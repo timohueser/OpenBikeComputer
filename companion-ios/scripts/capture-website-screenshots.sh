@@ -45,7 +45,9 @@ raise SystemExit(f"no available iOS simulator named {wanted!r}")
 # starts it and returns at once, so a caller can boot it beside the build it is going to need
 # it for; the capture below then finds it ready.
 if [[ "$mode" == "boot" ]]; then
-  xcrun simctl boot "$(resolve_simulator)" >/dev/null 2>&1 || true
+  # On its own line, so a device this runner does not have fails here and not minutes later.
+  boot_target="$(resolve_simulator)"
+  xcrun simctl boot "$boot_target" >/dev/null 2>&1 || true
   echo "started the $device_name simulator"
   exit 0
 fi
@@ -86,10 +88,11 @@ xcrun simctl status_bar "$simulator_id" override \
   --batteryState charged --batteryLevel 100
 
 # CI builds the app and the UI-test bundle once with `build-for-testing` and points
-# OBC_DERIVED_DATA_PATH at the result, so this run only executes the test. A standalone run
-# owns no prebuilt products and builds them here.
+# OBC_DERIVED_DATA_PATH at the result, so a check run only executes the test. A standalone run
+# owns no prebuilt products and builds them here. Update mode always builds: it writes the
+# committed images, which must never come from a bundle somebody else built.
 action="test"
-if [[ -n "${OBC_DERIVED_DATA_PATH:-}" ]]; then
+if [[ "$mode" == "check" && -n "${OBC_DERIVED_DATA_PATH:-}" ]]; then
   shopt -s nullglob
   prebuilt=("$derived_data/Build/Products/"*.xctestrun)
   shopt -u nullglob
@@ -101,7 +104,10 @@ echo "screenshot capture runs xcodebuild $action"
 
 (
   cd "$companion_dir"
-  xcodegen generate
+  # The prebuilt path reads no project file.
+  if [[ "$action" == "test" ]]; then
+    xcodegen generate
+  fi
   xcodebuild "$action" \
     -quiet \
     -project OBCCompanion.xcodeproj \
