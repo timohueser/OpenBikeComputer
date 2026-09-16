@@ -15,7 +15,6 @@
 //!
 //! **Provisional.** This whole file goes when #1096's toggle does.
 
-mod common;
 
 use core::cell::RefCell;
 
@@ -28,7 +27,7 @@ use obc_map_scene::{
 };
 use obc_render::{RenderConfig, RenderScratch, Viewport};
 
-use common::Buf;
+use crate::common::Buf;
 
 /// The ordinary feature: a red polygon covering the middle of the view.
 const ROAD_TOKEN: FeatureToken = FeatureToken::from_source_words([1, 0, 0]);

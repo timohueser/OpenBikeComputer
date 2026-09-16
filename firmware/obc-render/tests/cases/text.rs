@@ -7,8 +7,7 @@ use embedded_graphics::{pixelcolor::Rgb888, prelude::*};
 use obc_reader::{rgb565_to_device64, rgb565_to_rgb888};
 use obc_render::text::{draw_text, draw_text_ccw, text_width, Font, TextAlign};
 
-mod common;
-use common::Buf;
+use crate::common::Buf;
 
 const RED: Rgb888 = Rgb888::new(255, 0, 0);
 

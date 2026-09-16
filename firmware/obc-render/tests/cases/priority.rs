@@ -15,8 +15,7 @@ use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 use obc_render::{RenderConfig, RenderScratch, Viewport, MAX_FRAME_POINTS, MAX_SPANS};
 use obcm_testkit::{build_priority_tree, pack_poly, Style};
 
-mod common;
-use common::Buf;
+use crate::common::Buf;
 
 // Distinct colors per priority so the recording target can tell them apart.
 const LOW_565: u16 = 0x001F; // priority 4, blue

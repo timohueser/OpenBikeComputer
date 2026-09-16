@@ -8,8 +8,7 @@ use embedded_graphics::pixelcolor::Rgb888;
 use obc_map_scene::{ground_dist_m, BBox};
 use obc_render::{OverlayChunk, RenderScratch, RouteOverlaySource, Viewport};
 
-mod common;
-use common::Buf;
+use crate::common::Buf;
 
 const ROUTE: Rgb888 = Rgb888::new(255, 0, 255); // magenta stroke
 const ARROW: Rgb888 = Rgb888::new(255, 255, 255); // white chevrons
