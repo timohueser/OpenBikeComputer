@@ -1,0 +1,13 @@
+[Unit]
+Description=Back up OBC verification data and attachments
+ConditionPathExists=/var/lib/obc-verification/verification.sqlite
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/obc-verification-backup
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/backups/obc-verification /var/lib/obc-verification
