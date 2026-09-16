@@ -39,7 +39,7 @@ nextest_fast() {
   mkdir -p target
   find target -maxdepth 1 -name '*.profraw' -delete
   rm -f target/nextest/ci/junit.xml
-  cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/suite_registry.py cargo-filter --tier fast)"
+  cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/test_plan.py cargo-filter --tier fast)"
 }
 
 nextest_fixtures() {
@@ -49,7 +49,7 @@ nextest_fixtures() {
   python3 tools/fixtures.py sync test
   OBC_FIXTURE_ROOT="$(python3 tools/fixtures.py root)"
   export OBC_FIXTURE_ROOT
-  cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/suite_registry.py cargo-filter --tier fixtures)"
+  cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/test_plan.py cargo-filter --tier fixtures)"
 }
 
 # nextest runs no doctests, so they run here rather than falling out of the gate.
