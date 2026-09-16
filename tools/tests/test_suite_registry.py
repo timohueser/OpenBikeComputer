@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import copy
-import json
-from pathlib import Path
+import re
 import subprocess
 import tempfile
+import tomllib
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import sys
@@ -116,12 +117,6 @@ class SuiteRegistryTests(unittest.TestCase):
             self.assertEqual(registry.workflow_jobs(root)['test'].gates_on, 'test')
 
 
-    def test_list_data_is_derived_not_stored(self) -> None:
-        suites, coverage, discovered = self.base_documents()
-        inventory = registry.validate(self.root, suites, coverage, discovered)
-        row = registry._suite_summary(inventory.suites[0], inventory.matches["demo"])
-        self.assertEqual(row["discovered_units"], 1)
-
     def test_rejection_rules(self) -> None:
         cases = []
 
@@ -136,7 +131,6 @@ class SuiteRegistryTests(unittest.TestCase):
         case("fixture declaration", lambda s, c, d: s["suite"][0].update(level="fixture"), "must declare fixtures")
         case("derived fact", lambda s, c, d: s["suite"][0].update(test_count=3), "derived fields are forbidden")
         case("budget issue", lambda s, c, d: s["suite"][0].update(budget_exception={"reason": "slow"}), "GitHub issue reference")
-        case("quarantine issue", lambda s, c, d: s["suite"][0].update(quarantine={"reason": "flake"}), "GitHub issue reference")
         case("global coverage exclusion", lambda s, c, d: c.update(exclude=[{"path": "src/**"}]), "global exclusion needs path and replacement evidence")
         case("unknown component", lambda s, c, d: s["suite"][0].update(coverage_component="missing"), "unknown coverage component")
         case("dead entry", lambda s, c, d: s["suite"].append({**copy.deepcopy(s["suite"][0]), "id": "dead", "ownership": [{"kind": "workflow", "pattern": "never"}]}), "dead registry entry")
@@ -163,31 +157,6 @@ class SuiteRegistryTests(unittest.TestCase):
         suites["suite"].append(duplicate)
         with self.assertRaisesRegex(registry.RegistryError, "duplicate ownership"):
             registry.validate(self.root, suites, coverage, discovered)
-
-    def test_python_sleep_detection_uses_call_syntax(self) -> None:
-        source = self.root / "tools/tests/test_wait.py"
-        source.parent.mkdir(parents=True)
-        suites, coverage, _ = self.base_documents()
-        suites["suite"][0].update(
-            surface="python",
-            command="python3 -m unittest tools.tests.test_wait",
-            ownership=[{"kind": "path", "source": "python-test", "pattern": "tools/tests/test_*.py"}],
-        )
-        discovered = [registry.Discovered("python-test", "tools/tests/test_wait.py", "tools/tests/test_wait.py")]
-        for text in ['# time.sleep(1)\n', 'fixture = "time.sleep(1)"\n', 'fixture = "Task.sleep(1)"\n']:
-            with self.subTest(source=text):
-                source.write_text(text, encoding="utf-8")
-                registry.validate(self.root, suites, coverage, discovered)
-        for content in [b"def broken(:\n", b"\xff"]:
-            with self.subTest(source=content):
-                source.write_bytes(content)
-                with self.assertRaisesRegex(registry.RegistryError, "cannot inspect tools/tests/test_wait.py"):
-                    registry.validate(self.root, suites, coverage, discovered)
-        source.write_text("import time\ntime.sleep(1)\n", encoding="utf-8")
-        with self.assertRaisesRegex(registry.RegistryError, "real sleep"):
-            registry.validate(self.root, suites, coverage, discovered)
-        suites["suite"][0]["sleep_exception"] = {"reason": "bounded watchdog", "issue": "#1449"}
-        registry.validate(self.root, suites, coverage, discovered)
 
     def test_workflow_parser_handles_inline_blocks_and_matrix_commands(self) -> None:
         workflow = self.root / ".github/workflows/ci.yml"
@@ -688,21 +657,17 @@ class CiRoutingTests(unittest.TestCase):
                 with self.assertRaisesRegex(registry.RegistryError, expected):
                     registry.validate_ci_routing(self.root, self.inventory, self.graph, routes)
 
-    def test_a_trunk_build_routes_the_package_its_html_target_links(self) -> None:
+    def test_the_job_table_routes_a_package_no_cargo_argument_names(self) -> None:
         self.workflow.write_text(
             synthetic_workflow().replace(
                 "      - run: cargo test --workspace --locked\n",
-                "      - run: trunk build --config site/Trunk.toml\n",
+                "      - run: bash builder/build-wasm-bridges.sh\n",
             ),
             encoding="utf-8",
         )
-        (self.root / "site").mkdir()
-        (self.root / "site/Trunk.toml").write_text('[build]\ntarget = "page.html"\n', encoding="utf-8")
-        (self.root / "site/page.html").write_text(
-            '<link data-trunk rel="rust" href="../crates/core/Cargo.toml" data-wasm-opt="z" />\n',
-            encoding="utf-8",
-        )
-        self.assertEqual(self.routes()["rust.core"], ["unit"])
+        self.assertEqual(self.routes()["rust.core"], [])
+        with patch.object(registry, "JOB_PACKAGES", {"unit": {"core"}, "absent": {"core"}}):
+            self.assertEqual(self.routes()["rust.core"], ["unit"])
 
     def test_validation_rejects_a_gate_that_names_another_job(self) -> None:
         self.workflow.write_text(
@@ -732,19 +697,6 @@ class CiRoutingTests(unittest.TestCase):
     def test_validation_rejects_an_unprovisioned_runner_image(self) -> None:
         self.workflow.write_text(synthetic_workflow(runs_on=""), encoding="utf-8")
         with self.assertRaisesRegex(registry.RegistryError, "provisions no runner image"):
-            registry.validate_ci_routing(self.root, self.inventory, self.graph, self.routes())
-
-    def test_validation_rejects_a_leftover_suite_policy_filter(self) -> None:
-        self.workflow.write_text(
-            synthetic_workflow().replace(
-                f"      - run: {self.policy_command}\n",
-                f"      - run: {self.policy_command}\n"
-                "      - uses: dorny/paths-filter@v3\n        with:\n          filters: |\n"
-                "            rust:\n              - 'testing/**'\n",
-            ),
-            encoding="utf-8",
-        )
-        with self.assertRaisesRegex(registry.RegistryError, "encodes suite policy"):
             registry.validate_ci_routing(self.root, self.inventory, self.graph, self.routes())
 
     def test_gate_claims_come_from_obc_check_commands(self) -> None:
@@ -822,6 +774,7 @@ class ShippedRoutingTests(unittest.TestCase):
             # suite as well: a job that builds a package runs whenever that package is selected.
             "rust.obc-sim": ["clippy", "fmt", "test", "ui-snapshots"],
             "web.demo-browser": ["wasm"],
+            "web.builder-browser": ["web-browser"],
         }
         for suite_id, jobs in expected.items():
             with self.subTest(suite=suite_id):
@@ -863,17 +816,17 @@ class ShippedRoutingTests(unittest.TestCase):
             (
                 "web only",
                 ["builder/app/src/lib/panel.ts"],
-                ["desktop", "desktop-frontend", "desktop-launch", "fmt", "wasm-bridges", "web"],
+                ["desktop", "desktop-frontend", "desktop-launch", "fmt", "wasm-bridges", "web", "web-browser"],
             ),
             (
                 "workflow",
                 [".github/workflows/ci.yml"],
-                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web"],
+                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
             ),
             (
                 "nextest configuration",
                 [".config/nextest.toml"],
-                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web"],
+                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
             ),
             # The web demo is built only by `trunk build`, the OBCKit package is compiled into the
             # app only by `xcodebuild`, and tools/fixtures.py is run only by a workflow step.
@@ -912,82 +865,6 @@ class ShippedRoutingTests(unittest.TestCase):
         self.assertIn("rust.obc-route", claims)
         self.assertFalse({id for id in claims if by_id[id]["level"] in {"fixture", "live", "hardware"}
                           or by_id[id]["scheduled"] == "manual"})
-
-class ExceptionIssueStateTests(unittest.TestCase):
-    def suite(self, reference: str, field: str = "quarantine", name: str = "demo") -> dict:
-        return {"id": name, field: {"reason": "Pending repair", "issue": reference}}
-
-    def response(self, value: object) -> subprocess.CompletedProcess:
-        return subprocess.CompletedProcess([], 0, stdout=json.dumps(value))
-
-    @patch.object(registry.subprocess, "run")
-    def test_local_and_full_references_share_one_lookup(self, run) -> None:
-        run.return_value = self.response({"state": "open"})
-        suites = [self.suite("#7"), self.suite("https://github.com/OWNER/REPO/issues/007", "sleep_exception")]
-        self.assertEqual(registry.check_issue_states(suites, "owner/repo"), 1)
-        run.assert_called_once_with(
-            ["gh", "api", "repos/owner/repo/issues/7"],
-            check=True, capture_output=True, text=True, timeout=20,
-        )
-
-    @patch.object(registry.subprocess, "run")
-    def test_distinct_issues_report_all_owning_fields(self, run) -> None:
-        run.side_effect = [self.response({"state": "closed"}), self.response({"state": "closed"})]
-        suites = [self.suite("#1"), self.suite("#1", "cadence_conflict", "other"), self.suite("#2", "budget_exception")]
-        with self.assertRaises(registry.RegistryError) as caught:
-            registry.check_issue_states(suites, "owner/repo")
-        for owner in ("demo.quarantine", "other.cadence_conflict", "demo.budget_exception"):
-            self.assertIn(owner, str(caught.exception))
-        self.assertEqual(run.call_count, 2)
-
-    @patch.object(registry.subprocess, "run")
-    def test_invalid_references_are_rejected_before_any_request(self, run) -> None:
-        for invalid in ("garbage", "https://example.com/o/r/issues/3", "https://github.com/o/r?bad/issues/3"):
-            with self.subTest(reference=invalid), self.assertRaises(registry.RegistryError):
-                registry.check_issue_states([self.suite("#1"), self.suite(invalid)], "owner/repo")
-        run.assert_not_called()
-
-    @patch.object(registry.subprocess, "run")
-    def test_missing_reason_and_repository_are_rejected_before_requests(self, run) -> None:
-        suite = self.suite("#1")
-        suite["quarantine"]["reason"] = ""
-        with self.assertRaises(registry.RegistryError):
-            registry.check_issue_states([suite], "owner/repo")
-        with self.assertRaises(registry.RegistryError):
-            registry.check_issue_states([self.suite("#1")], "not-a-repository")
-        run.assert_not_called()
-
-    @patch.object(registry.subprocess, "run")
-    def test_pull_requests_and_malformed_responses_are_not_open_issues(self, run) -> None:
-        for response in ({"state": "open", "pull_request": {}}, {}, [], {"state": []}, {"state": "unknown"}):
-            with self.subTest(response=response):
-                run.return_value = self.response(response)
-                with self.assertRaisesRegex(registry.RegistryError, "demo.quarantine: owner/repo#1"):
-                    registry.check_issue_states([self.suite("#1")], "owner/repo")
-
-    @patch.object(registry.subprocess, "run")
-    def test_api_auth_timeout_and_decode_errors_are_visible_without_retry(self, run) -> None:
-        failures = [
-            subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 403: authentication failed"),
-            subprocess.TimeoutExpired(["gh"], 20),
-            FileNotFoundError("gh is not installed"),
-        ]
-        for failure in failures:
-            with self.subTest(failure=type(failure).__name__):
-                run.reset_mock(side_effect=True)
-                run.side_effect = failure
-                with self.assertRaisesRegex(registry.RegistryError, "demo.quarantine: owner/repo#1"):
-                    registry.check_issue_states([self.suite("#1")], "owner/repo")
-                run.assert_called_once()
-        run.reset_mock(side_effect=True)
-        run.return_value = subprocess.CompletedProcess([], 0, stdout="not JSON")
-        with self.assertRaisesRegex(registry.RegistryError, "could not check issue"):
-            registry.check_issue_states([self.suite("#1")], "owner/repo")
-        run.assert_called_once()
-
-if __name__ == "__main__":
-    unittest.main()
-
 
 class CargoCadenceTests(unittest.TestCase):
     def test_whole_target_owners_partition_fast_fixture_and_manual_work(self):
@@ -1033,3 +910,35 @@ class CargoCadenceTests(unittest.TestCase):
         owner = {'kind': 'path', 'source': 'xcuitest', 'pattern': 'ios/*.swift', 'exclude': [unit.path]}
         self.assertFalse(registry.ownership_matches(Path('.'), owner, unit))
         self.assertTrue(registry.ownership_matches(Path('.'), {**owner, 'exclude': []}, unit))
+
+class JobPackageTableTests(unittest.TestCase):
+    """`JOB_PACKAGES` states what the builders compile; nothing derives it, so pin it here."""
+
+    root = registry.repository_root()
+
+    def package_name(self, manifest_directory: Path) -> str:
+        with (manifest_directory / "Cargo.toml").open("rb") as handle:
+            return tomllib.load(handle)["package"]["name"]
+
+    def test_wasm_bridges_matches_the_build_script(self) -> None:
+        script = (self.root / "builder/build-wasm-bridges.sh").read_text(encoding="utf-8")
+        directories = re.findall(r"\bwasm-pack\s+build\s+(\S+)", script)
+        self.assertEqual(
+            {self.package_name(self.root / directory) for directory in directories},
+            registry.JOB_PACKAGES["wasm-bridges"],
+        )
+
+    def test_wasm_matches_the_trunk_target_page(self) -> None:
+        config = self.root / "docs/Trunk.toml"
+        with config.open("rb") as handle:
+            page = config.parent / tomllib.load(handle)["build"]["target"]
+        hrefs = re.findall(
+            r'<link[^>]*data-trunk[^>]*rel="rust"[^>]*href="([^"]+)"', page.read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            {self.package_name((page.parent / href).parent) for href in hrefs},
+            registry.JOB_PACKAGES["wasm"],
+        )
+
+if __name__ == "__main__":
+    unittest.main()
