@@ -1,0 +1,106 @@
+name: Verification candidate
+run-name: Verification candidate ${{ inputs.candidate_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_id:
+        required: true
+        type: string
+      source_sha:
+        required: true
+        type: string
+      release_version:
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: verification-candidate-${{ inputs.candidate_id }}
+  cancel-in-progress: false
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate candidate identity and reviewed source
+        env:
+          CANDIDATE_ID: ${{ inputs.candidate_id }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          OBC_VERIFICATION_URL: ${{ vars.OBC_VERIFICATION_URL }}
+          OBC_VERIFICATION_CI_TOKEN: ${{ secrets.OBC_VERIFICATION_CI_TOKEN }}
+        run: python3 apps/obc-verification/ops/candidate_identity.py
+  checks:
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      full_release: true
+    secrets: inherit
+  firmware:
+    needs: validate
+    uses: ./.github/workflows/release.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      version: ${{ inputs.release_version }}
+      artifact_name: candidate-firmware-${{ inputs.candidate_id }}-${{ github.run_attempt }}
+    secrets: inherit
+  verify:
+    if: always()
+    needs: [validate, checks, firmware]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every candidate gate
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          states = json.loads(os.environ['NEEDS_JSON'])
+          assert states and all(job['result'] == 'success' for job in states.values()), states
+          PY
+  report:
+    if: always() && needs.validate.result == 'success'
+    needs: [validate, verify]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download native reports from this attempt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: python3 apps/obc-verification/ops/download_reports.py reports
+      - name: Download candidate firmware if built
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          ARTIFACT_NAME: candidate-firmware-${{ inputs.candidate_id }}-${{ github.run_attempt }}
+        run: |
+          mkdir -p firmware-assets
+          # A failed build has no assets. The failed verify gate remains authoritative.
+          if gh api "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts" --paginate --jq '.artifacts[].name' | grep -Fxq "$ARTIFACT_NAME"; then
+            gh run download "$RUN_ID" --name "$ARTIFACT_NAME" --dir firmware-assets
+          fi
+      - name: Import candidate evidence
+        env:
+          OBC_VERIFICATION_URL: ${{ vars.OBC_VERIFICATION_URL }}
+          OBC_VERIFICATION_CI_TOKEN: ${{ secrets.OBC_VERIFICATION_CI_TOKEN }}
+          CANDIDATE_ID: ${{ inputs.candidate_id }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          CONCLUSION: ${{ needs.verify.result == 'success' && 'success' || 'failure' }}
+        run: |
+          python3 apps/obc-verification/ops/import_results.py --reports reports --assets firmware-assets \
+            --source-sha "$SOURCE_SHA" --run-id "$RUN_ID" --run-attempt "$RUN_ATTEMPT" \
+            --candidate "$CANDIDATE_ID" --conclusion "$CONCLUSION"

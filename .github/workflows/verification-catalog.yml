@@ -1,0 +1,43 @@
+name: Update verification test catalogue
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [develop]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: verification-catalog
+  cancel-in-progress: false
+jobs:
+  catalogue:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      vars.OBC_VERIFICATION_URL != ''
+    runs-on: ubuntu-latest
+    steps:
+      # Execute importer code from the trusted default-branch workflow revision only.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download native reports from completed CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: python3 apps/obc-verification/ops/download_reports.py reports
+      - name: Import observed test identities
+        env:
+          OBC_VERIFICATION_URL: ${{ vars.OBC_VERIFICATION_URL }}
+          OBC_VERIFICATION_CI_TOKEN: ${{ secrets.OBC_VERIFICATION_CI_TOKEN }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: |
+          python3 apps/obc-verification/ops/import_results.py --reports reports \
+            --source-sha "$SOURCE_SHA" --run-id "$RUN_ID" --run-attempt "$RUN_ATTEMPT" \
+            --catalog-only --conclusion success

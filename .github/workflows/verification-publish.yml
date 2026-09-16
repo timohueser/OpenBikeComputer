@@ -1,0 +1,68 @@
+name: Publish verified candidate
+run-name: Publish candidate ${{ inputs.candidate_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_id:
+        required: true
+        type: string
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: verification-publication
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    environment: release
+    outputs:
+      source_sha: ${{ steps.publish.outputs.source_sha }}
+      release_url: ${{ steps.publish.outputs.release_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install distribution client
+        run: sudo apt-get update && sudo apt-get install -y rclone
+      - name: Validate evidence and promote exact candidate files
+        id: publish
+        env:
+          CANDIDATE_ID: ${{ inputs.candidate_id }}
+          OBC_VERIFICATION_URL: ${{ vars.OBC_VERIFICATION_URL }}
+          OBC_VERIFICATION_CI_TOKEN: ${{ secrets.OBC_VERIFICATION_CI_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OBC_R2_ACCOUNT_ID: ${{ secrets.OBC_R2_ACCOUNT_ID }}
+          OBC_R2_BUCKET: ${{ secrets.OBC_R2_BUCKET }}
+          OBC_R2_ACCESS_KEY_ID: ${{ secrets.OBC_R2_ACCESS_KEY_ID }}
+          OBC_R2_SECRET_ACCESS_KEY: ${{ secrets.OBC_R2_SECRET_ACCESS_KEY }}
+        run: python3 apps/obc-verification/ops/publish.py
+  confirm:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record completed publication
+        env:
+          CANDIDATE_ID: ${{ inputs.candidate_id }}
+          SOURCE_SHA: ${{ needs.publish.outputs.source_sha }}
+          RELEASE_URL: ${{ needs.publish.outputs.release_url }}
+          OBC_VERIFICATION_URL: ${{ vars.OBC_VERIFICATION_URL }}
+          OBC_VERIFICATION_CI_TOKEN: ${{ secrets.OBC_VERIFICATION_CI_TOKEN }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, urllib.request
+          candidate = os.environ['CANDIDATE_ID']
+          assert re.fullmatch(r'[A-Za-z0-9-]+', candidate)
+          payload = json.dumps(dict(sourceSha=os.environ['SOURCE_SHA'], releaseUrl=os.environ['RELEASE_URL'],
+            runId=int(os.environ['RUN_ID']), runAttempt=int(os.environ['RUN_ATTEMPT']))).encode()
+          url = os.environ['OBC_VERIFICATION_URL'].rstrip('/')
+          assert url.startswith('https://')
+          request = urllib.request.Request(f'{url}/api/ci/candidates/{candidate}/published', data=payload,
+            headers={'Authorization': f"Bearer {os.environ['OBC_VERIFICATION_CI_TOKEN']}", 'Content-Type':'application/json'})
+          with urllib.request.urlopen(request, timeout=30) as response:
+            assert response.status == 200
+          PY

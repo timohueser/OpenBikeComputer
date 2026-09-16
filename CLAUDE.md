@@ -96,3 +96,20 @@ Codex, or other — and only the owner can raise them:
   ```sh
   python3 docs/build_docs.py --check-links
   ```
+
+## System requirements and release evidence
+
+The [verification console](https://releases.openbikecomputer.com) owns requirement revisions and
+linked tests. Read it before work that changes product behavior. If the console is unavailable,
+report that limitation. Do not invent a requirement or assume that a test is linked.
+
+- The owner writes requirement titles and prose. Agents must not create or edit them unless the
+  owner explicitly requests an example. Example requirements remain inactive.
+- Alert the owner when requested behavior has no requirement, a changed test needs a link, or a
+  deleted test removes coverage. The console does not block ordinary development.
+- Read the API with the dedicated agent credential. Never use an owner session for agent writes.
+- Ask the owner before submitting a test-link proposal. Submission does not change a requirement;
+  an owner must accept it in the console. Do not record manual passes or publish a release on
+  behalf of the owner without an explicit instruction.
+
+See [the application README](apps/obc-verification/README.md) for the API and release flow.
