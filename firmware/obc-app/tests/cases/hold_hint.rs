@@ -5,11 +5,11 @@
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::screen::palette;
-use obc_app::{App, AppState};
+use obc_app::{App, AppState, Chord, InputPlane};
 use obc_ports::{Button, InputClock};
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 
-use crate::common::{build_min_obcm, down, keys, Buf};
+use crate::common::{build_min_obcm, down, keys, up, Buf};
 
 /// True-color palette color the host `color_fn` resolves a hint hue to.
 fn rgb(c: u16) -> Rgb888 {
@@ -51,17 +51,10 @@ fn holding_a_button_bulges_its_edge_a_tap_does_nothing() {
     app.handle_input(InputClock(0), &mut keys(&[]));
     let (i_top, i_bot) = render(&mut app, &bytes).edge_halves(hud);
 
-    // Hold Select past the dead zone: a bulge swells the top half. Its base spans `2*base_half`
-    // px, so the quartic shoulders can graze a few px past the midline — hence require the top-half
-    // growth to dominate rather than the bottom count to be zero.
+    // Select and Back occupy opposite screen halves.
     let (e_top, e_bot) = render_hold(&bytes, Button::Select, 300).edge_halves(hud);
     assert!(e_top > i_top, "Select hold ⇒ a bulge swells the top of the right edge");
-    assert!(
-        e_top - i_top > 10 * (e_bot - i_bot),
-        "the Select bulge belongs to the top half (top +{}, bottom +{})",
-        e_top - i_top,
-        e_bot - i_bot,
-    );
+    assert_eq!(e_bot, i_bot, "the Select bulge stays out of the bottom half");
 
     // Hold Back instead: a bulge in the *bottom* half, the top untouched.
     let (b_top, b_bot) = render_hold(&bytes, Button::Back, 300).edge_halves(hud);
@@ -72,4 +65,72 @@ fn holding_a_button_bulges_its_edge_a_tap_does_nothing() {
     // a tap-length press swells nothing, so a quick click never flashes a bulge.
     let early = render_hold(&bytes, Button::Select, 50).edge_halves(hud);
     assert_eq!(early, (i_top, i_bot), "inside the dead zone a press shows no bulge");
+}
+
+fn overlay(plane: &InputPlane) -> Buf {
+    let mut buf = Buf::new(240, 320);
+    plane.render_overlay(&mut buf, 240.0, 320.0, rgb);
+    buf
+}
+
+#[test]
+fn select_and_back_have_mirrored_shapes() {
+    let held = |button| {
+        let mut plane = InputPlane::new();
+        plane.recognize(InputClock(0), &mut keys(&[down(button)]), |_| {});
+        plane.recognize(InputClock(300), &mut keys(&[]), |_| {});
+        overlay(&plane)
+    };
+    let select = held(Button::Select);
+    let back = held(Button::Back);
+    assert!(select.count(rgb(palette::HUD)) > 0);
+    for y in 0..320 {
+        for x in 0..240 {
+            assert_eq!(select.get(x, y), back.get(x, 319 - y), "mirror at ({x}, {y})");
+        }
+    }
+}
+
+#[test]
+fn assistant_hints_charge_pop_and_retract_together_on_both_input_paths() {
+    let hud = rgb(palette::HUD);
+    for (first, second) in [(Button::Up, Button::Select), (Button::Select, Button::Up)] {
+        for release_at in [100, 340, 600] {
+            let mut plane = InputPlane::new();
+            let mut app = App::new_idle(AppState::new(0, 0, 0.05));
+            for (t, evs) in [
+                (0, vec![down(first)]),
+                (40, vec![down(second)]),
+                (release_at - 1, vec![]),
+                (release_at, vec![up(first), up(second)]),
+                (release_at + 50, vec![]),
+                (release_at + 250, vec![]),
+            ] {
+                let chord = plane.recognize(InputClock(t), &mut keys(&evs), |_| panic!("constituent gesture"));
+                app.handle_input(InputClock(t), &mut keys(&evs));
+                if t == release_at - 1 && release_at == 600 {
+                    assert_eq!(chord, Some(Chord::Assistant));
+                }
+                let buf = overlay(&plane);
+                let mut single = Buf::new(240, 320);
+                app.render_overlay(&mut single, 240.0, 320.0, rgb);
+                assert_eq!(buf.px, single.px, "input paths at {t}");
+                let visible = release_at > 100 && t >= release_at - 1 && t < release_at + 250;
+                assert_eq!(buf.count(hud) > 0, visible, "visible at {t}, release {release_at}");
+                assert_eq!(plane.overlay_active(), visible);
+                let rows = plane.overlay_rows(240, 320);
+                for y in 0..320 {
+                    for x in 0..240 {
+                        assert_eq!(buf.get(x, y), buf.get(239 - x, y), "paired hints at {t}");
+                        if buf.get(x, y) == hud {
+                            assert!(!(12..228).contains(&x), "only edge pixels");
+                            assert!(y < 160, "no Back hint");
+                            let (start, count) = rows.expect("visible hints need dirty rows");
+                            assert!((start..start + count).contains(&(y as u16)));
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

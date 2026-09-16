@@ -110,9 +110,11 @@ fn standalone_input_plane_recognizes_the_same_gestures_as_handle_input() {
     plane.recognize(InputClock(300), &mut keys(&[]), |g| got.push(g));
     assert!(got.is_empty(), "still charging before the threshold");
     assert!(plane.overlay_active(), "the bulge is live past the dead zone");
+    assert!(plane.hold_charging());
 
     plane.recognize(InputClock(600), &mut keys(&[]), |g| got.push(g));
     assert_eq!(got, vec![Gesture::Hold], "the long-press fires the instant it crosses 500 ms");
+    assert!(!plane.hold_charging());
 
     // A step recognises immediately; a release after the hold is silent.
     got.clear();
@@ -166,6 +168,7 @@ fn assistant_hold_matches_both_input_planes_without_opening_the_drawer_first() {
                 }
                 assert_eq!(app.last_gesture(), None, "no constituent gesture at {t}");
             }
+            assert_eq!(plane.hold_charging(), t == 40 || t == 539, "Assistant charge at {t}");
             if t == 40 || t == 539 {
                 assert_eq!(single.ms_until_next_wake(t), Some(540 - t));
                 assert_eq!(plane.chord_remaining_ms(t), Some(540 - t));

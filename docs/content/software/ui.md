@@ -271,10 +271,16 @@ long press, and no release. The chord stays latched until both buttons are up.
 
 | Chord | Meaning |
 | --- | --- |
-| Up + Select | Open or close the universal quick drawer |
+| Up + Select, released before 500 ms | Open or close the universal quick drawer |
+| Up + Select, held for 500 ms | Open Ride Assistant |
 | Down + Back | Open or close the current screen's contextual drawer |
 | Up + Down | Reserved |
 | Select + Back | Reserved |
+
+The Assistant hold starts when the second button goes down. Matching bulges grow beside Up and
+Select, then pop together when Assistant opens. A release before the threshold retracts both.
+Select and Back holds use the same bulge size, at equal distances above and below the screen centre.
+Quick taps do not show a bulge.
 
 A reserved chord is recognized and swallowed. It does nothing. This keeps a squeeze of two buttons
 from becoming two unrelated actions.
