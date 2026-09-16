@@ -91,7 +91,7 @@ async function route(event: RequestEvent): Promise<Response> {
     store().revision(revisionId);
     const { sourceSha } = await sourceCommit(sourceRef);
     const revision = store().revision(revisionId);
-    const candidate: Candidate = { id: store().id(), version, sourceRef, sourceSha, revision, createdAt: new Date().toISOString(), status: 'queued', ciStatus: 'pending', results: [], manualRuns: [], assets: [] };
+    const candidate: Candidate = { id: store().id(), version, sourceRef, sourceSha, revision, createdAt: new Date().toISOString(), status: 'queued', ciStatus: 'pending', results: [], manualRuns: [], assets: [], exceptions: [] };
     store().put('candidate', candidate.id, candidate);
     try { await dispatch(candidate); }
     catch (error) { return json(store().updateCandidate(candidate.id, (c) => { c.ciStatus = 'failure'; c.failure = error instanceof Error ? error.message : 'Dispatch failed.'; }), { status: 201 }); }
@@ -101,9 +101,34 @@ async function route(event: RequestEvent): Promise<Response> {
     const id = identifier(parts[1]);
     const candidate = store().candidate(id);
     if (parts.length === 2 && method === 'GET') { const refreshed = await reconcile(candidate); return json({ candidate: refreshed, readiness: readiness(refreshed) }); }
-    const frozen = store().maybe<Candidate>('publication', id) ?? candidate;
-    if (parts[2] === 'evidence' && method === 'GET') return json({ candidate: frozen, readiness: readiness(frozen) }, { headers: { 'Content-Disposition': `attachment; filename="${id}-evidence.json"` } });
-    if (parts[2] === 'report' && method === 'GET') return new Response(report(frozen), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Content-Disposition': `${event.url.searchParams.has('download') ? 'attachment' : 'inline'}; filename="${id}-report.html"`, 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" } });
+    if (['evidence', 'report'].includes(parts[2]) && method === 'GET') {
+      const publication = store().maybe<Candidate>('publication', id);
+      const files = publication ? store().maybe<{ html: string; evidence: string }>('publication-files', id) : undefined;
+      assert(!publication || files, 'Frozen publication files are missing. Restore them before continuing.', 409);
+      if (parts[2] === 'evidence') return new Response(files?.evidence ?? JSON.stringify({ candidate, readiness: readiness(candidate) }), { headers: { 'Content-Type': 'application/json', 'Content-Disposition': `attachment; filename="${id}-evidence.json"` } });
+      return new Response(files?.html ?? report(candidate), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Content-Disposition': `${event.url.searchParams.has('download') ? 'attachment' : 'inline'}; filename="${id}-report.html"`, 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" } });
+    }
+    if (parts[2] === 'exceptions' && ((parts.length === 3 && method === 'POST') || (parts.length === 4 && method === 'DELETE'))) {
+      requireAdmin(actor);
+      const data = method === 'POST' ? await body(event) : undefined;
+      const requirementId = identifier(data?.requirementId ?? parts[3], 'Requirement ID');
+      const reason = data ? text(data.reason, 'Exception reason', 5000) : undefined;
+      return json(store().updateCandidate(id, (current) => {
+        const admin = requireAdmin(actor);
+        assert(!current.evidenceFrozen && !['publishing', 'published'].includes(current.status) && !store().maybe('publication', id), 'Published evidence is frozen.', 409);
+        const requirement = current.revision.requirements.find((r) => r.id === requirementId);
+        assert(requirement?.active, 'Active requirement not found in this candidate.', 404);
+        assert(!requirement.todo, 'Complete the requirement definition before accepting an exception.', 409);
+        const exists = current.exceptions?.some((entry) => entry.requirementId === requirementId);
+        if (method === 'POST') {
+          assert(!exists, 'An exception already exists. Remove it before recording a replacement.', 409);
+          current.exceptions = [...(current.exceptions ?? []), { requirementId, reason: reason!, author: admin.name, createdAt: new Date().toISOString() }];
+        } else {
+          assert(exists, 'Exception not found.', 404);
+          current.exceptions = current.exceptions!.filter((entry) => entry.requirementId !== requirementId);
+        }
+      }));
+    }
     if (parts[2] === 'runs' && method === 'POST') {
       allow('owner'); const data = await body(event);
       const req = candidate.revision.requirements.find((r) => r.id === data.requirementId);
@@ -116,15 +141,22 @@ async function route(event: RequestEvent): Promise<Response> {
     }
     if (parts[2] === 'publish' && method === 'POST') {
       allow('owner');
+      const data = await body(event);
+      assert(Array.isArray(data.exceptions), 'The reviewed exception list is required.');
+      const exceptionSnapshot = (entries: { requirementId?: unknown; reason?: unknown; author?: unknown; createdAt?: unknown }[]) => JSON.stringify(entries.map((entry) => [entry?.requirementId, entry?.reason, entry?.author, entry?.createdAt]));
       const previousDispatch = store().maybe<{ id: string }>('dispatch', `${id}:publish`)?.id;
       if (candidate.status === 'publishing') await publicationRetry(candidate);
       const locked = store().updateCandidate(id, (c) => {
         assert(c.status !== 'published', 'Release is already published.', 409);
         assert(c.status === candidate.status && store().maybe<{ id: string }>('dispatch', `${id}:publish`)?.id === previousDispatch, 'Candidate changed. Reload before publishing.', 409);
+        assert(exceptionSnapshot(c.exceptions ?? []) === exceptionSnapshot(data.exceptions), 'Exceptions changed. Reload the candidate and review again.', 409);
         assert(readiness(c).ready, 'Verification is incomplete.', 409);
         assert(!store().list<Candidate>('candidate').some((other) => other.id !== id && other.version === c.version && ['publishing', 'published'].includes(other.status)), 'Another candidate already owns this version.', 409);
         c.status = 'publishing'; c.evidenceFrozen = true; delete c.failure;
-        if (!store().maybe('publication', id)) store().put('publication', id, c);
+        if (!store().maybe('publication', id)) {
+          store().put('publication', id, c);
+          store().put('publication-files', id, { html: report(c), evidence: JSON.stringify({ candidate: c, readiness: readiness(c) }) });
+        }
       });
       try { await dispatch(locked, true); }
       catch (error) { return json(store().updateCandidate(id, (c) => { c.failure = error instanceof Error ? error.message : 'Publish dispatch failed.'; })); }
