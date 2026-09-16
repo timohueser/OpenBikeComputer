@@ -79,6 +79,8 @@ user_config.json
 builder/app/src/lib/convert/pkg/
 # …and the assembly bridge's (#1034), the same way.
 builder/app/src/lib/assemble/pkg/
+# …and the test device's, which lands outside src/ so nothing shipped can import it.
+builder/app/test-support/flat-device/pkg/
 # `obc` dev-task tooling (in tools/): personal defaults + the web builder's
 # virtualenv + the optional local maps drop. The tooling itself (everything in
 # tools/ except obc.local) is committed.
