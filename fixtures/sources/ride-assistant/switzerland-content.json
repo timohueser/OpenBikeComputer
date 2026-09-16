@@ -1,23 +1,63 @@
 {
-  "schema": 1,
+  "schema": 2,
   "package": "assistant-switzerland-content",
-  "bytes": 10554318,
-  "sha256": "cf2a7ad213d91ba513fbbe24642d1615efd071c1e659c9e7885103f11c9d33b1",
-  "content_manifest_sha256": "4746bd01daf57012ca2a34eb62c269f20c859b981f0e7682c5742f6221e71f57",
+  "bytes": 10741228,
+  "sha256": "42a2f4986a77641753c99a91df8a3b419dd20cbf4ac1e35512a608a936434ebd",
+  "content_schema": 2,
+  "content_manifest_sha256": "07a318fa4c1891960d04e9c86b0ee0e24259cdc3f44058815b77db1e02675dc2",
+  "compiler_commit": "e9b14df70e066e6b4a084006f5ea188bee457519",
+  "compiler_sha256": "f748a5ef89d3d6c50d3cbaa42cdd793bb298175c363c7ecd69b0698c44703bc5",
+  "source_manifest_sha256": "ec07a5a76f603f10784ae9391caffd9e6ae9f0513ff85e50ececc1f059a491e4",
+  "boundary_sha256": "1b36c21d52a4419d410893ea41dd522d36238ada0b253c7fe78b81d2ef1edd5b",
   "input_sha256": "41348f1c7613ac423b653b78f6cad4aa636ab1e0cd242331fb5f584ec7a4f775",
-  "policy_sha256": "ab0ca42e41851a6a032b630020ff39dd6695d1a8d711f04e1917e66ff8edc5e6",
+  "policy_sha256": "2aebe70c9552885b5aab7385d4f117ecbb7068e542a461defe675429253a22d3",
   "category_policy_sha256": "b5efcb7a54590174e6dbb100097a638cc5b060317a62132e465db3cbd01a6dd8",
+  "supported_languages": [
+    "en",
+    "de",
+    "fr",
+    "es"
+  ],
   "counts": {
     "captured": 6221,
     "candidates": 3508,
-    "texts": 1495,
-    "images": 1119,
+    "texts": 1478,
+    "images": 1109,
     "mapped_approaches": null,
-    "photo_bytes": 58008960
+    "photo_bytes": 57490560
   },
+  "article_variants": {
+    "de": 1200,
+    "en": 669,
+    "fr": 522
+  },
+  "default_languages": {
+    "de": 692,
+    "en": 669,
+    "fr": 117
+  },
+  "records_with_locale_sources": 0,
   "source_coverage_kind": "geographic-policy-superset",
-  "country_complete": true,
-  "content_members": 1120,
-  "archive_members": 1121,
-  "scope": "Compiled content and RGB222 photos only. Raw country captures remain in the local acquisition cache. Text and photo source notices are retained per record."
+  "source_country_complete": true,
+  "capture_limits": {
+    "captured_articles": {
+      "en": 718,
+      "de": 1456,
+      "fr": 581,
+      "it": 258
+    },
+    "spanish_articles_captured": false,
+    "locale_entities_captured": false,
+    "current_language_and_locale_coverage_complete": false,
+    "note": "The retained capture predates the current language and locale policy. Its country-complete declaration describes geographic and category acquisition. Italian is not a supported output language. No missing translations or locale claims were manufactured."
+  },
+  "content_members": 1110,
+  "archive_members": 1111,
+  "recipe": "cargo build --locked --release -p obc-bake; obc-bake landmarks --snapshot CAPTURE/manifest.json --boundary CAPTURE/boundary.geojson --out OUTPUT; tools/obc fixtures pack assistant-switzerland-content OUTPUT --output assistant-switzerland-content.tar.gz",
+  "scope": "Compiled multilingual content and RGB222 photos only. Raw country captures remain in the local acquisition cache. Text and photo source notices are retained per record.",
+  "verification": {
+    "offline_compiler_passes": 2,
+    "byte_identical_content_members": 1110,
+    "network": "Denied by macOS sandbox-exec during both compiler passes."
+  }
 }
