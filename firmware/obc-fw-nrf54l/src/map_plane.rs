@@ -48,15 +48,9 @@ use obc_render::RenderStats;
 use crate::com_hw::HwCom;
 use crate::ls021_flpr::{relaunch_flpr, Frame64, Ls021Flpr};
 
-// The hold-bulge's right-edge overlay **columns**. Both bulges erupt from the right screen edge ≤12 px
-// deep, so this fixed 16-px column band bounds them with margin. The map plane re-presents the bulge
-// through the presenter's `present_overlay` over the clean framebuffer, addressing only the live
-// bulge's *rows* (`InputPlane::overlay_rows`: Select ≈ 59–171, Back ≈ 182–246) — the FLPR the
-// full-width rows of that span (the presenter has its own `MAX_OVERLAY_*` scratch bound).
-/// First overlay column: the rightmost 16 px (bulge depth ≤12 + margin).
-const OVL_X0: u16 = (FRAME_W - 16) as u16;
-/// Overlay window width (columns).
-const OVL_W: u16 = 16;
+// A full-width strip keeps both edge hints in the same panel scan. Twelve rows fit
+// the presenter's bounded scratch without adding a full-width overlay buffer.
+const OVL_ROWS: u16 = 12;
 
 // The live-bulge "present the rows *around* it" discipline lives **inside** the self-diffing present:
 // the map plane presents with `damage_around(bulge window)`, which clips the bulge's rows out of the
@@ -284,12 +278,24 @@ impl MapDisplay {
         rows: u16,
     ) -> bool {
         let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
-        panel
-            .present_overlay(frame, RowWindow { x0: OVL_X0, y0, w: OVL_W, rows }, |band: &mut Band| {
-                input_plane.lock(|cell| cell.borrow().render_overlay(band, FRAME_W as f32, FRAME_H as f32, color_fn));
-            })
-            .await
-            .is_ok()
+        let end = y0 + rows;
+        let mut y = y0;
+        while y < end {
+            let rows = (end - y).min(OVL_ROWS);
+            let region = RowWindow { x0: 0, y0: y, w: FRAME_W as u16, rows };
+            if panel
+                .present_overlay(frame, region, |band: &mut Band| {
+                    input_plane
+                        .lock(|cell| cell.borrow().render_overlay(band, FRAME_W as f32, FRAME_H as f32, color_fn));
+                })
+                .await
+                .is_err()
+            {
+                return false;
+            }
+            y += rows;
+        }
+        true
     }
 
     /// Fold one push outcome into the **relaunch escalation** (#349) — every FLPR push (map present,
