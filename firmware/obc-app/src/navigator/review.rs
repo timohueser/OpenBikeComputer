@@ -778,6 +778,14 @@ impl crate::App {
                     if let Some(checkpoint) = self.navigator.review.checkpoint {
                         self.navigator.request_seam(index, checkpoint.progress_m);
                     }
+                    if self.recorder.session().is_none() {
+                        self.recorder.request(crate::RecorderIntent::Start);
+                        self.activity.mode = crate::activity::Mode::Riding;
+                        let position = self.state.user_fix.map(|fix| (fix.lon, fix.lat));
+                        if let Some((lon, lat)) = position {
+                            self.state.enter_riding_view(lon, lat);
+                        }
+                    }
                     self.ui.map_dirty = true;
                 } else {
                     self.navigator.review_failed(NavigatorError::SourceChanged);
@@ -847,6 +855,64 @@ mod tests {
         let token = tokens.issue();
         nav.checkpoint_issued(token);
         token
+    }
+    #[test]
+    fn accepted_destination_starts_only_a_missing_recording_and_keeps_navigation() {
+        use crate::activity::Mode;
+        for mode in [Mode::Idle, Mode::Riding, Mode::Paused] {
+            for committed in [false, true] {
+                let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 1.0));
+                app.test_mount_store();
+                if mode != Mode::Idle {
+                    app.test_start_ride();
+                }
+                app.activity.mode = mode;
+                let session = app.recorder.session();
+                let summary = obc_route::RouteSummary {
+                    name: heapless::String::new(),
+                    distance_km: 1,
+                    climb_m: 0,
+                    bbox: obc_map_scene::BBox { min_lon: 0, min_lat: 0, max_lon: 1, max_lat: 1 },
+                    start_lon: 0,
+                    start_lat: 0,
+                };
+                app.set_routes_with_ids(&[summary.clone(), summary], &[4, 5]);
+                app.navigator = preview();
+                if mode == Mode::Idle {
+                    app.navigator.following.active_route = None;
+                    app.navigator.review.context.as_mut().unwrap().original = None;
+                }
+                app.navigator.accept_review(origin(), 0);
+                let effect = app.metadata.next_checkpoint_effect().unwrap();
+                let token = effect.token();
+                app.navigator.checkpoint_issued(token);
+                assert!(app.navigator.checkpoint_submission(token));
+                assert_eq!(app.recorder.session(), session, "preview and saving do not start recording");
+                let outcome = if committed {
+                    MetadataOutcome::CheckpointWritten { token }
+                } else {
+                    MetadataOutcome::Failed { token, error: MetadataError::Busy }
+                };
+                assert!(app.metadata.apply_outcome(outcome));
+                app.assistant_checkpoint_answer(outcome);
+                app.advance_recorder_session();
+                if committed {
+                    let recording = app.recorder.session().expect("accepted navigation records a ride");
+                    if let Some(session) = session {
+                        assert_eq!(recording, session);
+                    }
+                    assert_eq!(app.active_route_index(), Some(1));
+                    assert!(app.navigator.pending_seam(), "session initialization must keep the accepted route seam");
+                    assert_eq!(app.mode(), if mode == Mode::Idle { Mode::Riding } else { mode });
+                    app.advance_recorder_session();
+                    assert_eq!(app.recorder.session(), Some(recording));
+                } else {
+                    assert_eq!(app.recorder.session(), session);
+                    assert_eq!(app.mode(), mode);
+                    assert_eq!(app.active_route_index(), if mode == Mode::Idle { None } else { Some(0) });
+                }
+            }
+        }
     }
     #[test]
     fn easier_review_refuses_movement_and_preserves_uncertain_acceptance_until_recovery() {
