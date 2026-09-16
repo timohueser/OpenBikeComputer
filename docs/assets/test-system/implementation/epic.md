@@ -179,20 +179,36 @@ Stop and put that behaviour back in the host that needs it.
 No child is open yet. Each must carry its own files, commands, acceptance and deletion scope,
 refined against current source, before implementation starts.
 
-| ID | Deliverable | Depends on |
-| --- | --- | --- |
-| TS-0 | **Done in #1817.** Plan document landed under `docs/assets/test-system/implementation/` with every correction above applied in place | — |
-| TS-A | One ordinary integration target for each package that has five or more today (`obc-route` 19, `obc-app` 16, `obc-pack` 10, `obc-render` 10, `obc-reader` 9, `obc-dfu` 6, `obc-ble` 5: 75 of the 101 binaries), with the five fixture targets and the allocator target carved by name and the panic-hook test marked serial; local `obc test -p` on nextest plus a doctest step; move `COPERNICUS_ATTRIBUTION` to `obc-elevation` and drop the app's `obc-dem` dev-dependency; move the four `integrate_edge_ascent` assertions to `obc-pack` and drop `obc-route`'s packer dev-dependency; measure before and after at the merged shape | — |
-| TS-B | Execution routes: the three `#[ignore]` tests, the five `manual.*` commands and `live.copernicus` given their explicit routes; bounded fixture tests made unconditional and `sim-peak-view` dropped from the `test` profile; the `test` job's nextest steps fed the affected root-package set instead of `--workspace`; CI job scripts extracted; sweep and builder pytest off the `test` job's serial path; the seven unconditional guard jobs merged into one; llvm-cov cost measured by one instrumented versus one plain run | TS-A |
-| TS-C | Replace registry discovery with the explicit selection plan. Every live consumer listed in the correction table gets a replacement or a deliberate retirement: `cargo-filter`, `select`, `run`, `gates`, `check` (including coverage-policy validation), `validate-filters`, `check-issues` and `test-exception-health.yml`, `test-weekly.yml`, and `ci_aggregate.py`'s `workflow_jobs()`. Migrate the exact-set change-class tests (`test_suite_registry.py` `ShippedRoutingTests`); switch local and CI callers in one cutover; delete the superseded responsibilities | TS-B |
-| TS-D | `host/obc-flat-device`: the real engine and store behind a bounded adapter, native plus wasm; port every loopback-driven TypeScript suite (about 157 tests across eight files, not only `flows` and `client`) and the builder dev harness; remove `MockDevice`; `loopbackLink` stays as the transport substrate | TS-A |
-| TS-G | Extract the shared frame seam above into `obc-host-core`; collapse the simulator's local helper and both inlined copies onto it | TS-A; lands before TS-E |
-| TS-E | The missing composition checks: interrupted recording through storage recovery and GET to GPX (unblocked today); assembled map through the card to a rendered App frame (after TS-G); the builder browser assembly and download journey, download half only (after TS-B); captured waypoint-bearing provider imports (after the fixture question below is answered) | TS-B, TS-D, TS-G |
-| TS-F | Remove dead infrastructure (`tools/s6b_board_cutover_soak.py` and its test, 1,180 lines; `firmware/obc-fw-nrf54l/src/bin/ble_central_repro.rs`, 347 lines, zero references; `firmware/obc-app/src/device_core/feeders.rs`, 274 lines; `tools/loc_report.py` with the `loc` recipe and `loc_ledger.py`'s delta mode; `tools/test_cost.py` if unused), finish policy and release routes, update contributor and testing documentation | TS-C, TS-D, TS-E |
+| ID | Issue | Deliverable | Depends on |
+| --- | --- | --- | --- |
+| TS-0 | #1817 | Plan document under `docs/assets/test-system/implementation/`, corrected twice against source | — |
+| TS-A | #1819 | One integration target in each of the seven packages with five or more (75 of 101 binaries); fixture and allocator targets carved by name; the four ascent assertions move to `obc-pack` and `obc-route` drops its packer dev-dependency; before/after measurement | — |
+| TS-B | #1820 | Explicit routes for the three ignored tests and five manual commands (no heavy tier); fixture loader always fails with the sync command; `sim-peak-view` out of the `test` profile; the `test` job runs the affected package set; sweep, builder pytest and the seven guard jobs reshaped; `obc test -p` on nextest; `COPERNICUS_ATTRIBUTION` moved; llvm-cov cost measured | TS-A |
+| TS-C1 | #1821 | Delete the registry's consumer-less parts (`list`, `explain`, dead `coarse_filters`, second metadata pass, Trunk/shell scraping, `test_cost.py`); exception machinery shrunk to a small script; byte-identical selection before and after | TS-B |
+| TS-C2 | #1822 | `tools/test_plan.py` replaces the selector and the pure-Cargo registry rows in one cutover behind a differential harness; five fail-closed rules tested; PyYAML structural workflow check | TS-C1 |
+| TS-D | #1823 | `host/obc-flat-device` native plus wasm; harness assembly shared; about 157 TypeScript tests and the dev harness ported under the three rulings; `MockDevice` deleted, `loopbackLink` kept; two PRs | — |
+| TS-G | #1824 | `obc_host_core::frame::render` and `active_route` extracted; three hosts collapse onto them; one final-head sweep with zero manifest changes | — |
+| TS-E1 | #1825 | Interrupted recording through storage recovery and GET to the pinned GPX, in the link suite | TS-D |
+| TS-E2 | #1826 | Assembled map through the card to a rendered App frame, in the assembler oracle | TS-G |
+| TS-E3 | #1827 | Builder browser assembly and download journey, download half, on a shared fixture catalog | TS-B |
+| TS-F | #1828 | Deletions (s6b soak, BLE repro bin, `feeders.rs`, `loc_report.py`, ledger delta mode), release routes, contributor docs, final line-count report | TS-C2, TS-D, TS-E1, TS-E2, TS-E3 |
+| TS-H | #1829 | Captured Komoot and bikepacking.com waypoint imports to device presentation. **Owner-gated and deliberately last**: the owner captures the bikepacking.com route and settles redistribution first | TS-F, owner |
 
-TS-G is a production refactor, not a test change, and carries its own acceptance: every host renders the same frames it rendered before, and the shared piece has no per-host switch. TS-A and TS-B carry no design risk; their value is measured, not assumed (see the table above). TS-C is the only step that changes how
-CI decides anything; it lands as one cutover, never as two selectors running side by side. The
-critical path is TS-A, then TS-B, TS-D and TS-G in parallel, then TS-C and TS-E, then TS-F.
+TS-G is a production refactor, not a test change, and carries its own acceptance: every host renders the same frames it rendered before, and the shared piece has no per-host switch. TS-A and TS-B carry no design risk; their value is measured, not assumed (see the table above). TS-C2 is the only step that changes how CI decides anything; it lands as one cutover, never as two selectors running side by side. Execution order: TS-A, TS-D and TS-G in parallel; then TS-B and TS-E1 and TS-E2; then TS-C1, TS-E3; then TS-C2; then TS-F; TS-H when the owner supplies the fixtures.
+
+## Decisions recorded 2026-09-16
+
+Taken by the owner on the second audit (comment below the body); binding for the children.
+
+- **D1** Consolidation covers the seven packages with five or more targets only.
+- **D2** No heavy tier and no `obc test heavy`. Existing manual commands, the live Copernicus route and the weekly workflow are the routes.
+- **D3** TS-C lands as C1 (delete consumer-less parts) then C2 (selector cutover behind a differential harness, deleted after use). Fail-closed rules are explicit requirements with tests.
+- **D4** TS-D rulings: the no-space assertion changes to the engine's `busy`; chosen object ids are rewritten to captured ids; exactly two adapter test hooks (request trace, stop answering); the dev harness is ported in the same child.
+- **D5** The UI sweep stays automatic and required when `ci.ui-snapshots` is selected, as its own CI job off the `test` job's serial path. No manual-only route.
+- **D6** TS-G extracts the generic render function (clock and photo as parameters) and the route re-open helper; the one-line predicate and hold-cancel stay in the hosts. Three rendering hosts.
+- **D7** Provider-import fixtures are the owner's to capture; TS-H is last and owner-gated. The epic's closing report must remind the owner.
+- **D8** The builder browser journey is download-only; OPFS in headless Chromium is proven first.
+- **D9** This epic does not reduce pull-request wall time while `ios-app` is selected; that is #1788.
 
 ## Shared implementation rules
 
