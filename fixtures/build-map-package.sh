@@ -76,6 +76,9 @@ repack() { # repack <name> <source_pbf> <bbox> [terrain_obcd]
     if [[ "$name" == grimsel-demo && -n "${OBC_DEMO_LANDMARKS:-}" ]]; then
         extra+=(--landmarks "$OBC_DEMO_LANDMARKS")
     fi
+    if [[ "$name" == grimsel && -n "${OBC_GRIMSEL_LANDMARKS:-}" ]]; then
+        extra+=(--landmarks "$OBC_GRIMSEL_LANDMARKS")
+    fi
     local output
     case "$name" in
       grimsel) output="$BUILD_DIR/sim-grimsel/grimsel.obcm" ;;
