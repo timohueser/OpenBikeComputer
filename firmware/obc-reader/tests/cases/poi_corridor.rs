@@ -18,8 +18,7 @@ use obc_reader::{
 };
 use obcm_testkit::{build_poi_map, PoiSpec};
 
-mod common;
-use common::CountingSource;
+use crate::common::CountingSource;
 
 /// The fixture map bbox `(min_lon, min_lat, max_lon, max_lat)` — the 1°×1° square the other POI
 /// suites use.

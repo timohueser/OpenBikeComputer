@@ -27,8 +27,7 @@ fn single_leaf(bbox: (i32, i32, i32, i32), chunk: Vec<u8>, chunk_size: usize) ->
     )
 }
 
-mod common;
-use common::{decode_chunk_status, Decoded};
+use crate::common::{decode_chunk_status, Decoded};
 
 /// [`decode_chunk_status`] with the assertion this suite's happy-path cases all want: the walk
 /// dropped nothing, so a missing feature is a decode bug and not an over-capacity scratch.
