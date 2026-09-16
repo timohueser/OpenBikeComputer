@@ -77,3 +77,59 @@ source-linked approaches, shared opening-hours references and the device format.
 Verification uses the complete `obc-pack` and `obc-bake` package suites and scoped Clippy. Rebuild
 the captured package into two empty directories and compare every output byte. The compiler does
 not need network access, a simulator or a connected device.
+
+## Peak article catalogue
+
+The same capture program can take a regional OSM extract and produce a separate peak source
+collection. Build `obc-bake` first, then run:
+
+```sh
+python3 tools/landmark_capture.py \
+  --peaks-osm REGION.osm.pbf --boundary REGION.geojson \
+  --out .artifacts/peak-source --select-with target/debug/obc-bake
+target/debug/obc-bake peaks \
+  --snapshot .artifacts/peak-source/manifest.json \
+  --boundary REGION.geojson --out .artifacts/peak-content
+```
+
+`peak-candidates --osm FILE --boundary GEOJSON --out FILE` is the offline discovery entry point.
+It uses the map's POI classifier and reads named summit nodes only. `summits.json` retains the
+original node IDs, coordinates and tags, plus the source PBF digest. The compiler verifies its
+pinned bytes and applies the exact boundary again. It never joins an article by name, coordinates,
+or a preferred landmark approach. The article entity can lack coordinates or describe a massif
+outside the boundary.
+
+Acquisition resolves explicit `wikidata` and `wikipedia=language:title` tags. Captured API
+normalization and redirect edges establish the canonical identity. A direct Wikipedia link can
+resolve to a QID. Without a QID, explicit Wikipedia language links select the first available UI
+edition in UI order, and its page ID is the identity. That page supplies the supported language
+links. A truncated language-link response, failed resolution or conflicting pair of explicit tags
+produces an omission. There are no inferred links or generated translations.
+
+The peak compiler uses the same article, local fallback, photo and attribution code. Its internal
+`peaks.json` has schema 1 and collection `peaks`. Each record has an `id` and shared article fields;
+it has no landmark category. `associations` retains every usable OSM node-to-article link with the
+summit's original coordinates. Records are stored once per canonical identity; all associations
+and language variants share one photo. Counts distinguish named source nodes, linked candidates,
+usable article records and photos. Link omissions identify `osm-node-ID`; article and photo
+omissions identify the canonical article in the shared omission record's `qid` field.
+
+Peak captures cannot enter the landmark compiler, and `peaks.json` cannot enter the landmark map
+serializer. OBCM peak references and Peak View access are separate work. Regional artifact
+orchestration under [issue 1805](https://github.com/timohueser/OpenBikeComputer/issues/1805) is also
+still required for normal region-tree delivery. These commands extend the current shared capture
+and compile seam; they do not claim that orchestration exists.
+
+The bounded `peak-articles` fixture profile contains nine Swiss summit nodes, their captured
+sources and the compiled catalogue. Verify it with:
+
+```sh
+tools/obc fixtures sync peak-articles
+python3 fixtures/verify-peak-content.py
+```
+
+The verifier rebuilds discovery from its small source PBF and compares two complete offline
+catalogue builds. It checks duplicate and direct-link associations, all UI languages, shared
+photos, and text/photo omissions. The hermetic package tests also cover redirected QIDs,
+Wikipedia redirects and normalization, a direct article without Wikidata, unusable text, and
+independence from article-entity coordinates.

@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "coverage": "Nine selected OSM summit nodes from the pinned Switzerland extract; not regional or country coverage.",
+  "upstream_package": "assistant-osm",
+  "upstream_osm": {
+    "path": "switzerland.osm.pbf",
+    "sha256": "e6ae53a3cfeb8fbefbab291073e61f0906b03576e773b7403ab9b6d6232a8e88",
+    "bytes": 545916978,
+    "retrieved_at": "2026-09-14T21:39:43.143687+00:00",
+    "url": "https://download.geofabrik.de/europe/switzerland-260913.osm.pbf",
+    "source_timestamp": "2026-09-13T20:21:20Z",
+    "revision": "4909",
+    "license": "ODbL-1.0",
+    "license_url": "https://www.openstreetmap.org/copyright",
+    "source_sha256": "e6ae53a3cfeb8fbefbab291073e61f0906b03576e773b7403ab9b6d6232a8e88",
+    "transform": "none"
+  },
+  "selected_osm_nodes": [
+    26864921,
+    31664302,
+    26863664,
+    26864310,
+    8736685488,
+    7165008398,
+    13848863734,
+    1372219824,
+    1244930329
+  ],
+  "subset_recipe": "osmium getid SWITZERLAND.osm.pbf nNODE... -o peaks.osm.pbf",
+  "subset_sha256": "b297273d14a5f3681402b0df4178842f3b617fdb4d17d62479ef7bc5c336a4ad",
+  "snapshot_sha256": "99961987c36173a1fb41a845c6f086f22f492ce54d2e3e1286a7afb75658dbcd",
+  "boundary_sha256": "1b36c21d52a4419d410893ea41dd522d36238ada0b253c7fe78b81d2ef1edd5b",
+  "capture_date": "2026-09-16",
+  "capture_recipe": "python3 tools/landmark_capture.py --peaks-osm peaks.osm.pbf --boundary boundary.geojson --out CAPTURE --select-with target/debug/obc-bake",
+  "compiler_commit": "d047d3cd56d56cc3441a64da5569eae9a869cc52",
+  "limits": [
+    "Bounded source examples only.",
+    "Canonical QID and direct Wikipedia links are real source tags. Synthetic hermetic tests cover redirected QIDs, a Wikipedia redirect and a direct article without Wikidata.",
+    "No regional bake-tree integration, OBCM peak associations or Peak View reader UI."
+  ]
+}

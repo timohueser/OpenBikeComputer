@@ -74,12 +74,10 @@ fn attribution(
 pub(super) fn article(root: &Path, sources: &[Source], entity: &Value, capture: &Value) -> Result<Article, String> {
     let language = string(capture, "language")?;
     let title = string(capture, "title")?;
-    if entity["sitelinks"][format!("{language}wiki")]["title"].as_str() != Some(title) {
-        return Err("article_identity_mismatch".into());
-    }
+    let expected =
+        entity["sitelinks"][format!("{language}wiki")]["title"].as_str().ok_or("article_identity_mismatch")?;
     let raw = json_pinned(root, sources, string(capture, "path")?)?;
-    let page =
-        raw["query"]["pages"].as_object().and_then(|pages| pages.values().next()).ok_or("missing_article_page")?;
+    let page = resolved_page(&raw, expected)?;
     let revision = capture["revision"].as_u64().ok_or("missing_article_revision")?;
     if page["revisions"][0]["revid"].as_u64() != Some(revision) || page["title"] != title {
         return Err("article_revision_mismatch".into());
@@ -105,7 +103,9 @@ pub(super) fn article(root: &Path, sources: &[Source], entity: &Value, capture: 
         .select(&license_selector)
         .filter_map(|a| a.value().attr("href"))
         .map(|url| {
-            if url == "/wiki/Wikipedia:Text_of_the_Creative_Commons_Attribution-ShareAlike_4.0_International_License" {
+            if matches!(url,
+                "/wiki/Wikipedia:Text_of_the_Creative_Commons_Attribution-ShareAlike_4.0_International_License"
+                | "/wiki/Wikipedia:Texto_de_la_Licencia_Creative_Commons_Atribuci%C3%B3n-CompartirIgual_4.0_Internacional") {
                 "https://creativecommons.org/licenses/by-sa/4.0/"
             } else {
                 url
@@ -213,9 +213,44 @@ pub(super) fn photo(
     Ok((Photo { path, sha256: hash(&pixels), bytes: pixels.len(), attribution }, pixels))
 }
 
+/// Check the API normalization and redirect chain against the requested title.
+pub(super) fn resolved_page<'a>(raw: &'a Value, title: &str) -> Result<&'a Value, String> {
+    let mut title = title.to_owned();
+    for key in ["normalized", "redirects"] {
+        let entries = raw["query"][key].as_array().map(Vec::as_slice).unwrap_or(&[]);
+        let mut seen = BTreeSet::new();
+        while let Some(entry) = entries.iter().find(|entry| entry["from"] == title) {
+            if !seen.insert(title.clone()) {
+                return Err("article_redirect_cycle".into());
+            }
+            title = string(entry, "to")?.to_owned();
+        }
+    }
+    let pages = raw["query"]["pages"].as_object().ok_or("missing_article_page")?;
+    if pages.len() != 1 {
+        return Err("article_identity_mismatch".into());
+    }
+    let page = pages.values().next().unwrap();
+    if page["title"] != title || page.get("missing").is_some() {
+        return Err("article_identity_mismatch".into());
+    }
+    Ok(page)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_article_normalization_starts_with_the_exact_osm_title() {
+        let raw = serde_json::json!({"query": {
+            "normalized": [{"from": "mount_Everest", "to": "Mount Everest"}],
+            "redirects": [{"from": "Mount Everest", "to": "Everest"}],
+            "pages": {"1": {"pageid": 1, "title": "Everest"}}
+        }});
+        assert_eq!(resolved_page(&raw, "mount_Everest").unwrap()["title"], "Everest");
+        assert!(resolved_page(&raw, "Different summit").is_err());
+    }
 
     #[test]
     fn a_local_wikipedia_lead_cannot_alias_a_commons_filename() {

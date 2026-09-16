@@ -121,6 +121,23 @@ is only a review sample. Both West Cork and the Swiss regional simulator maps us
 content. The Swiss map is a crop, not a full-country map. See the source recipes for exact
 coverage, scenario clocks and the persistent-card option.
 
+
+## Peak article evidence
+
+The `peak-articles` profile contains one bounded raw source package and one compiled catalogue
+for host map integration. `peak-wiki` retains nine original Swiss OSM summit nodes and the source
+responses for seven explicitly linked articles. `peak-content` contains the seven compiled
+articles, all usable UI language variants, six photos, and eight summit associations. Two Piz
+Starlex nodes share one article and photo outcome. Pointe Kurz and Tourbillon use direct Wikipedia
+tags. Gross Wendenstock has no link. The Piz Starlex photo is rejected because its attribution is
+too long; its text remains available.
+
+This is source evidence for a small host scenario, not a regional map or a country archive.
+[The source record](sources/peak-view/peak-articles-source.json) identifies the unchanged OSM node
+slice and capture. [The output record](sources/peak-view/peak-articles-content.json) records the
+compiler and catalogue digests. Run `tools/obc fixtures sync peak-articles`, then
+`python3 fixtures/verify-peak-content.py` to rebuild discovery and compare two offline compilations.
+
 ## Storage contract
 
 The dev fixture bucket holds test and simulator inputs. It is not a country source archive or

@@ -886,9 +886,10 @@ responses. This step uses local source files with recorded digests. It selects s
 polygon, including points on its boundary. Country claims do not define coverage.
 
 The category policy follows Wikidata types and their parent classes. Excluded types take priority.
-Claims use the preferred rank when present, otherwise the normal rank. The compiler selects the
-requested language, then a fixed fallback order, and records the language it used. It keeps one or
-two complete lead sentences within four readable pages.
+Claims use the preferred rank when present, otherwise the normal rank. The compiler retains every
+usable article in the supported UI languages: English, German, French and Spanish. Each version
+has one or two complete lead sentences within four readable pages. The device selects its UI
+language, then English, then the baked local fallback. All versions share one optional photo.
 
 Text and photos have separate source and attribution records. The compiler rejects an asset when
 its required credits cannot fit or use unsupported characters. A rejected photo leaves valid text
@@ -897,6 +898,25 @@ available. Photos use a fixed size and palette; there is no subject crop or imag
 The output reports captured sites, usable content and omissions separately. Source coverage remains
 explicit. An approach count is unknown until the OSM source join runs. This host preparation step
 does not by itself install content or establish that a landmark has a routeable approach.
+
+
+## Preparing peak articles
+
+Peak articles form a separate host catalogue. Discovery uses the same named OSM summit nodes as
+Peak View. Only explicit Wikidata or Wikipedia tags can establish an article link. Captured source
+redirects and Wikipedia language links can resolve those tags; names and coordinates never infer
+a match. The OSM node determines region membership. A linked article can describe several summits
+and does not need a coordinate inside that region.
+
+The compiler stores each canonical article once and retains every summit node association. It
+shares text extraction, supported languages, local fallback, photos and credits with landmark
+preparation. Candidate, article, photo and omission counts remain separate. A rejected photo leaves
+a text-only peak article. A summit without usable text remains an ordinary summit.
+
+The peak catalogue cannot enter Ride Assistant landmark packaging. Map references and Peak View
+access still need their own integration. Regional capture and artifact orchestration also remain
+required for normal map delivery. The current host entry points and bounded captured evidence are
+in the [compiler README](src:host/obc-pack/src/landmarks/README.md).
 
 ## Attribution and share-alike
 

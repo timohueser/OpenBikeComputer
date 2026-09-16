@@ -1,0 +1,126 @@
+{
+  "schema": 1,
+  "package": "peak-content",
+  "bytes": 64463,
+  "sha256": "ff8d68fc279387b76a44d7924b9270f05abb7a842587e194a212db12d70aea22",
+  "unpacked_content_bytes": 402732,
+  "compiler_commit": "712ab141d68ad82aca36ba569df4fa4067322479",
+  "compiler_sha256": "847b9fabb4ed0b2c5d8191c46b0ca779c949b711cdde40e5be0c615b8588778b",
+  "source_package": "peak-wiki",
+  "source_package_sha256": "992a9a81e417d5ca8f0a668bdca61d729d944518814d2c54889a9d69b46f55db",
+  "source_manifest_sha256": "99961987c36173a1fb41a845c6f086f22f492ce54d2e3e1286a7afb75658dbcd",
+  "content_manifest_sha256": "5674902c8beade7683787cc157618ed60636517dd012643f49cc8b97a2ab9b66",
+  "input_sha256": "bfaea0123dd5a6c26592eae22fd44a69667fd1c32991f0267d43c7dd9db562a9",
+  "policy_sha256": "20778dad30b06f87264db306b70c08a5ab15326b4aabb5bb31d178b981380f41",
+  "counts": {
+    "captured": 9,
+    "candidates": 8,
+    "texts": 7,
+    "images": 6,
+    "mapped_approaches": null,
+    "photo_bytes": 311040
+  },
+  "associations": [
+    {
+      "node_id": 26863664,
+      "article_id": "Q1374",
+      "latitude": 45.9764263,
+      "longitude": 7.6586024
+    },
+    {
+      "node_id": 26864310,
+      "article_id": "Q7199902",
+      "latitude": 46.6627506,
+      "longitude": 10.3925516
+    },
+    {
+      "node_id": 26864921,
+      "article_id": "Q15138",
+      "latitude": 46.772034,
+      "longitude": 8.437814
+    },
+    {
+      "node_id": 31664302,
+      "article_id": "Q4425",
+      "latitude": 46.5776321,
+      "longitude": 8.0054694
+    },
+    {
+      "node_id": 1372219824,
+      "article_id": "Q16525",
+      "latitude": 46.558506,
+      "longitude": 7.997271
+    },
+    {
+      "node_id": 7165008398,
+      "article_id": "Q136829",
+      "latitude": 45.9385667,
+      "longitude": 7.0357667
+    },
+    {
+      "node_id": 8736685488,
+      "article_id": "Q7199902",
+      "latitude": 46.6605191,
+      "longitude": 10.39256
+    },
+    {
+      "node_id": 13848863734,
+      "article_id": "Q2970842",
+      "latitude": 46.2364622,
+      "longitude": 7.3668733
+    }
+  ],
+  "variant_counts": {
+    "en": 7,
+    "de": 5,
+    "fr": 5,
+    "es": 4
+  },
+  "omissions": [
+    {
+      "qid": "Q2970842",
+      "asset": "article",
+      "reason": "de: unsupported_glyph"
+    },
+    {
+      "qid": "Q4425",
+      "asset": "article",
+      "reason": "es: unbreakable_word"
+    },
+    {
+      "qid": "Q4425",
+      "asset": "article",
+      "reason": "fr: unsupported_glyph"
+    },
+    {
+      "qid": "Q7199902",
+      "asset": "photo",
+      "reason": "attribution_bytes"
+    },
+    {
+      "qid": "Q7199902",
+      "asset": "photo",
+      "reason": "no_usable_captured_image"
+    },
+    {
+      "qid": "osm-node-1244930329",
+      "asset": "link",
+      "reason": "no_explicit_link"
+    }
+  ],
+  "coverage": {
+    "kind": "osm-named-summits",
+    "country_complete": false,
+    "asset_phase_complete": true,
+    "named_summits": 9,
+    "linked_summits": 8,
+    "canonical_articles": 7,
+    "request_failures": 0,
+    "selection": "Explicit OSM wikidata/wikipedia links from the map summit classifier; no inferred matches."
+  },
+  "recipe": "python3 fixtures/verify-peak-content.py --source CAPTURE --out OUTPUT; tools/obc fixtures pack peak-content OUTPUT --output peak-content.tar.gz",
+  "limits": [
+    "A bounded host catalogue, not a region artifact or installed map.",
+    "Normal regional delivery still depends on issue 1805; OBCM peak associations and Peak View access remain PW2 and PW3."
+  ]
+}
