@@ -8,10 +8,9 @@
 //! Host logic shared with the landing page's wasm host (`obc-web-demo`) — replay stepping, the
 //! frame-interleaved `NavPlan`, the in-memory byte sink — lives in `obc-host-core`, not here.
 
-use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::{App, AppState};
+use obc_host_core::frame::device_rgb888;
 use obc_ports::{Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource};
-use obc_reader::rgb565_to_device64;
 
 mod calib;
 mod card;
@@ -669,11 +668,6 @@ fn headless_replay_advance<'s>(
 
 fn parse_args() -> Result<Args, String> {
     parse_args_from(std::env::args().skip(1))
-}
-
-fn color_of(c: u16) -> Rgb888 {
-    let (r, g, b) = rgb565_to_device64(c);
-    Rgb888::new(r, g, b)
 }
 
 /// The fixed card-free stand-in the sim answers a card-free scan with (the sim has no FAT to scan):
@@ -1718,12 +1712,8 @@ fn main() {
         let mut scratch = Box::new(obc_render::RenderScratch::new());
 
         session.sync(&app, stores.routes);
-        let route_src = stores.routes.active_source();
-        let route = match (session.index(), route_src) {
-            (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
-            _ => None,
-        };
-        let scene = map_file::Scene { reader: &reader, route: route.as_ref() };
+        let route = obc_host_core::frame::active_route(&session, stores.routes);
+        let scene = obc_host_core::frame::Scene { reader: &reader, route: route.as_ref() };
 
         // `--expect-screen`: the recipe states where its gestures were supposed to land, and the
         // sim checks it against the `screens!` table's own name before a single pixel is written.
@@ -1747,7 +1737,7 @@ fn main() {
             scene,
             panorama,
             (args.width as f32, args.height as f32),
-            color_of,
+            device_rgb888,
         );
         stats.render_us = t0.elapsed().as_micros() as u32;
         peak_runtime.note_frame_presented(&app);

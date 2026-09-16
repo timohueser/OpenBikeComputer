@@ -11,18 +11,18 @@
 //! Target-independent on purpose: everything here compiles and is tested natively (`cargo test`
 //! from `firmware/`); only the thin `#[wasm_bindgen]` surface in `main.rs` is wasm-only.
 
-use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::device_core::{PassClock, PassPlan, PlatformSupport, RouteUpload};
 use obc_app::recorder::RecorderOutcome;
 use obc_app::{App, AppState, CameraMode, Gesture};
 use obc_host_core::flat_map::FlatMap;
+use obc_host_core::frame;
 use obc_host_core::{
     initial_camera, replay_advance, ActiveRouteSession, FlatRideRecorder, FlatRideStore, FlatRouteStore, HostLoop,
     ReplaySensors, RgbaFrame,
 };
 use obc_host_core::{RideRepository, RouteRepository};
 use obc_ports::InputClock;
-use obc_reader::{rgb565_to_device64, MapTables, SliceSource};
+use obc_reader::{MapTables, SliceSource};
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 use obc_route::RouteReader;
 
@@ -438,35 +438,20 @@ impl Demo {
         // Render on demand — `plan.render` is the same signal the firmware gates its repaints on.
         // The first frame always renders (`ready` doubles as the page's poster-swap signal).
         if plan.render.map || plan.render.overlay || !self.ready || self.app.photo_pending() {
-            // Re-open the active route: the executor may have committed new geometry under it (a
-            // planned route, a spliced detour), and the frame must draw what is there now.
             self.session.sync(&self.app, &mut self.routes);
-            let route_src = self.routes.active_source();
-            let route = match (self.session.index(), route_src) {
-                (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
-                _ => None,
-            };
+            let route = frame::active_route(&self.session, &self.routes);
             let reader = self.map.reader();
-            self.app.render_scene_map_photo_timed(
-                Some(&mut self.scratch),
+            frame::render(
+                &mut self.app,
+                &mut self.scratch,
                 &mut self.frame,
-                Some(&reader),
-                Some(&reader),
-                route.as_ref(),
+                frame::Scene { reader: &reader, route: route.as_ref() },
                 self.peaks.panorama(),
-                FRAME_W as f32,
-                FRAME_H as f32,
-                |c| {
-                    let (r, g, b) = rgb565_to_device64(c);
-                    Rgb888::new(r, g, b)
-                },
+                (FRAME_W as f32, FRAME_H as f32),
+                frame::device_rgb888,
                 &obc_render::NoopClock,
                 Some(self.photo.interactive(plan.render.map || !self.ready)),
             );
-            self.app.render_overlay(&mut self.frame, FRAME_W as f32, FRAME_H as f32, |c| {
-                let (r, g, b) = rgb565_to_device64(c);
-                Rgb888::new(r, g, b)
-            });
             self.ready = true;
             return true;
         }

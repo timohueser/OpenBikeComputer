@@ -24,8 +24,9 @@
 //! - [`peak_view`] — the cooperative panorama runtime the frame-stepped hosts build terrain with.
 //! - [`convert_gpx`] — a GPX file as OBCR bytes, attributed against the host's map.
 //! - [`VecSink`] — the in-memory [`ByteSink`](obc_formats::io::ByteSink) OBCR/GPX output collects into.
-//! - [`RgbaFrame`] — the in-memory RGBA8888 `DrawTarget` the browser hosts blit to a `<canvas>`
-//!   (the app demo and the builder's preset previews both draw into it).
+//! - [`frame`] — the whole-frame draw every rendering host uses ([`frame::render`], the
+//!   [`frame::active_route`] re-open before it, [`frame::device_rgb888`]) and [`RgbaFrame`], the
+//!   in-memory RGBA8888 `DrawTarget` the browser hosts blit to a `<canvas>`.
 //! - [`FlatRouteStore`] — routes on the shared host card, including a card that also owns maps.
 //! - [`MemRideStore`] / [`MemTrackStore`] — memory stores for browser hosts and tests.
 //!
@@ -47,7 +48,7 @@ pub use flat_rides::FlatRideStore;
 pub use flat_trips::FlatTripStore;
 pub mod flat_store;
 pub use flat_routes::FlatRouteStore;
-mod frame;
+pub mod frame;
 mod gpx;
 mod nav;
 mod nav_visit;
