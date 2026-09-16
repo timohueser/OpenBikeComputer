@@ -2,8 +2,6 @@
 """Launch the embedded Linux frontend and select a local catalog region."""
 
 from contextlib import suppress
-import hashlib
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
@@ -13,7 +11,6 @@ import socket
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
-from threading import Thread
 import traceback
 from urllib.parse import urlsplit
 
@@ -25,44 +22,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.webkitgtk.options import Options
 
 ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / "tools"))
 
-
-def catalog_fixture():
-    """Keep the producer's fine-band example; make the other bands empty."""
-    examples = ROOT / "host/obc-pack/schema"
-    catalog = json.loads((examples / "catalog.example.json").read_text())
-    fine = json.loads((examples / "cell-index.example.json").read_text())
-    region_cells = json.loads((examples / "region-cells.example.json").read_text())
-    objects = {}
-
-    def pin(name, document):
-        body = json.dumps(document).encode()
-        digest = hashlib.sha256(body).hexdigest()
-        path = f"/{name}.{digest}.json"
-        objects[path] = body
-        return {"url": path, "bytes": len(body), "sha256": digest}
-
-    catalog.pop("terrain", None)
-    catalog.pop("network_terrain_revision", None)
-    for ref in catalog["cell_index"]:
-        doc = fine if ref["band"] == "fine" else {
-            "schema_version": 2, "schema_revision": catalog["schema"]["revision"],
-            "band": ref["band"], "cells": [], "known_empty": [],
-        }
-        ref.update(pin(ref["band"], doc))
-        ref.update(cell_count=len(doc["cells"]), known_empty_count=len(doc["known_empty"]))
-    region_cells["cells"] = {"fine": region_cells["cells"]["fine"]}
-    region_cells.pop("terrain", None)
-    region = catalog["regions"][0]
-    region.pop("terrain", None)
-    region.update(bytes=sum(cell["bytes"] for cell in fine["cells"]),
-                  bytes_by_band={"fine": sum(cell["bytes"] for cell in fine["cells"])}, cell_count={"fine": 3},
-                  partial_cell_count_by_band={"fine": 0})
-    pinned = pin("region", region_cells)
-    region.update({f"cells_{key}": value for key, value in pinned.items()})
-    catalog["regions"] = [region]
-    objects["/catalog.json"] = json.dumps(catalog).encode()
-    return objects
+from fixture_catalog import CatalogServer, schema_examples  # noqa: E402 — needs ROOT on the path
 
 
 def main():
@@ -75,30 +37,14 @@ def main():
         (evidence / name).unlink(missing_ok=True)
     result = {"passed": False, "binary": str(binary)}
     browser = process = server = None
-    requests = []
-    objects = catalog_fixture()
-
-    class CatalogHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            status = 200 if self.path in objects else 404
-            requests.append(self.path)
-            with (evidence / "catalog.jsonl").open("a") as log:
-                log.write(json.dumps({"path": self.path, "status": status}) + "\n")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(objects.get(self.path, b"not found"))
-
-        def log_message(self, *_args):
-            pass
+    objects = schema_examples()
 
     with TemporaryDirectory(prefix="obc-desktop-launch-") as scratch, (evidence / "driver.log").open("w") as driver_log:
         try:
             if not binary.is_file() or not os.access(binary, os.X_OK):
                 raise RuntimeError(f"Missing executable release app: {binary}")
-            server = ThreadingHTTPServer(("127.0.0.1", 0), CatalogHandler)
-            Thread(target=server.serve_forever, daemon=True).start()
-            catalog_url = f"http://127.0.0.1:{server.server_port}/catalog.json"
+            server = CatalogServer(objects, log=evidence / "catalog.jsonl").start()
+            catalog_url = f"{server.origin}/catalog.json"
             # WebKit launches this wrapper once. exec preserves its PID and captures Rust output.
             wrapper = Path(scratch) / "application.sh"
             pidfile = Path(scratch) / "application.pid"
@@ -139,7 +85,7 @@ def main():
             wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, '.parts .price'), "1.0 KB"))
             if browser.find_elements(By.CSS_SELECTOR, '.catalog-error, .ledger .error, .parts .retry'):
                 raise AssertionError("Catalog or region resolution failed")
-            missing = set(objects) - set(requests)
+            missing = set(objects) - set(server.requests)
             if missing:
                 raise AssertionError(f"Native catalog requests missing: {sorted(missing)}")
             result["region"] = "Switzerland"
@@ -183,7 +129,7 @@ def main():
             if server:
                 server.shutdown()
                 server.server_close()
-            result["requests"] = requests
+            result["requests"] = server.requests if server else []
             (evidence / "result.json").write_text(json.dumps(result, indent=2) + "\n")
             print(json.dumps(result, indent=2))
 
