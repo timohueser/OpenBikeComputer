@@ -32,6 +32,9 @@ impl FindPlaceScreen {
     pub fn new() -> Self {
         Self { category: None, selected: 0 }
     }
+    pub(crate) fn refresh_selection(&mut self) {
+        self.selected = 0;
+    }
     pub(crate) fn choices(&self) -> bool {
         self.category.is_some()
     }
@@ -52,10 +55,7 @@ impl FindPlaceScreen {
                 }
                 Gesture::Press
                     if cx.find.state == State::Ready
-                        && cx
-                            .find
-                            .selected(self.selected, cx.poi_scratch, cx.corridor)
-                            .is_some_and(|p| p.opening != obc_reader::hours::OpeningStatus::Closed) =>
+                        && cx.find.selected(self.selected, cx.poi_scratch, cx.corridor).is_some() =>
                 {
                     cx.find.action = Action::Preview(self.selected as u8);
                 }
@@ -185,8 +185,7 @@ impl FindPlaceScreen {
         let name = rx.marquee.fit(name, 15, Some(name_row));
         cv.text(&name, Point::new(18, 236), Font::Body, TextAlign::Left, INK);
         if poi.opening == obc_reader::hours::OpeningStatus::Closed {
-            cv.text(rx.t(Msg::AssistantClosed), Point::new(18, 264), Font::Label, TextAlign::Left, WARNING);
-            return;
+            cv.text(rx.t(Msg::AssistantClosed), Point::new(48, 212), Font::Label, TextAlign::Left, WARNING);
         }
         figures(cv, cost.arrival_m, cost.arrival_ascent_m, 264, false, rx.settings.units);
         let mut line = heapless::String::<32>::new();
@@ -432,7 +431,7 @@ fn dotted_connector(cv: &mut impl Surface, start: Point, end: Point) {
 }
 
 fn letter(i: usize) -> &'static str {
-    ["A", "B", "C", "D"][i.min(3)]
+    ["A", "B", "C", "D", "E", "F"][i.min(5)]
 }
 pub(super) fn fit(min: (i32, i32), max: (i32, i32), w: i32, h: i32, bottom: i32) -> Viewport {
     let lat = min.1 + (max.1 - min.1) / 2;

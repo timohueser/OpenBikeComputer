@@ -251,7 +251,14 @@ impl NextAhead {
             let cat = PoiCategory::ALL[i];
             if placed.contains(cat) && self.is_stale(i, progress_m) {
                 self.turn = (i + 1) % CATEGORIES;
-                return Some((i, CorridorKey { filter: PoiCategorySet::only(cat), anchor_m: progress_m }));
+                return Some((
+                    i,
+                    CorridorKey {
+                        hours_filter: obc_reader::reader::places::HoursFilter::HideClosed,
+                        filter: PoiCategorySet::only(cat),
+                        anchor_m: progress_m,
+                    },
+                ));
             }
         }
         None
@@ -360,7 +367,11 @@ mod tests {
         c.reconcile(PoiCategorySet::only(PoiCategory::Water), true, Some(0), 1_200);
         assert_eq!(
             c.request(),
-            Some(CorridorKey { filter: PoiCategorySet::only(PoiCategory::Water), anchor_m: 1_200 }),
+            Some(CorridorKey {
+                hours_filter: obc_reader::reader::places::HoursFilter::HideClosed,
+                filter: PoiCategorySet::only(PoiCategory::Water),
+                anchor_m: 1_200
+            }),
             "one category per query, anchored at progress"
         );
     }
@@ -415,7 +426,11 @@ mod tests {
         c.reconcile(placed, true, Some(0), 1_101);
         assert_eq!(
             c.request(),
-            Some(CorridorKey { filter: PoiCategorySet::only(PoiCategory::Water), anchor_m: 1_101 }),
+            Some(CorridorKey {
+                hours_filter: obc_reader::reader::places::HoursFilter::HideClosed,
+                filter: PoiCategorySet::only(PoiCategory::Water),
+                anchor_m: 1_101
+            }),
             "one metre past the cached fountain re-arms, step or no step"
         );
     }
@@ -472,11 +487,25 @@ mod tests {
         c.reconcile(placed, true, Some(0), 0);
         let mine = c.request().unwrap();
         // Same category, someone else's anchor (the Up-ahead screen's entry progress).
-        c.harvest(CorridorKey { filter: mine.filter, anchor_m: 4_000 }, &[poi(100, "Not mine", WATER)]);
+        c.harvest(
+            CorridorKey {
+                hours_filter: obc_reader::reader::places::HoursFilter::HideClosed,
+                filter: mine.filter,
+                anchor_m: 4_000,
+            },
+            &[poi(100, "Not mine", WATER)],
+        );
         assert_eq!(c.poi(PoiCategory::Water), None, "a differently-keyed snapshot is not this cache's answer");
         assert_eq!(c.request(), Some(mine), "…and the request is still in flight");
         // Everything filtered differently is ignored too.
-        c.harvest(CorridorKey { filter: PoiCategorySet::ALL, anchor_m: 0 }, &[poi(100, "Not mine", WATER)]);
+        c.harvest(
+            CorridorKey {
+                hours_filter: obc_reader::reader::places::HoursFilter::HideClosed,
+                filter: PoiCategorySet::ALL,
+                anchor_m: 0,
+            },
+            &[poi(100, "Not mine", WATER)],
+        );
         assert_eq!(c.poi(PoiCategory::Water), None);
     }
 
@@ -513,7 +542,11 @@ mod tests {
         c.reconcile(placed, true, Some(0), 0);
         assert_eq!(
             c.request(),
-            Some(CorridorKey { filter: PoiCategorySet::only(PoiCategory::Water), anchor_m: 0 }),
+            Some(CorridorKey {
+                hours_filter: obc_reader::reader::places::HoursFilter::HideClosed,
+                filter: PoiCategorySet::only(PoiCategory::Water),
+                anchor_m: 0
+            }),
             "progress back at the start re-takes — the old answer covered only the far tail"
         );
         c.harvest(c.request().unwrap(), &[poi(300, "Fontaine", WATER)]);
@@ -552,7 +585,11 @@ mod tests {
         c.reconcile(placed, true, Some(0), 0);
         assert_eq!(
             c.request(),
-            Some(CorridorKey { filter: PoiCategorySet::only(PoiCategory::Water), anchor_m: 0 }),
+            Some(CorridorKey {
+                hours_filter: obc_reader::reader::places::HoursFilter::HideClosed,
+                filter: PoiCategorySet::only(PoiCategory::Water),
+                anchor_m: 0
+            }),
             "…and the very same route index re-queries"
         );
     }

@@ -461,6 +461,22 @@ impl SavedSensor {
     }
 }
 
+setting_enum! {
+    /// Maximum recommendations and candidates from each Find a Place source.
+    pub enum FindResults {
+        Two = 0, text "2";
+        Four = 1, text "4";
+        Six = 2, text "6";
+    }
+    default Four;
+}
+
+impl FindResults {
+    pub const fn limit(self) -> usize {
+        2 + 2 * self as usize
+    }
+}
+
 settings_table! {
     /// The whole persisted settings set. Plain old data — `Copy` + `Eq`, no floats — so a
     /// before/after `==` flags a save and the codec is a trivial field-by-field pack.
@@ -575,6 +591,9 @@ settings_table! {
         /// preference — don't grow migration concerns around it.
         map_contours: bool = true, since(19);
         brightness: u8 = BRIGHTNESS_MAX, since(19), range(0, BRIGHTNESS_MAX);
+        /// Find a Place search filter, shared by all categories and the paged browser.
+        find_hide_closed: bool = true, since(21);
+        find_results: FindResults = FindResults::Four, since(21);
     }
 
     pub const DEFAULT;
@@ -609,9 +628,18 @@ settings_table! {
 /// Config cache, the `.rodata` [`DEFAULT`](Settings::DEFAULT) image), so a field that silently
 /// widens the struct widens every one of those — this makes the growth an explicit decision.
 ///
-const _: () = assert!(core::mem::size_of::<Settings>() == 112, "Settings grew — was that deliberate?");
+const _: () = assert!(core::mem::size_of::<Settings>() == 114, "Settings grew — was that deliberate?");
 
 impl Settings {
+    pub(crate) fn find_hours_filter(&self) -> obc_reader::reader::places::HoursFilter {
+        use obc_reader::reader::places::HoursFilter;
+        if self.find_hide_closed {
+            HoursFilter::HideClosed
+        } else {
+            HoursFilter::All
+        }
+    }
+
     /// The **local** wall-clock set-point the device shows: the UTC [`clock`](Settings::clock)
     /// anchor shifted into local time by [`utc_offset_min`](Settings::utc_offset_min) (via a
     /// calendar offset operation, so a shift across midnight rolls the date too). Manual editing was
@@ -622,7 +650,7 @@ impl Settings {
 }
 
 /// Current settings layout version.
-pub const VERSION: u8 = 20;
+pub const VERSION: u8 = 21;
 
 /// Settings use the current layout. Other versions reset to defaults.
 pub const MIN_SUPPORTED: u8 = 19;
@@ -668,7 +696,9 @@ const _: () = {
     assert!(off::up_ahead_source == 110, "up_ahead_source moved");
     assert!(off::map_contours == 111, "map_contours moved");
     assert!(off::brightness == 112, "brightness moved");
-    assert!(PAYLOAD_LEN == 113, "the CRC moved");
+    assert!(off::find_hide_closed == 113);
+    assert!(off::find_results == 114);
+    assert!(PAYLOAD_LEN == 115, "the CRC moved");
     assert!(ENCODED_LEN == 128, "the blob is no longer 11 RRAM lines");
 };
 
@@ -695,6 +725,7 @@ mod tests {
         assert_eq!(d.language, Language::default());
         assert_eq!(d.saved_sensors, [SavedSensor::default(); SENSOR_SLOTS]);
         assert_eq!(d.up_ahead_source, UpAheadSource::default());
+        assert_eq!(d.find_results, FindResults::default());
 
         // And the whole const is its type's `Default` — the property the field list guards.
         assert_eq!(d, Settings::default());
@@ -732,6 +763,8 @@ mod tests {
                 SavedSensor::saved(0, [6, 5, 4, 3, 2, 1]),
             ],
             up_ahead_source: UpAheadSource::MapPoisOnly,
+            find_hide_closed: false,
+            find_results: FindResults::Six,
 
             brightness: 1,
         }
@@ -868,6 +901,7 @@ mod tests {
         check!(ClimbMode);
         check!(WaypointMode);
         check!(UpAheadSource);
+        check!(FindResults);
         check!(IdleReturn);
 
         check!(Language);

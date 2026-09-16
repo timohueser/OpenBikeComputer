@@ -205,8 +205,11 @@ impl AheadState {
         } else {
             scope.filter
         };
-        (self.page == Page::Overview || scope.source.shows_pois())
-            .then_some(CorridorKey { filter, anchor_m: self.window.map_or(self.anchor, |w| w.start_m) })
+        (self.page == Page::Overview || scope.source.shows_pois()).then_some(CorridorKey {
+            hours_filter: obc_reader::reader::places::HoursFilter::HideClosed,
+            filter,
+            anchor_m: self.window.map_or(self.anchor, |w| w.start_m),
+        })
     }
     fn keep(&self, key: Key) -> bool {
         self.boundary.is_none_or(|b| if self.backwards { key < b } else { key > b })

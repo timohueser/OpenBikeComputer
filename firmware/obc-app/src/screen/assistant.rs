@@ -124,7 +124,6 @@ mod tests {
             assert!(obc_render::text::text_width(text, Font::Label) <= 204, "{language:?}: {text}");
             for message in [
                 Msg::AssistantPhotoVisit,
-                Msg::AssistantPhotoClosed,
                 Msg::AssistantPhotoNoAccess,
                 Msg::AssistantPhotoUnavailableHint,
                 Msg::AssistantPhotoMissing,

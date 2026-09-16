@@ -152,6 +152,7 @@ pub enum ContextValue {
     /// the field; [`App`](crate::App)'s one `==` diff over `Settings` is what arms the save, exactly
     /// as it does for a settings screen's edit.
     UpAheadSource,
+    FindResults,
 
     /// The routing profile the on-device planner weights edges by —
     /// [`Settings::bike_profile_idx`](crate::Settings), whose whole settings *screen* this slice
@@ -170,6 +171,7 @@ impl ContextValue {
             // "Everything" plus the six categories.
             ContextValue::UpAheadFilter => 1 + PoiCategory::ALL.len() as u8,
             ContextValue::UpAheadSource => UpAheadSource::COUNT as u8,
+            ContextValue::FindResults => crate::settings::FindResults::COUNT as u8,
 
             // At most `NAV_MAX_PROFILES` (8), which is also the notch strip's own ceiling.
             ContextValue::BikeProfile => f.nav_profiles.len() as u8,
@@ -187,7 +189,7 @@ impl ContextValue {
     /// guard, which it expressed as a silent no-op on an empty-state page.
     fn accepts(self, f: &ContextFacts) -> bool {
         match self {
-            ContextValue::UpAheadFilter | ContextValue::UpAheadSource => true,
+            ContextValue::UpAheadFilter | ContextValue::UpAheadSource | ContextValue::FindResults => true,
 
             ContextValue::BikeProfile => f.nav_profiles.len() > 1,
         }
@@ -198,6 +200,7 @@ impl ContextValue {
         match self {
             ContextValue::UpAheadFilter => filter_choice(f.state.up_ahead_filter),
             ContextValue::UpAheadSource => f.settings.up_ahead_source as u8,
+            ContextValue::FindResults => f.settings.find_results as u8,
 
             // The **effective** index, not the stored one: a stale index against a smaller map
             // opens on profile 0 and marks profile 0, which is the profile the router will actually
@@ -210,6 +213,7 @@ impl ContextValue {
     fn commit(self, cx: &mut Ctx, ordinal: u8) {
         match self {
             ContextValue::UpAheadFilter => cx.state.up_ahead_filter = choice_filter(ordinal),
+            ContextValue::FindResults => cx.settings.find_results = crate::settings::FindResults::from_byte(ordinal),
             ContextValue::UpAheadSource => {
                 cx.settings.up_ahead_source = UpAheadSource::ALL[(ordinal as usize).min(UpAheadSource::COUNT - 1)]
             }
@@ -237,6 +241,7 @@ impl ContextValue {
             // fallback is deliberately not used: it exists for an empty table, and an empty table
             // makes this row inert, so it has no reachable case in the sheet.
             ContextValue::BikeProfile => rx.nav_profiles.name(ordinal).unwrap_or(""),
+            ContextValue::FindResults => crate::settings::FindResults::from_byte(ordinal).name(),
         }
     }
 
@@ -244,7 +249,7 @@ impl ContextValue {
     /// label alone rather than inventing a glyph.
     fn choice_icon(self, ordinal: u8) -> Option<PoiCategory> {
         match self {
-            ContextValue::UpAheadSource | ContextValue::BikeProfile => None,
+            ContextValue::UpAheadSource | ContextValue::BikeProfile | ContextValue::FindResults => None,
 
             ContextValue::UpAheadFilter => choice_category(ordinal),
         }
@@ -254,13 +259,7 @@ impl ContextValue {
 /// A `bool` a context row flips **in place** — the switch shape. The binding owns *where the bit
 /// lives*; the drawer owns the row, the slider it draws and what a press does.
 ///
-/// All three are the Map's display modifiers, and all three are device-only —
-/// `adopt_ble_fields` never pulls them. That is what makes the render key's one `committed` byte
-/// sufficient here: under an open sheet only the rider can move one of these bits, and only the
-/// selected row's.
-///
-/// The shared `Map` prefix is deliberate: each variant is named for the [`Settings`] field it binds
-/// to, so `read`/`flip` can be checked by reading them side by side.
+/// These preferences are device-only. The settings diff schedules persistence after a flip.
 #[allow(clippy::enum_variant_names)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ContextToggle {
@@ -272,6 +271,7 @@ pub enum ContextToggle {
     /// #1096): it exists so #1097's ride review can A/B contours on the same ride, and it goes with
     /// that review's verdict — the row migrated here, it was not retired.
     MapContours,
+    FindHideClosed,
 }
 
 impl ContextToggle {
@@ -282,6 +282,7 @@ impl ContextToggle {
             ContextToggle::MapClock => f.settings.map_clock,
             ContextToggle::MapScaleBar => f.settings.map_scale_bar,
             ContextToggle::MapContours => f.settings.map_contours,
+            ContextToggle::FindHideClosed => f.settings.find_hide_closed,
         }
     }
 
@@ -293,6 +294,7 @@ impl ContextToggle {
             ContextToggle::MapClock => cx.settings.map_clock = !cx.settings.map_clock,
             ContextToggle::MapScaleBar => cx.settings.map_scale_bar = !cx.settings.map_scale_bar,
             ContextToggle::MapContours => cx.settings.map_contours = !cx.settings.map_contours,
+            ContextToggle::FindHideClosed => cx.settings.find_hide_closed = !cx.settings.find_hide_closed,
         }
     }
 }
@@ -440,6 +442,13 @@ pub static MAP: ContextMenu = ContextMenu {
 /// The **map display sheet** (#1515 D4c): the three switches that change nothing but what the Map
 /// draws. The only home any of them has — before this they were three rows two levels inside the
 /// central Settings tree, on a page the rider could only reach by leaving the map.
+pub static FIND_PLACE: ContextMenu = ContextMenu {
+    rows: &[
+        ContextRow { label: Msg::FindContextHideClosed, action: ContextAction::Toggle(ContextToggle::FindHideClosed) },
+        ContextRow { label: Msg::FindContextResults, action: ContextAction::Edit(ContextValue::FindResults) },
+    ],
+};
+
 pub static MAP_DISPLAY: ContextMenu = ContextMenu {
     rows: &[
         ContextRow { label: Msg::MapContextClock, action: ContextAction::Toggle(ContextToggle::MapClock) },
@@ -877,14 +886,28 @@ impl ContextDrawerScreen {
             let live = row.action.available(&facts);
             rows::row_cursor(cv, area, i as u8 == self.selected, false);
             let ink = if live { palette::INK } else { palette::CONTOUR };
-            cv.text_vcentered(
-                rx.t(row.label),
-                area.top_left.x + 14,
-                (area.top_left.y, ROW_H - 4),
-                Font::Body,
-                TextAlign::Left,
-                ink,
-            );
+            let label = rx.t(row.label);
+            if let Some((first, second)) = label.split_once('\n') {
+                for (line, text) in [first, second].into_iter().enumerate() {
+                    cv.text_vcentered(
+                        text,
+                        area.top_left.x + 14,
+                        (area.top_left.y + line as i32 * 20, 20),
+                        Font::Label,
+                        TextAlign::Left,
+                        ink,
+                    );
+                }
+            } else {
+                cv.text_vcentered(
+                    label,
+                    area.top_left.x + 14,
+                    (area.top_left.y, ROW_H - 4),
+                    Font::Body,
+                    TextAlign::Left,
+                    ink,
+                );
+            }
             match row.action {
                 ContextAction::Toggle(t) => super::vocab::rows::toggle_slider(cv, area, t.read(&facts)),
                 _ if live => {
@@ -1165,7 +1188,7 @@ mod tests {
         assert_eq!(MAX_ROWS, 5, "24 px of padding plus 44 px rows inside a {MAX_SHEET_H} px sheet");
 
         // Every table the tree declares; each D4 slice added its own to this list.
-        let declared: &[&ContextMenu] = &[&RIDE, &MAP, &MAP_DISPLAY, &UP_AHEAD, &ROUTE_PLAN];
+        let declared: &[&ContextMenu] = &[&RIDE, &MAP, &MAP_DISPLAY, &UP_AHEAD, &ROUTE_PLAN, &FIND_PLACE];
         for menu in declared {
             assert!(menu.rows.len() <= MAX_ROWS, "{} rows outgrow the sheet", menu.rows.len());
             for page in [Page::Root, Page::Editor] {
@@ -1458,10 +1481,12 @@ mod tests {
         let facts = w.facts();
         let (mut worst_row, mut worst_choice) = (0, 0);
         for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
-            for menu in [&RIDE, &MAP, &MAP_DISPLAY, &UP_AHEAD, &ROUTE_PLAN] {
+            for menu in [&RIDE, &MAP, &MAP_DISPLAY, &UP_AHEAD, &ROUTE_PLAN, &FIND_PLACE] {
                 for row in menu.rows {
                     let label = t(row.label, lang);
-                    let lw = text_width(label, Font::Body) as i32;
+                    let font = if label.contains('\n') { Font::Label } else { Font::Body };
+                    assert!(label.lines().count() <= 2);
+                    let lw = label.lines().map(|line| text_width(line, font) as i32).max().unwrap_or(0);
                     let room = match row.action {
                         ContextAction::Toggle(_) => switch_room,
                         _ => door_room,
@@ -1515,6 +1540,7 @@ mod tests {
                 None => t(Msg::UpAheadEverything, lang),
             },
             ContextValue::UpAheadSource => UpAheadSource::ALL[ordinal as usize].name(lang),
+            ContextValue::FindResults => crate::settings::FindResults::from_byte(ordinal).name(),
 
             ContextValue::BikeProfile => unreachable!("the map's own names are measured at their §8.6 cap"),
         }

@@ -12,6 +12,20 @@ use obc_map_scene::{cos_lat, delta_m, ground_dist_m_cl, BBox};
 /// Resident page capacity; identity continuations expose all matching places.
 pub const PLACE_PAGE_SIZE: usize = 8;
 
+/// Opening status controls search membership, never route eligibility.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum HoursFilter {
+    All,
+    #[default]
+    HideClosed,
+}
+
+impl HoursFilter {
+    pub fn includes(self, opening: OpeningStatus) -> bool {
+        self == Self::All || opening != OpeningStatus::Closed
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueryProgress {
     Pending,
@@ -69,6 +83,7 @@ pub struct PlaceQuery {
     categories: PoiCategorySet,
     window: PlaceWindow,
     local: Option<(u8, u16)>,
+    hours_filter: HoursFilter,
     after: Option<PlaceKey>,
     backwards: bool,
     category: usize,
@@ -91,6 +106,7 @@ impl PlaceQuery {
             categories,
             window,
             local,
+            hours_filter: HoursFilter::HideClosed,
             after: None,
             backwards: false,
             category: 0,
@@ -104,6 +120,11 @@ impl PlaceQuery {
             coverage_complete: true,
             progress: QueryProgress::Pending,
         }
+    }
+
+    pub fn with_hours_filter(mut self, filter: HoursFilter) -> Self {
+        self.hours_filter = filter;
+        self
     }
 
     pub fn progress(&self) -> QueryProgress {
@@ -358,7 +379,7 @@ impl PlaceQuery {
                             return;
                         }
                     };
-                    if opening == OpeningStatus::Closed {
+                    if !self.hours_filter.includes(opening) {
                         cursor.record += 1;
                         return;
                     }
