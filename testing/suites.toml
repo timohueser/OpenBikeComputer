@@ -232,6 +232,7 @@ command = "companion-ios/scripts/capture-website-screenshots.sh --check"
 jobs = ["ios-app"]
 platforms = ["macos"]
 triggers = [
+  "companion-ios/scripts/capture-website-screenshots.sh",
   "companion-ios/OBCCompanionUITests/WebsiteScreenshotTests.swift",
   "companion-ios/OBCCompanion/**",
   "companion-ios/project.yml",
