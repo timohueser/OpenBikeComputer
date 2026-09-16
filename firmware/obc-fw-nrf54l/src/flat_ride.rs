@@ -19,7 +19,7 @@ use obc_storage::flat::{
     Store as _, StoreError, RIDE_RESUME_LEN,
 };
 
-use obc_app::recorder::{CheckpointStatus, RecorderError};
+use obc_app::recorder::{CheckpointStatus, RecorderEffect, RecorderError, RecorderOutcome, RideClose};
 use obc_app::RideDamage;
 
 use crate::flat_store::{FlatCard, Outcome, Reply, Request, Writer};
@@ -307,6 +307,70 @@ impl Recorder {
             }
             _ => {}
         }
+    }
+
+    /// Open the owed session before serving its effect, including samples from the Start pass.
+    /// Keep the opened identity after a close: its outcome reaches App on the next pass.
+    pub(crate) async fn execute(
+        &mut self,
+        store: &'static FlatStore<FlatCard>,
+        app: &obc_app::App,
+        opened_session: &mut Option<u32>,
+        effect: Option<RecorderEffect>,
+        now: u32,
+    ) -> Option<RecorderOutcome> {
+        if let Some(id) = app.recorder.object_owed(*opened_session) {
+            let name =
+                app.active_route_index().and_then(|i| app.routes().get(i)).map_or("", |route| route.name.as_str());
+            self.open(store, id, name, now).await;
+            // A refused start stays owed and is retried on the next iteration.
+            if self.open_session() == Some(id) {
+                *opened_session = Some(id);
+            }
+        }
+        Some(match effect? {
+            RecorderEffect::Checkpoint { token } => {
+                let stats = app.recorder.ride_stats();
+                let continuation = app.recorder.checkpoint_context();
+                match self.checkpoint(now, &stats, continuation).await {
+                    Ok(status) => RecorderOutcome::Checkpointed { token, status },
+                    Err(error) => RecorderOutcome::Failed { token, error },
+                }
+            }
+            RecorderEffect::Finalize { token } => {
+                // Recorder has already drained the samples through acknowledged appends.
+                // The footer facts come from Recorder, which stamped its wall-clock anchor
+                // as it minted this close. The save name is not read at all: it was frozen
+                // when the ride opened.
+                let stats = app.recorder.ride_stats();
+                match self.finalize(&stats).await {
+                    RideClose::Committed(ride) => RecorderOutcome::Finalized { token, ride },
+                    RideClose::Nothing => {
+                        defmt::warn!("flat ride: finalize with no open object — the ride was never created");
+                        RecorderOutcome::Discarded { token }
+                    }
+                    RideClose::Failed => RecorderOutcome::Failed { token, error: RecorderError::Write },
+                }
+            }
+            // The store's refusal is reported by kind. A card that will take no mutation at
+            // all is the one answer a retry cannot help, so Recorder must be able to tell it
+            // from a write that went wrong.
+            RecorderEffect::Discard { token } => match self.discard().await {
+                Ok(()) => RecorderOutcome::Discarded { token },
+                Err(StoreError::ReadOnly) => RecorderOutcome::Failed { token, error: RecorderError::ReadOnly },
+                Err(_) => RecorderOutcome::Failed { token, error: RecorderError::Write },
+            },
+            // The immutable App borrow binds the full issued batch to its observation
+            // context. A changed cohort is reissued before any board storage work.
+            RecorderEffect::Append { token, samples } => match app.recorder.append_context(samples) {
+                None => RecorderOutcome::Cancelled { token },
+                Some(context) => match self.append(app.recorder.staged(), context) {
+                    AppendResult::Accepted => RecorderOutcome::Appended { token, samples },
+                    AppendResult::NeedsCheckpoint => RecorderOutcome::NeedsCheckpoint { token },
+                    AppendResult::Failed => RecorderOutcome::Failed { token, error: RecorderError::Write },
+                },
+            },
+        })
     }
 
     /// Close the ride into a durable ride object.
