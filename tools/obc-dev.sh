@@ -89,6 +89,33 @@ ensure_probe() {
   return 1
 }
 
+# ---- iOS on a phone ------------------------------------------------------------
+# Resolve a paired iPhone for `devicectl`: an explicit name/identifier, else the only one.
+ios_phone() {
+  [[ -n "${1:-}" ]] && { printf '%s\n' "$1"; return 0; }
+  local json; json="$(mktemp)"
+  xcrun devicectl list devices --filter "connectionProperties.pairingState == 'paired'" \
+    --json-output "$json" >/dev/null
+  python3 -c 'import json, sys; p = [d["identifier"] for d in json.load(open(sys.argv[1]))["result"]["devices"]]; print(p[0]) if len(p) == 1 else sys.exit(f"{len(p)} paired phones; pass one by name or identifier")' "$json"
+}
+
+# Build one companion-ios scheme for a phone, then install and launch it there.
+# Args: SCHEME CONFIG BUNDLE_ID DEVICE. Signing comes from companion-ios/project.local.yml.
+ios_install() {
+  local scheme="$1" config="$2" bundle="$3" device="$4"
+  cd "$OBC_ROOT/companion-ios"
+  _run xcodegen generate
+  _run xcodebuild build -quiet -project OBCCompanion.xcodeproj -scheme "$scheme" \
+    -configuration "$config" -destination generic/platform=iOS \
+    -derivedDataPath DerivedData -allowProvisioningUpdates
+  # The first connection to an idle phone wakes its debug tunnel and can be reset; one retry.
+  local app="DerivedData/Build/Products/$config-iphoneos/$scheme.app"
+  _run xcrun devicectl device install app --device "$device" "$app" \
+    || _run xcrun devicectl device install app --device "$device" "$app"
+  _run xcrun devicectl device process launch --device "$device" "$bundle" --quiet \
+    || _warn "installed, but the phone would not launch it (locked?) — open it by hand"
+}
+
 # ---- path / default resolution ----------------------------------------------
 _abspath() { case "$1" in /*) printf '%s\n' "$1";; *) printf '%s\n' "${OBC_PWD:-$PWD}/$1";; esac; }
 
