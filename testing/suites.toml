@@ -238,7 +238,7 @@ triggers = [
   "companion-ios/project.yml",
   "companion-ios/Packages/OBCKit/Sources/**",
 ]
-budget_exception = { reason = "Real simulator startup, build and screenshot flows took 509 seconds in CI run 34957666017; setup and test time still need separate measurement.", issue = "#1788" }
+budget_exception = { reason = "Simulator setup and the capture took 190 seconds in CI run 35112589078, of which 133 seconds is native test execution. The app is built once by the job, and the simulator boots beside that build.", issue = "#1788" }
 
 # ── Required CI validations that own no test source ─────────────────────────
 
