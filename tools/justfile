@@ -435,6 +435,30 @@ ios-host *args:
     cd "$OBC_ROOT"
     _run "$OBC_TOOLS/build-ios-host.sh" "$@"
 
+# Build the OBCDevice app (the firmware on a phone) and install and launch it on a paired iPhone.
+# Args: [DEVICE] — a `devicectl` name or identifier; defaults to the only paired phone.
+ios-device *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    cd "$OBC_ROOT"
+    (( $# <= 1 )) || { _err "usage: obc ios-device [DEVICE]"; exit 1; }
+    device="$(ios_phone "${1:-}")"
+    # Xcode reads the XCFramework while it plans the build and links the slice that was on
+    # disk at the start, so the host is packed before the app build, not only by its script phase.
+    _run "$OBC_TOOLS/build-ios-host.sh"
+    ios_install OBCDevice Debug com.openbikecomputer.device "$device"
+
+# Build the companion app in Release (real Bluetooth, no mock) and install and launch it on a
+# paired iPhone. Args: [DEVICE] — a `devicectl` name or identifier; defaults to the only paired phone.
+ios-companion *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    (( $# <= 1 )) || { _err "usage: obc ios-companion [DEVICE]"; exit 1; }
+    device="$(ios_phone "${1:-}")"
+    ios_install OBCCompanion Release com.openbikecomputer.companion "$device"
+
 # Show and validate human ownership of documentation prose. Args: [status|check]
 docs *args:
     #!/usr/bin/env bash

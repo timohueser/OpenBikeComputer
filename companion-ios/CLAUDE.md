@@ -38,9 +38,10 @@ cd Packages/OBCKit
 swift test
 ```
 
-CI runs the package tests plus Debug and Release simulator builds. For a simulator or physical
-device, generate the project and use the `OBCCompanion` scheme. Personal signing belongs in the
-gitignored `project.local.yml`.
+CI runs the package tests plus Debug and Release simulator builds. For a simulator, generate the
+project and use the `OBCCompanion` scheme. `obc ios-companion` builds Release (real Bluetooth) and
+installs it on the paired iPhone; `obc ios-device` does the same for the `OBCDevice` shell.
+Personal signing belongs in the gitignored `project.local.yml`.
 
 ## Mock and captures
 
