@@ -115,23 +115,14 @@ fn file_name(path: &Path) -> String {
     path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned()
 }
 
-/// Everything a frame draws its map from: the map reader (map plane plus POI/hours) and the active
-/// route.
-#[derive(Clone, Copy)]
-pub struct Scene<'a, 'd> {
-    pub reader: &'a obc_reader::Reader<'d>,
-    pub route: Option<&'a obc_route::RouteReader<'a>>,
-}
-
-/// Draw one whole frame through the app's real generic scene seam. `scratch` is the caller's
-/// render scratch — the app borrows it for the call and keeps nothing (#1146).
-#[allow(clippy::too_many_arguments)]
+/// One whole frame for the sim's one-shot drivers, which own the photo phase nowhere else: it runs
+/// the capture phase whenever the photo screen is in its base state. The interactive hosts pass
+/// their own `FramePhoto` to [`obc_host_core::frame::render`] instead.
 pub fn render_frame<D, F>(
     app: &mut obc_app::App,
     scratch: &mut obc_render::RenderScratch,
     target: &mut D,
-    scene: Scene<'_, '_>,
-
+    scene: obc_host_core::frame::Scene<'_, '_>,
     peak_view: Option<&obc_app::peak_view::Panorama>,
     (w, h): (f32, f32),
     color_fn: F,
@@ -141,45 +132,21 @@ where
     F: Fn(u16) -> D::Color,
 {
     let mut photo = app.photo_base_active().then(obc_host_core::photo::Preparer::default);
-    render_base_frame(app, scratch, target, scene, peak_view, (w, h), &color_fn, photo.as_mut().map(|p| p.capture()))
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn render_base_frame<D, F>(
-    app: &mut obc_app::App,
-    scratch: &mut obc_render::RenderScratch,
-    target: &mut D,
-    scene: Scene<'_, '_>,
-    peak_view: Option<&obc_app::peak_view::Panorama>,
-    (w, h): (f32, f32),
-    color_fn: F,
-    photo: Option<obc_app::photo::FramePhoto<'_>>,
-) -> RenderStats
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
-    let Scene { reader, route } = scene;
-    let clock = StdClock(std::time::Instant::now());
-    let stats = app.render_scene_map_photo_timed(
-        Some(scratch),
+    obc_host_core::frame::render(
+        app,
+        scratch,
         target,
-        Some(reader),
-        Some(reader),
-        route,
+        scene,
         peak_view,
-        w,
-        h,
+        (w, h),
         &color_fn,
-        &clock,
-        photo,
-    );
-    app.render_overlay(target, w, h, &color_fn);
-    stats
+        &StdClock(std::time::Instant::now()),
+        photo.as_mut().map(|p| p.capture()),
+    )
 }
 
 /// Microsecond [`obc_render::Clock`] over a host `Instant` — the sim's stage-timing source.
-struct StdClock(std::time::Instant);
+pub struct StdClock(pub std::time::Instant);
 
 impl obc_render::Clock for StdClock {
     fn now_us(&self) -> u64 {
