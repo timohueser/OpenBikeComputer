@@ -50,9 +50,6 @@ All other conditions remain production in the absolute report. In particular,
 `cfg(any(test, feature = "std"))` does not prove that an item is test-only. Its module declarations,
 store observations and helpers remain counted unless they are inside an explicitly excluded file.
 
-The historical delta command retains its broader test-mentioning `cfg` rule. Its `--storage-series`
-output is a change report, not an absolute acceptance count. Do not add those deltas to this total.
-
 ### Scanner and boundary limits
 
 The scanner removes comments and literal contents, then balances braces to find an item's end.
@@ -107,6 +104,6 @@ The raw reconciliation is **5,223 + 7,614 = 12,837** source lines. The flat laye
 production lines below** the 6,000 maximum at this commit. This does not close the wider storage
 acceptance gate.
 
-The historical scanner gives 5,197 raw and 3,563 code lines for the same production scope.
-The absolute report retains 26 mixed test/std lines: 4 in `mod.rs`, 6 in `layout.rs`, 4 in
-`source.rs` and 12 in `store.rs`. The difference is explicit; no historical deletion is subtracted.
+The report counts 26 mixed test/std lines as production: 4 in `mod.rs`, 6 in `layout.rs`, 4 in
+`source.rs` and 12 in `store.rs`. A `cfg` that merely mentions `test` does not prove an item is
+test-only, so they stay in the total.

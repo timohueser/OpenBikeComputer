@@ -1,7 +1,6 @@
 pub(crate) mod connections;
 pub(crate) mod core_mode;
 pub mod derived;
-pub mod feeders;
 pub mod pass;
 mod shared;
 pub mod slots;

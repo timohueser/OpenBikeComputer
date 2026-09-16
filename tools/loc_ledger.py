@@ -1,36 +1,29 @@
 #!/usr/bin/env python3
-"""Count committed Rust source as production or test/harness.
+"""Count committed Rust source in the flat-store layer as production or test.
 
 Usage::
 
     python3 tools/loc_ledger.py --storage-total [--head REF] [--check-budget]
-    python3 tools/loc_ledger.py --base REF --head REF [--storage-series]
-    python3 tools/loc_ledger.py --pr NUMBER [--basis code]
 
-The absolute storage report counts the fixed STORAGE_SERIES_PATHS recursively.
-It uses raw production lines for the 6,000-line ceiling and shows structural
-code lines as supplemental evidence. See tools/storage-line-budget.md for the
-scope, exclusions, current reconciliation and scanner limits.
+The report counts the fixed STORAGE_SERIES_PATHS recursively at one commit. It
+uses raw production lines for the 6,000-line ceiling and shows structural code
+lines as supplemental evidence. See tools/storage-line-budget.md for the scope,
+exclusions, current reconciliation and scanner limits.
 
 Raw means every physical source line, including blanks and comments; a final
 unterminated line counts once. Code means a line with a token left by
 strip_noise, which removes comments and literal contents. This is a structural
 counter, not a Rust compiler or a general code-coverage measurement.
 
-The absolute report excludes only exact cfg(test) gates and named harness
-files. Mixed test/std gates remain counted. The historical delta mode keeps its
-broader test-mentioning cfg rule: any(test, feature = "std") selects harness,
-not(test) selects production, and cfg_attr does not gate an item. Do not add
-historical deltas to the absolute total.
+The report excludes only exact cfg(test) gates and named harness files. Mixed
+test/std gates remain counted.
 
 The scanner balances item braces after removing comments and string/character
 literal contents. It handles nested comments, raw strings, lifetimes and array
 semicolons. It does not expand macros, follow include! or #[path] indirection,
 or evaluate general cfg expressions. Scope changes and new syntax need review.
 
-Delta mode defaults to HEAD against the merge base with origin/develop. --pr
-uses the merge base of both parents and the PR head; git diff -M recognizes
-renames. Specs, documentation and non-Rust source are outside both Rust totals.
+Specs, documentation and non-Rust source are outside the total.
 """
 
 from __future__ import annotations
@@ -71,45 +64,9 @@ STORAGE_HARNESS_FILES = {
 #: Directory names that make everything under them fixture data.
 FIXTURE_DIRS = ("fixtures", "testdata", "test-data", "golden", "vectors")
 
-_HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 # cfg_attr changes attributes, not whether the item is present.
 _CFG_ATTR = re.compile(r"^#!?\[\s*cfg\s*\(")
 _MOD_DECL = re.compile(r"\bmod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
-_TEST_TOKEN = re.compile(r"\btest\b")
-
-
-def gates_on_test(attr_text: str) -> bool:
-    """Does this ``cfg`` expression select the *test* configuration?
-
-    Every ``not( … )`` group is removed first, balanced, so `not(test)` — which
-    is the **production** half of a build — cannot be read as a test gate.
-    `all(not(test), feature = "x")` is production; `any(test, miri)` is test.
-    """
-    out: list[str] = []
-    i = 0
-    while i < len(attr_text):
-        j = attr_text.find("not(", i)
-        if j < 0:
-            out.append(attr_text[i:])
-            break
-        # `not` must be a whole token, not the tail of `cannot(`.
-        if j > 0 and (attr_text[j - 1].isalnum() or attr_text[j - 1] == "_"):
-            out.append(attr_text[i : j + 4])
-            i = j + 4
-            continue
-        out.append(attr_text[i:j])
-        depth = 0
-        k = j + 3
-        while k < len(attr_text):
-            if attr_text[k] == "(":
-                depth += 1
-            elif attr_text[k] == ")":
-                depth -= 1
-                if depth == 0:
-                    break
-            k += 1
-        i = k + 1
-    return bool(_TEST_TOKEN.search("".join(out)))
 
 
 def run_git(repo: str, *args: str) -> str:
@@ -232,7 +189,7 @@ def is_code_line(stripped: str) -> bool:
     return bool(stripped.strip())
 
 
-def scan_cfg_test(text: str, *, exact_test: bool = False) -> tuple[set[int], set[str]]:
+def scan_cfg_test(text: str) -> tuple[set[int], set[str]]:
     """Return (1-based line numbers inside test-gated items, test-gated module names).
 
     Approximate by construction — see the module docstring.
@@ -260,11 +217,7 @@ def scan_cfg_test(text: str, *, exact_test: bool = False) -> tuple[set[int], set
                 break
             j += 1
         attr_text = " ".join(attr)
-        selected = (
-            bool(re.match(r"^\s*#!?\[\s*cfg\s*\(\s*test\s*\)\s*\]", attr_text))
-            if exact_test else gates_on_test(attr_text)
-        )
-        if not selected:
+        if not re.match(r"^\s*#!?\[\s*cfg\s*\(\s*test\s*\)\s*\]", attr_text):
             i = j + 1
             continue
         # `#![cfg(test)]` at the top of a file gates the whole file.
@@ -323,10 +276,9 @@ OTHER = "other"
 class Tree:
     """Cached read access to one git tree, plus the cfg(test) facts it implies."""
 
-    def __init__(self, repo: str, ref: str, *, exact_test: bool = False) -> None:
+    def __init__(self, repo: str, ref: str) -> None:
         self.repo = repo
         self.ref = ref
-        self.exact_test = exact_test
         self._text: dict[str, str | None] = {}
         self._scan: dict[str, tuple[set[int], set[str]]] = {}
         self._is_test_mod_file: dict[str, bool] = {}
@@ -346,7 +298,7 @@ class Tree:
     def scan(self, path: str) -> tuple[set[int], set[str]]:
         if path not in self._scan:
             text = self.text(path)
-            self._scan[path] = scan_cfg_test(text, exact_test=self.exact_test) if text is not None else (set(), set())
+            self._scan[path] = scan_cfg_test(text) if text is not None else (set(), set())
         return self._scan[path]
 
     def cfg_test_lines(self, path: str) -> set[int]:
@@ -408,7 +360,7 @@ def crate_of(path: str) -> str | None:
     return None
 
 
-def classify_file(path: str, head: Tree, base: Tree) -> tuple[str, str]:
+def classify_file(path: str, tree: Tree) -> tuple[str, str]:
     """Return (bucket, reason).  First matching rule wins — order is the basis."""
     parts = path.split("/")
     stem = parts[-1]
@@ -428,44 +380,31 @@ def classify_file(path: str, head: Tree, base: Tree) -> tuple[str, str]:
         return TEST, f"rule 5: oracle crate ({crate})"
     if any(d in FIXTURE_DIRS for d in parts[:-1]):
         return TEST, "rule 6: fixture directory"
-    if head.declared_under_cfg_test(path) or base.declared_under_cfg_test(path):
+    if tree.declared_under_cfg_test(path):
         return TEST, "rule 7: cfg(test) module file"
     return PRODUCTION, "production"
 
 
 # --------------------------------------------------------------------------
-# Diff walking
+# Counting
 # --------------------------------------------------------------------------
 
 
 @dataclass
 class Counts:
-    """Added/removed counts for one bucket, on both bases."""
+    """Lines counted on both bases: every line, and every line with a token."""
 
-    code_add: int = 0
-    code_del: int = 0
-    raw_add: int = 0
-    raw_del: int = 0
+    raw: int = 0
+    code: int = 0
 
-    def add(self, added: bool, is_code: bool) -> None:
-        if added:
-            self.raw_add += 1
-            if is_code:
-                self.code_add += 1
-        else:
-            self.raw_del += 1
-            if is_code:
-                self.code_del += 1
-
-    def on(self, basis: str) -> tuple[int, int, int]:
-        a, d = (self.code_add, self.code_del) if basis == "code" else (self.raw_add, self.raw_del)
-        return a, d, a - d
+    def add(self, is_code: bool) -> None:
+        self.raw += 1
+        if is_code:
+            self.code += 1
 
     def merge(self, other: Counts) -> None:
-        self.code_add += other.code_add
-        self.code_del += other.code_del
-        self.raw_add += other.raw_add
-        self.raw_del += other.raw_del
+        self.raw += other.raw
+        self.code += other.code
 
 
 @dataclass
@@ -475,225 +414,39 @@ class FileLedger:
     reason: str
     prod: Counts = field(default_factory=Counts)
     test: Counts = field(default_factory=Counts)
-    other: Counts = field(default_factory=Counts)
-    cfg_test_hunks: bool = False
 
     def counts(self, bucket: str) -> Counts:
-        return {PRODUCTION: self.prod, TEST: self.test, OTHER: self.other}[bucket]
-
-    @property
-    def display_reason(self) -> str:
-        if self.bucket == PRODUCTION and self.cfg_test_hunks:
-            return "production (+ cfg(test) lines split out)"
-        return self.reason
-
-
-def parse_diff(repo: str, base: str, head: str, paths: list[str] | None) -> dict[str, list[tuple[int, int]]]:
-    """Return ``{path: [(head_line, base_line)]}`` — added lines carry a head
-    line number and base ``0``; removed lines carry base and head ``0``."""
-    args = ["diff", "-U0", "-M", "--no-color", "--no-ext-diff", f"{base}", f"{head}"]
-    if paths:
-        args += ["--", *paths]
-    out = run_git(repo, *args)
-    files: dict[str, list[tuple[int, int]]] = {}
-    path: str | None = None
-    old_ln = new_ln = 0
-    for line in out.split("\n"):
-        if line.startswith("diff --git "):
-            path = None
-            continue
-        if line.startswith("+++ "):
-            target = line[4:].strip()
-            if target == "/dev/null":
-                continue
-            path = target[2:] if target.startswith("b/") else target
-            files.setdefault(path, [])
-            continue
-        if line.startswith("--- "):
-            src = line[4:].strip()
-            if path is None and src != "/dev/null":
-                pass  # `+++` always follows; nothing to do
-            continue
-        m = _HUNK.match(line)
-        if m:
-            old_ln = int(m.group(1))
-            new_ln = int(m.group(3))
-            continue
-        if path is None or not line:
-            continue
-        if line.startswith("+"):
-            files[path].append((new_ln, 0))
-            new_ln += 1
-        elif line.startswith("-"):
-            files[path].append((0, old_ln))
-            old_ln += 1
-    # A file that was deleted has no `+++ b/…`; catch it from the `--- a/…` side.
-    path = None
-    old_ln = 0
-    for line in out.split("\n"):
-        if line.startswith("--- "):
-            src = line[4:].strip()
-            path = None if src == "/dev/null" else (src[2:] if src.startswith("a/") else src)
-            continue
-        if line.startswith("+++ "):
-            if line[4:].strip() != "/dev/null":
-                path = None  # handled above
-            continue
-        m = _HUNK.match(line)
-        if m:
-            old_ln = int(m.group(1))
-            continue
-        if path is None or not line:
-            continue
-        if line.startswith("-"):
-            files.setdefault(path, []).append((0, old_ln))
-            old_ln += 1
-    return files
+        return self.test if bucket == TEST else self.prod
 
 
 @dataclass
-class Ledger:
-    base: str
+class StorageTotal:
+    """One committed tree, counted file by file."""
+
     head: str
-    basis: str
     files: list[FileLedger] = field(default_factory=list)
 
-    def totals(self, bucket: str, basis: str | None = None) -> tuple[int, int, int]:
+    def totals(self, bucket: str) -> Counts:
         acc = Counts()
-        for f in self.files:
-            acc.merge(f.counts(bucket))
-        return acc.on(basis or self.basis)
+        for entry in self.files:
+            acc.merge(entry.counts(bucket))
+        return acc
 
 
-def build_ledger(repo: str, base: str, head: str, basis: str, paths: list[str] | None) -> Ledger:
-    head_tree = Tree(repo, head)
-    base_tree = Tree(repo, base)
-    diff = parse_diff(repo, base, head, paths)
-    ledger = Ledger(base=base, head=head, basis=basis)
-    for path in sorted(diff):
-        bucket, reason = classify_file(path, head_tree, base_tree)
-        entry = FileLedger(path=path, bucket=bucket, reason=reason)
-        head_text = head_tree.text(path)
-        base_text = base_tree.text(path)
-        head_lines = head_text.split("\n") if head_text is not None else []
-        base_lines = base_text.split("\n") if base_text is not None else []
-        head_code = strip_noise(head_lines)
-        base_code = strip_noise(base_lines)
-        head_cfg = head_tree.cfg_test_lines(path) if bucket == PRODUCTION else set()
-        base_cfg = base_tree.cfg_test_lines(path) if bucket == PRODUCTION else set()
-        for new_ln, old_ln in diff[path]:
-            added = new_ln > 0
-            idx = (new_ln if added else old_ln) - 1
-            src_raw = head_lines if added else base_lines
-            src_code = head_code if added else base_code
-            if 0 <= idx < len(src_raw):
-                is_code = is_code_line(src_code[idx])
-            else:
-                is_code = True  # defensive: a line the tree no longer has
-            if bucket == OTHER:
-                entry.other.add(added, is_code)
-                continue
-            in_test = bucket == TEST
-            if not in_test:
-                cfg = head_cfg if added else base_cfg
-                if (new_ln if added else old_ln) in cfg:
-                    in_test = True
-                    entry.cfg_test_hunks = True
-            (entry.test if in_test else entry.prod).add(added, is_code)
-        ledger.files.append(entry)
-    return ledger
-
-
-# --------------------------------------------------------------------------
-# Reporting
-# --------------------------------------------------------------------------
-
-
-def signed(n: int) -> str:
-    return f"{n:+d}"
-
-
-def _totals_block(ledger: Ledger, indent: str, show_other: bool) -> list[str]:
-    """Both bases, always, side by side — the drift between them is the thing
-    two hand-counted ledgers disagreed about, so neither number is hidden."""
-    out = [f"{indent}{'':<20} {'code basis':>22}   {'raw basis':>22}"]
-    for label, bucket in (
-        ("production", PRODUCTION),
-        ("test/harness", TEST),
-        ("other (uncounted)", OTHER),
-    ):
-        ca, cd, cn = ledger.totals(bucket, "code")
-        ra, rd, rn = ledger.totals(bucket, "raw")
-        if bucket == OTHER and not show_other and ra == rd == 0:
-            continue
-        code = f"+{ca} -{cd} net {signed(cn)}"
-        raw = f"+{ra} -{rd} net {signed(rn)}"
-        out.append(f"{indent}{label:<20} {code:>22}   {raw:>22}")
-    return out
-
-
-def render(ledger: Ledger, storage: Ledger | None, show_other: bool) -> str:
-    basis = ledger.basis
-    lines: list[str] = []
-    lines.append("LOC ledger (tools/loc_ledger.py)")
-    lines.append(f"  base   {ledger.base}")
-    lines.append(f"  head   {ledger.head}")
-    lines.append(
-        f"  basis  {basis} lines in .rs files"
-        + ("  (non-blank, non-comment)" if basis == "code" else "  (every line)")
-    )
-    lines.append("")
-    width = max((len(f.path) for f in ledger.files), default=4)
-    width = min(max(width, 4), 72)
-    header = f"  {'file'.ljust(width)}  {'+':>6} {'-':>6} {'net':>7}  classification"
-    lines.append(header)
-    lines.append("  " + "-" * (len(header) - 2))
-    for f in ledger.files:
-        if f.bucket == OTHER and not show_other:
-            continue
-        acc = Counts()
-        acc.merge(f.prod)
-        acc.merge(f.test)
-        acc.merge(f.other)
-        add, dele, net = acc.on(basis)
-        path = f.path if len(f.path) <= width else "…" + f.path[-(width - 1) :]
-        detail = f.display_reason
-        if f.bucket == PRODUCTION and f.cfg_test_hunks:
-            detail += f"  [prod {signed(f.prod.on(basis)[2])}, test {signed(f.test.on(basis)[2])}]"
-        lines.append(f"  {path.ljust(width)}  {add:>6} {dele:>6} {signed(net):>7}  {detail}")
-    lines.append("")
-    lines.extend(_totals_block(ledger, "  ", show_other))
-    lines.append("")
-    if storage is not None:
-        lines.append("  storage series — the #1256 budget set")
-        for p in STORAGE_SERIES_PATHS:
-            lines.append(f"    counted path  {p}")
-        lines.extend(_totals_block(storage, "    ", show_other))
-        lines.append("")
-        other = "code" if basis == "raw" else "raw"
-        _, _, net = storage.totals(PRODUCTION, basis)
-        _, _, alt = storage.totals(PRODUCTION, other)
-        lines.append(f"  POST ON #1256: storage-layer delta {signed(net)} production lines ({basis} basis)")
-        lines.append(f"                 {signed(alt)} on the {other} basis — quote both, or say which.")
-        lines.append("    Historical delta only. Use --storage-total for the current absolute budget.")
-        lines.append("")
-    return "\n".join(lines)
-
-
-def storage_total(repo: str, ref: str) -> Ledger:
+def storage_total(repo: str, ref: str) -> StorageTotal:
     """Count one immutable tree, with conservative test exclusions."""
     head = run_git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}").strip()
-    tree = Tree(repo, head, exact_test=True)
+    tree = Tree(repo, head)
     paths = run_git(repo, "ls-tree", "-r", "--name-only", head, "--", *STORAGE_SERIES_PATHS).splitlines()
     paths = [path for path in paths if path.endswith(".rs")]
     if not paths:
         raise SystemExit("storage scope contains no Rust files; update and review the fixed scope")
-    result = Ledger(base="", head=head, basis="raw")
+    result = StorageTotal(head=head)
     for path in sorted(paths):
         source = tree.text(path)
         if source is None:
             raise SystemExit(f"cannot read counted source: {path}")
-        bucket, reason = classify_file(path, tree, tree)
+        bucket, reason = classify_file(path, tree)
         if path in STORAGE_HARNESS_FILES:
             bucket, reason = TEST, "explicit fault/model harness"
         entry = FileLedger(path=path, bucket=bucket, reason=reason)
@@ -704,12 +457,17 @@ def storage_total(repo: str, ref: str) -> Ledger:
         gated = tree.cfg_test_lines(path) if bucket == PRODUCTION else set()
         for number, code in enumerate(strip_noise(lines), 1):
             counts = entry.test if bucket == TEST or number in gated else entry.prod
-            counts.add(True, is_code_line(code))
+            counts.add(is_code_line(code))
         result.files.append(entry)
     return result
 
 
-def render_storage_total(total: Ledger) -> str:
+# --------------------------------------------------------------------------
+# Reporting
+# --------------------------------------------------------------------------
+
+
+def render_storage_total(total: StorageTotal) -> str:
     rows = [
         "Flat-store absolute line budget (raw production basis)",
         f"commit {total.head} (committed tree only; working-tree edits excluded)",
@@ -717,85 +475,38 @@ def render_storage_total(total: Ledger) -> str:
         "", "module | production raw | production code | excluded test raw | classification",
     ]
     for entry in total.files:
-        rows.append(f"{entry.path} | {entry.prod.raw_add} | {entry.prod.code_add} | "
-                    f"{entry.test.raw_add} | {entry.reason}")
-    raw = total.totals(PRODUCTION, "raw")[0]
-    code = total.totals(PRODUCTION, "code")[0]
-    test = total.totals(TEST, "raw")[0]
+        rows.append(f"{entry.path} | {entry.prod.raw} | {entry.prod.code} | "
+                    f"{entry.test.raw} | {entry.reason}")
+    production = total.totals(PRODUCTION)
+    test = total.totals(TEST).raw
     rows.extend([
-        f"TOTAL | {raw} | {code} | {test}",
-        f"Reconciliation: {raw} production + {test} excluded = {raw + test} Rust source lines",
-        f"Budget: {raw} / {STORAGE_LIMIT} raw production lines; "
-        + (f"OVER by {raw - STORAGE_LIMIT}" if raw > STORAGE_LIMIT else f"within by {STORAGE_LIMIT - raw}"),
+        f"TOTAL | {production.raw} | {production.code} | {test}",
+        f"Reconciliation: {production.raw} production + {test} excluded = "
+        f"{production.raw + test} Rust source lines",
+        f"Budget: {production.raw} / {STORAGE_LIMIT} raw production lines; "
+        + (f"OVER by {production.raw - STORAGE_LIMIT}" if production.raw > STORAGE_LIMIT
+           else f"within by {STORAGE_LIMIT - production.raw}"),
         "Flat-layer scope only. Adapter/FAT removal and physical acceptance remain separate.",
     ])
     return "\n".join(rows)
 
 
-def resolve_range(repo: str, args: argparse.Namespace) -> tuple[str, str]:
-    if args.pr is not None:
-        merge = run_git(
-            repo, "log", "--all", "--format=%H %s", "--grep", f"Merge pull request #{args.pr} ", "-1"
-        ).strip()
-        if not merge:
-            raise SystemExit(f"no merge commit found for PR #{args.pr}")
-        sha = merge.split()[0]
-        parents = run_git(repo, "rev-list", "--parents", "-n", "1", sha).split()
-        if len(parents) < 3:
-            raise SystemExit(f"{sha[:8]} is not a merge commit — pass --base/--head")
-        # The base is the *merge base* of the two parents, not the first parent:
-        # a branch that was not rebased before merging would otherwise have every
-        # commit develop gained meanwhile counted against it, backwards.
-        base = run_git(repo, "merge-base", parents[1], parents[2]).strip()
-        return base, parents[2]
-    head = args.head or "HEAD"
-    base = args.base
-    if base is None:
-        base = run_git(repo, "merge-base", args.develop, head).strip()
-    return base, head
-
-
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(
         prog="loc_ledger.py",
-        description="Deterministic production-vs-test LOC ledger for the #1256 storage budget.",
+        description="Deterministic production-vs-test line count for the #1256 storage budget.",
     )
-    ap.add_argument("--storage-total", action="store_true", help="count the absolute committed flat-store layer")
-    ap.add_argument("--check-budget", action="store_true", help="with --storage-total, fail above 6,000 raw production lines")
-    ap.add_argument("--base", help="base ref (default: merge-base with origin/develop)")
-    ap.add_argument("--head", help="head ref (default: HEAD)")
-    ap.add_argument("--pr", type=int, help="count a merged PR by number (both sides of its merge commit)")
-    ap.add_argument("--develop", default="origin/develop", help="ref the default base is taken against")
-    ap.add_argument(
-        "--basis",
-        choices=("raw", "code"),
-        default="raw",
-        help="which basis leads the table (both are always totalled): "
-        "raw = every line; "
-        "code = non-blank, non-comment",
-    )
-    ap.add_argument("--storage-series", action="store_true", help="also print the #1256 budget line")
-    ap.add_argument("--show-other", action="store_true", help="list uncounted non-Rust files too")
+    ap.add_argument("--storage-total", action="store_true", required=True,
+                    help="count the absolute committed flat-store layer")
+    ap.add_argument("--check-budget", action="store_true",
+                    help="fail above 6,000 raw production lines")
+    ap.add_argument("--head", help="commit to count (default: HEAD)")
     args = ap.parse_args(argv)
 
     repo = run_git(os.path.dirname(os.path.abspath(__file__)) or ".", "rev-parse", "--show-toplevel").strip()
-    if args.check_budget and not args.storage_total:
-        ap.error("--check-budget requires --storage-total")
-    if args.storage_total:
-        if args.base or args.pr or args.storage_series or args.basis != "raw" or args.show_other:
-            ap.error("--storage-total accepts only --head and --check-budget")
-        total = storage_total(repo, args.head or "HEAD")
-        print(render_storage_total(total))
-        return int(args.check_budget and total.totals(PRODUCTION, "raw")[0] > STORAGE_LIMIT)
-    base, head = resolve_range(repo, args)
-
-    ledger = build_ledger(repo, base, head, args.basis, None)
-    storage = None
-    if args.storage_series:
-        storage = build_ledger(repo, base, head, args.basis, list(STORAGE_SERIES_PATHS))
-
-    print(render(ledger, storage, args.show_other))
-    return 0
+    total = storage_total(repo, args.head or "HEAD")
+    print(render_storage_total(total))
+    return int(args.check_budget and total.totals(PRODUCTION).raw > STORAGE_LIMIT)
 
 
 if __name__ == "__main__":

@@ -26,7 +26,7 @@
 //!   ADV_IND, which an extended scanner/initiator receives fine): the nRF54L15 SDC blob
 //!   (nrfxlib 3.3.0) **faults internally** (`SoftdeviceController: 50:701`) the instant a *legacy*
 //!   `LeCreateConn` initiator receives its target's advertisement — 100 % reproducible in a
-//!   minimal harness (`src/bin/ble_central_repro.rs`, 2026-07-12) — while the same connect issued
+//!   minimal MPSL + SDC harness (2026-07-12) — while the same connect issued
 //!   as `LeExtCreateConn` works. Nordic's own central-role coverage runs through Zephyr, which
 //!   uses the extended commands; the legacy initiator path is the untested one (reported
 //!   upstream, #736). And because legacy and extended adv/scan/initiate commands are one

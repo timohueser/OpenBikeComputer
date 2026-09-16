@@ -9,7 +9,7 @@ both files.
 
 ## Routes
 
-A route says when a piece of verification runs. There are five, and `route` in
+A route says when a piece of verification runs. There are four, and `route` in
 `testing/suites.toml` names one of them:
 
 | Route | Meaning |
@@ -21,6 +21,13 @@ A route says when a piece of verification runs. There are five, and `route` in
 
 There is no `weekly` route. A schedule belongs to the workflow that holds it: `test-weekly.yml`
 names the two commands it runs each Monday, and the suites they run are `manual`.
+
+Captured fixtures are not a route either. They are ordinary work whose Cargo targets are gated
+on `required-features = ["external-fixtures"]`, run in CI after an explicit sync, and fail with
+the exact `obc fixtures sync` command to run instead of skipping.
+
+Physical work has no route and no registry row. A procedure that needs a board, a card or a
+cable lives in its owning issue, and no workflow claims it.
 
 Every Rust package is on the ordinary route unless `testing/suites.toml` says otherwise.
 Its ordinary test binaries are every test target Cargo reports; its captured-fixture
@@ -37,7 +44,7 @@ A file or binary that mixes ordinary work with captured-fixture, live or manual 
 split into separate execution units. Do not make a mixed binary look homogeneous and do not add
 test-level selection.
 
-## Explicit cadence routes
+## Explicit commands and tiers
 
 The Rust ordinary and captured-fixture runs use separate nextest invocations and result files.
 `cargo-filter --tier fast|fixtures` derives expressions over whole Cargo binaries from
@@ -489,6 +496,7 @@ graph rather than nothing.
 | Desktop application composition | Affected platform build and desktop launch smoke |
 | Python tool or service implementation | Matching Python suite |
 | Documentation only | Documentation and generated-policy checks unless it produces a shared artifact |
+| Agent prose (`CLAUDE.md`, `AGENTS.md`) | The unconditional `guards` job, which validates the plan and runs the tool suites. Owned by the documentation route so the path is not unowned; `build_docs.py` does not read these files. It decides nothing, so it builds no platform |
 | Live-service or hardware path | Hermetic contracts on the pull request; scheduled, manual, or release evidence as required |
 
 The aggregate gate reports pass, fail, not selected, selected but not run, or blocked by an upstream
