@@ -37,6 +37,7 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+pub mod articles;
 pub mod color;
 pub mod corridor;
 pub mod hours;

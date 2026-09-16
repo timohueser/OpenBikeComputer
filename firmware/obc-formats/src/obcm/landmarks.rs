@@ -4,7 +4,8 @@ use super::{PoiMetadata, POI_HOURS_REF_NONE};
 use crate::io::{rd_i32, rd_u16, rd_u32};
 
 pub const SECTION_HEADER_LEN: usize = 16;
-pub const RECORD_LEN: usize = 92;
+pub const RECORD_LEN: usize = 84;
+pub const SECTION_VERSION: u16 = 1;
 pub const MAX_RECORDS: u32 = 65_535;
 pub const MAX_NAME_BYTES: u32 = 256;
 pub const MAX_PAGE_BYTES: usize = 1024;
@@ -49,13 +50,10 @@ pub struct LandmarkRecord {
     pub lon: i32,
     pub lat: i32,
     pub category: u8,
-    pub language: [u8; 2],
-    pub text_pages: u8,
     pub hours_ref: u16,
     pub osm: Option<PoiMetadata>,
     pub name: ContentRef,
-    pub text: ContentRef,
-    pub article: ContentRef,
+    pub articles: ContentRef,
     pub photo: ContentRef,
     pub photo_attribution: ContentRef,
 }
@@ -72,22 +70,18 @@ impl LandmarkRecord {
             lon: rd_i32(bytes, 8),
             lat: rd_i32(bytes, 12),
             category: bytes[16],
-            language: [bytes[17], bytes[18]],
-            text_pages: bytes[19],
             hours_ref: rd_u16(bytes, 20),
             osm,
             name: ContentRef::decode(bytes, 52),
-            text: ContentRef::decode(bytes, 60),
-            article: ContentRef::decode(bytes, 68),
-            photo: ContentRef::decode(bytes, 76),
-            photo_attribution: ContentRef::decode(bytes, 84),
+            articles: ContentRef::decode(bytes, 60),
+            photo: ContentRef::decode(bytes, 68),
+            photo_attribution: ContentRef::decode(bytes, 76),
         };
         (record.qid > 0
             && (-90_000_000..=90_000_000).contains(&record.lat)
             && (-180_000_000..=180_000_000).contains(&record.lon)
             && (1..=6).contains(&record.category)
-            && record.language.iter().all(u8::is_ascii_lowercase)
-            && (1..=MAX_TEXT_PAGES).contains(&record.text_pages)
+            && bytes[17..20] == [0; 3]
             && bytes[22..24] == [0, 0]
             && (record.osm.is_some() || record.hours_ref == POI_HOURS_REF_NONE))
             .then_some(record)
@@ -99,15 +93,11 @@ impl LandmarkRecord {
         bytes[8..12].copy_from_slice(&self.lon.to_le_bytes());
         bytes[12..16].copy_from_slice(&self.lat.to_le_bytes());
         bytes[16] = self.category;
-        bytes[17..19].copy_from_slice(&self.language);
-        bytes[19] = self.text_pages;
         bytes[20..22].copy_from_slice(&self.hours_ref.to_le_bytes());
         if let Some(osm) = self.osm {
             bytes[24..52].copy_from_slice(&osm.encode());
         }
-        for (reference, at) in
-            [(self.name, 52), (self.text, 60), (self.article, 68), (self.photo, 76), (self.photo_attribution, 84)]
-        {
+        for (reference, at) in [(self.name, 52), (self.articles, 60), (self.photo, 68), (self.photo_attribution, 76)] {
             reference.encode(&mut bytes, at);
         }
         bytes

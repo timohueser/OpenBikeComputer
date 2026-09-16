@@ -11,6 +11,7 @@ fn section(count: u32) -> std::vec::Vec<u8> {
     let mut bytes = std::vec![0; payload as usize];
     bytes[..4].copy_from_slice(&count.to_le_bytes());
     bytes[4..6].copy_from_slice(&(RECORD_LEN as u16).to_le_bytes());
+    bytes[6..8].copy_from_slice(&SECTION_VERSION.to_le_bytes());
     bytes[8..12].copy_from_slice(&payload.to_le_bytes());
     bytes[12..16].copy_from_slice(&(payload + 4).to_le_bytes());
     for i in 0..count {
@@ -19,13 +20,10 @@ fn section(count: u32) -> std::vec::Vec<u8> {
             lon: 8_000_000,
             lat: 46_000_000,
             category: 2,
-            language: *b"en",
-            text_pages: 1,
             hours_ref: POI_HOURS_REF_NONE,
             osm: None,
             name: ContentRef { offset: payload, len: 4 },
-            text: ContentRef::default(),
-            article: ContentRef::default(),
+            articles: ContentRef::default(),
             photo: ContentRef::default(),
             photo_attribution: ContentRef::default(),
         };
@@ -115,7 +113,7 @@ fn source_failure_and_generation_change_clear_partial_results() {
 #[test]
 fn malformed_record_fails_query_but_bad_photo_reference_is_selected_item_error() {
     let mut bytes = section(1);
-    let photo = SECTION_HEADER_LEN + 76;
+    let photo = SECTION_HEADER_LEN + 68;
     bytes[photo..photo + 4].copy_from_slice(&u32::MAX.to_le_bytes());
     bytes[photo + 4..photo + 8].copy_from_slice(&100u32.to_le_bytes());
     let source = SliceSource(&bytes);
@@ -145,4 +143,32 @@ fn content_references_and_utf8_page_boundaries_are_checked() {
     assert!(page(&SliceSource(&invalid), 2, 1, &mut output).is_err());
     assert!(ContentRef { offset: u32::MAX, len: 10 }.range(16, u32::MAX, 10).is_none());
     assert!(ContentRef { offset: 0, len: 10 }.range(16, 100, 10).is_none());
+}
+
+#[test]
+fn multilingual_bundle_selects_ui_english_and_local_default_and_checks_directory() {
+    use obcm_testkit::articles::bundle;
+    let credits = ["URL", "1", "License", "Authors", "Credit."];
+    let variants = [
+        (*b"de", &["Deutsch."][..], &credits[..]),
+        (*b"en", &["English."][..], &credits[..]),
+        (*b"fr", &["Français."][..], &credits[..]),
+    ];
+    let bytes = bundle(*b"fr", &variants);
+    for (requested, expected) in [(*b"de", "Deutsch."), (*b"es", "English.")] {
+        let source = SliceSource(&bytes);
+        let article = obc_reader::articles::select(&source, requested).unwrap();
+        let text =
+            obc_formats::io::WindowSource::new(&source, article.text.offset as u64, article.text.len as u64).unwrap();
+        assert_eq!(page(&text, article.text_pages as u16, 0, &mut [0; MAX_PAGE_BYTES]).unwrap(), expected);
+    }
+    let bytes = bundle(*b"fr", &[variants[0], variants[2]]);
+    assert_eq!(obc_reader::articles::select(&SliceSource(&bytes), *b"es").unwrap().language, *b"fr");
+    let duplicate = bundle(*b"fr", &[variants[2], variants[2]]);
+    assert!(obc_reader::articles::select(&SliceSource(&duplicate), *b"fr").is_err());
+    let absent = bundle(*b"es", &[variants[2]]);
+    assert!(obc_reader::articles::select(&SliceSource(&absent), *b"fr").is_err());
+    let mut invalid = bytes;
+    invalid[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(obc_reader::articles::select(&SliceSource(&invalid), *b"fr").is_err());
 }

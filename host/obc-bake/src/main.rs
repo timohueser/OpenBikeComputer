@@ -24,7 +24,7 @@ use obc_pack::catalog::CatalogOptions;
 
 const USAGE: &str = "\
 usage:
-  obc-bake landmarks --snapshot FILE --boundary GEOJSON --language CODE --out DIR
+  obc-bake landmarks --snapshot FILE --boundary GEOJSON --out DIR
       Compile pinned article and image captures offline for the map content stage.
 
   obc-bake regions [--regions FILE]
@@ -689,19 +689,14 @@ fn default_cache_dir() -> PathBuf {
 }
 
 fn run_landmarks(args: &[String]) -> Result<(), String> {
-    let (flags, positional) = Flags::parse(args, &[], &["snapshot", "boundary", "language", "out"])?;
+    let (flags, positional) = Flags::parse(args, &[], &["snapshot", "boundary", "out"])?;
     if !positional.is_empty() {
         return Err("landmarks accepts named flags only".into());
     }
     let snapshot = flags.get("snapshot").ok_or("landmarks requires --snapshot FILE")?;
     let boundary = flags.get("boundary").ok_or("landmarks requires --boundary GEOJSON")?;
     let output = flags.get("out").ok_or("landmarks requires --out DIR")?;
-    let content = obc_pack::landmarks::compile(
-        Path::new(snapshot),
-        Path::new(boundary),
-        flags.get("language").unwrap_or("en"),
-        Path::new(output),
-    )?;
+    let content = obc_pack::landmarks::compile(Path::new(snapshot), Path::new(boundary), Path::new(output))?;
     println!(
         "{} candidates, {} texts, {} photos ({} RGB222 bytes); {} omissions",
         content.counts.candidates,

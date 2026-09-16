@@ -399,6 +399,17 @@ setting_enum! {
     default En;
 }
 
+impl Language {
+    pub const fn article_code(self) -> [u8; 2] {
+        match self {
+            Self::En => *b"en",
+            Self::De => *b"de",
+            Self::Fr => *b"fr",
+            Self::Es => *b"es",
+        }
+    }
+}
+
 /// UTC-offset stepper bounds + granularity (minutes). 15-minute steps cover the real-world
 /// `:30` / `:45` zones (India +5:30, Nepal +5:45) over the −12:00…+14:00 span.
 pub const UTC_OFFSET_MIN: i16 = -12 * 60;
@@ -904,6 +915,7 @@ mod tests {
     /// The picker's left/right walk order (wrapping at both ends) and the press cycle.
     #[test]
     fn language_stepping_and_cycling() {
+        assert_eq!(Language::ALL.map(Language::article_code), obc_formats::articles::LANGUAGES);
         // Right walks En → De → Fr → Es, wrapping back to English; left is the mirror.
         assert_eq!(Language::En.stepped(1), Language::De);
         assert_eq!(Language::Es.stepped(1), Language::En, "wraps past the last language");
