@@ -37,7 +37,7 @@ use obc_ports::{InputClock, InputSource};
 pub struct InputPlane {
     /// The shared recognizer (raw events + clock → the five gestures and the device-wide chords).
     gestures: Gestures,
-    /// The global long-press hint overlay (the charge-in-place bulge at the Select / Back
+    /// The global long-press hint overlay (the charge-in-place bulge at the Select / Back / Up
     /// edges), drawn above every screen on the dedicated overlay layer.
     hold_hints: HoldHints,
     /// In-flight Select / Back hold-progress (0.0–1.0) for the confirm ring.
@@ -105,8 +105,18 @@ impl InputPlane {
         }
         self.enc_progress = self.gestures.select_progress(now_ms);
         self.back_progress = self.gestures.back_progress(now_ms);
-        self.hold_hints.update(now_ms, self.enc_progress, self.back_progress, enc_fired, back_fired);
-        self.gestures.take_chord()
+        let chord = self.gestures.take_chord();
+        let assistant_progress = self
+            .gestures
+            .chord_remaining_ms(now_ms)
+            .map_or(0.0, |remaining| 1.0 - remaining as f32 / DEFAULT_HOLD_MS as f32);
+        self.hold_hints.update(
+            now_ms,
+            (self.enc_progress, enc_fired),
+            (self.back_progress, back_fired),
+            (assistant_progress, chord == Some(Chord::Assistant)),
+        );
+        chord
     }
 
     /// Render **only the overlay plane** — the transient hold bulge / confirm ring — over whatever
@@ -143,6 +153,11 @@ impl InputPlane {
     /// progress reads 0.
     pub fn cancel_holds(&mut self) {
         self.gestures.cancel_holds();
+    }
+
+    /// Whether an ordinary hold or the Assistant chord is waiting for its threshold.
+    pub fn hold_charging(&self) -> bool {
+        self.enc_progress > 0.0 || self.back_progress > 0.0 || self.gestures.chord_remaining_ms(self.now_ms).is_some()
     }
 
     /// Time until a pending Assistant chord reaches its hold threshold.

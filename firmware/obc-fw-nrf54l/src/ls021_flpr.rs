@@ -202,12 +202,10 @@ const _: () =
 /// FLPR scan (the borrow that statically keeps a render off the bytes the coprocessor is reading).
 pub type Frame64 = Device64Frame<'static, FB_W, FB_H>;
 
-/// Max overlay region the overlay present's composite scratch holds — the hold
-/// bulge's right-edge window (16 cols × 192 rows). A region must fit this (asserted);
-/// the `[u16; COLS×ROWS]` RGB565 scratch is the only extra RAM the FLPR overlay path needs (~6 KB,
-/// transient on the overlay-only frame's shallow stack — never live during a deep map render).
-const MAX_OVERLAY_COLS: usize = 16;
-const MAX_OVERLAY_ROWS: usize = 192;
+/// Composite scratch for a full-width strip containing both edge hints.
+/// The RGB565 and saved RGB222 pixels stay on the overlay call's stack.
+const MAX_OVERLAY_COLS: usize = FB_W;
+const MAX_OVERLAY_ROWS: usize = 12;
 
 // ── The EGU20 frame-ack doorbell (issue #347). The blob pokes `EGU20.TASKS_TRIGGER[0]` after every
 // frame; the M33 arms `TRIGGERED[0]`'s IRQ and awaits it instead of busy-polling `flpr_seq`. Raw
@@ -829,7 +827,7 @@ impl OverlayPresenter<Frame64> for Ls021Flpr<'_> {
     /// next overlay tick repaints them).
     ///
     /// **Stack + lock discipline**: the overlay is rendered into a small RGB565 window scratch
-    /// **once** (one `draw` call ⇒ the caller's `InputPlane` lock is taken once per overlay frame,
+    /// **once** (one `draw` call ⇒ the caller's `InputPlane` lock is taken once per strip,
     /// not per row); the transient cost is the ~6 KB RGB565 scratch + the ~3 KB save window on this
     /// call's stack — an overlay-only frame, never live during a deep map render.
     ///
