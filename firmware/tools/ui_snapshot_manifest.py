@@ -40,6 +40,8 @@ SNAPSHOT_SUFFIX = ".png"
 IDENTICAL_BY_DESIGN: list[set[str]] = [
     # Pan mode owns the Map's chrome, not the Statistics grid's: entering it changes no pixel here.
     {"statistics-pan.png", "statistics.png"},
+    # Back from a peak article restores the selected summit and Browse heading exactly.
+    {"peak-article-back.png", "peak-article-indicator.png"},
     # The held shortcut opens the same Assistant question list from either base.
     {"assistant.png", "quick-assistant.png"},
 ]
