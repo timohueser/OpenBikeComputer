@@ -1,9 +1,9 @@
 //! The global long-press hint — an on-screen "frame bulge" surfacing the device's central hold
-//! gesture. [`App`](crate::app::App) folds each frame's Select/Back hold-progress into
+//! gestures. [`App`](crate::app::App) folds each frame's hold-progress into
 //! [`HoldHints`] and draws it on top of the screen stack.
 //!
-//! Per control a black hump swells inward from the screen edge nearest its physical button (both on
-//! the right today), so it reads as the black bezel *bulging into* the display. The hump has a
+//! Per control a black hump swells inward from the screen edge nearest its physical button,
+//! so it reads as the black bezel *bulging into* the display. The hump has a
 //! **fixed base width** along the edge ([`Style::base_half`]) and only its inward *depth* tracks the
 //! hold. Its silhouette is a flat-topped bump — a [`Style::flat_half`]-wide flat shelf with quartic
 //! shoulders easing into the edge — rasterized as edge-perpendicular strips. A completed hold
@@ -31,10 +31,11 @@ const CANCEL_MS: u32 = 150;
 /// and reaches full depth at the threshold. `0.30` ≈ 150 ms of the 500 ms hold.
 const DEAD: f32 = 0.30;
 
-/// A bulge's `0.0..=1.0` position down the screen's right edge.
+/// A bulge's `0.0..=1.0` position down the screen edge.
 #[derive(Clone, Copy)]
 struct Anchor {
     pos: f32,
+    left: bool,
 }
 
 impl Anchor {
@@ -42,13 +43,13 @@ impl Anchor {
     /// the `base_half`-wide base stays on-panel along the edge.
     fn place(self, w: i32, h: i32, base_half: i32) -> Place {
         let lo = base_half + 1;
-        let hi = (h - base_half - 1).max(lo);
-        let cc = ((self.pos * h as f32) as i32).clamp(lo, hi);
-        Place { outer: w, cc }
+        let hi = (h - 1 - lo).max(lo);
+        let cc = (self.pos * (h - 1) as f32 + 0.5) as i32;
+        Place { outer: if self.left { 0 } else { w }, cc: cc.clamp(lo, hi) }
     }
 }
 
-/// A resolved placement: the right-edge coordinate and the centre along it.
+/// A resolved placement: the edge coordinate and the centre along it.
 struct Place {
     outer: i32,
     cc: i32,
@@ -59,7 +60,8 @@ impl Place {
     /// `depth` px inward from the edge. The bulge is the union of these across the
     /// fixed base width.
     fn strip(&self, along_off: i32, depth: i32) -> Rectangle {
-        rect(self.outer - depth, self.cc + along_off, depth, 1)
+        let x = if self.outer == 0 { 0 } else { self.outer - depth };
+        rect(x, self.cc + along_off, depth, 1)
     }
 }
 
@@ -195,6 +197,7 @@ fn bulge(cv: &mut impl Surface, place: &Place, depth: f32, base_half: i32, flat_
 /// Per-control look: where the bulge sits and its size along the edge. Relocating or
 /// resizing a bulge is a one-line change to one of the [`SELECT`] / [`BACK`]
 /// constants below.
+#[derive(Clone, Copy)]
 struct Style {
     anchor: Anchor,
     /// Half the base width (px) along the edge — the hump spans `2 * base_half`
@@ -210,15 +213,13 @@ struct Style {
     pop_depth: f32,
 }
 
-/// Select hint — upper-right edge, under the Select button; the taller of the two, echoing
-/// Select's role as the primary control.
-const SELECT: Style = Style { anchor: Anchor { pos: 0.36 }, base_half: 56, flat_half: 20, depth: 7.0, pop_depth: 12.0 };
+/// Equal-sized hints mirrored about the display centre.
+const SELECT: Style =
+    Style { anchor: Anchor { pos: 0.35, left: false }, base_half: 44, flat_half: 15, depth: 7.0, pop_depth: 12.0 };
+const BACK: Style = Style { anchor: Anchor { pos: 0.65, left: false }, ..SELECT };
+const UP: Style = Style { anchor: Anchor { left: true, ..SELECT.anchor }, ..SELECT };
 
-/// Back hint — lower-right edge, under the Back button (which sits below Select); shorter
-/// than the Select bulge.
-const BACK: Style = Style { anchor: Anchor { pos: 0.67 }, base_half: 32, flat_half: 10, depth: 7.0, pop_depth: 12.0 };
-
-/// The global long-press overlay: one [`Hint`] per control, drawn above every screen.
+/// The global long-press overlay. The Assistant chord shares one hint at Up and Select.
 ///
 /// [`App`](crate::app::App) feeds each frame's hold-progress and long-press firings
 /// through [`update`](HoldHints::update), then [`draw`](HoldHints::draw)s this on top
@@ -226,19 +227,24 @@ const BACK: Style = Style { anchor: Anchor { pos: 0.67 }, base_half: 32, flat_ha
 pub struct HoldHints {
     select: Hint,
     back: Hint,
+    /// Mirror Select at Up throughout the chord charge, pop, and retract.
+    assistant: bool,
 }
 
 impl HoldHints {
     pub const fn new() -> Self {
-        HoldHints { select: Hint::new(), back: Hint::new() }
+        HoldHints { select: Hint::new(), back: Hint::new(), assistant: false }
     }
 
-    /// Advance both hints one frame. `sel`/`back` are the live hold fractions
-    /// (`0.0..=1.0`); `sel_fired`/`back_fired` mark the frame each long-press crossed
-    /// its threshold (so the bulge pops the instant the action commits).
-    pub fn update(&mut self, now: u32, sel: f32, back: f32, sel_fired: bool, back_fired: bool) {
-        self.select.update(now, sel, sel_fired);
-        self.back.update(now, back, back_fired);
+    /// Advance each hold from its live fraction and threshold-crossing flag.
+    pub fn update(&mut self, now: u32, sel: (f32, bool), back: (f32, bool), assistant: (f32, bool)) {
+        let chord = assistant.0 > 0.0 || assistant.1;
+        if chord || sel.0 > 0.0 || sel.1 {
+            self.assistant = chord;
+        }
+        let (progress, fired) = if chord { assistant } else { sel };
+        self.select.update(now, progress, fired);
+        self.back.update(now, back.0, back.1);
     }
 
     /// Whether either hint has live content at `now` — a bulge charging, popping, or
@@ -271,7 +277,7 @@ impl HoldHints {
         })
     }
 
-    /// Draw both hints above the current screen, into a `w`×`h` target.
+    /// Draw the active hints above the current screen, into a `w`×`h` target.
     pub fn draw<D, F>(&self, target: &mut D, color_fn: &F, w: i32, h: i32, now: u32)
     where
         D: DrawTarget,
@@ -279,6 +285,9 @@ impl HoldHints {
     {
         let mut cv = Canvas::new(target, color_fn);
         self.select.draw(&mut cv, &SELECT, now, w, h);
+        if self.assistant {
+            self.select.draw(&mut cv, &UP, now, w, h);
+        }
         self.back.draw(&mut cv, &BACK, now, w, h);
     }
 }
