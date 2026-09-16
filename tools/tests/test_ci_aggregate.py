@@ -8,7 +8,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import ci_aggregate as aggregate
-import suite_registry as registry
+import test_plan
 
 
 ALL_JOBS = ("selection", "policy", "test", "wasm-bridges", "web", "desktop-frontend", "desktop")
@@ -105,7 +105,7 @@ class AggregateTests(unittest.TestCase):
         self.assertIn("`web.no`", summary)
         self.assertIn("unrelated change", summary)
 
-    def test_upstream_relation_is_read_from_the_shipped_workflow(self):
+    def test_upstream_relation_is_the_job_table(self):
         relation = aggregate.upstream_jobs()
         self.assertEqual(relation["web"], ("selection", "wasm-bridges"))
         self.assertEqual(relation["desktop"], ("selection", "desktop-frontend"))
@@ -113,20 +113,11 @@ class AggregateTests(unittest.TestCase):
     def test_shipped_plan_shape_feeds_the_aggregate(self):
         """The selector's own JSON is what the gate consumes; no second routing table exists."""
 
-        root = registry.repository_root()
-        inventory = registry.load_inventory(root)
-        graph = registry.build_cargo_graph(root)
-        routes = registry.suite_workflow_jobs(inventory, root, graph)
-        selection = registry.select_suites(
-            inventory,
-            ["docs/content/ride.md"],
-            graph,
-            routes,
-            unconditional=registry.unconditional_jobs(root),
-        )
-        data = registry.selection_plan_data(selection, registry.workflow_jobs(root))
+        root = test_plan.repository_root()
+        graph, _, units = test_plan.load(root)
+        data = test_plan.plan_data(test_plan.select(units, graph, ["docs/content/ride.md"]))
         results = {job: {"result": "success"} for job in data["required_jobs"]}
-        results.update({job: {"result": "skipped"} for job in registry.workflow_jobs(root) if job not in results})
+        results.update({job: {"result": "skipped"} for job in test_plan.JOBS if job not in results})
         result = aggregate.evaluate(data, results, aggregate.upstream_jobs())
         self.assertTrue(result.passed)
         self.assertIn("docs", data["required_jobs"])

@@ -535,14 +535,13 @@ build:
 # Run focused host tests by default. A scope is required: `obc test -p obc-pack`.
 # The focused arm runs nextest and then the same scope's doctests; `--lib` runs the library
 # target alone and no doctests.
-# The registry selectors run whole suites and print why each one was selected:
+# The plan selector runs the affected packages and suites and prints why:
 #
 #   obc test affected --base origin/develop [--head REF] [--dry-run]
-#   obc test unit|component|contract|fixtures|e2e [--surface NAME] [--dry-run]
 #
 # `obc test fixtures -p <crate>` keeps its scoped meaning (sync + external-fixtures) and
-# needs neither the registry nor Git. `full` stays the exceptional cross-cutting gate.
-# See docs/testing.md for the level and cadence policy.
+# needs neither the plan nor Git. `full` stays the exceptional cross-cutting gate.
+# See docs/testing.md for the routes.
 test *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -554,7 +553,6 @@ test *args:
       _hint "focused: obc test -p <crate> [test-filter]"
       _hint "captured fixtures: obc test fixtures -p <crate>"
       _hint "by change: obc test affected --base origin/develop [--dry-run]"
-      _hint "by level: obc test unit|component|contract|fixtures|e2e [--surface NAME]"
       _hint "cross-cutting only: obc test full"
       exit 2
     }
@@ -582,27 +580,24 @@ test *args:
     case "$mode" in
       full)
         shift
-        _run cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/suite_registry.py cargo-filter --tier fast)" "$@"
+        _run cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/test_plan.py cargo-filter --tier fast)" "$@"
         fixture_env
-        _run cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/suite_registry.py cargo-filter --tier fixtures)" "$@"
+        _run cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/test_plan.py cargo-filter --tier fixtures)" "$@"
         _run cargo test --workspace --all-features --locked --doc
         ;;
       affected)
         shift
-        _run python3 "$OBC_TOOLS/suite_registry.py" run --affected "$@"
-        ;;
-      unit|component|contract|e2e)
-        shift
-        _run python3 "$OBC_TOOLS/suite_registry.py" run --level "$mode" "$@"
+        _run python3 "$OBC_TOOLS/test_plan.py" run "$@"
         ;;
       fixtures)
         shift
-        if require_scope "$@"; then
-          fixture_env
-          _run cargo test --locked --features external-fixtures "$@"
-        else
-          _run python3 "$OBC_TOOLS/suite_registry.py" run --level fixtures "$@"
-        fi
+        require_scope "$@" || {
+          _err "a Cargo package scope is required (-p/--package or --manifest-path)"
+          _hint "example: obc test fixtures -p obc-route"
+          exit 2
+        }
+        fixture_env
+        _run cargo test --locked --features external-fixtures "$@"
         ;;
       *)
         require_scope "$@" || {
@@ -657,17 +652,17 @@ check-device:
     source "{{lib}}"; obc_init
     cd "$OBC_ROOT"; _run cargo build -p obc-app --target thumbv8m.main-none-eabihf
 
-# Run explicitly selected CI gates locally. Each gate names the registry suites it
-# reproduces; `full` runs every gate the registry declares and then names the required
-# suites the run does NOT reproduce. Examples:
+# Run explicitly selected CI gates locally. Each gate names the CI jobs it reproduces;
+# `full` runs every gate in the job table and then names the required suites the run does
+# NOT reproduce. Examples:
 #   obc check fmt         obc check test         obc check board docs
 #   obc check full        # cross-cutting changes only
-# Level and cadence policy lives in docs/testing.md.
+# The routes live in docs/testing.md.
 check *args:
     #!/usr/bin/env bash
     set -uo pipefail
     source "{{lib}}"; obc_init; ensure_geos
-    gates=($(python3 "$OBC_TOOLS/suite_registry.py" gates --list)) || exit 1
+    gates=($(python3 "$OBC_TOOLS/test_plan.py" gates --list)) || exit 1
     sel=("$@")
     (( ${#sel[@]} )) || {
       _err "select one or more gates (${gates[*]:-})"
@@ -680,11 +675,11 @@ check *args:
       full=1
       sel=("${gates[@]}")
     fi
-    # A renamed gate that no longer reproduces a registry suite fails here, before any work.
-    python3 "$OBC_TOOLS/suite_registry.py" gates "${sel[@]}" || exit 1
+    # A gate the job table does not know fails here, before any work.
+    python3 "$OBC_TOOLS/test_plan.py" gates "${sel[@]}" || exit 1
     want() { local x; for x in "${sel[@]}"; do [[ "$x" == "$1" ]] && return 0; done; return 1; }
-    FAILED=(); PASSED=(); SKIPPED=(); RAN=()
-    step() { local label="$1"; shift; RAN+=("$*"); printf '\n'; _say "▶ $label"
+    FAILED=(); PASSED=(); SKIPPED=()
+    step() { local label="$1"; shift; printf '\n'; _say "▶ $label"
              if _run "$@"; then PASSED+=("$label"); else _err "$label FAILED"; FAILED+=("$label"); fi; }
     cd "$OBC_ROOT"
     if want fmt; then
@@ -752,8 +747,8 @@ check *args:
     printf '\n'; _say "check summary"
     (( ${#PASSED[@]} ))  && _ok   "passed:  ${PASSED[*]}"
     (( ${#SKIPPED[@]} )) && _warn "skipped: ${SKIPPED[*]}"
-    # No unqualified CI-parity claim: the registry names what this run leaves to CI.
-    (( full )) && python3 "$OBC_TOOLS/suite_registry.py" gates --unreproduced "${sel[@]}" ${RAN[@]+--ran "${RAN[@]}"}
+    # No unqualified CI-parity claim: the plan names what this run leaves to CI.
+    (( full )) && python3 "$OBC_TOOLS/test_plan.py" gates --unreproduced "${sel[@]}"
     if (( ${#FAILED[@]} )); then _err "failed:  ${FAILED[*]}"; exit 1; fi
     _ok "all run gates passed"
 
@@ -768,14 +763,14 @@ clean *args:
 
 # ── Meta ─────────────────────────────────────────────────────────────────────
 
-# Inspect the machine-readable test and validation inventory from any directory.
-# The full taxonomy and suite-granularity policy live in docs/testing.md.
+# Inspect the test selection plan from any directory.
+# The routes and the granularity policy live in docs/testing.md.
 # Args: check | select --base REF | run | gates | cargo-filter --tier TIER | validate-filters
 suites *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init
-    _run python3 "$OBC_TOOLS/suite_registry.py" "$@"
+    _run python3 "$OBC_TOOLS/test_plan.py" "$@"
 
 # Check your toolchain and report what's missing. Add --install to fix what it can
 # (rustup targets, just, probe-rs, the venv, replication client, and GEOS / RISC-V gcc via scripts/).
