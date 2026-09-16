@@ -1483,66 +1483,14 @@ pub(crate) async fn run_app(
                 RideExec::deliver(&mut exec.outcomes.storage_info, outcome, "storage");
             }
 
-            // ── The staged recording operation (#1398) ──
-            //
-            // One bounded card operation, exactly like the catalog's above it, and it decides
-            // nothing: Recorder chose the checkpoint cadence and what "closed" means, and this
-            // reports whether the store did it. A failure is a **typed reason**, so the ride stays
-            // open and Recorder re-offers the same operation rather than the rider losing it.
-            if let Some(effect) = exec.effects.recorder.take() {
-                use obc_app::recorder::{RecorderEffect, RecorderError, RecorderOutcome, RideClose};
-                use obc_storage::flat::StoreError;
-                let outcome = match effect {
-                    RecorderEffect::Checkpoint { token } => {
-                        let stats = app.recorder.ride_stats();
-                        let continuation = app.recorder.checkpoint_context();
-                        match ride_recorder.checkpoint(now, &stats, continuation).await {
-                            Ok(status) => RecorderOutcome::Checkpointed { token, status },
-                            Err(error) => RecorderOutcome::Failed { token, error },
-                        }
-                    }
-                    RecorderEffect::Finalize { token } => {
-                        // Recorder has already drained the samples through acknowledged appends.
-                        // The footer facts come from Recorder, which stamped its wall-clock anchor
-                        // as it minted this close. The save name is not read at all: it was frozen
-                        // when the ride opened.
-                        let stats = app.recorder.ride_stats();
-                        match ride_recorder.finalize(&stats).await {
-                            RideClose::Committed(ride) => RecorderOutcome::Finalized { token, ride },
-                            RideClose::Nothing => {
-                                defmt::warn!("flat ride: finalize with no open object — the ride was never created");
-                                RecorderOutcome::Discarded { token }
-                            }
-                            RideClose::Failed => RecorderOutcome::Failed { token, error: RecorderError::Write },
-                        }
-                    }
-                    // The store's refusal is reported by kind. A card that will take no mutation at
-                    // all is the one answer a retry cannot help, so Recorder must be able to tell it
-                    // from a write that went wrong.
-                    RecorderEffect::Discard { token } => match ride_recorder.discard().await {
-                        Ok(()) => RecorderOutcome::Discarded { token },
-                        Err(StoreError::ReadOnly) => RecorderOutcome::Failed { token, error: RecorderError::ReadOnly },
-                        Err(_) => RecorderOutcome::Failed { token, error: RecorderError::Write },
-                    },
-                    // The immutable App borrow binds the full issued batch to its observation
-                    // context. A changed cohort is reissued before any board storage work.
-                    RecorderEffect::Append { token, samples } => match app.recorder.append_context(samples) {
-                        None => RecorderOutcome::Cancelled { token },
-                        Some(context) => match ride_recorder.append(app.recorder.staged(), context) {
-                            crate::flat_ride::AppendResult::Accepted => RecorderOutcome::Appended { token, samples },
-                            crate::flat_ride::AppendResult::NeedsCheckpoint => {
-                                RecorderOutcome::NeedsCheckpoint { token }
-                            }
-                            crate::flat_ride::AppendResult::Failed => {
-                                RecorderOutcome::Failed { token, error: RecorderError::Write }
-                            }
-                        },
-                    },
-                };
-                if ride_recorder.take_warning() {
-                    exec.facts.raise_warnings(obc_app::WarningFlags::REC_ERROR);
-                }
+            // Open the session before serving the previous pass's first samples.
+            if let Some(outcome) =
+                ride_recorder.execute(flat, app, &mut opened_session, exec.effects.recorder.take(), now).await
+            {
                 RideExec::deliver(&mut exec.outcomes.recorder, outcome, "recorder");
+            }
+            if ride_recorder.take_warning() {
+                exec.facts.raise_warnings(obc_app::WarningFlags::REC_ERROR);
             }
 
             // The catalog and checkpoint calls share one physical reply slot.
@@ -2529,40 +2477,10 @@ pub(crate) async fn run_app(
                 prev_route = active;
             }
 
-            // Point the card at the active route's geometry, and open a ride object for the session
-            // Recorder decided on. Gated on the edges that can change either — a route swap, or a
-            // session with no object yet — so the dominant static frame does no per-tick
-            // `String<64>` copy.
-            //
-            // **The owed object is named by id, and on this loop that is load-bearing.** A close is
-            // served at the top of this iteration but its verdict is applied by the pass at the
-            // *end* of it, so right here `app.ride_session()` is still `Some(N)` while the object it
-            // named is already gone. A gate that asked "is a session open and nothing recording"
-            // could not tell that apart from "the start failed, retry", and would allocate a fresh
-            // 32 MiB `RECORDING` object under the closing ride's identity — never closed, refusing
-            // every later DFU install, and surfacing as a bogus recovered ride at the next boot.
-            // `object_owed` compares the id the executor has already opened one for, so a served
-            // close owes nothing and a failed start still retries. Closing is not here at all: it
-            // is a `RecorderEffect`, served in the store phase above.
-            let owed = app.recorder.object_owed(opened_session);
-            if active != prev_active || owed.is_some() {
-                let mut name: heapless::String<64> = heapless::String::new();
-                if let Some(r) = active.and_then(|i| app.routes().get(i)) {
-                    let _ = name.push_str(&r.name);
-                }
+            // Reconcile geometry only when the active route changes.
+            if active != prev_active {
                 let active_id = active.and_then(|i| app.route_ids().get(i).copied());
                 crate::flat_store::reconcile_route(flat, active_id);
-                if let Some(id) = owed {
-                    ride_recorder.open(flat, id, &name, now).await;
-                    // A start the card refused leaves no object, so the id stays unclaimed and the
-                    // next iteration retries it. A start that took claims it once and for all.
-                    if ride_recorder.open_session() == Some(id) {
-                        opened_session = Some(id);
-                    }
-                }
-                if ride_recorder.take_warning() {
-                    exec.facts.raise_warnings(obc_app::WarningFlags::REC_ERROR);
-                }
                 prev_active = active;
             }
 
