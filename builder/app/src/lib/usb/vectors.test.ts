@@ -437,6 +437,33 @@ describe("control vectors decode and re-encode byte for byte", () => {
             displayName: "",
         });
     });
+
+    it("carries a `u64` past 2^53 through a LIST entry without rounding it", () => {
+        // §3.3's ids, revisions, lengths and commit sequence are 64-bit, and a `number` stops being
+        // exact at 2^53. Nothing on a card mints an id this large, so the check belongs at the codec
+        // rather than at a device: these are the bytes a client must read back unchanged.
+        const huge = 18_446_744_073_709_551_615n; // 2^64 - 1
+        const entry = {
+            objectId: huge,
+            revision: huge - 1n,
+            payloadLength: 9_007_199_254_740_993n, // 2^53 + 1, the first length a `number` loses
+            payloadCrc32: 0xdead_beef,
+            kind: 1,
+            flags: 0,
+            displayName: "big",
+        };
+        const frame = encodeListResponse(7, {
+            storeId: "0123456789abcdef0123456789abcdef",
+            commitSequence: huge,
+            entries: [entry],
+            more: false,
+        });
+
+        const decoded = decodeResponse(frame);
+        if (!decoded.ok || decoded.response.opcode !== Opcode.List) throw new Error("not a LIST page");
+        expect(decoded.response.body.commitSequence).toBe(huge);
+        expect(decoded.response.body.entries[0]).toEqual(entry);
+    });
 });
 
 // ------------------------------------------------------------------- stream records

@@ -1,8 +1,8 @@
 /**
  * The WebUSB transport, driven under Node against a scripted `navigator.usb`.
  *
- * The fake is not a stub of the protocol — it is a fake of the *browser API*, with a real
- * {@link MockDevice} behind it. So `WebUsbWatcher.start()`, `openWebUsbLink`, the endpoint
+ * The fake is not a stub of the protocol — it is a fake of the *browser API*, with the real
+ * {@link FlatDevice} behind it. So `WebUsbWatcher.start()`, `openWebUsbLink`, the endpoint
  * discovery, §5.2's record framing and the pipe's transfer translation all run for real, and what
  * the tests assert is the behaviour that only the browser layer can get wrong: the permission
  * model, the descriptor match that settles the USB-binding major, hot-plug, and settling promptly when the
@@ -19,10 +19,12 @@
  * that enumerates.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
+import { loadFlatDevice } from "../../../test-support/flat-device/load";
 import { DeviceError, FlatStoreClient } from "./client";
-import { MockDevice, loopbackLink, type LoopbackLink, type LoopbackOptions, type MockDeviceOptions } from "./loopback";
+import { FlatDevice, streamCeilingFor, type FlatDeviceOptions } from "./flat-device";
+import { loopbackLink, type LoopbackLink, type LoopbackOptions } from "./loopback";
 import {
     DEVICE_INFO_MAX,
     GET_DEVICE_INFO,
@@ -104,7 +106,7 @@ interface FakeDeviceOptions {
 }
 
 /**
- * A `USBDevice` whose endpoints are wired to a loopback link, with a {@link MockDevice} on the far
+ * A `USBDevice` whose endpoints are wired to a loopback link, with a {@link FlatDevice} on the far
  * side. Endpoint 1 is the control pair, endpoint 2 the stream pair — the layout `discoverLayout`
  * derives, and the one the firmware descriptors declare.
  */
@@ -240,22 +242,24 @@ class FakeUsb implements UsbLike {
 /** A USB host with one OBC on the far end of a loopback. */
 function rig(
     options: LoopbackOptions & { deviceInfo?: DeviceInfo } = {},
-    deviceOptions: MockDeviceOptions = {},
+    deviceOptions: FlatDeviceOptions = {},
     fake: FakeDeviceOptions = {},
 ) {
     const link = loopbackLink(options);
-    const device = new MockDevice(link.device, deviceOptions);
+    const device = new FlatDevice(link.device, deviceOptions);
     void device.run();
     const usbDevice = new FakeUsbDevice(link, fake);
     const usb = new FakeUsb();
     return { link, device, usbDevice, usb };
 }
 
-/** A link with no {@link MockDevice} on it, so the far end sends only what a test says to. */
+/** A link with no {@link FlatDevice} on it, so the far end sends only what a test says to. */
 function bareLink(options: LoopbackOptions = {}) {
     const link = loopbackLink(options);
     return { link, usbDevice: new FakeUsbDevice(link) };
 }
+
+beforeAll(loadFlatDevice);
 
 describe("browser support", () => {
     it("reports no WebUSB rather than pretending", () => {
@@ -301,7 +305,7 @@ describe("the permission model", () => {
     });
 
     it("keeps the recovery client ready when LIST says the card is unformatted", async () => {
-        const { usb, usbDevice } = rig({}, { formatRecovery: "unformatted" });
+        const { usb, usbDevice } = rig({}, { formatted: false });
         usb.permitted = [usbDevice];
         const watcher = new WebUsbWatcher({ usb });
         expect(await watcher.start()).toBe(true);
@@ -345,7 +349,7 @@ describe("the permission model", () => {
     it("releases the interface when the first exchange fails", async () => {
         // A device claimed but never listed still holds its interface, and USB grants it to one
         // claimant. Leaking it here would leave the device unreachable to a retry or another tab
-        // until it is physically re-plugged. No `MockDevice` runs on this link, so the `LIST` that
+        // until it is physically re-plugged. No device runs on this link, so the `LIST` that
         // follows the EP0 read times out — a device that enumerates and then says nothing.
         const { usbDevice } = bareLink();
         const usb = new FakeUsb();
@@ -462,7 +466,7 @@ describe("hot plug", () => {
         // #902's acceptance, precisely: unplugging must not leave a spinner. The pipes are failed
         // from the event rather than left for a pending `transferIn` to notice, because a pending
         // one may never settle at all.
-        const { usb, usbDevice, device } = rig({ packetSize: 64 }, { streamPayload: 256 });
+        const { usb, usbDevice, device } = rig({ packetSize: 64 }, { streamCeiling: streamCeilingFor(256) });
         usb.permitted = [usbDevice];
         const watcher = new WebUsbWatcher({ usb });
         await watcher.start();
@@ -685,7 +689,7 @@ describe("the pipe", () => {
             // through. Discarding the abandoned transfer instead would have eaten this ride's first
             // packet — leaving the download short of the length the device announced and parked
             // forever on a read the device had already satisfied.
-            const { link, usbDevice, device } = rig({ packetSize: 64 }, { streamPayload: 256 });
+            const { link, usbDevice, device } = rig({ packetSize: 64 }, { streamCeiling: streamCeilingFor(256) });
             const bytes = Uint8Array.from({ length: 4_096 }, (_, i) => (i * 7) & 0xff);
             const entry = device.seed({ kind: ObjectKind.Ride, displayName: "after the cancel", bytes });
             const webusb = await openWebUsbLink(usbDevice);

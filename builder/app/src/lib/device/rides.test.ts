@@ -22,15 +22,10 @@ import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { initConvert } from "../convert/bridge";
+import { loadFlatDevice } from "../../../test-support/flat-device/load";
 import { DeviceError, FlatStoreClient } from "../usb/client";
-import {
-    MockDevice,
-    REFERENCE_STORE_ID,
-    loopbackDevice,
-    loopbackLink,
-    type LoopbackOptions,
-    type MockDeviceOptions,
-} from "../usb/loopback";
+import { FlatDevice, controlCeilingFor, flatDevice, type FlatDeviceOptions } from "../usb/flat-device";
+import { loopbackLink, type LoopbackOptions } from "../usb/loopback";
 import { decodeRideObject, encodeRideObject, type RideObject, type RidePoint } from "../usb/objects";
 import type { BytePipe, DeviceLink } from "../usb/pipe";
 import { EntryFlags, ObjectKind, type CatalogEntry } from "../usb/protocol";
@@ -46,6 +41,9 @@ import {
     scopeKey,
     type RideSource,
 } from "./rides";
+
+/** A card identity for the tests that only need one to compare against. */
+const CARD = "8f2c41d96b074ea3b1559c207de83466";
 
 // --- fixtures -----------------------------------------------------------------
 
@@ -70,6 +68,7 @@ beforeAll(async () => {
         throw new Error(`the wasm bridge is not built (${wasm} missing). Run \`npm run build:wasm\`.`);
     }
     await initConvert(readFileSync(wasm));
+    await loadFlatDevice();
 });
 
 const TRACK_RECORD_LEN = 20;
@@ -176,18 +175,11 @@ function context(options: { signal?: AbortSignal; at?: (done: number, phase: Job
 }
 
 /** A device with seeded rides, and the read-only handle the export path gets. */
-function deviceWith(
-    rides: Array<{ id: bigint; ride: RideObject }>,
-    options: LoopbackOptions & MockDeviceOptions = {},
-) {
-    const rig = loopbackDevice(options);
-    const entries = rides.map(({ id, ride }) =>
-        rig.device.seed({
-            objectId: id,
-            kind: ObjectKind.Ride,
-            displayName: ride.name,
-            bytes: encodeRideObject(ride),
-        }),
+function deviceWith(rides: RideObject[], options: LoopbackOptions & FlatDeviceOptions = {}) {
+    const rig = flatDevice(options);
+    // The store assigns the ids; a test names a ride by the entry it got back.
+    const entries = rides.map((ride) =>
+        rig.device.seed({ kind: ObjectKind.Ride, displayName: ride.name, bytes: encodeRideObject(ride) }),
     );
     return { ...rig, entries, source: rideAccess(rig.client) };
 }
@@ -197,11 +189,11 @@ function deviceWith(
 describe("the exported GPX", () => {
     it("reproduces the native exporter byte-for-byte, pulled from the device", async () => {
         const ride = { ...decodeRideObject(vector("ride-v3.bin")), name: TRACK_NAME };
-        const { entries, source, close } = deviceWith([{ id: 4n, ride }]);
+        const { entries, source, close } = deviceWith([ride]);
         try {
             // The catalog is what a rider picks from, so the export starts where they do.
             const listed = await source.listRides();
-            expect(listed.map((entry) => entry.objectId)).toEqual([4n]);
+            expect(listed.map((entry) => entry.objectId)).toEqual([entries[0].objectId]);
 
             const exported = await exportRide(source, listed[0], context());
             const expected = new TextDecoder().decode(vector("track-export.gpx"));
@@ -218,7 +210,7 @@ describe("the exported GPX", () => {
         // non-ASCII ride name is the case where those two stop agreeing if anything re-encodes.
         const log = vector("track-log.obct");
         const ride = rideFromTrackLog(log, "Höhenweg — Schauinsland", 1_783_598_400);
-        const { source, close } = deviceWith([{ id: 1n, ride }]);
+        const { source, close } = deviceWith([ride]);
         try {
             const exported = await exportRide(source, (await source.listRides())[0], context());
             const bytes = new TextEncoder().encode(exported.gpx);
@@ -343,12 +335,12 @@ describe("when the export cannot finish", () => {
 
     it("refuses to offer a file whose bytes did not survive the cable", async () => {
         const raw = loopbackLink();
-        const device = new MockDevice(raw.device);
+        const device = new FlatDevice(raw.device);
         void device.run();
         const wire = corruptible(raw.host);
         const client = new FlatStoreClient(wire.link);
         const ride = rideFromTrackLog(vector("track-log.obct"), TRACK_NAME, 1_783_598_400);
-        device.seed({ objectId: 4n, kind: ObjectKind.Ride, displayName: ride.name, bytes: encodeRideObject(ride) });
+        device.seed({ kind: ObjectKind.Ride, displayName: ride.name, bytes: encodeRideObject(ride) });
         try {
             const source = rideAccess(client);
             const entry = (await source.listRides())[0];
@@ -367,10 +359,7 @@ describe("when the export cannot finish", () => {
     it("reports an unplug mid-pull instead of leaving a spinner", async () => {
         // 30 000 points is about 540 KB on the wire — long enough that the cable can be pulled
         // while bytes are still moving, which is the state a stuck spinner comes from.
-        const harness = deviceWith([{ id: 4n, ride: longRide(30_000) }], {
-            packetSize: 4096,
-            streamHighWaterMark: 8 * 1024,
-        });
+        const harness = deviceWith([longRide(30_000)], { packetSize: 4096, streamHighWaterMark: 8 * 1024 });
         const ctx = context({
             at: (done, phase) => {
                 if (phase === "downloading" && done > 64 * 1024) void harness.link.device.close();
@@ -384,10 +373,7 @@ describe("when the export cannot finish", () => {
     }, 30_000);
 
     it("cancels mid-pull, and the next export on the same link is an ordinary one", async () => {
-        const harness = deviceWith([{ id: 4n, ride: longRide(30_000) }], {
-            packetSize: 4096,
-            streamHighWaterMark: 8 * 1024,
-        });
+        const harness = deviceWith([longRide(30_000)], { packetSize: 4096, streamHighWaterMark: 8 * 1024 });
         const controller = new AbortController();
         try {
             // Cancelled from inside the progress callback, not after a timer: the loopback moves
@@ -412,7 +398,7 @@ describe("when the export cannot finish", () => {
 
     it("says the ride is gone when it was deleted on the device between listing and exporting", async () => {
         const ride = rideFromTrackLog(vector("track-log.obct"), TRACK_NAME, 1_783_598_400);
-        const { source, entries, close } = deviceWith([{ id: 4n, ride }]);
+        const { source, entries, close } = deviceWith([ride]);
         try {
             const stale: CatalogEntry = { ...entries[0], objectId: 99n };
             const failure = await exportRide(source, stale, context()).catch((e: unknown) => e);
@@ -447,7 +433,7 @@ describe("when the export cannot finish", () => {
         try {
             const future = encodeRideObject(ride);
             future[future.length - 80] = 4;
-            device.seed({ objectId: 4n, kind: ObjectKind.Ride, displayName: ride.name, bytes: future });
+            device.seed({ kind: ObjectKind.Ride, displayName: ride.name, bytes: future });
             const failure = await exportRide(source, (await source.listRides())[0], context()).catch(
                 (e: unknown) => e,
             );
@@ -459,7 +445,7 @@ describe("when the export cannot finish", () => {
     });
 
     it("explains an empty ride rather than failing inside the converter", async () => {
-        const { source, close } = deviceWith([{ id: 4n, ride: { ...longRide(1), points: [] } }]);
+        const { source, close } = deviceWith([{ ...longRide(1), points: [] }]);
         try {
             const failure = await exportRide(source, (await source.listRides())[0], context()).catch(
                 (e: unknown) => e,
@@ -480,15 +466,15 @@ describe("listing", () => {
         // the truncation. §3.3 pages instead — the client walks the `(ObjectId, Revision)` cursor to
         // the end — so there is no truncated listing left to render, and a page size small enough to
         // force three round trips must still produce every ride.
-        const harness = deviceWith([], { pageEntries: 2 });
+        const harness = deviceWith([], { controlCeiling: controlCeilingFor(2) });
         try {
             const ride = rideFromTrackLog(vector("track-log.obct"), TRACK_NAME, 1_783_598_400);
             const bytes = encodeRideObject(ride);
-            for (let id = 1n; id <= 5n; id++) {
-                harness.device.seed({ objectId: id, kind: ObjectKind.Ride, displayName: ride.name, bytes });
-            }
+            const seeded = [1, 2, 3, 4, 5].map(() =>
+                harness.device.seed({ kind: ObjectKind.Ride, displayName: ride.name, bytes }),
+            );
             const listed = await harness.source.listRides();
-            expect(listed.map((entry) => entry.objectId)).toEqual([1n, 2n, 3n, 4n, 5n]);
+            expect(listed.map((entry) => entry.objectId)).toEqual(seeded.map((entry) => entry.objectId));
         } finally {
             await harness.close();
         }
@@ -498,11 +484,14 @@ describe("listing", () => {
         const harness = deviceWith([]);
         try {
             const ride = rideFromTrackLog(vector("track-log.obct"), TRACK_NAME, 1_783_598_400);
-            harness.device.seed({ objectId: 1n, kind: ObjectKind.Ride, bytes: encodeRideObject(ride) });
-            harness.device.seed({ objectId: 2n, kind: ObjectKind.Ride, flags: EntryFlags.Recording });
+            const done = harness.device.seed({ kind: ObjectKind.Ride, bytes: encodeRideObject(ride) });
+            const live = harness.device.seed({ kind: ObjectKind.Ride, flags: EntryFlags.Recording });
             const listed = await harness.source.listRides();
-            expect(listed.map((entry) => entry.objectId), "the listing itself hides nothing").toEqual([1n, 2n]);
-            expect(recordedRides(listed).map((entry) => entry.objectId)).toEqual([1n]);
+            expect(listed.map((entry) => entry.objectId), "the listing itself hides nothing").toEqual([
+                done.objectId,
+                live.objectId,
+            ]);
+            expect(recordedRides(listed).map((entry) => entry.objectId)).toEqual([done.objectId]);
         } finally {
             await harness.close();
         }
@@ -525,9 +514,9 @@ describe("ride identity", () => {
 
     it("takes the full StoreId and device serial", () => {
         const info = { firmwareRevision: "0.4.0", hardwareRevision: "obc-lm20-r1", serialNumber: "AABB" };
-        expect(rideScope(info, { storeId: REFERENCE_STORE_ID, commitSequence: 3n })).toEqual({
+        expect(rideScope(info, { storeId: CARD, commitSequence: 3n })).toEqual({
             serial: "AABB",
-            storeId: REFERENCE_STORE_ID,
+            storeId: CARD,
         });
         expect(rideScope(info, null)).toEqual({ serial: "AABB", storeId: null });
         expect(rideScope(null, null)).toEqual({ serial: "", storeId: null });
@@ -562,7 +551,7 @@ describe("ride identity", () => {
 describe("the panel's flow", () => {
     it("reports downloading then converting, and ends with a file to save", async () => {
         const ride = rideFromTrackLog(vector("track-log.obct"), TRACK_NAME, 1_783_598_400);
-        const { source, close } = deviceWith([{ id: 4n, ride }]);
+        const { source, close } = deviceWith([ride]);
         try {
             const ctx = context();
             const listed = await source.listRides();
