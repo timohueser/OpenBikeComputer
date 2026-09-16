@@ -67,4 +67,9 @@ obc-render = { path = "../../firmware/obc-render" }
 obc-display = { path = "../../firmware/obc-display" }
 # The oracle's route half: the real A* the device runs.
 obc-route = { path = "../../firmware/obc-route", features = ["alloc"] }
+# The card half: the host flat store, the mounted `FlatMap`, the shared host frame, and the counted
+# byte source that proves a frame really read the card. Pulls in `obc-app`, the application whose
+# frame the check draws. Dev-only, so the wasm32 `--no-default-features --lib` build never sees it.
+obc-host-core = { path = "../obc-host-core", features = ["test-support"] }
+obc-app = { path = "../../firmware/obc-app" }
 embedded-graphics = "0.8"
