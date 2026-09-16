@@ -33,7 +33,8 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import { initConvert } from "../convert/bridge";
 import type { FlatStoreClient } from "../usb/client";
-import { REFERENCE_STORE_ID, loopbackDevice } from "../usb/loopback";
+import { flatDevice } from "../usb/flat-device";
+import { loadFlatDevice } from "../../../test-support/flat-device/load";
 import { encodeRideObject, type RideObject, type RidePoint } from "../usb/objects";
 import { EntryFlags, ObjectKind } from "../usb/protocol";
 import {
@@ -58,11 +59,12 @@ beforeAll(async () => {
         throw new Error(`the wasm bridge is not built (${wasm} missing). Run \`npm run build:wasm\`.`);
     }
     await initConvert(readFileSync(wasm));
+    await loadFlatDevice();
 });
 
-/** The mock's default §5.2.1 serial, and the two cards these tests swap between. */
+/** The loopback link's default §5.2.1 serial, and the two cards these tests swap between. */
 const SERIAL = "0011223344556677";
-const CARD_A = REFERENCE_STORE_ID;
+const CARD_A = "8f2c41d96b074ea3b1559c207de83466";
 const CARD_B = CARD_A.slice(0, 8) + "00000000000000000000abcd";
 
 function ctx(): JobContext {
@@ -207,7 +209,7 @@ class RecordingLibrary implements RideLibrary {
 
 /** A live client + device pair over the loopback pipe, plus the narrowed source the pull is given. */
 function connect(options: { storeId?: string } = {}) {
-    const rig = loopbackDevice({ storeId: options.storeId ?? CARD_A });
+    const rig = flatDevice({ storeId: options.storeId ?? CARD_A });
     return { ...rig, source: rideAccess(rig.client) };
 }
 
@@ -222,27 +224,30 @@ async function scopeNow(client: FlatStoreClient): Promise<RideScope> {
     return rideScope(await client.deviceInfo(), { storeId: page.storeId, commitSequence: page.commitSequence });
 }
 
-/** Put a ride on the simulated device's card, catalog entry and all. */
-function seedRide(
-    device: ReturnType<typeof connect>["device"],
-    objectId: bigint,
-    name: string,
-    startTime: number,
-): Uint8Array {
+/**
+ * Put a ride on the device's card, catalog entry and all.
+ *
+ * The store assigns the id, so a caller that needs one reads it off the entry that comes back.
+ * Seeding in order gives 1, 2, 3 — which is what the keys below are written against.
+ */
+function seedRide(device: ReturnType<typeof connect>["device"], name: string, startTime: number) {
     const bytes = encodeRideObject(rideObject(name, startTime));
-    device.seed({ objectId, kind: ObjectKind.Ride, displayName: name, bytes });
-    return bytes;
+    const entry = device.seed({ kind: ObjectKind.Ride, displayName: name, bytes });
+    return { entry, bytes };
 }
 
 // --- acceptance ----------------------------------------------------------------
 
 describe("pulling rides into the library", () => {
-    it("pulls and deduplicates full u64 object ids without rounding", async () => {
+    it("pulls every ride the card holds and deduplicates them by the id the card assigned", async () => {
+        // The ids are the store's, not this test's. That a key survives an id above 2^53 is pinned
+        // where the key is built (`rides.test.ts`, "keys the complete card identity and decimal u64
+        // object id"); what is pinned here is that a pull uses that key and repeats nothing.
         const { device, client, source, close } = connect();
         try {
             const scope = await scopeNow(client);
-            const ids = [65536n, 9007199254740993n, 18446744073709551615n];
-            for (const id of ids) seedRide(device, id, `Ride ${id}`, 1_700_000_000);
+            const seeded = ["Dawn", "Noon", "Dusk"].map((name) => seedRide(device, name, 1_700_000_000).entry);
+            const ids = seeded.map((entry) => entry.objectId);
             const library = new RecordingLibrary();
             const first = await pullRides(source, library, scope, ctx());
             expect(first.failed).toEqual([]);
@@ -260,8 +265,8 @@ describe("pulling rides into the library", () => {
         const { device, client, source, close } = connect();
         try {
             const scope = await scopeNow(client);
-            seedRide(device, 1n, "Dawn Patrol", 1_700_000_000);
-            seedRide(device, 2n, "Gravel Hour", 1_700_100_000);
+            seedRide(device, "Dawn Patrol", 1_700_000_000);
+            seedRide(device, "Gravel Hour", 1_700_100_000);
             const library = new RecordingLibrary();
 
             const first = await pullRides(source, library, scope, ctx());
@@ -288,8 +293,8 @@ describe("pulling rides into the library", () => {
         const { device, client, source, close } = connect();
         try {
             const scope = await scopeNow(client);
-            seedRide(device, 1n, "Finished", 1_700_000_000);
-            device.seed({ objectId: 2n, kind: ObjectKind.Ride, displayName: "Still going", flags: EntryFlags.Recording });
+            seedRide(device, "Finished", 1_700_000_000);
+            device.seed({ kind: ObjectKind.Ride, displayName: "Still going", flags: EntryFlags.Recording });
             const library = new RecordingLibrary();
 
             const report = await pullRides(source, library, scope, ctx());
@@ -308,9 +313,9 @@ describe("pulling rides into the library", () => {
         const { device, client, source, close } = connect();
         try {
             const scope = await scopeNow(client);
-            seedRide(device, 1n, "Landed", 1_700_000_000);
-            seedRide(device, 2n, "Interrupted", 1_700_100_000);
-            seedRide(device, 3n, "Also landed", 1_700_200_000);
+            seedRide(device, "Landed", 1_700_000_000);
+            seedRide(device, "Interrupted", 1_700_100_000);
+            seedRide(device, "Also landed", 1_700_200_000);
             const library = new RecordingLibrary();
             library.failFor.add(rideKey(scope, 2n));
 
@@ -339,7 +344,7 @@ describe("pulling rides into the library", () => {
         const first = connect({ storeId: CARD_A });
         const oldEra = await scopeNow(first.client);
         expect(oldEra.storeId).toBe(CARD_A);
-        seedRide(first.device, 1n, "Old era ride", 1_700_000_000);
+        seedRide(first.device, "Old era ride", 1_700_000_000);
         await pullRides(first.source, library, oldEra, ctx());
         expect(library.rides.size).toBe(1);
         await first.close();
@@ -349,7 +354,7 @@ describe("pulling rides into the library", () => {
             const newEra = await scopeNow(second.client);
             expect(newEra.storeId).toBe(CARD_B);
             expect(newEra.serial).toBe(oldEra.serial);
-            seedRide(second.device, 1n, "New era ride", 1_800_000_000);
+            seedRide(second.device, "New era ride", 1_800_000_000);
 
             const after = await pullRides(second.source, library, newEra, ctx());
             expect(after.imported.map((r) => r.name)).toEqual(["New era ride"]);
@@ -370,8 +375,8 @@ describe("pulling rides into the library", () => {
         const { device, client, source, close } = connect();
         try {
             const scope = await scopeNow(client);
-            for (const [id, name] of [[1n, "One"], [2n, "Two"], [3n, "Three"]] as const) {
-                seedRide(device, id, name, 1_700_000_000 + Number(id) * 1000);
+            for (const [at, name] of ["One", "Two", "Three"].entries()) {
+                seedRide(device, name, 1_700_000_000 + at * 1000);
             }
             const library = new RecordingLibrary();
             await pullRides(source, library, scope, ctx());
@@ -396,7 +401,7 @@ describe("pulling rides into the library", () => {
         // copied. A missing StoreId never shares an identity with a readable card.
         const { device, source, close } = connect();
         try {
-            seedRide(device, 1n, "Unkeyable", 1_700_000_000);
+            seedRide(device, "Unkeyable", 1_700_000_000);
             const library = new RecordingLibrary();
             await expect(pullRides(source, library, { serial: SERIAL, storeId: null }, ctx())).rejects.toMatchObject({
                 name: "RideLibraryError",
@@ -415,7 +420,7 @@ describe("pulling rides into the library", () => {
         const { device, client, source, close } = connect();
         try {
             const scope = await scopeNow(client);
-            const bytes = seedRide(device, 1n, "Schauinsland", 1_700_000_000);
+            const { bytes } = seedRide(device, "Schauinsland", 1_700_000_000);
             const library = new RecordingLibrary();
             await pullRides(source, library, scope, ctx());
 
@@ -440,8 +445,7 @@ describe("pulling rides into the library", () => {
         try {
             const scope = await scopeNow(client);
             const ride = rideObject("Kaiserstuhl", 1_700_300_000);
-            device.seed({
-                objectId: 9n,
+            const seeded = device.seed({
                 kind: ObjectKind.Ride,
                 displayName: "Kaiserstuhl",
                 bytes: encodeRideObject(ride),
@@ -451,7 +455,7 @@ describe("pulling rides into the library", () => {
             const landed = (await pullRides(source, library, scope, ctx())).imported[0];
 
             expect(landed).toMatchObject({
-                objectId: 9n,
+                objectId: seeded.objectId,
                 serial: scope.serial,
                 storeId: scope.storeId,
                 name: ride.name,
@@ -470,8 +474,8 @@ describe("pulling rides into the library", () => {
         const { device, client, source, close } = connect();
         try {
             const scope = await scopeNow(client);
-            seedRide(device, 1n, "First", 1_700_000_000);
-            seedRide(device, 2n, "Second", 1_700_100_000);
+            seedRide(device, "First", 1_700_000_000);
+            seedRide(device, "Second", 1_700_100_000);
             const library = new RecordingLibrary();
 
             const listed = await source.listRides();

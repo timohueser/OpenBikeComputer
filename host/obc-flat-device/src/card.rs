@@ -8,11 +8,11 @@
 use std::rc::Rc;
 
 use obc_storage::flat::sim::{DiskError, FaultOnce, SparseDisk};
-use obc_storage::flat::{BlockDevice, FlatStore};
+use obc_storage::flat::{BlockDevice, FlatStore, StoreId};
 
 pub use obc_storage::flat::sim::MediaOp;
 
-use crate::{CATALOG_BLOCKS, STORE};
+use crate::CATALOG_BLOCKS;
 
 /// A shared handle to the sparse disk. `SparseDisk` itself is only a `BlockDevice` by reference, so
 /// this is what makes an owned, clonable card possible at all.
@@ -54,10 +54,10 @@ impl Card {
         Card { disk, gate }
     }
 
-    /// A card this crate has formatted with [`STORE`].
-    pub fn formatted(blocks: u64, seed: u64) -> Card {
+    /// A card formatted with the identity the caller names.
+    pub fn formatted(blocks: u64, seed: u64, store: StoreId) -> Card {
         let card = Card::blank(blocks, seed);
-        FlatStore::initialize(card.clone(), STORE).expect("the test card formats");
+        FlatStore::initialize(card.clone(), store).expect("the test card formats");
         card
     }
 

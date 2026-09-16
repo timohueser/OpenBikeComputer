@@ -398,6 +398,38 @@ impl<D: BlockDevice> Device<D> {
         meta
     }
 
+    /// Publishes a further revision of an object already on the card and keeps the previous one as
+    /// `RETAINED` — §5.3's non-head revision the store keeps alive on purpose.
+    ///
+    /// Both entries go in one commit, which is the only shape the catalog admits, and the id comes
+    /// from the card rather than from the caller. It is the one catalog state no opcode produces,
+    /// which is why a test that needs one needs this.
+    pub fn seed_retained(&mut self, id: u64, bytes: &[u8], name: &str) -> EntryMeta {
+        let previous = Store::entries(&self.store)
+            .find(|meta| meta.id == ObjectId(id) && !meta.flags.has(EntryFlags::RETAINED))
+            .expect("the object to retain is on the card");
+        let mut allocation = Store::allocate(&self.store, bytes.len() as u64).expect("the revision allocates");
+        Store::write(&self.store, &mut allocation, bytes).expect("the revision writes");
+        let head = EntryMeta {
+            revision: Revision(previous.revision.0 + 1),
+            payload_len: bytes.len() as u64,
+            payload_crc: crc32(bytes),
+            name: DisplayName::new(name).expect("a seed name"),
+            ..previous
+        };
+        let flags = EntryFlags::decode(previous.flags.bits() | EntryFlags::RETAINED.bits()).expect("§5.3 flags");
+        let retained = EntryMeta { flags, ..previous };
+        Store::commit(
+            &self.store,
+            &[
+                Mutation::Put { meta: head, source: PutSource::Fresh(allocation) },
+                Mutation::Put { meta: retained, source: PutSource::Amend },
+            ],
+        )
+        .expect("one commit publishes the head and retains the previous revision");
+        head
+    }
+
     /// Publishes an entry over a reserve with no bytes behind it: a ride mid-recording, or an
     /// update's rollback reserve. A `GET` of either is refused, which is the point of having one.
     pub fn seed_reserved(&mut self, kind: u16, reserve: u64, flags: EntryFlags, name: &str) -> EntryMeta {
