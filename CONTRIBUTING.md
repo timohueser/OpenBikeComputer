@@ -1,9 +1,12 @@
 # Developing OpenBikeComputer
 
 The routes, the suite-granularity rule, the plan documents, the exception policy and the change
-selection table live in [`docs/testing.md`](docs/testing.md). In short: ordinary work is selected
-by the change; captured fixtures, manual commands, the weekly workflow and live services are the
-four explicit routes; selection is per suite, never per test function.
+selection table live in [`docs/testing.md`](docs/testing.md). In short: a suite declares one of
+four routes — `ordinary` (the change selects it), `required` (it runs whenever one of its CI jobs
+starts), `manual` (its own command only) and `live` (it contacts a live service). Captured
+fixtures are ordinary work behind an explicit sync, `test-weekly.yml` names its two commands
+directly, and physical procedures stay in their owning issue. Selection is per suite, never per
+test function.
 
 ## Verification is proportional to the change
 
@@ -50,7 +53,7 @@ obc test fixtures -p obc-route
 
 This syncs the `test` fixture profile, enables the `external-fixtures` feature, and still requires
 an explicit Cargo scope. Use it when changing a decoder, fixture-backed behavior, the fixture
-catalog, or the associated scenario. Ordinary package work should stay in tier 1.
+catalog, or the associated scenario. Ordinary package work stays with the focused checks above.
 
 ### 3. Surface gates — when a whole development surface changed
 

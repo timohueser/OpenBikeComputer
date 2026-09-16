@@ -115,7 +115,10 @@ RUST_FOUNDATION_PATHS = {
     ".cargo/config",
 }
 # A change to how this repository decides or executes verification selects every declared
-# suite: the decision itself is what changed.
+# suite: the decision itself is what changed. Agent prose (CLAUDE.md, AGENTS.md) is not on
+# this list: it instructs an agent, it does not decide or execute anything. It is owned by the
+# documentation route so it is not an unowned path; the check that reads it is the
+# unconditional `guards` job, not a platform build.
 TEST_POLICY_PATTERNS = (
     ".config/nextest.toml",
     ".github/workflows/**",
@@ -128,8 +131,6 @@ TEST_POLICY_PATTERNS = (
     "tools/requirements-coverage.txt",
     "docs/testing.md",
     "CONTRIBUTING.md",
-    "AGENTS.md",
-    "CLAUDE.md",
     "tools/justfile",
     "tools/obc",
     "tools/obc-dev.sh",
