@@ -30,10 +30,11 @@ use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 /// read, short enough that it is plainly an ending and not a hang.
 const POWERING_OFF_HOLD: std::time::Duration = std::time::Duration::from_millis(700);
 
-use crate::map_file::LoadedMap;
+use crate::map_file::{LoadedMap, StdClock};
 use crate::present::Present;
 use crate::sim_compass::SimCompass;
 use crate::sim_location::SimLocationSource;
+use obc_host_core::frame;
 use obc_host_core::{DeviceInput, FileSettingsStore, TrackStore};
 use obc_host_core::{FlatRideStore as RideStore, RideRepository};
 use obc_host_core::{FlatRouteStore as RouteStore, FlatTripStore as TripStore, RouteRepository};
@@ -630,14 +631,8 @@ impl SimGui {
         // this reads at most one 512 B tile per fix, never per frame.
         self.app.sample_terrain(&mut *self.elevation);
 
-        // Re-open the active route for the render: a committed plan or a spliced detour replaced
-        // the bytes under it, and the frame must draw what is there now.
         self.session.sync(&self.app, &mut self.store);
-        let route_src = self.store.active_source();
-        let route = match (self.session.index(), route_src) {
-            (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
-            _ => None,
-        };
+        let route = frame::active_route(&self.session, &self.store);
 
         self.peak_view.update(&mut self.app);
         let panorama = self.peak_view.panorama();
@@ -649,11 +644,11 @@ impl SimGui {
         let t0 = std::time::Instant::now();
         let (dev_w, dev_h) = (self.dev_w, self.dev_h);
         let mut fbdev = FbDevice64::new(&mut self.fb, dev_w, dev_h);
-        let scene = crate::map_file::Scene { reader: &reader, route: route.as_ref() };
+        let scene = frame::Scene { reader: &reader, route: route.as_ref() };
         // The frame renders the very snapshot this pass decided over — sampled before it, not after
         // — so the card, the step count and the raster are one decision.
         let (app, scratch) = (&mut self.app, &mut *self.scratch);
-        let mut stats = crate::map_file::render_base_frame(
+        let mut stats = frame::render(
             app,
             scratch,
             &mut fbdev,
@@ -661,6 +656,7 @@ impl SimGui {
             panorama,
             (dev_w as f32, dev_h as f32),
             |c| Rgb565::from(RawU16::new(c)),
+            &StdClock(t0),
             Some(self.photo.interactive(plan.render.map)),
         );
         stats.render_us = t0.elapsed().as_micros() as u32;
