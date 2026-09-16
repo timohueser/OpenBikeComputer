@@ -61,6 +61,9 @@ mod settings_store;
 mod sink;
 mod stores;
 pub mod terrain;
+/// Test-only oracles, for this crate's suites and for dependents that enable `test-support`.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 pub mod trace;
 mod track_store;
 
