@@ -2053,6 +2053,16 @@ impl App {
         self.peak_view_base().is_some()
     }
 
+    /// Text and credits can cover the panorama; photos need its shared scratch arena.
+    pub fn peak_view_retains_panorama(&self) -> bool {
+        matches!(
+            self.ui.stack.iter().rev().find(|screen| {
+                !screen.is_overlay() && !matches!(screen, Screen::PeakArticle(_) | Screen::LandmarkSources(_))
+            }),
+            Some(Screen::PeakView(_))
+        )
+    }
+
     fn peak_view_base(&self) -> Option<&screen::PeakViewScreen> {
         match self.ui.stack.iter().rev().find(|screen| !screen.is_overlay()) {
             Some(Screen::PeakView(screen)) => Some(screen),

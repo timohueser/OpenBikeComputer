@@ -108,7 +108,7 @@ impl Runtime {
 
     pub fn update(&mut self, app: &mut App, reader: &Reader<'_>) {
         if !matches!(app.top_screen(), Screen::PeakView(_)) {
-            if !app.peak_view_is_base() {
+            if !app.peak_view_retains_panorama() {
                 self.reset();
             }
             return;
@@ -231,16 +231,11 @@ mod tests {
         app.apply_gesture(obc_app::Gesture::Press);
         assert!(matches!(app.top_screen(), Screen::PeakArticle(_)), "Mönch's installed article opens");
         runtime.update(&mut app, &map.reader());
-        assert!(runtime.builder.is_none(), "reading releases panorama work");
+        assert!(complete(&runtime), "reading retains the completed panorama");
         app.apply_gesture(obc_app::Gesture::Back);
-        for _ in 0..4_000 {
-            runtime.update(&mut app, &map.reader());
-            if complete(&runtime) {
-                break;
-            }
-        }
+        runtime.update(&mut app, &map.reader());
         assert!(complete(&runtime));
-        assert_eq!(runtime.position, Some(observer), "Back rebuilds at the frozen Browse observer");
+        assert_eq!(runtime.position, Some(observer), "Back retains the frozen Browse observer");
         assert_eq!(app.peak_view_heading_q4(), heading);
         app.apply_gesture(obc_app::Gesture::Back);
         for _ in 0..4_000 {
