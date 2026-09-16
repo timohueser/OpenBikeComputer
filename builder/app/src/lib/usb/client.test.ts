@@ -34,6 +34,10 @@ beforeAll(loadFlatDevice);
 /** A card identity that is nothing like the default, so a test that mixes the two says so. */
 const CARD = "8f2c41d96b074ea3b1559c207de83466";
 
+/** A link that hands a download over in small records and blocks the device early, so a cancel or a
+ *  second transfer has something in flight to meet. */
+const SMALL_RECORDS = { streamCeiling: streamCeilingFor(512), streamHighWaterMark: 4 * 1024 };
+
 /** A payload with a distinct byte at every offset, so a misplaced record shows up as a wrong byte. */
 function payload(length: number, seed = 1): Uint8Array {
     const out = new Uint8Array(length);
@@ -451,9 +455,7 @@ describe("GET", () => {
 
 describe("CANCEL", () => {
     it("stops a running download and answers the transfer with `cancelled`", async () => {
-        await withDevice(
-            { streamCeiling: streamCeilingFor(512), streamHighWaterMark: 4 * 1024 },
-            async ({ client, device }) => {
+        await withDevice(SMALL_RECORDS, async ({ client, device }) => {
             device.seed({ kind: ObjectKind.MapShard, displayName: "map", bytes: payload(400_000) });
             const abort = new AbortController();
             // Cancelled from inside the download rather than after a timer: the loopback moves
@@ -473,8 +475,7 @@ describe("CANCEL", () => {
             // a recovery path.
             const again = await client.get({ objectId: 1n, revision: 0n });
             expect(again.bytes.length).toBe(400_000);
-            },
-        );
+        });
     });
 
     it("answers `no such transfer` for an identifier nothing is using", async () => {
@@ -634,15 +635,12 @@ describe("reconciling a break", () => {
 
 describe("§1's one transfer at a time", () => {
     it("refuses a second transfer from this client without a round trip", async () => {
-        await withDevice(
-            { streamCeiling: streamCeilingFor(512), streamHighWaterMark: 4 * 1024 },
-            async ({ client, device }) => {
+        await withDevice(SMALL_RECORDS, async ({ client, device }) => {
             device.seed({ kind: ObjectKind.MapShard, bytes: payload(300_000) });
             const first = client.get({ objectId: 1n, revision: 0n });
             await expect(client.get({ objectId: 1n, revision: 0n })).rejects.toMatchObject({ code: "busy" });
             await first;
-            },
-        );
+        });
     });
 
     it("is the device's rule, not the client's: a second peer is answered `busy` with the live id", async () => {
