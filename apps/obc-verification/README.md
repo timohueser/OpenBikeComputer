@@ -101,6 +101,21 @@ The command prompts for a new password without echoing it and ends local admin s
 not change requirements or evidence. There is no email reset service. Database backups contain
 password hashes and session records; keep the backups private.
 
+## Clear requirement history
+
+An administrator can open **Account → Maintenance** to clear requirement history. The preview
+shows how many revisions can be removed and how many are retained for release candidates.
+The default keeps the current requirements and linked tests in a new revision. **Start fresh** also
+clears the current requirements and tests. Enter the displayed confirmation phrase to proceed.
+The server rejects the action if another user saved a revision after the preview was loaded.
+
+Revisions referenced by any release candidate or publication remain available. The action does not
+change release evidence, uploaded files, accounts, the CI catalogue, or backup archives. Old link
+proposals are removed. Revision numbers continue to increase so that an older open editor cannot
+save over the fresh state. An empty reset remains empty after a restart; the example is not seeded
+again. Clearing history cannot be undone in the interface. This removes application history, not
+all copies of data from backups or storage.
+
 ## Deployment
 
 `deploy-verification.yml` tests and builds the application on pushes to `develop` that change this
