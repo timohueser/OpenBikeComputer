@@ -8,7 +8,7 @@
 //! TypeScript side already answers it, and a second opinion about a constant would be a device
 //! policy this crate has no business holding.
 
-use obc_storage::flat::EntryFlags;
+use obc_storage::flat::{EntryFlags, StoreId};
 use wasm_bindgen::prelude::*;
 
 use crate::card::MediaOp;
@@ -86,12 +86,14 @@ impl JsDevice {
         control_ceiling: usize,
         stream_ceiling: usize,
         arm_allowed: bool,
+        store_id: &str,
     ) -> JsDevice {
         JsDevice {
             inner: SimDevice::boot(SimOptions {
                 extents,
                 formatted,
                 seed: seed as u64,
+                store: store_id_of(store_id),
                 control_ceiling,
                 stream_ceiling,
                 arm_reserve: arm_allowed.then_some(ARM_RESERVE),
@@ -190,6 +192,13 @@ impl JsDevice {
         catalog_json(&[self.inner.seed_reserved(kind, reserve, EntryFlags::decode(flags).expect("§5.3 flags"), name)])
     }
 
+    /// Publish a further revision of an object already on the card, keeping the previous one as
+    /// `RETAINED`. The id is the card's, read off an earlier seed.
+    #[wasm_bindgen(js_name = seedRetained)]
+    pub fn seed_retained(&mut self, id: u64, name: &str, bytes: &[u8]) -> String {
+        catalog_json(&[self.inner.seed_retained(id, bytes, name)])
+    }
+
     /// The device's own FS8 path: reserve, journal the final bytes, publish them in one amend.
     #[wasm_bindgen(js_name = finishRecording)]
     pub fn finish_recording(&mut self, name: &str, bytes: &[u8]) -> String {
@@ -218,6 +227,16 @@ impl JsDevice {
     pub fn resume_answering(&mut self) {
         self.inner.resume_answering();
     }
+}
+
+/// §5.7's store identity, as 32 hex characters.
+fn store_id_of(hex: &str) -> StoreId {
+    let mut bytes = [0u8; 16];
+    assert_eq!(hex.len(), 32, "a store identity is 32 hex characters");
+    for (at, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[at * 2..at * 2 + 2], 16).expect("a hex store identity");
+    }
+    StoreId(bytes)
 }
 
 fn media_op(name: &str) -> MediaOp {

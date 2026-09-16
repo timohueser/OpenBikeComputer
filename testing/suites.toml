@@ -503,7 +503,7 @@ command = "cd builder/app && npm test"
 fixtures = ["checked-in-web-fixtures"]
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = ["builder/app/src/**", "builder/app/package.json", "builder/app/package-lock.json", "builder/app/vite.config.ts", "specs/vectors/**", "host/obc-flat-device/**"]
+extra_triggers = ["builder/app/src/**", "builder/app/test-support/**", "builder/app/package.json", "builder/app/package-lock.json", "builder/app/vite.config.ts", "specs/vectors/**", "host/obc-flat-device/**"]
 coverage_component = "web"
 ownership = [
   { kind = "path", source = "web-test", pattern = "builder/app/**/*.test.ts" },
