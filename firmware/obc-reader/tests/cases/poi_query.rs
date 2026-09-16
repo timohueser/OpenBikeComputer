@@ -431,7 +431,7 @@ fn summit_spatial_query_preserves_metadata_and_clamps_the_search_radius() {
 
 #[test]
 fn complete_pages_filter_hours_before_capacity_and_cancel_old_generations() {
-    use obc_reader::reader::places::{PlaceQuery, PlaceWindow, QueryProgress, PLACE_PAGE_SIZE};
+    use obc_reader::reader::places::{HoursFilter, PlaceQuery, PlaceWindow, QueryProgress, PLACE_PAGE_SIZE};
     use obc_reader::PoiCategorySet;
     let pois: Vec<_> = (0..55)
         .map(|i| PoiSpec {
@@ -453,51 +453,58 @@ fn complete_pages_filter_hours_before_capacity_and_cancel_old_generations() {
     let tables = MapTables::parse(&src).unwrap();
     let cache = MapCache::new();
     let reader = Reader::new(&src, &tables, &cache);
-    let mut query = PlaceQuery::new(
-        7,
-        PoiCategorySet::ALL,
-        PlaceWindow::Nearby { position: (7_500_000, 43_500_000), radius_m: 5_000 },
-        Some((0, 600)),
-    );
-    let mut page = heapless::Vec::<_, PLACE_PAGE_SIZE>::new();
-    let mut names = Vec::new();
-    let mut first_page = Vec::new();
-    let mut second_start = None;
-    loop {
-        let status = loop {
-            let status = query.step(&reader, None, 7, &mut page);
-            if status != QueryProgress::Pending {
-                break status;
+    for (filter, local, start) in [
+        (HoursFilter::HideClosed, Some((0, 600)), 20),
+        (HoursFilter::All, Some((0, 600)), 0),
+        (HoursFilter::HideClosed, None, 0),
+    ] {
+        let mut query = PlaceQuery::new(
+            7,
+            PoiCategorySet::ALL,
+            PlaceWindow::Nearby { position: (7_500_000, 43_500_000), radius_m: 5_000 },
+            local,
+        )
+        .with_hours_filter(filter);
+        let mut page = heapless::Vec::<_, PLACE_PAGE_SIZE>::new();
+        let mut names = Vec::new();
+        let mut first_page = Vec::new();
+        let mut second_start = None;
+        loop {
+            let status = loop {
+                let status = query.step(&reader, None, 7, &mut page);
+                if status != QueryProgress::Pending {
+                    break status;
+                }
+            };
+            if first_page.is_empty() {
+                first_page = page.iter().map(|p| p.poi.name.clone()).collect();
+            } else if second_start.is_none() {
+                second_start = Some(query.key(&page[0]));
             }
-        };
-        if first_page.is_empty() {
-            first_page = page.iter().map(|p| p.poi.name.clone()).collect();
-        } else if second_start.is_none() {
-            second_start = Some(query.key(&page[0]));
+            names.extend(page.iter().map(|p| p.poi.name.clone()));
+            let QueryProgress::Ready { more, coverage_complete: true } = status else { panic!("{status:?}") };
+            if !more {
+                break;
+            }
+            query.next_page(query.key(page.last().unwrap()));
+            page.clear();
         }
-        names.extend(page.iter().map(|p| p.poi.name.clone()));
-        let QueryProgress::Ready { more, coverage_complete: true } = status else { panic!("{status:?}") };
-        if !more {
-            break;
-        }
-        query.next_page(query.key(page.last().unwrap()));
+        assert_eq!(first_page.len(), PLACE_PAGE_SIZE);
+        assert_eq!(
+            names.iter().map(|name| name.as_str()).collect::<Vec<_>>(),
+            (start..55).map(|i| format!("P{i:02}")).collect::<Vec<_>>()
+        );
+        query.previous_page(second_start.unwrap());
         page.clear();
+        while query.step(&reader, None, 7, &mut page) == QueryProgress::Pending {}
+        assert_eq!(page.iter().map(|p| p.poi.name.clone()).collect::<Vec<_>>(), first_page);
+        query.next_page(query.key(page.last().unwrap()));
+        assert_eq!(query.step(&reader, None, 8, &mut page), QueryProgress::Unavailable);
+        assert!(page.is_empty());
+        query.next_page(second_start.unwrap());
+        query.previous_page(second_start.unwrap());
+        assert_eq!(query.progress(), QueryProgress::Unavailable, "cancelled work cannot revive through paging");
     }
-    assert_eq!(first_page.len(), PLACE_PAGE_SIZE);
-    assert_eq!(
-        names.iter().map(|name| name.as_str()).collect::<Vec<_>>(),
-        (20..55).map(|i| format!("P{i:02}")).collect::<Vec<_>>()
-    );
-    query.previous_page(second_start.unwrap());
-    page.clear();
-    while query.step(&reader, None, 7, &mut page) == QueryProgress::Pending {}
-    assert_eq!(page.iter().map(|p| p.poi.name.clone()).collect::<Vec<_>>(), first_page);
-    query.next_page(query.key(page.last().unwrap()));
-    assert_eq!(query.step(&reader, None, 8, &mut page), QueryProgress::Unavailable);
-    assert!(page.is_empty());
-    query.next_page(second_start.unwrap());
-    query.previous_page(second_start.unwrap());
-    assert_eq!(query.progress(), QueryProgress::Unavailable, "cancelled work cannot revive through paging");
 }
 
 #[test]

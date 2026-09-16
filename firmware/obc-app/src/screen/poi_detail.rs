@@ -1,6 +1,6 @@
 //! Place detail with a cached schedule and live, trusted local-time status.
 //! Prepare resolves the schedule into the App-owned scratch. Activation checks the current
-//! status again and refuses a known-closed place or invalidated source.
+//! source validity again before route planning.
 
 use core::fmt::Write;
 
@@ -272,12 +272,6 @@ impl PoiDetailScreen {
             rx.t(Msg::AssistantMapChanged)
         } else if self.hours_pending(rx.poi_scratch) || !rx.poi_scratch.detail_valid {
             rx.t(Msg::AssistantVisitUnavailable)
-        } else if rx
-            .poi_scratch
-            .detail_schedule
-            .is_some_and(|s| s.status(rx.place_local) == obc_reader::hours::OpeningStatus::Closed)
-        {
-            rx.t(Msg::AssistantClosed)
         } else if rx.no_fix {
             rx.t(Msg::AssistantNoFix)
         } else if self

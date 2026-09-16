@@ -33,6 +33,7 @@ const ROW_H: i32 = 64;
 /// The App owns one bounded nearby page, outside the screen stack so each stack slot stays small.
 pub struct PoiScratch {
     pub(crate) query: Option<PlaceQuery>,
+    pub(crate) hours_filter: obc_reader::reader::places::HoursFilter,
     pub(crate) detail_valid: bool,
     pub(crate) detail_source: u64,
     pub(crate) detail_schedule: Option<obc_reader::WeeklySchedule>,
@@ -58,6 +59,7 @@ impl PoiScratch {
             taken_for: None,
             pois: heapless::Vec::new(),
             query: None,
+            hours_filter: obc_reader::reader::places::HoursFilter::HideClosed,
             detail_valid: false,
             detail_source: 0,
             detail_schedule: None,
@@ -126,13 +128,7 @@ impl PoiScratch {
     /// detail screen — the one place `handle` reaches the draw-taken snapshot (the query itself still
     /// only runs at draw).
     pub(crate) fn get(&self, index: usize) -> Option<&Poi> {
-        self.pois
-            .get(index)
-            .filter(|hit| {
-                hit.poi.opening != obc_reader::hours::OpeningStatus::Closed
-                    && matches!(self.status, QueryProgress::Ready { .. })
-            })
-            .map(|hit| &hit.poi)
+        self.pois.get(index).filter(|_| matches!(self.status, QueryProgress::Ready { .. })).map(|hit| &hit.poi)
     }
 }
 
@@ -157,6 +153,11 @@ impl PoiListScreen {
     /// re-queries even when re-entering the same category.
     pub fn new(category: PoiCategory) -> Self {
         PoiListScreen { category, selected: 0, page: None }
+    }
+
+    pub(crate) fn refresh(&mut self) {
+        self.page = None;
+        self.selected = usize::MAX;
     }
 
     pub(crate) fn pending(&self, scratch: &PoiScratch) -> bool {
@@ -188,7 +189,7 @@ impl PoiListScreen {
                     .pois
                     .iter()
                     .enumerate()
-                    .filter(|(_, hit)| hit.poi.opening != obc_reader::hours::OpeningStatus::Closed)
+                    .filter(|(_, hit)| scratch.hours_filter.includes(hit.poi.opening))
                     .map(|(i, _)| i)
                     .collect();
                 let index = visible
@@ -245,7 +246,7 @@ impl PoiListScreen {
         let visible: heapless::Vec<usize, PLACE_PAGE_SIZE> = pois
             .iter()
             .enumerate()
-            .filter(|(i, p)| *i == self.selected || p.poi.opening != obc_reader::hours::OpeningStatus::Closed)
+            .filter(|(i, p)| *i == self.selected || rx.poi_scratch.hours_filter.includes(p.poi.opening))
             .map(|(i, _)| i)
             .collect();
         let total = visible.len();
@@ -330,12 +331,15 @@ impl PoiListScreen {
         }
         if scratch.query.is_none() {
             self.selected = usize::MAX;
-            scratch.query = Some(PlaceQuery::new(
-                scratch.generation,
-                obc_reader::PoiCategorySet::only(self.category),
-                PlaceWindow::Nearby { position: (fix.lon, fix.lat), radius_m: 50_000 },
-                px.place_local,
-            ));
+            scratch.query = Some(
+                PlaceQuery::new(
+                    scratch.generation,
+                    obc_reader::PoiCategorySet::only(self.category),
+                    PlaceWindow::Nearby { position: (fix.lon, fix.lat), radius_m: 50_000 },
+                    px.place_local,
+                )
+                .with_hours_filter(scratch.hours_filter),
+            );
             scratch.status = QueryProgress::Pending;
         }
         if self.page != scratch.page {
@@ -366,7 +370,7 @@ impl PoiListScreen {
                         .pois
                         .iter()
                         .enumerate()
-                        .filter(|(_, hit)| hit.poi.opening != obc_reader::hours::OpeningStatus::Closed);
+                        .filter(|(_, hit)| scratch.hours_filter.includes(hit.poi.opening));
                     self.selected = if scratch.page.is_some_and(|(_, reverse)| reverse) {
                         visible.next_back()
                     } else {
@@ -410,8 +414,7 @@ fn draw_poi_row(
     // Line 2 — bearing arrow + distance, secondary (smaller, muted), stacked under the name.
     let line2_top = name_top + Font::Body.cap_bottom() as i32 + 4;
     if poi.opening == obc_reader::hours::OpeningStatus::Closed {
-        cv.text(closed, Point::new(x, line2_top), Font::Label, TextAlign::Left, WARNING);
-        return;
+        cv.text(closed, Point::new(w - 20, line2_top), Font::Label, TextAlign::Right, WARNING);
     }
     let mut dist: heapless::String<12> = heapless::String::new();
     write_distance_coarse(&mut dist, "", poi.distance_m, units);
@@ -605,14 +608,14 @@ mod tests {
     }
 
     #[test]
-    fn closed_status_preserves_selection_and_refuses_activation() {
+    fn closed_status_preserves_selection_and_allows_activation() {
         let mut scratch = scratch_with(3);
         let mut screen = PoiListScreen::new(PoiCategory::Water);
         screen.selected = 1;
         scratch.pois[0].poi.opening = obc_reader::hours::OpeningStatus::Closed;
         scratch.pois[1].poi.opening = obc_reader::hours::OpeningStatus::Closed;
         assert_eq!(screen.selected, 1);
-        assert!(scratch.get(screen.selected).is_none());
+        assert!(scratch.get(screen.selected).is_some());
         step(&mut screen, &scratch, 1);
         assert_eq!(screen.selected, 2, "turning moves to the next eligible identity");
     }

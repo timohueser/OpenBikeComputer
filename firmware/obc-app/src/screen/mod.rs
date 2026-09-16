@@ -1252,6 +1252,7 @@ impl Screen {
             Screen::Statistics(_) | Screen::Climb(_) | Screen::RideControl(_) => Some(&context_drawer::RIDE),
             // The timeline's two scope controls (#1515 D4a) — the only home either of them has.
             Screen::WhatsNext(_) => Some(&context_drawer::UP_AHEAD),
+            Screen::FindPlace(_) | Screen::PoiList(_) => Some(&context_drawer::FIND_PLACE),
             Screen::Landmarks(_) | Screen::PeakArticle(_) => Some(&context_drawer::LANDMARK_CONTENT),
             Screen::LandmarkPhoto(photo) if photo.linked => Some(&context_drawer::LANDMARK_CONTENT),
 
