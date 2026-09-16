@@ -65,17 +65,19 @@ Generated design-review screenshots belong in PRs or project documentation, not 
 
 ## Package provenance
 
-- `sim-grimsel`: an **OBCM v16** file packed from the pinned `assistant-osm`
+- `sim-grimsel`: an **OBCM v17** file packed from the pinned `assistant-osm`
   Switzerland snapshot dated 2026-09-13, on the canonical fixture bbox; its OBCT terrain is derived from Copernicus GLO-30 tile
   `N46_00_E008_00` and is unchanged (OBCT is a separate format and did not move).
   The GPX/OBCR/OBT inputs are project-authored and byte-identical to their
   `tracked_sources` originals. The Grimsel route uses OBCR v4 with route facts. The map contains selected text, compressed photos, and credits from the pinned
   `assistant-switzerland-content` schema 2 package. It uses the optional landmark section.
-  [The build record](sources/ride-assistant/grimsel-v16.json) pins source and output hashes.
-  Set `OBC_GRIMSEL_LANDMARKS` to its `content.json` when you run the fixture baker.
-- `sim-monaco`: an **OBCM v16** file from the pinned `assistant-osm` Monaco
+  [The build record](sources/ride-assistant/grimsel-v17.json) pins source and output hashes.
+  Set `OBC_GRIMSEL_LANDMARKS` to its `content.json` and `OBC_GRIMSEL_PEAKS` to the
+  pinned `peak-content/peaks.json` when you run the fixture baker.
+- `sim-monaco`: an **OBCM v17** file from the pinned `assistant-osm` Monaco
   snapshot dated 2026-09-13, on the canonical fixture bbox, plus the unchanged
-  project-authored up-ahead GPX.
+  project-authored up-ahead GPX. [The build record](sources/ride-assistant/monaco-v17.json)
+  pins its source and output identities.
 
 ### Revision log: repacked at OBCM v14 (FS7.5b, #1420)
 
@@ -117,7 +119,7 @@ revisions, licenses, offline build commands, review identities, and remaining si
 The Swiss OSM input is country-wide. The separate compiled Swiss content package contains
 1,478 sites, 2,391 article variants and 1,109 photos. The retained capture has English, German
 and French output, with no Spanish article or locale entity capture. The four-site Wiki input
-is only a review sample. Both West Cork and the Swiss regional simulator maps use OBCM v16 with native terrain and compiled landmark
+is only a review sample. Both West Cork and the Swiss regional simulator maps use OBCM v17 with native terrain and compiled landmark
 content. The Swiss map is a crop, not a full-country map. See the source recipes for exact
 coverage, scenario clocks and the persistent-card option.
 
@@ -132,7 +134,12 @@ Starlex nodes share one article and photo outcome. Pointe Kurz and Tourbillon us
 tags. Gross Wendenstock has no link. The Piz Starlex photo is rejected because its attribution is
 too long; its text remains available.
 
-This is source evidence for a small host scenario, not a regional map or a country archive.
+The compiled catalogue feeds the normal OBCM v17 map paths. Grimsel and the shipped demo
+include Mönch. The Meiringen regional map includes Titlis, Eiger and Mönch. The baker joins
+articles to emitted summit records by original OSM node ID. Gross Wendenstock remains a
+summit without an article. Peak articles use a separate section from landmarks; original
+article and photo credits remain in each collection. These bounded examples do not establish
+complete regional or country article coverage.
 [The source record](sources/peak-view/peak-articles-source.json) identifies the unchanged OSM node
 slice and capture. [The output record](sources/peak-view/peak-articles-content.json) records the
 compiler and catalogue digests. Run `tools/obc fixtures sync peak-articles`, then
