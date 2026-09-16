@@ -1,5 +1,6 @@
 export type Role = 'owner' | 'agent' | 'ci';
-export interface Actor { name: string; role: Role }
+export interface Actor { name: string; role: Role; admin?: boolean; provider?: 'local' | 'github'; userId?: string }
+export interface ApprovedGitHubUser { id: string; login: string; admin: boolean }
 export interface Attachment { id: string; name: string; size: number; sha256: string }
 export interface VerificationTest {
   id: string;
