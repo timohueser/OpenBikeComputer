@@ -96,7 +96,7 @@ impl LandmarksScreen {
         }
         let (x, y) = vp.to_screen(rx.landmarks.origin.0, rx.landmarks.origin.1);
         cv.disc(Point::new(x, y), 5, INK);
-        header(cv, rx.t(Msg::AssistantLandmarks), None);
+        header(cv, rx.t(Msg::AssistantLandmarks), None, None);
         cv.fill(rect(0, 208, 240, 112), PARCHMENT);
         cv.round(rect(6, 210, 228, 104), 6, AMBER);
         let state = rx.landmarks;
@@ -122,7 +122,9 @@ impl LandmarksScreen {
             let mut label = heapless::String::<40>::new();
             let _ = write!(label, "{}  {}", letter(state.selected), rx.t(kind(record.category)));
             cv.text(&label, Point::new(12, 212), Font::Label, TextAlign::Left, SUBTEXT);
-            cv.text(&super::poi_list::fit(&state.name, 18), Point::new(12, 238), Font::Label, TextAlign::Left, INK);
+            let name_row = rect(12, 238, 18 * Font::Label.char_width() as i32, Font::Label.line_height() as i32);
+            let name = rx.marquee.fit(&state.name, 18, Some(name_row));
+            cv.text(&name, Point::new(12, 238), Font::Label, TextAlign::Left, INK);
             label.clear();
             super::vocab::fmt::write_distance_coarse(
                 &mut label,
@@ -210,7 +212,12 @@ where
             (state.page + 1, record.text_pages as u16 + u16::from(!record.photo.is_absent()))
         }
     });
-    header(cv, if sources { rx.t(Msg::RideContextSources) } else { &state.name }, page);
+    header(
+        cv,
+        if sources { rx.t(Msg::RideContextSources) } else { &state.name },
+        page,
+        (!sources).then_some(&rx.marquee),
+    );
     if !state.ready() || state.record.is_none() {
         cv.text(rx.t(status(state.status)), Point::new(12, 100), Font::Label, TextAlign::Left, INK);
         return;
@@ -261,7 +268,12 @@ pub(super) fn visit_action(
         Msg::AssistantNoAccess
     }
 }
-pub(super) fn header(cv: &mut impl Surface, title: &str, page: Option<(u16, u16)>) {
+pub(super) fn header(
+    cv: &mut impl Surface,
+    title: &str,
+    page: Option<(u16, u16)>,
+    marquee: Option<&super::vocab::marquee::MarqueeFrame>,
+) {
     cv.fill(rect(0, 0, 240, 40), PARCHMENT);
     cv.round(rect(4, 4, 232, 34), 6, WOOD);
     let mut count = heapless::String::<12>::new();
@@ -270,7 +282,11 @@ pub(super) fn header(cv: &mut impl Surface, title: &str, page: Option<(u16, u16)
     }
     let reserved = if count.is_empty() { 0 } else { text_width(&count, Font::Label) as usize + 12 };
     let title_chars = (216 - reserved) / Font::Label.char_width() as usize;
-    cv.text(&super::poi_list::fit(title, title_chars), Point::new(12, 9), Font::Label, TextAlign::Left, PARCHMENT);
+    let title = match marquee {
+        Some(marquee) => marquee.fit(title, title_chars, Some(rect(4, 4, 232, 34))),
+        None => super::vocab::marquee::fit(title, title_chars),
+    };
+    cv.text(&title, Point::new(12, 9), Font::Label, TextAlign::Left, PARCHMENT);
     cv.text(&count, Point::new(228, 9), Font::Label, TextAlign::Right, PARCHMENT);
 }
 fn letter(i: usize) -> &'static str {

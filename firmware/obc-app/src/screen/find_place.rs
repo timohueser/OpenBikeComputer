@@ -181,7 +181,9 @@ impl FindPlaceScreen {
         } else {
             poi.name.as_str()
         };
-        cv.text(&super::poi_list::fit(name, 15), Point::new(18, 236), Font::Body, TextAlign::Left, INK);
+        let name_row = rect(18, 236, 15 * Font::Body.char_width() as i32, Font::Body.line_height() as i32);
+        let name = rx.marquee.fit(name, 15, Some(name_row));
+        cv.text(&name, Point::new(18, 236), Font::Body, TextAlign::Left, INK);
         if poi.opening == obc_reader::hours::OpeningStatus::Closed {
             cv.text(rx.t(Msg::AssistantClosed), Point::new(18, 264), Font::Label, TextAlign::Left, WARNING);
             return;
@@ -344,7 +346,8 @@ impl VisitReviewScreen {
         }
         cv.fill(rect(0, 0, rx.w, 40), PARCHMENT);
         cv.round(rect(4, 4, rx.w - 8, 34), 6, WOOD);
-        cv.text(&super::poi_list::fit(&self.name, 18), Point::new(14, 8), Font::Label, TextAlign::Left, PARCHMENT);
+        let title = rx.marquee.fit(&self.name, 18, Some(rect(4, 4, rx.w - 8, 34)));
+        cv.text(&title, Point::new(14, 8), Font::Label, TextAlign::Left, PARCHMENT);
         cv.fill(rect(0, 192, rx.w, rx.h - 192), PARCHMENT);
         if let Some(Costs { arrival_m, arrival_ascent_m, added_m, added_ascent_m }) = rx.find.review_costs {
             figures(cv, arrival_m, arrival_ascent_m, 196, false, rx.settings.units);

@@ -112,7 +112,7 @@ impl LandmarkPhotoScreen {
             let total = record.text_pages as u16 + 1;
             (total, total)
         });
-        super::landmarks::header(cv, self.title.as_str(), page);
+        super::landmarks::header(cv, self.title.as_str(), page, None);
         if self.linked {
             cv.round(obc_render::rect(4, 282, 232, 34), 6, AMBER);
             let label = match super::landmarks::visit_action(

@@ -833,7 +833,8 @@ The application renders on demand. `Dirty` separates base-frame changes from tra
 - `overlay` requests a transient overlay render.
 - `region` can limit a base-frame update to one rectangle.
 
-A static screen with no new input, data, or timer event does not render.
+A static screen with no new input, data, or timer event does not render. A scrolling name is a
+region update of its text row, and its next step is the only timer it arms.
 
 ### The render key
 
@@ -1259,8 +1260,16 @@ Idle return removes abandoned chrome. It returns to Home when idle and to Map du
 Screens use shared primitives for titles, lists, rows, bands, tiles, text, and status indicators.
 
 The `chrome`, `rows`, `list`, and `tiles` modules contain composable drawing parts. The `band`,
-`spinner`, and `pager` modules each own one shared mechanism. The `fmt` module owns shared quantity
-formatting.
+`spinner`, `pager`, and `marquee` modules each own one shared mechanism. The `fmt` module owns
+shared quantity formatting.
+
+The `marquee` module fits a long name into its field. A name that does not fit is cut with `..`.
+One name per frame scrolls instead: the highlighted row of a list, the title of a detail screen or
+card, the selected peak in the Peak View ledger. The draw names it with the text row it occupies,
+and the UI runtime steps it by one character every 250 ms after a 1 s rest at the head, rests 1.5 s
+at the tail, and returns to the head. Every font is monospace, so a step draws a different
+substring and no new primitive. The riding view's waypoint tile scrolls once when the name changes
+and then rests at the head, so nothing moves on the panel while the rider rides.
 
 `ActionRows` owns card-row selection, wrapping, Back dismissal, Press or Hold activation, guard
 state, and row drawing. A card screen maps `CardEvent` to typed domain work and owns its body

@@ -19,4 +19,5 @@ mod quick_drawer;
 mod screens;
 mod upload;
 
+mod marquee;
 mod nav;

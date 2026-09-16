@@ -120,7 +120,9 @@ pub struct PassPlan {
     /// Which display planes changed.
     pub render: Dirty,
     /// Millis until the pass must run again, or `None` to sleep until an event. `Some(0)` when
-    /// [`immediate`](Self::immediate) holds.
+    /// [`immediate`](Self::immediate) holds. Planned before the frame is drawn: a host that renders
+    /// in the same pass reads [`App::ms_until_next_wake`](crate::App::ms_until_next_wake) after the
+    /// draw, since a draw can arm a wake of its own (a long name that starts scrolling).
     pub next_wake_ms: Option<u32>,
     /// The keyed derived reads DeviceCore still needs.
     pub derived_needs: DerivedNeeds,

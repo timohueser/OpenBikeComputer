@@ -3189,6 +3189,7 @@ impl App {
             w: w as i32,
             h: h as i32,
             now_ms: ui.now_ms,
+            marquee: ui.marquee.frame(),
             now,
             clock_set,
             place_local,
@@ -3270,6 +3271,13 @@ impl App {
         }
         // Read out before the debt is discharged, so `rx`'s borrow of `ui` ends first.
         let stats = rx.stats;
+        let marquee = rx.marquee.request();
+        // The one name this frame asked to scroll. A fresh name's first step is armed here, after
+        // the draw that named it — the pass's own wake was planned before the render, so the
+        // firmware reads the deadline again once the frame is drawn.
+        if let Some(wake) = ui.marquee.adopt(marquee, ui.now_ms) {
+            ui.next_wake_ms = Some(ui.next_wake_ms.map_or(wake, |w| w.min(wake)));
+        }
         // **The frame pays what the sheets above the base owed** (#1515 D5). A sheet arms a base
         // draw when it stops purely covering the screen below — a page slide, a shorter sheet
         // swapped in — and carries it until a frame draws that screen. This is that frame, and
