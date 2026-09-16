@@ -66,7 +66,6 @@ jobs:
           set -euo pipefail
           [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "IS_REAL_RELEASE=true" >> "$GITHUB_ENV"
 
       - name: Tag ↔ crate version guard
         run: |
@@ -112,9 +111,6 @@ jobs:
           if [ -n "${OBCU_SIGNING_SEED:-}" ]; then
             echo "signing with the OBCU_SIGNING_SEED environment secret"
             SIGN_ARGS=(--sign-seed-env OBCU_SIGNING_SEED)
-          elif [ "$IS_REAL_RELEASE" != "true" ]; then
-            echo "::warning::OBCU_SIGNING_SEED is not set — dry run, signing with the committed TEST key."
-            SIGN_ARGS=(--sign-seed firmware/obc-dfu/keys/test/obcu-test.seed)
           else
             echo "::error::OBCU_SIGNING_SEED is not set — refusing to publish a real release signed by the committed TEST key."
             echo "::error::Set the secret in the 'release' environment (firmware/obc-dfu/keys/README.md)."

@@ -87,17 +87,18 @@ async function route(event: RequestEvent): Promise<Response> {
     }
     if (parts[2] === 'publish' && method === 'POST') {
       allow('owner');
+      const previousDispatch = store().maybe<{ id: string }>('dispatch', `${id}:publish`)?.id;
       if (candidate.status === 'publishing') await publicationRetry(candidate);
       const locked = store().updateCandidate(id, (c) => {
         assert(c.status !== 'published', 'Release is already published.', 409);
-        assert(c.status === candidate.status, 'Candidate changed. Reload before publishing.', 409);
+        assert(c.status === candidate.status && store().maybe<{ id: string }>('dispatch', `${id}:publish`)?.id === previousDispatch, 'Candidate changed. Reload before publishing.', 409);
         assert(readiness(c).ready, 'Verification is incomplete.', 409);
         assert(!store().list<Candidate>('candidate').some((other) => other.id !== id && other.version === c.version && ['publishing', 'published'].includes(other.status)), 'Another candidate already owns this version.', 409);
         c.status = 'publishing'; c.evidenceFrozen = true; delete c.failure;
         if (!store().maybe('publication', id)) store().put('publication', id, c);
       });
       try { await dispatch(locked, true); }
-      catch (error) { return json(store().updateCandidate(id, (c) => { c.status = 'ready'; c.failure = error instanceof Error ? error.message : 'Publish dispatch failed.'; })); }
+      catch (error) { return json(store().updateCandidate(id, (c) => { c.failure = error instanceof Error ? error.message : 'Publish dispatch failed.'; })); }
       return json(locked);
     }
   }
