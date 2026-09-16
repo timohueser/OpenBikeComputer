@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { Attachment, Candidate, Catalog, LinkProposal, Requirement, Revision } from '../types.ts';
+import type { ApprovedGitHubUser, Attachment, Candidate, Catalog, LinkProposal, Requirement, Revision } from '../types.ts';
 import { assert, Problem, refresh } from './domain.ts';
 
 export class Store {
@@ -18,7 +18,11 @@ export class Store {
       CREATE TABLE IF NOT EXISTS records (seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS record_lookup ON records(kind,id,seq);
       CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, actor TEXT NOT NULL, expires INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS github_users (id TEXT PRIMARY KEY, login TEXT NOT NULL, admin INTEGER NOT NULL CHECK(admin IN (0,1)));
+      CREATE TABLE IF NOT EXISTS local_admin (id INTEGER PRIMARY KEY CHECK(id=1), password_hash TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS login_attempts (key TEXT PRIMARY KEY, count INTEGER NOT NULL, expires INTEGER NOT NULL);`);
+    const initialHash = process.env.VERIFICATION_OWNER_PASSWORD_HASH || '';
+    if (/^[a-f0-9]{32}:[a-f0-9]{128}$/.test(initialHash)) this.db.prepare('INSERT OR IGNORE INTO local_admin(id,password_hash) VALUES(1,?)').run(initialHash);
     if (!this.db.prepare('SELECT id FROM revisions LIMIT 1').get()) this.saveRevision(0, 'Example', [{
       id: 'EXAMPLE-001', title: 'Example — large route upload', active: false,
       statement: '**Illustrative only.** Upload a GPX route containing up to 500,000 GPS points. Replace this example with a requirement you have reviewed before activating it.', tests: []
@@ -66,6 +70,14 @@ export class Store {
   file(id: string): Attachment { return this.get<Attachment>('file', id); }
   catalog(): Catalog { return this.maybe<Catalog>('catalog', 'current') ?? { sourceSha: '', updatedAt: '', cases: [] }; }
   proposals(): LinkProposal[] { return this.list<LinkProposal>('proposal'); }
+  githubUsers(): ApprovedGitHubUser[] {
+    return this.db.prepare('SELECT id,login,admin FROM github_users ORDER BY login COLLATE NOCASE').all().map((row) => ({ id: String(row.id), login: String(row.login), admin: row.admin === 1 }));
+  }
+  githubUser(id: string): ApprovedGitHubUser | undefined {
+    const row = this.db.prepare('SELECT id,login,admin FROM github_users WHERE id=?').get(id);
+    return row ? { id: String(row.id), login: String(row.login), admin: row.admin === 1 } : undefined;
+  }
+  localPasswordHash(): string { return String(this.db.prepare('SELECT password_hash FROM local_admin WHERE id=1').get()?.password_hash ?? ''); }
   id(): string { return randomUUID(); }
 }
 let instance: Store | undefined;

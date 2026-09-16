@@ -3,9 +3,10 @@ import { json } from '@sveltejs/kit';
 import type { Candidate, Catalog, LinkProposal, ManualRun, Role } from '../types.ts';
 import { attachments, assert, identifier, positive, Problem, readiness, requirements, testResults, text } from './domain.ts';
 import { store } from './store.ts';
-import { createSession, localLogin, logout, oauthEnabled, sameOrigin } from './auth.ts';
+import { createSession, localLogin, logout, oauthEnabled, sameOrigin, requireAdmin, changePassword } from './auth.ts';
 import { dispatch, githubEnabled, sourceCommit, verifyPublished, verifyRun, publicationRetry, verifyCatalog, reconcile } from './github.ts';
 import { boundedBody, download, upload } from './files.ts';
+import { approveGitHubUser, removeGitHubUser } from './accounts.ts';
 import { report } from './report.ts';
 
 async function body(event: RequestEvent): Promise<Record<string, any>> {
@@ -40,6 +41,22 @@ async function route(event: RequestEvent): Promise<Response> {
   const allow = (...roles: Role[]) => assert(roles.includes(actor.role), 'This credential cannot perform this action.', 403);
   if (write && actor.role === 'owner') sameOrigin(event.request);
   if (path === 'logout' && method === 'POST') { allow('owner'); logout(event.cookies); return json({ ok: true }); }
+  if (parts[0] === 'users') {
+    requireAdmin(actor);
+    if (parts.length === 1 && method === 'POST') {
+      const data = await body(event);
+      await approveGitHubUser(actor, data.login, data.admin ?? false);
+    } else if (parts.length === 2 && method === 'DELETE') {
+      removeGitHubUser(actor, parts[1]); return json({ ok: true });
+    } else assert(parts.length === 1 && method === 'GET', 'Method not allowed.', 405);
+    return json({ users: store().githubUsers(), oauth: oauthEnabled() });
+  }
+  if (path === 'account/password' && method === 'POST') {
+    requireAdmin(actor);
+    const data = await body(event);
+    changePassword(actor, data.currentPassword, data.newPassword, event.cookies);
+    return json({ ok: true });
+  }
   if (parts[0] === 'ci') { allow('ci'); return ci(event, parts.slice(1)); }
   if (actor.role === 'ci') assert(parts[0] === 'files' || (parts[0] === 'candidates' && ['report', 'evidence'].includes(parts[2]) && method === 'GET'), 'CI access is limited to evidence ingestion and release artifacts.', 403);
   if (path === 'bootstrap' && method === 'GET') return json({ actor, revision: store().latestRevision(), catalog: store().catalog(), candidates: store().list<Candidate>('candidate'), configured: { github: githubEnabled(), oauth: oauthEnabled() } });
