@@ -5,8 +5,7 @@
 use obc_formats::io::SliceSource;
 use obc_route::{RouteIndex, RouteReader, PROFILE_COLS};
 
-mod common;
-use common::convert;
+use crate::common::convert;
 
 /// Densely scan one pyramid `level` across `[lo, hi]` and return its `(min, max)`
 /// elevation envelope — for asserting the downsample keeps extremes (it's min/max, not
@@ -269,7 +268,7 @@ fn sparkline_is_none_without_a_range() {
 
 #[test]
 fn sparkline_refuses_incomplete_segments_and_unreadable_chunks() {
-    use common::{build_obcr, ChunkIn, RouteSpec};
+    use crate::common::{build_obcr, ChunkIn, RouteSpec};
     use obc_formats::io::{ByteSource, Error};
     let chunks = [
         ChunkIn { points: vec![(0, 0, 10), (1000, 0, 20)], cum_distance_m: 0, cum_ascent_m: 0 },

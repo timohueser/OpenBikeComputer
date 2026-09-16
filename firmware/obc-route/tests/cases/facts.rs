@@ -1,5 +1,4 @@
-mod common;
-use common::VecSink;
+use crate::common::VecSink;
 use obc_formats::{io::SliceSource, obcr::RouteSourceKey};
 use obc_route::{gpx_to_obcr_attributed, RouteIndex, RouteReader};
 const MAP: RouteSourceKey = RouteSourceKey { store: [1; 16], object: 2, revision: 3 };

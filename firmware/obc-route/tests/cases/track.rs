@@ -10,8 +10,7 @@ use obc_formats::track::{
 use obc_ports::TrackPoint;
 use obc_route::track_to_gpx;
 
-mod common;
-use common::VecSink;
+use crate::common::VecSink;
 
 /// A `TrackPoint` with no sensor values — the pre-#707 shape, used where sensors are irrelevant.
 fn pt(lon: i32, lat: i32, ele: i16, t_ms: u32, segment_start: bool) -> TrackPoint {

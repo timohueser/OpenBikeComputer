@@ -1,14 +1,13 @@
 //! Real chunk boundaries and I/O budgets for the paced route transforms.
-mod common;
 
-use common::{build_obcr, convert, ChunkIn, RouteSpec, VecSink};
+use crate::common::{build_obcr, convert, ChunkIn, RouteSpec, VecSink};
 use core::cell::{Cell, RefCell};
 use obc_formats::io::{ByteSink, ByteSource, Error, SliceSource};
 use obc_route::{RouteIndex, RouteReader, SpliceStep, Splicer, TrimOutcome, TrimStep, Trimmer};
 
 type Point = (i32, i32, i16);
 
-fn encoded(points: &[Point], seam: usize, waypoints: &[common::WpRec<'_>]) -> Vec<u8> {
+fn encoded(points: &[Point], seam: usize, waypoints: &[crate::common::WpRec<'_>]) -> Vec<u8> {
     let distance = |points: &[Point]| -> u32 {
         points.windows(2).map(|p| obc_map_scene::ground_dist_m((p[0].0, p[0].1), (p[1].0, p[1].1)) as f64).sum::<f64>()
             as u32
@@ -258,7 +257,7 @@ fn splice_waypoints_follow_retained_geometry_and_end_at_measured_total() {
     let (o, d) = (RouteReader::new(&oi, &os), RouteReader::new(&di, &ds));
     let mut sink = VecSink::default();
     let result = obc_route::splice_detour(&o, &d, 100, 200, di.total_distance_m, true, &mut sink).unwrap();
-    let output = common::route_points(&sink.buf);
+    let output = crate::common::route_points(&sink.buf);
     let mut measured = 0.0;
     let mut distances = Vec::new();
     for (i, p) in output.iter().enumerate() {
@@ -299,7 +298,7 @@ fn incomplete_segment_seeks_and_splice_boundaries_keep_elevation_unknown() {
     let d = RouteReader::new(&di, &ds);
     let mut sink = VecSink::default();
     obc_route::splice_detour(&o, &d, 556, oi.chunks()[1].cum_distance_m, di.total_distance_m, true, &mut sink).unwrap();
-    let output = common::route_points(&sink.buf);
+    let output = crate::common::route_points(&sink.buf);
     assert_eq!(output[0].elevation(), Some(10));
     assert_eq!(output[1].elevation(), None, "the clipped splice seam has no measured height");
     let source = SliceSource(&sink.buf);

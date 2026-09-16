@@ -1,7 +1,7 @@
 //! Format-contract tests for the OBCR reader.
 //!
 //! Each test builds a synthetic `.obcr` byte buffer with the shared handwritten builder
-//! ([`common::build_obcr`], which mirrors `OBCR_Spec.md` exactly), then asserts the reader
+//! ([`crate::common::build_obcr`], which mirrors `OBCR_Spec.md` exactly), then asserts the reader
 //! parses it back. Hand-emitting the bytes rather than going through the converter pins the
 //! reader to the spec independently: if either drifts, these break.
 
@@ -13,8 +13,7 @@ use obc_route::{
     RouteCache, RouteIndex, RoutePoint, RouteReader, RouteSummary, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS,
 };
 
-mod common;
-use common::{build_obcr, decode, ChunkIn, IndexPlacement, RouteSpec};
+use crate::common::{build_obcr, decode, ChunkIn, IndexPlacement, RouteSpec};
 
 /// A [`ByteSource`] that wraps a [`SliceSource`] and counts `read_at` calls, so a test can prove
 /// the [`RouteCache`] really skips the source on a hit.

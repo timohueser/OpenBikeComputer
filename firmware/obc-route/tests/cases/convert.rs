@@ -4,8 +4,7 @@
 use obc_formats::io::{Error, SliceSource};
 use obc_route::{gpx_to_obcr, RouteIndex, RoutePoint, RouteReader};
 
-mod common;
-use common::{convert, decode, VecSink};
+use crate::common::{convert, decode, VecSink};
 
 /// A straight, gently rolling eastward track. The four points are collinear, so the
 /// geometry decimates to its two endpoints — but the stats come from every raw point.
