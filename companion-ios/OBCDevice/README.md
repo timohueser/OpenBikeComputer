@@ -42,7 +42,13 @@ simulator SDK. An Intel Mac cannot run this app.
 ## On a phone
 
 Signing comes from the gitignored `project.local.yml`, as it does for the companion. Put your team
-id there, run `xcodegen generate` again, then pick your phone as the destination.
+id there, then either pick your phone as the destination in Xcode or run:
+
+```sh
+obc ios-device                  # packs the host, builds, installs and launches on the paired phone
+```
+
+With more than one paired phone, pass its name or identifier from `xcrun devicectl list devices`.
 
 The card is a 32 GiB sparse file and is marked as excluded from backup. Settings › General ›
 iPhone Storage reports the bytes in use, not 32 GB.
