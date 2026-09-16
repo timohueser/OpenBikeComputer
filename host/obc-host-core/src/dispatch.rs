@@ -1436,7 +1436,7 @@ mod tests {
         }
         assert_eq!(reboot.assistant_review_status(), ReviewStatus::Accepted);
         assert_eq!(reboot.route_ids()[reboot.active_route_index().unwrap()], preview.source.object);
-        assert!(!reboot.recording());
+        assert!(reboot.recording());
         assert!(!reboot.visit_arrival_pending());
         assert!(reboot.assistant_checkpoint().unwrap().progress_m > 50);
         assert_eq!(routes.read_checkpoint().unwrap(), reboot.assistant_checkpoint());

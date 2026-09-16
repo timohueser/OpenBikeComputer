@@ -391,6 +391,14 @@ fn find_prepares_ranked_candidates_without_render_or_early_catalog_shape_binding
         assert_eq!(h.h.app.find_place_state(), obc_app::find_place::State::Ready);
         assert_eq!(h.h.app.find_place_result_count(), 1);
         h.h.app.apply_gesture(obc_app::Gesture::Back);
+        assert_eq!(h.h.app.find_place_state(), obc_app::find_place::State::Ready);
+        for _ in 0..2 {
+            if !matches!(h.h.app.top_screen(), obc_app::screen::Screen::FindPlace(_)) {
+                break;
+            }
+            h.h.app.apply_gesture(obc_app::Gesture::Back);
+        }
+        assert_eq!(h.h.app.find_place_state(), obc_app::find_place::State::Idle);
         for _ in 0..20 {
             h.pass_with(&mut Position, true);
             h.h.app.prepare_find(None, None);
