@@ -102,11 +102,10 @@ fails the upload; setup failure can leave no bundle. The screenshot script also 
 `OBC_XCRESULT_PATH` for local retention. A workflow declaration alone does not establish a passing
 run. TS6 still owns the remaining critical application journeys.
 
-The UI snapshot sweep is its own `ui-snapshots` job, off the `test` job's serial path. Its
-`ci.ui-snapshots` suite still selects only on its own rendering, screen and snapshot-input
-triggers, and a broad coverage or policy change does not select it. The job itself also starts
-whenever the simulator is selected, because the job compiles the simulator and a job that
-compiles a package is a route for it — the same rule that starts `clippy` and `fmt`.
+The UI snapshot sweep is its own `ui-snapshots` job, off the `test` job's serial path. The
+sweep step runs only when `ci.ui-snapshots` is selected, and that suite still selects only on
+its own rendering, screen and snapshot-input triggers. A broad coverage or policy change does
+not run a sweep.
 
 ## Suite registry fields
 
@@ -170,7 +169,7 @@ unmeasured files. Unmeasured informational source stays visible and does not bec
 
 | Maintained invocation | Collector | Coverage artifact |
 | --- | --- | --- |
-| Selected-package nextest | cargo-llvm-cov 0.9.1, current Rust LLVM | `coverage-rust-ATTEMPT` |
+| Workspace nextest | cargo-llvm-cov 0.9.1, current Rust LLVM | `coverage-rust-ATTEMPT` |
 | Repository and firmware Python | coverage.py 7.16.1 around xmlrunner | `coverage-repository-tools-ATTEMPT`, `coverage-firmware-tools-ATTEMPT` |
 | Builder Python | pytest-cov 7.1.0, coverage.py 7.16.1 | `coverage-builder-ATTEMPT` |
 | Builder Vitest | Vitest and V8 provider 3.2.6 | `coverage-web-ATTEMPT` |
@@ -260,10 +259,10 @@ request that the run did not reproduce, with the reason. It makes no unqualified
 ## Rust CI result artifacts
 
 `tools/ci/test.sh` is the body of the `test` job, one section per CI step, and `obc check test`
-runs the same file. Each section asks `tools/ci/rust_packages.py` which packages its tier
-selected and compiles those with `-p`. A change to the root manifest, the lockfile, the
-toolchain, the registry or the workflow compiles the whole workspace instead. A tier that
-selected no package prints that and runs nothing; it never falls back to the workspace.
+runs the same file. Compilation is workspace-wide. The per-pull-request coverage ratchet reads
+one LCOV report over the whole workspace and fails any critical file it never compiled, so a
+narrowed package set would fail the ratchet instead of saving time. Only the two nextest
+sections run under llvm-cov instrumentation, because their report is that evidence.
 
 The two `cargo nextest run` commands in `test` use `NEXTEST_PROFILE=ci` for fast binaries
 and `NEXTEST_PROFILE=fixtures` for captured fixtures. The profiles in `.config/nextest.toml` write
@@ -284,8 +283,7 @@ Each command removes an old report before it starts. A skipped job uploads nothi
 fixture setup failure remains a failure and may produce no report; the upload step reports a
 missing file as an error. CI does not create an empty report or run the tests again for reporting.
 
-These JUnit artifacts cover nextest invocations. A tier that selected no package writes no
-report and uploads none. Doctests for the selected packages and the default-feature
+These JUnit artifacts cover nextest invocations. Workspace doctests and the default-feature
 `obc-formats` Cargo command retain their native text in `coverage-rust-ATTEMPT` (`doctests.log` and
 `formats-default.log`). Those logs contain native identities and outcomes, with aggregate durations;
 Cargo does not emit individual case durations for these commands. No synthetic durations or passes
