@@ -482,7 +482,7 @@ places are excluded before these limits. The shared corridor page keeps its rout
 The shared Visit planner measures at most eight distinct candidates, one at a time. It stores each
 measured route on the card and releases the planner before the next plan starts. The Finding
 indicator stays visible through the complete batch. Its small compass turns by one third of a revolution once per
-second without redrawing the map. Planning a suggestion does not activate a route or change the recording session. Up to four useful choices remain. An **On the way** choice adds at most 400 m to
+second without redrawing the map. Planning a suggestion does not activate a route or change the recording session. Up to four useful choices remain. A choice on the way adds at most 400 m to
 the complete visit. A nearer alternative remains when its measured costs provide a useful choice.
 Unknown ascent cannot eliminate a measured choice.
 
@@ -500,8 +500,11 @@ through the place and back to the original route; the stored journey retains the
 The card shows route distance and ascent to arrival. Added costs compare the complete visit,
 including its return, with the remaining accepted route. With no accepted route, the review is a
 direct destination and has no return cost. Membership, order, map bounds, and cost origin stay fixed
-until the category is reopened. These bounded results do not establish a global nearest place.
-**More places** opens the full paged category browser. It plans only the place selected for review.
+while the cached inputs remain valid. The last category stays cached until another category is
+calculated or the Assistant closes. A changed map, route, bike profile, clock authority, or stale
+origin invalidates the choices. These bounded results do not establish a global nearest place.
+**More places** opens the full paged category browser. Back returns to the category overview
+without route calculation. The browser plans only the place selected for review.
 
 Selecting a Find suggestion opens Visit review directly and loads its stored route without another
 route calculation. With an active route, the action button offers **Add detour** or **Route here**.
@@ -509,17 +512,20 @@ Use Up or Down to switch; the card updates its geometry and costs before Select 
 **Route here** plans from the current position to the place and replaces the current goal. It has
 no return leg or original-route continuation. **Add detour** is the initial choice in every category.
 With no active route, the card offers only **Route here**. Switching modes stays on the same card.
-Back and reselect reuse the category's original route while its inputs remain valid. Leaving
-the category removes unused routes. Restart removes abandoned previews while preserving accepted
+Back and reselect reuse the category's original route while its inputs remain valid. Closing
+the Assistant removes unused routes. Restart removes abandoned previews while preserving accepted
 checkpoint routes. More places retains the place detail page and plans the
 selected place through the shared Visit planner. Ordinary service places without an explicit OSM approach
 use normal coordinate destination routing. The review binds the exact map revision and actual
 route endpoint. The preview draws the rider and destination pin above the route. When an explicit
 approach is more than 100 m from the place's map coordinate, a dotted line connects the route end
-to the pin. The caption gives this direct distance. The pin can mark the center of a feature;
-the line does not describe a walking path. A known-closed place, a changed source, or a stale origin
+to the pin. The pin can mark the center of a feature; the line does not describe a walking path.
+A small pill shows the current opening interval when trusted hours are available. Otherwise it
+shows that the hours are unknown or that the place is closed. A known-closed place, a changed source, or a stale origin
 prevents acceptance. Missing elevation remains unknown. Acceptance
-uses the shared durable Visit transaction; browsing and cancellation leave the active route intact.
+uses the shared durable Visit transaction. After the route is accepted, the device starts recording
+if no ride session exists. An existing ride keeps its session and pause state. Browsing and
+cancellation leave the active route intact.
 
 Implementation: [Find preparation](src:firmware/obc-app/src/find_place.rs),
 [Find and Visit review screens](src:firmware/obc-app/src/screen/find_place.rs).

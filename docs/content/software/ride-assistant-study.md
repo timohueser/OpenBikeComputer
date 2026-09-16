@@ -132,7 +132,10 @@ remain layout references; their synthetic alternatives do not ship.
 ## Discovery and limits
 
 Find a place includes all map categories. **More places** opens the complete paged browser for the
-selected category. What's next retains category and source filters, generic and categorized authored
+selected category. Back returns to its overview. The last calculated category stays cached until
+another category replaces it or the Assistant closes, while its inputs remain valid. Accepting a
+place route starts recording if no ride session exists. An existing ride continues in the same
+session. What's next retains category and source filters, generic and categorized authored
 waypoints, route order, route distance and climbing, lateral offsets, and stable selected identity.
 An authored waypoint is information from the route; its detail cannot add it as a new stop.
 Generated Assistant routes are internal and do not appear in saved Routes. Acceptance keeps their
