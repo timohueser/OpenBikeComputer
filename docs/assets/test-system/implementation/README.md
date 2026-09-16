@@ -1,0 +1,32 @@
+# Test system redesign — implementation documents
+
+The design record behind epic
+[#1816](https://github.com/timohueser/OpenBikeComputer/issues/1816). The epic fixes scope, order and
+acceptance; these documents hold the design and the evidence it rests on.
+
+| File | What it is |
+| --- | --- |
+| `epic.md` | The epic body, mirrored from #1816. The authoritative scope. |
+| `plan.md` | The settled design (plan v3), corrected on 2026-09-16 against current `develop`. Children are derived from this. |
+| `plan-v2-superseded.md` | The first full proposal. Kept only because `plan.md` cites it. Do not implement from it. |
+| `surveys/` | Ten parallel subsystem surveys of the test system as it stood at `d42e2e3a`, plus a completeness critic. Every claim carries a `file:line`. |
+| `reviews/` | Six adversarial reviews of the first proposal, and one independent review by a second agent that produced plan v3. |
+
+## How to read these
+
+`plan.md` is the design. It was written against `d42e2e3a` and landed three days later, by which
+time `develop` was 764 commits ahead. Its corrections are applied in place and marked
+`[CORRECTED …]`, `[REMOVED …]` or `[ALREADY DONE …]`; the epic carries the same list with reasons.
+
+The surveys and reviews are a snapshot, not a live inventory. They describe the repository at
+`d42e2e3a`. Read them for mechanism and rationale, never as a current census. Anything counted
+there must be re-counted before it is quoted again: the weather subsystem has since been deleted
+entirely, `obc-app` lost 27% of its test targets, and the golden manifest shrank from 317 frames to
+263.
+
+## The one open design question
+
+Whether to share the host-side application assembly, or to keep the hand-written copies in
+`apps/obc-sim`, `apps/obc-web-demo`, `apps/obc-ios-host` and the board. `plan.md` decided against
+sharing, but both of its stated reasons have since changed. This is an owner decision and must be
+settled before the composition-check milestone opens. See #1816.
