@@ -35,7 +35,7 @@ pub(super) struct TerrainDoc {
     /// The terrain store's own revision. Nothing here is `schema_revision`.
     pub(super) revision: u32,
     /// The source licence's required credit, verbatim. The bakery stamps
-    /// `obc_dem::COPERNICUS_ATTRIBUTION` here; this crate never hard-codes it, because
+    /// `obc_elevation::COPERNICUS_ATTRIBUTION` here; this crate never hard-codes it, because
     /// a generic producer publishing another dataset owes a different notice.
     pub(super) attribution: String,
 }

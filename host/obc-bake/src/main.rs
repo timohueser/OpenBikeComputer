@@ -275,7 +275,7 @@ fn run_cell_bake(
                 posting_log2: obc_dem::bake::V1_POSTING_LOG2,
                 cell_log2: obc_dem::bake::V1_CELL_LOG2,
                 revision: 1,
-                attribution: obc_dem::COPERNICUS_ATTRIBUTION.to_string(),
+                attribution: obc_elevation::COPERNICUS_ATTRIBUTION.to_string(),
             }
         };
         let sources = match flags.get("dem-sources") {
@@ -293,7 +293,7 @@ fn run_cell_bake(
         .run(&obc_pack::progress::Progress::stdout())?;
         print!("{}", summary.render());
         // The credit is a licence obligation, printed wherever the dataset was used.
-        println!("{}\n", obc_dem::COPERNICUS_ATTRIBUTION);
+        println!("{}\n", obc_elevation::COPERNICUS_ATTRIBUTION);
     }
 
     let cutter = obc_bake::cells::ObcCutter {
@@ -529,7 +529,7 @@ fn run_terrain(args: &[String]) -> Result<(), String> {
         revision: number("terrain-revision", 1)?,
         // The credit is a licence obligation and is never retyped here: it comes from the one
         // `const` in `obc-dem`, travels into the catalog, and a consumer reads it from there.
-        attribution: obc_dem::COPERNICUS_ATTRIBUTION.to_string(),
+        attribution: obc_elevation::COPERNICUS_ATTRIBUTION.to_string(),
     };
 
     let cache = flags.get("cache").map(PathBuf::from).unwrap_or_else(default_cache_dir);
@@ -564,7 +564,7 @@ fn run_terrain(args: &[String]) -> Result<(), String> {
     };
     // Unconditional, and before the `?`: the credit is a licence obligation of the data that was just
     // written, so it cannot be something only a fully successful catalog pass gets to print.
-    println!("\n{}", obc_dem::COPERNICUS_ATTRIBUTION);
+    println!("\n{}", obc_elevation::COPERNICUS_ATTRIBUTION);
     finished
 }
 

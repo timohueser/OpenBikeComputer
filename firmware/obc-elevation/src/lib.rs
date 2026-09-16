@@ -43,7 +43,40 @@ pub use integrator::ProfileIntegrator;
 pub use reader::{TerrainHeader, TerrainReader, TerrainTables};
 pub use source::{ElevationSource, NullElevation, TerrainElevation};
 
+/// The credit the Copernicus DEM licence requires on any product derived from the dataset, verbatim.
+///
+/// The licence ("Copernicus DEM Instance COP-DEM-GLO-30-F") requires this exact notice wherever the
+/// data have been adapted or modified — which a resample to a different lattice certainly is. It is
+/// not a courtesy and it is not paraphrasable: the baker stamps it into the catalog, the builder
+/// surfaces it in the browser, and the About page shows it on glass. It lives in this leaf crate
+/// because every one of those consumers already depends on it, and none of them should have to
+/// take a host DEM tool just to read a string.
+pub const COPERNICUS_ATTRIBUTION: &str = "produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 \
+and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and \
+ESA; all rights reserved";
+
+/// The dataset the terrain tiles are derived from, as the catalog names it.
+pub const SOURCE_DATASET: &str = "Copernicus DEM GLO-30";
+
 /// The v1 tile-cache depth: four 512 B tiles ≈ 2.1 KB. Four because a single bilinear query can
 /// straddle a tile corner and touch exactly four tiles — anything less would thrash on the one
 /// access pattern the sampler is guaranteed to make.
 pub const DEFAULT_TILE_SLOTS: usize = 4;
+
+#[cfg(test)]
+mod tests {
+    use super::COPERNICUS_ATTRIBUTION;
+
+    #[test]
+    fn the_attribution_is_the_wording_the_licence_names() {
+        // Pinned as one line: the `const` is written with continuations, and a stray newline in it
+        // would travel into the catalog and the builder.
+        assert_eq!(
+            COPERNICUS_ATTRIBUTION,
+            "produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and \
+             Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all \
+             rights reserved"
+        );
+        assert!(!COPERNICUS_ATTRIBUTION.contains('\n'));
+    }
+}
