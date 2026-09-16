@@ -1485,7 +1485,7 @@ pub(crate) async fn run_app(
 
             // Open the session before serving the previous pass's first samples.
             if let Some(outcome) =
-                ride_recorder.execute(flat, &app, &mut opened_session, exec.effects.recorder.take(), now).await
+                ride_recorder.execute(flat, app, &mut opened_session, exec.effects.recorder.take(), now).await
             {
                 RideExec::deliver(&mut exec.outcomes.recorder, outcome, "recorder");
             }
