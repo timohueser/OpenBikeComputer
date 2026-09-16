@@ -231,7 +231,7 @@ pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
     f.push(SCALE.log2()); // §1.1 offset scale
     f.extend_from_slice(&0u32.to_le_bytes()); // §1.3 terrain offset — this fixture has no raster
     f.extend_from_slice(&0u32.to_le_bytes()); // …and its length is `0` exactly when the offset is
-    f.extend_from_slice(&[0; 8]); // no landmark section
+    f.extend_from_slice(&[0; 16]); // no landmark or peak section
     debug_assert_eq!(f.len(), obc_formats::obcm::HEADER_LEN);
     f.resize(style_off, FILLER);
     f.extend_from_slice(&styles);
