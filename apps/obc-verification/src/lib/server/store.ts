@@ -58,14 +58,16 @@ export class Store {
     }, previous);
     if (highest > previous) this.put('sequence', 'requirement', highest);
   }
-  reserveRequirementId(): string {
+  reserveRequirementIds(count = 1): string[] {
     return this.atomic(() => {
-      const next = (this.maybe<number>('sequence', 'requirement') ?? 0) + 1;
-      assert(Number.isSafeInteger(next), 'Requirement number limit reached.');
-      this.put('sequence', 'requirement', next);
-      return `SYS-${String(next).padStart(3, '0')}`;
+      const first = (this.maybe<number>('sequence', 'requirement') ?? 0) + 1;
+      const last = first + count - 1;
+      assert(Number.isSafeInteger(last), 'Requirement number limit reached.');
+      this.put('sequence', 'requirement', last);
+      return Array.from({ length: count }, (_, i) => `SYS-${String(first + i).padStart(3, '0')}`);
     });
   }
+  reserveRequirementId(): string { return this.reserveRequirementIds(1)[0]; }
   saveRevision(base: number, author: string, requirements: Requirement[]): Revision {
     return this.atomic(() => {
       const row = this.db.prepare('SELECT MAX(id) AS id FROM revisions').get();
