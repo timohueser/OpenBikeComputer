@@ -116,8 +116,9 @@ RUST_FOUNDATION_PATHS = {
 }
 # A change to how this repository decides or executes verification selects every declared
 # suite: the decision itself is what changed. Agent prose (CLAUDE.md, AGENTS.md) is not on
-# this list: it instructs an agent, it does not decide or execute anything, so it takes the
-# documentation route instead of building every platform.
+# this list: it instructs an agent, it does not decide or execute anything. It is owned by the
+# documentation route so it is not an unowned path; the check that reads it is the
+# unconditional `guards` job, not a platform build.
 TEST_POLICY_PATTERNS = (
     ".config/nextest.toml",
     ".github/workflows/**",

@@ -51,8 +51,10 @@ Epic #1816 landed in eleven pull requests. One child, TS-H, is not done.
 
 ### Measured
 
-- The `test` job went from 302 s to 178 s. The saving is the snapshot sweep and the builder
-  pytest leaving that job's serial path, not a narrowed package set.
+- The `test` job: 302 s before the epic; 153 s measured on TS-B's head when it shipped (#1841);
+  177-194 s on `develop` push runs after every child landed, measured 2026-09-16. All three are
+  measurements, not estimates. The saving is the snapshot sweep and the builder pytest
+  leaving that job's serial path, not a narrowed package set.
 - `obc-app` went from 17 ordinary integration executables to 1. Across the seven consolidated
   packages the count went from 73 to 8. Wall time per rebuild did not change; CPU halved, and
   nextest execution is about 1.2 s slower because each test process now loads a larger binary.

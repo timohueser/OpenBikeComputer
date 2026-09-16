@@ -349,8 +349,8 @@ id = "ci.docs"
 route = "required"
 command = "obc check docs"
 jobs = ["docs"]
-# The agent on-ramps ride the documentation route: they are prose, and the docs job is the
-# only check they can fail.
+# The agent on-ramps are owned here so they are not unowned paths. `build_docs.py` does not
+# read them; the check that does is the unconditional `guards` job.
 triggers = ["docs/**", "CLAUDE.md", "AGENTS.md"]
 
 [[suite]]
