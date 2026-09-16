@@ -242,7 +242,7 @@ integers are **little-endian**.
 
 ## 1. Header (65 bytes)
 
-Packed as `struct "<4sBiiiiIBIHIIBIIII"`.
+Packed as `struct "<4sBiiiiIBIHIIBIIIIII"`.
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
