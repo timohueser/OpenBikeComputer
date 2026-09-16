@@ -15,7 +15,6 @@
 //!
 //! **Provisional.** This whole file goes when #1096's toggle does.
 
-
 use core::cell::RefCell;
 
 use embedded_graphics::pixelcolor::Rgb888;
