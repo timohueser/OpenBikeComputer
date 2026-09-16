@@ -8,9 +8,23 @@ import unittest
 spec = importlib.util.spec_from_file_location("verification_import", Path(__file__).resolve().parents[2] / "apps/obc-verification/ops/import_results.py")
 report = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(report)
+publish_spec = importlib.util.spec_from_file_location("verification_publish", Path(__file__).resolve().parents[2] / "apps/obc-verification/ops/publish.py")
+publish = importlib.util.module_from_spec(publish_spec)
+publish_spec.loader.exec_module(publish)
 
 
 class VerificationImportTests(unittest.TestCase):
+    def test_release_notes_do_not_present_excepted_requirements_as_verified(self):
+        candidate = {"id": "candidate", "sourceSha": "a" * 40, "version": "v0.1.0-alpha"}
+        self.assertIn("Verified candidate", publish.release_notes(candidate, "owner/repo"))
+        candidate["exceptions"] = [{"requirementId": "SYS-001"}]
+        notes = publish.release_notes(candidate, "owner/repo")
+        self.assertIn("Accepted requirement exceptions: 1", notes)
+        self.assertIn("`SYS-001`", notes)
+        self.assertIn("not counted as verified", notes)
+        self.assertIn("verification-report.html", notes)
+        self.assertNotIn("Verified candidate", notes)
+
     def test_native_statuses_and_stable_identities_ignore_coverage(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

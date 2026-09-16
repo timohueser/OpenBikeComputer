@@ -37,3 +37,41 @@ test('requirements accept one optional flat group and normalize ungrouped values
   assert.throws(() => read('x'.repeat(81)), /80/);
   assert.throws(() => read('Navigation\nRoutes'), /single line/);
 });
+
+test('active unfinished definitions cannot be excepted and to-do status is a strict optional boolean', () => {
+  const c = candidate();
+  const req = c.revision.requirements[0];
+  const read = (todo: unknown) => requirements([{ ...req, todo }], () => { throw new Error('unknown file'); })[0];
+  assert.equal(read(true).todo, true);
+  assert.equal(read(false).todo, undefined);
+  assert.equal(read(undefined).todo, undefined);
+  for (const invalid of ['true', null, 1]) assert.throws(() => read(invalid), /boolean/);
+  req.todo = true;
+  c.exceptions = [{ requirementId: req.id, reason: 'Cannot skip definition', author: 'owner', createdAt: '' }];
+  assert.equal(readiness(c).ready, false);
+  assert.equal(readiness(c).excepted, 0);
+  assert.equal(readiness(c).verified, 0);
+  assert.match(readiness(c).missing.join(' '), /definition is still to do/);
+  req.active = false;
+  c.revision.requirements.push({ ...candidate().revision.requirements[0], id: 'REQ-2' });
+  c.manualRuns.push({ ...c.manualRuns[0], requirementId: 'REQ-2' });
+  assert.deepEqual(readiness(c), { ready: true, missing: [], verified: 1, total: 1, excepted: 0 });
+});
+
+test('candidate exceptions remain distinct from verification and never bypass CI or firmware gates', () => {
+  const c = candidate();
+  const req = c.revision.requirements[0];
+  c.exceptions = [{ requirementId: req.id, reason: 'Known gap outside the assertions', author: 'owner', createdAt: '' }];
+  assert.deepEqual(readiness(c), { ready: true, missing: [], verified: 0, total: 1, excepted: 1 });
+  c.results[0].status = 'fail'; c.manualRuns[0].result = 'blocked';
+  assert.equal(readiness(c).ready, true);
+  c.ciStatus = 'failure'; assert.equal(readiness(c).ready, false);
+  c.ciStatus = 'pending'; assert.equal(readiness(c).ready, false);
+  c.ciStatus = 'success'; c.assets.pop(); assert.equal(readiness(c).ready, false);
+  c.assets = candidate().assets;
+  req.tests = []; assert.equal(readiness(c).ready, true);
+  c.exceptions = []; assert.equal(readiness(c).ready, false);
+  const next = candidate(); next.results = []; next.manualRuns = [];
+  assert.equal(readiness(next).ready, false); assert.equal(readiness(next).excepted, 0);
+  c.revision.requirements = []; assert.equal(readiness(c).ready, false);
+});

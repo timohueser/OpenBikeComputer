@@ -11,20 +11,21 @@ export interface VerificationTest {
   expected?: string;
   inputs: Attachment[];
 }
-export interface Requirement { id: string; title: string; statement: string; group?: string; active: boolean; tests: VerificationTest[] }
+export interface Requirement { id: string; title: string; statement: string; group?: string; todo?: boolean; active: boolean; tests: VerificationTest[] }
 export interface Revision { id: number; createdAt: string; author: string; requirements: Requirement[] }
 export interface CatalogCase { id: string; suite: string; name: string; file?: string }
 export interface Catalog { sourceSha: string; updatedAt: string; cases: CatalogCase[] }
 export interface TestResult { caseId: string; status: 'pass' | 'fail' | 'skip' | 'error'; detail?: string }
 export interface ManualRun { id: string; requirementId: string; testId: string; result: 'pass' | 'fail' | 'blocked'; device: string; notes: string; evidence: Attachment[]; author: string; createdAt: string }
 export interface ReleaseAsset extends Attachment { url?: string }
+export interface RequirementException { requirementId: string; reason: string; author: string; createdAt: string }
 export interface Candidate {
   id: string; version: string; sourceRef: string; sourceSha: string; revision: Revision;
   createdAt: string; status: 'queued' | 'running' | 'failed' | 'ready' | 'publishing' | 'published';
   ciStatus: 'pending' | 'success' | 'failure'; runId?: number; runAttempt?: number;
   results: TestResult[]; manualRuns: ManualRun[]; assets: ReleaseAsset[];
-  releaseUrl?: string; failure?: string; evidenceFrozen?: boolean;
+  releaseUrl?: string; failure?: string; evidenceFrozen?: boolean; exceptions?: RequirementException[];
 }
-export interface Readiness { ready: boolean; missing: string[]; verified: number; total: number }
+export interface Readiness { ready: boolean; missing: string[]; verified: number; total: number; excepted: number }
 export interface Bootstrap { actor: Actor; revision: Revision; catalog: Catalog; candidates: Candidate[]; configured: { github: boolean; oauth: boolean } }
 export interface LinkProposal { id: string; baseRevision: number; requirementId: string; caseId: string; action: 'add' | 'remove'; reason: string; author: string; createdAt: string; status: 'pending' | 'accepted' | 'rejected' }

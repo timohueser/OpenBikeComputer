@@ -105,9 +105,16 @@ The workflow builds the bootloader and application. It converts the application 
 Each active system requirement must have linked tests. Every linked automated test needs a pass
 from this candidate's CI run. Every linked manual test needs a recorded pass for this candidate.
 The owner can attach input files to manual procedures and evidence files to manual results. A new
-candidate needs new manual results. Missing tests, skipped tests, and failed checks block publication.
+candidate needs new manual results. Missing tests, skipped tests, and failed checks block publication
+unless an administrator records a requirement exception for that candidate. An exception needs a
+reason and retains the original test results. It does not carry into another candidate. The report
+and release notes distinguish accepted exceptions from verified requirements.
 
-When all checks pass, the owner can publish. The [publication workflow](src:.github/workflows/verification-publish.yml)
+An active requirement marked **To do** has an incomplete definition and blocks publication. Resolve
+it in a new requirement revision and prepare a new candidate. Exceptions cannot bypass this rule,
+failed CI, firmware signing, missing build files, or evidence provenance checks.
+
+When the release gate passes, the owner can publish. The [publication workflow](src:.github/workflows/verification-publish.yml)
 checks the frozen evidence and retained file hashes again. It creates the tag at the tested commit
 and publishes the retained firmware without a rebuild.
 

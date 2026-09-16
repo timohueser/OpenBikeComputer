@@ -81,3 +81,21 @@ test('standalone reports render Markdown without active content', () => {
   assert.match(html, /Group: Navigation &lt;script&gt;/);
   assert.doesNotMatch(html, /<script>|href="javascript:|<img/);
 });
+
+test('reports distinguish accepted gaps from passes and retain unfinished definitions and original failures', () => {
+  const c: Candidate = { id: 'exceptions', version: 'v0.1.0-alpha', sourceRef: 'develop', sourceSha: 'a'.repeat(40), createdAt: '', status: 'ready', ciStatus: 'success',
+    revision: { id: 1, author: 'owner', createdAt: '', requirements: [{ id: 'REQ-1', title: 'Runtime', statement: 'Defined target', active: true, tests: [{ id: 'manual', title: 'Battery run', kind: 'manual', steps: 'Measure', expected: 'Meets target', inputs: [] }] }] },
+    results: [], manualRuns: [{ id: 'run', requirementId: 'REQ-1', testId: 'manual', result: 'fail', device: 'alpha board', notes: 'Measured below target', evidence: [], author: 'tester', createdAt: '' }],
+    assets: ['UPDATE.BIN', 'manifest.json', 'SHA256SUMS.txt', 'obc-boot.elf', 'obc-fw-nrf54l.elf'].map(name => ({ id: name, name, size: 1, sha256: 'a'.repeat(64) })),
+    exceptions: [{ requirementId: 'REQ-1', reason: 'Alpha limitation <script>bad()</script>', author: 'admin', createdAt: '2026-09-16' }] };
+  const html = report(c);
+  assert.match(html, /<h2>Accepted with exceptions<\/h2>/);
+  assert.match(html, /0\/1 requirements verified · 1 accepted with exception/);
+  assert.match(html, /<strong>fail<\/strong>/);
+  assert.match(html, /Alpha limitation &lt;script&gt;/);
+  assert.match(html, /Accepted by admin/);
+  assert.doesNotMatch(html, /<script>|<h2>Verified<\/h2>/);
+  c.revision.requirements[0].todo = true;
+  assert.match(report(c), /<h2>Incomplete<\/h2>/);
+  assert.match(report(c), /To do — requirement definition is incomplete/);
+});

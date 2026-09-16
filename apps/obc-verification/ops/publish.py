@@ -14,6 +14,24 @@ def command(*args):
     return subprocess.check_output(args, text=True).strip()
 
 
+def release_notes(candidate, repo):
+    version, source = candidate["version"], candidate["sourceSha"]
+    exceptions = candidate.get("exceptions", [])
+    outcome = "Candidate accepted with requirement exceptions" if exceptions else "Verified candidate"
+    notice = ""
+    if exceptions:
+        ids = ", ".join(f"`{item['requirementId']}`" for item in exceptions)
+        notice = (f"**Accepted requirement exceptions: {len(exceptions)}.** {ids}. "
+                  "These requirements are not counted as verified. Reasons, approvers, and original test outcomes "
+                  "are recorded in the attached `verification-report.html` and `verification-evidence.json`.\n\n")
+    return (
+        f"{outcome} `{candidate['id']}` at `{source}`.\n\n" + notice +
+        f"**Source and licences.** Firmware is licensed under [GPL-3.0](https://github.com/{repo}/blob/{version}/LICENSE). "
+        f"[Complete corresponding source](https://github.com/{repo}/tree/{version}) and "
+        f"[third-party licences](https://github.com/{repo}/blob/{version}/THIRD-PARTY.md) apply to these files and their copies at updates.openbikecomputer.com.\n"
+    )
+
+
 def main():
     candidate_id = os.environ["CANDIDATE_ID"]
     assert re.fullmatch(r"[A-Za-z0-9-]+", candidate_id), "Invalid candidate ID"
@@ -79,12 +97,7 @@ def main():
         prerelease = "-" in version.split("+", 1)[0]
         if existing.returncode != 0:
             notes = directory / "notes.md"
-            notes.write_text(
-                f"Verified candidate `{candidate_id}` at `{source}`.\n\n"
-                f"**Source and licences.** Firmware is licensed under [GPL-3.0](https://github.com/{repo}/blob/{version}/LICENSE). "
-                f"[Complete corresponding source](https://github.com/{repo}/tree/{version}) and "
-                f"[third-party licences](https://github.com/{repo}/blob/{version}/THIRD-PARTY.md) apply to these files and their copies at updates.openbikecomputer.com.\n"
-            )
+            notes.write_text(release_notes(candidate, repo))
             args = ["gh", "release", "create", version, "--verify-tag", "--draft", "--title", version, "--notes-file", str(notes), "--generate-notes"]
             if prerelease:
                 args.append("--prerelease")
