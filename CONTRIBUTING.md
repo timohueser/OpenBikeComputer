@@ -35,8 +35,8 @@ obc test unit --surface formats
 and `--dry-run` executes nothing.
 
 Run `obc suites check` after changing test sources, validation commands, workflows, registries, or
-test policy. Use `obc suites list` and `obc suites explain SUITE_ID` to inspect the derived
-inventory; counts and durations do not belong in the registry.
+test policy. `testing/suites.toml` holds the inventory; counts and durations do not belong in it,
+because the registry derives them.
 
 For a non-Rust surface, use that surface's native focused command from its README or package
 scripts. Do not run Rust gates for a Swift-, documentation-, or frontend-only change.
