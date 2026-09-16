@@ -569,7 +569,6 @@ test *args:
       _run python3 "$OBC_TOOLS/fixtures.py" sync test
       export OBC_FIXTURE_ROOT
       OBC_FIXTURE_ROOT="$(python3 "$OBC_TOOLS/fixtures.py" root)"
-      export OBC_REQUIRE_FIXTURES=1
     }
     case "$mode" in
       full)

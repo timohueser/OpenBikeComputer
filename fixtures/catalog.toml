@@ -51,7 +51,7 @@ scenarios = ["grimsel", "monaco-upahead", "assistant-out-and-back", "assistant-f
 [profiles.test]
 summary = "All external fixture packages exercised by the full repository test suite"
 scenarios = ["grimsel", "monaco-upahead"]
-packages = ["sim-peak-view"]
+packages = []
 
 [packages.assistant-osm]
 summary = "Pinned OSM sources for Ride Assistant: Switzerland, Monaco and regional West Cork"

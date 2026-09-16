@@ -24,7 +24,7 @@ fn app_scenarios_idle_is_free_tick_is_small_pan_is_most() {
     // The device resolution is the single ls021 authority, not a re-declared literal.
     const W: u32 = FRAME_W as u32;
     const H: u32 = FRAME_H as u32;
-    let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
+    let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcm");
     let tables = MapTables::parse(&SliceSource(&bytes)).expect("valid demo map");
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
@@ -93,7 +93,7 @@ fn app_scenarios_idle_is_free_tick_is_small_pan_is_most() {
 fn monaco_fixture_parses_populated_poi_and_nav_sections() {
     use obc_reader::{MapCache, MapTables, Reader, SliceSource};
 
-    let bytes = obc_fixtures::read("sim-monaco", "monaco.obcm").expect("full fixture suite requires map");
+    let bytes = obc_fixtures::read("sim-monaco", "monaco.obcm");
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).expect("monaco.obcm parses as a valid current map");
     let cache = MapCache::new();
@@ -261,7 +261,7 @@ fn tour_screens_dwell_with_no_present_miss() {
 
     const W: u32 = FRAME_W as u32;
     const H: u32 = FRAME_H as u32;
-    let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
+    let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcm");
     let tables = MapTables::parse(&SliceSource(&bytes)).expect("valid demo map");
     let owner = HostStore::memory().unwrap();
     let map = obc_host_core::flat_map::FlatMap::from_bytes_in(&owner, &bytes).unwrap();
@@ -484,7 +484,7 @@ fn demo_reset_rebuild_and_seek_present_clean() {
 
     const W: u32 = FRAME_W as u32;
     const H: u32 = FRAME_H as u32;
-    let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
+    let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcm");
     let tables = MapTables::parse(&SliceSource(&bytes)).expect("valid demo map");
     let owner = HostStore::memory().unwrap();
     let map = obc_host_core::flat_map::FlatMap::from_bytes_in(&owner, &bytes).unwrap();

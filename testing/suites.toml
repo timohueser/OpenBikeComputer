@@ -1082,7 +1082,7 @@ ownership = [{ kind = "path", source = "xcuitest", pattern = "companion-ios/OBCC
 id = "ci.rust-fixture-tests"
 surface = "ci"
 level = "fixture"
-command = 'python3 tools/fixtures.py sync test && OBC_REQUIRE_FIXTURES=1 OBC_FIXTURE_ROOT="$(python3 tools/fixtures.py root)" cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/suite_registry.py cargo-filter --tier fixtures)"'
+command = 'python3 tools/fixtures.py sync test && OBC_FIXTURE_ROOT="$(python3 tools/fixtures.py root)" cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/suite_registry.py cargo-filter --tier fixtures)"'
 fixtures = ["test"]
 pull_request = "affected"
 scheduled = "none"

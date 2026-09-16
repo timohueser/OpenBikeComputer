@@ -299,7 +299,6 @@ jobs:
         id: nextest-fixtures
         env:
           NEXTEST_PROFILE: fixtures
-          OBC_REQUIRE_FIXTURES: "1"
         run: |
           eval "$(cargo llvm-cov show-env --sh)"
           rm -f target/nextest/fixtures/junit.xml
