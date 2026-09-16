@@ -1,6 +1,5 @@
 //! The base renderer is testable without OBCM bytes or a concrete `obc_reader::Reader`.
 
-mod common;
 
 use core::cell::Cell;
 
@@ -13,7 +12,7 @@ use obc_map_scene::{
 };
 use obc_render::{RenderConfig, RenderScratch, Viewport, MAX_SPANS};
 
-use common::Buf;
+use crate::common::Buf;
 
 const TOKEN: FeatureToken = FeatureToken::from_source_words([1, 0, 0]);
 const POINTS: [(i32, i32); 4] = [(-8, -8), (8, -8), (8, 8), (-8, 8)];

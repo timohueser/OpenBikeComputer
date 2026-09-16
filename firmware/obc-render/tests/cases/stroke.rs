@@ -9,10 +9,9 @@
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_render::{RenderScratch, Viewport};
 
-mod common;
 // These tests only probe pixel coverage (painted or not), so the 1-bit `BitBuf` is the
 // right recording target; aliased to `Buf` to keep the test bodies unchanged.
-use common::BitBuf as Buf;
+use crate::common::BitBuf as Buf;
 
 const LINE: Rgb888 = Rgb888::new(255, 0, 255);
 

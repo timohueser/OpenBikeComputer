@@ -15,8 +15,7 @@ use obc_render::{RenderConfig, RenderScratch, Viewport};
 use obc_render::{MAX_FRAME_POINTS, MAX_SPANS};
 use obcm_testkit::{build_file, pack_poly, pack_poly16, pack_poly_decl, pack_poly_hole, LodSpec, Style};
 
-mod common;
-use common::Buf;
+use crate::common::Buf;
 
 const FILL_565: u16 = 0x07E0; // green
 const GREEN: Rgb888 = Rgb888::new(0, 255, 0);

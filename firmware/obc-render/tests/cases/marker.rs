@@ -6,8 +6,7 @@
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_render::{RenderScratch, Viewport};
 
-mod common;
-use common::Buf;
+use crate::common::Buf;
 
 const RED: Rgb888 = Rgb888::new(255, 0, 0);
 

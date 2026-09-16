@@ -10,8 +10,7 @@ use obc_reader::{rgb565_to_rgb888, ByteSource, MapCache, MapTables, Reader};
 use obc_render::{RenderConfig, RenderScratch, Viewport, MAX_DECODE_POINTS};
 use obcm_testkit::{align_up, build_file, pack_line, pack_line16, pack_line_decl, seal, LodSpec, Style};
 
-mod common;
-use common::Buf;
+use crate::common::Buf;
 
 const STYLES: &[Style] = &[(1, 0, 0xF800, 1, 1, false, None)];
 
