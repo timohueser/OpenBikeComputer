@@ -74,13 +74,15 @@
     testDraft = null; edit = false; picker = false; deleting = false; return true;
   }
   function select(id: string) { if (leaveEditor()) selected = id; }
-  function create() {
+  async function create() {
     if (busy || !leaveEditor()) return;
-    const reserved = [...revision.requirements, ...requirements, ...deleted.map(d => d.requirement)];
-    const prefix = `SYS-R${revision.id + 1}-`;
-    let n = 1; while (reserved.some(r => r.id === `${prefix}${String(n).padStart(3, '0')}`)) n++;
-    const r: Requirement = { ...(groupFilter.startsWith('group:') ? { group: groupFilter.slice(6) } : {}), id: `${prefix}${String(n).padStart(3, '0')}`, title: '', statement: '', active: true, tests: [] };
-    requirements = [...requirements, r]; selected = r.id; query = ''; edit = true;
+    busy = true; error = '';
+    try {
+      const { id } = await api<{ id: string }>('/api/requirements/next-id', 'POST');
+      if (!leaveEditor()) return;
+      const r: Requirement = { ...(groupFilter.startsWith('group:') ? { group: groupFilter.slice(6) } : {}), id, title: '', statement: '', active: true, tests: [] };
+      requirements = [...requirements, r]; selected = r.id; query = ''; edit = true;
+    } catch (e) { error = message(e); } finally { busy = false; }
   }
   function removeRequirement() {
     if (busy || !requirement || !leaveEditor()) return;

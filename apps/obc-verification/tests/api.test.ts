@@ -48,6 +48,9 @@ test('API enforces prose ownership, origins, proposed link approval, and frozen 
     assert.equal((await request('users', 'POST', { login: 'alice', admin: true }, owner)).status, 403);
     assert.equal((await request('account/password', 'POST', { currentPassword: 'secret', newPassword: 'sixteen-characters' }, agent)).status, 403);
     assert.equal((await request('users/123', 'DELETE', undefined, owner, 'https://attacker.example')).status, 403);
+    for (const denied of [agent, ci]) assert.equal((await request('requirements/next-id', 'POST', undefined, denied)).status, 403);
+    assert.equal((await request('requirements/next-id', 'POST', undefined, owner, 'https://attacker.example')).status, 403);
+    assert.equal((await request('requirements/next-id', 'POST', undefined, owner)).status, 200);
     const revision = store().latestRevision();
     const payload = { baseRevision: revision.id, requirements: revision.requirements };
     assert.equal((await request('requirements', 'PUT', payload, agent)).status, 403);
