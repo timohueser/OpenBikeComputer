@@ -463,6 +463,10 @@ pub struct Render<'a> {
     pub w: i32,
     pub h: i32,
     pub now_ms: u32,
+    /// The frame's marquee (see [`vocab::marquee`]): the one long name a draw asks to scroll
+    /// instead of cutting. Written through a `Cell`, since the draw helpers borrow the frame
+    /// shared; the render reads the request back after the draw.
+    pub(crate) marquee: vocab::marquee::MarqueeFrame,
     /// The live wall-clock time this frame (set-point advanced by elapsed millis — see
     /// [`WallClock`](crate::WallClock)). The Home screensaver draws it as `HH:MM`; for boot-relative
     /// millis a screen uses [`now_ms`](Render::now_ms) instead.

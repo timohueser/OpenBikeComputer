@@ -4,10 +4,12 @@
 
 use embedded_graphics::{prelude::Point, primitives::Rectangle};
 use obc_render::{
+    rect,
     text::{text_width, Font, TextAlign},
     Surface,
 };
 
+use super::marquee::{fit, MarqueeFrame};
 use crate::screen::{palette, poi_menu};
 use crate::{t, Msg};
 
@@ -24,6 +26,7 @@ use crate::{t, Msg};
 pub(crate) fn tile(
     cv: &mut impl Surface,
     area: Rectangle,
+    marquee: &MarqueeFrame,
     label: &str,
     value: &str,
     arrow: bool,
@@ -37,12 +40,15 @@ pub(crate) fn tile(
     // Content block: Label caption (cap 18) + Display value (cap 26) with the same 18 px lead the
     // Statistics grid always had; centre it in whatever height the pane has.
     let cy = y + ((area.size.height as i32 - 48) / 2).max(4);
-    // A caption wider than the tile (a long waypoint name) is truncated with an ASCII ellipsis; the
-    // short unit captions of every built-in field pass through untouched. Caption inset less than
-    // the value so those unit captions sit nearer the tile centre.
-    let mut label_buf: heapless::String<24> = heapless::String::new();
-    let label = fit_caption(label, area.size.width as i32 - 5, &mut label_buf, Font::Label);
-    cv.text(label, Point::new(x + 5, cy), Font::Label, TextAlign::Left, SUBTEXT);
+    // A caption wider than the tile (a long waypoint name) scrolls once when it changes and then
+    // rests on its head — never perpetually while riding; the short unit captions of every built-in
+    // field pass through untouched. Caption inset less than the value so those unit captions sit
+    // nearer the tile centre.
+    let char_w = Font::Label.char_width() as i32;
+    let chars = ((area.size.width as i32 - 5) / char_w).max(0) as usize;
+    let caption_row = rect(x + 5, cy, chars as i32 * char_w, Font::Label.line_height() as i32);
+    let label = marquee.fit_once(label, chars, caption_row);
+    cv.text(&label, Point::new(x + 5, cy), Font::Label, TextAlign::Left, SUBTEXT);
     let vy = cy + 18;
     match value_align {
         // Right-aligned (the wide waypoint distance): anchor at the tile's far edge, so it can never
@@ -110,9 +116,8 @@ pub(crate) fn category_tile(
     // The caption/value block, centred in the pane exactly as `tile` centres its own.
     let cy = y + ((area.size.height as i32 - 48) / 2).max(4);
     poi_menu::draw_category_icon(cv, cat, Point::new(x + CATEGORY_TILE_ICON_CX, cy + 9), SUBTEXT, bg);
-    let mut buf: heapless::String<24> = heapless::String::new();
-    let name = fit_caption(name, w - CATEGORY_TILE_NAME_X - 5, &mut buf, Font::Label);
-    cv.text(name, Point::new(x + CATEGORY_TILE_NAME_X, cy), Font::Label, TextAlign::Left, SUBTEXT);
+    let name = fit(name, ((w - CATEGORY_TILE_NAME_X - 5) / Font::Label.char_width() as i32).max(0) as usize);
+    cv.text(&name, Point::new(x + CATEGORY_TILE_NAME_X, cy), Font::Label, TextAlign::Left, SUBTEXT);
     cv.text(value, Point::new(x + w - 8, cy + 18), Font::Display, TextAlign::Right, value_color);
 }
 
@@ -160,9 +165,8 @@ pub(crate) fn waypoint_panel(cv: &mut impl Surface, area: Rectangle, cx: &crate:
         let dist = super::fmt::distance_short(wp.dist_along_m.saturating_sub(cx.navigation.progress_m), cx.units);
         cv.text(&dist, Point::new(x + w - 10, ry), font, TextAlign::Right, INK);
         let budget = w - 20 - text_width(&dist, font) as i32 - 8;
-        let mut buf: heapless::String<24> = heapless::String::new();
-        let name = fit_caption(wp.name.as_str(), budget, &mut buf, font);
-        cv.text(name, Point::new(x + 10, ry), font, TextAlign::Left, INK);
+        let name = fit(wp.name.as_str(), (budget / font.char_width() as i32).max(0) as usize);
+        cv.text(&name, Point::new(x + 10, ry), font, TextAlign::Left, INK);
     }
 }
 
@@ -189,36 +193,6 @@ pub(crate) fn waypoint_panel_ghost(cv: &mut impl Surface, area: Rectangle, lang:
         cv.text(dist, Point::new(x + w - 10, ry), font, TextAlign::Right, SUBTEXT);
         cv.text(name, Point::new(x + 10, ry), font, TextAlign::Left, SUBTEXT);
     }
-}
-
-/// Fit a caption into `budget_px` at `font`, dropping trailing chars and appending an ASCII ellipsis
-/// (`...` — the device font is printable-ASCII only, so `…` would render as tofu) when it overflows.
-/// Every built-in field's unit caption fits whole; only a long waypoint name is ever truncated (the
-/// wide tile's caption at [`Font::Label`], the panel's per-row names at their row font). Writes into
-/// `buf` and returns it. Pure integer geometry over the monospace cell width, so the truncation is
-/// deterministic. Mirrors the Map chip's `fit_name`.
-pub(crate) fn fit_caption<'b>(label: &str, budget_px: i32, buf: &'b mut heapless::String<24>, font: Font) -> &'b str {
-    buf.clear();
-    let char_w = font.char_width() as i32;
-    if label.chars().count() as i32 * char_w <= budget_px {
-        let _ = buf.push_str(label); // fits whole (caption ≤ StatCell cap ≤ buf)
-        return buf.as_str();
-    }
-    const ELL: &str = "...";
-    let keep = ((budget_px - ELL.len() as i32 * char_w) / char_w).max(0) as usize;
-    for ch in label.chars().take(keep) {
-        if buf.push(ch).is_err() {
-            break;
-        }
-    }
-    // A cut that lands on a word gap would read as `Fontaine du ...` — the space between the last
-    // word and the ellipsis makes the truncation look like a typo. Drop trailing blanks first (the
-    // budget only ever shrinks, so this can't overflow).
-    while buf.ends_with(' ') {
-        buf.pop();
-    }
-    let _ = buf.push_str(ELL);
-    buf.as_str()
 }
 
 #[cfg(test)]
@@ -328,7 +302,7 @@ mod tests {
         // Row 0: distance then the truncated name.
         assert_eq!(rec.calls[1].0.as_str(), "12.4km", "the distance-to-go is intact");
         let name = rec.calls[2].0.as_str();
-        assert!(name.ends_with("..."), "an over-long name is ellipsis-truncated, got {name:?}");
+        assert!(name.ends_with(".."), "an over-long name is cut with the dots, got {name:?}");
         assert!(name.starts_with("Pass"), "…keeping its leading characters, got {name:?}");
         // And the truncated name plus a gap stays clear of the distance's left edge.
         let name_px = text_width(name, Font::Body) as i32;
@@ -447,27 +421,9 @@ mod tests {
             palette::INK,
         );
         let name = cv.calls[0].0.as_str();
-        assert!(name.ends_with("..."), "an over-long name is cut with the house ellipsis, got {name:?}");
-        assert!(!name.ends_with(" ..."), "…and never with a dangling space before it");
+        assert!(name.ends_with(".."), "an over-long name is cut with the house dots, got {name:?}");
+        assert!(!name.ends_with(" .."), "…and never with a dangling space before them");
         let budget = 220 - CATEGORY_TILE_NAME_X - 5;
         assert!(text_width(name, Font::Label) as i32 <= budget, "the cut stays inside the icon-narrowed budget");
-    }
-
-    /// A stat tile's caption fits its pixel budget: a short built-in caption passes through verbatim,
-    /// a long waypoint name is cut to leading chars + an ASCII ellipsis that stays within budget — so
-    /// the wide `NextWaypoint` tile's name can never run into its right-aligned value.
-    #[test]
-    fn tile_caption_truncation_fits_the_budget() {
-        let cw = Font::Label.char_width() as i32;
-        let mut buf = heapless::String::<24>::new();
-        assert_eq!(
-            fit_caption("NEXT WPT", 100 * cw, &mut buf, Font::Label),
-            "NEXT WPT",
-            "a caption within budget is verbatim"
-        );
-        let mut buf = heapless::String::<24>::new();
-        let fitted = fit_caption("Pass Summit Overlook", 10 * cw, &mut buf, Font::Label);
-        assert_eq!(fitted, "Pass Su...", "7 leading chars + ellipsis fill the 10-cell budget");
-        assert!(text_width(fitted, Font::Label) as i32 <= 10 * cw, "and it stays within budget");
     }
 }

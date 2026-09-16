@@ -14,6 +14,7 @@
 
 use embedded_graphics::prelude::Point;
 use obc_render::{
+    rect,
     text::{Font, TextAlign},
     Surface,
 };
@@ -91,9 +92,10 @@ impl TripDeleteScreen {
         // the two option rows.
         title_frame(cv, w, h, rx.t(Msg::TripDeleteTitle), "");
 
-        // The trip name, centred, truncated with ".." to the card width (no ellipsis glyph).
+        // The trip name, centred, scrolled when it overflows the card width.
         let max = (((w - 24) / Font::Body.char_width() as i32).max(6)) as usize;
-        let name = super::route_menu::fit_name(&self.name, max);
+        let name_row = rect(12, TITLE_BAR_H + 12, w - 24, Font::Body.line_height() as i32);
+        let name = rx.marquee.fit(&self.name, max, Some(name_row));
         cv.text(&name, Point::new(w / 2, TITLE_BAR_H + 12), Font::Body, TextAlign::Center, INK);
 
         // The warning line — what the confirm actually does (deletes the routes too), word-wrapped in

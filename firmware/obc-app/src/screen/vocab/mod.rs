@@ -6,6 +6,7 @@
 //! - [`chrome`] — the framed page header, the card glyphs, and the shared text/stroke helpers.
 //! - [`fmt`] — every quantity readout: distance, speed, elevation, duration, date, temperature.
 //! - [`list`] — the windowed scrolling-list widget and its wrapping cursor.
+//! - [`marquee`] — the `..` cut for a long name, and the one name a frame scrolls instead.
 //! - [`pager`] — the two-page auto-flip the detail compositions share.
 //! - [`rows`] — the settings row, the value picker, the stat-ledger row, the guarded option rows.
 //! - [`sheet`] — the two drawers' shared arrival/page curves and the committed-value tick.
@@ -20,6 +21,7 @@ pub(crate) mod card;
 pub(crate) mod chrome;
 pub(crate) mod fmt;
 pub(crate) mod list;
+pub(crate) mod marquee;
 pub(crate) mod pager;
 pub(crate) mod rows;
 pub(crate) mod sheet;

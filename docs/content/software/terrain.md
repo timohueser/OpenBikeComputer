@@ -131,7 +131,7 @@ become available.
 All visible names are considered for chart labels. There is no fixed label-count limit. Higher
 elevation angles take priority where names would overlap; labels keep at least 15 pixels of
 horizontal space. A chart name that does not fit above its summit is shortened with `..`. The selected peak's name
-appears in the ledger.
+appears in the ledger; a name wider than the ledger scrolls there.
 
 The vertical scale is chosen once per observer from the catalogue elevation angles. Shallow
 relief receives a vertical boost up to 2.4× over the base 1.25× scale; steep views keep the base scale. Missing height metadata
