@@ -804,6 +804,12 @@ jobs:
           name: obc-skin-preview-pkg
           path: builder/app/src/lib/skin/pkg
           retention-days: 1
+      # The test device. No size budget: it ships to nobody and only the `web` job downloads it.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: obc-flat-device-pkg
+          path: builder/app/test-support/flat-device/pkg
+          retention-days: 1
 
   # Render the docs site (stdlib-only Python, no pip) and fail on error, plus the cross-page
   # anchor audit CLAUDE.md otherwise asks for by hand: every internal ../page/#anchor must
@@ -985,6 +991,12 @@ jobs:
         with:
           name: obc-skin-preview-pkg
           path: builder/app/src/lib/skin/pkg
+      # The device the USB suites run against. The desktop-frontend job does not download it: that
+      # job only builds the shipped bundle, which must not contain this package at all.
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-flat-device-pkg
+          path: builder/app/test-support/flat-device/pkg
       - uses: actions/setup-node@v4
         with:
           node-version: 22

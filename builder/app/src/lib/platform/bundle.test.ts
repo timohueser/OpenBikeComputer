@@ -360,9 +360,10 @@ describe("the USB stack's chunk", () => {
         ["web", web],
         ["desktop", desktop],
     ])("does not ship the simulated device (%s target)", async (_mode, target) => {
-        // `loopback.ts` is a whole device — an object store, a catalog, id assignment. It exists so
-        // the epic isn't blocked on #889's silicon, and it has no business in anything a person
-        // installs or visits.
+        // Two things must never ship. `loopback.ts` is the in-memory transport, and
+        // `flat-device.ts` with its wasm package is a whole device — the real protocol engine over a
+        // real card. They exist so the epic isn't blocked on #889's silicon, and they have no
+        // business in anything a person installs or visits.
         //
         // The **desktop** row is not symmetry for its own sake. That app is the one people take to
         // a bench with a real board, and D4's (#909) on-glass recipe leans on "if the window says
@@ -370,7 +371,7 @@ describe("the USB stack's chunk", () => {
         // device reachable from the shipped app would make that sentence false — quietly, and
         // exactly when someone is trying to decide whether hardware works.
         const shipped = modulesOf(await target()).filter((id) =>
-            /\/src\/lib\/usb\/loopback\.ts$/.test(id),
+            /\/src\/lib\/usb\/(loopback|flat-device)\.ts$|\/test-support\/flat-device\//.test(id),
         );
         expect(shipped).toEqual([]);
     }, 180_000);
