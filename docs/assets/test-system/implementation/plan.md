@@ -109,17 +109,7 @@ Ordinary Rust execution uses `cargo nextest run --locked -p ...`, with a target-
 
 Reserve `heavy_*` integration-target names for heavy hermetic suites. A captured-fixture target is named `captured`; its owning job selects it explicitly. Do not select individual test functions in CI. Any existing ignored library probe admitted to the heavy route must have a recipe for its whole ignored-library suite and an audit that no generator or network test shares that selection.
 
-Remove `external-fixtures` only after each gated test has an ordinary, captured, or explicit maintainer route. Bounded fixture tests become unconditional and fail with a sync hint when missing. **[CORRECTED 2026-09-16: today `host/obc-fixtures::file()` prints the hint only under `OBC_REQUIRE_FIXTURES`; all 16 call sites `.expect()` its `None`, so a plain local run panics without the hint. Make `file()` always fail with the sync command and drop the env variable. `sim-peak-view` (103 MB) is in the `test` profile but no test reads it; drop it from that profile.]** Generators and live downloads stay explicitly invoked and excluded. The existing feature-gated and ignored tests mix these purposes, so deletion of the flags must not become a blanket `--ignored` run. [firmware/obc-route/tests/nav.rs:1066](firmware/obc-route/tests/nav.rs:1066) [host/obc-wx-bake/tests/event_pack_airmass.rs:89](host/obc-wx-bake/tests/event_pack_airmass.rs:89) [host/obc-dem/tests/decode.rs:35](host/obc-dem/tests/decode.rs:35)
-
-### Weather target map — **[REMOVED 2026-09-16]**
-
-Weather was removed from this repository in `ee5424579`: `firmware/obc-weather`, `host/obc-wx-bake`,
-`host/obc-wx-client`, `ops/` and the rain-radar demo no longer exist. The target map, the
-`weather-captured` job, the `heavy_weather` recipe and the airmass cadence question are void. The
-nowcast deletion rows below are already banked by that removal. The general rule the section
-carried still applies to any future captured-fixture package: split at the existing source
-sections, move the intact expensive suite rather than shrinking it, and never change iteration
-counts or thread counts merely to fit the ordinary run.
+Remove `external-fixtures` only after each gated test has an ordinary, captured, or explicit maintainer route. Bounded fixture tests become unconditional and fail with a sync hint when missing. **[CORRECTED 2026-09-16: today `host/obc-fixtures::file()` prints the hint only under `OBC_REQUIRE_FIXTURES`; all 16 call sites `.expect()` its `None`, so a plain local run panics without the hint. Make `file()` always fail with the sync command and drop the env variable. `sim-peak-view` (103 MB) is in the `test` profile but no test reads it; drop it from that profile.]** Generators and live downloads stay explicitly invoked and excluded. The existing feature-gated and ignored tests mix these purposes, so deletion of the flags must not become a blanket `--ignored` run. [firmware/obc-route/tests/nav.rs:1066](firmware/obc-route/tests/nav.rs:1066) [host/obc-dem/tests/decode.rs:35](host/obc-dem/tests/decode.rs:35)
 
 ### Dependency cuts
 
@@ -250,7 +240,7 @@ Other goldens retain their existing explicit generators. Do not standardize thei
 
 The release-heavy workflow runs correctness recipes on the exact release revision on their required platforms before publishing. Make the release publisher depend on successful completion, not merely an artifact from an older branch head. Timing probes produce evidence without unstable shared-runner timing thresholds. Generators, external-service downloads, and physical procedures are excluded. Failures stop publication. Keep existing release version/key/image verification unchanged. [release.yml:3](.github/workflows/release.yml:3)
 
-No new cron is added; the existing weekly route stays. **[CORRECTED 2026-09-16: the live weather freshness probe was removed with the weather subsystem.]** [survey-weather.md:115](docs/assets/test-system/implementation/surveys/survey-weather.md:115) [survey-weather.md:117](docs/assets/test-system/implementation/surveys/survey-weather.md:117)
+No new cron is added; the existing weekly route stays. **[CORRECTED 2026-09-16: the live weather freshness probe was removed with the weather subsystem.]**
 
 No board source changes are required by this plan. Keep existing board resource checks and host-side driver/display tests. Physical reset, watchdog, wake, stack, USB/BLE, and phone evidence remains in #1262/#1393/#994 and their existing procedures. Do not claim that host success substitutes for these observations. Cable and BLE sessions remain separate. [issue-1262.md:9](issue issue-1262.md:9) [issue-1262.md:109](issue issue-1262.md:109) [issue-994.md:41](issue issue-994.md:41) [plan-v2.md:152](docs/assets/test-system/implementation/plan-v2-superseded.md:152)
 

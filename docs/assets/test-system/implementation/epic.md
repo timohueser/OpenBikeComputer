@@ -48,7 +48,6 @@ the document and are overridden here. TS-0 fixes them in the document itself.
 
 | Plan content | What is true now | Binding instruction |
 |---|---|---|
-| The weather bakery, its client, the device reader, the four-leg CI matrix, the weather target map, the airmass cadence question, and the "published weather through client to screen" composition check | **Weather was removed entirely** in `ee5424579`: 435 files, 80,732 deletions. `firmware/obc-weather`, `host/obc-wx-bake`, `host/obc-wx-client`, `ops/` and the rain-radar demo no longer exist. | **Delete every weather section.** There is no weather composition check to write and no airmass decision to make. The two nowcast deletion rows are already banked. |
 | Delete `testing/coverage-policy.toml`; defer the coverage ratchet | TS5 shipped in #1784 / #1789. The policy file carries real `enforcement = "ratchet"` components, `testing/coverage-baseline.json` holds measured baselines with CI evidence, and `tools/coverage_report.py` runs per pull request under llvm-cov instrumentation. | **Keep the files and the ratchet.** Deleting them discards accepted work. Separately: llvm-cov instrumentation is a new, unmeasured cost inside the `test` job. Measure it in TS-B and report it; do not remove it without the owner. |
 | Delete the LOC ledger tools | #1786 / #1787 made `tools/loc_ledger.py --storage-total --check-budget` the FS11 acceptance command. | **Keep `loc_ledger.py`.** Only the per-merge delta reporting and `loc_report.py` may go, and only with FS11's owner agreeing. |
 | Add a Linux desktop launch smoke; this "closes #994" | Already delivered as `apps/obc-desktop/e2e/launch.py` under `xvfb-run -a dbus-run-session` (#1727 / #1729), registered as `e2e.desktop-linux-launch`. | **Drop the row.** Do not add a second launch path. #994 keeps its real remainder: Windows launch, and physical device enumeration and route upload. |
@@ -278,4 +277,3 @@ its stated constraint against changing the screenshot gate conflicts with taking
 requests, which is an owner decision. #1815 item 1.3 builds a text-recording surface over
 `App::render_frame` for copy fitting; under decision 7 it does not collide with this epic and stays
 where it is.
-
