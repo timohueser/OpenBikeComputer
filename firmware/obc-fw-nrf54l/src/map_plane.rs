@@ -147,15 +147,12 @@ impl MapDisplay {
         self.input_plane.lock(|c| c.borrow().select_hold_progress())
     }
 
-    /// Whether a hold is **charging** right now — either button down, its long-press not yet fired.
+    /// Whether an ordinary hold or the Assistant chord is charging right now.
     /// The pre-fire window the ride loop defers expensive map redraws in, so the bulge keeps its
     /// cadence instead of waiting out a 150–300 ms map frame mid-charge.
     #[inline(always)]
     pub(crate) fn hold_charging(&self) -> bool {
-        self.input_plane.lock(|c| {
-            let p = c.borrow();
-            p.select_hold_progress() > 0.0 || p.back_hold_progress() > 0.0
-        })
+        self.input_plane.lock(|c| c.borrow().hold_charging())
     }
 
     /// Cancel any in-flight hold on the shared input plane — rung by the ride loop after a gesture
