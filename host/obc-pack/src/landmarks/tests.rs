@@ -77,10 +77,13 @@ fn offline_compiler_preserves_colocated_sites_and_boundary_fallback_with_no_phot
         "https://www.wikidata.org/w/api.php?action=wbgetentities&ids=Q999&redirects=yes",
         serde_json::to_vec(&json!({"entities":{"Q999":{"id":"Q23413", "redirects":{"from":"Q999","to":"Q23413"}, "claims":{"P279":[]}}}})).unwrap(),
     );
+    pin("locales/Q29.json", "https://www.wikidata.org/wiki/Special:EntityData/Q29.json",
+        serde_json::to_vec(&json!({"entities":{"Q29":{"id":"Q29", "claims":{"P37":[{"mainsnak":{"datavalue":{"value":{"id":"Q1321"}}}}]}}}})).unwrap());
     let mut places = Vec::new();
     for qid in ["Q1", "Q2"] {
-        let entity = json!({"entities":{qid:{"id":qid,"labels":{"de":{"value":"Burg"}},
-        "sitelinks":{"dewiki":{"title":"Burg"}},"claims":{
+        let entity = json!({"entities":{qid:{"id":qid,"labels":{"de":{"value":"Burg"}, "es":{"value":"Castillo"}},
+        "sitelinks":{"dewiki":{"title":"Burg"}, "enwiki":{"title":"Castle"}, "eswiki":{"title":"Castillo"}},"claims":{
+            "P17":[{"mainsnak":{"datavalue":{"value":{"id":"Q29"}}}}],
             "P31":[{"rank":"preferred","mainsnak":{"datavalue":{"value":{"id":"Q999"}}}},
                 {"rank":"normal","mainsnak":{"datavalue":{"value":{"id":"Q35666"}}}}],
             "P625":[{"mainsnak":{"datavalue":{"value":{"latitude":0.0,"longitude":0.0,"globe":"http://www.wikidata.org/entity/Q2"}}}}]
@@ -93,23 +96,52 @@ fn offline_compiler_preserves_colocated_sites_and_boundary_fallback_with_no_phot
         let url = "https://de.wikipedia.org/w/index.php?title=Burg&oldid=42";
         let html = r#"<script>{"wgRevisionId":42}</script><div id="mw-content-text"><div class="mw-parser-output"><p>Die Burg ist alt. Sie steht am Fluss.</p></div></div><div id="footer-info-copyright">Contributors <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></div>"#;
         pin(&html_path, url, html.as_bytes().to_vec());
-        places.push(json!({"qid":qid,"articles":[{"language":"de","title":"Burg","revision":42,"url":url,"path":path,"html_path":html_path}],"images":[]}));
+        let mut articles =
+            vec![json!({"language":"de","title":"Burg","revision":42,"url":url,"path":path,"html_path":html_path})];
+        for (language, title, body) in
+            [("en", "Castle", "No complete sentence"), ("es", "Castillo", "El castillo es antiguo.")]
+        {
+            let path = format!("articles/{language}-{qid}.json");
+            let html_path = format!("articles/{language}-{qid}.html");
+            let url = format!("https://{language}.wikipedia.org/w/index.php?title={title}&oldid=42");
+            pin(
+                &path,
+                &url,
+                serde_json::to_vec(&json!({"query":{"pages":{"1":{"title":title,"revisions":[{"revid":42}]}}}}))
+                    .unwrap(),
+            );
+            pin(&html_path, &url, html.replace("Die Burg ist alt. Sie steht am Fluss.", body).as_bytes().to_vec());
+            articles.push(
+                json!({"language":language,"title":title,"revision":42,"url":url,"path":path,"html_path":html_path}),
+            );
+        }
+        places.push(json!({"qid":qid,"articles":articles,"images":[]}));
     }
     let manifest = root.join("manifest.json");
     fs::write(&manifest, serde_json::to_vec(&json!({"schema":1,"sources":sources,"places":places})).unwrap()).unwrap();
     let boundary = root.join("boundary.json");
     fs::write(&boundary, r#"{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}"#).unwrap();
-    let first = compile(&manifest, &boundary, "en", &root.join("first")).unwrap();
+    let first = compile(&manifest, &boundary, &root.join("first")).unwrap();
     assert_eq!(first.counts.candidates, 2);
     assert_eq!(first.counts.texts, 2);
     assert_eq!(first.counts.images, 0);
     assert_eq!(first.counts.mapped_approaches, None);
     assert_eq!(first.records.iter().map(|record| record.qid.as_str()).collect::<Vec<_>>(), ["Q1", "Q2"]);
-    assert!(first.records.iter().all(|record| record.language == "de" && record.photo.is_none()));
-    assert!(first.omissions.iter().all(|omission| omission.reason == "no_usable_captured_image"));
-    compile(&manifest, &boundary, "en", &root.join("second")).unwrap();
+    assert!(first.records.iter().all(|record| record.default_language == "es"
+        && record.photo.is_none()
+        && record.variants.len() == 2
+        && record.fallback_sources == ["Q29"]));
+    assert!(first
+        .omissions
+        .iter()
+        .all(|omission| omission.reason == "no_usable_captured_image" || omission.reason.starts_with("en:")));
+    assert!(first
+        .records
+        .iter()
+        .all(|record| record.variants.iter().map(|v| v.language.as_str()).collect::<Vec<_>>() == ["de", "es"]));
+    compile(&manifest, &boundary, &root.join("second")).unwrap();
     assert_eq!(fs::read(root.join("first/content.json")).unwrap(), fs::read(root.join("second/content.json")).unwrap());
     fs::write(root.join("entities/Q1.json"), b"changed source").unwrap();
-    assert!(compile(&manifest, &boundary, "en", &root.join("changed")).unwrap_err().contains("source size changed"));
+    assert!(compile(&manifest, &boundary, &root.join("changed")).unwrap_err().contains("source size changed"));
     fs::remove_dir_all(root).unwrap();
 }

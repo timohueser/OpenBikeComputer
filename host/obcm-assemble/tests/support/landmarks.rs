@@ -7,13 +7,10 @@ pub fn record(qid: u64) -> LandmarkRecord {
         lon: 7_500_000,
         lat: 47_300_000,
         category: 1,
-        language: *b"en",
-        text_pages: 1,
         hours_ref: POI_HOURS_REF_NONE,
         osm: None,
         name: ContentRef::default(),
-        text: ContentRef::default(),
-        article: ContentRef::default(),
+        articles: ContentRef::default(),
         photo: ContentRef::default(),
         photo_attribution: ContentRef::default(),
     }
@@ -82,9 +79,13 @@ pub fn assert_content(source: &dyn obc_formats::io::ByteSource) {
     for index in 0..directory.count {
         let record = directory.record(source, index).unwrap();
         assert_eq!(directory.name(source, &record, &mut [0; MAX_NAME_BYTES as usize]).unwrap(), "Castle");
-        let text = directory.content(source, record.text, MAX_TEXT_BYTES).unwrap();
-        assert_eq!(page(&text, record.text_pages as u16, 0, &mut [0; MAX_PAGE_BYTES]).unwrap(), TEXT);
-        for (reference, expected) in [(record.article, ARTICLE), (record.photo_attribution, PHOTO)] {
+        let french = directory.article(source, &record, *b"fr").unwrap();
+        let text = directory.content(source, french.text, MAX_TEXT_BYTES).unwrap();
+        assert_eq!(page(&text, french.text_pages as u16, 0, &mut [0; MAX_PAGE_BYTES]).unwrap(), "Un château.");
+        let article = directory.article(source, &record, *b"en").unwrap();
+        let text = directory.content(source, article.text, MAX_TEXT_BYTES).unwrap();
+        assert_eq!(page(&text, article.text_pages as u16, 0, &mut [0; MAX_PAGE_BYTES]).unwrap(), TEXT);
+        for (reference, expected) in [(article.attribution, ARTICLE), (record.photo_attribution, PHOTO)] {
             let credit = directory.content(source, reference, MAX_ATTRIBUTION_BYTES).unwrap();
             for (index, expected) in expected.iter().enumerate() {
                 assert_eq!(page(&credit, 5, index as u16, &mut [0; MAX_PAGE_BYTES]).unwrap(), *expected);
@@ -121,6 +122,7 @@ pub fn attach(map: &mut Vec<u8>, mut records: Vec<LandmarkRecord>, photo: bool) 
     let mut section = vec![0; payload];
     section[..4].copy_from_slice(&(records.len() as u32).to_le_bytes());
     section[4..6].copy_from_slice(&(RECORD_LEN as u16).to_le_bytes());
+    section[6..8].copy_from_slice(&SECTION_VERSION.to_le_bytes());
     section[8..12].copy_from_slice(&(payload as u32).to_le_bytes());
     let mut add = |bytes: &[u8]| {
         let reference = ContentRef { offset: section.len() as u32, len: bytes.len() as u32 };
@@ -129,8 +131,10 @@ pub fn attach(map: &mut Vec<u8>, mut records: Vec<LandmarkRecord>, photo: bool) 
     };
     for record in &mut records {
         record.name = add(b"Castle");
-        record.text = add(&fields(&[TEXT]));
-        record.article = add(&fields(&ARTICLE));
+        record.articles = add(&obcm_testkit::articles::bundle(
+            *b"en",
+            &[(*b"en", &[TEXT], &ARTICLE), (*b"fr", &["Un château."], &ARTICLE)],
+        ));
         if photo {
             record.photo = add(&self::photo());
             record.photo_attribution = add(&fields(&PHOTO));

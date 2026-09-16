@@ -42,11 +42,12 @@ pub struct Landmarks {
     pub name: heapless::String<256>,
     pub text: heapless::String<MAX_PAGE_BYTES>,
     pub record: Option<LandmarkRecord>,
+    pub article: Option<obc_formats::articles::ArticleVariant>,
     pub generation: Option<u32>,
     pub more: bool,
     query: Option<LandmarkQuery>,
     after: Option<LandmarkKey>,
-    loaded: Option<(usize, bool, u16)>,
+    loaded: Option<(usize, bool, u16, [u8; 2])>,
     article_pages: u16,
 }
 impl Landmarks {
@@ -63,6 +64,7 @@ impl Landmarks {
             name: heapless::String::new(),
             text: heapless::String::new(),
             record: None,
+            article: None,
             generation: None,
             more: false,
             query: None,
@@ -86,6 +88,7 @@ impl Landmarks {
         self.reading = false;
         self.loaded = None;
         self.record = None;
+        self.article = None;
         self.name.clear();
         self.text.clear();
         self.status = Status::Loading;
@@ -93,10 +96,12 @@ impl Landmarks {
     pub(crate) fn invalidate_selection(&mut self) {
         self.loaded = None;
         self.record = None;
+        self.article = None;
     }
     pub(crate) fn invalidate(&mut self) {
         self.status = Status::Stale;
         self.record = None;
+        self.article = None;
         self.loaded = None;
         self.text.clear();
     }
@@ -104,7 +109,7 @@ impl Landmarks {
         let row = self.selected()?;
         Some(Selection { qid: row.key.qid, record_index: row.index, map_generation: self.generation? })
     }
-    pub(crate) fn read_step(&mut self, reader: &Reader, sources: bool) -> Result<(), Error> {
+    pub(crate) fn read_step(&mut self, reader: &Reader, sources: bool, language: [u8; 2]) -> Result<(), Error> {
         if Some(reader.generation()) != self.generation {
             self.invalidate();
             return Ok(());
@@ -143,7 +148,11 @@ impl Landmarks {
         let Some(row) = self.selected().copied() else {
             return Ok(());
         };
-        let requested = (self.selected, sources, if sources { self.source_page } else { self.page });
+        if self.loaded.is_some_and(|loaded| loaded.3 != language) {
+            self.page = 0;
+            self.source_page = 0;
+        }
+        let requested = (self.selected, sources, if sources { self.source_page } else { self.page }, language);
         if self.loaded == Some(requested) {
             return Ok(());
         }
@@ -152,6 +161,7 @@ impl Landmarks {
             self.invalidate();
             return Ok(());
         }
+        let article = directory.article(&section, &record, language)?;
         self.name.clear();
         let mut name = [0; MAX_NAME_BYTES as usize];
         self.name.push_str(directory.name(&section, &record, &mut name)?).map_err(|_| Error::BadOffset)?;
@@ -159,7 +169,7 @@ impl Landmarks {
             return Err(Error::BadOffset);
         }
         self.text.clear();
-        self.article_pages = credit_count(&directory, &section, record.article)?;
+        self.article_pages = credit_count(&directory, &section, article.attribution)?;
         let photo_credits = if record.photo_attribution.is_absent()
             || self.record.is_some_and(|r| r.qid == record.qid && r.photo_attribution.is_absent())
         {
@@ -182,10 +192,10 @@ impl Landmarks {
                     MAX_ATTRIBUTION_BYTES,
                 )
             } else {
-                (record.article, self.source_page + 4, self.article_pages + 4, MAX_ATTRIBUTION_BYTES)
+                (article.attribution, self.source_page + 4, self.article_pages + 4, MAX_ATTRIBUTION_BYTES)
             }
         } else {
-            (record.text, self.page.min(record.text_pages as u16 - 1), record.text_pages as u16, MAX_TEXT_BYTES)
+            (article.text, self.page.min(article.text_pages as u16 - 1), article.text_pages as u16, MAX_TEXT_BYTES)
         };
         let mut bytes = [0; MAX_PAGE_BYTES];
         let result = read_display_page(&directory, &section, reference, limit, count, index, &mut bytes);
@@ -198,7 +208,7 @@ impl Landmarks {
                 read_display_page(
                     &directory,
                     &section,
-                    record.article,
+                    article.attribution,
                     MAX_ATTRIBUTION_BYTES,
                     self.article_pages + 4,
                     4,
@@ -209,6 +219,7 @@ impl Landmarks {
         };
         self.text.push_str(text).map_err(|_| Error::BadOffset)?;
         self.record = Some(record);
+        self.article = Some(article);
         self.loaded = Some(requested);
         Ok(())
     }
@@ -282,6 +293,7 @@ impl crate::App {
             return;
         }
         let sources = matches!(screen, Screen::LandmarkSources(_));
+        let language = self.settings().language.article_code();
         let state = &mut self.ui.landmarks;
         if matches!(
             state.status,
@@ -303,7 +315,7 @@ impl crate::App {
             state.generation = Some(reader.generation());
         }
         let before = state.loaded;
-        if let Err(error) = state.read_step(reader, sources) {
+        if let Err(error) = state.read_step(reader, sources, language) {
             state.status = match error {
                 Error::BadVersion => Status::Unsupported,
                 _ if state.status == Status::Partial => Status::Partial,
@@ -312,6 +324,7 @@ impl crate::App {
             state.loaded = None;
             state.text.clear();
             state.record = None;
+            state.article = None;
         }
         if let Some(record) = state.record {
             let source = record.osm.map_or(0, |m| m.source.0);
@@ -375,14 +388,20 @@ mod tests {
             reference
         };
         let name = append("Ruin ä".as_bytes());
-        let text = append(&fields(&[
+        let text = &[
             "First source page.",
             "Second source
 page.",
-        ]));
+        ];
         let mut credit_fields = vec!["A", "URL", "License", "License URL"];
         credit_fields.extend_from_slice(credits);
-        let article = append(&fields(&credit_fields));
+        let articles = append(&obcm_testkit::articles::bundle(
+            *b"de",
+            &[
+                (*b"de", text, &credit_fields),
+                (*b"es", &["Una ruina."], &["ES URL", "42", "License", "Autores", "Crédito español."]),
+            ],
+        ));
         let (photo, photo_attribution) = if photo_credits.is_empty() {
             (ContentRef::default(), ContentRef::default())
         } else {
@@ -397,13 +416,10 @@ page.",
                 lon: 0,
                 lat: 0,
                 category: 2,
-                language: *b"de",
-                text_pages: 2,
                 hours_ref: obcm::POI_HOURS_REF_NONE,
                 osm: None,
                 name,
-                text,
-                article,
+                articles,
                 photo,
                 photo_attribution,
             };
@@ -412,6 +428,7 @@ page.",
         }
         section[..4].copy_from_slice(&(count as u32).to_le_bytes());
         section[4..6].copy_from_slice(&(RECORD_LEN as u16).to_le_bytes());
+        section[6..8].copy_from_slice(&SECTION_VERSION.to_le_bytes());
         section[8..12].copy_from_slice(&(payload as u32).to_le_bytes());
         let len = section.len() as u32;
         section[12..16].copy_from_slice(&len.to_le_bytes());
@@ -433,14 +450,14 @@ page.",
         let mut state = Landmarks::new();
         state.generation = Some(reader.generation());
         state.restart(false);
-        state.read_step(&reader, false).unwrap();
+        state.read_step(&reader, false, *b"en").unwrap();
         assert_eq!(state.rows.iter().map(|r| r.key.qid).collect::<Vec<_>>(), [1, 2, 3, 4]);
         assert!(state.more);
         assert_eq!(&*state.name, "Ruin ä");
         state.selected = 2;
         state.reading = true;
         state.page = 1;
-        state.read_step(&reader, false).unwrap();
+        state.read_step(&reader, false, *b"en").unwrap();
         let before = state.text.clone();
         assert_eq!(
             &*before,
@@ -448,18 +465,18 @@ page.",
 page."
         );
         state.source_page = 1;
-        state.read_step(&reader, true).unwrap();
+        state.read_step(&reader, true, *b"en").unwrap();
         assert_eq!(&*state.text, "Credit page two.");
         assert_eq!(state.source_pages, 2);
-        state.read_step(&reader, false).unwrap();
+        state.read_step(&reader, false, *b"en").unwrap();
         assert_eq!(state.text, before);
         assert_eq!(state.selected().unwrap().key.qid, 3);
         state.restart(true);
-        state.read_step(&reader, false).unwrap();
+        state.read_step(&reader, false, *b"en").unwrap();
         assert_eq!(state.rows.iter().map(|r| r.key.qid).collect::<Vec<_>>(), [5, 6, 7]);
         assert!(!state.more);
         state.generation = Some(reader.generation().wrapping_add(1));
-        state.read_step(&reader, false).unwrap();
+        state.read_step(&reader, false, *b"en").unwrap();
         assert_eq!(state.status, Status::Stale);
         assert!(state.text.is_empty());
         assert!(state.record.is_none());
@@ -467,6 +484,29 @@ page."
             core::mem::size_of::<Landmarks>() < 1800,
             "only four identities, selected name and one page are resident"
         );
+    }
+    #[test]
+    fn changing_ui_language_reloads_text_and_credits_and_resets_page() {
+        let bytes = map();
+        let source = SliceSource(&bytes);
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new_boxed();
+        let reader = Reader::new(&source, &tables, &cache);
+        let mut state = Landmarks::new();
+        state.generation = Some(reader.generation());
+        state.restart(false);
+        state.read_step(&reader, false, *b"de").unwrap();
+        state.page = 1;
+        state.read_step(&reader, false, *b"de").unwrap();
+        state.read_step(&reader, false, *b"es").unwrap();
+        assert_eq!(state.page, 0);
+        assert_eq!(state.text.as_str(), "Una ruina.");
+        assert_eq!(state.article.unwrap().language, *b"es");
+        state.read_step(&reader, true, *b"es").unwrap();
+        assert_eq!(state.text.as_str(), "Crédito español.");
+        state.read_step(&reader, false, *b"fr").unwrap();
+        assert_eq!(state.article.unwrap().language, *b"de", "no English: use the baked default");
+        assert_eq!(state.text.as_str(), "First source page.");
     }
     #[test]
     fn full_attribution_budget_keeps_the_last_page_accessible() {
@@ -480,16 +520,16 @@ page."
         let mut state = Landmarks::new();
         state.generation = Some(reader.generation());
         state.restart(false);
-        state.read_step(&reader, false).unwrap();
+        state.read_step(&reader, false, *b"en").unwrap();
         assert_eq!(state.source_pages, MAX_CREDIT_PAGES);
         state.source_page = MAX_CREDIT_PAGES - 1;
-        state.read_step(&reader, true).unwrap();
+        state.read_step(&reader, true, *b"en").unwrap();
         assert_eq!(state.text.as_str(), "Credit page 255");
         state.selected = 1;
         state.invalidate_selection();
         state.selected = 0;
         state.invalidate_selection();
-        state.read_step(&reader, false).unwrap();
+        state.read_step(&reader, false, *b"en").unwrap();
         assert!(state.record.is_some(), "returning selection reloads its identity");
     }
     #[test]
@@ -510,10 +550,10 @@ page."
         let mut state = Landmarks::new();
         state.generation = Some(reader.generation());
         state.restart(false);
-        state.read_step(&reader, false).unwrap();
+        state.read_step(&reader, false, *b"en").unwrap();
         assert_eq!(state.text.as_str(), "First source page.");
         assert!(state.record.unwrap().photo.is_absent());
-        state.read_step(&reader, true).unwrap();
+        state.read_step(&reader, true, *b"en").unwrap();
         assert_eq!(state.text.as_str(), "Credit page one.");
     }
     #[test]

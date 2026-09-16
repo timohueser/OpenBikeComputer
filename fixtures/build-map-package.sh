@@ -30,9 +30,9 @@
 # canonical camera coverage. Relation completion can recover polygons (and
 # therefore change bytes) when a fixture is next deliberately refreshed.
 #
-# After re-packing, run the full workspace test suite — a few sim/reader tests
-# exercise fixture content (they are written content-agnostic, but verify) —
-# and note the Geofabrik snapshot date in README.md alongside the commit.
+# Set OBC_GRIMSEL_LANDMARKS to the compiled content.json for Grimsel.
+# After re-packing, run the fixture consumer suites from docs/testing.md and
+# record source and output identities in fixtures/sources/.
 
 set -euo pipefail
 
@@ -75,6 +75,9 @@ repack() { # repack <name> <source_pbf> <bbox> [terrain_obcd]
     [[ -n "$terrain" ]] && extra=(--terrain "$terrain")
     if [[ "$name" == grimsel-demo && -n "${OBC_DEMO_LANDMARKS:-}" ]]; then
         extra+=(--landmarks "$OBC_DEMO_LANDMARKS")
+    fi
+    if [[ "$name" == grimsel && -n "${OBC_GRIMSEL_LANDMARKS:-}" ]]; then
+        extra+=(--landmarks "$OBC_GRIMSEL_LANDMARKS")
     fi
     local output
     case "$name" in

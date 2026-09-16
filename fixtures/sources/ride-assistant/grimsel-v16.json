@@ -1,0 +1,84 @@
+{
+  "schema": 2,
+  "package": "sim-grimsel",
+  "bytes": 3469556,
+  "sha256": "30b6db6e9a79f96ff0ad236646b7cf5fd73b41b3b0a01c54c0d659991bd7d7c7",
+  "recipe_commit": "7ca7aabb1e278b7446dc5ed00d89f5604f19ebf9",
+  "compiler_source_commit": "e9b14df70e066e6b4a084006f5ea188bee457519",
+  "executable": {
+    "obc-pack": "7fa61cf4b877e8d4392fa1b3e66e44c0828f4ef63ee530eceb3921f667829374"
+  },
+  "bounds_lon_lat": [
+    8.15034,
+    46.48261,
+    8.46007,
+    46.7207
+  ],
+  "source_packages": {
+    "assistant-osm": "c63f8846fd6a3bfadd7a315a647e288c5d6cf22caefa43ff339cc3950966c224",
+    "assistant-switzerland-content": "42a2f4986a77641753c99a91df8a3b419dd20cbf4ac1e35512a608a936434ebd"
+  },
+  "source_pbf_sha256": "e6ae53a3cfeb8fbefbab291073e61f0906b03576e773b7403ab9b6d6232a8e88",
+  "content_manifest_sha256": "07a318fa4c1891960d04e9c86b0ee0e24259cdc3f44058815b77db1e02675dc2",
+  "land_source": {
+    "source": "https://osmdata.openstreetmap.de/download/land-polygons-split-3857.zip",
+    "cached_version": "Fri, 19 Jun 2026 03:38:23 GMT",
+    "files": [
+      {
+        "path": "README.txt",
+        "bytes": 890,
+        "sha256": "a63aa8d566fa34400252f02f30a4ad8573125ee697927d2155064eebc6700698"
+      },
+      {
+        "path": "land_polygons.cpg",
+        "bytes": 6,
+        "sha256": "146d6789ffe033a5297c1ad046e6a62ee35319b86b021444f05b6ea2aa8a1f4a"
+      },
+      {
+        "path": "land_polygons.dbf",
+        "bytes": 16002772,
+        "sha256": "568939e0f8622f78aca8dce33285a43b3cb5f795d5b6ca5ecab61319f6355881"
+      },
+      {
+        "path": "land_polygons.prj",
+        "bytes": 425,
+        "sha256": "f2e7fb14d55bdd8d6a3bc2c272a48729d8f9d0ad72936e20eae6a9a81c2fccd0"
+      },
+      {
+        "path": "land_polygons.shp",
+        "bytes": 1307422196,
+        "sha256": "363c37eb5941813c4c2f709a899b97017ecf1b5f456325a0337483ad018c131d"
+      },
+      {
+        "path": "land_polygons.shx",
+        "bytes": 6738068,
+        "sha256": "8618b46714146db21e9143ea3a4ecf38f2f185d724bb35bcd1d98be085eb264c"
+      }
+    ]
+  },
+  "map": {
+    "bytes": 3952432,
+    "sha256": "c9b4d1efde3b139df5fbcf9f411e1ed5f789e130f21459575b73a762bc45a7a0",
+    "obcm_version": 16,
+    "landmark_records": 7,
+    "article_variants": {
+      "de": 6,
+      "en": 5,
+      "fr": 6
+    },
+    "default_languages": {
+      "de": 1,
+      "en": 5,
+      "fr": 1
+    },
+    "photos": 2
+  },
+  "terrain": {
+    "bytes": 786560,
+    "sha256": "ebc0d3972d9a6faa74708ce6478223e61351cba5167a66c097e066a62995a96f",
+    "policy": "Unchanged sidecar from the prior registered sim-grimsel package."
+  },
+  "recipe": "OBC_GRIMSEL_LANDMARKS=CONTENT/content.json OBC_FIXTURE_BUILD_DIR=OUTPUT bash fixtures/build-map-package.sh grimsel PINNED/switzerland.osm.pbf",
+  "network": "Denied by macOS sandbox-exec during packing; source packages and land polygon cache copied into isolated caches.",
+  "log_sha256": "e0002c9f12820857eeaa99ccd7749ede6548250ebe405b68be7ee0256f8929be"
+}

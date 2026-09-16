@@ -26,7 +26,7 @@ def main() -> int:
             outputs = [Path(temporary) / name for name in ("first", "second")]
             for output in outputs:
                 subprocess.run([str(executable), "landmarks", "--snapshot", str(source / "manifest.json"),
-                                "--boundary", str(source / "regions.geojson"), "--language", "en",
+                                "--boundary", str(source / "regions.geojson"),
                                 "--out", str(output)], cwd=ROOT, check=True)
             files = [{file.name: file.read_bytes() for file in output.iterdir()} for output in outputs]
             if files[0] != files[1]:
@@ -36,9 +36,13 @@ def main() -> int:
             if {record["qid"] for record in content["records"]} != expected:
                 raise FixtureError("captured Swiss/Irish landmark selection differs")
             for record in content["records"]:
-                if record["language"] != "en" or not 1 <= len(record["text_pages"]) <= 4:
+                if not any(v["language"] == "en" for v in record["variants"]) or not all(1 <= len(v["text_pages"]) <= 4 for v in record["variants"]):
                     raise FixtureError(f"invalid extracted text: {record['qid']}")
                 photo = record["photo"]
+                if record["qid"] == "Q666668":
+                    if photo is not None or not any(o["qid"] == record["qid"] and o["reason"] == "photo_creator_missing" for o in content["omissions"]):
+                        raise FixtureError("captured photo without creator was not rejected")
+                    continue
                 if photo is None or len(files[0][photo["path"]]) != 216 * 240:
                     raise FixtureError(f"missing bounded source photo: {record['qid']}")
             if content["source_coverage"].get("country_complete") is not False:

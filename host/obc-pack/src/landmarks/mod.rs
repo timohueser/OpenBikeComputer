@@ -2,6 +2,7 @@
 //! by the map serializer; this module emits bounded text, attribution and RGB222 assets.
 
 mod assets;
+mod locale;
 mod photo;
 mod policy;
 pub mod text;
@@ -18,7 +19,6 @@ use std::{
 };
 
 const COMPILER_POLICY: &str = "landmarks-1;lead-2-sentences;latin-extended-a;label-216x240;rgba-white-lanczos3-bayer4;credits-8192;decode-32MiB-16384-128MiB";
-const FALLBACK: [&str; 5] = ["en", "de", "fr", "it", "ga"];
 
 #[derive(Deserialize)]
 struct Source {
@@ -42,7 +42,7 @@ pub struct Content {
     pub input_sha256: String,
     pub policy_sha256: String,
     pub category_policy_sha256: String,
-    pub language: String,
+    pub languages: Vec<String>,
     pub source_coverage: Value,
     pub counts: Counts,
     pub candidate_qids: Vec<String>,
@@ -65,10 +65,16 @@ pub struct Record {
     pub category: u8,
     pub latitude: f64,
     pub longitude: f64,
+    pub default_language: String,
+    pub fallback_sources: Vec<String>,
+    pub variants: Vec<TextVariant>,
+    pub photo: Option<Photo>,
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TextVariant {
     pub language: String,
     pub text_pages: Vec<String>,
-    pub article: Attribution,
-    pub photo: Option<Photo>,
+    pub attribution: Attribution,
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Attribution {
@@ -170,7 +176,7 @@ fn coordinate(entity: &Value) -> Option<(f64, f64)> {
 }
 
 /// `boundary` is a GeoJSON Polygon/MultiPolygon, not a country-claim filter. All inputs are local.
-pub fn compile(snapshot_path: &Path, boundary: &Path, language: &str, output: &Path) -> Result<Content, String> {
+pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<Content, String> {
     let raw = fs::read(snapshot_path).map_err(|e| e.to_string())?;
     let snapshot: Snapshot = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
     if snapshot.schema != 1 {
@@ -220,15 +226,24 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, language: &str, output: &P
     ] {
         policy_input.extend_from_slice(source);
     }
-    policy_input.extend_from_slice(language.as_bytes());
+    policy_input.extend_from_slice(locale::LANGUAGE_BYTES);
+    policy_input.extend_from_slice(include_bytes!("locale.rs"));
+    let mut locales = BTreeMap::new();
+    for source in snapshot.sources.iter().filter(|s| s.path.starts_with("locales/")) {
+        let raw = json_pinned(root, &snapshot.sources, &source.path)?;
+        let id = Path::new(&source.path).file_stem().and_then(|s| s.to_str()).ok_or("invalid locale path")?;
+        if let Some(entity) = raw["entities"].get(id).filter(|e| e["id"] == id) {
+            locales.insert(id.to_owned(), entity.clone());
+        }
+    }
     let mut input = raw;
     input.extend_from_slice(&boundary_bytes);
     let mut content = Content {
-        schema: 1,
+        schema: 2,
         input_sha256: hash(&input),
         policy_sha256: hash(&policy_input),
         category_policy_sha256: hash(policy::BYTES),
-        language: language.into(),
+        languages: locale::languages().into_iter().map(|(code, _)| code).collect(),
         source_coverage: snapshot.coverage,
         counts: Counts { captured: snapshot.places.len(), ..Counts::default() },
         candidate_qids: Vec::new(),
@@ -280,30 +295,26 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, language: &str, output: &P
         };
         content.counts.candidates += 1;
         content.candidate_qids.push(qid.clone());
-        let mut languages = vec![language];
-        for fallback in FALLBACK {
-            if !languages.contains(&fallback) {
-                languages.push(fallback);
-            }
-        }
         let captures = place["articles"].as_array().ok_or("article captures missing")?;
-        let mut selected = None;
-        for candidate in languages {
+        let mut variants = Vec::new();
+        let mut lead = BTreeSet::new();
+        for (candidate, _) in locale::languages() {
             if let Some(capture) = captures.iter().find(|item| item["language"] == candidate) {
                 match article(root, &snapshot.sources, entity, capture) {
-                    Ok(value) => {
-                        selected = Some(value);
-                        break;
+                    Ok(Article { language, pages, attribution, lead_image }) => {
+                        lead.extend(lead_image);
+                        variants.push(TextVariant { language, text_pages: pages, attribution });
                     }
                     Err(reason) => omit("article", format!("{candidate}: {reason}")),
                 }
             }
         }
-        let Some(Article { language: actual_language, pages, attribution, lead_image }) = selected else {
+        if variants.is_empty() {
             omit("article", "no_usable_captured_language".into());
             continue;
-        };
-        let name = entity["labels"][&actual_language]["value"]
+        }
+        let (default_language, fallback_sources) = locale::default_language(entity, &locales, &variants);
+        let name = entity["labels"][&default_language]["value"]
             .as_str()
             .or_else(|| entity["labels"]["en"]["value"].as_str())
             .ok_or("site name missing")?;
@@ -321,7 +332,6 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, language: &str, output: &P
             .filter_map(|claim| claim["mainsnak"]["datavalue"]["value"].as_str())
             .map(|file| file.replace('_', " "))
             .collect();
-        let lead: BTreeSet<_> = lead_image.into_iter().collect();
         for image in images {
             let allowed = match image["source"].as_str() {
                 Some("P18") => &p18,
@@ -333,8 +343,10 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, language: &str, output: &P
             };
             match assets::photo(root, &snapshot.sources, image, allowed, &qid) {
                 Ok((candidate, pixels))
-                    if candidate.attribution.display_pages.len() + attribution.display_pages.len()
-                        <= text::MAX_SOURCE_PAGES =>
+                    if variants.iter().all(|v| {
+                        candidate.attribution.display_pages.len() + v.attribution.display_pages.len()
+                            <= text::MAX_SOURCE_PAGES
+                    }) =>
                 {
                     fs::write(output.join(&candidate.path), pixels).map_err(|e| e.to_string())?;
                     photo = Some(candidate);
@@ -358,9 +370,9 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, language: &str, output: &P
             category,
             latitude: lat,
             longitude: lon,
-            language: actual_language,
-            text_pages: pages,
-            article: attribution,
+            default_language,
+            fallback_sources,
+            variants,
             photo,
         });
     }

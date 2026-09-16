@@ -70,7 +70,9 @@ Generated design-review screenshots belong in PRs or project documentation, not 
   `N46_00_E008_00` and is unchanged (OBCT is a separate format and did not move).
   The GPX/OBCR/OBT inputs are project-authored and byte-identical to their
   `tracked_sources` originals. The Grimsel route uses OBCR v4 with route facts. The map contains selected text, compressed photos, and credits from the pinned
-  `assistant-wiki-switzerland` content capture. It uses the optional landmark section.
+  `assistant-switzerland-content` schema 2 package. It uses the optional landmark section.
+  [The build record](sources/ride-assistant/grimsel-v16.json) pins source and output hashes.
+  Set `OBC_GRIMSEL_LANDMARKS` to its `content.json` when you run the fixture baker.
 - `sim-monaco`: an **OBCM v16** file from the pinned `assistant-osm` Monaco
   snapshot dated 2026-09-13, on the canonical fixture bbox, plus the unchanged
   project-authored up-ahead GPX.
@@ -113,8 +115,9 @@ The `assistant-inputs` profile contains independent OSM, terrain, Wiki, and auth
 packages. See [the source recipes](sources/ride-assistant/README.md) for source dates, exact
 revisions, licenses, offline build commands, review identities, and remaining simulator wiring.
 The Swiss OSM input is country-wide. The separate compiled Swiss content package contains
-1,495 articles and 1,119 photos; the four-site Wiki input is only a review sample. Both West Cork
-and the Swiss regional simulator maps use OBCM v16 with native terrain and compiled landmark
+1,478 sites, 2,391 article variants and 1,109 photos. The retained capture has English, German
+and French output, with no Spanish article or locale entity capture. The four-site Wiki input
+is only a review sample. Both West Cork and the Swiss regional simulator maps use OBCM v16 with native terrain and compiled landmark
 content. The Swiss map is a crop, not a full-country map. See the source recipes for exact
 coverage, scenario clocks and the persistent-card option.
 

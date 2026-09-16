@@ -17,7 +17,7 @@ use std::{
 pub struct Landmark {
     pub record: LandmarkRecord,
     pub hours: Option<Schedule>,
-    pub content: [Vec<u8>; 5],
+    pub content: [Vec<u8>; 4],
 }
 
 /// Declared photo digests are part of content.json; load verifies their bytes.
@@ -33,6 +33,7 @@ pub fn fingerprint(path: &Path) -> Result<String, String> {
     hash.update(bytes);
     hash.update(include_bytes!("landmark_map.rs"));
     hash.update(include_bytes!("../../../firmware/obc-formats/src/obcm/landmarks.rs"));
+    hash.update(include_bytes!("../../../firmware/obc-formats/src/articles.rs"));
     hash.update(include_bytes!("../../../Cargo.lock"));
     Ok(hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect())
 }
@@ -98,8 +99,53 @@ fn attribution(source: &Attribution) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn article_link(record: &Record) -> Option<String> {
-    let url = url::Url::parse(&record.article.source_url).ok()?;
+/// Internal references are bundle-relative, so map assembly copies the bundle unchanged.
+fn article_bundle(record: &Record) -> Result<Vec<u8>, String> {
+    use obc_formats::articles::{self, ArticleVariant, LANGUAGES, VARIANT_LEN};
+    let default: [u8; 2] = record.default_language.as_bytes().try_into().map_err(|_| "invalid default language")?;
+    if record.variants.is_empty() || record.variants.len() > LANGUAGES.len() {
+        return Err("article language count".into());
+    }
+    let mut variants: Vec<_> = record.variants.iter().collect();
+    variants.sort_by_key(|v| LANGUAGES.iter().position(|l| l.as_slice() == v.language.as_bytes()));
+    let mut seen = BTreeSet::new();
+    let mut bytes = vec![0; articles::HEADER_LEN + variants.len() * VARIANT_LEN];
+    bytes[..2].copy_from_slice(&default);
+    bytes[2..4].copy_from_slice(&(variants.len() as u16).to_le_bytes());
+    for (i, variant) in variants.iter().enumerate() {
+        let language: [u8; 2] = variant.language.as_bytes().try_into().map_err(|_| "invalid article language")?;
+        if !LANGUAGES.contains(&language)
+            || !seen.insert(language)
+            || variant.text_pages.iter().any(|p| p.len() > MAX_PAGE_BYTES)
+        {
+            return Err("invalid or duplicate article language".into());
+        }
+        let text_pages = u8::try_from(variant.text_pages.len()).map_err(|_| "article page count")?;
+        let mut append = |blob: Vec<u8>| {
+            let reference = ContentRef { offset: bytes.len() as u32, len: blob.len() as u32 };
+            bytes.extend(blob);
+            reference
+        };
+        let encoded = ArticleVariant {
+            language,
+            text_pages,
+            text: append(pages(&variant.text_pages)?),
+            attribution: append(attribution(&variant.attribution)?),
+        };
+        if ArticleVariant::decode(&encoded.encode()).is_none() {
+            return Err("article page count".into());
+        }
+        let at = articles::HEADER_LEN + i * VARIANT_LEN;
+        bytes[at..at + VARIANT_LEN].copy_from_slice(&encoded.encode());
+    }
+    if !seen.contains(&default) || bytes.len() > articles::MAX_BYTES as usize {
+        return Err("invalid article default or size".into());
+    }
+    Ok(bytes)
+}
+
+fn article_link(record: &crate::landmarks::TextVariant) -> Option<String> {
+    let url = url::Url::parse(&record.attribution.source_url).ok()?;
     let expected = format!("{}.wikipedia.org", record.language);
     if url.host_str()? != expected {
         return None;
@@ -113,7 +159,7 @@ fn article_link(record: &Record) -> Option<String> {
 pub fn load(path: &Path, links: &[LandmarkLink], bbox: (i64, i64, i64, i64)) -> Result<Vec<Landmark>, String> {
     let content: Content =
         serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    if content.schema != 1 {
+    if content.schema != 2 {
         return Err("unsupported landmark content schema".into());
     }
     let root = path.parent().ok_or("landmark content has no directory")?;
@@ -141,50 +187,35 @@ pub fn load(path: &Path, links: &[LandmarkLink], bbox: (i64, i64, i64, i64)) -> 
         if i64::from(lon) < bbox.0 || i64::from(lat) < bbox.1 || i64::from(lon) > bbox.2 || i64::from(lat) > bbox.3 {
             continue;
         }
-        let article = article_link(&record);
+        let articles: Vec<_> = record.variants.iter().filter_map(article_link).collect();
         let link = links
             .iter()
             .filter(|link| {
                 link.wikidata.as_deref() == Some(record.qid.as_str())
                     || (link.wikidata.is_none()
-                        && article
-                            .as_ref()
-                            .zip(link.wikipedia.as_ref())
-                            .is_some_and(|(a, b)| *a == b.replace('_', " ")))
+                        && link.wikipedia.as_ref().is_some_and(|b| articles.contains(&b.replace('_', " "))))
             })
             .min_by_key(|link| (link.metadata.approach.is_none(), link.metadata.source));
-        let language: [u8; 2] = record.language.as_bytes().try_into().map_err(|_| "invalid landmark language")?;
-        if record.name.is_empty()
-            || record.name.len() > MAX_NAME_BYTES as usize
-            || record.text_pages.iter().any(|p| p.len() > MAX_PAGE_BYTES)
-        {
-            return Err("landmark text budget".into());
+        if record.name.is_empty() || record.name.len() > MAX_NAME_BYTES as usize {
+            return Err("landmark name budget".into());
         }
+        let bundle = article_bundle(&record)?;
         let mut encoded = LandmarkRecord {
             qid,
             lon,
             lat,
             category: record.category,
-            language,
-            text_pages: u8::try_from(record.text_pages.len()).map_err(|_| "landmark page count")?,
             hours_ref: POI_HOURS_REF_NONE,
             osm: link.map(|link| link.metadata),
             name: ContentRef::default(),
-            text: ContentRef::default(),
-            article: ContentRef::default(),
+            articles: ContentRef::default(),
             photo: ContentRef::default(),
             photo_attribution: ContentRef::default(),
         };
         if LandmarkRecord::decode(&encoded.encode()).is_none() {
             return Err("invalid landmark metadata".into());
         }
-        let mut blobs = [
-            record.name.into_bytes(),
-            pages(&record.text_pages)?,
-            attribution(&record.article)?,
-            Vec::new(),
-            Vec::new(),
-        ];
+        let mut blobs = [record.name.into_bytes(), bundle, Vec::new(), Vec::new()];
         if let Some(photo) = record.photo {
             let pixels = photo_pixels(root, &photo)?;
             let mut buffer = vec![0; zlib_rs::compress_bound(pixels.len())];
@@ -196,8 +227,8 @@ pub fn load(path: &Path, links: &[LandmarkLink], bbox: (i64, i64, i64, i64)) -> 
             if code != zlib_rs::ReturnCode::Ok || stream.len() > PHOTO_MAX_COMPRESSED {
                 return Err("landmark compression failed".into());
             }
-            blobs[3] = stream.to_vec();
-            blobs[4] = attribution(&photo.attribution)?;
+            blobs[2] = stream.to_vec();
+            blobs[3] = attribution(&photo.attribution)?;
         }
         // Offsets are assigned only when this cell's content pool is known.
         encoded.hours_ref = POI_HOURS_REF_NONE;
@@ -230,12 +261,12 @@ pub fn serialize(landmarks: &[Landmark], hours_refs: &[u16]) -> Result<Vec<u8>, 
         }
         previous = Some(record.key());
         if LandmarkRecord::decode(&record.encode()).is_none()
-            || landmark.content[..3].iter().any(Vec::is_empty)
-            || landmark.content[3].is_empty() != landmark.content[4].is_empty()
+            || landmark.content[..2].iter().any(Vec::is_empty)
+            || landmark.content[2].is_empty() != landmark.content[3].is_empty()
         {
             return Err("invalid landmark metadata or content".into());
         }
-        let mut refs = [ContentRef::default(); 5];
+        let mut refs = [ContentRef::default(); 4];
         for (slot, blob) in refs.iter_mut().zip(&landmark.content) {
             if blob.is_empty() {
                 continue;
@@ -252,13 +283,14 @@ pub fn serialize(landmarks: &[Landmark], hours_refs: &[u16]) -> Result<Vec<u8>, 
                 reference
             };
         }
-        [record.name, record.text, record.article, record.photo, record.photo_attribution] = refs;
+        [record.name, record.articles, record.photo, record.photo_attribution] = refs;
         let at = SECTION_HEADER_LEN + index * RECORD_LEN;
         bytes[at..at + RECORD_LEN].copy_from_slice(&record.encode());
     }
     let len = u32::try_from(bytes.len()).map_err(|_| "landmark section overflow")?;
     bytes[..4].copy_from_slice(&(landmarks.len() as u32).to_le_bytes());
     bytes[4..6].copy_from_slice(&(RECORD_LEN as u16).to_le_bytes());
+    bytes[6..8].copy_from_slice(&SECTION_VERSION.to_le_bytes());
     bytes[8..12].copy_from_slice(&(payload as u32).to_le_bytes());
     bytes[12..16].copy_from_slice(&len.to_le_bytes());
     Ok(bytes)
