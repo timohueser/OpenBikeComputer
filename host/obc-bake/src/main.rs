@@ -528,7 +528,7 @@ fn run_terrain(args: &[String]) -> Result<(), String> {
         cell_log2: log2("cell-log2", obc_dem::bake::V1_CELL_LOG2)?,
         revision: number("terrain-revision", 1)?,
         // The credit is a licence obligation and is never retyped here: it comes from the one
-        // `const` in `obc-dem`, travels into the catalog, and a consumer reads it from there.
+        // `const` in `obc-elevation`, travels into the catalog, and a consumer reads it from there.
         attribution: obc_elevation::COPERNICUS_ATTRIBUTION.to_string(),
     };
 

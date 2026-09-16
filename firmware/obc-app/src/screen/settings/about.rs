@@ -195,11 +195,11 @@ mod tests {
         assert!(matches!(run(&mut scr, Gesture::Back), Transition::Pop));
     }
 
-    /// The Copernicus lines re-join to `obc_dem`'s canonical attribution word for word — the
-    /// single-copy-of-the-wording rule, held across the firmware/host boundary by a dev-dep the
-    /// device build never sees. If the wording ever changes in `obc-dem`, this fails here.
+    /// The Copernicus lines re-join to `obc_elevation`'s canonical attribution word for word —
+    /// the single-copy-of-the-wording rule. The credit lives in the elevation leaf this crate
+    /// already depends on, so the device text cannot drift from the one the bakery stamps.
     #[test]
-    fn copernicus_wording_matches_obc_dem() {
+    fn copernicus_wording_matches_obc_elevation() {
         let mut joined = std::string::String::new();
         for (i, line) in COPERNICUS_LINES.iter().enumerate() {
             if i > 0 {
