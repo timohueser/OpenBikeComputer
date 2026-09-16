@@ -1,6 +1,5 @@
 //! The base renderer is testable without OBCM bytes or a concrete `obc_reader::Reader`.
 
-
 use core::cell::Cell;
 
 use embedded_graphics::pixelcolor::Rgb888;
