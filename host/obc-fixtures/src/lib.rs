@@ -23,13 +23,18 @@ pub fn root() -> PathBuf {
     PathBuf::from(home).join(".cache/openbikecomputer/fixtures/by-id")
 }
 
-/// Resolve a file in a logical package, returning `None` when it is not synced.
+/// Resolve a file in a logical package, or fail with the command that syncs it.
 ///
-/// Tests should return early on `None` during an ordinary `cargo test`. The
-/// canonical `obc test` command sets `OBC_REQUIRE_FIXTURES=1`, turning a missing
-/// package into a useful hard failure instead of a silent skip.
+/// Fixtures are never downloaded by a test. A package that is not synced is a
+/// setup error, and the panic names the exact `obc fixtures sync` command.
 #[must_use]
-pub fn file(package: &str, relative: impl AsRef<Path>) -> Option<PathBuf> {
+pub fn file(package: &str, relative: impl AsRef<Path>) -> PathBuf {
+    file_in("test", package, relative)
+}
+
+/// [`file`] for a package outside the `test` profile; `profile` is the one that provides it.
+#[must_use]
+pub fn file_in(profile: &str, package: &str, relative: impl AsRef<Path>) -> PathBuf {
     assert_id(package);
     let relative = relative.as_ref();
     assert!(
@@ -37,27 +42,15 @@ pub fn file(package: &str, relative: impl AsRef<Path>) -> Option<PathBuf> {
         "OBC fixtures: relative paths may not escape a package"
     );
     let path = root().join(package).join(relative);
-    if path.is_file() {
-        Some(path)
-    } else if std::env::var_os("OBC_REQUIRE_FIXTURES").is_some() {
-        panic!("OBC fixture is missing: {}. Run `obc fixtures sync test`.", path.display());
-    } else {
-        eprintln!(
-            "skipping external-fixture assertion (missing {}); run `obc test` for the full suite",
-            path.display()
-        );
-        None
-    }
+    assert!(path.is_file(), "OBC fixture is missing: {}. Run `obc fixtures sync {profile}`.", path.display());
+    path
 }
 
-/// Read a fixture file with the same optional/full-suite behavior as [`file`].
+/// Read a fixture file, with the same missing-package failure as [`file`].
 #[must_use]
-pub fn read(package: &str, relative: impl AsRef<Path>) -> Option<Vec<u8>> {
-    let path = file(package, relative)?;
-    Some(
-        std::fs::read(&path)
-            .unwrap_or_else(|error| panic!("OBC fixture became unreadable at {}: {error}", path.display())),
-    )
+pub fn read(package: &str, relative: impl AsRef<Path>) -> Vec<u8> {
+    let path = file(package, relative);
+    std::fs::read(&path).unwrap_or_else(|error| panic!("OBC fixture became unreadable at {}: {error}", path.display()))
 }
 
 fn assert_id(package: &str) {

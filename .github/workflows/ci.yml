@@ -92,7 +92,10 @@ jobs:
           echo "jobs=$(cat selection-jobs.json)" >> "$GITHUB_OUTPUT"
           echo "required jobs: $(cat selection-jobs.json)"
 
-  retired-map-stack:
+  # Every guard is a fast Python check over the source tree. They share nothing but runner
+  # setup, so one job runs them all; each keeps its own step name and failure message. The
+  # job is unconditional: every guard suite is required on every pull request.
+  guards:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -100,58 +103,16 @@ jobs:
           persist-credentials: false
       - name: Deleted catalog and bake APIs stay deleted
         run: python3 tools/check_retired_map_stack.py
-
-  card-scheduler-guard:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
       - name: Host-pushed cards are built only by the card scheduler
         run: python3 tools/check_card_scheduler.py
-
-  render-key-guard:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
       - name: Deleted repaint mirrors stay deleted
         run: python3 tools/check_render_keys.py
-
-  catalog-ownership-guard:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
       - name: Only CatalogMachine orders a catalog re-read
         run: python3 tools/check_catalog_ownership.py
-
-  one-home-guard:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
       - name: A contextual setting has one home
         run: python3 tools/check_one_home.py
-
-  screen-vocabulary-guard:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
       - name: Shared screen drawing helpers live in screen/vocab
         run: python3 tools/check_screen_vocabulary.py
-
-  fixture-registry:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
       - name: Test-suite registry drift
         run: python3 tools/suite_registry.py check
       - uses: actions/setup-python@v5
@@ -285,40 +246,24 @@ jobs:
         with:
           path: ~/.cache/openbikecomputer/fixtures
           key: obc-fixtures-${{ hashFiles('fixtures/catalog.toml') }}
+      # Each section is one step so it keeps its own step name and result artifact; the file
+      # is the same one `obc check test` runs. Only the two nextest steps are instrumented:
+      # their lcov is what the coverage ratchet reads, and the bench gate's release binary
+      # would otherwise merge its profile data into that evidence.
       - name: cargo nextest (fast hermetic binaries)
         id: nextest
         env:
-          NEXTEST_PROFILE: ci
-        run: |
-          mkdir -p target
-          eval "$(cargo llvm-cov show-env --sh)"
-          find target -maxdepth 1 -name '*.profraw' -delete
-          rm -f target/nextest/ci/junit.xml
-          cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/suite_registry.py cargo-filter --tier fast)"
+          OBC_COVERAGE: "1"
+        run: bash tools/ci/test.sh nextest-fast
       - name: cargo nextest (captured fixture binaries)
         id: nextest-fixtures
         env:
-          NEXTEST_PROFILE: fixtures
-          OBC_REQUIRE_FIXTURES: "1"
-        run: |
-          eval "$(cargo llvm-cov show-env --sh)"
-          rm -f target/nextest/fixtures/junit.xml
-          python3 tools/fixtures.py sync test
-          OBC_FIXTURE_ROOT="$(python3 tools/fixtures.py root)"
-          export OBC_FIXTURE_ROOT
-          cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/suite_registry.py cargo-filter --tier fixtures)"
-      # nextest runs no doctests, so the whole workspace's doctests run here as one cheap step
-      # rather than being silently dropped from the gate.
+          OBC_COVERAGE: "1"
+        run: bash tools/ci/test.sh nextest-fixtures
       - name: cargo test --doc (workspace, all features)
-        shell: bash
-        run: |
-          mkdir -p .artifacts/rust
-          cargo test --workspace --all-features --locked --doc 2>&1 | tee .artifacts/rust/doctests.log
+        run: bash tools/ci/test.sh doctests
       - name: cargo test (obc-formats, default features = the device's shape)
-        shell: bash
-        run: |
-          mkdir -p .artifacts/rust
-          cargo test -p obc-formats --locked 2>&1 | tee .artifacts/rust/formats-default.log
+        run: bash tools/ci/test.sh formats-default
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -332,50 +277,8 @@ jobs:
           python3 -m coverage run --data-file=.artifacts/coverage/firmware-tools/.coverage --source=firmware/tools -m xmlrunner discover -s firmware/tools/tests -v -o .artifacts/python/firmware-tools
       - name: firmware production dependency direction
         run: python3 firmware/tools/check_dependencies.py
-      # Render + read-path golden gate (issues #327, #1467): re-run the 7 fixed bench scenes and
-      # the 9 route-corridor cases over the deterministic testkit fixtures and fail if any frame
-      # hash *or* any read counter (chunks visited, cache hits/misses, SD reads, bytes) drifts from
-      # the committed golden file — so a cache change that halves the hit rate cannot pass on
-      # identical pixels. Timings are printed to the log but never gated (shared runners are noisy);
-      # an intentional change regenerates golden.txt (--write-golden) in the same PR.
       - name: obc-bench --check (render + read-counter golden gate)
-        run: cargo run -p obc-bench --release --locked -- --check host/obc-bench/golden.txt
-      # Screen pixel-hash tripwire (#1441): re-render every UI screen through the headless
-      # simulator and compare the frames to the committed digest manifest. The bench tripwire above
-      # covers the map renderer's scenes; this covers the screens drawn over them, which is what a
-      # screen refactor moves. The debug binary is used deliberately — its output is byte-identical
-      # to release and the tests above have already built it, so this adds a sweep, not a link.
-      # `update` is a developer command and never runs here: a self-regenerating manifest records
-      # nothing.
-      - name: ui-snapshots manifest check
-        id: ui-snapshots
-        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ci.ui-snapshots')
-        run: |
-          cargo build -p obc-sim --locked
-          SIM="$PWD/target/debug/obc-sim" firmware/ui-snapshots.sh "$RUNNER_TEMP/ui-snapshots"
-          python3 firmware/tools/ui_snapshot_manifest.py check firmware/ui-snapshots.sha256 "$RUNNER_TEMP/ui-snapshots"
-      - name: Upload UI review frames
-        if: ${{ !cancelled() && (steps.ui-snapshots.outcome == 'success' || steps.ui-snapshots.outcome == 'failure') }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ui-snapshots-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/ui-snapshots/*.png
-          if-no-files-found: ignore
-      # Routing-profile round-trips through the builder's pack path. These shell out to the
-      # real obc-pack binary over the tiny corpus and byte-compare the §8.6 profile table
-      # against independently quantized expectations — so they pin the packer's writer
-      # against the spec rather than against itself — plus the pure /api/schema and
-      # /api/presets endpoints via FastAPI's TestClient. The suite existed and passed but no
-      # workflow ran it; requirements-dev.txt is what makes it installable.
-      - name: Prepare web-builder packer tests
-        run: |
-          pip install -r builder/requirements-dev.txt
-          cargo build -p obc-pack --release --locked
-      - name: web-builder packer tests (pytest)
-        id: python-builder
-        run: |
-          rm -f .artifacts/python/builder.xml
-          PYTHONPATH=. python3 -m pytest builder/tests/ -v --junitxml=.artifacts/python/builder.xml --cov=builder/server --cov-report=lcov:.artifacts/coverage/builder/lcov.info --cov-report=term
+        run: bash tools/ci/test.sh bench-golden
       - name: firmware-tools coverage
         if: ${{ !cancelled() && (steps.python-firmware-tools.outcome == 'success' || steps.python-firmware-tools.outcome == 'failure') }}
         run: |
@@ -396,25 +299,6 @@ jobs:
         with:
           name: python-firmware-tools-${{ github.run_attempt }}
           path: .artifacts/python/firmware-tools/*.xml
-          if-no-files-found: error
-      - name: Builder Python coverage
-        if: ${{ !cancelled() && (steps.python-builder.outcome == 'success' || steps.python-builder.outcome == 'failure') }}
-        run: |
-          python3 tools/coverage_report.py --scope python --lcov .artifacts/coverage/builder/lcov.info --output .artifacts/coverage/builder --tool coverage.py=7.16.1 --tool pytest-cov=7.1.0
-          cat .artifacts/coverage/builder/summary.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload builder Python coverage
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-builder-${{ github.run_attempt }}
-          path: .artifacts/coverage/builder/
-          if-no-files-found: error
-      - name: Upload builder Python test results
-        if: ${{ !cancelled() && (steps.python-builder.outcome == 'success' || steps.python-builder.outcome == 'failure') }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: python-builder-${{ github.run_attempt }}
-          path: .artifacts/python/builder.xml
           if-no-files-found: error
       - name: Rust component coverage
         if: ${{ !cancelled() && (steps.nextest.outcome == 'success' || steps.nextest.outcome == 'failure') }}
@@ -447,6 +331,113 @@ jobs:
         with:
           name: rust-fixtures-${{ github.run_attempt }}
           path: target/nextest/fixtures/junit.xml
+          if-no-files-found: error
+
+  # Screen pixel-hash tripwire: re-render every UI screen through the headless simulator and
+  # compare the frames to the committed digest manifest. The bench golden gate in `test` covers
+  # the map renderer's scenes; this covers the screens drawn over them, which is what a screen
+  # refactor moves. It is its own job so the sweep is off the `test` job's serial path. The debug
+  # binary is deliberate: its output is byte-identical to release. `update` is a developer command
+  # and never runs here — a self-regenerating manifest records nothing.
+  #
+  # The job starts for every suite that routes to it, which includes each package it compiles.
+  # The sweep itself still runs only for `ci.ui-snapshots`, the suite that owns the rendering
+  # input triggers, so its selection budget is exactly what it was.
+  ui-snapshots:
+    needs: selection
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'ui-snapshots')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          shared-key: host-tests
+          save-if: false
+      - uses: ./.github/actions/setup-host-deps
+      - name: Cache content-addressed developer fixtures
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/openbikecomputer/fixtures
+          key: obc-fixtures-${{ hashFiles('fixtures/catalog.toml') }}
+      - name: ui-snapshots manifest check
+        id: ui-snapshots
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ci.ui-snapshots')
+        run: |
+          cargo build -p obc-sim --locked
+          SIM="$PWD/target/debug/obc-sim" firmware/ui-snapshots.sh "$RUNNER_TEMP/ui-snapshots"
+          python3 firmware/tools/ui_snapshot_manifest.py check firmware/ui-snapshots.sha256 "$RUNNER_TEMP/ui-snapshots"
+      - name: Upload UI review frames
+        if: ${{ !cancelled() && (steps.ui-snapshots.outcome == 'success' || steps.ui-snapshots.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-snapshots-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ui-snapshots/*.png
+          if-no-files-found: ignore
+
+  # Routing-profile round-trips through the builder's pack path. These shell out to the real
+  # obc-pack binary over the tiny corpus and byte-compare the §8.6 profile table against
+  # independently quantized expectations — so they pin the packer's writer against the spec
+  # rather than against itself — plus the pure /api/schema and /api/presets endpoints via
+  # FastAPI's TestClient. The preflight is what stops a missing binary or corpus from turning
+  # the packer half of the suite into a silent skip.
+  builder-python:
+    needs: selection
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'builder-python')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          shared-key: host-tests
+          save-if: false
+      - uses: ./.github/actions/setup-host-deps
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Prepare web-builder packer tests
+        run: |
+          pip install -r builder/requirements-dev.txt
+          cargo build -p obc-pack --release --locked
+      - name: Packer binary and corpus are present
+        run: |
+          test -x target/release/obc-pack
+          test -f builder/tests/corpus/data/tiny.osm.pbf
+      - name: web-builder packer tests (pytest)
+        id: python-builder
+        run: |
+          mkdir -p .artifacts/python
+          rm -f .artifacts/python/builder.xml
+          PYTHONPATH=. python3 -m pytest builder/tests/ -v --junitxml=.artifacts/python/builder.xml --cov=builder/server --cov-report=lcov:.artifacts/coverage/builder/lcov.info --cov-report=term
+      - name: Builder Python coverage
+        if: ${{ !cancelled() && (steps.python-builder.outcome == 'success' || steps.python-builder.outcome == 'failure') }}
+        run: |
+          python3 tools/coverage_report.py --scope python --lcov .artifacts/coverage/builder/lcov.info --output .artifacts/coverage/builder --tool coverage.py=7.16.1 --tool pytest-cov=7.1.0
+          cat .artifacts/coverage/builder/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload builder Python coverage
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-builder-${{ github.run_attempt }}
+          path: .artifacts/coverage/builder/
+          if-no-files-found: error
+      - name: Upload builder Python test results
+        if: ${{ !cancelled() && (steps.python-builder.outcome == 'success' || steps.python-builder.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-builder-${{ github.run_attempt }}
+          path: .artifacts/python/builder.xml
           if-no-files-found: error
 
   embedded:
@@ -1267,7 +1258,7 @@ jobs:
   # publishes no plan, which fails this gate rather than silently passing.
   ci:
     if: always()
-    needs: [selection, retired-map-stack, card-scheduler-guard, render-key-guard, catalog-ownership-guard, one-home-guard, screen-vocabulary-guard, fixture-registry, fmt, clippy, test, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, web, desktop-frontend, desktop, desktop-launch]
+    needs: [selection, guards, fmt, clippy, test, ui-snapshots, builder-python, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, web, desktop-frontend, desktop, desktop-launch]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
