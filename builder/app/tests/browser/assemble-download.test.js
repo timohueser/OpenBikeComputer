@@ -56,6 +56,7 @@ test('assembles the fixture region in the tab and downloads the pinned map', asy
     return route.abort();
   });
 
+  let failure;
   try {
     await page.goto('/');
 
@@ -92,14 +93,19 @@ test('assembles the fixture region in the tab and downloads the pinned map', asy
     const requested = new Set(records.slice(1).filter((r) => r.kind === 'object').map((r) => r.path));
     expect([...records[0].served].filter((path) => !requested.has(path))).toEqual([]);
     expect(records.slice(1).filter((r) => r.kind === 'missing' && r.path.startsWith('/catalog/'))).toEqual([]);
-
-    // Every off-origin request was the decorative basemap, answered locally; anything else aborts.
-    expect([...new Set(offOrigin.map((href) => new URL(href).hostname))].filter((h) => h !== BASEMAP)).toEqual([]);
-    expect(errors).toEqual([]);
-  } finally {
-    await mkdir(testInfo.outputDir, { recursive: true });
-    const path = testInfo.outputPath('browser-diagnostics.log');
-    await writeFile(path, diagnostics.join('\n'));
-    await testInfo.attach('browser-diagnostics', { path, contentType: 'text/plain' });
+  } catch (error) {
+    failure = error;
   }
+
+  await mkdir(testInfo.outputDir, { recursive: true });
+  const path = testInfo.outputPath('browser-diagnostics.log');
+  await writeFile(path, diagnostics.join('\n'));
+  await testInfo.attach('browser-diagnostics', { path, contentType: 'text/plain' });
+  if (failure) throw failure;
+
+  // Last, after every other await in this test, because these two accumulate: an off-origin request
+  // or a console error raised while the page settled after the download is still a failure, and
+  // asserting them mid-journey would only cover what had happened by then.
+  expect([...new Set(offOrigin.map((href) => new URL(href).hostname))].filter((h) => h !== BASEMAP)).toEqual([]);
+  expect(errors).toEqual([]);
 });

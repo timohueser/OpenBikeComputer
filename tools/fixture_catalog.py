@@ -118,6 +118,9 @@ FEATURE_TYPES = {
     4: "highway.path",
 }
 
+# Where this catalog is published on the server, and what the browser suite builds
+# `VITE_CATALOG_URL` from.
+PREFIX = "/catalog"
 REGION_ID = "bridge-fixture"
 REGION_NAME = "Bridge Fixture"
 SCHEMA_REVISION = 1
@@ -129,12 +132,12 @@ GENERATED_AT = "2026-07-30T09:00:00Z"
 SOURCES = [{"extract_id": "fixture", "snapshot": "2026-07-19"}]
 
 
-def _cell_path(prefix: str, band: str, cell_id: str, extension: str) -> str:
+def _cell_path(band: str, cell_id: str, extension: str) -> str:
     _log2, i, j = cell_id.split("/")
-    return f"{prefix}/cells/{band}/{i}/{j}.{extension}"
+    return f"{PREFIX}/cells/{band}/{i}/{j}.{extension}"
 
 
-def web_assemble(prefix: str = "/catalog") -> dict[str, bytes]:
+def web_assemble() -> dict[str, bytes]:
     """The bridge fixture published as a catalog: schema, skin, cells, terrain, one region."""
 
     sidecar = json.loads((ASSEMBLE_FIXTURE / "cells.json").read_text())
@@ -179,7 +182,7 @@ def web_assemble(prefix: str = "/catalog") -> dict[str, bytes]:
     for cell in sidecar["cells"]:
         body = (ASSEMBLE_FIXTURE / cell["path"]).read_bytes()
         entry = {"id": cell["id"], "built_at": BUILT_AT, "sources": SOURCES, "partial": cell["partial"]}
-        entry.update(pin(objects, _cell_path(prefix, cell["band"], cell["id"], "obcm"), body))
+        entry.update(pin(objects, _cell_path(cell["band"], cell["id"], "obcm"), body))
         by_band[cell["band"]].append(entry)
 
     cell_index = []
@@ -191,14 +194,14 @@ def web_assemble(prefix: str = "/catalog") -> dict[str, bytes]:
         }
         ref = {"band": band["id"], "cell_log2": band["cell_log2"],
                "cell_count": len(cells), "known_empty_count": 0}
-        ref.update(_document(objects, f"{prefix}/cells/{band['id']}/index.json", document))
+        ref.update(_document(objects, f"{PREFIX}/cells/{band['id']}/index.json", document))
         cell_index.append(ref)
 
     terrain_cells = []
     for cell in terrain_doc["cells"]:
         body = (ASSEMBLE_FIXTURE / cell["path"]).read_bytes()
         entry = {"id": cell["id"], "built_at": BUILT_AT}
-        entry.update(pin(objects, _cell_path(prefix, "terrain", cell["id"], "obcd"), body))
+        entry.update(pin(objects, _cell_path("terrain", cell["id"], "obcd"), body))
         terrain_cells.append(entry)
     terrain_index = {
         "schema_version": 2, "terrain_revision": TERRAIN_REVISION,
@@ -212,7 +215,7 @@ def web_assemble(prefix: str = "/catalog") -> dict[str, bytes]:
         "terrain_revision": TERRAIN_REVISION,
         "attribution": "Synthetic raster cut by apps/obc-web-assemble/examples/fixture.rs.",
         "cell_index": {"cell_count": len(terrain_cells), "known_empty_count": 0,
-                       **_document(objects, f"{prefix}/cells/terrain/index.json", terrain_index)},
+                       **_document(objects, f"{PREFIX}/cells/terrain/index.json", terrain_index)},
     }
 
     region_cells = {
@@ -239,7 +242,7 @@ def web_assemble(prefix: str = "/catalog") -> dict[str, bytes]:
         "terrain": {"cell_count": len(terrain_cells), "known_empty_count": 0,
                     "bytes": sum(cell["bytes"] for cell in terrain_cells)},
     }
-    pinned = _document(objects, f"{prefix}/regions/{REGION_ID}/cells.json", region_cells)
+    pinned = _document(objects, f"{PREFIX}/regions/{REGION_ID}/cells.json", region_cells)
     region.update({f"cells_{key}": value for key, value in pinned.items()})
 
     catalog = {
@@ -258,7 +261,7 @@ def web_assemble(prefix: str = "/catalog") -> dict[str, bytes]:
         "terrain": terrain,
         "network_terrain_revision": TERRAIN_REVISION,
     }
-    objects[f"{prefix}/catalog.json"] = json.dumps(catalog).encode()
+    objects[f"{PREFIX}/catalog.json"] = json.dumps(catalog).encode()
     return objects
 
 
