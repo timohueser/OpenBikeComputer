@@ -5,6 +5,9 @@ import { randomUUID } from 'node:crypto';
 import type { ApprovedGitHubUser, Attachment, Candidate, Catalog, LinkProposal, Requirement, Revision } from '../types.ts';
 import { assert, Problem, refresh } from './domain.ts';
 
+const referencedRevisions = `SELECT json_extract(body, '$.revision.id') FROM records
+  WHERE kind IN ('candidate', 'publication') AND json_type(body, '$.revision.id') = 'integer'`;
+
 export class Store {
   db: DatabaseSync;
   directory: string;
@@ -49,6 +52,26 @@ export class Store {
       const createdAt = new Date().toISOString();
       const inserted = this.db.prepare('INSERT INTO revisions(created_at,author,body) VALUES (?,?,?)').run(createdAt, author, JSON.stringify(requirements));
       return { id: Number(inserted.lastInsertRowid), author, createdAt, requirements };
+    });
+  }
+  historySummary() {
+    const revisions = this.revisions();
+    const current = revisions[0];
+    const protectedCount = this.db.prepare(`SELECT COUNT(*) AS count FROM revisions WHERE id IN (${referencedRevisions})`).get();
+    return { baseRevision: current.id, revisionCount: revisions.length, protectedRevisionCount: Number(protectedCount?.count ?? 0),
+      requirementCount: current.requirements.length, testCount: current.requirements.reduce((count, r) => count + r.tests.length, 0) };
+  }
+  clearHistory(base: number, author: string, clearCurrent: boolean): Revision {
+    return this.atomic(() => {
+      const current = this.latestRevision();
+      assert(current.id === base, 'Requirements changed. Refresh the preview and confirm again.', 409);
+      const createdAt = new Date().toISOString();
+      const requirements = clearCurrent ? [] : current.requirements;
+      const inserted = this.db.prepare('INSERT INTO revisions(created_at,author,body) VALUES(?,?,?)').run(createdAt, author, JSON.stringify(requirements));
+      const id = Number(inserted.lastInsertRowid);
+      this.db.prepare(`DELETE FROM revisions WHERE id <> ? AND id NOT IN (${referencedRevisions})`).run(id);
+      this.db.prepare("DELETE FROM records WHERE kind='proposal'").run();
+      return { id, author, createdAt, requirements };
     });
   }
   put(kind: string, id: string, value: unknown): void {

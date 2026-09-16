@@ -2,11 +2,15 @@
   import type { Actor } from '$lib/types';
   import { api, message } from './api';
   import Users from './Users.svelte';
+  import Maintenance from './Maintenance.svelte';
 
   export let actor: Actor;
   export let dirty = false;
   export let onback: () => void;
-  let view: 'account' | 'users' = 'account';
+  export let workspaceDirty = false;
+  export let onreset: () => void;
+  export let resetBusy = false;
+  let view: 'account' | 'users' | 'maintenance' = 'account';
   let currentPassword = '';
   let newPassword = '';
   let confirmation = '';
@@ -29,10 +33,10 @@
 </script>
 
 <div class="account-shell">
-  <button class="back" on:click={onback}>← Back to workspace</button>
+  <button class="back" disabled={resetBusy} on:click={onback}>← Back to workspace</button>
   <div class="page-heading"><div class="eyebrow">Workspace access</div><h1>Account</h1><p class="muted">Signed in as <strong>{actor.name}</strong> · {actor.admin ? 'Administrator' : 'Maintainer'}</p></div>
   {#if actor.admin}
-    <nav class="account-nav" aria-label="Account settings"><button aria-current={view === 'account' ? 'page' : undefined} on:click={() => view = 'account'}>Your account</button><button aria-current={view === 'users' ? 'page' : undefined} on:click={() => view = 'users'}>Users</button></nav>
+    <nav class="account-nav" aria-label="Account settings"><button disabled={resetBusy} aria-current={view === 'account' ? 'page' : undefined} on:click={() => view = 'account'}>Your account</button><button disabled={resetBusy} aria-current={view === 'users' ? 'page' : undefined} on:click={() => view = 'users'}>Users</button><button disabled={resetBusy} aria-current={view === 'maintenance' ? 'page' : undefined} on:click={() => view = 'maintenance'}>Maintenance</button></nav>
   {/if}
   <section class="panel account-panel" hidden={view !== 'account'}>
     {#if actor.provider === 'local'}
@@ -59,4 +63,5 @@
     {/if}
   </section>
   {#if view === 'users' && actor.admin}<section class="panel account-panel"><Users {actor} /></section>{/if}
+  {#if view === 'maintenance' && actor.admin}<section class="panel account-panel"><Maintenance bind:busy={resetBusy} workspaceDirty={workspaceDirty || dirty} onsuccess={onreset} /></section>{/if}
 </div>

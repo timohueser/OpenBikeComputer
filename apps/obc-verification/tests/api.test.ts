@@ -25,6 +25,19 @@ test('API enforces prose ownership, origins, proposed link approval, and frozen 
     store().db.prepare('INSERT OR IGNORE INTO local_admin(id,password_hash) VALUES(1,?)').run('a'.repeat(32) + ':' + 'b'.repeat(128));
     const admin: Actor = { name: 'owner', role: 'owner', provider: 'local', userId: 'local', admin: true };
     assert.equal((await request('users', 'GET', undefined, admin)).status, 200);
+    const reset = { baseRevision: store().latestRevision().id, clearCurrent: true, confirmation: 'START FRESH' };
+    assert.equal((await request('admin/history')).status, 401);
+    store().db.prepare('INSERT INTO github_users(id,login,admin) VALUES(?,?,?)').run('7', 'member', 0);
+    const member: Actor = { name: 'member', role: 'owner', provider: 'github', userId: '7', admin: true };
+    for (const denied of [agent, ci, member]) {
+      assert.equal((await request('admin/history', 'GET', undefined, denied)).status, 403);
+      assert.equal((await request('admin/history', 'POST', reset, denied)).status, 403);
+    }
+    assert.equal((await request('admin/history', 'POST', reset, admin, 'https://attacker.example')).status, 403);
+    assert.equal((await request('admin/history', 'POST', { ...reset, confirmation: 'CLEAR HISTORY' }, admin)).status, 400);
+    assert.equal((await request('admin/history', 'POST', { ...reset, clearCurrent: 'true' }, admin)).status, 400);
+    assert.equal(store().latestRevision().id, reset.baseRevision);
+    assert.equal((await request('admin/history', 'GET', undefined, admin)).status, 200);
     assert.equal((await request('users/123', 'DELETE', undefined, admin, 'https://attacker.example')).status, 403);
     assert.equal((await request('account/password', 'POST', { currentPassword: 'wrong', newPassword: 'valid-new-password' }, admin)).status, 403);
 
@@ -53,6 +66,14 @@ test('API enforces prose ownership, origins, proposed link approval, and frozen 
     assert.equal((await request('candidates/candidate/report', 'GET', undefined, ci)).status, 200);
     const before = await (await request('candidates/candidate/evidence', 'GET', undefined, ci)).text();
     store().updateCandidate(candidate.id, (value) => { value.releaseUrl = 'https://example.com/release'; });
+    assert.equal(await (await request('candidates/candidate/evidence', 'GET', undefined, ci)).text(), before);
+    const current = store().latestRevision();
+    const cleared = await request('admin/history', 'POST', { baseRevision: current.id, clearCurrent: false, confirmation: 'CLEAR HISTORY' }, admin);
+    assert.equal(cleared.status, 200);
+    const replacement = await cleared.json();
+    assert.deepEqual(replacement.requirements, current.requirements);
+    assert(replacement.id > current.id);
+    assert.equal((await request('admin/history', 'POST', { baseRevision: current.id, clearCurrent: true, confirmation: 'START FRESH' }, admin)).status, 409);
     assert.equal(await (await request('candidates/candidate/evidence', 'GET', undefined, ci)).text(), before);
   } finally { store().db.close(); rmSync(directory, { recursive: true, force: true }); }
 });
