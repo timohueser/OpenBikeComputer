@@ -1,9 +1,9 @@
 # Developing OpenBikeComputer
 
-The complete test taxonomy, suite-granularity rule, registry fields, exception policy, and change
-selection table live in [`docs/testing.md`](docs/testing.md). In short: unit, component, and
-contract suites are the fast hermetic tier; fixture, end-to-end, live, and hardware suites use
-explicit cadences; selection is per suite, never per test function.
+The routes, the suite-granularity rule, the plan documents, the exception policy and the change
+selection table live in [`docs/testing.md`](docs/testing.md). In short: ordinary work is selected
+by the change; captured fixtures, manual commands, the weekly workflow and live services are the
+four explicit routes; selection is per suite, never per test function.
 
 ## Verification is proportional to the change
 
@@ -23,20 +23,19 @@ cargo clippy -p obc-app --all-targets -- -D warnings
 `obc test` deliberately requires a scope. It does not silently expand to the workspace. Multiple
 affected packages may be supplied with repeated `-p` arguments.
 
-When the change spans packages, ask the registry which suites it selects instead of guessing:
+When the change spans packages, ask the plan what it selects instead of guessing:
 
 ```sh
 obc test affected --base origin/develop --dry-run
 obc test affected --base origin/develop
-obc test unit --surface formats
 ```
 
-`affected` is the same selection CI runs. Every form prints the selected suites and one reason each,
-and `--dry-run` executes nothing.
+`affected` is the same selection CI runs. It prints the selected units and one reason each, and
+`--dry-run` executes nothing.
 
-Run `obc suites check` after changing test sources, validation commands, workflows, registries, or
-test policy. `testing/suites.toml` holds the inventory; counts and durations do not belong in it,
-because the registry derives them.
+Run `obc suites check` after changing test sources, validation commands, workflows, the plan
+documents, or test policy. `testing/suites.toml` holds only what Cargo cannot see; packages,
+dependency edges, test binaries, counts and durations are all derived.
 
 For a non-Rust surface, use that surface's native focused command from its README or package
 scripts. Do not run Rust gates for a Swift-, documentation-, or frontend-only change.
@@ -51,7 +50,7 @@ obc test fixtures -p obc-route
 
 This syncs the `test` fixture profile, enables the `external-fixtures` feature, and still requires
 an explicit Cargo scope. Use it when changing a decoder, fixture-backed behavior, the fixture
-registry, or the associated scenario. Ordinary package work should stay in tier 1.
+catalog, or the associated scenario. Ordinary package work should stay in tier 1.
 
 ### 3. Surface gates — when a whole development surface changed
 
@@ -67,7 +66,7 @@ obc check fmt clippy device
 
 The `clippy` and `test` gates cover the complete host workspace, so prefer package-scoped Cargo
 commands during development. `frontend`, `board`, `docs`, `deny`, and `wasm` are independent
-surfaces; include one only when the change can affect it. Each gate prints the registry suites it
+surfaces; include one only when the change can affect it. Each gate prints the suites it
 reproduces, and `obc check full` names the required suites it does not — it is not CI parity.
 
 ### 4. Full gates — exceptional and explicit
@@ -83,7 +82,8 @@ or feature-resolution changes, a release candidate, or an explicit request. A ta
 being opened, or another agent also working in the repository is not by itself a reason to run it.
 Concurrent full runs are allowed; the discipline is to start one only when its coverage is needed.
 
-`obc test full` runs fast binaries, captured-fixture binaries and doctests in separate commands.
+`obc test full` runs ordinary binaries, captured-fixture binaries and doctests in separate
+commands.
 `obc check test` runs `tools/ci/test.sh`, the same file the CI `test` job runs: the fast tier,
 doctests, the default-feature formats shape and the render contract. Every command here, focused
 ones included, needs the CI-pinned runner (`cargo install cargo-nextest --version 0.9.143

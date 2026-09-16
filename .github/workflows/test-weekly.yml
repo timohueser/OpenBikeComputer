@@ -21,7 +21,7 @@ jobs:
       - run: brew install xcodegen
       - name: Run registered weekly iOS suites
         id: test
-        run: python3 tools/suite_registry.py run --scheduled weekly --surface ios
+        run: companion-ios/scripts/test-application.sh
       - name: Upload native application results
         if: ${{ !cancelled() && (steps.test.outcome == 'success' || steps.test.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
@@ -45,7 +45,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p .artifacts
-          python3 tools/suite_registry.py run --scheduled weekly --surface storage 2>&1 | tee .artifacts/storage-weekly.log
+          cargo test -p obc-storage --locked 2>&1 | tee .artifacts/storage-weekly.log
       - name: Upload native storage results
         if: ${{ !cancelled() && (steps.test.outcome == 'success' || steps.test.outcome == 'failure') }}
         uses: actions/upload-artifact@v4

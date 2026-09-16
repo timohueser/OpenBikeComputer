@@ -56,12 +56,12 @@ permissions:
 # token never lands in a job's .git/config.
 
 jobs:
-  # The registry is the only suite selector. This job runs it and publishes two outputs: the
+  # `tools/test_plan.py` is the only selector. This job runs it and publishes two outputs: the
   # per-suite plan the `ci` gate evaluates, and the list of jobs that plan requires. Every gated
   # job below reads that list — there is no second path-filter selector, and no job decides its
-  # own policy. `python3 tools/suite_registry.py select` is the same command `obc test affected`
+  # own policy. `python3 tools/test_plan.py select` is the same command `obc test affected`
   # runs locally (just is not installed on the runners), so a developer and CI answer "which
-  # suites does this change require" with one implementation.
+  # jobs does this change require" with one implementation.
   selection:
     runs-on: ubuntu-latest
     outputs:
@@ -94,7 +94,7 @@ jobs:
           fi
           echo '[]' > selection-jobs.json
           set +e
-          python3 tools/suite_registry.py select "${release_args[@]}" --base "$base" --format json \
+          python3 tools/test_plan.py select "${release_args[@]}" --base "$base" --format json \
             --jobs-file selection-jobs.json > selection-plan.json
           rc=$?
           set -e
@@ -128,14 +128,14 @@ jobs:
         run: python3 tools/check_one_home.py
       - name: Shared screen drawing helpers live in screen/vocab
         run: python3 tools/check_screen_vocabulary.py
-      - name: Test-suite registry drift
-        run: python3 tools/suite_registry.py check
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Install Python test reporter
         run: pip install -r tools/requirements-test.txt
-      - name: Registry unit tests
+      - name: Test plan drift
+        run: python3 tools/test_plan.py check
+      - name: Repository tool unit tests
         id: python-repository-tools
         run: |
           mkdir -p .artifacts/coverage/repository-tools
@@ -162,8 +162,8 @@ jobs:
           name: python-repository-tools-${{ github.run_attempt }}
           path: .artifacts/python/repository-tools/*.xml
           if-no-files-found: error
-      - name: Plan-derived job routing matches the workflow
-        run: python3 tools/suite_registry.py validate-filters
+      - name: The job table and this workflow describe the same jobs
+        run: python3 tools/test_plan.py validate-filters
       - name: Large fixture policy
         run: python3 tools/check_fixture_policy.py
 
