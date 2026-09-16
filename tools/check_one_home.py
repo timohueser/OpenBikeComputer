@@ -29,12 +29,12 @@ SCREEN = ROOT / "firmware/obc-app/src/screen"
 SETTINGS = SCREEN / "settings"
 DRAWERS = [SCREEN / "context_drawer.rs", SCREEN / "quick_drawer.rs"]
 
-# Bluetooth has one home in Settings; no drawer setting needs a duplicate editor.
-ALLOWED_SHARED_FIELDS: set[str] = set()
+# The universal Bluetooth on/off shortcut also stays with connection setup in Settings.
+ALLOWED_SHARED_FIELDS: set[str] = {"ble_enabled"}
 
 # Update these floors when controls are added or removed. A parser change must not lower them.
 MIN_ROW_LABELS = 11
-MIN_DRAWER_FIELDS = 6
+MIN_DRAWER_FIELDS = 7
 
 # `cx.settings.<field> = …` — the one production write path a screen has into the persisted record.
 # `=(?!=)` so an equality test is not read as a write.
@@ -132,7 +132,7 @@ def main() -> int:
     print(
         f"one-home guard: {len(drawer_fields)} drawer-written setting(s) (floor {MIN_DRAWER_FIELDS}), "
         f"{len(row_labels)} context row label(s) from {rows_seen} row literal(s) "
-        f"(floor {MIN_ROW_LABELS}) — no setting has two homes"
+        f"(floor {MIN_ROW_LABELS}) — no unapproved shared setting"
     )
     return 0
 

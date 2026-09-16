@@ -399,10 +399,12 @@ impl CoreHarness {
         use obc_app::catalog_state::CatalogObjectKind;
         let kind = match effect {
             CatalogEffect::RemoveObject { kind, .. } => Some(kind),
-            CatalogEffect::ReadCatalog { .. } | CatalogEffect::CleanupRoute { .. } => None,
+            CatalogEffect::ReadCatalog { .. }
+            | CatalogEffect::CleanupRoute { .. }
+            | CatalogEffect::RemoveReview { .. } => None,
         };
         match effect {
-            CatalogEffect::CleanupRoute { .. } => panic!("unexpected cleanup"),
+            CatalogEffect::CleanupRoute { .. } | CatalogEffect::RemoveReview { .. } => panic!("unexpected cleanup"),
             CatalogEffect::ReadCatalog { token } => {
                 // The re-read the domain ordered. The fixture's catalogs are the resident ones, so
                 // a refresh re-feeds exactly what the store now holds, and the outcome reports only
@@ -891,7 +893,7 @@ impl CoreHarness {
         for _ in 0..4 {
             let effect = self.next_catalog_effect();
             match effect {
-                CatalogEffect::CleanupRoute { .. } => panic!("unexpected cleanup"),
+                CatalogEffect::CleanupRoute { .. } | CatalogEffect::RemoveReview { .. } => panic!("unexpected cleanup"),
                 CatalogEffect::RemoveObject { .. } => return effect,
                 CatalogEffect::ReadCatalog { .. } => {
                     self.answer_catalog(effect);
@@ -1684,8 +1686,9 @@ fn the_conformance_replay_wake_profile_and_pass_cost() {
     assert!(immediate * 10 < passes, "immediate wakes stay a small minority — nothing here polls");
 }
 
-/// The wake counts for the complete scenario table.
-const WAKE_PROFILE: (u32, u32, u32, u32) = (190, 0, 125, 65);
+/// The wake counts for the complete scenario table. Cancelling a detour uncovers the Map while
+/// planner cleanup is pending, so its visible planning banner keeps a one-second animation deadline.
+const WAKE_PROFILE: (u32, u32, u32, u32) = (190, 0, 126, 64);
 
 // ==================== the resource gate ====================
 

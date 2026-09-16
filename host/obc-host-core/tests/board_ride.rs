@@ -199,3 +199,118 @@ fn empty_payload_preserves_valid_context_and_rejects_invalid_checkpoint_metadata
         reopened = next;
     }
 }
+
+fn app_pass(
+    app: &mut obc_app::App,
+    now: u32,
+    fix: Option<obc_ports::Fix>,
+    outcome: Option<obc_app::recorder::RecorderOutcome>,
+) -> Option<obc_app::recorder::RecorderEffect> {
+    use obc_app::device_core::{
+        derived::{DerivedInputs, DerivedTargets},
+        ExternalFacts, OutcomeSlots, PassClock, PassInputs, PlatformSupport, Revision, StoreIdentity, StoreRevision,
+    };
+    struct Location(Option<obc_ports::Fix>);
+    impl obc_ports::LocationSource for Location {
+        fn poll(&mut self) -> Option<obc_ports::Fix> {
+            self.0.take()
+        }
+    }
+    let mut location = Location(fix);
+    let mut facts = ExternalFacts::default();
+    facts.note_store_revision(StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(1) });
+    let mut outcomes = OutcomeSlots::default();
+    if let Some(outcome) = outcome {
+        outcomes.recorder.try_put(outcome).unwrap();
+    }
+    app.run_pass(PassInputs {
+        now: PassClock { ride: obc_ports::RideClock(now), ui: obc_ports::InputClock(now) },
+        gestures: &[],
+        sensors: obc_ports::Sensors::new(&mut location),
+        route: None,
+        support: PlatformSupport::default(),
+        outcomes: &mut outcomes,
+        facts: &mut facts,
+        derived: DerivedInputs::NONE,
+        targets: DerivedTargets { ride_preview: &[], nav_preview: &[] },
+    })
+    .effects
+    .recorder
+    .take()
+}
+
+#[test]
+fn start_after_discard_opens_before_the_first_append_and_preserves_every_sample() {
+    use obc_app::recorder::{RecorderEffect, RecorderIntent, RecorderOutcome};
+    use obc_app::{App, AppState, WarningFlags};
+    use obc_storage::flat::Store;
+
+    let _owner = RECORDER.lock().unwrap();
+    for fail_restart in [false, true] {
+        let (media, store, writer, mut recorder) = setup();
+        complete(recorder.discard()).unwrap();
+        let mut app = App::new(AppState::new(8_194_551, 46_723_126, 1.0));
+        let mut opened = None;
+        // Establish the store capability before the rider starts.
+        assert!(app_pass(&mut app, 0, None, None).is_none());
+        for now in [1_000, 5_000] {
+            app.recorder.request(RecorderIntent::Start);
+            let effect = app_pass(&mut app, now, Some(obc_ports::Fix::at(8_194_551, 46_723_126)), None);
+            assert!(matches!(effect, Some(RecorderEffect::Append { samples: 1, .. })));
+            let mut expected = app.recorder.staged().to_vec();
+            if now == 5_000 && fail_restart {
+                store.device().fault_next(sim::MediaOp::Sync);
+            }
+            let mut outcome = complete(recorder.execute(store, &app, &mut opened, effect, now));
+            if now == 5_000 && fail_restart {
+                assert!(matches!(outcome, Some(RecorderOutcome::Failed { error: RecorderError::Write, .. })));
+                assert!(recorder.take_warning(), "a real open failure must still warn");
+                assert_ne!(opened, app.recorder.session(), "a failed start remains owed");
+                assert_eq!(app.recorder.staged(), expected);
+                let retry = app_pass(&mut app, now + 1, None, outcome);
+                assert!(matches!(retry, Some(RecorderEffect::Checkpoint { .. })));
+                let repaired = complete(recorder.execute(store, &app, &mut opened, retry, now + 1));
+                let append = app_pass(&mut app, now + 2, None, repaired);
+                outcome = complete(recorder.execute(store, &app, &mut opened, append, now + 2));
+            }
+            assert!(matches!(outcome, Some(RecorderOutcome::Appended { samples: 1, .. })));
+            assert_eq!(opened, app.recorder.session());
+            assert!(!recorder.take_warning());
+            let next = app_pass(&mut app, now + 1_000, Some(obc_ports::Fix::at(8_194_551, 46_723_171)), outcome);
+            expected.extend_from_slice(app.recorder.staged());
+            let outcome = complete(recorder.execute(store, &app, &mut opened, next, now + 1_000));
+            assert!(matches!(outcome, Some(RecorderOutcome::Appended { samples: 1, .. })));
+            assert!(app_pass(&mut app, now + 1_001, None, outcome).is_none());
+            assert!(app.recorder.staged().is_empty());
+            if !fail_restart {
+                assert!(
+                    !matches!(app.top_screen(), obc_app::screen::Screen::Warning(w) if w.flags().contains(WarningFlags::REC_ERROR))
+                );
+            }
+            if now == 1_000 {
+                app.recorder.request(RecorderIntent::Discard);
+                let discard = app_pass(&mut app, now + 1_002, None, None);
+                let outcome = complete(recorder.execute(store, &app, &mut opened, discard, now + 1_002));
+                assert!(matches!(outcome, Some(RecorderOutcome::Discarded { .. })));
+                assert_eq!(store.entries().count(), 0);
+                // App has not consumed the close yet. It must not reopen this session.
+                assert!(complete(recorder.execute(store, &app, &mut opened, None, now + 1_003)).is_none());
+                assert_eq!(store.entries().count(), 0);
+                assert!(app_pass(&mut app, now + 1_003, None, outcome).is_none());
+            } else {
+                assert_eq!(store.entries().count(), 1);
+                assert_eq!(
+                    complete(recorder.checkpoint(
+                        20_000,
+                        &app.recorder.ride_stats(),
+                        app.recorder.checkpoint_context()
+                    )),
+                    Ok(CheckpointStatus::Durable)
+                );
+                assert!(!writer.attempts.borrow().is_empty());
+                let (reopened, _) = recover(media, store.device());
+                assert_eq!(recovered_points(reopened), expected, "every second-ride sample survives exactly once");
+            }
+        }
+    }
+}

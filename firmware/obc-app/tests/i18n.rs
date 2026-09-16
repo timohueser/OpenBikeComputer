@@ -299,10 +299,8 @@ fn the_route_plan_sheet_is_localized_and_every_state_renders() {
         app.set_nav_profiles(tables.nav_profiles());
         app.state.user_fix = Some(Fix::at(POS.1, POS.0));
 
-        // Home → Menu → POIs → Water → shared place detail and its route-profile context.
-        app.apply_gesture(Gesture::BackHold);
-        app.apply_gesture(Gesture::Step(2)); // Routes → Rides → POIs
-        app.apply_gesture(Gesture::Press); // Assistant
+        // Assistant → Find → Water → shared place detail and its route-profile context.
+        assert!(app.apply_chord(obc_app::Chord::Assistant));
         app.apply_gesture(Gesture::Press); // Find a place
         app.apply_gesture(Gesture::Press); // Water
         app.apply_gesture(Gesture::Step(1));

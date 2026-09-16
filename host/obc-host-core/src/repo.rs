@@ -78,6 +78,9 @@ pub trait RouteRepository {
     fn catalog(&self) -> &[RouteSummary];
     /// Each catalog entry's session-stable durable id, parallel to [`catalog`](RouteRepository::catalog).
     fn ids(&self) -> &[CatalogObjectId];
+    fn internal_routes(&self) -> u64 {
+        0
+    }
     fn unaccepted_routes(&self) -> u64 {
         0
     }
@@ -124,6 +127,9 @@ pub trait RouteRepository {
     fn active_source(&self) -> Option<&dyn ByteSource>;
     /// Retain the exact active snapshot. Repositories without leases cannot plan detours.
     fn pin_active(&self) -> Option<RouteLease> {
+        None
+    }
+    fn pin_review(&self, _source: obc_formats::obcr::RouteSourceKey) -> Option<RouteLease> {
         None
     }
     /// Force the active bytes to re-read on the next [`sync_active`](RouteRepository::sync_active)

@@ -739,8 +739,8 @@ fn replay() -> Vec<Step> {
     // asks for nothing, and the close asks for exactly one repaint. The open itself, step by step,
     // is `the_drawer_open_damages_only_the_sheet_…` below.
     steps.push(step("squeeze the quick drawer open", 192_000).keys(&squeeze(Button::Up, Button::Select)));
+    steps.push(step("release the squeeze", 192_100).keys(&[release(Button::Select), release(Button::Up)]));
     steps.push(step("the quick sheet settles", 192_600).expect("QuickDrawer"));
-    steps.push(step("release the squeeze", 192_700).keys(&[release(Button::Select), release(Button::Up)]));
     steps.push(step("quiet under the settled sheet", 193_000).expect("QuickDrawer"));
     steps.push(step("close it again", 193_400).keys(&tap(Button::Back)).expect("Map"));
     steps.push(step("quiet on the uncovered map", 194_000).expect("Map"));
@@ -1165,7 +1165,8 @@ fn drawer_open_replay() -> Vec<Step> {
         // **The board's cadence, and it is the point** — see [`SQUEEZE_MS`].
         step("quiet", 500).expect("Map"),
         step("the last wake the Map asked for", 8_000).expect("Map"),
-        step("squeeze the quick drawer open", SQUEEZE_MS).keys(&squeeze(Button::Up, Button::Select)),
+        step("squeeze the quick drawer open", SQUEEZE_MS - 80).keys(&squeeze(Button::Up, Button::Select)),
+        step("release the squeeze", SQUEEZE_MS).keys(&[release(Button::Select), release(Button::Up)]),
     ];
     for i in 1..=9 {
         steps.push(step("an open step", SQUEEZE_MS + i * 32).expect("QuickDrawer"));
@@ -1175,7 +1176,6 @@ fn drawer_open_replay() -> Vec<Step> {
     for i in 0..30 {
         steps.push(step("a wake between two steps", SQUEEZE_MS + 292 + i * 4).expect("QuickDrawer"));
     }
-    steps.push(step("release the squeeze", SQUEEZE_MS + 560).keys(&[release(Button::Select), release(Button::Up)]));
     steps.push(step("quiet under the settled sheet", SQUEEZE_MS + 700).expect("QuickDrawer"));
     steps.push(step("quiet again", SQUEEZE_MS + 800).expect("QuickDrawer"));
     steps.push(step("close it", SQUEEZE_MS + 900).keys(&tap(Button::Back)).expect("Map"));

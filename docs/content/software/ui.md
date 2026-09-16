@@ -473,25 +473,59 @@ The delete footer is a guarded row. The action runs only after a complete hold o
 ## Find a place
 
 Find combines places within 10 km by air with places along the next 20 km of the accepted route,
-within 300 m of its line. It takes the first eight eligible places from each source, alternates
-sources, and removes duplicate OSM identities. Known-closed places are excluded before these limits.
+within 300 m of its line. It takes four eligible nearby places and four from the corridor page,
+alternates sources, and removes duplicate OSM identities. The corridor selection estimates arrival
+using the same route occurrence as Visit and the straight distance from that point to the place.
+This avoids a later pass being treated as an early stop on an overlapping route. Known-closed
+places are excluded before these limits. The shared corridor page keeps its route order.
 
-The shared Visit planner measures at most 16 distinct candidates, one at a time. Each candidate is
-released before the next plan starts. Planning a suggestion does not activate a route or change the
-recording session. Up to four useful choices remain. An **On the way** choice adds at most 400 m to
+The shared Visit planner measures at most eight distinct candidates, one at a time. It stores each
+measured route on the card and releases the planner before the next plan starts. The Finding
+indicator stays visible through the complete batch. Its small compass turns by one third of a revolution once per
+second without redrawing the map. Planning a suggestion does not activate a route or change the recording session. Up to four useful choices remain. A choice on the way adds at most 400 m to
 the complete visit. A nearer alternative remains when its measured costs provide a useful choice.
 Unknown ascent cannot eliminate a measured choice.
+
+With an accepted route, a visit follows that route to the point nearest the place's access coordinate
+within the next 20 km. Equal whole-metre distances use the first forward occurrence. Two
+directed route searches connect that point to the place and back. The original route before and
+after the excursion, including its waypoints and loops, stays in the visit. A place on the route
+can have no return leg distance; guidance continues after the rider leaves the stop.
+
+An imported route can differ from the road graph. At departure and return, a connection within
+the normal 100 m snap limit retains both coordinates and counts toward the visit distance.
+Its surface and elevation are unknown. A larger gap refuses the visit. The preview fits the path
+through the place and back to the original route; the stored journey retains the full continuation.
 
 The card shows route distance and ascent to arrival. Added costs compare the complete visit,
 including its return, with the remaining accepted route. With no accepted route, the review is a
 direct destination and has no return cost. Membership, order, map bounds, and cost origin stay fixed
-until **Refresh**. These bounded results are partial; they do not establish a global nearest place.
-**More places** opens the full paged category browser. It plans only the place selected for review.
+while the cached inputs remain valid. The last category stays cached until another category is
+calculated or the Assistant closes. A changed map, route, bike profile, clock authority, or stale
+origin invalidates the choices. These bounded results do not establish a global nearest place.
+**More places** opens the full paged category browser. Back returns to the category overview
+without route calculation. The browser plans only the place selected for review.
 
-All place entries use the same details and Visit review. The host binds the exact map revision and
-OSM approach. The review reads the published candidate geometry and costs. A known-closed place, a
-changed source, or a stale origin prevents acceptance. Missing elevation remains unknown. Acceptance
-uses the shared durable Visit transaction; browsing and cancellation leave the active route intact.
+Selecting a Find suggestion opens Visit review directly and loads its stored route without another
+route calculation. With an active route, the action button offers **Add detour** or **Route here**.
+Use Up or Down to switch; the card updates its geometry and costs before Select accepts it.
+**Route here** plans from the current position to the place and replaces the current goal. It has
+no return leg or original-route continuation. **Add detour** is the initial choice in every category.
+With no active route, the card offers only **Route here**. Switching modes stays on the same card.
+Back and reselect reuse the category's original route while its inputs remain valid. Closing
+the Assistant removes unused routes. Restart removes abandoned previews while preserving accepted
+checkpoint routes. More places retains the place detail page and plans the
+selected place through the shared Visit planner. Ordinary service places without an explicit OSM approach
+use normal coordinate destination routing. The review binds the exact map revision and actual
+route endpoint. The preview draws the rider and destination pin above the route. When an explicit
+approach is more than 100 m from the place's map coordinate, a dotted line connects the route end
+to the pin. The pin can mark the center of a feature; the line does not describe a walking path.
+A small pill shows the current opening interval when trusted hours are available. Otherwise it
+shows that the hours are unknown or that the place is closed. A known-closed place, a changed source, or a stale origin
+prevents acceptance. Missing elevation remains unknown. Acceptance
+uses the shared durable Visit transaction. After the route is accepted, the device starts recording
+if no ride session exists. An existing ride keeps its session and pause state. Browsing and
+cancellation leave the active route intact.
 
 Implementation: [Find preparation](src:firmware/obc-app/src/find_place.rs),
 [Find and Visit review screens](src:firmware/obc-app/src/screen/find_place.rs).
@@ -598,7 +632,7 @@ Page membership and order stay fixed while the list is open. Current opening sta
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
-<svg viewBox="0 0 720 250" role="img" aria-label="The POI detail view. On the left, the screen: the POI name with its category icon at the top, a muted subtype subtitle beneath it, then a promoted distance row with the 8-way bearing arrow, a Today heading with an opening-hours range below, a green OPEN pill, and a full-width amber Review visit bar at the bottom. On the right, the three heading states for the hours block: Today with time ranges when open some hours today, Closed today when the schedule has no interval for this weekday, and Hours not listed when the POI has no schedule at all. Below, the open-now pill is derived from the live local clock.">
+<svg viewBox="0 0 720 250" role="img" aria-label="The POI detail view. On the left, the screen: the POI name with its category icon at the top, a muted subtype subtitle beneath it, then a promoted distance row with the 8-way bearing arrow, a Today heading with an opening-hours range below, a green OPEN pill, and a full-width amber Preview route bar at the bottom. On the right, the three heading states for the hours block: Today with time ranges when open some hours today, Closed today when the schedule has no interval for this weekday, and Hours not listed when the POI has no schedule at all. Below, the open-now pill is derived from the live local clock.">
   <defs>
     <marker id="aPD" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -622,7 +656,7 @@ Page membership and order stay fixed while the list is open. Current opening sta
   <text class="d-sub" x="68" y="203" text-anchor="middle" style="fill:#fff;font-size:12px">OPEN</text>
   <!-- footer action bar -->
   <rect x="38" y="214" width="204" height="16" rx="5" style="fill:#e3a52b" />
-  <text class="d-sub" x="140" y="225" text-anchor="middle" style="fill:#3d3427;font-size:12px">&#9654; Review visit</text>
+  <text class="d-sub" x="140" y="225" text-anchor="middle" style="fill:#3d3427;font-size:12px">&#9654; Preview route</text>
 
   <!-- the three heading states -->
   <text class="d-tag" x="292" y="60">the hours heading — three states</text>

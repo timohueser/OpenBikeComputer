@@ -166,9 +166,6 @@ async fn read_catalogs(
     app.begin_catalog_refresh();
     metadata_call(crate::flat_store::Request::ReconcileMetadata).await.map_err(catalog_metadata_error)?;
     let start = crate::flat_store::catalog_scope(flat);
-    // Drop the held revision before rebuilding identity/index state. A replace at the same ObjectId
-    // must reopen the new revision, not keep rendering the hold.
-    crate::flat_store::reconcile_route(flat, None);
     let routes_loaded = crate::flat_store::load_routes(flat, app);
     let trips_loaded = crate::flat_store::load_trips(flat, app);
     let rides_loaded = crate::flat_store::load_rides(flat, app);
@@ -565,6 +562,7 @@ fn gesture_name(g: obc_app::Gesture) -> &'static str {
 fn chord_name(c: obc_app::Chord) -> &'static str {
     match c {
         obc_app::Chord::Quick => "Quick",
+        obc_app::Chord::Assistant => "Assistant",
         obc_app::Chord::Context => "Context",
     }
 }
@@ -876,6 +874,7 @@ pub(crate) async fn run_app(
     let mut route_index_valid = false;
     let mut index_route: Option<usize> = None;
     let mut pending_map_redraw = false;
+    let mut find_loading_painted = false;
     let mut power_off = crate::panel_power::SystemOff;
     // The level last handed to the backlight, so the PWM is touched on a change rather than every
     // pass. `u8::MAX` is never a real level, so the boot apply below always reaches the hardware.
@@ -1328,6 +1327,30 @@ pub(crate) async fn run_app(
             if let Some(effect) = exec.effects.catalog.take() {
                 use obc_app::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
                 match effect {
+                    CatalogEffect::RemoveReview { token, source } => {
+                        let result = if source.store != flat.store_id().0 {
+                            Err(obc_storage::flat::StoreError::NotFound)
+                        } else if let Some(writer) = crate::flat_store::writer() {
+                            writer
+                                .call(
+                                    crate::flat_store::Request::RemoveComputedRoute {
+                                        id: obc_storage::flat::ObjectId(source.object),
+                                        revision: obc_storage::flat::Revision(source.revision),
+                                    },
+                                    &CATALOG_STORE_REPLY,
+                                )
+                                .await
+                        } else {
+                            Err(obc_storage::flat::StoreError::ReadOnly)
+                        };
+                        let outcome = match result {
+                            Ok(_) | Err(obc_storage::flat::StoreError::NotFound) => {
+                                CatalogOutcome::ReviewRemoved { token, source }
+                            }
+                            Err(_) => CatalogOutcome::Failed { token, error: CatalogError::RemoveFailed },
+                        };
+                        RideExec::deliver(&mut exec.outcomes.catalog, outcome, "catalog");
+                    }
                     CatalogEffect::CleanupRoute { token, before_utc, store } => {
                         let active = app
                             .active_route_index()
@@ -1350,9 +1373,20 @@ pub(crate) async fn run_app(
                     // The rescan block: rebuild the flat route/trip/ride identities and remap the
                     // app's held indices by durable ObjectId.
                     CatalogEffect::ReadCatalog { token } => {
+                        let old_source = crate::flat_store::route_source_key();
                         let read = read_catalogs(flat, app, &mut exec.facts).await;
-                        prev_active = None; // force reconcile_route/track to re-run against the new indexing
-                        index_route = None; // and the chunk index to rebuild off the freshly-opened file
+                        let active = app.active_route_index();
+                        crate::flat_store::reconcile_route(flat, active.and_then(|i| app.route_ids().get(i).copied()));
+                        if read.is_ok() && old_source.is_some() && crate::flat_store::route_source_key() == old_source {
+                            prev_active = active;
+                            if route_index_valid {
+                                index_route = active;
+                            }
+                        } else {
+                            prev_active = None;
+                            index_route = None;
+                            route_index_valid = false;
+                        }
 
                         // A partial read is answered `Unreadable`, and the **domain** re-offers the read from there
                         // (#1541) — one per pass, which is one per wake.
@@ -1449,66 +1483,14 @@ pub(crate) async fn run_app(
                 RideExec::deliver(&mut exec.outcomes.storage_info, outcome, "storage");
             }
 
-            // ── The staged recording operation (#1398) ──
-            //
-            // One bounded card operation, exactly like the catalog's above it, and it decides
-            // nothing: Recorder chose the checkpoint cadence and what "closed" means, and this
-            // reports whether the store did it. A failure is a **typed reason**, so the ride stays
-            // open and Recorder re-offers the same operation rather than the rider losing it.
-            if let Some(effect) = exec.effects.recorder.take() {
-                use obc_app::recorder::{RecorderEffect, RecorderError, RecorderOutcome, RideClose};
-                use obc_storage::flat::StoreError;
-                let outcome = match effect {
-                    RecorderEffect::Checkpoint { token } => {
-                        let stats = app.recorder.ride_stats();
-                        let continuation = app.recorder.checkpoint_context();
-                        match ride_recorder.checkpoint(now, &stats, continuation).await {
-                            Ok(status) => RecorderOutcome::Checkpointed { token, status },
-                            Err(error) => RecorderOutcome::Failed { token, error },
-                        }
-                    }
-                    RecorderEffect::Finalize { token } => {
-                        // Recorder has already drained the samples through acknowledged appends.
-                        // The footer facts come from Recorder, which stamped its wall-clock anchor
-                        // as it minted this close. The save name is not read at all: it was frozen
-                        // when the ride opened.
-                        let stats = app.recorder.ride_stats();
-                        match ride_recorder.finalize(&stats).await {
-                            RideClose::Committed(ride) => RecorderOutcome::Finalized { token, ride },
-                            RideClose::Nothing => {
-                                defmt::warn!("flat ride: finalize with no open object — the ride was never created");
-                                RecorderOutcome::Discarded { token }
-                            }
-                            RideClose::Failed => RecorderOutcome::Failed { token, error: RecorderError::Write },
-                        }
-                    }
-                    // The store's refusal is reported by kind. A card that will take no mutation at
-                    // all is the one answer a retry cannot help, so Recorder must be able to tell it
-                    // from a write that went wrong.
-                    RecorderEffect::Discard { token } => match ride_recorder.discard().await {
-                        Ok(()) => RecorderOutcome::Discarded { token },
-                        Err(StoreError::ReadOnly) => RecorderOutcome::Failed { token, error: RecorderError::ReadOnly },
-                        Err(_) => RecorderOutcome::Failed { token, error: RecorderError::Write },
-                    },
-                    // The immutable App borrow binds the full issued batch to its observation
-                    // context. A changed cohort is reissued before any board storage work.
-                    RecorderEffect::Append { token, samples } => match app.recorder.append_context(samples) {
-                        None => RecorderOutcome::Cancelled { token },
-                        Some(context) => match ride_recorder.append(app.recorder.staged(), context) {
-                            crate::flat_ride::AppendResult::Accepted => RecorderOutcome::Appended { token, samples },
-                            crate::flat_ride::AppendResult::NeedsCheckpoint => {
-                                RecorderOutcome::NeedsCheckpoint { token }
-                            }
-                            crate::flat_ride::AppendResult::Failed => {
-                                RecorderOutcome::Failed { token, error: RecorderError::Write }
-                            }
-                        },
-                    },
-                };
-                if ride_recorder.take_warning() {
-                    exec.facts.raise_warnings(obc_app::WarningFlags::REC_ERROR);
-                }
+            // Open the session before serving the previous pass's first samples.
+            if let Some(outcome) =
+                ride_recorder.execute(flat, app, &mut opened_session, exec.effects.recorder.take(), now).await
+            {
                 RideExec::deliver(&mut exec.outcomes.recorder, outcome, "recorder");
+            }
+            if ride_recorder.take_warning() {
+                exec.facts.raise_warnings(obc_app::WarningFlags::REC_ERROR);
             }
 
             // The catalog and checkpoint calls share one physical reply slot.
@@ -1553,9 +1535,18 @@ pub(crate) async fn run_app(
                             });
                     #[cfg(not(has_nav))]
                     let sources_current = app.assistant_review_context().is_none();
+                    let current_scope = crate::flat_store::catalog_scope(flat);
+                    let clear_scope_moved =
+                        app.assistant_checkpoint_payload(token).is_some_and(|change| change.next.is_none())
+                            && effect.scope().is_some_and(|issued| {
+                                app.assistant_store_matches(issued.store)
+                                    && issued.store == current_scope.store
+                                    && issued.revision != current_scope.revision
+                            });
                     let result = if !sources_current {
                         Some(Err(obc_app::metadata::MetadataError::Stale))
-                    } else if !effect.scope().is_some_and(|scope| app.assistant_store_matches(scope.store))
+                    } else if clear_scope_moved
+                        || !effect.scope().is_some_and(|scope| app.assistant_store_matches(scope.store))
                         || !app.assistant_checkpoint_submission(token)
                     {
                         RideExec::deliver(
@@ -1603,7 +1594,12 @@ pub(crate) async fn run_app(
             #[allow(unused_mut, unused_assignments)]
             let mut nav_cancel = false;
             #[cfg(has_nav)]
-            if app.assistant_review_status() == obc_app::navigator::ReviewStatus::Accepted && nav_run.is_none() {
+            if app.assistant_review_status() == obc_app::navigator::ReviewStatus::Accepted
+                && nav_run.is_none()
+                && review_publication.is_some_and(|source| {
+                    app.assistant_checkpoint().is_some_and(|checkpoint| checkpoint.route == source)
+                })
+            {
                 review_publication = None;
                 if let Some(source) = review_original.take() {
                     flat.close(source.release());
@@ -1769,9 +1765,14 @@ pub(crate) async fn run_app(
                                 "navigator",
                             );
                         }
-                        NavigatorEffect::Acquire { token, work: PlannerWork::Detour(_) }
+                        NavigatorEffect::Acquire {
+                            token,
+                            work: PlannerWork::Detour(_) | PlannerWork::RestoreReview(_),
+                        }
                         | NavigatorEffect::CommitDetour { token } => {
-                            defmt::warn!("nav: detour is not supported on this board — refusing the operation");
+                            defmt::warn!(
+                                "nav: planner operation is not supported on this board — refusing the operation"
+                            );
                             RideExec::deliver(
                                 &mut exec.outcomes.navigator,
                                 NavigatorOutcome::Failed { token, error: NavigatorError::Workspace },
@@ -1781,7 +1782,13 @@ pub(crate) async fn run_app(
                         NavigatorEffect::Release { token, retain_result, .. } => {
                             #[cfg(has_nav)]
                             if nav_run.is_none() && !retain_result {
-                                if let Some(source) = review_publication {
+                                if let Some(source) = review_publication.filter(|source| {
+                                    !app.retains_find_review(obc_formats::obcr::RouteSourceKey {
+                                        store: flat.store_id().0,
+                                        object: source.object,
+                                        revision: source.revision,
+                                    })
+                                }) {
                                     if let Some(writer) = crate::flat_store::writer() {
                                         let result = writer
                                             .call(
@@ -1800,7 +1807,6 @@ pub(crate) async fn run_app(
                                             );
                                             continue;
                                         }
-                                        review_publication = None;
                                         crate::flat_store::load_routes(flat, app);
                                     } else {
                                         RideExec::deliver(
@@ -1811,6 +1817,7 @@ pub(crate) async fn run_app(
                                         continue;
                                     }
                                 }
+                                review_publication = None;
                                 if let Some(source) = review_original.take() {
                                     flat.close(source.release());
                                 }
@@ -1828,7 +1835,12 @@ pub(crate) async fn run_app(
                                 exec.nav_token = Some(token);
                                 if let Some(run) = nav_run.as_mut() {
                                     if let NavIo::Published(id) = run.io {
-                                        run.io = if retain_result {
+                                        run.io = if retain_result
+                                            || app.retains_find_review(obc_formats::obcr::RouteSourceKey {
+                                                store: flat.store_id().0,
+                                                object: id.0,
+                                                revision: 1,
+                                            }) {
                                             NavIo::Complete
                                         } else {
                                             NavIo::NeedPublishCompensation(id)
@@ -2332,6 +2344,16 @@ pub(crate) async fn run_app(
                     }
                 }
                 if search_ended {
+                    if review_publication.is_some_and(|source| {
+                        app.retains_find_review(obc_formats::obcr::RouteSourceKey {
+                            store: flat.store_id().0,
+                            object: source.object,
+                            revision: source.revision,
+                        })
+                    }) && app.assistant_review_status() != obc_app::navigator::ReviewStatus::Preview
+                    {
+                        review_publication = None;
+                    }
                     crate::assistant::release_original(
                         flat,
                         &mut review_original,
@@ -2455,40 +2477,10 @@ pub(crate) async fn run_app(
                 prev_route = active;
             }
 
-            // Point the card at the active route's geometry, and open a ride object for the session
-            // Recorder decided on. Gated on the edges that can change either — a route swap, or a
-            // session with no object yet — so the dominant static frame does no per-tick
-            // `String<64>` copy.
-            //
-            // **The owed object is named by id, and on this loop that is load-bearing.** A close is
-            // served at the top of this iteration but its verdict is applied by the pass at the
-            // *end* of it, so right here `app.ride_session()` is still `Some(N)` while the object it
-            // named is already gone. A gate that asked "is a session open and nothing recording"
-            // could not tell that apart from "the start failed, retry", and would allocate a fresh
-            // 32 MiB `RECORDING` object under the closing ride's identity — never closed, refusing
-            // every later DFU install, and surfacing as a bogus recovered ride at the next boot.
-            // `object_owed` compares the id the executor has already opened one for, so a served
-            // close owes nothing and a failed start still retries. Closing is not here at all: it
-            // is a `RecorderEffect`, served in the store phase above.
-            let owed = app.recorder.object_owed(opened_session);
-            if active != prev_active || owed.is_some() {
-                let mut name: heapless::String<64> = heapless::String::new();
-                if let Some(r) = active.and_then(|i| app.routes().get(i)) {
-                    let _ = name.push_str(&r.name);
-                }
+            // Reconcile geometry only when the active route changes.
+            if active != prev_active {
                 let active_id = active.and_then(|i| app.route_ids().get(i).copied());
                 crate::flat_store::reconcile_route(flat, active_id);
-                if let Some(id) = owed {
-                    ride_recorder.open(flat, id, &name, now).await;
-                    // A start the card refused leaves no object, so the id stays unclaimed and the
-                    // next iteration retries it. A start that took claims it once and for all.
-                    if ride_recorder.open_session() == Some(id) {
-                        opened_session = Some(id);
-                    }
-                }
-                if ride_recorder.take_warning() {
-                    exec.facts.raise_warnings(obc_app::WarningFlags::REC_ERROR);
-                }
                 prev_active = active;
             }
 
@@ -2586,9 +2578,18 @@ pub(crate) async fn run_app(
                     // the level forever.
                     derived.nav_preview = Some(match route.as_ref() {
                         Some(r) => {
-                            let _ =
-                                derived_pts.extend_from_slice(&r.preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>());
-                            obc_app::device_core::DerivedInput::filled(key)
+                            let points = if key.assistant {
+                                r.assistant_preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>()
+                            } else {
+                                Ok(r.preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>())
+                            };
+                            match points {
+                                Ok(points) => {
+                                    let _ = derived_pts.extend_from_slice(&points);
+                                    obc_app::device_core::DerivedInput::filled(key)
+                                }
+                                Err(_) => obc_app::device_core::DerivedInput::failed(key),
+                            }
                         }
                         None => obc_app::device_core::DerivedInput::failed(key),
                     });
@@ -2834,6 +2835,26 @@ pub(crate) async fn run_app(
             // of them is full-frame, so each also drops a region-scoped clip (`dirty.region`) — the
             // region only survives when the pass's own ticks were the sole dirt.
             let mut dirty = render;
+            // Keep an already-painted loading base while reader work advances between planner owners.
+            find_loading_painted &= app.find_preparing() && app.find_place_state() != obc_app::find_place::State::Start;
+            #[cfg(has_nav)]
+            let find_can_prepare = nav_guard.is_none();
+            #[cfg(not(has_nav))]
+            let find_can_prepare = true;
+            let review_pending = app.assistant_route_pending();
+            if (find_loading_painted || review_pending) && find_can_prepare {
+                let reader = Reader::new(flat_map, map_tables, map_cache);
+                app.prepare_find(Some(&reader), route.as_ref());
+                if (find_loading_painted && !app.find_preparing()) || (review_pending && !app.assistant_route_pending())
+                {
+                    if find_loading_painted && app.find_place_state() == obc_app::find_place::State::Ready {
+                        defmt::info!("find: ready results={=usize}", app.find_place_result_count());
+                    }
+                    find_loading_painted = false;
+                    dirty.map = true;
+                    dirty.region = None;
+                }
+            }
             if pending_map_redraw {
                 dirty.map = true;
                 dirty.region = None;
@@ -2842,6 +2863,7 @@ pub(crate) async fn run_app(
             // A FLPR relaunch landed since the last pass (#349): the fresh core has no frame history
             // and the diff store was reset — schedule the full repaint even if nothing else is dirty.
             if display.take_relaunch_repaint() {
+                find_loading_painted = false;
                 dirty.map = true;
                 dirty.region = None;
             }
@@ -2903,7 +2925,7 @@ pub(crate) async fn run_app(
             // This is also what makes the arena's `render ⊥ nav` rule hold in practice rather than
             // only at the gate: no map render is attempted while the nav arm is out, so the claim
             // below is never refused on the ordinary path.
-            let frozen = app.reroute_freeze_active();
+            let frozen = app.reroute_freeze_active() || find_loading_painted;
             if frozen && dirty.map {
                 pending_map_redraw = true;
                 dirty.map = false;
@@ -2913,7 +2935,8 @@ pub(crate) async fn run_app(
             // ═══ The store phase ends HERE: the tuple is the block's value and `store_guard` dies at
             // the closing brace — every reader/source/track borrow of the card ended above, and the
             // present await below *cannot* hold the guard, by construction. ═══
-            let rendered: Option<RenderedFrame> = if frozen {
+            let banner_rows = app.reroute_banner_rows(FRAME_H as f32);
+            let rendered: Option<RenderedFrame> = if frozen || (!dirty.map && dirty.overlay && banner_rows.is_some()) {
                 // The banner rides the overlay plane, which on this board means: draw it straight
                 // into the resident framebuffer and let the self-diffing present push the handful of
                 // rows it changed. It deliberately does **not** go through the FLPR's
@@ -2921,10 +2944,9 @@ pub(crate) async fn run_app(
                 // bounded at 16 columns (`MAX_OVERLAY_COLS`), because the bulge is a 16 px strip at
                 // the right edge; a 240-px-wide banner band would need a ~26 KB transient on the
                 // overlay frame's stack, on the crate where transients overflow it. Painting into the
-                // frame is free instead, and safe because the map render that would otherwise own
-                // those pixels is precisely what is not running — the full repaint when the freeze
-                // lifts restores them.
-                match app.reroute_banner_rows(FRAME_H as f32).filter(|_| dirty.overlay) {
+                // frame is safe while its base is unchanged. The same path advances the activity
+                // dots between planner runs; a pending base redraw paints its banner in that pass.
+                match banner_rows.filter(|_| dirty.overlay) {
                     Some((y0, rows)) => {
                         let (stats, render_us) = display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
                             let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
@@ -3058,6 +3080,7 @@ pub(crate) async fn run_app(
                                         .map(|runtime| obc_app::photo::FramePhoto::interactive(runtime, true)),
                                 );
 
+                                app.render_planning_banner(&mut fbdev, FRAME_W as f32, FRAME_H as f32, color_fn);
                                 stats
                             });
                             #[cfg(feature = "sd-bench")]
@@ -3107,8 +3130,10 @@ pub(crate) async fn run_app(
             } else {
                 None
             };
-            // The deadline is read after the render, not from the plan: a frame's draw can arm a
-            // wake of its own (a long name that starts scrolling), and the plan predates the draw.
+            if dirty.map && rendered.is_some() {
+                find_loading_painted = app.find_preparing();
+            }
+            // Rendering can arm a marquee wake after the pass plan was made.
             (rendered, dirty.map, hold_p, app.ms_until_next_wake(now), immediate, t_store.elapsed().as_micros())
         };
 
@@ -3158,6 +3183,7 @@ pub(crate) async fn run_app(
             // A transport fault (`present` → false, e.g. a stalled FLPR) latches a retry like the
             // reader-build failure rather than faulting.
             if !ok {
+                find_loading_painted = false;
                 pending_map_redraw = true;
             }
 
@@ -3366,7 +3392,13 @@ pub(crate) async fn run_app(
         // because spinning at full speed against a commit that runs for hundreds of milliseconds
         // would starve the task answering it.
         let immediate = immediate || peak_view.busy();
-        let next_ms = if animating || exec.polling_store() {
+        #[cfg(has_nav)]
+        let visit_immediate = visit.immediate(&NAV_STORE_REPLY, immediate || exec.owed());
+        #[cfg(not(has_nav))]
+        let visit_immediate = false;
+        let next_ms = if visit_immediate {
+            Some(0)
+        } else if animating || exec.polling_store() {
             Some(LOOP_MS as u32)
         } else if immediate || exec.owed() {
             Some(0)

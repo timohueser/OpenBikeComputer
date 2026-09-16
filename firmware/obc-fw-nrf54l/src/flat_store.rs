@@ -1670,6 +1670,12 @@ pub(crate) fn open_map(store: &'static FlatStore<FlatCard>) -> Option<&'static d
 /// single slot replaces FAT's open file handle and spends one of the store's bounded hold rows.
 static mut ROUTE_SOURCE: Option<obc_storage::flat::StoreSource<'static, FlatCard>> = None;
 
+/// The exact revision held for the ride loop's cached route index.
+pub(crate) fn route_source_key() -> Option<(ObjectId, obc_storage::flat::Revision)> {
+    // SAFETY: only the ride loop owns or reconciles this source, synchronously between frames.
+    unsafe { (*core::ptr::addr_of!(ROUTE_SOURCE)).as_ref().map(|source| (source.id(), source.revision())) }
+}
+
 /// Take another reader of the exact active route, never a replacement found through a stale menu.
 #[cfg(has_nav)]
 pub(crate) fn planner_original(
@@ -1759,24 +1765,48 @@ pub(crate) fn load_routes(store: &'static FlatStore<FlatCard>, app: &mut obc_app
         return false;
     }
 
+    let mut accepted = 0u64;
+    for meta in store.entries().filter(|meta| meta.flags.has(EntryFlags::ASSISTANT_ACCEPTED)) {
+        if let Some(index) = heads.iter().position(|head| head.id == meta.id && head.revision == meta.revision) {
+            accepted |= 1 << index;
+        }
+    }
+    if !store.entries_ok() {
+        return false;
+    }
+
     let mut routes: heapless::Vec<obc_route::RouteSummary, { obc_app::MAX_ROUTES }> = heapless::Vec::new();
     let mut ids: heapless::Vec<u64, { obc_app::MAX_ROUTES }> = heapless::Vec::new();
     let mut candidates = 0u64;
-    for entry in heads {
+    let mut internal_routes = 0u64;
+    for (index, entry) in heads.into_iter().enumerate() {
         match store
             .with_source(entry.id, Some(entry.revision), |source| obc_route::RouteSummary::read_with_candidate(source))
         {
             Ok(Ok((summary, candidate))) => {
-                let accepted = store.entries().any(|meta| {
-                    meta.id == entry.id
-                        && meta.revision == entry.revision
-                        && meta.flags.has(EntryFlags::ASSISTANT_ACCEPTED)
-                });
-                if !store.entries_ok() {
-                    return false;
+                if candidate {
+                    internal_routes |= 1 << routes.len();
                 }
-                if candidate && !accepted {
+                if candidate && accepted & (1 << index) == 0 {
                     candidates |= 1 << routes.len();
+                    let source = obc_formats::obcr::RouteSourceKey {
+                        store: store.store_id().0,
+                        object: entry.id.0,
+                        revision: entry.revision.0,
+                    };
+                    if app.can_reconcile_reviews()
+                        && !app.retains_find_review(source)
+                        && store
+                            .with_source(entry.id, Some(entry.revision), |bytes| {
+                                obc_route::RouteObjectInfo::read(bytes).is_ok_and(|info| {
+                                    info.assistant_candidate
+                                        && info.attribution_map.is_some_and(|map| map.store == source.store)
+                                })
+                            })
+                            .unwrap_or(false)
+                    {
+                        app.reconcile_review_candidate(source);
+                    }
                 }
                 let _ = routes.push(summary);
                 let _ = ids.push(entry.id.0);
@@ -1797,6 +1827,7 @@ pub(crate) fn load_routes(store: &'static FlatStore<FlatCard>, app: &mut obc_app
         }
     }
     app.set_routes_with_ids(&routes, &ids);
+    app.set_internal_routes(internal_routes);
     app.set_unaccepted_routes(candidates);
     if app.assistant_needs_recovery() {
         if let Ok(checkpoint) = obc_storage::flat::metadata::read_checkpoint(store) {

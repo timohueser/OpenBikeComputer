@@ -108,8 +108,11 @@ impl LandmarkPhotoScreen {
         S: MapScene,
     {
         cv.clear(PARCHMENT);
-        cv.round(obc_render::rect(4, 4, 232, 34), 6, WOOD);
-        cv.text(self.title.as_str(), Point::new(12, 9), Font::Label, TextAlign::Left, PARCHMENT);
+        let page = self.linked.then_some(rx.landmarks.record).flatten().map(|record| {
+            let total = record.text_pages as u16 + 1;
+            (total, total)
+        });
+        super::landmarks::header(cv, self.title.as_str(), page, None);
         if self.linked {
             cv.round(obc_render::rect(4, 282, 232, 34), 6, AMBER);
             let label = match super::landmarks::visit_action(

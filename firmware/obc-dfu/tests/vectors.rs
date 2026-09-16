@@ -17,7 +17,10 @@ use obc_dfu::{crc32, verify_image, ImageHeader, HEADER_LEN, SIG_LEN, SIG_SCHEME_
 fn fixture(name: &str) -> Vec<u8> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../specs/vectors").join(name);
     std::fs::read(&path).unwrap_or_else(|e| {
-        panic!("fixture {} unreadable ({e}) — run `cargo test -p obc-vectors regenerate -- --ignored`", path.display())
+        panic!(
+            "fixture {} unreadable ({e}) — run `cargo run -p obc-vectors --example regenerate --locked`",
+            path.display()
+        )
     })
 }
 

@@ -101,7 +101,7 @@ impl PlaceQuery {
             leaf: None,
             started: false,
             more: false,
-            coverage_complete: false,
+            coverage_complete: true,
             progress: QueryProgress::Pending,
         }
     }

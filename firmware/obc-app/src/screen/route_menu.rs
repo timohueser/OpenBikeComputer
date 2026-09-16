@@ -157,13 +157,14 @@ impl RouteMenuScreen {
         remap: &dyn Fn(usize) -> Option<usize>,
         trips: &[TripSummary],
         routes_len: usize,
+        internal_routes: u64,
     ) {
         let mapped = self.sel_id.and_then(|id| match id {
             SelId::Route(i) => remap(i).map(SelId::Route),
             SelId::Folder(tid) => Some(SelId::Folder(tid)),
         });
         let mut rows: heapless::Vec<Row, ROW_CAP> = heapless::Vec::new();
-        self.build_rows(trips, routes_len, &mut rows);
+        self.build_rows(trips, routes_len, internal_routes, &mut rows);
         self.selected = match mapped.and_then(|id| rows.iter().position(|r| r.is(id, trips))) {
             Some(row) => row,
             // Vanished (or nothing pinned): clamp near the old position, never a dangling index.
@@ -180,9 +181,15 @@ impl RouteMenuScreen {
     }
 
     /// Build the current scope's rows into `out` (folder rows first, then unfiled routes, at the top
-    /// level; the trip's member routes inside a folder). Reads only `routes_len` (row *structure* is
-    /// which catalog index each row is), so a rescan-time rebuild needs no route slice.
-    fn build_rows(&self, trips: &[TripSummary], routes_len: usize, out: &mut heapless::Vec<Row, ROW_CAP>) {
+    /// level; the trip's member routes inside a folder). Internal Assistant routes are omitted
+    /// without changing the catalog indices used for navigation.
+    fn build_rows(
+        &self,
+        trips: &[TripSummary],
+        routes_len: usize,
+        internal_routes: u64,
+        out: &mut heapless::Vec<Row, ROW_CAP>,
+    ) {
         out.clear();
         match self.scope {
             RouteMenuScope::TopLevel => {
@@ -192,7 +199,7 @@ impl RouteMenuScreen {
                 for ri in 0..routes_len {
                     // A filed route shows only inside its folder — skip it at the top level.
                     let filed = trips.iter().any(|t| t.stage_indices.contains(&(ri as u16)));
-                    if !filed {
+                    if !filed && internal_routes & (1 << ri) == 0 {
                         let _ = out.push(Row::Route(ri));
                     }
                 }
@@ -200,7 +207,9 @@ impl RouteMenuScreen {
             RouteMenuScope::Trip { trip_id } => {
                 if let Some(t) = trips.iter().find(|t| t.id == trip_id) {
                     for &idx in t.stage_indices.iter() {
-                        let _ = out.push(Row::Route(idx as usize));
+                        if internal_routes & (1 << idx) == 0 {
+                            let _ = out.push(Row::Route(idx as usize));
+                        }
                     }
                 }
             }
@@ -209,7 +218,7 @@ impl RouteMenuScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         let mut rows: heapless::Vec<Row, ROW_CAP> = heapless::Vec::new();
-        self.build_rows(cx.trips, cx.routes.len(), &mut rows);
+        self.build_rows(cx.trips, cx.routes.len(), cx.navigator.internal_routes(), &mut rows);
         let len = rows.len();
         // Keep the selection in range against a list that may have regrouped since last frame, and
         // pin its identity so the next rescan-remap can follow it.
@@ -268,7 +277,7 @@ impl RouteMenuScreen {
         let trips = rx.trips;
 
         let mut rows: heapless::Vec<Row, ROW_CAP> = heapless::Vec::new();
-        self.build_rows(trips, routes.len(), &mut rows);
+        self.build_rows(trips, routes.len(), rx.internal_routes, &mut rows);
         let total = rows.len();
 
         let geo = ListGeometry::below_title(w, h, ROW_H, 8, SIDE_INSET, Separators::Unselected);
@@ -523,6 +532,26 @@ mod tests {
             Some(2),
             "and it's the unfiled catalog route (index 2), not a filed one"
         );
+    }
+
+    #[test]
+    fn internal_routes_are_absent_from_both_scopes_and_selection_follows_the_saved_route() {
+        let routes = [summary("Saved A"), summary("Visit"), summary("Saved B")];
+        let mut rows = heapless::Vec::new();
+        let mut menu = RouteMenuScreen::new();
+        menu.build_rows(&[], routes.len(), 0b010, &mut rows);
+        assert!(matches!(rows.as_slice(), [Row::Route(0), Row::Route(2)]));
+        menu.selected = 1;
+        menu.pin(&rows, &[]);
+        menu.remap_routes(&|index| Some(index + 1), &[], 4, 0b0011);
+        assert_eq!(menu.selected, 1);
+        assert!(matches!(menu.sel_id, Some(SelId::Route(3))));
+
+        let trips = [trip(9, "Tour", &[0, 1, 2], &routes)];
+        RouteMenuScreen::trip(9).build_rows(&trips, routes.len(), 0b010, &mut rows);
+        assert!(matches!(rows.as_slice(), [Row::Route(0), Row::Route(2)]));
+        RouteMenuScreen::new().build_rows(&[], 1, 1, &mut rows);
+        assert!(rows.is_empty(), "an internal-only catalog has no saved routes");
     }
 
     /// Long-pressing a folder opens the cascade-delete confirm carrying the trip's durable id.

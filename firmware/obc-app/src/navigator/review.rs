@@ -151,9 +151,11 @@ pub(super) enum AfterCheckpoint {
 pub(super) struct ReviewState {
     pub store: Option<StoreIdentity>,
     pub context: Option<ReviewContext>,
+    pub restore: Option<RouteSourceKey>,
     pub preview: Option<ReviewedRoute>,
     pub preview_index: Option<usize>,
     pub unaccepted: u64,
+    pub internal_routes: u64,
     pub checkpoint: Option<NavigatorCheckpoint>,
     pub change: Option<Option<NavigatorCheckpoint>>,
     pub token: Option<OperationToken<MetadataTag>>,
@@ -169,9 +171,11 @@ impl ReviewState {
         Self {
             store: None,
             context: None,
+            restore: None,
             preview: None,
             preview_index: None,
             unaccepted: 0,
+            internal_routes: 0,
             checkpoint: None,
             change: None,
             token: None,
@@ -206,6 +210,7 @@ impl NavigatorMachine {
         }
         self.review.store = Some(context.store);
         self.review.context = Some(context);
+        self.review.restore = None;
         self.review.status = ReviewStatus::Planning;
         self.route_request = Some(request);
         self.route = PlanPhase::Requested;
@@ -217,6 +222,13 @@ impl NavigatorMachine {
 
     pub fn route_unaccepted(&self, index: usize) -> bool {
         index < 64 && self.review.unaccepted & (1 << index) != 0
+    }
+    /// Generated Assistant routes stay internal even after they are accepted.
+    pub fn internal_routes(&self) -> u64 {
+        self.review.internal_routes
+    }
+    pub(crate) fn set_internal_routes(&mut self, mask: u64) {
+        self.review.internal_routes = mask;
     }
     pub(crate) fn set_unaccepted_routes(&mut self, mask: u64) {
         self.review.unaccepted = mask;
@@ -250,15 +262,17 @@ impl NavigatorMachine {
         true
     }
     pub(crate) fn remap_review_keys(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
-        let mut mask = 0;
-        for old in 0..64 {
-            if self.route_unaccepted(old) {
-                if let Some(new) = remap(old).filter(|&index| index < 64) {
-                    mask |= 1 << new;
+        for mask in [&mut self.review.unaccepted, &mut self.review.internal_routes] {
+            let mut next = 0;
+            for old in 0..64 {
+                if *mask & (1 << old) != 0 {
+                    if let Some(new) = remap(old).filter(|&index| index < 64) {
+                        next |= 1 << new;
+                    }
                 }
             }
+            *mask = next;
         }
-        self.review.unaccepted = mask;
         self.review.preview_index = self.review.preview_index.and_then(remap);
         if let AfterCheckpoint::Select(index) = &mut self.review.after {
             *index = index.and_then(remap);
@@ -298,7 +312,7 @@ impl NavigatorMachine {
             self.review.status = ReviewStatus::Failed(NavigatorError::Movement);
             return;
         }
-        let (progress_m, upper_m) = if context.purpose == ReviewPurpose::Visit {
+        let (progress_m, upper_m, phase) = if context.purpose == ReviewPurpose::Visit {
             let Some([entry, stop, rejoin]) = preview.visit_anchors_m else {
                 self.review.status = ReviewStatus::Failed(NavigatorError::Unavailable);
                 return;
@@ -307,23 +321,31 @@ impl NavigatorMachine {
                 self.review.status = ReviewStatus::Failed(NavigatorError::Unavailable);
                 return;
             }
-            (entry, stop)
+            if entry == stop && stop == rejoin && rejoin == preview.distance_m {
+                (entry, rejoin, JourneyPhase::Following)
+            } else if entry == stop {
+                (entry, if stop == rejoin { preview.distance_m } else { rejoin }, JourneyPhase::AtStop)
+            } else {
+                (entry, stop, JourneyPhase::Outbound)
+            }
         } else {
-            (0, preview.distance_m)
+            (0, preview.distance_m, JourneyPhase::Following)
         };
         // The measured candidate axis is authoritative for its accepted phase.
         let next = NavigatorCheckpoint {
             route: preview.source,
-            original: if context.purpose == ReviewPurpose::ReturnToRoute { None } else { context.original },
+            original: if matches!(context.purpose, ReviewPurpose::Destination | ReviewPurpose::ReturnToRoute)
+                || context.purpose == ReviewPurpose::Visit && phase == JourneyPhase::Following
+            {
+                None
+            } else {
+                context.original
+            },
             progress_m,
             occurrence: 0,
             lon: context.origin.0,
             lat: context.origin.1,
-            phase: if context.purpose == ReviewPurpose::Visit {
-                JourneyPhase::Outbound
-            } else {
-                JourneyPhase::Following
-            },
+            phase,
             unresolved_avoidance: context.unresolved_avoidance,
             lower_m: progress_m,
             upper_m,
@@ -369,6 +391,7 @@ impl NavigatorMachine {
         self.review.preview = None;
         self.review.preview_index = None;
         self.review.context = None;
+        self.review.restore = None;
     }
 
     pub(super) fn prepare_ordinary_route(&mut self) -> bool {
@@ -676,6 +699,22 @@ impl crate::App {
     pub fn assistant_review_context(&self) -> Option<ReviewContext> {
         self.navigator.review.context
     }
+    pub fn requested_assistant_restore(&self) -> Option<RouteSourceKey> {
+        self.navigator.review.restore
+    }
+    pub fn restore_visit(
+        &mut self,
+        target: obc_route::visit::VisitTarget,
+        context: ReviewContext,
+        source: RouteSourceKey,
+    ) -> bool {
+        if !self.plan_visit(target, context) {
+            return false;
+        }
+        self.navigator.review.context = Some(context);
+        self.navigator.review.restore = Some(source);
+        true
+    }
     pub fn assistant_preview(&self) -> Option<ReviewedRoute> {
         self.navigator.review.preview
     }
@@ -694,8 +733,12 @@ impl crate::App {
                 self.note_resume_save_refusal();
             }
         } else {
-            let offer = !self.navigator.review.recovery_seen && checkpoint.is_some();
+            let first = !self.navigator.review.recovery_seen;
+            let offer = first && checkpoint.is_some();
             self.navigator.offer_checkpoint(store, checkpoint);
+            if first && self.navigator.review.recovery_seen {
+                self.catalogs.note_store_moved();
+            }
             self.ui.find.resume_offer |= offer;
             self.ui.map_dirty |= offer;
         }
@@ -734,6 +777,14 @@ impl crate::App {
                     self.navigator.following.active_route = Some(index);
                     if let Some(checkpoint) = self.navigator.review.checkpoint {
                         self.navigator.request_seam(index, checkpoint.progress_m);
+                    }
+                    if self.recorder.session().is_none() {
+                        self.recorder.request(crate::RecorderIntent::Start);
+                        self.activity.mode = crate::activity::Mode::Riding;
+                        let position = self.state.user_fix.map(|fix| (fix.lon, fix.lat));
+                        if let Some((lon, lat)) = position {
+                            self.state.enter_riding_view(lon, lat);
+                        }
                     }
                     self.ui.map_dirty = true;
                 } else {
@@ -804,6 +855,64 @@ mod tests {
         let token = tokens.issue();
         nav.checkpoint_issued(token);
         token
+    }
+    #[test]
+    fn accepted_destination_starts_only_a_missing_recording_and_keeps_navigation() {
+        use crate::activity::Mode;
+        for mode in [Mode::Idle, Mode::Riding, Mode::Paused] {
+            for committed in [false, true] {
+                let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 1.0));
+                app.test_mount_store();
+                if mode != Mode::Idle {
+                    app.test_start_ride();
+                }
+                app.activity.mode = mode;
+                let session = app.recorder.session();
+                let summary = obc_route::RouteSummary {
+                    name: heapless::String::new(),
+                    distance_km: 1,
+                    climb_m: 0,
+                    bbox: obc_map_scene::BBox { min_lon: 0, min_lat: 0, max_lon: 1, max_lat: 1 },
+                    start_lon: 0,
+                    start_lat: 0,
+                };
+                app.set_routes_with_ids(&[summary.clone(), summary], &[4, 5]);
+                app.navigator = preview();
+                if mode == Mode::Idle {
+                    app.navigator.following.active_route = None;
+                    app.navigator.review.context.as_mut().unwrap().original = None;
+                }
+                app.navigator.accept_review(origin(), 0);
+                let effect = app.metadata.next_checkpoint_effect().unwrap();
+                let token = effect.token();
+                app.navigator.checkpoint_issued(token);
+                assert!(app.navigator.checkpoint_submission(token));
+                assert_eq!(app.recorder.session(), session, "preview and saving do not start recording");
+                let outcome = if committed {
+                    MetadataOutcome::CheckpointWritten { token }
+                } else {
+                    MetadataOutcome::Failed { token, error: MetadataError::Busy }
+                };
+                assert!(app.metadata.apply_outcome(outcome));
+                app.assistant_checkpoint_answer(outcome);
+                app.advance_recorder_session();
+                if committed {
+                    let recording = app.recorder.session().expect("accepted navigation records a ride");
+                    if let Some(session) = session {
+                        assert_eq!(recording, session);
+                    }
+                    assert_eq!(app.active_route_index(), Some(1));
+                    assert!(app.navigator.pending_seam(), "session initialization must keep the accepted route seam");
+                    assert_eq!(app.mode(), if mode == Mode::Idle { Mode::Riding } else { mode });
+                    app.advance_recorder_session();
+                    assert_eq!(app.recorder.session(), Some(recording));
+                } else {
+                    assert_eq!(app.recorder.session(), session);
+                    assert_eq!(app.mode(), mode);
+                    assert_eq!(app.active_route_index(), if mode == Mode::Idle { None } else { Some(0) });
+                }
+            }
+        }
     }
     #[test]
     fn easier_review_refuses_movement_and_preserves_uncertain_acceptance_until_recovery() {
@@ -879,8 +988,7 @@ mod tests {
             }
             let status = app.assistant_review_status();
             let change = app.navigator.review.change;
-            assert!(app.apply_chord(Chord::Quick));
-            app.apply_gesture(Gesture::Press);
+            assert!(app.apply_chord(Chord::Assistant));
             app.apply_gesture(Gesture::Step(2));
             app.apply_gesture(Gesture::Press);
             assert!(matches!(app.top_screen(), Screen::Assistant(_)));
@@ -931,6 +1039,7 @@ mod tests {
             Some(AfterCheckpoint::Activate(5))
         );
         assert_eq!(nav.review.checkpoint.unwrap().route, source(5));
+        assert_eq!(nav.review.checkpoint.unwrap().original, None, "a destination replaces the previous goal");
         assert_eq!(nav.review.status, ReviewStatus::Accepted);
         assert!(nav.checkpoint_answer(MetadataOutcome::CheckpointWritten { token }).is_none());
         assert_eq!(nav.review.preview_index, None);

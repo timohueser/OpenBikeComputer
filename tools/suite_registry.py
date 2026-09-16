@@ -66,6 +66,8 @@ TEST_POLICY_PATTERNS = (
     "testing/**",
     "tools/suite_registry.py",
     "tools/ci_aggregate.py",
+    "tools/coverage_report.py",
+    "tools/requirements-coverage.txt",
     "docs/testing.md",
     "CONTRIBUTING.md",
     "AGENTS.md",
@@ -95,6 +97,7 @@ CODE_OR_POLICY_SUFFIXES = {
 WORKFLOW_MARKERS = (
     "cargo test",
     "cargo nextest run",
+    "cargo check",
     "cargo clippy",
     "cargo fmt",
     "cargo deny",
@@ -102,10 +105,12 @@ WORKFLOW_MARKERS = (
     "cargo run",
     "python3 ",
     "npm test",
+    "npm run test:",
     "npm run check",
     "npm run build",
     "swift test",
     "xcodebuild build",
+    "xcodebuild test",
     "trunk build",
     "build-wasm-bridges.sh",
     "capture-website-screenshots.sh",
@@ -228,7 +233,7 @@ def discover_rust(root: Path, metadata_loader: Callable[[Path, Path | None], dic
             test_targets = [
                 target
                 for target in package.get("targets", [])
-                if target.get("test") or "test" in target.get("kind", [])
+                if target.get("test") or set(target.get("kind", [])).intersection({"test", "example"})
             ]
             for target in test_targets:
                 target_name = target["name"]
@@ -373,9 +378,15 @@ def _path_matches(root: Path, pattern: str, item: Discovered) -> bool:
 def ownership_matches(root: Path, owner: dict[str, Any], item: Discovered) -> bool:
     kind = owner.get("kind")
     if kind == "rust-package":
-        return item.kind in {"rust-target", "rust-manifest"} and item.name.split(":", 1)[0] == owner.get("name")
+        package, _, target = item.name.partition(":")
+        return (
+            item.kind in {"rust-target", "rust-manifest"}
+            and package == owner.get("name")
+            and any(fnmatch.fnmatchcase(target, pattern) for pattern in owner.get("targets", ["*"]))
+            and target not in owner.get("exclude_targets", [])
+        )
     if kind == "path":
-        return item.kind == owner.get("source") and _path_matches(root, owner.get("pattern", ""), item)
+        return item.kind == owner.get("source") and _path_matches(root, owner.get("pattern", ""), item) and item.path not in owner.get("exclude", [])
     if kind == "swift-target":
         return item.kind == "swift-target" and item.name == owner.get("name") and item.path == owner.get("package")
     if kind == "swift-package":
@@ -456,9 +467,10 @@ def _validate_command(root: Path, suite: dict[str, Any], rust_packages: set[str]
         elif executable not in known_tools and shutil.which(executable) is None:
             errors.append(f"{suite_id}: command executable cannot resolve: {executable}")
         expect_executable = False
-    package_match = re.search(r"(?:^|\s)(?:-p|--package)\s+([^\s]+)", command)
-    if package_match and package_match.group(1) not in rust_packages:
-        errors.append(f"{suite_id}: command names unknown Cargo package {package_match.group(1)}")
+    for cargo_args in _cargo_invocations(command):
+        for index, word in enumerate(cargo_args[:-1]):
+            if word in {"-p", "--package"} and cargo_args[index + 1] not in rust_packages:
+                errors.append(f"{suite_id}: command names unknown Cargo package {cargo_args[index + 1]}")
 
 def _collect_rust_packages(discovered: Iterable[Discovered]) -> set[str]:
     return {item.name.split(":", 1)[0] for item in discovered if item.kind in {"rust-target", "rust-manifest"}}
@@ -527,6 +539,12 @@ def validate(root: Path, suites_doc: dict[str, Any], coverage_doc: dict[str, Any
         for pattern in suite.get("extra_triggers", []):
             if not isinstance(pattern, str) or not any(root.glob(pattern)):
                 errors.append(f"{suite_id}: extra trigger matches no maintained path: {pattern!r}")
+
+    for exclusion in coverage_doc.get("exclude", []):
+        if not isinstance(exclusion, dict) or not all(
+            isinstance(exclusion.get(key), str) and exclusion[key].strip() for key in ("path", "evidence")
+        ):
+            errors.append("coverage: every global exclusion needs path and replacement evidence")
 
     for component in coverage:
         component_id = component.get("id", "<missing-id>")
@@ -688,7 +706,7 @@ def workflow_jobs(root: Path) -> dict[str, WorkflowJob]:
             flush()
             name, runs_on, needs, gated, gates_on = job_match.group(1), "", (), False, ""
             continue
-        if not name:
+        if not name or len(raw) - len(raw.lstrip()) != 4:
             continue
         stripped = raw.strip()
         runner = re.fullmatch(r"runs-on:\s*(.+)", stripped)
@@ -1025,6 +1043,11 @@ def select_suites(
                 f"changed production path has no suite owner: {path}; add a registry trigger or build-graph owner"
             )
 
+    # The snapshot sweep has an explicit rendering-input budget. Broad policy and
+    # fixture changes must not add an otherwise unrelated full UI render run.
+    if snapshots := selections.get("ci.ui-snapshots"):
+        snapshots.reasons = [reason for reason in snapshots.reasons if reason.startswith("registry trigger ")]
+
     selected_jobs = {
         job for selection in selections.values() if selection.selected for job in selection.jobs
     }
@@ -1120,7 +1143,7 @@ def select_by_level(
     errors: list[str] = []
     for suite in inventory.suites:
         selection = SuiteSelection(suite=suite, jobs=list(routes.get(suite["id"], ())))
-        if suite["level"] == resolved and surface in (None, suite["surface"]):
+        if suite["level"] == resolved and surface in (None, suite["surface"]) and suite.get("scheduled") != "manual":
             selection.reasons.append(reason)
             if not selection.jobs and suite.get("pull_request") != "never":
                 errors.append(
@@ -1195,8 +1218,19 @@ def gate_claims(
                 if owner.get("kind") != "workflow" or set("*?[").intersection(pattern):
                     continue
                 for args in _cargo_invocations(pattern):
-                    for package in _cargo_packages(args, "", graph):
-                        expanded |= by_package.get(package, set())
+                    if "--doc" in args:
+                        continue  # Doctests do not execute the package test targets.
+                    candidates = set().union(*(by_package.get(package, set()) for package in _cargo_packages(args, "", graph)))
+                    if "--filter-expr" in args:
+                        expression = args[args.index("--filter-expr") + 1]
+                        tier = re.fullmatch(r'\$\(python3 tools/suite_registry.py cargo-filter --tier (fast|fixtures)\)', expression)
+                        # An unknown filter cannot justify a package-wide execution claim.
+                        if not tier:
+                            continue
+                        candidates = {candidate for candidate in candidates
+                                      if by_id[candidate].get("level") in cargo_tier_levels(tier.group(1))
+                                      and by_id[candidate].get("pull_request") != "never"}
+                    expanded |= candidates
         claims[gate] = expanded
     return claims
 
@@ -1452,10 +1486,38 @@ def command_select(args: argparse.Namespace) -> int:
         print(render_selection_text(plan))
     return 1 if plan.errors else 0
 
+def cargo_tier_levels(tier: str) -> set[str]:
+    return {"unit", "component", "contract"} if tier == "fast" else {"fixture"}
+
+
+def cargo_filter(inventory: Inventory, tier: str, packages: set[str] | None = None) -> str:
+    """Select whole Rust test binaries from their registry owners."""
+    levels = cargo_tier_levels(tier)
+    terms = set()
+    for suite in inventory.suites:
+        if suite["level"] not in levels or suite["pull_request"] == "never":
+            continue
+        for item in inventory.matches[suite["id"]]:
+            if item.kind != "rust-target" or item.detail.endswith(":example"):
+                continue
+            package, target = item.name.split(":", 1)
+            if packages is not None and package not in packages:
+                continue
+            terms.add(f"(package(={package}) & binary(={target}))")
+    if not terms:
+        raise RegistryError(f"no Rust binaries for {tier}")
+    return " | ".join(sorted(terms))
+
+def command_cargo_filter(args: argparse.Namespace) -> int:
+    root = args.root or repository_root()
+    packages = {name for name, package in build_cargo_graph(root).packages.items() if package.root_workspace}
+    print(cargo_filter(load_inventory(root), args.tier, packages))
+    return 0
+
 def command_run(args: argparse.Namespace) -> int:
     root = (args.root or repository_root()).resolve()
-    if args.affected == bool(args.level):
-        raise RegistryError("run needs exactly one of --affected or --level")
+    if sum((bool(args.affected), bool(args.level), bool(getattr(args, "scheduled", None)))) != 1:
+        raise RegistryError("run needs exactly one of --affected, --level or --scheduled")
     if args.affected:
         if not args.base:
             raise RegistryError(
@@ -1465,7 +1527,16 @@ def command_run(args: argparse.Namespace) -> int:
     else:
         inventory = load_inventory(root)
         routes = suite_workflow_jobs(inventory, root, build_cargo_graph(root))
-        plan = select_by_level(inventory, routes, args.level, args.surface)
+        if getattr(args, "scheduled", None):
+            plan = SelectionPlan("", "", [], [
+                SuiteSelection(suite, routes[suite["id"]], [f"scheduled {args.scheduled}"])
+                for suite in inventory.suites
+                if suite["scheduled"] == args.scheduled and (not args.surface or suite["surface"] == args.surface)
+            ], [])
+            if not plan.suites:
+                raise RegistryError(f"no suites for scheduled {args.scheduled} on {args.surface or 'all surfaces'}")
+        else:
+            plan = select_by_level(inventory, routes, args.level, args.surface)
     return run_plan(plan, root, dry_run=args.dry_run)
 
 def command_gates(args: argparse.Namespace) -> int:
@@ -1524,6 +1595,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Inspect and validate testing/suites.toml")
     parser.add_argument("--root", type=Path, help=argparse.SUPPRESS)
     subparsers = parser.add_subparsers(dest="action", required=True)
+    cargo = subparsers.add_parser("cargo-filter", help="derive a nextest expression over whole registered binaries")
+    cargo.add_argument("--tier", choices=["fast", "fixtures"], required=True)
+    cargo.set_defaults(func=command_cargo_filter)
     check = subparsers.add_parser("check", help="validate registries, discovery, commands, and CI routes")
     check.set_defaults(func=command_check)
     issues = subparsers.add_parser("check-issues", help="check exception issue state online (requires gh authentication)")
@@ -1543,6 +1617,7 @@ def build_parser() -> argparse.ArgumentParser:
     select.set_defaults(func=command_select)
     run = subparsers.add_parser("run", help="run the suites of a level, surface, or Git range")
     run.add_argument("--level", help="registry level (fixtures and e2e are the only aliases)")
+    run.add_argument("--scheduled", choices=sorted(SCHEDULED_CADENCES - {"none"}), help="run a declared cadence")
     run.add_argument("--surface", help="narrow a level selection to one product surface")
     run.add_argument("--affected", action="store_true", help="select from a Git range instead")
     run.add_argument("--base", help="base Git revision, required by --affected")

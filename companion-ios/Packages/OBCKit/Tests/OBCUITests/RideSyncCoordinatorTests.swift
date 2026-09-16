@@ -249,7 +249,10 @@ final class RideSyncCoordinatorTests: XCTestCase {
         try await waitFor("link state lands") { coordinator.connection == .outOfRange }
 
         coordinator.sync()
-        try? await Task.sleep(for: .milliseconds(80))
+        let stayedIdle = await neverHolds({
+            coordinator.syncState != .idle || coordinator.upToDateToastVisible
+        }, for: .milliseconds(80))
+        XCTAssertTrue(stayedIdle, "an unreachable link must not start sync or show a success toast")
         XCTAssertEqual(coordinator.syncState, .idle)
         XCTAssertFalse(coordinator.upToDateToastVisible)
     }
@@ -262,7 +265,11 @@ final class RideSyncCoordinatorTests: XCTestCase {
         coordinator.canSync = { false }
 
         coordinator.sync()
-        try? await Task.sleep(for: .milliseconds(80))
+        let stayedBlocked = await neverHolds({
+            coordinator.syncProgress != nil || coordinator.upToDateToastVisible
+                || coordinator.syncState == .done
+        }, for: .milliseconds(80))
+        XCTAssertTrue(stayedBlocked, "a sync veto must prevent progress and success")
         XCTAssertEqual(coordinator.syncState, .idle)
         XCTAssertNil(coordinator.syncProgress)
         XCTAssertFalse(coordinator.upToDateToastVisible)

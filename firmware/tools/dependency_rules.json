@@ -37,6 +37,7 @@
       "obc-desktop",
       "obc-fixtures",
       "obc-host-core",
+      "obc-ios-host",
       "obc-mkimage",
       "obc-pack",
       "obc-replay",

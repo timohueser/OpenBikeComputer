@@ -26,7 +26,7 @@ use crate::screen::{
 use crate::settings::{DateTime, Settings};
 use crate::ui_runtime::UiRuntime;
 use crate::wall_clock::WallClock;
-use crate::DeviceStatus;
+use crate::{DeviceStatus, Msg};
 use obc_map_scene::MapScene;
 use obc_ports::{Fix, InputClock, InputSource, LocationSource, RideClock, Sensors};
 
@@ -972,7 +972,7 @@ impl App {
     /// Whether the **Recalculating freeze** is engaged (issue #1146, P2): a host planner run is
     /// live *and* the base screen would draw the map. While it is, a render-on-demand host must
     /// **skip the map redraw** — the last frame stays on the reflective glass — and paint only
-    /// [`render_overlay`](App::render_overlay), which raises the "Recalculating..." banner over it.
+    /// [`render_overlay`](App::render_overlay), which raises a planning banner over it.
     /// [`tick`](App::tick) stops advancing route-match progress for the same span (everything else
     /// about a fix keeps recording).
     ///
@@ -983,6 +983,45 @@ impl App {
     /// [`ArenaGate::claim_nav`](crate::arena_gate::ArenaGate::claim_nav).
     pub fn reroute_freeze_active(&self) -> bool {
         self.mode.frozen(self.ui.base_draws_map())
+    }
+
+    /// Whether the visible place choices are still being prepared.
+    pub fn find_preparing(&self) -> bool {
+        use crate::find_place::{Action, State};
+        matches!(self.top_screen(), Screen::FindPlace(screen) if screen.choices())
+            && (matches!(self.ui.find.action, Action::Refresh | Action::Preview(_))
+                || matches!(self.ui.find.state, State::Start | State::Querying | State::Planning | State::Releasing))
+    }
+
+    /// A preview mode change waiting for the previous planner and catalog owners.
+    pub fn assistant_route_pending(&self) -> bool {
+        matches!(self.top_screen(), Screen::VisitReview(screen) if screen.pending_target.is_some())
+    }
+
+    fn planning_banner(&self) -> Option<Msg> {
+        if self.find_preparing() {
+            Some(Msg::AssistantFinding)
+        } else if self.assistant_route_pending()
+            || self.reroute_freeze_active()
+            || (matches!(self.top_screen(), Screen::VisitReview(_))
+                && self.assistant_review_status() == crate::navigator::ReviewStatus::Planning)
+        {
+            Some(if self.requested_assistant_restore().is_some() {
+                Msg::AssistantLoadingRoute
+            } else {
+                Msg::AssistantPlanningRoute
+            })
+        } else {
+            None
+        }
+    }
+
+    fn planning_banner_phase(&self) -> u8 {
+        if self.planning_banner().is_some() {
+            1 + (self.ui.now_ms / 1_000 % 3) as u8
+        } else {
+            0
+        }
     }
 
     /// What the device is busy with, ranked and payload-free — [`CoreMode`]'s one public read.
@@ -1128,9 +1167,13 @@ impl App {
     /// [`RouteSwapScreen`](crate::screen::RouteSwapScreen) at the *same route* (by id) in the new
     /// order. A vanished route falls back sanely: navigation unloads (`active_route = None`, stale
     /// matcher progress + profile dropped), a menu selection clamps near its old position, a
-    /// preview/swap subject turns into its screen's own missing-route path. Dirties the map once —
-    /// a store change is a repaint-worthy host event (the open menu refreshes in place).
+    /// preview/swap subject turns into its screen's own missing-route path. Changed summaries or
+    /// identities dirty the map once. A replacing upload separately invalidates geometry-derived state.
     pub fn set_routes_with_ids(&mut self, summaries: &[RouteSummary], ids: &[crate::CatalogObjectId]) {
+        let len = summaries.len().min(ids.len()).min(crate::MAX_ROUTES);
+        if self.catalogs.routes() == &summaries[..len] && self.catalogs.route_ids() == &ids[..len] {
+            return;
+        }
         // The catalog + trip replacement (and the id ↔ summary pairing) is `CatalogState`'s; the
         // old-id snapshot it returns drives the remap of everything held *outside* it.
         let old_ids = self.catalogs.replace_routes(summaries, ids);
@@ -1142,8 +1185,23 @@ impl App {
         self.navigator.route_unaccepted(index)
     }
 
+    /// Saved Routes omits these rows; navigation and recovery keep the complete catalog.
+    pub fn set_internal_routes(&mut self, mask: u64) {
+        if self.navigator.internal_routes() != mask {
+            self.navigator.set_internal_routes(mask);
+            for screen in self.ui.stack.iter_mut() {
+                if let Screen::RouteMenu(menu) = screen {
+                    menu.remap_routes(&Some, self.catalogs.trips(), self.catalogs.route_len(), mask);
+                }
+            }
+            self.ui.map_dirty = true;
+        }
+    }
     pub fn set_unaccepted_routes(&mut self, mask: u64) {
-        self.navigator.set_unaccepted_routes(mask);
+        if self.navigator.unaccepted_routes() != mask {
+            self.navigator.set_unaccepted_routes(mask);
+            self.ui.map_dirty = true;
+        }
     }
     /// Re-point every held catalog index after the catalog was replaced: old index → its id in
     /// `old_ids` → that id's new index (or `None` if the route vanished). See
@@ -1165,7 +1223,7 @@ impl App {
         let trips = catalogs.trips();
         for s in ui.stack.iter_mut() {
             match s {
-                Screen::RouteMenu(m) => m.remap_routes(&remap, trips, new_len),
+                Screen::RouteMenu(m) => m.remap_routes(&remap, trips, new_len, navigator.internal_routes()),
                 Screen::RouteOverview(o) => o.remap_routes(&remap),
                 Screen::RouteSwap(sw) => sw.remap_routes(&remap),
                 Screen::RouteReceived(rc) => rc.remap_routes(&remap),
@@ -1225,6 +1283,14 @@ impl App {
     /// resolve; a later [`set_routes_with_ids`](App::set_routes_with_ids) re-resolves them in place.
     /// Dirties the map so an open (TR3) menu repaints.
     pub fn set_trips(&mut self, trips: &[crate::trip::TripInput]) {
+        let trips = &trips[..trips.len().min(crate::trip::MAX_TRIPS)];
+        if self.catalogs.trips().len() == trips.len()
+            && self.catalogs.trips().iter().zip(trips).all(|(old, input)| {
+                *old == crate::trip::TripSummary::resolve(input, self.catalogs.routes(), self.catalogs.route_ids())
+            })
+        {
+            return;
+        }
         self.catalogs.set_trips(trips);
         self.ui.map_dirty = true;
     }
@@ -1247,6 +1313,10 @@ impl App {
     /// up to [`MAX_RIDES`](crate::MAX_RIDES) supplied rides. Re-point open screens by durable id
     /// across the rescan and dirty the map once.
     pub fn set_rides(&mut self, entries: &[RideEntry]) {
+        let entries = &entries[..entries.len().min(crate::UI_RIDES_CAP)];
+        if self.catalogs.rides() == entries {
+            return;
+        }
         // Screen indices follow the durable identity through each rescan.
         // Derived track answers already carry that identity and need no remap.
         let old_ids = self.catalogs.replace_rides(entries);
@@ -1475,7 +1545,8 @@ impl App {
                 self.ui.map_dirty = true;
             }
             NavigatorOutcome::Released { .. } => {
-                if self.navigator.released(&mut self.mode) {
+                if self.navigator.released(&mut self.mode) || self.ui.find.state == crate::find_place::State::Releasing
+                {
                     self.ui.map_dirty = true;
                 }
             }
@@ -1673,7 +1744,7 @@ impl App {
     /// route change, a re-plan over the same id, or a committed detour all stale it automatically.
     pub fn set_nav_preview(&mut self, pts: &[(i32, i32)]) {
         use crate::device_core::derived::{DerivedInput, DerivedInputs, DerivedTargets};
-        let Some(key) = self.catalogs.nav_preview_key(self.active_route_index()) else { return };
+        let Some(key) = self.derived_needs().nav_preview else { return };
         let input = DerivedInput::filled(key);
         self.apply_derived(
             DerivedInputs::nav_preview(input),
@@ -1989,8 +2060,8 @@ impl App {
         self.ui.stack.last().expect("the stack always has the Home root")
     }
 
-    /// Apply one device-wide [`Chord`] — **the drawer owner**, and the only place a drawer opens
-    /// or closes. Returns whether it moved anything.
+    /// Apply one device-wide [`Chord`]: a drawer toggle or direct Assistant entry.
+    /// Returns whether it moved anything.
     ///
     /// Resolved here rather than in a screen because a chord is not a screen's input: the
     /// recogniser already swallowed its constituents, and the sheet has to be able to open over
@@ -2014,6 +2085,26 @@ impl App {
         }
         match chord {
             Chord::Quick => self.toggle_drawer(Screen::QuickDrawer(QuickDrawerScreen::opening())),
+            Chord::Assistant => {
+                if let Some(index) = self.ui.stack.iter().rposition(|s| matches!(s, Screen::Assistant(_))) {
+                    self.ui.stack.truncate(index + 1);
+                } else {
+                    let assistant = Screen::Assistant(screen::AssistantScreen::new());
+                    let transition = if self.ui.stack.len() < self.ui.stack.capacity() {
+                        screen::Transition::Push(assistant)
+                    } else {
+                        screen::Transition::Root(assistant)
+                    };
+                    screen::apply(&mut self.ui.stack, transition);
+                }
+                self.ui.map_dirty = true;
+                self.ui.last_input_ms = self.ui.now_ms;
+                self.ui.idle_return_timing = true;
+                self.ui.input.cancel_holds();
+                self.ui.hold_cancel_pending = true;
+                self.ui.reconcile_corridor(self.up_ahead_scope());
+                true
+            }
             // The contextual sheet exists only where content is declared (#1515 D3): a base screen
             // that names no [`ContextMenu`](crate::screen::ContextMenu) gets nothing, not an empty
             // drawer. The squeeze is still swallowed by the recogniser, so it can never leak a step
@@ -2704,6 +2795,13 @@ impl App {
         // runtime's; this method sequences the per-pass sweeps around it with the cross-component
         // facts they need.
         self.ui.advance_timers(clock.0, now, ms_to_next_minute, &self.settings, pan_active, tracking);
+        if self.planning_banner().is_some() {
+            let remaining = 1_000 - clock.0 % 1_000;
+            self.ui.next_wake_ms = Some(self.ui.next_wake_ms.map_or(remaining, |wake| wake.min(remaining)));
+        }
+        if let Some(remaining) = self.ui.input.chord_remaining_ms(clock.0) {
+            self.ui.next_wake_ms = Some(self.ui.next_wake_ms.map_or(remaining, |wake| wake.min(remaining)));
+        }
         let place_local = self.place_local_time();
         if self.ui.stack.iter().any(|screen| {
             matches!(
@@ -2775,7 +2873,13 @@ impl App {
             now_ms, self.ui.now_ms,
             "ms_until_next_wake must follow advance_animations in the same frame, with the same now_ms"
         );
-        if self.photo_pending() || self.landmarks_pending() {
+        if self.photo_pending()
+            || self.landmarks_pending()
+            || self.find_preparing()
+            || self.assistant_route_pending()
+            || (matches!(self.top_screen(), Screen::VisitReview(_))
+                && self.assistant_review_status() == crate::navigator::ReviewStatus::Planning)
+        {
             Some(self.ui.next_wake_ms.unwrap_or(1).min(1))
         } else {
             self.ui.next_wake_ms
@@ -3003,6 +3107,7 @@ impl App {
         let hold_progress = self.ui.hold_progress_override.unwrap_or_else(|| self.ui.input.select_hold_progress());
         let no_fix = !self.has_live_fix(self.ui.now_ms);
         let backlight_available = self.backlight_available;
+        let visit_target = self.assistant_visit_target();
 
         let assistant_preview = matches!(&self.ui.stack[base], Screen::Easier(_) | Screen::VisitReview(_)).then(|| {
             if matches!(&self.ui.stack[base], Screen::VisitReview(s) if s.accepted) {
@@ -3034,7 +3139,7 @@ impl App {
         } else {
             navigation.active_route
         };
-        let nav_key = catalogs.nav_preview_key(preview_index);
+        let nav_key = catalogs.nav_preview_key(preview_index, assistant_preview.is_some());
         let ride_key = catalogs.ride_track_key(activity.viewed_ride);
         let nav_preview: &[(i32, i32)] = catalogs.nav_preview_for(nav_key);
         let ride_preview: &[(i32, i32)] = catalogs.ride_preview_for(ride_key);
@@ -3047,6 +3152,7 @@ impl App {
             .and_then(|i| navigator.climbs().as_slice().get(i))
             .map(|seg| screen::ActiveClimb { seg, profile: navigator.climb_profile() });
         let rx = Render {
+            visit_target,
             find: &ui.find,
             landmarks: &ui.landmarks,
             ahead: &ui.ahead,
@@ -3060,6 +3166,7 @@ impl App {
             settings,
             routes: catalogs.routes(),
             unaccepted_routes: navigator.unaccepted_routes(),
+            internal_routes: navigator.internal_routes(),
             rides: catalogs.rides(),
             trips: catalogs.trips(),
             nav_profiles,
@@ -3197,28 +3304,41 @@ impl App {
         F: Fn(u16) -> D::Color,
     {
         self.ui.input.render_overlay(target, w, h, &color_fn);
-        // The Recalculating banner (issue #1146, P2) rides the same plane as the bulge, and for the
-        // same reason: it must appear over a frame the map plane is *not* redrawing. Drawn last so
-        // a hold charging during a search still bulges over it.
-        if self.reroute_freeze_active() {
-            let text = crate::i18n::t(crate::Msg::MapRecalculating, self.settings.language);
-            crate::screen::vocab::chrome::recalculating_banner(target, &color_fn, w, h, text);
+        self.render_planning_banner(target, w, h, color_fn);
+    }
+
+    /// Paint the request's busy label after a base redraw, including gaps between planner runs.
+    pub fn render_planning_banner<D, F>(&self, target: &mut D, w: f32, h: f32, color_fn: F)
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+    {
+        if let Some(message) = self.planning_banner() {
+            let text = crate::i18n::t(message, self.settings.language);
+            crate::screen::vocab::chrome::recalculating_banner(
+                target,
+                &color_fn,
+                w,
+                h,
+                text,
+                self.planning_banner_phase(),
+            );
         }
     }
 
-    /// The Recalculating banner's bounding rows `[y0, y0 + rows)` in a `w`×`h` frame, or `None` when
+    /// The planning banner's bounding rows `[y0, y0 + rows)` in a `w`×`h` frame, or `None` when
     /// the freeze is not engaged — the twin of [`InputPlane::overlay_rows`](crate::InputPlane::overlay_rows)
     /// for a partial-overlay host (the board re-presents overlay *rows*, not whole frames). A host
     /// that pushes the union of this and the bulge's rows presents exactly what changed.
     pub fn reroute_banner_rows(&self, h: f32) -> Option<(u16, u16)> {
-        self.reroute_freeze_active().then(|| crate::screen::vocab::chrome::recalculating_banner_rows(h))
+        self.planning_banner().map(|_| crate::screen::vocab::chrome::recalculating_banner_rows(h))
     }
 
     /// Whether the overlay plane has live content this frame — a hold bulge charging, popping, or
     /// retracting. `false` exactly when [`render_overlay`](App::render_overlay) would draw nothing,
     /// so a host driving the overlay as a separate layer can leave it idle.
     pub fn overlay_active(&self) -> bool {
-        self.ui.input.overlay_active() || self.reroute_freeze_active()
+        self.ui.input.overlay_active() || self.planning_banner().is_some()
     }
 
     /// Drain the repaint demand accumulated since the last call, resetting to [`Dirty::CLEAN`]. The
@@ -3236,14 +3356,14 @@ impl App {
     /// no full-frame demand joined it since the last drain: a set `map_dirty` covers any region, so
     /// the region folds away and the host full-repaints (over-redraw is safe; under-redraw is a bug).
     ///
-    /// The overlay plane is **derived here, from levels** — the hold bulge's and the Recalculating
+    /// The overlay plane is **derived here, from levels** — the hold bulge's and the planning
     /// freeze's, read as one [`OverlayKey`](crate::device_core::pass::OverlayKey) and folded against
     /// the level this same call last saw. Both rules live in that one converter: see its doc for why
     /// the banner keys on the engaged level rather than on the plan's own start edge.
     pub fn take_dirty(&mut self) -> Dirty {
         let overlay = crate::device_core::pass::OverlayKey {
             hold: self.ui.input.overlay_active(),
-            freeze: self.mode.frozen(self.ui.base_draws_map()),
+            banner: self.planning_banner_phase(),
         };
         let overlay = self.pass.overlay_repaint(overlay);
         let mut dirty = self.ui.take_dirty();
@@ -3335,12 +3455,13 @@ impl App {
             .filter(|&key| !self.catalogs.ride_track_answered(key));
         // The screen half of the preview level — is an overview up? — is the UI's; the data half is
         // the key's.
-        let overview_open = self.ui.stack.iter().any(|s| matches!(s, Screen::RouteOverview(_)))
-            || self.ui.stack.iter().rev().find(|s| !s.is_overlay()).is_some_and(
+        let assistant =
+            self.ui.stack.iter().rev().find(|s| !s.is_overlay()).is_some_and(
                 |s| matches!(s, Screen::VisitReview(s) if s.accepted && self.current_visit_index().is_some()),
             );
+        let overview_open = assistant || self.ui.stack.iter().any(|s| matches!(s, Screen::RouteOverview(_)));
         let nav_preview = overview_open
-            .then(|| self.catalogs.nav_preview_key(self.active_route_index()))
+            .then(|| self.catalogs.nav_preview_key(self.active_route_index(), assistant))
             .flatten()
             .filter(|&key| !self.catalogs.nav_preview_answered(key));
         DerivedNeeds { ride_track, nav_preview }
@@ -3751,7 +3872,7 @@ mod tests {
             tick_fix(&mut app, Fix::at(0, 0), 0);
             app.ui.now_ms = if fresh { POSITION_FIX_FRESH_MS } else { POSITION_FIX_FRESH_MS + 1 };
             app.escape_to_menu();
-            app.apply_gesture(Gesture::Step(4));
+            app.apply_gesture(Gesture::Step(3));
             app.apply_gesture(Gesture::Press);
             assert!(app.peak_view_is_base());
             assert_eq!(app.peak_view_needs_position(), !fresh);
@@ -3799,6 +3920,22 @@ mod tests {
     /// One pass with nothing on any port — the quiet frame.
     fn pass_idle(app: &mut App, now_ms: u32) -> Dirty {
         pass_ports(app, now_ms, None, None)
+    }
+
+    #[test]
+    fn assistant_shortcut_at_full_stack_leaves_room_for_its_actions() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        while app.ui.stack.len() < app.ui.stack.capacity() {
+            screen::apply(&mut app.ui.stack, screen::Transition::Push(Screen::Menu(MenuScreen::new())));
+        }
+        assert!(app.apply_chord(Chord::Assistant));
+        assert!(matches!(app.top_screen(), Screen::Assistant(_)));
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::FindPlace(_)));
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::Assistant(_)));
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::Home(_)));
     }
 
     /// The frozen base, through a **real pass**: a fresh fix under an open drawer moves the camera
@@ -5014,6 +5151,48 @@ mod tests {
     /// Home it's the wall-clock minute boundary; on a static menu the idle-return timeout is the
     /// only pending wake (the menu itself animates on nothing). With the idle return disabled a
     /// static menu reports `None` — sleep until input.
+    #[test]
+    fn find_banner_and_wake_cover_the_complete_candidate_batch() {
+        use crate::find_place::{Action, State};
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.apply_chord(Chord::Assistant);
+        app.apply_gesture(Gesture::Press);
+        app.apply_gesture(Gesture::Press);
+        app.advance_animations(InputClock(0));
+        assert!(app.find_preparing());
+        assert_eq!(app.ms_until_next_wake(0), Some(1));
+        assert!(matches!(app.planning_banner(), Some(Msg::AssistantFinding)));
+        app.take_dirty();
+        app.ui.find.action = Action::None;
+        for state in [State::Querying, State::Planning, State::Releasing] {
+            app.ui.find.state = state;
+            app.mode.search_started(PlanFamily::Route);
+            assert!(!app.take_dirty().overlay, "a new candidate does not replace the banner");
+            app.mode.search_ended(PlanFamily::Route);
+            assert!(!app.reroute_freeze_active(), "arena admission still follows the actual planner");
+            assert!(matches!(app.planning_banner(), Some(Msg::AssistantFinding)));
+            assert!(!app.take_dirty().overlay, "releasing a candidate does not clear the banner");
+            assert_eq!(app.ms_until_next_wake(0), Some(1), "queued work cannot wait for another GPS fix");
+        }
+        app.advance_animations(InputClock(999));
+        assert!(!app.take_dirty().overlay, "activity does not repaint before its deadline");
+        app.advance_animations(InputClock(1_000));
+        assert!(app.take_dirty().overlay, "activity repaints at one second");
+        assert!(!app.take_dirty().overlay, "activity never repaints twice in one phase");
+        app.advance_animations(InputClock(1_500));
+        assert!(!app.take_dirty().overlay);
+        assert_eq!(app.ui.next_wake_ms, Some(500));
+        app.ui.find.state = State::Ready;
+        app.advance_animations(InputClock(1_500));
+        assert!(app.ui.next_wake_ms.is_none_or(|ms| ms > 1_000), "ready results stop the activity timer");
+        assert!(app.planning_banner().is_none());
+        assert!(app.take_dirty().overlay, "the completed batch clears its banner");
+        assert_ne!(app.ms_until_next_wake(1_500), Some(1), "a ready result does not poll");
+        app.ui.find.state = State::Planning;
+        app.apply_gesture(Gesture::Back);
+        assert!(app.planning_banner().is_none(), "leaving choices removes the banner");
+    }
+
     #[test]
     fn ms_until_next_wake_reports_the_home_minute_then_the_idle_deadline_on_a_static_menu() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // base = Home
@@ -6325,6 +6504,54 @@ mod tests {
 
         let _ = app.ui.stack.push(overview()); // …and comes back
         assert_eq!(app.derived_needs().nav_preview, Some(key), "the level is up again, not silently answered");
+    }
+
+    #[test]
+    fn internal_route_visibility_follows_catalog_identity_without_unloading_navigation() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_routes_with_ids(&[summary("Visit"), summary("Saved")], &[10, 20]);
+        app.set_internal_routes(1);
+        app.navigator.route_state_mut().active_route = Some(0);
+        app.take_dirty();
+        app.set_internal_routes(1);
+        assert!(!app.take_dirty().map);
+        app.set_routes_with_ids(&[summary("Saved"), summary("Visit")], &[20, 10]);
+        assert_eq!(app.navigator.internal_routes(), 2);
+        assert_eq!(app.active_route_index(), Some(1));
+        assert_eq!(app.routes().len(), 2, "the durable navigation catalog stays complete");
+    }
+
+    #[test]
+    fn repeated_catalog_feeds_do_not_repaint_but_changed_content_does() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let mut routes = [summary("Col")];
+        let trips = [crate::trip::TripInput { id: 20, name: "Tour", stage_ids: &[10] }];
+        let mut rides = [RideEntry { id: 30, summary: ride_summary("Ride") }];
+        app.take_dirty();
+        app.set_routes_with_ids(&routes, &[10]);
+        assert!(app.take_dirty().map);
+        app.set_trips(&trips);
+        assert!(app.take_dirty().map);
+        app.set_rides(&rides);
+        assert!(app.take_dirty().map);
+        app.set_routes_with_ids(&routes, &[10]);
+        app.set_trips(&trips);
+        app.set_rides(&rides);
+        app.set_unaccepted_routes(0);
+        assert!(!app.take_dirty().map, "an identical catalog feed changes no pixels");
+        routes[0].climb_m += 1;
+        app.set_routes_with_ids(&routes, &[10]);
+        assert!(app.take_dirty().map);
+        assert_eq!(app.trips()[0].climb_m, routes[0].climb_m);
+        rides[0].summary.synced = true;
+        app.set_rides(&rides);
+        assert!(app.take_dirty().map);
+        app.set_unaccepted_routes(1);
+        assert!(app.take_dirty().map, "candidate visibility changes the route menu");
+        app.set_unaccepted_routes(1);
+        assert!(!app.take_dirty().map);
+        app.set_trips(&[]);
+        assert!(app.take_dirty().map);
     }
 
     /// The nav-preview twin of the staleness rule, over the one thing identity cannot catch: an

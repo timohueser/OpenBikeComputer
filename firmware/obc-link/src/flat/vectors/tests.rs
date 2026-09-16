@@ -12,17 +12,6 @@ use crate::flat::wire::{
     StatusResponse, StreamFrame, CONTROL_FLOOR,
 };
 
-/// Rewrites `specs/vectors/flat-store-v4/`.
-///
-/// Deliberately `#[ignore]`d: fixtures move only when a human decided they should, and the guard
-/// below is what fails when they moved without one.
-#[test]
-#[ignore = "writes the checked-in fixture suite"]
-fn flat_regenerate() {
-    let written = write_all().expect("the suite writes");
-    std::println!("wrote {written} files to {}", dir().display());
-}
-
 fn find(name: &str) -> Fixture {
     fixtures().into_iter().find(|fixture| fixture.name == name).unwrap_or_else(|| panic!("no fixture named {name}"))
 }
@@ -39,14 +28,14 @@ fn checked_in_fixtures_match_the_producer() {
         let path = root.join(fixture.path());
         let checked_in = std::fs::read_to_string(&path).unwrap_or_else(|error| {
             panic!(
-                "fixture {} unreadable ({error}) — run `cargo test -p obc-link flat_regenerate -- --ignored`",
+                "fixture {} unreadable ({error}) — run `cargo run -p obc-link --features std --example flat_vectors --locked`",
                 path.display()
             )
         });
         assert_eq!(
             checked_in,
             fixture.json,
-            "fixture drift in {} — run `cargo test -p obc-link flat_regenerate -- --ignored` if the change is \
+            "fixture drift in {} — run `cargo run -p obc-link --features std --example flat_vectors --locked` if the change is \
              deliberate",
             fixture.path()
         );

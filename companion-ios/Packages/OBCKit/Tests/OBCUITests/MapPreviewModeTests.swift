@@ -14,15 +14,12 @@ final class MapPreviewModeTests: XCTestCase {
     }
 
     @MainActor
-    func testReachabilityStoreStartsOptimisticThenTracksTheSeam() async {
+    func testReachabilityStoreStartsOptimisticThenTracksTheSeam() async throws {
         let store = ReachabilityStore(ConstantReachability(false), initiallyOnline: true)
         XCTAssertTrue(store.isOnline, "optimistic until the first path update lands")
 
         store.start()
-        // The store subscribes on a Task; give it a few hops to converge.
-        for _ in 0..<50 where store.isOnline {
-            try? await Task.sleep(nanoseconds: 2_000_000)
-        }
+        try await waitFor("reachability update") { !store.isOnline }
         XCTAssertFalse(store.isOnline, "converges to the seam's value")
     }
 }

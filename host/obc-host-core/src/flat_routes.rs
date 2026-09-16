@@ -17,6 +17,7 @@ pub struct FlatRouteStore {
     active: Option<ObjectSource>,
     nav_id: Option<ObjectId>,
     unaccepted: u64,
+    internal_routes: u64,
 }
 
 impl FlatRouteStore {
@@ -34,6 +35,7 @@ impl FlatRouteStore {
             active: None,
             nav_id: None,
             unaccepted: 0,
+            internal_routes: 0,
         };
         for meta in repo.owner.entries()? {
             if meta.kind == ObjectKind::Route {
@@ -96,6 +98,10 @@ impl FlatRouteStore {
             i
         };
         if i < 64 {
+            self.internal_routes &= !(1 << i);
+            if candidate {
+                self.internal_routes |= 1 << i;
+            }
             self.unaccepted &= !(1 << i);
             if candidate && !meta.flags.has(obc_storage::flat::EntryFlags::ASSISTANT_ACCEPTED) {
                 self.unaccepted |= 1 << i;
@@ -135,6 +141,9 @@ impl RouteRepository for FlatRouteStore {
     fn catalog(&self) -> &[RouteSummary] {
         &self.catalog
     }
+    fn internal_routes(&self) -> u64 {
+        self.internal_routes
+    }
     fn unaccepted_routes(&self) -> u64 {
         self.unaccepted
     }
@@ -161,6 +170,7 @@ impl RouteRepository for FlatRouteStore {
         let mut ids = Vec::new();
         let mut revisions = Vec::new();
         let mut unaccepted = 0u64;
+        let mut internal_routes = 0u64;
         for entry in store.entries().filter(|entry| entry.kind == ObjectKind::Route && entry.flags.is_route_head()) {
             if ids.len() == obc_app::MAX_ROUTES {
                 break;
@@ -169,6 +179,9 @@ impl RouteRepository for FlatRouteStore {
                 .with_source(entry.id, Some(entry.revision), |source| RouteSummary::read_with_candidate(source))
                 .map_err(|_| obc_app::metadata::MetadataError::WriteFailed)?
                 .map_err(|_| obc_app::metadata::MetadataError::WriteFailed)?;
+            if candidate {
+                internal_routes |= 1 << ids.len();
+            }
             if candidate && !entry.flags.has(obc_storage::flat::EntryFlags::ASSISTANT_ACCEPTED) {
                 unaccepted |= 1 << ids.len();
             }
@@ -183,6 +196,7 @@ impl RouteRepository for FlatRouteStore {
         self.ids = ids;
         self.revisions = revisions;
         self.unaccepted = unaccepted;
+        self.internal_routes = internal_routes;
         Ok(Some(start))
     }
     fn write_checkpoint(
@@ -219,8 +233,9 @@ impl RouteRepository for FlatRouteStore {
         self.ids.remove(i);
         self.catalog.remove(i);
         if i < 64 {
-            self.unaccepted =
-                (self.unaccepted & ((1u64 << i) - 1)) | if i < 63 { (self.unaccepted >> (i + 1)) << i } else { 0 };
+            for mask in [&mut self.unaccepted, &mut self.internal_routes] {
+                *mask = (*mask & ((1u64 << i) - 1)) | if i < 63 { (*mask >> (i + 1)) << i } else { 0 };
+            }
         }
         if self.active.as_ref().is_some_and(|source| source.id().0 == id) {
             self.active = None;
@@ -334,6 +349,13 @@ impl RouteRepository for FlatRouteStore {
 
     fn active_source(&self) -> Option<&dyn ByteSource> {
         self.active.as_ref().map(|s| s as &dyn ByteSource)
+    }
+    fn pin_review(&self, source: obc_formats::obcr::RouteSourceKey) -> Option<crate::RouteLease> {
+        if self.store_scope()?.store.bytes() != source.store {
+            return None;
+        }
+        let source = self.owner.open(ObjectId(source.object), Revision(source.revision)).ok()?;
+        source.is_current().then_some(crate::RouteLease::Flat(source))
     }
     fn invalidate_active(&mut self) {
         self.active = None;

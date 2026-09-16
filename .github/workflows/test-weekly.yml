@@ -1,0 +1,55 @@
+name: Weekly test suites
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '31 4 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  ios-application:
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.5.app
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: brew install xcodegen
+      - name: Run registered weekly iOS suites
+        id: test
+        run: python3 tools/suite_registry.py run --scheduled weekly --surface ios
+      - name: Upload native application results
+        if: ${{ !cancelled() && (steps.test.outcome == 'success' || steps.test.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-application-${{ github.run_attempt }}
+          path: .artifacts/ios-application.xcresult
+          if-no-files-found: error
+  storage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+      - name: Run registered weekly storage suites
+        id: test
+        shell: bash
+        run: |
+          mkdir -p .artifacts
+          python3 tools/suite_registry.py run --scheduled weekly --surface storage 2>&1 | tee .artifacts/storage-weekly.log
+      - name: Upload native storage results
+        if: ${{ !cancelled() && (steps.test.outcome == 'success' || steps.test.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: storage-weekly-${{ github.run_attempt }}
+          path: .artifacts/storage-weekly.log
+          if-no-files-found: error

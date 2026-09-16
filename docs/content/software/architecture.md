@@ -7,7 +7,7 @@ copy: ai
 # System architecture
 
 OpenBikeComputer puts hardware-specific code at the system boundary.
-The device, simulator, and [browser demo](../../) use the same `no_std` application core.
+The device, the simulator, the [browser demo](../../) and the iPhone use the same `no_std` application core.
 Each host supplies storage, sensors, input, and display functions.
 
 ## Runtime layers
@@ -81,18 +81,29 @@ Foundation crates have narrow responsibilities:
 - [`obc-elevation`](src:firmware/obc-elevation) reads OBCT data and applies shared elevation rules.
 - [`obc-ports`](src:firmware/obc-ports) defines dependency-free values and semantic host interfaces.
 
-## Three hosts, one core
+## Four hosts, one core
 
 A host constructs [`App`](src:firmware/obc-app/src/app.rs) and drives the runtime.
 The following crates are hosts:
 
 - [`obc-sim`](src:apps/obc-sim) is the desktop simulator.
 - [`obc-web-demo`](src:apps/obc-web-demo) is the browser demo.
+- [`obc-ios-host`](src:apps/obc-ios-host) is the iPhone host.
 - [`obc-fw-nrf54l`](src:firmware/obc-fw-nrf54l) is the device host.
 
-[`obc-host-core`](src:host/obc-host-core) contains host behavior that the simulator and browser share.
+[`obc-host-core`](src:host/obc-host-core) contains host behavior that the simulator, the browser and the iPhone share.
 The conversion and assembly WebAssembly crates are tools.
 They do not construct `App`.
+
+The iPhone host runs the application over one persistent card file.
+The phone supplies the position, the heading, the altitude and the battery level.
+The `OBCDevice` app is the shell around it.
+It is a development tool, not a product.
+
+`OBCDevice` tests the user interface, the position tracking, the route following and the ride
+recording against real sensors and a real rider.
+It does not test the speed of the device, the power use, the display driver or the Bluetooth link.
+Only the device host can show those.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">

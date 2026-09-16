@@ -12,6 +12,8 @@ description = "OBCM map format reader (no_std + alloc) — pure-parse logic for 
 # `alloc` stays off by default. Mirrors `obc-route`'s `alloc` / `NavScratch::new_boxed`.
 alloc = []
 external-fixtures = []
+# Optional host attribution; disabled in shipping builds.
+nav-metrics = []
 
 [dependencies]
 heapless = "0.8"
@@ -27,3 +29,7 @@ miniz_oxide = { version = "0.8.9", default-features = false }
 obcm-testkit = { path = "../../host/obcm-testkit" }
 obc-fixtures = { path = "../../host/obc-fixtures" }
 zlib-rs = "0.6.7"
+
+[[test]]
+name = "poi_fixtures"
+required-features = ["external-fixtures"]

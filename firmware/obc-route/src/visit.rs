@@ -8,8 +8,8 @@ use obc_formats::io::{put_i16, put_i32, put_u16, put_u32, ByteSink, Error};
 use obc_formats::obcm::{PoiMetadata, SourceId};
 use obc_formats::obcr::{RouteSourceKey, VisitDescriptor, WaypointProvenance, HEADER_FULL_LEN, WAYPOINT_LEN};
 
-pub const FORWARD_REJOIN_M: u32 = 1_000;
-pub const MAX_VISIT_SEARCHES: u8 = 6;
+pub const VISIT_FORWARD_M: u32 = 20_000;
+pub const MAX_VISIT_SEARCHES: u8 = 2;
 /// A mapped approach must land on the graph, not on a nearby disconnected road.
 pub const APPROACH_TOLERANCE_M: f32 = 1.0;
 
@@ -21,16 +21,20 @@ pub struct VisitTarget {
 }
 impl VisitTarget {
     pub fn approach(self, map: RouteSourceKey, profile: u8) -> Option<(i32, i32)> {
-        let a = self.metadata.approach?;
-        (self.map == map
-            && self.metadata.source.is_valid()
-            && a.source.is_valid()
-            && profile < 8
-            && a.profile_mask & (1 << profile) != 0)
-            .then_some((a.lon, a.lat))
+        if self.map != map || !self.metadata.source.is_valid() || profile >= 8 {
+            return None;
+        }
+        match self.metadata.approach {
+            Some(a) => (a.source.is_valid() && a.profile_mask & (1 << profile) != 0).then_some((a.lon, a.lat)),
+            None => Some(self.display),
+        }
     }
-    /// Validate the actual graph endpoint for a direct destination. A near snap is insufficient.
+    /// Explicit approaches must be reached exactly; other places use the normal bounded graph snap.
     pub fn validate_destination(self, src: &dyn obc_formats::io::ByteSource, profile: u8) -> Result<(), Error> {
+        self.destination(src, profile).map(|_| ())
+    }
+    /// The actual final graph coordinate, validated against this map-bound place.
+    pub fn destination(self, src: &dyn obc_formats::io::ByteSource, profile: u8) -> Result<(i32, i32), Error> {
         use crate::reader::{decode_chunk_from, parse_chunk_meta, read_header};
         use obc_formats::obcr::CHUNK_META_LEN;
         let approach = self.approach(self.map, profile).ok_or(Error::BadOffset)?;
@@ -47,10 +51,11 @@ impl VisitTarget {
         let mut points = Vec::<crate::RoutePoint, MAX_POINTS_PER_CHUNK>::new();
         decode_chunk_from(src, &meta, meta.point_count as usize, &mut points)?;
         let p = points.last().ok_or(Error::BadOffset)?;
-        if obc_map_scene::ground_dist_m((p.lon, p.lat), approach) > APPROACH_TOLERANCE_M {
+        let tolerance = if self.metadata.approach.is_some() { APPROACH_TOLERANCE_M } else { crate::nav::SNAP_RADIUS_M };
+        if obc_map_scene::ground_dist_m((p.lon, p.lat), approach) > tolerance {
             return Err(Error::BadOffset);
         }
-        Ok(())
+        Ok((p.lon, p.lat))
     }
 }
 
@@ -124,42 +129,65 @@ impl VisitCosts {
     }
 }
 
-/// Original route constraints are scanned from the complete stored section, never the UI window.
-/// A forward join stops at the first remaining annotation's on-route access anchor.
-pub fn forward_rejoin(original: &RouteReader, departure_m: u32) -> Result<Option<u32>, Error> {
-    if departure_m >= original.total_distance_m
-        || original.visit_descriptor()?.is_some_and(|v| departure_m < v.accepted_anchors_m[2])
+/// Choose the closest remaining route occurrence in whole metres; ties keep the earlier pass.
+/// The prefix and tail stay on the original route, so no waypoint or loop is skipped.
+pub fn visit_anchor(original: &RouteReader, progress_m: u32, target: (i32, i32)) -> Result<u32, Error> {
+    if progress_m > original.total_distance_m
+        || original.visit_descriptor()?.is_some_and(|v| progress_m < v.accepted_anchors_m[2])
         || original.has_unresolved_avoidance()
     {
-        return Ok(None);
+        return Err(Error::BadOffset);
     }
-    let mut limit = original.total_distance_m;
-    let mut cursor = WaypointCursor::new(original.source())?;
+    let mut waypoints = WaypointCursor::new(original.source())?;
     let mut previous = 0;
-    while let Some(w) = cursor.next(original.source())? {
-        if w.dist_along_m < previous || w.dist_along_m > original.total_distance_m {
+    while let Some(waypoint) = waypoints.next(original.source())? {
+        if waypoint.dist_along_m < previous || waypoint.dist_along_m > original.total_distance_m {
             return Err(Error::BadOffset);
         }
-        previous = w.dist_along_m;
-        if w.dist_along_m >= departure_m {
-            limit = limit.min(w.dist_along_m);
+        previous = waypoint.dist_along_m;
+    }
+    let end = progress_m.saturating_add(VISIT_FORWARD_M).min(original.total_distance_m);
+    let origin = original.position_at(progress_m).ok_or(Error::BadOffset)?;
+    let mut best = ((obc_map_scene::ground_dist_m((origin.lon, origin.lat), target) + 0.5) as u32, progress_m);
+    let mut points = Vec::<_, MAX_POINTS_PER_CHUNK>::new();
+    let cl = obc_map_scene::cos_lat(target.1);
+    for (k, meta) in original.chunks().iter().enumerate() {
+        if meta.cum_distance_m > end {
+            break;
+        }
+        if original.chunks().get(k + 1).is_some_and(|next| next.cum_distance_m < progress_m) {
+            continue;
+        }
+        original.decode_chunk(k, &mut points)?;
+        let mut along = meta.cum_distance_m as f64;
+        for pair in points.windows(2) {
+            let a = (pair[0].lon, pair[0].lat);
+            let b = (pair[1].lon, pair[1].lat);
+            let length = obc_map_scene::ground_dist_m(a, b) as f64;
+            if along + length >= progress_m as f64 && along <= end as f64 && length > 0.0 {
+                let (t, _) = crate::geo::project_to_segment(a, b, target, cl);
+                let at = (along + t as f64 * length).clamp(progress_m as f64, end as f64);
+                let t = ((at - along) / length).clamp(0.0, 1.0);
+                let point = (a.0 + ((b.0 - a.0) as f64 * t) as i32, a.1 + ((b.1 - a.1) as f64 * t) as i32);
+                let distance = (obc_map_scene::ground_dist_m(point, target) + 0.5) as u32;
+                if distance < best.0 {
+                    best = (distance, at as u32);
+                }
+            }
+            along += length;
         }
     }
-    let at = departure_m.saturating_add(FORWARD_REJOIN_M).min(limit);
-    Ok((at > departure_m && original.position_at(at).is_some()).then_some(at))
+    Ok(best.1)
 }
 
-/// One materialized variant at a time. The second may replace the first only on measured cost.
-#[derive(Debug, Clone, Copy)]
+/// The same bounded search counter serves visits and constrained replacements.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct VisitChoice {
-    pub departure_m: u32,
-    pub forward_m: Option<u32>,
-    outbound_cost: Option<u32>,
     searches: u8,
 }
 impl VisitChoice {
-    pub fn new(departure_m: u32, forward_m: Option<u32>) -> Self {
-        Self { departure_m, forward_m, outbound_cost: None, searches: 0 }
+    pub fn new() -> Self {
+        Self { searches: 0 }
     }
     pub fn search(&mut self) -> Result<(), Error> {
         self.search_with_limit(MAX_VISIT_SEARCHES)
@@ -177,17 +205,13 @@ impl VisitChoice {
     pub fn searches(&self) -> u8 {
         self.searches
     }
-    pub fn remember_out_and_back(&mut self, distance_m: u32) {
-        self.outbound_cost = Some(distance_m);
-    }
-    pub fn prefer_forward(&self, distance_m: u32) -> bool {
-        self.outbound_cost.is_some_and(|baseline| distance_m < baseline)
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
     Begin,
+    BeginPrefix,
+    Prefix,
     Outbound,
     Return,
     Tail,
@@ -372,15 +396,75 @@ impl VisitBuilder {
     }
 
     pub fn begin(&mut self, sink: &mut dyn ByteSink) -> Result<(), Error> {
-        if self.phase != Phase::Begin {
+        if !matches!(self.phase, Phase::Begin | Phase::BeginPrefix) {
             return Err(Error::BadOffset);
         }
         ObcrEmitter::begin(sink)?;
-        self.phase = if self.descriptor.is_some() { Phase::Outbound } else { Phase::Return };
+        self.phase = if self.descriptor.is_some() {
+            if self.phase == Phase::BeginPrefix || self.anchors[1] > self.anchors[0] {
+                Phase::Prefix
+            } else {
+                Phase::Outbound
+            }
+        } else {
+            Phase::Return
+        };
         Ok(())
+    }
+    /// Retain the journey up to the single leave/rejoin anchor before the two excursion legs.
+    pub fn keep_prefix(&mut self, anchor_m: u32) -> Result<(), Error> {
+        if self.phase != Phase::Begin || anchor_m < self.anchors[0] {
+            return Err(Error::BadOffset);
+        }
+        let descriptor = self.descriptor.as_mut().ok_or(Error::BadOffset)?;
+        self.anchors[1] = anchor_m;
+        self.anchors[2] = anchor_m;
+        descriptor.original_anchors_m = self.anchors;
+        self.phase = Phase::BeginPrefix;
+        Ok(())
+    }
+    pub fn append_prefix_step(&mut self, original: &RouteReader, sink: &mut dyn ByteSink) -> Result<bool, Error> {
+        if self.phase != Phase::Prefix {
+            return Ok(true);
+        }
+        if self.append_chunk(original, self.anchors[0], self.anchors[1], sink)? {
+            return Ok(false);
+        }
+        self.chunk = 0;
+        self.segment_started = false;
+        self.phase = Phase::Outbound;
+        Ok(true)
+    }
+    pub fn arrival_m(&self) -> u32 {
+        self.descriptor.map_or(0, |descriptor| descriptor.accepted_anchors_m[1])
     }
     pub fn original_anchors(&self) -> [u32; 3] {
         self.anchors
+    }
+
+    /// Bind the stop to the actual outbound graph endpoint before composing the route.
+    pub fn resolve_destination(
+        &mut self,
+        target: VisitTarget,
+        leg: &dyn obc_formats::io::ByteSource,
+        profile: u8,
+    ) -> Result<(), Error> {
+        let descriptor = self.descriptor.as_mut().ok_or(Error::BadOffset)?;
+        if self.phase != Phase::Outbound
+            || self.chunk != 0
+            || descriptor.target_kind != (target.metadata.source.0 >> 62) as u8
+            || descriptor.target_id != target.metadata.source.0 & ((1 << 62) - 1)
+            || self.em.attribution_map() != Some(target.map)
+        {
+            return Err(Error::BadOffset);
+        }
+        let (lon, lat) = target.destination(leg, profile)?;
+        descriptor.target_lon = lon;
+        descriptor.target_lat = lat;
+        Ok(())
+    }
+    pub fn destination(&self) -> Option<(i32, i32)> {
+        self.descriptor.map(|d| (d.target_lon, d.target_lat))
     }
 
     /// A decoded leg cannot join the next required coordinate. Source and sink failures do not set this state.
@@ -479,12 +563,16 @@ impl VisitBuilder {
                 if w.dist_along_m < departure {
                     return Ok(None);
                 }
-                if w.dist_along_m < rejoin || w.dist_along_m > original.total_distance_m {
+                if (w.dist_along_m > self.anchors[1] && w.dist_along_m < rejoin)
+                    || w.dist_along_m > original.total_distance_m
+                {
                     return Err(Error::BadOffset);
                 }
                 w.provenance.get_or_insert(WaypointProvenance { source: self.original, ordinal });
                 w.dist_along_m = if let Some(anchors) = &self.easier {
                     anchors.mapped(w.dist_along_m)?
+                } else if w.dist_along_m < self.anchors[1] {
+                    w.dist_along_m - departure
                 } else if w.dist_along_m == original.total_distance_m {
                     self.em.distance_m()
                 } else {
@@ -536,24 +624,29 @@ impl VisitBuilder {
         to: u32,
         sink: &mut dyn ByteSink,
     ) -> Result<bool, Error> {
-        if self.chunk >= route.chunks().len() {
+        if self.chunk >= route.chunks().len() || route.chunks()[self.chunk].cum_distance_m > to {
             return Ok(false);
         }
         let mut points = Vec::<_, MAX_POINTS_PER_CHUNK>::new();
         // A stored total is floored to metres. Keep the final stored endpoint, not a second
         // sub-metre clip of it, or consecutive legs would no longer have the same seam.
         let upper = if to == route.total_distance_m { u32::MAX } else { to };
-        let found = decode_route_points_between_checked(route, self.chunk, from, upper, &mut points)?;
+        let found = if route.total_distance_m == 0 && route.chunks()[self.chunk].point_count == 1 {
+            route.decode_chunk(self.chunk, &mut points)?;
+            Some(points.len())
+        } else {
+            decode_route_points_between_checked(route, self.chunk, from, upper, &mut points)?
+        };
         self.chunk += 1;
         if found.is_none() {
             return Ok(true);
         }
         let seam = !self.segment_started && self.last.is_some();
-        if seam
-            && self.last.is_some_and(|last| {
-                points.first().is_none_or(|p| obc_map_scene::ground_dist_m(last, (p.lon, p.lat)) > APPROACH_TOLERANCE_M)
-            })
-        {
+        let gap =
+            self.last.zip(points.first()).map_or(0.0, |(last, p)| obc_map_scene::ground_dist_m(last, (p.lon, p.lat)));
+        let route_join = self.descriptor.is_some() && matches!(self.phase, Phase::Outbound | Phase::Tail);
+        let tolerance = if route_join { crate::nav::SNAP_RADIUS_M } else { APPROACH_TOLERANCE_M };
+        if seam && (points.is_empty() || gap > tolerance) {
             self.phase = Phase::RejectedGeometry;
             return Err(Error::BadOffset);
         }
@@ -561,14 +654,23 @@ impl VisitBuilder {
         let source_surface = route.attribution_map()? == self.em.attribution_map();
         for (i, p) in points.iter().enumerate() {
             let coord = (p.lon, p.lat);
-            if i == 0 && (seam || self.last == Some(coord)) {
+            let connector = i == 0 && seam && gap > APPROACH_TOLERANCE_M;
+            if i == 0 && ((seam && !connector) || self.last == Some(coord)) {
                 // Coalesce sub-metre quantization at the existing endpoint; add no connector.
                 self.seam_incomplete |= self.last != Some(coord) || self.last_ele != p.ele;
                 continue;
             }
-            self.em.set_surface(if source_surface { p.surface } else { 0 });
-            self.em.set_elevation_incomplete(p.elevation_incomplete || self.seam_incomplete);
+            // Imported route geometry can differ from the normal graph snap. Retain both ends
+            // and charge the connection to the visit; it has no mapped surface or elevation.
+            self.em.set_surface(if source_surface && !connector { p.surface } else { 0 });
+            self.em.set_elevation_incomplete(p.elevation_incomplete || self.seam_incomplete || connector);
             self.em.push_retained(sink, p.lon, p.lat, p.ele)?;
+            if connector && self.phase == Phase::Tail {
+                self.accepted_rejoin_m = self.em.distance_m();
+                if let Some(descriptor) = &mut self.descriptor {
+                    descriptor.accepted_anchors_m[2] = self.accepted_rejoin_m;
+                }
+            }
             self.last = Some(coord);
             self.last_ele = p.ele;
             self.seam_incomplete = false;

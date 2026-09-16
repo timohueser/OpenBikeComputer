@@ -58,6 +58,8 @@ use obcm_assemble::{
 struct FileSource {
     file: RefCell<File>,
     len: u64,
+    #[cfg(feature = "mem-profile")]
+    verification: bool,
 }
 
 impl FileSource {
@@ -67,12 +69,19 @@ impl FileSource {
         // to refuse anything past 4 GiB − 1, because a `uint32` offset could not name the bytes and
         // a truncating cast would have presented the low 32 bits as the whole file.
         let len = file.metadata()?.len();
-        Ok(FileSource { file: RefCell::new(file), len })
+        Ok(FileSource {
+            file: RefCell::new(file),
+            len,
+            #[cfg(feature = "mem-profile")]
+            verification: false,
+        })
     }
 }
 
 impl ByteSource for FileSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::result::Result<(), IoError> {
+        #[cfg(feature = "mem-profile")]
+        mem_profile::io(if self.verification { 1 } else { 0 }, buf.len());
         let mut f = self.file.borrow_mut();
         f.seek(SeekFrom::Start(offset)).map_err(|_| IoError::Io)?;
         f.read_exact(buf).map_err(|_| IoError::Io)
@@ -110,6 +119,8 @@ impl MapStore for FileStore {
         Ok(())
     }
     fn write(&mut self, buf: &[u8]) -> Result<()> {
+        #[cfg(feature = "mem-profile")]
+        mem_profile::io(2, buf.len());
         self.open.as_mut().expect("the map is open").write_all(buf).map_err(|_| Error::Io(IoError::Io))
     }
     fn seal(&mut self) -> Result<()> {
@@ -117,6 +128,10 @@ impl MapStore for FileStore {
         w.flush().map_err(|_| Error::Io(IoError::Io))?;
         drop(w);
         self.sealed = Some(FileSource::open(&self.path).map_err(|_| Error::Io(IoError::Io))?);
+        #[cfg(feature = "mem-profile")]
+        {
+            self.sealed.as_mut().unwrap().verification = true;
+        }
         Ok(())
     }
     fn source(&self) -> Result<&dyn ByteSource> {
@@ -174,15 +189,21 @@ impl ScratchStore for FileScratch {
     }
 
     fn append(&self, id: ScratchId, buf: &[u8]) -> Result<()> {
+        #[cfg(feature = "mem-profile")]
+        mem_profile::io(3, buf.len());
         self.with(id, |(file, len)| {
             file.seek(SeekFrom::Start(*len)).map_err(|e| Error::Scratch(format!("{id}: seek: {e}")))?;
             file.write_all(buf).map_err(|e| Error::Scratch(format!("{id}: write: {e}")))?;
             *len += buf.len() as u64;
+            #[cfg(feature = "mem-profile")]
+            mem_profile::scratch_grew(buf.len());
             Ok(())
         })
     }
 
     fn read_at(&self, id: ScratchId, offset: u64, buf: &mut [u8]) -> Result<()> {
+        #[cfg(feature = "mem-profile")]
+        mem_profile::io(4, buf.len());
         self.with(id, |(file, len)| {
             let end = offset.saturating_add(buf.len() as u64);
             if end > *len {
@@ -204,6 +225,10 @@ impl ScratchStore for FileScratch {
         let mut files = self.files.borrow_mut();
         match files.get_mut(id.0 as usize) {
             Some(slot) => {
+                #[cfg(feature = "mem-profile")]
+                if let Some((_, len)) = slot {
+                    mem_profile::scratch_removed(*len as usize);
+                }
                 *slot = None; // closes the handle
                 let _ = std::fs::remove_file(self.dir.join(format!("{}.spill", id.0)));
                 Ok(())
@@ -277,6 +302,23 @@ mod mem_profile {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use obcm_assemble::{Clock, Summary};
+
+    static IO_CALLS: [AtomicUsize; 5] = [const { AtomicUsize::new(0) }; 5];
+    static IO_BYTES: [AtomicUsize; 5] = [const { AtomicUsize::new(0) }; 5];
+    static SCRATCH_LIVE: AtomicUsize = AtomicUsize::new(0);
+    static SCRATCH_PEAK: AtomicUsize = AtomicUsize::new(0);
+
+    pub fn io(kind: usize, bytes: usize) {
+        IO_CALLS[kind].fetch_add(1, Ordering::Relaxed);
+        IO_BYTES[kind].fetch_add(bytes, Ordering::Relaxed);
+    }
+    pub fn scratch_grew(bytes: usize) {
+        let live = SCRATCH_LIVE.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        raise(&SCRATCH_PEAK, live);
+    }
+    pub fn scratch_removed(bytes: usize) {
+        SCRATCH_LIVE.fetch_sub(bytes, Ordering::Relaxed);
+    }
 
     /// Bytes currently owned by the process, as `Layout`s state them.
     static LIVE: AtomicUsize = AtomicUsize::new(0);
@@ -378,6 +420,16 @@ mod mem_profile {
         /// Print the per-phase table to stderr. `nav_section_bytes` is the assembly's one natural
         /// yardstick: the section the whole rewrite exists to produce.
         pub fn report(&self, summary: &Summary) {
+            for (kind, label) in
+                ["input_read", "verification_read", "output_write", "scratch_write", "scratch_read"].iter().enumerate()
+            {
+                eprintln!(
+                    "io-profile {label} calls={} bytes={}",
+                    IO_CALLS[kind].load(Ordering::Relaxed),
+                    IO_BYTES[kind].load(Ordering::Relaxed)
+                );
+            }
+            eprintln!("io-profile scratch_peak_live_bytes={}", SCRATCH_PEAK.load(Ordering::Relaxed));
             let samples = self.samples.borrow();
             let labels = labels_for(samples.len());
             eprintln!("\nmem-profile — peak heap per phase (the window resets at every phase boundary)");
@@ -403,6 +455,16 @@ mod mem_profile {
     }
 
     impl<C: Clock> Clock for ProfilingClock<C> {
+        fn nav_phase(&self, name: &'static str) {
+            thread_local! { static PREVIOUS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
+            let now = self.inner.now_us();
+            PREVIOUS.with(|previous| {
+                let start = previous.replace(now);
+                if name != "start" {
+                    eprintln!("nav-profile {name} us={}", now - start);
+                }
+            });
+        }
         fn now_us(&self) -> u64 {
             let us = self.inner.now_us();
             let live = LIVE.load(Ordering::Relaxed);
@@ -431,6 +493,7 @@ mod mem_profile {
             "write",
             "(pre-verify)",
             "verify",
+            "release navigation scratch",
         ]
         .iter()
         .map(|s| s.to_string())

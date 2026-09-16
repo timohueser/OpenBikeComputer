@@ -83,7 +83,7 @@ fn start_from_home(app: &mut App) {
     assert!(matches!(app.top_screen(), Screen::Home(_)));
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::Menu(_)));
-    app.apply_gesture(Gesture::Step(3)); // Routes → Map
+    app.apply_gesture(Gesture::Step(2)); // Routes → Rides → Map
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::Map(_)));
     app.apply_gesture(Gesture::Press);

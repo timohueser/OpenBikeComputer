@@ -66,7 +66,7 @@ MAP="$FIXTURES/sim-assistant-meiringen/meiringen.obcm"
 WORK="$PWD/.artifacts/visit-proof"
 mkdir -p "$WORK/routes" "$WORK/exports"
 GPX="$PWD/fixtures/sources/ride-assistant/replays/meiringen-forward-rejoin.gpx"
-SCRIPT='p p p p T Q d p p d p f f f f f f f f f f f f p f p f p f'
+SCRIPT='p p p p T A p d p f f f f f f f f f f f f p f p f p f'
 run_offline() { sandbox-exec -p '(version 1) (allow default) (deny network*)' "$@"; }
 run_offline "$SIM" --import "$GPX" --routes-dir "$WORK/routes"
 run_offline "$SIM" "$MAP" --routes-dir "$WORK/routes" --create-card "$WORK/accepted.obc" \

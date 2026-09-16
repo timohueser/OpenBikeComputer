@@ -83,6 +83,11 @@ or feature-resolution changes, a release candidate, or an explicit request. A ta
 being opened, or another agent also working in the repository is not by itself a reason to run it.
 Concurrent full runs are allowed; the discipline is to start one only when its coverage is needed.
 
+`obc test full` runs fast binaries, captured-fixture binaries and doctests in separate commands.
+`obc check test` runs the fast tier, doctests and the render contract. These workspace commands
+need the CI-pinned runner (`cargo install cargo-nextest --version 0.9.143 --locked`). Focused
+`obc test -p <crate>` commands continue to use Cargo's test harness.
+
 ## Reclaiming stale development state
 
 `obc clean` is the repository-owned cleanup command. It is always a dry run unless `--apply` is

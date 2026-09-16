@@ -89,7 +89,7 @@ impl NavigatorMachine {
             self.visit.arrival = false;
             return true;
         }
-        if c.phase == JourneyPhase::AtStop && previous == Some(JourneyPhase::Outbound) {
+        if c.phase == JourneyPhase::AtStop && previous == Some(JourneyPhase::Outbound) && self.visit.departed {
             self.visit.arrival = true;
         }
         if c.phase != JourneyPhase::Outbound {
@@ -127,7 +127,8 @@ impl NavigatorMachine {
         }
         let at_stop = obc_map_scene::ground_dist_m(fix, (descriptor.target_lon, descriptor.target_lat));
         let departure_m = departure_m(entry, stop);
-        let leave_m = LEAVE_STOP_M.min(rejoin.saturating_sub(stop) / 2).max(1);
+        let remaining = if stop == rejoin { route.total_distance_m.saturating_sub(stop) } else { rejoin - stop };
+        let leave_m = if remaining == 0 { 0 } else { LEAVE_STOP_M.min(remaining / 2).max(1) };
         let return_arrival_m = ARRIVAL_M.min(rejoin.saturating_sub(stop) / 2).max(1);
         if current.phase == JourneyPhase::Outbound {
             let first = *self.visit.departure_fix.get_or_insert(fix);
@@ -154,11 +155,18 @@ impl NavigatorMachine {
             {
                 next.phase = JourneyPhase::AtStop;
                 next.lower_m = stop;
-                next.upper_m = rejoin;
+                next.upper_m = if stop == rejoin { route.total_distance_m } else { rejoin };
                 next.progress_m = stop;
             }
             JourneyPhase::AtStop if progress >= stop.saturating_add(leave_m) && at_stop >= leave_m as f32 => {
-                next.phase = JourneyPhase::Returning;
+                if stop == rejoin {
+                    next.phase = JourneyPhase::Following;
+                    next.original = None;
+                    next.lower_m = rejoin;
+                    next.upper_m = route.total_distance_m;
+                } else {
+                    next.phase = JourneyPhase::Returning;
+                }
                 next.progress_m = progress;
             }
             JourneyPhase::Returning if progress >= rejoin.saturating_sub(return_arrival_m) => {
@@ -205,7 +213,7 @@ impl crate::App {
             return false;
         }
         let Some(index) = self.route_ids().iter().position(|id| *id == source.object) else { return false };
-        let Some(key) = self.catalogs.nav_preview_key(Some(index)) else { return false };
+        let Some(key) = self.catalogs.nav_preview_key(Some(index), true) else { return false };
         self.catalogs.accept_nav_preview(Some(key), crate::device_core::DerivedInput::filled(key), points)
     }
 
@@ -218,7 +226,7 @@ impl crate::App {
         }
         let index =
             self.assistant_preview().and_then(|p| self.route_ids().iter().position(|id| *id == p.source.object));
-        self.catalogs.nav_preview_for(self.catalogs.nav_preview_key(index))
+        self.catalogs.nav_preview_for(self.catalogs.nav_preview_key(index, true))
     }
 
     pub fn current_review_origin(&self) -> Option<super::ReviewOrigin> {
@@ -242,6 +250,18 @@ impl crate::App {
     /// UI entry. Capture the live origin and catalog epoch here; Acquire binds the original
     /// fingerprint from that exact epoch before any planner runs.
     pub fn request_visit(&mut self, target: VisitTarget, name: &str) -> Result<(), VisitUnavailable> {
+        self.request_place_route(target, name, false)
+    }
+    /// Route to the place without retaining the current route's continuation.
+    pub fn request_destination(&mut self, target: VisitTarget, name: &str) -> Result<(), VisitUnavailable> {
+        self.request_place_route(target, name, true)
+    }
+    fn request_place_route(
+        &mut self,
+        target: VisitTarget,
+        name: &str,
+        destination: bool,
+    ) -> Result<(), VisitUnavailable> {
         if self.active_visit()
             || matches!(
                 self.assistant_review_status(),
@@ -256,8 +276,7 @@ impl crate::App {
             return Err(VisitUnavailable::SourceChanged);
         }
         let fix = self.fresh_position().ok_or(VisitUnavailable::NoFix)?;
-        let a = target.metadata.approach.ok_or(VisitUnavailable::NoMappedAccess)?;
-        if !a.source.is_valid() || !target.metadata.source.is_valid() {
+        if !target.metadata.source.is_valid() || target.metadata.approach.is_some_and(|a| !a.source.is_valid()) {
             return Err(VisitUnavailable::NoMappedAccess);
         }
         let profile = self.settings().bike_profile_idx;
@@ -268,7 +287,7 @@ impl crate::App {
         }
         let progress = self.navigator.following.progress_m;
         let context = ReviewContext {
-            purpose: if original.is_some() { ReviewPurpose::Visit } else { ReviewPurpose::Destination },
+            purpose: if original.is_some() && !destination { ReviewPurpose::Visit } else { ReviewPurpose::Destination },
             map: target.map,
             store: scope.store,
             original: None,
@@ -358,7 +377,7 @@ impl crate::App {
         self.navigator.visit.needs_bind = false;
         true
     }
-    /// Place queries supply a map-bound explicit approach; missing access remains information-only.
+    /// Place queries supply a map-bound approach or an ordinary coordinate destination.
     /// No active route means a direct destination, with no implied continuation.
     pub fn plan_visit(&mut self, target: VisitTarget, mut context: ReviewContext) -> bool {
         if self.navigator.active_visit()
@@ -402,8 +421,8 @@ impl crate::App {
         };
         if context.purpose != ReviewPurpose::Visit
             || anchors[0] != context.progress_m
-            || anchors[1] != context.progress_m
-            || anchors[2] < context.progress_m
+            || anchors[1] < context.progress_m
+            || anchors[2] < anchors[1]
         {
             return false;
         }
@@ -575,12 +594,42 @@ mod tests {
         );
     }
     fn open_current(app: &mut crate::App, route: &RouteReader) {
-        app.apply_chord(crate::input::Chord::Quick);
-        app.apply_gesture(crate::Gesture::Press);
+        assert!(app.apply_chord(crate::input::Chord::Assistant));
         app.apply_chord(crate::input::Chord::Context);
         app.apply_gesture(crate::Gesture::Press);
         app.prepare_find(None, Some(route));
         assert!(matches!(app.top_screen(), crate::screen::Screen::VisitReview(s) if s.accepted));
+    }
+    #[test]
+    fn destination_request_keeps_original_authority_until_acceptance() {
+        use crate::device_core::{Revision, StoreIdentity, StoreRevision};
+        let bytes = route();
+        let source = SliceSource(&bytes.0);
+        let index = obc_route::RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
+        let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 1.0));
+        app.set_routes_with_ids(&[route.summary()], &[7]);
+        app.navigator.following.active_route = Some(0);
+        let store = StoreIdentity::from_bytes([1; 16]);
+        let scope = StoreRevision { store, revision: Revision::new(1) };
+        app.catalogs.loaded_scope = Some(scope);
+        live_fix(&mut app, Some(&route), 0, 0);
+        let target = VisitTarget {
+            map: RouteSourceKey { store: store.bytes(), object: 1, revision: 1 },
+            display: (0, 1000),
+            metadata: PoiMetadata { source: obc_formats::obcm::SourceId::osm(1, 99), approach: None },
+        };
+        app.request_destination(target, "Water").unwrap();
+        let original = PayloadFingerprint { object: 7, revision: 1, length: 100, crc: 1 };
+        assert!(!app.bind_visit_sources(scope, None, false));
+        assert!(app.bind_visit_sources(scope, Some(original), false));
+        let context = app.assistant_review_context().unwrap();
+        assert_eq!(context.purpose, ReviewPurpose::Destination);
+        assert_eq!(context.original, Some(original));
+        assert_eq!(app.active_route_index(), Some(0));
+        app.cancel_assistant();
+        assert_eq!(app.active_route_index(), Some(0));
+        assert!(app.assistant_checkpoint().is_none());
     }
     #[test]
     fn current_visit_cancel_waits_for_checkpoint_or_explicit_connector_acceptance() {
@@ -956,8 +1005,7 @@ mod tests {
         app.navigator.following.active_route = Some(0);
         let checkpoint = app.assistant_checkpoint();
         let session = app.ride_session();
-        assert!(app.apply_chord(Chord::Quick));
-        app.apply_gesture(Gesture::Press);
+        assert!(app.apply_chord(Chord::Assistant));
         app.apply_gesture(Gesture::Press); // Explore another question first.
         assert!(matches!(app.top_screen(), Screen::FindPlace(_)));
         app.apply_gesture(Gesture::Back);
@@ -968,18 +1016,18 @@ mod tests {
         assert_eq!(app.ui.find.review, ReviewStatus::Accepted);
         assert_eq!(app.ui.find.review_costs.unwrap().arrival_m, 111);
         assert_eq!(app.derived_needs().nav_preview.unwrap().route, 8);
-        // A new question above the read-only view owns preparation and geometry.
-        assert!(app.apply_chord(Chord::Quick));
-        app.apply_gesture(Gesture::Press);
-        app.apply_gesture(Gesture::Press);
+        // Returning to Assistant lets the new question own preparation and geometry.
+        assert!(app.apply_chord(Chord::Assistant));
         app.apply_gesture(Gesture::Press);
         app.prepare_find(None, Some(&route));
         assert!(matches!(app.top_screen(), Screen::FindPlace(_)));
         assert_ne!(app.find_place_state(), crate::find_place::State::Start);
         assert!(app.derived_needs().nav_preview.is_none());
         app.apply_gesture(Gesture::Back);
-        app.apply_gesture(Gesture::Back);
-        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::Assistant(_)));
+        assert!(app.apply_chord(Chord::Context));
+        app.apply_gesture(Gesture::Press);
+        app.prepare_find(None, Some(&route));
         assert!(matches!(app.top_screen(), Screen::VisitReview(s) if s.accepted));
         app.apply_gesture(Gesture::Back);
         assert!(matches!(app.top_screen(), Screen::Assistant(_)));
@@ -1038,6 +1086,81 @@ mod tests {
         assert!(!app.active_visit() && !app.visit_arrival_pending());
         assert!(app.assistant_checkpoint().unwrap().original.is_none());
         assert!(app.navigator.review.change.is_none());
+    }
+
+    #[test]
+    fn on_route_stops_resume_the_tail_after_stationary_dwell() {
+        use crate::navigator::{ReviewContext, ReviewOrigin, ReviewedRoute, REVIEW_FACTS_POLICY};
+        for (stop, tail_lat) in [(0, 1000), (0, 90), (0, 0), (111, 1000), (111, 90), (111, 0)] {
+            let lat = if stop == 0 { 0 } else { 1000 };
+            let gpx = std::format!(
+                "<gpx><trk><trkseg><trkpt lon=\"0\" lat=\"0\"/><trkpt lon=\"0\" lat=\"{}\"/></trkseg></trk></gpx>",
+                (lat + tail_lat) as f64 / 1_000_000.0
+            );
+            let bytes = visit_route(gpx.as_bytes(), [0, stop, stop], lat);
+            let source = SliceSource(&bytes.0);
+            let index = obc_route::RouteIndex::read(&source).unwrap();
+            let route = RouteReader::new(&index, &source);
+            let mut app = app();
+            app.set_routes_with_ids(&[route.summary(), route.summary()], &[8, 7]);
+            let checkpoint = app.assistant_checkpoint().unwrap();
+            app.navigator.review.context = Some(ReviewContext {
+                purpose: ReviewPurpose::Visit,
+                map: RouteSourceKey { store: [1; 16], object: 1, revision: 1 },
+                store: crate::device_core::StoreIdentity::from_bytes([1; 16]),
+                original: checkpoint.original,
+                origin: (0, 0),
+                progress_m: 0,
+                occurrence: 0,
+                required_anchors_m: [0; 3],
+                profile: 0,
+                facts_policy: REVIEW_FACTS_POLICY,
+                unresolved_avoidance: false,
+            });
+            app.navigator.review.preview = Some(ReviewedRoute {
+                source: checkpoint.route,
+                distance_m: route.total_distance_m,
+                ascent_m: 0,
+                descent_m: 0,
+                visit_anchors_m: Some([0, stop, stop]),
+                visit_costs: None,
+            });
+            app.navigator.review.status = ReviewStatus::Preview;
+            app.navigator.accept_review(
+                ReviewOrigin { fix: (0, 0), progress_m: 0, occurrence: 0, lateral_m: 0, trustworthy: true },
+                0,
+            );
+            let mut tokens = TokenSource::new();
+            ack(&mut app, &mut tokens, &route);
+            assert!(!app.visit_arrival_pending());
+            if route.total_distance_m == 0 {
+                assert!(!app.active_visit());
+                assert!(app.assistant_checkpoint().unwrap().original.is_none());
+                continue;
+            }
+            if stop != 0 {
+                for lat in [0, 300, 600, 900, 1000] {
+                    fix(&mut app, &route, 0, lat);
+                }
+                ack(&mut app, &mut tokens, &route);
+                assert!(app.visit_arrival_pending());
+            }
+            assert_eq!(app.assistant_checkpoint().unwrap().phase, JourneyPhase::AtStop);
+            assert_eq!(app.assistant_checkpoint().unwrap().upper_m, route.total_distance_m);
+            if route.total_distance_m > stop {
+                for _ in 0..3 {
+                    fix(&mut app, &route, 0, lat);
+                }
+                assert!(app.navigator.review.change.is_none());
+                let next = route.position_at(stop + (route.total_distance_m - stop).min(30)).unwrap();
+                fix(&mut app, &route, next.lon, next.lat);
+            }
+            assert_eq!(app.navigator.review.change.unwrap().unwrap().phase, JourneyPhase::Following);
+            ack(&mut app, &mut tokens, &route);
+            assert!(!app.active_visit());
+            assert!(app.assistant_checkpoint().unwrap().original.is_none());
+            assert!(!app.visit_arrival_pending());
+        }
     }
 
     #[test]

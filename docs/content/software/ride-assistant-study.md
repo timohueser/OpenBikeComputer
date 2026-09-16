@@ -6,9 +6,10 @@ copy: ai
 
 # Ride Assistant
 
-Open **Up + Select → Assistant** to find a place, inspect what comes next, compare easier routes,
+Hold **Up + Select** for **500 ms** to find a place, inspect what comes next, compare easier routes,
 or read about nearby landmarks. All four questions use installed offline data. The grey questions
-remain inactive. Bluetooth stays in Settings, and the working Detour command stays in the map context.
+remain inactive. Tap **Up + Select** to open the quick drawer with Bluetooth on/off. Peak View
+stays in the main menu. The Detour command stays in the map context.
 See the [simulator README](../../../apps/obc-sim/README.md#ride-assistant) for controls and data setup.
 
 ## Purpose
@@ -82,6 +83,10 @@ its purpose becomes unclear inside a city. Town names on the map remain a separa
 
 ## Current visit and restart
 
+The visit preview shows the path from departure to the place and back to the original route in blue.
+Its camera fits this part of the journey. The remaining original route stays in the stored journey
+and appears in the ordinary route overview. A nearby stop does not zoom out to the journey finish.
+
 While a visit is active, open **Assistant → Down + Back → Current visit**. The detail shows the
 current leg. Select **Cancel visit** to leave the visit. Before departure, the original route returns
 after the card confirms the saved change. After departure, review the real connector and select
@@ -127,9 +132,14 @@ remain layout references; their synthetic alternatives do not ship.
 ## Discovery and limits
 
 Find a place includes all map categories. **More places** opens the complete paged browser for the
-selected category. What's next retains category and source filters, generic and categorized authored
+selected category. Back returns to its overview. The last calculated category stays cached until
+another category replaces it or the Assistant closes, while its inputs remain valid. Accepting a
+place route starts recording if no ride session exists. An existing ride continues in the same
+session. What's next retains category and source filters, generic and categorized authored
 waypoints, route order, route distance and climbing, lateral offsets, and stable selected identity.
 An authored waypoint is information from the route; its detail cannot add it as a new stop.
+Generated Assistant routes are internal and do not appear in saved Routes. Acceptance keeps their
+bytes for navigation and recovery without adding a saved route. Imported routes remain available.
 Place details and accepted visit previews use the same owner across all questions. During a visit,
 **Assistant → Down + Back → Current visit** reopens its route and current-leg distance. Back
 returns to the questions without cancelling the visit or changing the recording. If the accepted

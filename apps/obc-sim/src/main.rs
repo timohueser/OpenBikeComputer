@@ -15,7 +15,6 @@ use obc_reader::rgb565_to_device64;
 
 mod calib;
 mod card;
-mod device_input;
 mod dfu;
 mod framebuffer;
 mod gui;
@@ -27,22 +26,19 @@ mod peak_view;
 mod present;
 mod rides;
 mod routes;
-mod settings_store;
 mod sim_compass;
 mod sim_location;
 mod sim_sensors;
-mod track;
 mod trips;
 
 use framebuffer::Framebuffer;
 use obc_host_core::{
-    initial_camera, replay_advance, ActiveRouteSession, HostLoop, HostPlatform, PlanHold, ReplaySensors,
+    initial_camera, replay_advance, ActiveRouteSession, HostLoop, HostPlatform, PlanHold, ReplaySensors, TrackStore,
 };
 use obc_host_core::{FlatRideStore as RideStore, RideRepository};
 use obc_host_core::{FlatRouteStore as RouteStore, FlatTripStore as TripStore, RouteRepository};
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 use obc_route::RouteReader;
-use track::TrackStore;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct BleSeed {
@@ -120,7 +116,7 @@ struct Args {
     /// `f` = draw one throwaway frame so draw-time lazy state (the POI-list snapshot) is filled
     /// before the next gesture, `T` = one route-aware tick (sync + open the active route and run
     /// the once-per-load state builds), `Q` = the Up+Select squeeze that opens the universal quick
-    /// drawer, with its slide-down settled, `I` = elapse 5 min with no input so the idle-return
+    /// drawer, with its slide-down settled, `A` = hold Up+Select to open Assistant, `I` = elapse 5 min with no input so the idle-return
     /// timeout fires.
     script: Option<String>,
     /// Normal button input after GPX replay, before the final render.
@@ -849,7 +845,7 @@ fn write_png(fb: &Framebuffer, scale: u32, path: &str) -> Result<(), String> {
 }
 
 /// A scripted [`InputSource`] that replays a fixed queue of raw events — the
-/// headless counterpart to the control panel's [`device_input::DeviceInput`].
+/// headless counterpart to the control panel's [`obc_host_core::DeviceInput`].
 struct ScriptInput(std::collections::VecDeque<InputEvent>);
 impl InputSource for ScriptInput {
     fn poll(&mut self) -> Option<InputEvent> {
@@ -966,13 +962,23 @@ fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut
             // token, because every drawer frame starts with it.
             'Q' => {
                 chord(app, &mut now, Button::Up, Button::Select);
-                for _ in 0..8 {
+                for _ in 0..12 {
                     now += 40;
                     feed(app, now, vec![]);
                 }
             }
-            // The contextual drawer's Down+Back squeeze, then its slide-up settled — the bottom
-            // sheet's counterpart to `Q`.
+            // Hold the same raw button pair past the Assistant threshold.
+            'A' => {
+                feed(app, now, vec![down(Button::Up)]);
+                now += 30;
+                feed(app, now, vec![down(Button::Select)]);
+                now += hold;
+                feed(app, now, vec![]);
+                now += 30;
+                feed(app, now, vec![up(Button::Select), up(Button::Up)]);
+                now += 30;
+            }
+            // The contextual drawer's Down+Back squeeze, then its slide-up settled.
             'C' => {
                 chord(app, &mut now, Button::Down, Button::Back);
                 for _ in 0..8 {
@@ -1034,7 +1040,7 @@ Scripted snapshots:
   --script-after TOKENS  Apply button input after GPX replay, before rendering
   --script TOKENS         Apply device-button script tokens before rendering
                           (d/u step, p press, b back, h/B hold, H/M partial hold,
-                           Q quick-drawer squeeze, C context-drawer squeeze,
+                           Q quick-drawer tap, A held Up+Select (Assistant), C context-drawer squeeze,
                            w wait, f frame, T tick, I idle)
   --no-backlight          Model a panel with no controllable light (three quick-drawer controls)
   --expect-screen NAME    Refuse unless the script lands on this screen

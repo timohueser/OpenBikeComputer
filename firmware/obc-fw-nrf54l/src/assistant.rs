@@ -47,10 +47,5 @@ pub(crate) fn preview_shape(
 ) -> Result<heapless::Vec<(i32, i32), { obc_app::NAV_PREVIEW_MAX }>, obc_formats::io::Error> {
     index.read_into(source)?;
     let route = obc_route::RouteReader::new(index, source);
-    let count = route.chunks().iter().map(|c| usize::from(c.point_count).saturating_sub(1)).sum::<usize>() + 1;
-    let shape = route.preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>();
-    if shape.len() != count.min(obc_app::NAV_PREVIEW_MAX) {
-        return Err(obc_formats::io::Error::BadOffset);
-    }
-    Ok(shape)
+    route.assistant_preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>()
 }

@@ -320,9 +320,9 @@ impl CatalogState {
 
     /// The derived **nav-preview** key for the route at catalog index `active_route` — the route
     /// twin of [`ride_track_key`](Self::ride_track_key).
-    pub(crate) fn nav_preview_key(&self, active_route: Option<usize>) -> Option<NavPreviewKey> {
+    pub(crate) fn nav_preview_key(&self, active_route: Option<usize>, assistant: bool) -> Option<NavPreviewKey> {
         let route = *self.route_ids.get(active_route?)?;
-        Some(NavPreviewKey { route, source: self.source_revision, view: self.nav_preview_view })
+        Some(NavPreviewKey { assistant, route, source: self.source_revision, view: self.nav_preview_view })
     }
 
     /// Whether the ride-track need for `key` is already answered — a recorded failure counts, so a
@@ -519,6 +519,9 @@ use crate::device_core::{CatalogTag, OperationToken, StoreRevision};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogIntent {
+    RemoveReview {
+        source: obc_formats::obcr::RouteSourceKey,
+    },
     CleanupRoutes {
         before_utc: u32,
         store: crate::device_core::StoreIdentity,
@@ -550,6 +553,10 @@ pub enum CatalogObjectKind {
 /// One bounded physical catalog operation, carrying the [`OperationToken`] the domain issued.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogEffect {
+    RemoveReview {
+        token: OperationToken<CatalogTag>,
+        source: obc_formats::obcr::RouteSourceKey,
+    },
     CleanupRoute {
         token: OperationToken<CatalogTag>,
         before_utc: u32,
@@ -573,7 +580,8 @@ impl CatalogEffect {
         match self {
             CatalogEffect::CleanupRoute { token, .. }
             | CatalogEffect::ReadCatalog { token }
-            | CatalogEffect::RemoveObject { token, .. } => *token,
+            | CatalogEffect::RemoveObject { token, .. }
+            | CatalogEffect::RemoveReview { token, .. } => *token,
         }
     }
 }
@@ -594,6 +602,10 @@ pub enum CatalogError {
 /// The result of one [`CatalogEffect`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogOutcome {
+    ReviewRemoved {
+        token: OperationToken<CatalogTag>,
+        source: obc_formats::obcr::RouteSourceKey,
+    },
     CleanupFinished {
         token: OperationToken<CatalogTag>,
     },
@@ -629,6 +641,7 @@ impl CatalogOutcome {
             CatalogOutcome::CleanupFinished { token }
             | CatalogOutcome::CatalogRead { token, .. }
             | CatalogOutcome::ObjectRemoved { token, .. }
+            | CatalogOutcome::ReviewRemoved { token, .. }
             | CatalogOutcome::Failed { token, .. }
             | CatalogOutcome::Cancelled { token } => *token,
         }
@@ -642,6 +655,10 @@ impl CatalogOutcome {
 /// may be in flight — plus the one ordering no single bounded operation can express: the **trip
 /// cascade**, member routes first and the folder last.
 impl CatalogState {
+    pub(crate) fn can_admit_intent(&self) -> bool {
+        self.pending.is_none() && !self.in_flight && !self.refresh_owed && !self.remount_required
+    }
+
     /// Admit `intent`, or refuse it and hand it back.
     ///
     /// One refusal, and it is backpressure rather than failure: something is already in the slot —
@@ -715,6 +732,7 @@ impl CatalogState {
             return Some(CatalogEffect::ReadCatalog { token: self.ops.issue() });
         };
         let effect = match intent {
+            CatalogIntent::RemoveReview { source } => CatalogEffect::RemoveReview { token: self.ops.issue(), source },
             CatalogIntent::CleanupRoutes { before_utc, store } => {
                 self.cleanup_running = true;
                 self.pending = Some(intent);
@@ -795,6 +813,11 @@ impl CatalogState {
             CatalogOutcome::CatalogRead { scope, .. } => {
                 self.loaded_scope = scope;
                 self.read_retry_at = None;
+                None
+            }
+            CatalogOutcome::ReviewRemoved { .. } => {
+                self.loaded_scope = None;
+                self.refresh_owed = true;
                 None
             }
             CatalogOutcome::ObjectRemoved { object, .. } => {
@@ -890,6 +913,23 @@ impl CatalogState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assistant_and_whole_route_shapes_have_separate_keys() {
+        let mut catalogs = CatalogState::new();
+        catalogs.route_ids.push(10).unwrap();
+        let whole = catalogs.nav_preview_key(Some(0), false).unwrap();
+        let assistant = catalogs.nav_preview_key(Some(0), true).unwrap();
+        assert_ne!(whole, assistant);
+        assert!(catalogs.accept_nav_preview(Some(assistant), DerivedInput::filled(assistant), &[(1, 2)]));
+        assert_eq!(catalogs.nav_preview_for(Some(assistant)), &[(1, 2)]);
+        assert!(catalogs.nav_preview_for(Some(whole)).is_empty());
+        assert!(!catalogs.nav_preview_answered(whole));
+        assert!(!catalogs.accept_nav_preview(Some(whole), DerivedInput::filled(assistant), &[(3, 4)]));
+        assert!(catalogs.accept_nav_preview(Some(whole), DerivedInput::filled(whole), &[(5, 6)]));
+        assert!(catalogs.nav_preview_for(Some(assistant)).is_empty());
+        assert_eq!(core::mem::size_of::<Option<NavPreviewKey>>(), 32);
+    }
 
     #[test]
     fn cleanup_waits_for_an_unrelated_read_and_stops_on_its_own_failure() {
@@ -1099,7 +1139,7 @@ mod tests {
         for _ in 0..=steps.capacity() {
             let Some(effect) = catalogs.next_effect() else { break };
             match effect {
-                CatalogEffect::CleanupRoute { .. } => panic!("unexpected cleanup"),
+                CatalogEffect::CleanupRoute { .. } | CatalogEffect::RemoveReview { .. } => panic!("unexpected cleanup"),
                 CatalogEffect::RemoveObject { token, object, .. } => {
                     let _ = steps.push(Some(object));
                     catalogs.apply_outcome(CatalogOutcome::ObjectRemoved { token, object, existed: true });

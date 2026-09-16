@@ -119,10 +119,8 @@ export interface AssembleSourceCell {
  * return: do not keep it, do not pass it to anything asynchronous, and do not call back into the
  * assembler.
  *
- * It is called far less often than the engine reads — the wasm side serves the record-at-a-time
- * walks out of a 1 MiB block cache, so this is roughly one call per 64 KiB of a cell rather than one
- * per read. That ratio is what makes a per-call boundary crossing (~0.4 µs, measured in Node) and a
- * per-call file read affordable at country scale at all.
+ * The wasm side serves small reads through a bounded block cache. Host-call and byte
+ * counts depend on access locality; scattered records can repeatedly fetch whole blocks.
  */
 export type AssembleRead = (slot: number, offset: number, into: Uint8Array) => boolean;
 
@@ -172,10 +170,12 @@ export interface AssembleOptions {
     readonly acceptHoles?: boolean;
     /** Proceed although a cell is `partial` (OBCA §3.7). */
     readonly acceptPartial?: boolean;
-    /** How much of a source cell one {@link AssembleRead} brings back (default 64 KiB, clamped to
+    /** How much of a source cell one {@link AssembleRead} brings back (default 4 KiB, clamped to
      *  4 MiB). The cache holds sixteen of these, so it is also the input's whole residency ÷ 16.
      *
-     *  `1` turns the cache **off** — one call per engine read. Nothing but a measurement should ask
+     *  Sealed-output verification uses a separate fixed 64 KiB cache.
+     *
+     *  `1` turns the input cache **off** — one call per engine read. Nothing but a measurement should ask
      *  for that; it is here because "with the cache" only means something against "without". */
     readonly readBlockBytes?: number;
     /** The most memory the §4.6 nav merge's sorted passes may hold (default 64 MiB, floor 64 KiB).
@@ -236,8 +236,8 @@ export interface AssembleMapSink {
     /** Append `bytes` to the map. */
     write(bytes: Uint8Array): boolean;
     /** Fill `into` with `into.byteLength` bytes at `offset` of the **sealed** map, for the §4.8
-     *  read-back. Served through the wasm side's block cache, so this is called on the order of
-     *  once per 64 KiB rather than once per engine read. */
+     *  read-back. Small reads use the wasm side's block cache; cache misses and larger reads
+     *  call this function directly. */
     readAt(offset: number, into: Uint8Array): boolean;
     /** No more bytes are coming. Flush. */
     seal(): boolean;

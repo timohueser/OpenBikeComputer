@@ -16,7 +16,7 @@ use std::path::Path;
 
 use eframe::egui;
 use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
-use obc_app::device_core::{PassClock, PlatformSupport};
+use obc_app::device_core::PassClock;
 use obc_app::settings::Settings;
 use obc_app::{App, AppState, CameraMode, Dirty, Gesture};
 use obc_display::FbDevice64;
@@ -30,13 +30,11 @@ use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 /// read, short enough that it is plainly an ending and not a hang.
 const POWERING_OFF_HOLD: std::time::Duration = std::time::Duration::from_millis(700);
 
-use crate::device_input::DeviceInput;
 use crate::map_file::LoadedMap;
 use crate::present::Present;
-use crate::settings_store::FileSettingsStore;
 use crate::sim_compass::SimCompass;
 use crate::sim_location::SimLocationSource;
-use crate::track::TrackStore;
+use obc_host_core::{DeviceInput, FileSettingsStore, TrackStore};
 use obc_host_core::{FlatRideStore as RideStore, RideRepository};
 use obc_host_core::{FlatRouteStore as RouteStore, FlatTripStore as TripStore, RouteRepository};
 
@@ -80,12 +78,8 @@ struct CalibState {
     measured_mm: String,
 }
 
-/// What the desktop simulator implements. Everything the shared screens can reach: the sim is the
-/// device's development twin, and a capability withdrawn here would hide a screen the device has.
-/// The bounded work behind DFU is simply never answered ([`SimPlatform`]), exactly as the old
-/// command loop dropped that request — the headless `--png` path stages synthetic answers instead.
-pub(crate) const SIM_SUPPORT: PlatformSupport =
-    PlatformSupport { detour: true, settings_persistence: true, dfu: true, bonding: true, storage_space_report: true };
+mod support;
+pub(crate) use support::SIM_SUPPORT;
 
 /// What only this host can do: the RRAM stand-in file, the injected panel "bond", and the fixed
 /// card-free figure (the desktop sim has no FAT to scan).

@@ -61,13 +61,8 @@ impl AssistantScreen {
             if i == self.selected {
                 cv.round(rect(10, y, rx.w - 20, 40), 6, AMBER);
             }
-            cv.text(
-                rx.t(label),
-                Point::new(18, y + 5),
-                Font::Body,
-                TextAlign::Left,
-                if matches!(i, 0 | 1 | 2 | 5) { INK } else { SUBTEXT },
-            );
+            let ink = if matches!(i, 0 | 1 | 2 | 5) { INK } else { SUBTEXT };
+            cv.text(rx.t(label), Point::new(18, y + 5), Font::Body, TextAlign::Left, ink);
         }
         cv.vline(rx.w - 7, 44, 261, 2, RULE);
         cv.vline(rx.w - 7, 44 + first as i32 * 36, 225, 2, WOOD);
@@ -81,13 +76,12 @@ mod tests {
 
     fn open() -> App {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        assert!(app.apply_chord(Chord::Quick));
-        app.apply_gesture(Gesture::Press);
+        assert!(app.apply_chord(Chord::Assistant));
         assert!(matches!(app.top_screen(), Screen::Assistant(_)));
         app
     }
     #[test]
-    fn normal_drawer_reaches_real_questions_and_keeps_placeholders_inert() {
+    fn held_shortcut_reaches_real_questions_and_keeps_placeholders_inert() {
         for (selected, expected) in [(0, "FindPlace"), (1, "WhatsNext"), (5, "Landmarks")] {
             let mut app = open();
             app.apply_gesture(Gesture::Step(selected));
@@ -119,8 +113,15 @@ mod tests {
         for language in Language::ALL {
             for message in QUESTIONS.into_iter().chain([Msg::AssistantArrival, Msg::AssistantResumeJourney]) {
                 let text = crate::i18n::t(message, language);
+                let width = obc_render::text::text_width(text, Font::Body);
+                assert!(width <= 212, "{language:?}: {text}");
+            }
+            for message in [Msg::AssistantMorePlaces, Msg::AssistantSearchChanged] {
+                let text = crate::i18n::t(message, language);
                 assert!(obc_render::text::text_width(text, Font::Body) <= 212, "{language:?}: {text}");
             }
+            let text = crate::i18n::t(Msg::AssistantBrowsePlaces, language);
+            assert!(obc_render::text::text_width(text, Font::Label) <= 204, "{language:?}: {text}");
             for message in [
                 Msg::AssistantPhotoVisit,
                 Msg::AssistantPhotoClosed,
@@ -146,6 +147,10 @@ mod tests {
             ] {
                 let text = crate::i18n::t(message, language);
                 assert!(obc_render::text::text_width(text, Font::Body) <= 216, "{language:?}: {text}");
+            }
+            for message in [Msg::AssistantAddStop, Msg::AssistantGoHere] {
+                let text = crate::i18n::t(message, language);
+                assert!(obc_render::text::text_width(text, Font::Body) <= 180, "{language:?}: {text}");
             }
             for message in
                 [Msg::AssistantVisit, Msg::AssistantClosed, Msg::AssistantNoAccess, Msg::AssistantAccessUnavailable]

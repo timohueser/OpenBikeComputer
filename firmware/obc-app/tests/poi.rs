@@ -57,8 +57,7 @@ fn render(app: &mut App, bytes: &[u8]) -> Buf {
 
 /// Enter the complete category browser through the ordinary Assistant and More places.
 fn open_poi_list(app: &mut App, steps: i32) {
-    assert!(app.apply_chord(obc_app::Chord::Quick));
-    app.apply_gesture(Gesture::Press);
+    assert!(app.apply_chord(obc_app::Chord::Assistant));
     app.apply_gesture(Gesture::Press);
     app.apply_gesture(Gesture::Step(steps));
     app.apply_gesture(Gesture::Press);
@@ -67,11 +66,15 @@ fn open_poi_list(app: &mut App, steps: i32) {
 }
 
 #[test]
-fn assistant_find_more_reaches_every_category_and_back_restores_questions() {
+fn assistant_find_more_reaches_every_category_and_back_restores_overview() {
     for category in 0..obc_reader::PoiCategory::ALL.len() {
         let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
         open_poi_list(&mut app, category as i32);
         assert!(matches!(app.top_screen(), Screen::PoiList(_)));
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::FindPlace(_)));
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::FindPlace(_)));
         app.apply_gesture(Gesture::Back);
         assert!(matches!(app.top_screen(), Screen::Assistant(_)));
         app.apply_gesture(Gesture::Back);

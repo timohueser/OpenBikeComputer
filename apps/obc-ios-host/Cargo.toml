@@ -1,0 +1,32 @@
+[package]
+name = "obc-ios-host"
+version = "0.1.0"
+edition = "2021"
+publish = false  # internal firmware crate — not published to crates.io
+description = "The iPhone host's device core: the shared firmware over a persistent card, the phone's GPS/compass/barometer/battery on the sensor ports, and the four on-screen buttons through the app's own gesture recognizer. Target-independent and natively tested, with the hand-written C ABI the Swift shell links."
+
+[lib]
+# The staticlib the iOS app links through OBCHost.xcframework; the rlib beside it is what the
+# workspace type-checks and `cargo test` runs.
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+obc-reader = { path = "../../firmware/obc-reader" }
+obc-route = { path = "../../firmware/obc-route" }
+# The host owns the boxed RenderScratch it lends App each frame.
+obc-render = { path = "../../firmware/obc-render" }
+obc-app = { path = "../../firmware/obc-app" }
+# The pass's clock newtypes and the sensor ports the phone's sensors implement.
+obc-ports = { path = "../../firmware/obc-ports" }
+# The shared host glue: the card stores, the typed executor, the frame, the peak-view runtime.
+obc-host-core = { path = "../../host/obc-host-core" }
+# The route source key a converted GPX is attributed with.
+obc-formats = { path = "../../firmware/obc-formats" }
+# `StoreError::NotFound` — how a card with no map yet answers.
+obc-storage = { path = "../../firmware/obc-storage" }
+# The device-resolution frame authority (FRAME_W/FRAME_H) — no re-declared 240×320 literals.
+obc-display = { path = "../../firmware/obc-display" }
+embedded-graphics = "0.8"
+
+[dev-dependencies]
+obcm-testkit = { path = "../../host/obcm-testkit" }

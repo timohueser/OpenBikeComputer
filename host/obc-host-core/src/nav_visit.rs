@@ -3,23 +3,17 @@ use crate::{NavPlan, VecSink};
 use obc_app::navigator::{NavigatorError, ReviewContext, ReviewPurpose};
 use obc_formats::io::SliceSource;
 use obc_formats::obcr::RouteSourceKey;
-use obc_route::visit::{forward_rejoin, VisitBuilder, VisitChoice, VisitTarget};
+use obc_route::visit::{visit_anchor, VisitBuilder, VisitChoice, VisitTarget};
 use obc_route::{RouteIndex, RouteReader, RouteStats};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Stage {
+    Prefix,
     Plan,
     Append,
     Finish,
     Ready,
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Variant {
-    OutAndBack,
-    Forward,
-    Rebuild,
-}
-
 pub struct VisitPlan {
     context: ReviewContext,
     target: Option<VisitTarget>,
@@ -32,7 +26,6 @@ pub struct VisitPlan {
     index: Option<Box<RouteIndex>>,
     returning: bool,
     stage: Stage,
-    variant: Variant,
     stats: Option<RouteStats>,
 }
 impl VisitPlan {
@@ -48,8 +41,8 @@ impl VisitPlan {
             return Err(NavigatorError::Unavailable);
         }
         let easier = matches!(context.purpose, ReviewPurpose::Easier(_));
-        let (approach, rejoin_m, forward) = if easier {
-            (context.origin, context.progress_m, None)
+        let (approach, rejoin_m) = if easier {
+            (context.origin, context.progress_m)
         } else if returning {
             let visit = descriptor.ok_or(NavigatorError::Unavailable)?;
             let rejoin = visit.accepted_anchors_m[2];
@@ -57,7 +50,7 @@ impl VisitPlan {
                 return Err(NavigatorError::SourceChanged);
             }
             let at = original.position_at(rejoin).ok_or(NavigatorError::Unavailable)?;
-            ((at.lon, at.lat), rejoin, None)
+            ((at.lon, at.lat), rejoin)
         } else {
             if descriptor.is_some_and(|v| context.progress_m < v.accepted_anchors_m[2]) {
                 return Err(NavigatorError::Unavailable);
@@ -65,18 +58,14 @@ impl VisitPlan {
             let approach = target
                 .and_then(|target| target.approach(context.map, context.profile))
                 .ok_or(NavigatorError::Unavailable)?;
-            (
-                approach,
-                context.progress_m,
-                forward_rejoin(original, context.progress_m).map_err(|_| NavigatorError::Unavailable)?,
-            )
+            (approach, visit_anchor(original, context.progress_m, approach).map_err(|_| NavigatorError::Unavailable)?)
         };
         let builder = Self::builder(context, target, approach, rejoin_m)?;
         let mut plan = Self {
             context,
             target,
             approach,
-            choice: VisitChoice::new(context.progress_m, forward),
+            choice: VisitChoice::new(),
             rejoin_m,
             builder,
             output: VecSink::default(),
@@ -84,7 +73,6 @@ impl VisitPlan {
             index: None,
             returning,
             stage: Stage::Plan,
-            variant: Variant::OutAndBack,
             stats: None,
         };
         plan.builder.begin(&mut plan.output).map_err(|_| NavigatorError::Store)?;
@@ -96,8 +84,10 @@ impl VisitPlan {
                 .map_err(|_| NavigatorError::Unavailable)?
                 .ok_or(NavigatorError::Unavailable)?;
             plan.start_leg(from, to)?;
-        } else {
+        } else if returning {
             plan.start_leg(context.origin, approach)?;
+        } else {
+            plan.stage = Stage::Prefix;
         }
         Ok(plan)
     }
@@ -140,6 +130,7 @@ impl VisitPlan {
                     target.metadata.source,
                     approach,
                 )
+                .and_then(|()| (*slot).keep_prefix(rejoin))
             }
             .map_err(|_| NavigatorError::Unavailable)
         }
@@ -160,21 +151,6 @@ impl VisitPlan {
         self.stage = Stage::Plan;
         Ok(())
     }
-    #[inline(never)]
-    fn rebuild(&mut self, rejoin: u32, variant: Variant) -> Result<(), NavigatorError> {
-        // Discard the old A and B before allocating the next complete variant.
-        self.output = VecSink::default();
-        self.leg = None;
-        self.index = None;
-        self.rejoin_m = rejoin;
-        self.variant = variant;
-        self.returning = false;
-        unsafe {
-            Self::init_builder(&mut *self.builder, self.context, self.target, self.approach, rejoin)?;
-        }
-        self.builder.begin(&mut self.output).map_err(|_| NavigatorError::Store)?;
-        self.start_leg(self.context.origin, self.approach)
-    }
     /// One planner step, one source chunk, or one waypoint. `Some` holds the chosen complete bytes.
     pub fn step(
         &mut self,
@@ -183,18 +159,34 @@ impl VisitPlan {
         elev: &mut dyn obc_route::ElevationSource,
     ) -> Result<Option<RouteStats>, NavigatorError> {
         match self.stage {
+            Stage::Prefix => {
+                if self
+                    .builder
+                    .append_prefix_step(original, &mut self.output)
+                    .map_err(|_| NavigatorError::Unavailable)?
+                {
+                    let from = original.position_at(self.rejoin_m).ok_or(NavigatorError::Unavailable)?;
+                    self.start_leg((from.lon, from.lat), self.approach)?;
+                }
+            }
             Stage::Plan => match self.leg.as_mut().ok_or(NavigatorError::Workspace)?.step(reader, elev) {
                 obc_route::Step::Running => {}
                 obc_route::Step::Failed(error) => {
-                    if self.variant == Variant::Forward {
-                        self.rebuild(self.context.progress_m, Variant::Rebuild)?;
-                    } else {
-                        return Err(NavigatorError::Plan(error));
-                    }
+                    return Err(NavigatorError::Plan(error));
                 }
                 obc_route::Step::Done(_) => {
                     let source = SliceSource(self.leg.as_ref().unwrap().bytes());
                     self.index = Some(Box::new(RouteIndex::read(&source).map_err(|_| NavigatorError::Store)?));
+                    if self.context.purpose == ReviewPurpose::Visit && !self.returning {
+                        self.builder
+                            .resolve_destination(
+                                self.target.ok_or(NavigatorError::Unavailable)?,
+                                &source,
+                                self.context.profile,
+                            )
+                            .map_err(|_| NavigatorError::Unavailable)?;
+                        self.approach = self.builder.destination().ok_or(NavigatorError::Unavailable)?;
+                    }
                     self.stage = Stage::Append;
                 }
             },
@@ -202,10 +194,6 @@ impl VisitPlan {
                 let source = SliceSource(self.leg.as_ref().ok_or(NavigatorError::Workspace)?.bytes());
                 let leg = RouteReader::new(self.index.as_ref().ok_or(NavigatorError::Workspace)?, &source);
                 let appended = self.builder.append_leg_step(&leg, &mut self.output);
-                if appended.is_err() && self.variant == Variant::Forward && self.builder.rejected_geometry() {
-                    self.rebuild(self.context.progress_m, Variant::Rebuild)?;
-                    return Ok(None);
-                }
                 if appended.map_err(|_| NavigatorError::Unavailable)? {
                     self.leg = None;
                     self.index = None;
@@ -230,25 +218,10 @@ impl VisitPlan {
             }
             Stage::Finish => {
                 let finished = self.builder.finish_step(original, &mut self.output);
-                if finished.is_err() && self.variant == Variant::Forward && self.builder.rejected_geometry() {
-                    self.rebuild(self.context.progress_m, Variant::Rebuild)?;
-                    return Ok(None);
-                }
                 if let Some(stats) = finished.map_err(|_| NavigatorError::Unavailable)? {
-                    match self.variant {
-                        Variant::OutAndBack if self.choice.forward_m.is_some() => {
-                            self.choice.remember_out_and_back(stats.total_distance_m);
-                            self.rebuild(self.choice.forward_m.unwrap(), Variant::Forward)?;
-                        }
-                        Variant::Forward if !self.choice.prefer_forward(stats.total_distance_m) => {
-                            self.rebuild(self.context.progress_m, Variant::Rebuild)?;
-                        }
-                        _ => {
-                            self.stats = Some(stats);
-                            self.stage = Stage::Ready;
-                            return Ok(Some(stats));
-                        }
-                    }
+                    self.stats = Some(stats);
+                    self.stage = Stage::Ready;
+                    return Ok(Some(stats));
                 }
             }
             Stage::Ready => return Ok(self.stats),

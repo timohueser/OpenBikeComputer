@@ -427,6 +427,38 @@ desktop *args:
       _run cargo run --release
     fi
 
+# Pack the iOS host as target/OBCHost.xcframework, in release. Args: [--sim-only] (simulator only)
+ios-host *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    cd "$OBC_ROOT"
+    _run "$OBC_TOOLS/build-ios-host.sh" "$@"
+
+# Build the OBCDevice app (the firmware on a phone) and install and launch it on a paired iPhone.
+# Args: [DEVICE] — a `devicectl` name or identifier; defaults to the only paired phone.
+ios-device *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    cd "$OBC_ROOT"
+    (( $# <= 1 )) || { _err "usage: obc ios-device [DEVICE]"; exit 1; }
+    device="$(ios_phone "${1:-}")"
+    # Xcode reads the XCFramework while it plans the build and links the slice that was on
+    # disk at the start, so the host is packed before the app build, not only by its script phase.
+    _run "$OBC_TOOLS/build-ios-host.sh"
+    ios_install OBCDevice Debug com.openbikecomputer.device "$device"
+
+# Build the companion app in Release (real Bluetooth, no mock) and install and launch it on a
+# paired iPhone. Args: [DEVICE] — a `devicectl` name or identifier; defaults to the only paired phone.
+ios-companion *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    (( $# <= 1 )) || { _err "usage: obc ios-companion [DEVICE]"; exit 1; }
+    device="$(ios_phone "${1:-}")"
+    ios_install OBCCompanion Release com.openbikecomputer.companion "$device"
+
 # Show and validate human ownership of documentation prose. Args: [status|check]
 docs *args:
     #!/usr/bin/env bash
@@ -542,8 +574,10 @@ test *args:
     case "$mode" in
       full)
         shift
+        _run cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/suite_registry.py cargo-filter --tier fast)" "$@"
         fixture_env
-        _run cargo test --workspace --all-features --locked "$@"
+        _run cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/suite_registry.py cargo-filter --tier fixtures)" "$@"
+        _run cargo test --workspace --all-features --locked --doc
         ;;
       affected)
         shift
@@ -652,11 +686,8 @@ check *args:
     if want test; then
       rm -rf .artifacts/python/repository-tools
       step "fixture registry unit tests" python3 -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools
-      step "external fixtures (sync test profile)" python3 "$OBC_TOOLS/fixtures.py" sync test
-      export OBC_FIXTURE_ROOT
-      OBC_FIXTURE_ROOT="$(python3 "$OBC_TOOLS/fixtures.py" root)"
-      export OBC_REQUIRE_FIXTURES=1
-      step "test (workspace, all features)" cargo test --workspace --all-features --locked
+      step "test (fast hermetic binaries)" cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/suite_registry.py cargo-filter --tier fast)"
+      step "doctests (workspace)" cargo test --workspace --all-features --locked --doc
       step "bench golden gate (pixels + read counters)" cargo run -p obc-bench --release --locked -- --check host/obc-bench/golden.txt
     fi
     want device && step "device build (obc-app @ thumbv8m)" \
