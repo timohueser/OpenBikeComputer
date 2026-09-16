@@ -1,0 +1,157 @@
+use super::*;
+use serde_json::json;
+
+struct Fixture {
+    root: std::path::PathBuf,
+    sources: Vec<Value>,
+}
+impl Fixture {
+    fn pin(&mut self, path: &str, bytes: Vec<u8>) {
+        let target = self.root.join(path);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(target, &bytes).unwrap();
+        self.sources.push(
+            json!({"path":path,"url":format!("https://example.test/{path}"),"bytes":bytes.len(),"sha256":hash(&bytes)}),
+        );
+    }
+    fn json(&mut self, path: &str, value: Value) {
+        self.pin(path, serde_json::to_vec(&value).unwrap());
+    }
+    fn article(&mut self, id: &str, language: &str, title: &str, body: &str) -> Value {
+        let path = format!("articles/{id}-{language}.json");
+        let html = format!("articles/{id}-{language}.html");
+        self.json(&path, json!({"query":{"pages":{"42":{"pageid":42,"title":title,"revisions":[{"revid":24}]}}}}));
+        self.pin(&html,format!(r#"<script>{{"wgRevisionId":24}}</script><div id="mw-content-text"><div class="mw-parser-output"><p>{body}</p></div></div><div id="footer-info-copyright">Contributors <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></div>"#).into_bytes());
+        if language == "es" {
+            let original = fs::read_to_string(self.root.join(&html)).unwrap();
+            self.sources.retain(|source| source["path"] != html);
+            self.pin(&html, original.replace("https://creativecommons.org/licenses/by-sa/4.0/", "/wiki/Wikipedia:Texto_de_la_Licencia_Creative_Commons_Atribuci%C3%B3n-CompartirIgual_4.0_Internacional").into_bytes());
+        }
+        json!({"language":language,"title":title,"revision":24,"path":path,"html_path":html,"url":format!("https://example.test/{html}")})
+    }
+}
+
+#[test]
+fn peak_catalogue_keeps_explicit_associations_and_shared_assets_independent_of_entity_location() {
+    let mut f = Fixture { root: obcm_testkit::scratch::scratch_dir("landmarks", "peaks"), sources: vec![] };
+    let mut places = vec![];
+    for (id, body) in [("Q1", "A mountain massif. It has two summits."), ("Q2", "No sentence"), ("Q3", "A small hill.")]
+    {
+        // Q1 has no P625. Q3's article entity is far outside the OSM boundary.
+        f.json(
+            &format!("entities/{id}.json"),
+            json!({"entities":{id:{"id":id,"labels":{"en":{"value":"Mountain"}},
+                "sitelinks":{"enwiki":{"title":"Mountain"},"dewiki":{"title":"Berg"},"eswiki":{"title":"Montaña"}},"claims":{
+                "P625":[{"mainsnak":{"datavalue":{"value":{"latitude":80,"longitude":100}}}}],
+                "P18":[{"mainsnak":{"datavalue":{"value":"Photo.png"}}}]
+            }}}}),
+        );
+        if id == "Q1" {
+            let path = f.root.join("entities/Q1.json");
+            let mut value: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+            value["entities"]["Q1"]["claims"].as_object_mut().unwrap().remove("P625");
+            f.sources.retain(|s| s["path"] != "entities/Q1.json");
+            f.json("entities/Q1.json", value);
+        }
+        let mut articles = vec![f.article(id, "en", "Mountain", body)];
+        if id == "Q1" {
+            articles.push(f.article(id, "de", "Berg", "Ein hoher Berg."));
+            articles.push(f.article(id, "es", "Montaña", "Una gran montaña."));
+        }
+        places.push(json!({"qid":id,"articles":articles,"images":[]}));
+    }
+    let mut pixels = std::io::Cursor::new(vec![]);
+    image::DynamicImage::new_rgb8(2, 2).write_to(&mut pixels, image::ImageFormat::Png).unwrap();
+    let bytes = pixels.into_inner();
+    let sha1 = <sha1::Sha1 as sha1::Digest>::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect::<String>();
+    f.pin("photo.png", bytes);
+    for (id, license) in
+        [("good", "https://creativecommons.org/licenses/by/4.0/"), ("bad", "https://example.test/nonfree")]
+    {
+        f.json(&format!("{id}.json"),json!({"query":{"pages":{"1":{"title":"File:Photo.png","imageinfo":[{
+            "url":"https://example.test/photo.png","descriptionurl":"https://commons.wikimedia.org/wiki/File:Photo.png","timestamp":"2026-09-16T00:00:00Z","sha1":sha1,
+            "extmetadata":{"Artist":{"value":"Example"},"LicenseUrl":{"value":license}}
+        }]}}}}));
+    }
+    places[0]["images"] =
+        json!([{"source":"P18","filename":"Photo.png","path":"photo.png","metadata_path":"good.json"}]);
+    places[2]["images"] =
+        json!([{"source":"P18","filename":"Photo.png","path":"photo.png","metadata_path":"bad.json"}]);
+    let direct = f.article("wiki-en-42", "en", "Hill", "An isolated hill.");
+    places.push(json!({"qid":"wiki-en-42","articles":[direct],"images":[]}));
+    f.json("links/Q10.json", json!({"entities":{"Q10":{"id":"Q1","redirects":{"from":"Q10","to":"Q1"}}}}));
+    for id in ["Q2", "Q3"] {
+        f.json(&format!("links/{id}.json"), json!({"entities":{id:{"id":id}}}));
+    }
+    f.json("links/en.json",json!({"query":{"redirects":[{"from":"Old summit","to":"Mountain"}],"pages":{"1":{"pageid":1,"title":"Mountain","pageprops":{"wikibase_item":"Q1"}}}}}));
+    f.json(
+        "links/it.json",
+        json!({"query":{"pages":{"2":{"pageid":2,"title":"Collina","langlinks":[{"lang":"en","*":"Hill"}]}}}}),
+    );
+    f.json(
+        "links/hill.json",
+        json!({"query":{"pages":{"42":{"pageid":42,"title":"Hill","langlinks":[{"lang":"it","*":"Collina"}]}}}}),
+    );
+    let nodes:Vec<_>=[(1,"wikidata","Q10"),(2,"wikipedia","en:Old summit"),(3,"wikidata","Q3"),(4,"wikidata","Q2"),(5,"note","unlinked"),(6,"wikipedia","it:Collina")].into_iter().map(|(id,k,v)|json!({"node_id":id,"latitude":0.5,"longitude":0.5,"tags":{"natural":"peak","name":"Original full summit name",k:v}})).collect();
+    f.json("summits.json", json!({"schema":1,"osm_sha256":"a".repeat(64),"summits":nodes}));
+    let mut resolutions: Vec<_> = [
+        (1, "wikidata", "Q10"),
+        (2, "wikipedia", "en"),
+        (3, "wikidata", "Q3"),
+        (4, "wikidata", "Q2"),
+        (6, "wikipedia", "it"),
+    ]
+    .into_iter()
+    .map(|(id, kind, path)| json!({"node_id":id,"kind":kind,"path":format!("links/{path}.json"),"status":"resolved"}))
+    .collect();
+    resolutions[4]["canonical_path"] = json!("links/hill.json");
+    resolutions[4]["canonical_language"] = json!("en");
+    let manifest = f.root.join("manifest.json");
+    fs::write(&manifest,serde_json::to_vec(&json!({"schema":1,"sources":f.sources,"places":places,"peaks":{"summits_path":"summits.json","resolutions":resolutions}})).unwrap()).unwrap();
+    let boundary = f.root.join("boundary.json");
+    fs::write(&boundary, r#"{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}"#).unwrap();
+    let first = peaks::compile(&manifest, &boundary, &f.root.join("first")).unwrap();
+    assert_eq!((first.counts.captured, first.counts.candidates, first.counts.texts, first.counts.images), (6, 5, 3, 1));
+    assert_eq!(
+        first.associations.iter().map(|a| (a.node_id, a.article_id.as_str())).collect::<Vec<_>>(),
+        [(1, "Q1"), (2, "Q1"), (3, "Q3"), (6, "wiki-en-42")]
+    );
+    assert_eq!(first.records[0].article.variants.len(), 3);
+    assert!(first.records[2].article.variants.iter().all(|v| v.language == "en"));
+    assert!(first.omissions.iter().any(|o| o.reason == "no_explicit_link"));
+    assert!(first.omissions.iter().any(|o| o.qid == "Q2" && o.reason == "no_usable_captured_language"));
+    assert!(first.omissions.iter().any(|o| o.qid == "Q3" && o.reason == "unsupported_license"));
+    assert_eq!(fs::read_dir(f.root.join("first")).unwrap().count(), 2);
+    assert!(super::compile(&manifest, &boundary, &f.root.join("landmarks")).unwrap_err().contains("peak compiler"));
+    assert!(serde_json::from_slice::<Content>(&fs::read(f.root.join("first/peaks.json")).unwrap()).is_err());
+    peaks::compile(&manifest, &boundary, &f.root.join("second")).unwrap();
+    for file in fs::read_dir(f.root.join("first")).unwrap() {
+        let file = file.unwrap();
+        assert_eq!(fs::read(file.path()).unwrap(), fs::read(f.root.join("second").join(file.file_name())).unwrap());
+    }
+    fs::remove_dir_all(f.root).unwrap();
+}
+
+#[test]
+fn peak_discovery_matches_the_map_classifier_and_ignores_way_and_unnamed_objects() {
+    let tags = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    assert!(peaks::is_summit(&tags(&[("natural", "peak"), ("name", "Mönch")])));
+    assert!(!peaks::is_summit(&tags(&[("natural", "peak")])));
+    assert!(!peaks::is_summit(&tags(&[("natural", "peak"), ("name", " ")])));
+    assert!(!peaks::is_summit(&tags(&[("natural", "peak"), ("name", "Hill"), ("amenity", "drinking_water")])));
+    let root = obcm_testkit::scratch::scratch_dir("landmarks", "peak-discovery");
+    let boundary = root.join("boundary.json");
+    fs::write(
+        &boundary,
+        r#"{"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}}"#,
+    )
+    .unwrap();
+    let osm = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/peak-discovery.osm.pbf"));
+    peaks::discover(osm, &boundary, &root.join("summits.json")).unwrap();
+    let source: peaks::SummitSource = serde_json::from_slice(&fs::read(root.join("summits.json")).unwrap()).unwrap();
+    assert_eq!(source.summits.iter().map(|s| s.node_id).collect::<Vec<_>>(), [1]);
+    assert_eq!(source.summits[0].tags["name"], "A summit name longer than twenty four bytes");
+    assert_eq!(source.summits[0].tags["wikidata"], "Q1");
+    assert_eq!(source.osm_sha256, hash(&fs::read(osm).unwrap()));
+    fs::remove_dir_all(root).unwrap();
+}

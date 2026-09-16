@@ -1,0 +1,8 @@
+<osm version="0.6">
+  <node id="1" lat="0.5" lon="0.5"><tag k="natural" v="peak"/><tag k="name" v="A summit name longer than twenty four bytes"/><tag k="wikidata" v="Q1"/></node>
+  <node id="2" lat="0.5" lon="0.5"><tag k="natural" v="peak"/></node>
+  <node id="3" lat="0.5" lon="0.5"><tag k="natural" v="peak"/><tag k="name" v=" "/></node>
+  <node id="4" lat="0.5" lon="0.5"><tag k="natural" v="peak"/><tag k="name" v="Hill"/><tag k="amenity" v="drinking_water"/></node>
+  <node id="5" lat="2" lon="2"><tag k="natural" v="peak"/><tag k="name" v="Outside"/></node>
+  <way id="1"><nd ref="1"/><nd ref="2"/><nd ref="3"/><nd ref="1"/><tag k="natural" v="peak"/><tag k="name" v="A way summit"/></way>
+</osm>
