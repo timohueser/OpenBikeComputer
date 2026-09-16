@@ -66,11 +66,15 @@ fn open_poi_list(app: &mut App, steps: i32) {
 }
 
 #[test]
-fn assistant_find_more_reaches_every_category_and_back_restores_questions() {
+fn assistant_find_more_reaches_every_category_and_back_restores_overview() {
     for category in 0..obc_reader::PoiCategory::ALL.len() {
         let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
         open_poi_list(&mut app, category as i32);
         assert!(matches!(app.top_screen(), Screen::PoiList(_)));
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::FindPlace(_)));
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::FindPlace(_)));
         app.apply_gesture(Gesture::Back);
         assert!(matches!(app.top_screen(), Screen::Assistant(_)));
         app.apply_gesture(Gesture::Back);

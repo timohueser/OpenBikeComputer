@@ -28,13 +28,8 @@
 #      firmware/ui-snapshots.sha256 "$OUT"`. A change of pixels is intentional or it is a
 #      regression; look at the changed frames first, then record them with `update`.
 #
-# The sweep covers the screens reachable through simulator fixtures.
-# The exception is **RideRecovery**, the boot card that offers a ride recovered from a durable
-# recording after a reset. Its only entry is `App::offer_recovered_ride(RideContinuation)` — a
-# host call carrying thirteen reconstructed accumulator fields, which the simulator has no
-# fixture for and no gesture can stand in for. It is named here rather than left to be
-# discovered: an uncovered screen is exactly where a refactor breaks silently, so adding that
-# seed is the way to close the gap, not quietly widening the net's claim.
+# The sweep covers the screens reachable through simulator fixtures. The persisted Assistant
+# journey also opens ride recovery after restart; Continue reveals the Journey resume card.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -205,12 +200,12 @@ LANDMARKS="A d d d d d p f"
     --expect-screen VisitReview --png "$OUT/visit-preview.png"
 "$SIM" "$CORK" --boot --heading 0 --center -9825560,51485575 --script "$LANDMARKS p p f p f p f" \
     --expect-screen Map --png "$OUT/visit-accepted.png"
-# Persist a real Cork destination, then reopen its checkpoint through normal Resume controls.
+# Persist a real Cork destination and recording, then continue the ride to reach Resume.
 "$SIM" "$CORK" --routes-dir "$NAVDIR" --create-card "$JOURNEYDIR/card.obc"
 "$SIM" --card "$JOURNEYDIR/card.obc" --boot --heading 0 --center -9825560,51485575 \
     --script "$LANDMARKS p p f p f p f" --expect-screen Map --png "$JOURNEYDIR/accepted.png"
 "$SIM" --card "$JOURNEYDIR/card.obc" --boot --heading 0 --center -9825560,51485575 \
-    --script "f" --expect-screen Journey --png "$OUT/journey-resume.png"
+    --script "f p f" --expect-screen Journey --png "$OUT/journey-resume.png"
 "$SIM" "$CORK" --boot --heading 0 --center -9829419,51482665 --script "A p p f" \
     --expect-screen FindPlace --png "$OUT/find-place.png"
 

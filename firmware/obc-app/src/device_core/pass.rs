@@ -616,6 +616,17 @@ impl App {
             self.navigator.reset_ride();
             self.recorder.reset_totals();
             self.navigator.reset_detour();
+            if let Some(checkpoint) = self
+                .assistant_checkpoint()
+                .filter(|_| self.assistant_review_status() == crate::navigator::ReviewStatus::Accepted)
+            {
+                if let Some(index) = self
+                    .active_route_index()
+                    .filter(|&index| self.route_ids().get(index) == Some(&checkpoint.route.object))
+                {
+                    self.navigator.request_seam(index, checkpoint.progress_m);
+                }
+            }
         }
         self.recorder.restart_buffers();
         self.ui.map_dirty = true;
