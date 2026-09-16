@@ -671,7 +671,7 @@ mod tests {
             posting_log2: 9,
             cell_log2: 19,
             revision: 1,
-            attribution: obc_dem::COPERNICUS_ATTRIBUTION.into(),
+            attribution: obc_elevation::COPERNICUS_ATTRIBUTION.into(),
         }
     }
 

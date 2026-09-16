@@ -8,7 +8,7 @@ use obc_reader::{MapCache, MapTables, Poi, PoiCategory, Reader, SliceSource, MAX
 /// nearest-16 query fills and the results are the closest 16.
 #[test]
 fn monaco_water_query_smoke() {
-    let bytes = obc_fixtures::read("sim-monaco", "monaco.obcm").expect("full fixture suite requires map");
+    let bytes = obc_fixtures::read("sim-monaco", "monaco.obcm");
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).unwrap();
     let cache = MapCache::new();

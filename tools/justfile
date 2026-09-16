@@ -533,6 +533,8 @@ build:
     cd "$OBC_ROOT"; _run cargo build --release
 
 # Run focused host tests by default. A scope is required: `obc test -p obc-pack`.
+# The focused arm runs nextest and then the same scope's doctests; `--lib` runs the library
+# target alone and no doctests.
 # The registry selectors run whole suites and print why each one was selected:
 #
 #   obc test affected --base origin/develop [--head REF] [--dry-run]
@@ -565,11 +567,17 @@ test *args:
       done
       return 1
     }
+    library_only() {
+      local arg
+      for arg in "$@"; do
+        case "$arg" in --lib) return 0 ;; esac
+      done
+      return 1
+    }
     fixture_env() {
       _run python3 "$OBC_TOOLS/fixtures.py" sync test
       export OBC_FIXTURE_ROOT
       OBC_FIXTURE_ROOT="$(python3 "$OBC_TOOLS/fixtures.py" root)"
-      export OBC_REQUIRE_FIXTURES=1
     }
     case "$mode" in
       full)
@@ -602,7 +610,11 @@ test *args:
           _hint "example: obc test -p obc-app"
           exit 2
         }
-        _run cargo test --locked "$@"
+        _run cargo nextest run --locked "$@"
+        # `--lib` is the library-only loop: nextest builds one target and doctests, which are a
+        # separate Cargo run over the whole package, stay out of it. Cargo rejects `--lib` on a
+        # package with no library, so an unbuildable scope fails before anything runs.
+        library_only "$@" || _run cargo test --locked --doc "$@"
         ;;
     esac
 
@@ -686,9 +698,10 @@ check *args:
     if want test; then
       rm -rf .artifacts/python/repository-tools
       step "fixture registry unit tests" python3 -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools
-      step "test (fast hermetic binaries)" cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/suite_registry.py cargo-filter --tier fast)"
-      step "doctests (workspace)" cargo test --workspace --all-features --locked --doc
-      step "bench golden gate (pixels + read counters)" cargo run -p obc-bench --release --locked -- --check host/obc-bench/golden.txt
+      step "test (fast hermetic binaries)" bash tools/ci/test.sh nextest-fast
+      step "doctests (selected packages)" bash tools/ci/test.sh doctests
+      step "obc-formats (default features = the device's shape)" bash tools/ci/test.sh formats-default
+      step "bench golden gate (pixels + read counters)" bash tools/ci/test.sh bench-golden
     fi
     want device && step "device build (obc-app @ thumbv8m)" \
       cargo build -p obc-app --target thumbv8m.main-none-eabihf --locked

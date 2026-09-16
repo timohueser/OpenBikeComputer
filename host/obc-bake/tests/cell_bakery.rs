@@ -427,7 +427,7 @@ fn terrain_doc(revision: u32, dataset_version: &str) -> TerrainDoc {
         revision,
         // The credit comes from `obc-dem`'s own `const` and is never retyped, here or anywhere:
         // this assertion is the whole reason the bakery reaches for the library rather than a CLI.
-        attribution: obc_dem::COPERNICUS_ATTRIBUTION.into(),
+        attribution: obc_elevation::COPERNICUS_ATTRIBUTION.into(),
     }
 }
 
@@ -527,7 +527,11 @@ fn a_terrain_bake_publishes_cells_ocean_runs_and_a_priced_region_selection() {
     assert_eq!(terrain.terrain_revision, 1);
     assert_eq!(terrain.dataset_id, "copernicus-glo-30");
     assert_eq!((terrain.posting_log2, terrain.cell_log2), (TERRAIN_POSTING_LOG2, TERRAIN_CELL_LOG2));
-    assert_eq!(terrain.attribution, obc_dem::COPERNICUS_ATTRIBUTION, "§13.5: the credit comes from obc-dem's const");
+    assert_eq!(
+        terrain.attribution,
+        obc_elevation::COPERNICUS_ATTRIBUTION,
+        "§13.5: the credit comes from obc-elevation's const"
+    );
     assert_eq!((terrain.cell_index.cell_count, terrain.cell_index.known_empty_count), (5, 1));
     assert!(terrain.cell_index.url.contains(&terrain.cell_index.sha256), "the index is addressed by its own digest");
 
