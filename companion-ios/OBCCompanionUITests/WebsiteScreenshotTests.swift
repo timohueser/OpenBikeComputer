@@ -82,7 +82,7 @@ final class WebsiteScreenshotTests: XCTestCase {
         )
         wait(for: [charged], timeout: 15)
         XCTAssertTrue(
-            app.staticTexts["Trailhead"].exists,
+            app.staticTexts["Trailhead"].waitForExistence(timeout: 15),
             "the device name never replaced the \"Your OBC\" placeholder",
             file: file, line: line
         )
