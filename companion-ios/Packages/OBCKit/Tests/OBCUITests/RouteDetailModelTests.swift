@@ -20,11 +20,12 @@ final class RouteDetailModelTests: XCTestCase {
 
     func testPlannedRendersFromItsLibraryRecordWithNoDeviceRoundTrip() async {
         let control = makeControl()
+        let transport = ObservedMockTransport(control: control)
         let entry = control.fixtures.routes[0]  // Kettle Moraine Loop
         // What RootView threads in: the saved record's own detail (#289 —
         // planned is library-first; the device is never asked for it).
         let model = RouteDetailModel(
-            transport: MockTransport(control: control),
+            transport: transport,
             dressing: .planned(entry.summary),
             preloadedDetail: entry.detail()
         )
@@ -41,7 +42,10 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertEqual(model.maxGradePercent, 9)
 
         model.start()
-        try? await Task.sleep(for: .milliseconds(50))
+        let skippedRead = await neverHolds({
+            transport.rideDetailStartedCount > 0
+        }, for: .milliseconds(50))
+        XCTAssertTrue(skippedRead, "planned detail must stay library-first")
         XCTAssertEqual(model.waypoints.count, 4, "start() must not clobber the record's detail")
     }
 
@@ -106,12 +110,17 @@ final class RouteDetailModelTests: XCTestCase {
 
     func testTrackedDetailReadFailureDegradesQuietly() async {
         let control = makeControl()
+        let transport = ObservedMockTransport(control: control)
         let ride = control.fixtures.rides[0].summary
         control.failNextOp(.readFailed)
-        let model = RouteDetailModel(transport: MockTransport(control: control), dressing: .tracked(ride))
+        let model = RouteDetailModel(transport: transport, dressing: .tracked(ride))
 
         model.start()
-        try? await Task.sleep(for: .milliseconds(100))
+        do {
+            try await waitFor("failed detail read") { transport.rideDetailCompletedCount == 1 }
+        } catch {
+            XCTFail(String(describing: error))
+        }
         XCTAssertTrue(model.elevationProfile.isEmpty, "no profile card on a failed read")
         XCTAssertEqual(model.name, ride.name, "summary content stays up")
     }
@@ -325,6 +334,7 @@ final class RouteDetailModelTests: XCTestCase {
 
     func testPreloadedDetailSkipsTheTransportFetch() async {
         let control = makeControl()
+        let transport = ObservedMockTransport(control: control)
         // A phone-only id: the mock would throw for it — preload must cover.
         let summary = RouteSummary(
             id: RouteID("imported-abc"), name: "Saved Import",
@@ -338,7 +348,7 @@ final class RouteDetailModelTests: XCTestCase {
             maxGradePercent: 6
         )
         let model = RouteDetailModel(
-            transport: MockTransport(control: control),
+            transport: transport,
             dressing: .planned(summary),
             preloadedDetail: detail
         )
@@ -348,7 +358,10 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertEqual(model.maxGradePercent, 6)
 
         model.start()
-        try? await Task.sleep(for: .milliseconds(100))
+        let skippedRead = await neverHolds({
+            transport.rideDetailStartedCount > 0
+        }, for: .milliseconds(100))
+        XCTAssertTrue(skippedRead, "a preloaded route must not ask the device for detail")
         XCTAssertEqual(model.waypoints.count, 1, "start() must not clobber the preload")
     }
 

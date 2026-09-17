@@ -182,9 +182,15 @@ public struct RideEntry: Sendable {
 // MARK: - Loading
 
 extension FixtureSet {
-    /// Decode a bundled fixture set by name (`default`, `empty`, `large`). Falls back
-    /// to `builtIn` if the resource is missing or unreadable — the mock never traps.
+    /// Decode a bundled fixture set by name. The website ride-only variant reuses its source
+    /// fixture without the planned route, so an import can share that launch without a collision.
+    /// Missing or unreadable resources fall back to `builtIn` — the mock never traps.
     public static func load(_ named: String) -> FixtureSet {
+        if named == "website-rides" {
+            var fixtures = load("website")
+            fixtures.routes = []
+            return fixtures
+        }
         guard
             let url = Bundle.module.url(forResource: named, withExtension: "json"),
             let data = try? Data(contentsOf: url)

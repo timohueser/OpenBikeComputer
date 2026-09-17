@@ -74,19 +74,18 @@ final class WebsiteScreenshotTests: XCTestCase {
     private func waitForDeviceIdentity(
         _ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line
     ) {
+        // The battery cluster ignores its children, so the percent is only readable through the
+        // element's own label ("Battery 82 percent" for the fixture device).
+        let battery = app.descendants(matching: .any)["topbar.battery"].firstMatch
+        let charged = expectation(
+            for: NSPredicate(format: "label == %@", "Battery 82 percent"), evaluatedWith: battery
+        )
+        wait(for: [charged], timeout: 15)
         XCTAssertTrue(
             app.staticTexts["Trailhead"].waitForExistence(timeout: 15),
             "the device name never replaced the \"Your OBC\" placeholder",
             file: file, line: line
         )
-        // The battery cluster ignores its children, so the percent is only readable through the
-        // element's own label ("Battery 82 percent" for the fixture device).
-        let battery = app.descendants(matching: .any)["topbar.battery"].firstMatch
-        XCTAssertTrue(battery.waitForExistence(timeout: 10), "the battery indicator is missing", file: file, line: line)
-        let charged = expectation(
-            for: NSPredicate(format: "label == %@", "Battery 82 percent"), evaluatedWith: battery
-        )
-        wait(for: [charged], timeout: 15)
     }
 
     /// Screenshot the app once it has stopped changing: keep capturing until two consecutive frames
@@ -122,9 +121,9 @@ final class WebsiteScreenshotTests: XCTestCase {
 
     /// A real GPX import, followed through the real mock transport to the stable completion sheet.
     @MainActor
-    func testRouteImportAndUploadBookend() {
+    func testWebsiteBookends() {
         let app = launch(extraArguments: [
-            "-OBCFixtures", "empty",
+            "-OBCFixtures", "website-rides",
             "-OBCImportSample", "grimsel",
         ])
 
@@ -133,18 +132,22 @@ final class WebsiteScreenshotTests: XCTestCase {
             "the imported route landing did not appear"
         )
         let upload = app.buttons["detail.upload"]
-        XCTAssertTrue(upload.waitForExistence(timeout: 5))
+        XCTAssertTrue(upload.exists, "the imported route upload action is missing")
         // The CTA reads "Upload to <device>", off the same unwaited `deviceName` the top bar uses —
         // so this page has the identity race too, even though it never shows the top bar.
         let named = expectation(
             for: NSPredicate(format: "label == %@", "Upload to Trailhead"), evaluatedWith: upload
         )
         wait(for: [named], timeout: 15)
-        waitFor(app, "trackPreview.grid", "the imported route's hero did not draw")
-        // Belt: an imported route computes its profile synchronously in `RouteDetailModel.init`, so
-        // this can't currently fail — it's here so that if the import path ever grows an async
-        // stage, the capture waits for it instead of quietly photographing a shorter screen.
-        waitFor(app, "detail.elevationProfile", "the imported route's elevation profile did not draw")
+        XCTAssertTrue(
+            app.descendants(matching: .any)["trackPreview.grid"].firstMatch.exists,
+            "the imported route's hero did not draw"
+        )
+        // The imported profile is synchronous; assert that the settled landing contains it.
+        XCTAssertTrue(
+            app.descendants(matching: .any)["detail.elevationProfile"].firstMatch.exists,
+            "the imported route's elevation profile did not draw"
+        )
         capture(app, name: "route-imported")
 
         upload.tap()
@@ -154,15 +157,12 @@ final class WebsiteScreenshotTests: XCTestCase {
             "the route upload did not finish"
         )
         // The done state swaps the whole sheet body; its button is the last thing laid out.
-        waitFor(app, "upload.done", timeout: 5, "the upload sheet's done state did not settle")
+        XCTAssertTrue(app.buttons["upload.done"].exists, "the upload sheet's done state did not settle")
         // Its body names the device too. The 20 s upload wait already implies the identity chain
         // landed, but say so rather than rely on it.
         let onDeviceLine = app.staticTexts
             .matching(NSPredicate(format: "label CONTAINS %@", "Trailhead")).firstMatch
-        XCTAssertTrue(
-            onDeviceLine.waitForExistence(timeout: 10),
-            "the done sheet still names the placeholder device"
-        )
+        XCTAssertTrue(onDeviceLine.exists, "the done sheet still names the placeholder device")
         capture(app, name: "route-on-device")
         // This sheet closes *itself* 2.6 s after `.done` unless `-OBCHoldConfirmations` parks it —
         // without the hold the capture above is of the main screen behind it. Assert the sheet
@@ -171,13 +171,14 @@ final class WebsiteScreenshotTests: XCTestCase {
             app.buttons["upload.done"].exists,
             "the upload sheet dismissed itself during the capture — the confirmation hold is broken"
         )
-    }
+        app.buttons["upload.done"].tap()
+        XCTAssertTrue(
+            app.otherElements["main.screen"].waitForExistence(timeout: 10),
+            "the completed import did not return to the main screen"
+        )
 
-    /// Pull the fixture rides off the mock device, then open one through the ordinary tracked list.
-    @MainActor
-    func testRideSyncAndDetailBookend() {
-        let app = launch(extraArguments: ["-OBCFixtures", "website"])
-        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
+        // Pull the fixture ride off the same mock device, then open it through the ordinary
+        // tracked list. One launch owns all five website frames and avoids duplicate app setup.
         app.buttons["Tracked"].tap()
 
         XCTAssertTrue(
@@ -190,7 +191,7 @@ final class WebsiteScreenshotTests: XCTestCase {
         capture(app, name: "rides-before-sync")
 
         let sync = app.buttons["topbar.sync"]
-        XCTAssertTrue(sync.waitForExistence(timeout: 5))
+        XCTAssertTrue(sync.exists, "the sync action is missing")
         sync.tap()
 
         let line = app.descendants(matching: .any)["main.syncLine"].firstMatch
@@ -222,16 +223,20 @@ final class WebsiteScreenshotTests: XCTestCase {
             app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5),
             "the downloaded ride detail did not open"
         )
-        XCTAssertTrue(app.staticTexts["4.9 km"].waitForExistence(timeout: 5))
-        waitFor(app, "trackPreview.grid", "the real Grimsel geometry should be visible in the ride hero")
+        XCTAssertTrue(app.staticTexts["4.9 km"].exists)
+        XCTAssertTrue(
+            app.descendants(matching: .any)["trackPreview.grid"].firstMatch.exists,
+            "the real Grimsel geometry should be visible in the ride hero"
+        )
         // The one genuinely async element on this screen, and the cause of #1212: a tracked ride's
         // profile samples come from `transport.rideDetail`, so the card (and everything the card
         // pushes down) appears a beat after the stats do.
         waitFor(app, "detail.elevationProfile", "the ride's elevation profile did not arrive")
-        // Belt, like the import landing's profile wait: the services block is static markup on the
-        // tracked dressing, so it's already there — kept so a future async services state can't
-        // slip under the capture.
-        waitFor(app, "detail.services", "the connected-services block did not lay out")
+        // The services block is static markup on the tracked dressing.
+        XCTAssertTrue(
+            app.descendants(matching: .any)["detail.services"].firstMatch.exists,
+            "the connected-services block did not lay out"
+        )
         capture(app, name: "ride-detail")
     }
 }
