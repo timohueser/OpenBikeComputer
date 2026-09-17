@@ -11,7 +11,7 @@
   import CoverageEditor from './CoverageEditor.svelte';
   import CoverageBadge from './CoverageBadge.svelte';
   import CoverageProposal from './CoverageProposal.svelte';
-  import { coverageSummary, planBlank, planProblem } from '$lib/coverage';
+  import { coverageDefinition, coverageSummary, planBlank, planProblem } from '$lib/coverage';
   export let revision: Revision;
   export let catalog: Catalog;
   export let dirty = false;
@@ -277,6 +277,8 @@
     {#if deleting}<div class="alert warning"><strong>Delete {requirement.id} · {requirement.title || 'Untitled requirement'}?</strong><p>This removes the requirement and its {requirement.tests.length} tests from the draft. Save revision to apply. Existing revisions and release candidates stay unchanged.</p><div class="actions"><button class="danger" disabled={busy} on:click={removeRequirement}>Delete from draft</button><button on:click={() => deleting = false}>Keep requirement</button></div></div>{/if}
   </div>
   {:else}<h2 class="requirement-title">{requirement.title || 'Untitled requirement'}</h2><div class="requirement-statement"><Markdown text={requirement.statement} /></div>{/if}
+  {@const saved = revision.requirements.find(r => r.id === requirement.id)}
+  {@const changed = !saved || coverageDefinition(saved) !== coverageDefinition(requirement)}
   {@const plans = pendingPlans.filter(p => p.requirementId === requirement.id)}
   {@const decided = coverageProposals.filter(p => p.requirementId === requirement.id && p.status !== 'pending' && p.status !== 'superseded')}
   <section class="section coverage-section" aria-label="Requirement coverage">
@@ -286,7 +288,8 @@
       {#each plans as p (p.id)}<CoverageProposal proposal={p} {requirement} {catalog} {busy} {dirty} bind:rejecting ondecide={decide} />{/each}
       {#if requirement.coverage}
         {#if plans.length}<p class="eyebrow current-plan">Current plan</p>{/if}
-        {#if requirement.coverage.review}<p class="small muted">Approved by {requirement.coverage.review.author} · {date(requirement.coverage.review.createdAt)}{#if requirement.coverage.review.sourceSha}{' · '}catalogue <code>{requirement.coverage.review.sourceSha.slice(0, 10)}</code>{/if}</p>{/if}
+        {#if changed}<p class="small muted">Approved when you save the revision.</p>
+        {:else if requirement.coverage.review}<p class="small muted">Approved by {requirement.coverage.review.author} · {date(requirement.coverage.review.createdAt)}{#if requirement.coverage.review.sourceSha}{' · '}catalogue <code>{requirement.coverage.review.sourceSha.slice(0, 10)}</code>{/if}</p>{/if}
         <CoveragePlan plan={requirement.coverage} {requirement} {catalog} />
       {:else if !plans.length}<div class="empty coverage-empty"><h3>What would prove this requirement?</h3><p class="muted">Break it into checkable criteria, attach the tests that prove each one, and note the gaps. Define coverage to start, or wait for an agent proposal.</p></div>{/if}
       {#if decided.length}<details class="small history"><summary>Earlier proposals ({decided.length})</summary>{#each decided as p (p.id)}<p class="small wrap"><span class="badge" class:success={p.status === 'accepted'} class:error={p.status === 'rejected'}>{p.status}</span> {p.author} · {date(p.createdAt)}{#if p.decidedBy} · decided by {p.decidedBy}{/if}{#if p.feedback} · “{p.feedback}”{/if}</p>{/each}</details>{/if}

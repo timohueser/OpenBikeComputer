@@ -5,7 +5,7 @@
   $: summary = coverageSummary(requirement);
   $: state = summary.state;
 </script>
-<span class="coverage-badge {state}" title={state === 'covered' ? 'Every criterion has reviewed evidence' : state === 'partial' ? 'Reviewed, but gaps remain' : state === 'needs-review' ? 'The plan exists but its approval is not current' : 'No coverage plan yet'}>
+<span class="coverage-badge {state}" title={state === 'covered' ? 'Every criterion has reviewed evidence' : state === 'partial' ? 'Reviewed, but gaps remain' : state === 'needs-review' ? 'Saved under the earlier workflow; the next save approves it' : 'No coverage plan yet'}>
   <span class="dot" aria-hidden="true"></span>{summary.label}{#if summary.total}<span class="count">{summary.covered}/{summary.total}</span>{/if}
 </span>
 <style>
