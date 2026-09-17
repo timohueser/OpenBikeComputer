@@ -54,7 +54,7 @@
 </script>
 
 <div class="row"><h2>Clear requirements history</h2><button disabled={busy || loading} on:click={refresh}>Refresh preview</button></div>
-<p class="muted">Remove old requirements revisions and link proposals. Your current requirements and tests stay in a new revision unless you choose to clear them below.</p>
+<p class="muted">Remove old requirements revisions and coverage proposals. Your current requirements and tests stay in a new revision unless you choose to clear them below.</p>
 {#if error}<div class="alert error" role="alert">{error}</div>{/if}
 {#if loading}<p class="muted" role="status">Loading the current history…</p>
 {:else if preview}
@@ -68,7 +68,7 @@
   <form on:submit|preventDefault={clearHistory}>
     <fieldset disabled={busy}>
       <label class="check"><input type="checkbox" bind:checked={clearCurrent} on:change={() => { confirmation = ''; discardDrafts = false; }} />Also clear the current requirements and tests — start fresh</label>
-      <div class="alert warning">{clearCurrent ? `This will remove ${preview.requirementCount} current ${preview.requirementCount === 1 ? 'requirement' : 'requirements'} and ${preview.testCount} linked ${preview.testCount === 1 ? 'test' : 'tests'} from the working set. Release candidates keep their original copies.` : 'The current saved requirements and tests will be kept. The removed history and link proposals cannot be restored through this application.'}</div>
+      <div class="alert warning">{clearCurrent ? `This will remove ${preview.requirementCount} current ${preview.requirementCount === 1 ? 'requirement' : 'requirements'} and ${preview.testCount} linked ${preview.testCount === 1 ? 'test' : 'tests'} from the working set. Release candidates keep their original copies.` : 'The current saved requirements and tests will be kept. The removed history and coverage proposals cannot be restored through this application.'}</div>
       {#if clearCurrent}<p class="small error">This cannot be undone through the application.</p>{/if}
       {#if workspaceDirty}<label class="check"><input type="checkbox" bind:checked={discardDrafts} />I understand that my unsaved requirement, release, and password changes will be discarded when the workspace reloads.</label>{/if}
       <label>Type <code>{phrase}</code> to confirm<input bind:value={confirmation} autocomplete="off" autocapitalize="off" spellcheck={false} aria-label="History confirmation" /></label>

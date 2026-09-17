@@ -38,7 +38,8 @@ test('history cleanup keeps release references, rejects stale writers, and leave
     const candidate = { revision: first, status: 'failed' };
     const publication = { revision: second, status: 'published' };
     db.put('candidate', 'candidate', candidate); db.put('publication', 'release', publication);
-    db.put('proposal', 'proposal', { baseRevision: latest.id });
+    db.put('coverage-proposal', 'proposal', { baseRevision: latest.id });
+    db.put('proposal', 'legacy', { baseRevision: latest.id });
     db.put('file', 'file', { name: 'input.gpx' }); db.put('catalog', 'current', { cases: [] });
     db.db.prepare('INSERT INTO github_users(id,login,admin) VALUES(?,?,?)').run('123', 'admin', 1);
     assert.deepEqual(db.historySummary(), { baseRevision: latest.id, revisionCount: 3, protectedRevisionCount: 2, requirementCount: 1, testCount: 0 });
@@ -46,7 +47,7 @@ test('history cleanup keeps release references, rejects stale writers, and leave
     assert.deepEqual(kept.requirements, latest.requirements);
     assert.deepEqual(db.revisions().map(r => r.id), [kept.id, second.id, first.id]);
     assert.throws(() => db.revision(latest.id), /not found/);
-    assert.equal(db.proposals().length, 0);
+    assert.equal(db.list('coverage-proposal').length + db.list('proposal').length, 0);
     assert.throws(() => db.clearHistory(latest.id, 'admin', true), /changed/);
     assert.throws(() => db.saveRevision(latest.id, 'stale editor', latest.requirements), /changed/);
     const empty = db.clearHistory(kept.id, 'admin', true);

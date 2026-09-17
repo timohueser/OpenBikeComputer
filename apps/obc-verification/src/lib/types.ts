@@ -16,8 +16,8 @@ export interface VerificationTest {
 export interface CoverageEvidence { caseId?: string; testId?: string; rationale: string }
 export interface AcceptanceCriterion { id: string; statement: string; evidence: CoverageEvidence[]; gap: string }
 export interface CoveragePlan { rationale: string; criteria: AcceptanceCriterion[]; removeTestIds?: string[] }
-/** An owner's approval of the plan for one exact source commit. */
-export interface CoverageReview { author: string; createdAt: string; sourceSha: string; proposalId?: string }
+/** An owner's approval of the saved statement, tests, and plan. It records the catalogue commit of that moment. */
+export interface CoverageReview { author: string; createdAt: string; sourceSha?: string; proposalId?: string }
 export interface ReviewedCoverage extends CoveragePlan { review?: CoverageReview }
 export interface Requirement { id: string; title: string; statement: string; group?: string; todo?: boolean; implementationNeeded?: boolean; active: boolean; tests: VerificationTest[]; coverage?: ReviewedCoverage }
 export interface Revision { id: number; createdAt: string; author: string; requirements: Requirement[] }
@@ -36,7 +36,5 @@ export interface Candidate {
 }
 export interface Readiness { ready: boolean; missing: string[]; verified: number; total: number; excepted: number; excluded: number }
 export interface Bootstrap { actor: Actor; revision: Revision; catalog: Catalog; candidates: Candidate[]; configured: { github: boolean; oauth: boolean; demo?: boolean } }
-export interface LinkProposal { id: string; baseRevision: number; requirementId: string; caseId: string; action: 'add' | 'remove'; reason: string; author: string; agentToken?: AgentTokenIdentity; createdAt: string; status: 'pending' | 'accepted' | 'rejected' | 'superseded'; resolvedByCoverage?: string }
-export interface ProposalReview extends LinkProposal { requirement?: Requirement; test?: CatalogCase; conflict?: string }
 export interface CoverageProposal { id: string; baseRevision: number; requirementId: string; sourceSha: string; plan: CoveragePlan; author: string; agentToken?: AgentTokenIdentity; createdAt: string; status: 'pending' | 'accepted' | 'rejected' | 'superseded'; supersedes?: string; feedback?: string; decidedBy?: string; decidedAt?: string }
 export interface CoverageProposalReview extends CoverageProposal { requirement?: Requirement; conflict?: string }

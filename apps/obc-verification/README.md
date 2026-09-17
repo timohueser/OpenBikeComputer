@@ -15,7 +15,7 @@ unchanged.
 **+ Requirement** inserts a new requirement after the selected one, in the same group. In the
 editor, **Done, add next** (or Ctrl+Enter / ⌘+Enter) keeps the current requirement and opens the
 next one. **Move up** and **Move down** change the order within a group. **More** holds the
-secondary actions: Markdown import and export, group management, link proposals, and history.
+secondary actions: Markdown import and export, group management, and history.
 
 **Import Markdown** reads `## Group` headings and `- **ID — Title.** Statement` lines into the
 draft. An entry whose ID already exists in the draft is updated; every other entry receives a fresh
@@ -35,14 +35,14 @@ the heading shows one state per requirement, with the count of covered criteria:
 | State | Meaning |
 | --- | --- |
 | Not assessed | No plan has been saved. |
-| Needs review | A plan exists, but the statement or tests changed after approval, or a candidate uses another source commit. |
+| Needs review | A plan exists, but the statement, the tests, or the plan changed after approval. |
 | Partial | Approved, but gaps remain. |
 | Covered | Approved, and every criterion has evidence. Only this state satisfies the release gate. |
 
-Coverage and test results are separate. An active requirement needs covered, approved coverage for
-the candidate's exact source commit and passing results for all linked tests. Test names alone
-cannot establish coverage; an owner judges whether the criteria capture the whole requirement and
-the evidence supports each claim. A candidate exception remains a separate administrator decision.
+Coverage and test results are separate. An active requirement needs covered, approved coverage and
+passing results for all its linked tests. Test names alone cannot establish coverage; an owner
+judges whether the criteria capture the whole requirement and the evidence supports each claim.
+A candidate exception remains a separate administrator decision.
 
 ### Edit coverage yourself
 
@@ -55,8 +55,8 @@ A test that is used as evidence cannot be unlinked until it is removed from its 
 
 **Save revision** stores the plan with the requirement. Saving never approves: the badge shows
 **Needs review** until you select **Approve coverage**. Approval attests the saved statement, tests,
-and plan for one commit, by default the latest CI catalogue commit. It does not create test results.
-Approving again after a change is the same single action, with nothing to re-enter.
+and plan. It records the CI catalogue commit of that moment for the report, and does not create
+test results. Approving again after a change is the same single action, with nothing to re-enter.
 
 ### Review an agent's proposal
 
@@ -68,10 +68,11 @@ or removes. **Approve** saves the plan, applies the links, and records your appr
 the agent assessed, in one action. **Reject** asks for feedback, which the agent can read before
 submitting a revision. Agents cannot approve coverage.
 
-Individual link suggestions from older agents appear in the same place. A suggestion that a
-pending plan already contains is folded into that plan and resolved when the plan is approved. Save or discard requirement drafts before
-approving. Approval rechecks the target requirement, coverage, test definitions, and catalogue;
-stale proposals must be refreshed. Changes to other requirements do not prevent approval.
+Save or discard requirement drafts before approving. Approval rechecks the target requirement,
+coverage, test definitions, and catalogue; stale proposals must be refreshed. Changes to other
+requirements do not prevent approval. After a decision, the next requirement in the review queue
+opens. While a proposal is on screen, Ctrl+Enter (or ⌘+Enter) approves it and Escape closes the
+feedback box.
 
 ### When a requirement changes
 
@@ -81,10 +82,10 @@ reassess it, then approve again. Renaming a requirement, changing its group, or 
 does not invalidate coverage. Labels still apply their own release gates. Changes to another requirement do not clear
 this requirement's approval.
 
-A new source commit requires a fresh assessment and owner approval. This conservative rule covers
-changes to test assertions as well as implementation. The requirement view shows the state for its
-saved assessment; the release view also checks the candidate's source commit. Existing candidates
-keep their original requirement and coverage snapshots. Published reports remain frozen.
+The review records one source commit for the report: the commit the agent assessed, or the CI
+catalogue commit when you approve the plan yourself. The release gate checks that every linked test
+is present and passes in the candidate. A new source commit thus does not clear an approval. Existing candidates keep their original requirement and coverage snapshots.
+Published reports remain frozen.
 
 ### Local demonstration
 
@@ -259,8 +260,8 @@ clears the current requirements and tests. Enter the displayed confirmation phra
 The server rejects the action if another user saved a revision after the preview was loaded.
 
 Revisions referenced by any release candidate or publication remain available. The action does not
-change release evidence, uploaded files, accounts, the CI catalogue, or backup archives. Old link
-proposals are removed. Revision numbers continue to increase so that an older open editor cannot
+change release evidence, uploaded files, accounts, the CI catalogue, or backup archives. Old
+coverage proposals are removed. Revision numbers continue to increase so that an older open editor cannot
 save over the fresh state. An empty reset remains empty after a restart; the example is not seeded
 again. Clearing history cannot be undone in the interface. This removes application history, not
 all copies of data from backups or storage.
@@ -394,7 +395,7 @@ require an administrator session; writes also require the exact configured brows
 
 Use `Authorization: Bearer TOKEN` with the dedicated agent token. The token can read
 `GET /api/bootstrap`, `/api/revisions`, `/api/revisions/ID`, `/api/catalog`, `/api/candidates`,
-`/api/candidates/ID`, and `/api/proposals`. These responses use the same definitions as the owner interface.
+`/api/candidates/ID`, and `/api/coverage-proposals`. These responses use the same definitions as the owner interface.
 Download a retained attachment with `GET /api/files/ID`.
 
 ### Propose coverage
@@ -454,44 +455,20 @@ coverage review in one transaction. The proposal retains the requested removals 
 saved plan contains only its criteria and summary. The top-level source SHA identifies the commit
 the agent assessed; it is not a claim that tests have run, and approval records it.
 
-The response contains the pending proposal ID and agent attribution. An identical pending request
-is reused. To revise your account's pending proposal, submit the new plan with its ID in the
-optional top-level `supersedes` field. The old proposal remains in history as superseded.
-After rejection, read `feedback` and submit a new proposal against the latest requirement revision.
-An agent cannot accept or reject plans. Owners edit the plan as part of the requirement draft:
-`PUT /api/requirements` accepts a `coverage` plan on each requirement, validates it the same way,
-links cited catalogue cases, and never accepts an approval. Owners approve a saved requirement with
-`POST /api/requirements/ID/coverage/approve` and `{ "baseRevision": N, "sourceSha": SHA }`. Both
-require an owner session and exact browser origin. Owner review of an agent proposal uses
-`POST /api/coverage-proposals/ID` with `{ "accept": true, "feedback": "" }`.
+The response contains the pending proposal ID and agent attribution. A requirement has at most one
+pending proposal. An identical pending request is reused; a different plan replaces the pending
+proposal, which stays in history as superseded. After rejection, read `feedback` and submit a new
+proposal against the latest requirement revision. An agent cannot accept or reject plans. Owners
+edit the plan as part of the requirement draft: `PUT /api/requirements` accepts a `coverage` plan
+on each requirement, validates it the same way, links cited catalogue cases, and never accepts an
+approval. Owners approve a saved requirement with `POST /api/requirements/ID/coverage/approve` and
+`{ "baseRevision": N }`. Both require an owner session and exact browser origin. Owner review of
+an agent proposal uses `POST /api/coverage-proposals/ID` with `{ "accept": true, "feedback": "" }`.
 
 Approval rechecks the requirement, existing test links, current coverage plan, and catalogue.
 Changes to that requirement require a refreshed proposal; other requirements can be approved
 sequentially. After an approval, prepare a new candidate to use the saved coverage snapshot.
 
-### Individual link API
-
-Prefer a coverage proposal for new assessments. The individual link API remains available for
-existing clients. After the owner explicitly asks for a link proposal, send `POST /api/proposals`
-with JSON:
-
-```json
-{
-  "baseRevision": 1,
-  "requirementId": "REQ-001",
-  "caseId": "python-repository-tools::RouteTests::test_upload",
-  "action": "add",
-  "reason": "This test checks the required route size."
-}
-```
-
-Use a case ID returned by the catalogue, not the illustrative ID above. `action` can also be
-`remove`. The owner accepts or rejects the proposal in the UI. Submitting against a stale revision
-returns HTTP 409. Repeating a pending proposal for the same revision, requirement, test, and action
-returns the existing proposal. `GET /api/proposals` includes the current `requirement`, catalogue
-`test`, and a `conflict` message when a pending proposal cannot be approved. An older proposal can
-still be approved if its target requirement and link remain compatible; its original `baseRevision`
-is kept.
 The agent token cannot write requirement prose, upload files, record manual outcomes, or publish.
 Owner writes require a session and the exact configured browser origin.
 

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import type { Revision, Requirement, Catalog, VerificationTest, ProposalReview, CoverageProposalReview } from '$lib/types';
+  import type { Revision, Requirement, Catalog, VerificationTest, CoverageProposalReview } from '$lib/types';
   import { api, clone, date, message } from './api';
   import { parseRequirements, formatRequirements } from './markdown-requirements';
   import Markdown from './Markdown.svelte';
@@ -9,12 +9,11 @@
   import Files from './Files.svelte';
   import RequirementGroups from './RequirementGroups.svelte';
   import RequirementLabels from './RequirementLabels.svelte';
-  import LinkSuggestions from './LinkSuggestions.svelte';
   import CoveragePlan from './CoveragePlan.svelte';
   import CoverageEditor from './CoverageEditor.svelte';
   import CoverageBadge from './CoverageBadge.svelte';
   import CoverageProposal from './CoverageProposal.svelte';
-  import { absorbedBy, coverageDefinition, coverageIssues, mappedBy, planBlank, planProblem } from '$lib/coverage';
+  import { coverageDefinition, coverageSummary, mappedBy, planBlank, planProblem } from '$lib/coverage';
   export let revision: Revision;
   export let catalog: Catalog;
   export let dirty = false;
@@ -35,27 +34,34 @@
   let notice = '';
   let history: Revision[] | null = null;
   let historical: Revision | null = null;
-  let proposals: ProposalReview[] = [];
   let coverageProposals: CoverageProposalReview[] = [];
+  let rejecting = false;
   let deleting = false;
   let deleted: { requirement: Requirement; index: number }[] = [];
   let undo: { requirementId: string; test: VerificationTest; index: number } | null = null;
   $: testChanged = testDraft !== null && JSON.stringify(testDraft) !== JSON.stringify(requirement?.tests.find(t => t.id === testDraft?.id));
   $: dirty = (requirement, JSON.stringify(requirements) !== JSON.stringify(revision.requirements) || testChanged);
-  let approveSha = '';
-  $: approveSha = catalog.sourceSha;
   $: requirement = requirements.find(r => r.id === selected);
   $: groups = groupOrder(requirements).filter(Boolean).map(name => ({ name, count: requirements.filter(r => groupName(r) === name).length }));
   $: filtered = requirements.filter(r => matches(r, query));
-  $: sections = groupOrder(filtered).map(name => { const list = filtered.filter(r => groupName(r) === name); return { name, requirements: list, unverified: list.filter(r => r.active && coverageIssues(r).length > 0).length, expanded: !!query || !!open[name] }; });
+  /** Excluded requirements need no plan, so only active ones are counted. */
+  $: active = requirements.filter(r => r.active);
+  $: covered = active.filter(r => coverageSummary(r).state === 'covered').length;
+  $: sections = groupOrder(filtered).map(name => {
+    const list = filtered.filter(r => groupName(r) === name);
+    const inGate = list.filter(r => r.active);
+    return { name, requirements: list, active: inGate.length, covered: inGate.filter(r => coverageSummary(r).state === 'covered').length, expanded: !!query || !!open[name] };
+  });
   $: matching = catalog.cases.filter(c => `${c.name} ${c.suite} ${c.id} ${c.file || ''}`.toLowerCase().includes(search.toLowerCase()));
   $: pendingPlans = coverageProposals.filter(p => p.status === 'pending');
-  $: pendingLinks = proposals.filter(p => p.status === 'pending');
-  /** Requirements with something to approve, in sidebar order. */
-  $: reviewQueue = requirements.filter(r => pendingPlans.some(p => p.requirementId === r.id) || pendingLinks.some(p => p.requirementId === r.id)).map(r => r.id);
+  /** Requirements with a proposal to approve, in sidebar order. */
+  $: reviewQueue = requirements.filter(r => pendingPlans.some(p => p.requirementId === r.id)).map(r => r.id);
+  $: reviewable = !coverageEditing && requirement ? pendingPlans.find(p => p.requirementId === requirement.id) : undefined;
   function nextReview() {
-    const after = reviewQueue.indexOf(selected);
-    const id = reviewQueue[(after + 1) % reviewQueue.length];
+    if (!reviewQueue.length) return;
+    const order = requirements.map(r => r.id);
+    const at = order.indexOf(selected);
+    const id = reviewQueue.find(value => order.indexOf(value) > at) ?? reviewQueue[0];
     if (query && !matches(requirements.find(r => r.id === id)!, query)) query = '';
     select(id);
   }
@@ -95,7 +101,7 @@
   function leaveEditor() {
     closeCoverage();
     if (testChanged && !confirm('Discard the unsaved manual test changes?')) return false;
-    testDraft = null; edit = false; picker = false; deleting = false; return true;
+    testDraft = null; edit = false; picker = false; deleting = false; rejecting = false; return true;
   }
   function select(id: string) { if (leaveEditor()) { selected = id; reveal(id); } }
   async function create() {
@@ -219,9 +225,9 @@
     if (!requirement || busy) return;
     busy = true; error = ''; notice = '';
     try {
-      const saved = await api<Revision>(`/api/requirements/${requirement.id}/coverage/approve`, 'POST', { baseRevision: revision.id, sourceSha: approveSha });
+      const saved = await api<Revision>(`/api/requirements/${requirement.id}/coverage/approve`, 'POST', { baseRevision: revision.id });
       revision = saved; requirements = clone(saved.requirements); onsaved(saved);
-      notice = `Coverage approved for commit ${approveSha.slice(0, 10)}. Test results and existing candidates are unchanged.`;
+      notice = 'Coverage approved. Test results and existing candidates are unchanged.';
       await loadProposals();
     } catch (e) { error = message(e); } finally { busy = false; }
   }
@@ -237,29 +243,39 @@
   }
   async function showHistory() { error = ''; try { history = await api<Revision[]>('/api/revisions'); } catch (e) { error = message(e); } }
   async function loadProposals() {
-    [proposals, coverageProposals] = await Promise.all([api<ProposalReview[]>('/api/proposals'), api<CoverageProposalReview[]>('/api/coverage-proposals')]);
+    coverageProposals = await api<CoverageProposalReview[]>('/api/coverage-proposals');
   }
   onMount(() => { loadProposals().catch(e => { error = message(e); }); });
-  async function decide(kind: 'proposals' | 'coverage-proposals', id: string, accept: boolean, feedback = '') {
+  async function decide(id: string, accept: boolean, feedback = '') {
     if (busy) return;
     if (accept && dirty) { error = 'Save or discard your draft before approving a proposal.'; return; }
     busy = true; error = '';
     try {
-      const decided = await api<{ revision: Revision }>(`/api/${kind}/${id}`, 'POST', { accept, feedback });
+      const decided = await api<{ revision: Revision }>(`/api/coverage-proposals/${id}`, 'POST', { accept, feedback });
       if (accept) {
         revision = decided.revision; requirements = clone(revision.requirements); onsaved(revision);
         if (!requirements.some(r => r.id === selected)) selected = requirements[0]?.id || '';
         undo = null; deleted = []; testDraft = null; edit = false; deleting = false;
       }
+      rejecting = false;
       await loadProposals();
-      notice = accept ? kind === 'coverage-proposals' ? 'Coverage approved. Existing candidates keep their original coverage review.' : 'Test link saved. Coverage needs a fresh review.' : 'Proposal rejected. The agent can read your feedback.';
+      notice = accept ? 'Coverage approved. Existing candidates keep their original coverage review.' : 'Proposal rejected. The agent can read your feedback.';
+      await tick(); if (!testDraft && !edit) nextReview();
     } catch (e) {
       error = message(e);
       try { await loadProposals(); } catch { /* Keep the original decision error. */ }
     } finally { busy = false; }
   }
+  /** Ctrl/⌘+Enter approves the proposal on screen; Escape closes an open reject box. */
+  function reviewKeys(event: KeyboardEvent) {
+    if (event.key === 'Escape' && rejecting) { rejecting = false; return; }
+    if (rejecting || event.key !== 'Enter' || !(event.metaKey || event.ctrlKey)) return;
+    if ((event.target as HTMLElement | null)?.closest('input, textarea')) return;
+    if (!reviewable || busy || dirty || reviewable.conflict) return;
+    event.preventDefault(); decide(reviewable.id, true);
+  }
 </script>
-<svelte:window on:keydown={(event) => { if (edit) editorKeys(event); }} />
+<svelte:window on:keydown={(event) => { if (edit) editorKeys(event); else reviewKeys(event); }} />
 <div class="page-heading row"><div><div class="eyebrow">Product verification</div><h1>Requirements</h1><p class="muted">The promises we make, and how we check them.</p></div><div class="actions"><details class="menu"><summary class="button">More ▾</summary><div class="menu-list"><label class="menu-item">Import Markdown…<input class="visually-hidden" type="file" accept=".md,.markdown,text/markdown,text/plain" disabled={busy} on:change={importMarkdown} /></label><button class="menu-item" on:click={exportMarkdown}>Export Markdown</button><button class="menu-item" on:click={() => manageGroups = !manageGroups}>Manage groups</button><button class="menu-item" on:click={showHistory}>Revision history</button></div></details>{#if reviewQueue.length}<button class="review-queue" disabled={busy} title="Go to the next requirement with a proposal to review" on:click={nextReview}><span class="review-count">{reviewQueue.length}</span>{reviewQueue.length === 1 ? 'proposal to review' : 'proposals to review'}</button>{/if}<button class="primary" disabled={busy} on:click={create}>+ Requirement</button></div></div>
 {#if error}<div class="alert error" role="alert">{error}<button class="text-button" disabled={busy} on:click={refresh}>Reload saved revision</button></div>{/if}
 {#if notice}<div class="alert success" role="status">{notice}</div>{/if}
@@ -284,10 +300,10 @@
 {/if}
 <div class="workbench"><aside><div class="sidebar-scroll">
   <label class="search-label">Find a requirement<input type="search" value={query} on:input={(event) => { if (!setQuery(event.currentTarget.value)) event.currentTarget.value = query; }} placeholder="ID, title, text, or group…" /></label>
-  <div class="muted small sidebar-caption">{query ? `${filtered.length} of ${requirements.length} match` : `${requirements.length} requirements · ${groups.length} groups`} · r{revision.id}</div>
+  <div class="muted small sidebar-caption">{query ? `${filtered.length} of ${requirements.length} match` : `${covered} of ${active.length} covered${reviewQueue.length ? ` · ${reviewQueue.length} to review` : ''}`} · r{revision.id}</div>
   {#each sections as section (section.name)}
-    <button type="button" class="group-heading" aria-expanded={section.expanded} on:click={() => open = { ...open, [section.name]: !section.expanded }}><span class="chevron" aria-hidden="true">{section.expanded ? '▾' : '▸'}</span><span class="group-name">{section.name || 'Ungrouped'}</span>{#if section.unverified}<span class="group-warning" title="{section.unverified} without complete coverage review">{section.unverified} ⚠</span>{/if}<span class="group-count">{section.requirements.length}</span></button>
-    {#if section.expanded}{#each section.requirements as r (r.id)}<button id={'entry-' + r.id} class="entry" class:selected={selected === r.id} on:click={() => select(r.id)}><span class="entry-head"><span class="eyebrow">{r.id}</span>{#if r.active && !r.tests.length}<span class="entry-flag warning" title="No verification defined">no checks</span>{:else if r.tests.length}<span class="entry-flag muted">{r.tests.length} {r.tests.length === 1 ? 'check' : 'checks'}</span>{/if}</span><strong>{r.title || 'Untitled requirement'}</strong><span class="entry-status"><CoverageBadge requirement={r} />{#if reviewQueue.includes(r.id)}<span class="entry-flag proposal">proposal</span>{/if}</span><RequirementLabels requirement={r} /></button>{/each}{/if}
+    <button type="button" class="group-heading" aria-expanded={section.expanded} on:click={() => open = { ...open, [section.name]: !section.expanded }}><span class="chevron" aria-hidden="true">{section.expanded ? '▾' : '▸'}</span><span class="group-name">{section.name || 'Ungrouped'}</span>{#if section.active}<span class="group-count">{section.covered} of {section.active} covered</span>{/if}</button>
+    {#if section.expanded}{#each section.requirements as r (r.id)}<button id={'entry-' + r.id} class="entry" class:selected={selected === r.id} on:click={() => select(r.id)}><span class="eyebrow">{r.id}</span><strong>{r.title || 'Untitled requirement'}</strong><span class="entry-status"><CoverageBadge requirement={r} />{#if reviewQueue.includes(r.id)}<span class="entry-flag proposal">proposal</span>{/if}</span><RequirementLabels requirement={r} /></button>{/each}{/if}
   {:else}<p class="muted small">{requirements.length ? 'No matching requirements.' : 'Start with one important product promise, or import a Markdown draft.'}</p>{/each}
 </div></aside>
 <section class="detail">
@@ -299,21 +315,17 @@
   {@const saved = revision.requirements.find(r => r.id === requirement.id)}
     {@const changed = !!saved?.coverage?.review && coverageDefinition(saved) !== coverageDefinition(requirement)}
   {@const plans = pendingPlans.filter(p => p.requirementId === requirement.id)}
-  {@const suggestions = pendingLinks.filter(p => p.requirementId === requirement.id)}
-  {@const links = suggestions.filter(p => !plans.some(plan => absorbedBy(plan.plan, requirement, p)))}
   {@const decided = coverageProposals.filter(p => p.requirementId === requirement.id && p.status !== 'pending' && p.status !== 'superseded')}
   <section class="section" aria-label="Requirement coverage">
     <div class="row"><div class="row coverage-head"><h2>Coverage</h2><CoverageBadge {requirement} {changed} /></div>{#if !coverageEditing}<button disabled={busy} on:click={editCoverage}>{requirement.coverage ? 'Edit coverage' : 'Define coverage'}</button>{/if}</div>
     {#if coverageEditing}<CoverageEditor {requirement} {catalog} {busy} onchange={() => requirements = [...requirements]} ondone={closeCoverage} />
     {:else}
-      {#each plans as p (p.id)}<CoverageProposal proposal={p} {requirement} {catalog} {busy} {dirty} ondecide={(id, accept, feedback) => decide('coverage-proposals', id, accept, feedback)} />{/each}
-      {#if suggestions.length > links.length}<p class="small muted absorbed">{suggestions.length - links.length} earlier link {suggestions.length - links.length === 1 ? 'suggestion is' : 'suggestions are'} part of the proposal above and resolve with it.</p>{/if}
-      <LinkSuggestions suggestions={links} {busy} {dirty} ondecide={(id, accept) => decide('proposals', id, accept)} />
+      {#each plans as p (p.id)}<CoverageProposal proposal={p} {requirement} {catalog} {busy} {dirty} bind:rejecting ondecide={decide} />{/each}
       {#if requirement.coverage}
         {#if plans.length}<p class="eyebrow current-plan">Current plan</p>{/if}
-        {#if requirement.coverage.review && !changed}<p class="small muted">Approved by {requirement.coverage.review.author} · {date(requirement.coverage.review.createdAt)} · commit <code>{requirement.coverage.review.sourceSha.slice(0, 10)}</code></p>
+        {#if requirement.coverage.review && !changed}<p class="small muted">Approved by {requirement.coverage.review.author} · {date(requirement.coverage.review.createdAt)}{#if requirement.coverage.review.sourceSha}{' · '}catalogue <code>{requirement.coverage.review.sourceSha.slice(0, 10)}</code>{/if}</p>
         {:else if dirty}<p class="small muted">Save the revision, then approve the coverage.</p>
-        {:else}<div class="approve row"><div class="actions"><button class="primary" disabled={busy || !/^[a-f0-9]{40}$/.test(approveSha)} on:click={approveCoverage}>Approve coverage</button><span class="small muted">{approveSha ? `for commit ${approveSha.slice(0, 10)}` : 'No CI catalogue commit yet'}</span></div><details class="small"><summary>Other commit</summary><input class="commit" maxlength={40} aria-label="Assessed commit" bind:value={approveSha} placeholder="Full 40-character commit" /></details></div>{/if}
+        {:else}<div class="approve row"><div class="actions"><button class="primary" disabled={busy} on:click={approveCoverage}>Approve coverage</button><span class="small muted">Attests this statement, its tests, and this plan.</span></div></div>{/if}
         <CoveragePlan plan={requirement.coverage} {requirement} {catalog} />
       {:else if !plans.length}<div class="empty coverage-empty"><h3>What would prove this requirement?</h3><p class="muted">Break it into checkable criteria, attach the tests that prove each one, and note the gaps. Define coverage to start, or wait for an agent proposal.</p></div>{/if}
       {#if decided.length}<details class="small history"><summary>Earlier proposals ({decided.length})</summary>{#each decided as p (p.id)}<p class="small wrap"><span class="badge" class:success={p.status === 'accepted'} class:error={p.status === 'rejected'}>{p.status}</span> {p.author} · {date(p.createdAt)}{#if p.decidedBy} · decided by {p.decidedBy}{/if}{#if p.feedback} · “{p.feedback}”{/if}</p>{/each}</details>{/if}
