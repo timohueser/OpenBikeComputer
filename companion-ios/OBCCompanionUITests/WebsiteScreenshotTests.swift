@@ -123,7 +123,7 @@ final class WebsiteScreenshotTests: XCTestCase {
     @MainActor
     func testWebsiteBookends() {
         let app = launch(extraArguments: [
-            "-OBCFixtures", "website",
+            "-OBCFixtures", "website-rides",
             "-OBCImportSample", "grimsel",
         ])
 
