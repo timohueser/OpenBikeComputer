@@ -58,7 +58,7 @@
 </script>
 
 <div class="row"><h2>Agent access</h2><button disabled={loading || busy} on:click={load}>Refresh tokens</button></div>
-<p class="muted">Agents can read requirements and test information, and propose test links. A person must approve each proposal. Tokens cannot edit requirements, record results, or publish releases.</p>
+<p class="muted">Agents can read requirements and test information, and propose coverage plans. A person must approve each proposal. Tokens cannot edit requirements, record results, or publish releases.</p>
 {#if error}<div class="alert error" role="alert">{error}</div>{/if}
 {#if notice}<div class="alert success" role="status">{notice}</div>{/if}
 {#if fresh}

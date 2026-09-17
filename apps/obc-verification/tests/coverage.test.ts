@@ -178,8 +178,8 @@ test('owners edit the plan and its tests in one draft, then approve the saved de
   r.tests = r.tests.filter(t => t.caseId !== 'b');
   r.tests.push({ id: 'manual', kind: 'manual', title: 'Restart check', steps: 'Restart the device.', expected: 'Settings remain.', inputs: [] });
   r.coverage!.criteria[1].evidence = [{ testId: 'manual', rationale: 'Checks settings after a restart.' }, { caseId: 'c', rationale: 'Checks part of the settings.' }];
-  const delta = coverageChanges(before.requirements[0], { ...r.coverage!, removeTestIds: [before.requirements[0].tests.find(t => t.caseId === 'b')!.id] });
-  assert.deepEqual(delta.addedCases, ['c']); assert.equal(delta.removedTests.length, 1); assert.equal(delta.changed.length, 1);
+  const delta = coverageChanges(before.requirements[0], r.coverage!);
+  assert.equal(delta.changed.length, 1); assert.equal(delta.added.length, 0); assert.equal(delta.removed.length, 0);
   const pending = await propose(plan());
   const body = (requirements: unknown) => ({ baseRevision: before.id, requirements });
   assert.equal((await request('requirements', 'PUT', body(draft))).status, 403);
@@ -217,19 +217,37 @@ test('owners edit the plan and its tests in one draft, then approve the saved de
   assert.doesNotMatch(report({ ...candidate(), revision: { ...store().latestRevision(), requirements: [local] } }), /source <code>/);
 });
 
-test('agent revisions remove only explicitly selected tests and reject invalid removals', async () => {
+test('a requirement carries exactly the tests its plan cites', async () => {
   setup(); const initial = await propose(); await decide(initial.id);
+  const current = store().latestRevision();
+  const draft = structuredClone(current.requirements);
+  draft[0].tests.push({ id: 'manual', kind: 'manual', title: 'Power cut', steps: 'Cut power.', expected: 'Data remains.', inputs: [] });
+  draft[0].coverage!.criteria[1].evidence.push({ testId: 'manual', rationale: 'Inspects settings after a power cut.' });
+  assert.equal((await request('requirements', 'PUT', { baseRevision: current.id, requirements: draft }, owner)).status, 200);
+  assert.deepEqual(store().latestRevision().requirements[0].tests.map(t => t.caseId ?? t.id).sort(), ['a', 'b', 'manual']);
+  // A plan that omits evidence unlinks that test; a manual procedure it no longer cites goes with its content.
   const revised = plan(); revised.criteria[1].evidence = [{ caseId: 'c', rationale: 'Replacement evidence.' }];
-  const current = store().latestRevision(); const old = current.requirements[0].tests.find(t => t.caseId === 'b')!;
-  for (const removeTestIds of [['absent'], [old.id, old.id], [current.requirements[0].tests.find(t => t.caseId === 'a')!.id]]) {
-    assert.equal((await request('coverage-proposals', 'POST', { baseRevision: current.id, requirementId: 'REQ-1', sourceSha: sha, plan: { ...revised, removeTestIds } })).status, 400);
-  }
-  const retained = await propose(revised); await decide(retained.id);
-  assert.equal(store().latestRevision().requirements[0].tests.length, 3);
-  const removal = await propose({ ...revised, removeTestIds: [old.id] }); await decide(removal.id);
+  assert.deepEqual(coverageChanges(store().latestRevision().requirements[0], revised).deletedProcedures.map(t => t.title), ['Power cut']);
+  const replacement = await propose(revised); await decide(replacement.id);
   const saved = store().latestRevision().requirements[0];
-  assert.deepEqual(saved.tests.map(t => t.caseId).sort(), ['a', 'c']);
+  assert.deepEqual(saved.tests.map(t => t.caseId ?? t.id).sort(), ['a', 'c']);
   assert.deepEqual(coverageSummary(saved), { state: 'covered', label: 'Covered', covered: 2, total: 2 });
+  // A requirement whose plan is deleted keeps no tests.
+  const without = structuredClone(store().latestRevision().requirements); delete without[0].coverage;
+  assert.equal((await request('requirements', 'PUT', { baseRevision: store().latestRevision().id, requirements: without }, owner)).status, 200);
+  assert.deepEqual(store().latestRevision().requirements[0].tests, []);
+});
+
+test('an older snapshot is judged by its plan, not by the tests it still carries', async () => {
+  setup(); const approved = await propose(); await decide(approved.id);
+  const frozen = candidate();
+  const requirement = frozen.revision.requirements[0];
+  requirement.tests.push({ id: 'legacy-manual', kind: 'manual', title: 'Legacy power cut', steps: 'Cut power.', expected: 'Data remains.', inputs: [] },
+    { id: 'legacy-auto', kind: 'automated', title: 'Legacy smoke test', caseId: 'c', inputs: [] });
+  frozen.results.push({ caseId: 'c', status: 'fail' });
+  frozen.manualRuns.push({ id: 'run', requirementId: 'REQ-1', testId: 'legacy-manual', result: 'pass', device: 'board', notes: 'Legacy note.', evidence: [], author: 'owner', createdAt: '' });
+  assert.equal(readiness(frozen).ready, true); assert.equal(readiness(frozen).verified, 1);
+  assert.doesNotMatch(report(frozen), /Legacy smoke test|Legacy power cut|Legacy note/);
 });
 
 test('a plan may propose criteria before any evidence', async () => {
