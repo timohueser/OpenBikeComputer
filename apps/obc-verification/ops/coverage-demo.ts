@@ -32,18 +32,22 @@ const cases = [
 ];
 db.put('catalog', 'current', { sourceSha, updatedAt: new Date().toISOString(), cases });
 const requirements: Requirement[] = [
-  { id: 'SYS-039', title: 'Map orientation', statement: 'The user shall be able to choose heading-up or north-up map orientation. The choice shall be persistent through restarts.', group: 'Map display on device', active: true, tests: [{ id: 'obsolete-test', kind: 'automated', title: cases[4].name, caseId: cases[4].id, inputs: [] }] },
-  { id: 'SYS-030', title: 'Return to position', statement: 'The user shall be able to exit pan/zoom mode with one action. This shall restore following mode and center the map back on the users position given a GPS fix is available.', group: 'Map display on device', active: true, tests: [] }
+  { id: 'SYS-039', title: 'Map orientation', statement: 'The user shall be able to choose heading-up or north-up map orientation. The choice shall be persistent through restarts.', group: 'Map display on device', active: true, tests: [] },
+  { id: 'SYS-030', title: 'Return to position', statement: 'The user shall be able to exit pan/zoom mode with one action. This shall restore following mode and center the map back on the users position given a GPS fix is available.', group: 'Map display on device', active: true,
+    tests: [{ id: 'manual-return', kind: 'manual', title: 'DEMO ONLY: ride check for return to position', steps: '1. Start a ride with a position fix.\n2. Pan the map away from the position.\n3. Use the Back action once.', expected: 'The map follows the position again and centers on it.', inputs: [] }] }
 ];
 const plans: CoveragePlan[] = [
   { rationale: 'Projection tests cover both render modes. They do not prove that a user can select a mode or retain that choice after restart.', criteria: [
     { id: 'north-up', statement: 'The map can render north-up.', evidence: [{ caseId: cases[0].id, rationale: 'Checks the default viewport angle and projection of a point due north.' }], gap: '' },
     { id: 'heading-up', statement: 'The map can render heading-up.', evidence: [{ caseId: cases[1].id, rationale: 'Checks that the current course projects toward the top of the screen.' }], gap: '' },
-    { id: 'selection', statement: 'The user can select either orientation.', evidence: [], gap: 'Add the orientation setting and an automated user-interaction test for both choices.' },
+    { id: 'selection', statement: 'The user can select either orientation.', evidence: [{ caseId: cases[4].id, rationale: 'Illustrative assertion: an old smoke test that only opens the map. It does not exercise the orientation control.' }], gap: 'Replace the smoke test with a real user-interaction test for both choices.' },
     { id: 'persistence', statement: 'The selected orientation survives a restart.', evidence: [], gap: 'Add a save/reload test that also starts a ride and checks that it respects the saved choice.' }
   ] },
-  { rationale: 'The shared application test exercises the single Back action, the resulting Follow mode, and recentering on a valid position fix.', criteria: [
-    { id: 'return', statement: 'One action exits pan/zoom, restores following, and recenters on the available fix.', evidence: [{ caseId: cases[2].id, rationale: 'Runs the Back gesture and asserts the mode and camera position afterwards.' }], gap: '' }
+  { rationale: 'The shared application test exercises the single Back action, the resulting Follow mode, and recentering on a valid position fix. A ride check confirms the same behavior on the device.', criteria: [
+    { id: 'return', statement: 'One action exits pan/zoom, restores following, and recenters on the available fix.', evidence: [
+      { caseId: cases[2].id, rationale: 'Runs the Back gesture and asserts the mode and camera position afterwards.' },
+      { testId: 'manual-return', rationale: 'Confirms the same behavior on the device, with a real position fix.' }
+    ], gap: '' }
   ] }
 ];
 const credential = createAgentToken(owner, 'Local coverage demo agent', 240).token;
@@ -60,11 +64,10 @@ for (let i = 0; i < plans.length; i++) db.decideCoverageProposal((await propose(
 const candidate: Candidate = { id: 'coverage-demo', version: 'v0.0.0-coverage-demo', sourceRef: 'Local demonstration — simulated results', sourceSha, revision: db.latestRevision(), createdAt: new Date().toISOString(), status: 'running', ciStatus: 'success',
   results: cases.map(c => ({ caseId: c.id, status: 'pass', detail: 'Simulated result for the local coverage demonstration. This is not release evidence.' })), manualRuns: [], assets: [] };
 db.put('candidate', candidate.id, candidate);
-// An agent extends an accepted partial plan and explicitly removes an obsolete linked test.
+// An agent replaces obsolete evidence in an accepted partial plan. The omitted test is unlinked on approval.
 plans[0].criteria[2].evidence = [{ caseId: cases[3].id, rationale: 'Illustrative assertion: choose each orientation through the control and inspect the map. This test is invented for the demo, not production evidence.' }];
 plans[0].criteria[2].gap = '';
-plans[0].removeTestIds = ['obsolete-test'];
-plans[0].rationale = 'Demo revision: add evidence for user selection and remove an obsolete smoke test. Persistence remains a gap; coverage stays partial.';
+plans[0].rationale = 'Demo revision: replace the obsolete smoke test with evidence for user selection. Persistence remains a gap; coverage stays partial.';
 await propose(0);
 // A requirement edit retains its plan but invalidates review; the candidate above stays frozen.
 const changed = db.latestRevision();
@@ -75,6 +78,6 @@ plans[1].rationale = 'The requirement gained a zoom-preservation clause. Keep th
 await propose(1);
 db.db.close();
 const child = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'dev', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: resolve(import.meta.dirname, '..'), env: process.env, stdio: 'inherit' });
-console.log(`\nLocal coverage demo: ${process.env.ORIGIN}\nUsername: demo\nPassword: ${password}\nDisposable database: ${directory}\nSYS-039: approve or edit the proposed extension and test removal. SYS-030: a demo requirement edit needs review. The release candidate retains the earlier snapshot. New demo tests and all results are illustrative.\n`);
+console.log(`\nLocal coverage demo: ${process.env.ORIGIN}\nUsername: demo\nPassword: ${password}\nDisposable database: ${directory}\nSYS-039: approve or edit the proposed evidence replacement. SYS-030: a demo requirement edit needs review. The release candidate retains the earlier snapshot. New demo tests and all results are illustrative.\n`);
 for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => child.kill(signal));
 child.on('exit', code => { rmSync(directory, { recursive: true, force: true }); process.exitCode = code ?? 0; });

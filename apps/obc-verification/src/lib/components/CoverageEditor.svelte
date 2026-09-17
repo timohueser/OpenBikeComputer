@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AcceptanceCriterion, Catalog, CatalogCase, CoverageEvidence, Requirement, VerificationTest } from '$lib/types';
-  import { criterionCovered, evidenceTest, mappedBy } from '$lib/coverage';
+  import { coverageChanges, criterionCovered, evidenceTest } from '$lib/coverage';
+  import { clone } from './api';
   import TestEditor from './TestEditor.svelte';
   /** Edits the requirement's draft plan and tests in place; the parent saves them with the revision. */
   export let requirement: Requirement;
@@ -8,12 +9,16 @@
   export let busy: boolean;
   export let onchange: () => void;
   export let ondone: () => void;
+  export let onrefresh: () => void;
+  /** True while a manual procedure is open for editing. The parent blocks saving until it is kept or cancelled. */
+  export let editing = false;
   let picker: string | null = null;
   let search = '';
   let manualDraft: VerificationTest | null = null;
+  let procedureDraft: { criterionId: string; test: VerificationTest } | null = null;
+  $: editing = !!manualDraft || !!procedureDraft;
   $: plan = requirement.coverage!;
   $: covered = plan.criteria.filter(c => criterionCovered(requirement, c)).length;
-  $: unmapped = requirement.tests.filter(t => !mappedBy(plan, t));
   $: manual = requirement.tests.filter(t => t.kind === 'manual' && t.title.toLowerCase().includes(search.toLowerCase()));
   $: automated = catalog.cases.filter(c => `${c.name} ${c.suite} ${c.file ?? ''}`.toLowerCase().includes(search.toLowerCase()));
   const name = (e: CoverageEvidence) => evidenceTest(requirement, e)?.title ?? e.caseId ?? e.testId;
@@ -30,6 +35,34 @@
     requirement.tests.push(test);
     addEvidence(criterion, { testId: test.id, rationale: '' });
   }
+  function keepProcedure(test: VerificationTest) {
+    requirement.tests = requirement.tests.map(t => t.id === test.id ? test : t);
+    procedureDraft = null; changed();
+  }
+  function cancelProcedure() {
+    const stored = requirement.tests.find(t => t.id === procedureDraft?.test.id);
+    if (JSON.stringify(stored) !== JSON.stringify(procedureDraft?.test) && !confirm('Discard these changes to the manual procedure?')) return;
+    procedureDraft = null;
+  }
+  /** A removal that takes a manual procedure's last citation deletes the procedure. Ask first. */
+  function confirmRemoval(lead: string, criteria: AcceptanceCriterion[]): boolean {
+    const gone = coverageChanges(requirement, { ...plan, criteria }).deletedProcedures;
+    if (!gone.length) return true;
+    const files = (t: VerificationTest) => `${t.inputs.length} input ${t.inputs.length === 1 ? 'file' : 'files'}`;
+    return confirm(`${lead} and delete the manual ${gone.length === 1 ? 'procedure' : 'procedures'} ${gone.map(t => `“${t.title}” with its steps and ${files(t)}`).join(', ')}?`);
+  }
+  function removeEvidence(criterion: AcceptanceCriterion, index: number) {
+    const evidence = criterion.evidence.filter((_, n) => n !== index);
+    if (!confirmRemoval('Remove this evidence', plan.criteria.map(c => c.id === criterion.id ? { ...c, evidence } : c))) return;
+    if (procedureDraft?.criterionId === criterion.id && procedureDraft.test.id === criterion.evidence[index].testId) procedureDraft = null;
+    criterion.evidence = evidence; changed();
+  }
+  function removeCriterion(criterion: AcceptanceCriterion) {
+    const criteria = plan.criteria.filter(c => c.id !== criterion.id);
+    if (!confirmRemoval('Remove this criterion', criteria)) return;
+    if (procedureDraft?.criterionId === criterion.id) procedureDraft = null;
+    plan.criteria = criteria; changed();
+  }
 </script>
 <div class="editor" aria-label="Coverage editor">
   <p class="progress small"><strong>{covered} of {plan.criteria.length}</strong> {plan.criteria.length === 1 ? 'criterion' : 'criteria'} covered <span class="muted">· a criterion is covered once it has evidence and no gap</span></p>
@@ -41,12 +74,14 @@
         <div class="body">
           <div class="head">
             <textarea class="statement" rows={1} maxlength={5000} aria-label={`Criterion ${index + 1}`} placeholder="What must be true? One checkable statement." bind:value={criterion.statement} on:input={changed}></textarea>
-            <button class="text-button remove" title="Remove criterion" aria-label="Remove criterion" on:click={() => { plan.criteria = plan.criteria.filter(c => c.id !== criterion.id); changed(); }}>×</button>
+            <button class="text-button remove" title="Remove criterion" aria-label="Remove criterion" on:click={() => removeCriterion(criterion)}>×</button>
           </div>
           {#each criterion.evidence as evidence, i}
+            {@const test = evidenceTest(requirement, evidence)}
             <div class="evidence">
-              <div class="row"><strong class="small wrap">{name(evidence)}</strong><button class="text-button small" on:click={() => { criterion.evidence = criterion.evidence.filter((_, n) => n !== i); changed(); }}>Remove</button></div>
+              <div class="row"><strong class="small wrap">{name(evidence)}</strong><span class="actions">{#if test?.kind === 'manual'}<button class="text-button small" on:click={() => procedureDraft = { criterionId: criterion.id, test: clone(test) }}>Edit procedure</button>{/if}<button class="text-button small" on:click={() => removeEvidence(criterion, i)}>Remove</button></span></div>
               <input maxlength={5000} aria-label="What this test proves" placeholder="What does this test prove?" bind:value={evidence.rationale} on:input={changed} />
+              {#if procedureDraft && procedureDraft.criterionId === criterion.id && procedureDraft.test.id === test?.id}<TestEditor bind:test={procedureDraft.test} onsave={keepProcedure} oncancel={cancelProcedure} />{/if}
             </div>
           {/each}
           {#if picker === criterion.id}
@@ -61,7 +96,7 @@
                   {#if !manual.length && !automated.length}<p class="small muted">{catalog.cases.length ? 'No test matches.' : 'No CI catalogue yet. Automated tests appear after the first verification run.'}</p>{/if}
                   {#if automated.length > 30}<p class="small muted">Showing 30 tests. Refine the search to find another.</p>{/if}
                 </div>
-                <div class="row"><button class="text-button small" on:click={() => manualDraft = { id: crypto.randomUUID(), kind: 'manual', title: '', steps: '', expected: '', inputs: [] }}>+ New manual procedure</button><button class="text-button small" on:click={() => picker = null}>Close</button></div>
+                <div class="row"><button class="text-button small" on:click={() => manualDraft = { id: crypto.randomUUID(), kind: 'manual', title: '', steps: '', expected: '', inputs: [] }}>+ New manual procedure</button><span class="actions"><button class="text-button small" disabled={busy} on:click={onrefresh}>Refresh catalogue</button><button class="text-button small" on:click={() => picker = null}>Close</button></span></div>
               {/if}
             </div>
           {:else}
@@ -73,9 +108,9 @@
     {/each}
   </div>
   <button disabled={busy || plan.criteria.length >= 100} on:click={() => { plan.criteria.push({ id: crypto.randomUUID(), statement: '', evidence: [], gap: '' }); changed(); }}>+ Add criterion</button>
-  {#if unmapped.length}<p class="small muted unmapped">Linked but not used as evidence: {unmapped.map(t => t.title).join(', ')}. These tests must still pass; unlink them under linked tests if they are obsolete.</p>{/if}
+  <p class="small muted note">The requirement's tests are exactly the tests this plan cites. A manual procedure that no criterion cites is deleted with its steps when you save the revision.</p>
   <label>Summary <span class="muted">· optional</span><textarea rows={2} maxlength={10000} bind:value={plan.rationale} on:input={changed} disabled={busy} placeholder="What the evidence proves as a whole, and what it does not."></textarea></label>
-  <div class="actions"><button class="primary" disabled={busy} on:click={ondone}>Done</button><span class="small muted">Changes stay in the draft until you save the revision.</span></div>
+  <div class="actions"><button class="primary" disabled={busy || editing} on:click={ondone}>Done</button><span class="small muted">{editing ? 'Keep or cancel the manual procedure first.' : 'Changes stay in the draft until you save the revision.'}</span></div>
 </div>
 <style>
   .editor { margin-top: 12px; }
@@ -101,6 +136,6 @@
   .gap { min-height: 0; margin: 10px 0 0; font-size: 13px; padding: 7px 10px; field-sizing: content; color: var(--amber); border-color: #e6d9bf; background: #fffcf4; }
   .gap::placeholder { color: #b39a6b; }
   .editor > button { margin-top: 10px; }
-  .unmapped { margin: 14px 0 0; }
+  .note { margin: 14px 0 0; }
   .actions { margin-top: 6px; }
 </style>

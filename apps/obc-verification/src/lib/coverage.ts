@@ -1,7 +1,17 @@
-import type { AcceptanceCriterion, Catalog, CoverageEvidence, CoveragePlan, Requirement } from './types.ts';
+import type { AcceptanceCriterion, CoverageEvidence, CoveragePlan, Requirement, VerificationTest } from './types.ts';
 
 export function evidenceTest(requirement: Requirement, evidence: CoverageEvidence) {
   return requirement.tests.find(test => evidence.caseId ? test.kind === 'automated' && test.caseId === evidence.caseId : test.kind === 'manual' && test.id === evidence.testId);
+}
+/** The verification of a requirement: every test its plan cites, once, in plan order. */
+export function citedTests(requirement: Requirement): VerificationTest[] {
+  const seen = new Set<string>();
+  return (requirement.coverage?.criteria ?? []).flatMap(c => c.evidence.flatMap(e => {
+    const test = evidenceTest(requirement, e);
+    if (!test || seen.has(test.id)) return [];
+    seen.add(test.id);
+    return [test];
+  }));
 }
 export function evidenceKey(evidence: CoverageEvidence): string { return evidence.caseId ?? evidence.testId ?? ''; }
 /** A criterion counts as covered when every piece of evidence is a linked test and no gap is recorded. */
@@ -36,7 +46,7 @@ export function coverageIssues(requirement: Requirement): string[] {
   const issues: string[] = [];
   if (!plan.criteria.length) issues.push('No acceptance criteria defined.');
   for (const criterion of plan.criteria) {
-    if (!criterionCovered(requirement, criterion)) issues.push(`“${criterion.statement}”: ${criterion.gap || (criterion.evidence.length ? 'evidence is no longer a linked test.' : 'no evidence mapped.')}`);
+    if (!criterionCovered(requirement, criterion)) issues.push(`“${criterion.statement}”: ${criterion.gap || (criterion.evidence.length ? 'evidence is not available.' : 'no evidence mapped.')}`);
   }
   return issues;
 }
@@ -54,27 +64,13 @@ export function coverageSummary(requirement: Requirement): CoverageSummary {
     : total > 0 && covered === total ? 'covered' : 'partial';
   return { state, label: labels[state], covered, total };
 }
-export function mappedBy(plan: CoveragePlan, test: Requirement['tests'][number]): boolean {
-  return plan.criteria.some(c => c.evidence.some(e => test.kind === 'automated' ? e.caseId === test.caseId : e.testId === test.id));
-}
 export function coverageChanges(requirement: Requirement, plan: CoveragePlan) {
   const before = requirement.coverage?.criteria ?? [];
   return {
     added: plan.criteria.filter(c => !before.some(old => old.id === c.id)),
     changed: plan.criteria.filter(c => before.some(old => old.id === c.id && JSON.stringify(old) !== JSON.stringify(c))),
     removed: before.filter(c => !plan.criteria.some(next => next.id === c.id)),
-    addedCases: [...new Set(plan.criteria.flatMap(c => c.evidence.flatMap(e => e.caseId && !requirement.tests.some(t => t.caseId === e.caseId) ? [e.caseId] : [])))],
-    removedTests: requirement.tests.filter(t => plan.removeTestIds?.includes(t.id)),
-    unmappedTests: requirement.tests.filter(t => !plan.removeTestIds?.includes(t.id) && !mappedBy(plan, t))
+    /** Manual procedures this plan cites nowhere. Saving the plan deletes them with their content. */
+    deletedProcedures: requirement.tests.filter(t => t.kind === 'manual' && !plan.criteria.some(c => c.evidence.some(e => e.testId === t.id)))
   };
-}
-/** Sentences describing the test links that approving this plan adds or removes. */
-export function linkChanges(requirement: Requirement, plan: CoveragePlan, catalog: Catalog): string[] {
-  const delta = coverageChanges(requirement, plan);
-  const name = (id: string) => catalog.cases.find(c => c.id === id)?.name ?? id;
-  const list = (items: string[]) => `${items.length} ${items.length === 1 ? 'test' : 'tests'}: ${items.join(', ')}.`;
-  return [
-    ...(delta.addedCases.length ? [`Links ${list(delta.addedCases.map(name))}`] : []),
-    ...(delta.removedTests.length ? [`Unlinks ${list(delta.removedTests.map(t => t.kind === 'manual' ? `${t.title} (manual procedure)` : t.title))}`] : [])
-  ];
 }

@@ -71,6 +71,8 @@ test('candidate exceptions remain distinct from verification and never bypass CI
   c.assets = candidate().assets;
   req.tests = []; assert.equal(readiness(c).ready, true);
   c.exceptions = []; assert.equal(readiness(c).ready, false);
+  // A plan whose evidence resolves to no test leaves the requirement without verification.
+  assert.match(readiness(c).missing.join(' '), /no verification defined/);
   const next = candidate(); next.results = []; next.manualRuns = [];
   assert.equal(readiness(next).ready, false); assert.equal(readiness(next).excepted, 0);
   c.revision.requirements = []; assert.equal(readiness(c).ready, false);
