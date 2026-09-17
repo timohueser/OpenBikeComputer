@@ -286,10 +286,10 @@ def plan_problems(entry: dict, requirement: dict, baseline: dict | None,
     note = notes.append
     plan = entry.get("plan") or {}
     procedures = entry.get("procedures") or []
-    if not plan.get("rationale", "").strip():
+    if not as_text(plan.get("rationale")).strip():
         say(f"{rid}: the plan has no rationale")
-    if len(plan.get("rationale", "")) > 900:
-        say(f"{rid}: the rationale is {len(plan['rationale'])} characters, too long for the card")
+    if len(as_text(plan.get("rationale"))) > 900:
+        note(f"{rid}: the rationale is {len(plan['rationale'])} characters, which reads long on the card")
     if not plan.get("criteria"):
         say(f"{rid}: the plan has no criteria")
         return found, notes
@@ -308,26 +308,35 @@ def plan_problems(entry: dict, requirement: dict, baseline: dict | None,
             note(f"{rid}: criterion {gained} is new")
     linked_cases = {t.get("caseId") for t in requirement["tests"] if t["kind"] == "automated"}
     existing = {t["id"] for t in requirement["tests"]}
+    cited_keys: set[tuple[str, str]] = set()
     proposed = {p.get("id") for p in procedures}
     cited: set[str] = set()
     for criterion in plan["criteria"]:
         cid = criterion.get("id", "?")
         if not identifier_ok(cid):
-            say(f"{rid}: criterion id {cid!r} has characters the server refuses")
-        if not criterion.get("statement", "").strip():
+            say(f"{rid}: criterion id {cid!r} is not one the server accepts")
+        if not as_text(criterion.get("statement")).strip():
             say(f"{rid}: criterion {cid} has no statement")
-        if len(criterion.get("evidence", [])) > 100:
+        # The server insists both fields are present and of the right type. A generator that emits
+        # `null` for "nothing here" is the common way to trip this.
+        if not isinstance(criterion.get("gap"), str):
+            say(f"{rid}: criterion {cid} needs a gap string; use \"\" when there is none")
+        if not isinstance(criterion.get("evidence"), list):
+            say(f"{rid}: criterion {cid} needs an evidence list; use [] when there is none")
+        if len(criterion.get("evidence") or []) > 100:
             say(f"{rid}: criterion {cid} has more than 100 pieces of evidence")
-        seen: set[str] = set()
-        for evidence in criterion.get("evidence", []):
+        seen: set[tuple[str, str]] = set()
+        for evidence in criterion.get("evidence") or []:
             # The server discriminates on the type, not on truthiness, so an empty string counts.
             if isinstance(evidence.get("caseId"), str) == isinstance(evidence.get("testId"), str):
                 say(f"{rid}: criterion {cid} has evidence naming neither exactly one case nor one manual test")
                 continue
-            key = evidence.get("caseId") or evidence.get("testId")
+            key = ("case", evidence["caseId"]) if isinstance(evidence.get("caseId"), str) \
+                else ("manual", evidence["testId"])
             if key in seen:
-                say(f"{rid}: criterion {cid} cites {key} twice")
+                say(f"{rid}: criterion {cid} cites {key[1]} twice")
             seen.add(key)
+            cited_keys.add(key)
             # A case the requirement already links stays valid evidence even once the catalogue has
             # moved on, which is what the server accepts.
             if evidence.get("caseId") and evidence["caseId"] not in catalog_ids | linked_cases:
@@ -336,19 +345,22 @@ def plan_problems(entry: dict, requirement: dict, baseline: dict | None,
                 cited.add(evidence["testId"])
                 if evidence["testId"] not in existing | proposed:
                     say(f"{rid}: criterion {cid} cites manual test {evidence['testId']}, which does not exist")
-            if not evidence.get("rationale", "").strip():
+            if not as_text(evidence.get("rationale")).strip():
                 say(f"{rid}: criterion {cid} has evidence with no rationale")
-        gap = criterion.get("gap", "").strip()
+        gap = as_text(criterion.get("gap")).strip()
         nxt = criterion.get("next")
+        if nxt is not None and not isinstance(nxt, dict):
+            say(f"{rid}: criterion {cid} has a next that is not an object")
+            nxt = None
         if gap and not nxt:
             note(f"{rid}: criterion {cid} has a gap and names no test to build")
         if nxt and not gap:
             note(f"{rid}: criterion {cid} names a test to build but records no gap")
         if nxt and nxt.get("level") not in LEVELS:
             say(f"{rid}: criterion {cid} has level {nxt.get('level')!r}; use one of {', '.join(LEVELS)}")
-        if nxt and not nxt.get("summary", "").strip():
+        if nxt and not as_text(nxt.get("summary")).strip():
             say(f"{rid}: criterion {cid} names a test to build with no summary")
-        if nxt and len(nxt.get("summary", "")) > 300:
+        if nxt and len(as_text(nxt.get("summary"))) > 300:
             say(f"{rid}: criterion {cid} has a {len(nxt['summary'])}-character summary; keep it to one sentence")
     for procedure in procedures:
         if not identifier_ok(procedure.get("id", "")):
@@ -360,15 +372,22 @@ def plan_problems(entry: dict, requirement: dict, baseline: dict | None,
         if procedure.get("id") in existing:
             say(f"{rid}: procedure {procedure['id']} collides with a test the requirement already has")
         for field in ("title", "steps", "expected"):
-            if not procedure.get(field, "").strip():
+            if not as_text(procedure.get(field)).strip():
                 say(f"{rid}: procedure {procedure.get('id')} has no {field}")
+    if len(cited_keys) > 100:
+        say(f"{rid}: the plan cites {len(cited_keys)} distinct tests; the server takes at most 100")
     return found, notes
 
 
-def identifier_ok(value: str) -> bool:
-    """The server's own identifier rule (`identifier` in src/lib/server/domain.ts)."""
-    return bool(value) and value[0].isascii() and value[0].isalnum() and all(
-        c.isascii() and (c.isalnum() or c in "._-") for c in value)
+def identifier_ok(value) -> bool:
+    """The server's own identifier rule (`identifier` in src/lib/server/domain.ts), length and all."""
+    return isinstance(value, str) and 0 < len(value) <= 200 and value[0].isascii() and value[0].isalnum() \
+        and all(c.isascii() and (c.isalnum() or c in "._-") for c in value)
+
+
+def as_text(value) -> str:
+    """A field the server insists is a string. An explicit `null` is not one, and is caught by name."""
+    return value if isinstance(value, str) else ""
 
 
 def head_sha() -> str:
@@ -413,7 +432,7 @@ def propose(console: Console, paths: list[str], sha: str, check_only: bool) -> i
         notes += said
     criteria = [c for e in entries for c in e.get("plan", {}).get("criteria", [])]
     print(f"r{revision['id']} · {len(entries)} plans · {len(criteria)} criteria · "
-          f"{sum(1 for c in criteria if c.get('gap', '').strip())} gaps · "
+          f"{sum(1 for c in criteria if as_text(c.get('gap')).strip())} gaps · "
           f"{sum(1 for c in criteria if c.get('next'))} named tests · "
           f"{sum(len(e.get('procedures') or []) for e in entries)} procedures · commit {sha[:10]}")
     for note in notes:
