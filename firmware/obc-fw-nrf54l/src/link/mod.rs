@@ -202,6 +202,18 @@ pub fn map_transfer_state() -> Option<obc_app::screen::MapTransfer> {
     })
 }
 
+/// **The committed map does not parse.** Published right after [`publish_map_transfer`] has stored
+/// the installed phase, so the terminal card becomes the format failure instead of success. Phase 5
+/// is `MapTransferError::NotAMap`, whose card already says the bytes arrived and are not an OBCM
+/// this firmware reads — which is exactly this case, and needed no new copy.
+///
+/// The map stays committed. The previous map is already gone by this point: the publish frees it in
+/// the same commit that writes the new one, so there is nothing to roll back to. The rider re-sends,
+/// and a reboot before they do lands on MAP UNREADABLE with USB recovery already running.
+pub(crate) fn publish_map_unreadable() {
+    MAP_PHASE.store(5, Ordering::Relaxed);
+}
+
 /// Clear the map-transfer state — called when the rider dismisses the terminal card, so the ride
 /// loop's next pass doesn't immediately push it back.
 ///
