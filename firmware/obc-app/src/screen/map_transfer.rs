@@ -60,7 +60,9 @@ const BAR_H: i32 = 14;
 /// correct.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapTransferError {
-    /// The card refused the write, or the commit could not finish — nothing durable landed.
+    /// The card refused the write, the commit could not finish, or a committed map could not be
+    /// read back to check it. In the first two nothing durable landed; in the last the map is on the
+    /// card and unverified, and the medium is the suspect rather than the map.
     Storage,
     /// The bytes arrived, the whole-object CRC did not match. Re-send.
     Damaged,
