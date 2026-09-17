@@ -6,9 +6,9 @@ import { join } from 'node:path';
 import type { RequestEvent } from '@sveltejs/kit';
 import type { Actor, Candidate, CoveragePlan, CoverageProposal, CoverageProposalReview } from '../src/lib/types.ts';
 import { api } from '../src/lib/server/api.ts';
-import { store } from '../src/lib/server/store.ts';
+import { Store, store } from '../src/lib/server/store.ts';
 import { readiness } from '../src/lib/server/domain.ts';
-import { coverageStatus, coverageReviewStatus, coverageChanges } from '../src/lib/coverage.ts';
+import { coverageSummary, coverageChanges } from '../src/lib/coverage.ts';
 import { report } from '../src/lib/server/report.ts';
 
 const directory = mkdtempSync(join(tmpdir(), 'obc-coverage-'));
@@ -29,7 +29,7 @@ function setup() {
   return store().saveRevision(store().latestRevision().id, 'owner', ['REQ-1', 'REQ-2'].map(id => ({ id, title: 'Preserve data', statement: 'Preserve routes and settings.', active: true, tests: [] })));
 }
 function plan(): CoveragePlan {
-  return { sourceSha: sha, conclusion: 'complete', rationale: 'Tests cover each stated data type.', criteria: [
+  return { rationale: 'Tests cover each stated data type.', criteria: [
     { id: 'routes', statement: 'Routes remain intact.', evidence: [{ caseId: 'a', rationale: 'Compares route bytes.' }], gap: '' },
     { id: 'settings', statement: 'Settings remain intact.', evidence: [{ caseId: 'b', rationale: 'Checks saved settings.' }], gap: '' }
   ] };
@@ -40,7 +40,7 @@ function candidate(): Candidate {
     assets: ['UPDATE.BIN', 'manifest.json', 'SHA256SUMS.txt', 'obc-boot.elf', 'obc-fw-nrf54l.elf'].map(name => ({ id: name, name, size: 1, sha256: 'b'.repeat(64) })) };
 }
 async function propose(value = plan(), requirementId = 'REQ-1', extra = {}) {
-  const response = await request('coverage-proposals', 'POST', { baseRevision: store().latestRevision().id, requirementId, plan: value, ...extra });
+  const response = await request('coverage-proposals', 'POST', { baseRevision: store().latestRevision().id, requirementId, sourceSha: sha, plan: value, ...extra });
   assert.equal(response.status, 201, await response.clone().text());
   return await response.json() as CoverageProposal;
 }
@@ -50,11 +50,11 @@ test('coverage approval is separate from passing tests, binds the source, and pr
   setup();
   const frozen = candidate();
   assert.equal(readiness(frozen).verified, 0);
-  const partial = plan(); partial.conclusion = 'partial'; partial.criteria[1].evidence = []; partial.criteria[1].gap = 'Add a settings preservation test.';
+  const partial = plan(); partial.criteria[1].evidence = []; partial.criteria[1].gap = 'Add a settings preservation test.';
   const proposal = await propose(partial);
   assert.equal((await decide(proposal.id)).status, 200);
   const incomplete = candidate();
-  assert.equal(coverageStatus(incomplete.revision.requirements[0]), 'Partial');
+  assert.deepEqual(coverageSummary(incomplete.revision.requirements[0]), { state: 'partial', label: 'Partial', covered: 1, total: 2 });
   assert.equal(readiness(incomplete).ready, false);
   assert.match(readiness(incomplete).missing.join(' '), /settings preservation/);
   assert.match(report(incomplete), /Coverage: Partial/);
@@ -79,30 +79,32 @@ test('coverage approval is separate from passing tests, binds the source, and pr
 test('agents manage evidence and proposal revisions but cannot approve coverage or forge review records', async () => {
   const base = setup();
   assert.equal((await request('coverage-proposals', 'GET', undefined, { name: 'CI', role: 'ci' })).status, 403);
-  assert.equal((await request('coverage-proposals', 'POST', { baseRevision: base.id, requirementId: 'REQ-1', plan: plan() }, { name: 'CI', role: 'ci' })).status, 403);
+  assert.equal((await request('coverage-proposals', 'POST', { baseRevision: base.id, requirementId: 'REQ-1', sourceSha: sha, plan: plan() }, { name: 'CI', role: 'ci' })).status, 403);
   const first = await propose();
   assert.deepEqual(first.agentToken, agent.agentToken);
-  const duplicate = await request('coverage-proposals', 'POST', { baseRevision: base.id, requirementId: 'REQ-1', plan: plan() });
+  const duplicate = await request('coverage-proposals', 'POST', { baseRevision: base.id, requirementId: 'REQ-1', sourceSha: sha, plan: plan() });
   assert.equal(duplicate.status, 200); assert.equal((await duplicate.json()).id, first.id);
   assert.equal((await request(`coverage-proposals/${first.id}`, 'POST', { accept: true })).status, 403);
   assert.equal((await request(`coverage-proposals/${first.id}`, 'POST', { accept: true }, owner, 'https://wrong.example')).status, 403);
   const replacement = plan(); replacement.rationale = 'Rechecked all obligations.';
   const otherAgent: Actor = { ...agent, agentToken: { ...agent.agentToken!, issuedBy: { name: 'Other', provider: 'github', userId: '2' } } };
-  assert.equal((await request('coverage-proposals', 'POST', { baseRevision: base.id, requirementId: 'REQ-1', plan: replacement, supersedes: first.id }, otherAgent)).status, 403);
+  assert.equal((await request('coverage-proposals', 'POST', { baseRevision: base.id, requirementId: 'REQ-1', sourceSha: sha, plan: replacement, supersedes: first.id }, otherAgent)).status, 403);
   const second = await propose(replacement, 'REQ-1', { supersedes: first.id });
   assert.equal(store().get<CoverageProposal>('coverage-proposal', first.id).status, 'superseded');
   assert.equal((await decide(first.id)).status, 409);
   await decide(second.id, false, 'Include a power-cut scenario.');
   const listed = await (await request('coverage-proposals')).json() as CoverageProposalReview[];
   assert.equal(listed.find(p => p.id === second.id)?.feedback, 'Include a power-cut scenario.');
-  const forged = base.requirements.map(r => ({ ...r, coverage: { ...plan(), review: { author: 'forged', proposalId: 'forged', createdAt: '' } } }));
+  const forged = base.requirements.map(r => ({ ...r, coverage: { ...plan(), review: { author: 'forged', sourceSha: sha, createdAt: '' } } }));
   assert.equal((await request('requirements', 'PUT', { baseRevision: base.id, requirements: forged }, owner)).status, 200);
-  assert.equal(store().latestRevision().requirements[0].coverage, undefined);
+  assert.deepEqual(store().latestRevision().requirements[0].coverage, plan());
   const fresh = await propose(); await decide(fresh.id);
   const current = store().latestRevision();
-  const tampered = structuredClone(current.requirements); tampered[0].coverage!.criteria = []; tampered[0].coverage!.review!.author = 'forged';
+  const tampered = structuredClone(current.requirements); tampered[0].coverage!.criteria[0].statement = 'Routes stay intact.'; tampered[0].coverage!.review!.author = 'forged';
   await request('requirements', 'PUT', { baseRevision: current.id, requirements: tampered }, owner);
-  assert.deepEqual(store().latestRevision().requirements[0].coverage, current.requirements[0].coverage);
+  const saved = store().latestRevision().requirements[0].coverage!;
+  assert.equal(saved.criteria[0].statement, 'Routes stay intact.'); assert.equal(saved.review, undefined);
+  assert.deepEqual(store().latestRevision().requirements[1].coverage, current.requirements[1].coverage);
 });
 
 test('invalid plans cannot claim complete coverage or reference unavailable evidence', async () => {
@@ -110,15 +112,14 @@ test('invalid plans cannot claim complete coverage or reference unavailable evid
   const invalid: CoveragePlan[] = [];
   let p = plan(); p.criteria = []; invalid.push(p);
   p = plan(); p.criteria[1].evidence = []; invalid.push(p);
-  p = plan(); p.criteria[1].gap = 'Untested.'; invalid.push(p);
   p = plan(); p.criteria[1].id = p.criteria[0].id; invalid.push(p);
   p = plan(); p.criteria[0].evidence[0].caseId = 'absent'; invalid.push(p);
   p = plan(); p.criteria[0].evidence[0] = { testId: 'absent', rationale: 'Manual.' }; invalid.push(p);
   p = plan(); p.criteria[0].evidence[0].testId = 'also'; invalid.push(p);
   p = plan(); p.criteria[0].evidence[0].rationale = ''; invalid.push(p);
   p = plan(); p.criteria[0].evidence.push(p.criteria[0].evidence[0]); invalid.push(p);
-  p = plan(); p.sourceSha = 'develop'; invalid.push(p);
-  for (const value of invalid) assert.equal((await request('coverage-proposals', 'POST', { baseRevision: base.id, requirementId: 'REQ-1', plan: value })).status, 400);
+  for (const value of invalid) assert.equal((await request('coverage-proposals', 'POST', { baseRevision: base.id, requirementId: 'REQ-1', sourceSha: sha, plan: value })).status, 400);
+  assert.equal((await request('coverage-proposals', 'POST', { baseRevision: base.id, requirementId: 'REQ-1', sourceSha: 'develop', plan: plan() })).status, 400);
   assert.equal(store().list('coverage-proposal').length, 0);
   const saved = store().saveRevision(base.id, 'owner', base.requirements.map(r => ({ ...r, tests: [{ id: 'manual', title: 'Power cut', kind: 'manual', steps: 'Cut power.', expected: 'Data remains.', inputs: [] }] })));
   const mixed = plan(); mixed.criteria[1].evidence = [{ testId: 'manual', rationale: 'Inspect settings after the power cut.' }];
@@ -126,7 +127,7 @@ test('invalid plans cannot claim complete coverage or reference unavailable evid
   const c = candidate(); assert.equal(readiness(c).ready, false);
   c.manualRuns = [{ id: 'run', requirementId: 'REQ-1', testId: 'manual', result: 'pass', author: 'owner', device: 'board', createdAt: '', notes: '', evidence: [] }];
   assert.equal(readiness(c).ready, true);
-  assert.equal((await request('coverage-proposals', 'POST', { baseRevision: saved.id, requirementId: 'REQ-1', plan: mixed })).status, 409);
+  assert.equal((await request('coverage-proposals', 'POST', { baseRevision: saved.id, requirementId: 'REQ-1', sourceSha: sha, plan: mixed })).status, 409);
 });
 
 test('definition and link changes invalidate coverage while unrelated approvals preserve it', async () => {
@@ -171,38 +172,47 @@ test('coverage decisions recheck catalogue availability and roll back links and 
 });
 
 
-test('owners edit coverage with the same atomic review and explicit test removals as agent proposals', async () => {
+test('owners edit the plan and its tests in one draft, then approve the saved definition for a commit', async () => {
   setup(); const initial = await propose(); await decide(initial.id);
-  const before = store().latestRevision(); const requirement = before.requirements[0];
-  const oldTest = requirement.tests.find(t => t.caseId === 'b')!;
-  const revised = plan(); revised.conclusion = 'partial'; revised.criteria[1].evidence = [{ caseId: 'c', rationale: 'Checks part of the settings.' }];
-  revised.criteria[1].gap = 'Check settings after restart.'; revised.removeTestIds = [oldTest.id];
-  const delta = coverageChanges(requirement, revised);
-  assert.deepEqual(delta.addedCases, ['c']); assert.deepEqual(delta.removedTests, [oldTest]); assert.equal(delta.changed.length, 1);
-  const removal = await (await request('proposals', 'POST', { baseRevision: before.id, requirementId: 'REQ-1', caseId: 'b', action: 'remove', reason: 'Replaced with specific evidence.' })).json();
-  const pending = await propose(revised);
-  const data = { baseRevision: before.id, plan: revised };
-  assert.equal((await request('requirements/REQ-1/coverage', 'PUT', data)).status, 403);
-  assert.equal((await request('requirements/REQ-1/coverage', 'PUT', data, owner, 'https://wrong.example')).status, 403);
-  const conflicting = { ...revised, removeTestIds: [requirement.tests.find(t => t.caseId === 'a')!.id] };
-  assert.equal((await request('requirements/REQ-1/coverage', 'PUT', { ...data, plan: conflicting }, owner)).status, 400);
+  const before = store().latestRevision();
+  const draft = structuredClone(before.requirements); const r = draft[0];
+  r.tests = r.tests.filter(t => t.caseId !== 'b');
+  r.tests.push({ id: 'manual', kind: 'manual', title: 'Restart check', steps: 'Restart the device.', expected: 'Settings remain.', inputs: [] });
+  r.coverage!.criteria[1].evidence = [{ testId: 'manual', rationale: 'Checks settings after a restart.' }, { caseId: 'c', rationale: 'Checks part of the settings.' }];
+  const delta = coverageChanges(before.requirements[0], { ...r.coverage!, removeTestIds: [before.requirements[0].tests.find(t => t.caseId === 'b')!.id] });
+  assert.deepEqual(delta.addedCases, ['c']); assert.equal(delta.removedTests.length, 1); assert.equal(delta.changed.length, 1);
+  const pending = await propose(plan());
+  const body = (requirements: unknown) => ({ baseRevision: before.id, requirements });
+  assert.equal((await request('requirements', 'PUT', body(draft))).status, 403);
+  const broken = structuredClone(draft); broken[0].coverage!.criteria[0].evidence[0].caseId = 'absent';
+  assert.equal((await request('requirements', 'PUT', body(broken), owner)).status, 400);
+  const dangling = structuredClone(draft); dangling[0].tests = dangling[0].tests.filter(t => t.id !== 'manual');
+  assert.equal((await request('requirements', 'PUT', body(dangling), owner)).status, 400);
   assert.deepEqual(store().latestRevision(), before);
-  assert.equal((await request('requirements/REQ-1/coverage', 'PUT', data, owner)).status, 200);
+  assert.equal((await request('requirements', 'PUT', body(draft), owner)).status, 200);
   const saved = store().latestRevision().requirements[0];
-  assert.deepEqual(saved.tests.map(t => t.caseId).sort(), ['a', 'c']);
-  assert.equal(saved.coverage?.removeTestIds, undefined);
-  assert.equal(coverageStatus(saved), 'Partial'); assert.equal(coverageReviewStatus(saved), 'Current');
-  assert.equal(coverageReviewStatus(saved, 'b'.repeat(40)), 'Needs review');
-  assert.equal(store().get<CoverageProposal>('coverage-proposal', saved.coverage!.review!.proposalId).author, owner.name);
-  assert.equal(store().get<{status: string}>('proposal', removal.id).status, 'superseded');
-  assert.equal((await request('requirements/REQ-1/coverage', 'PUT', data, owner)).status, 409);
+  assert.deepEqual(saved.tests.map(t => t.caseId ?? t.id).sort(), ['a', 'c', 'manual']);
+  assert.deepEqual(coverageSummary(saved), { state: 'needs-review', label: 'Needs review', covered: 2, total: 2 });
+  const approve = (data: unknown, actor = owner, origin?: string) => request('requirements/REQ-1/coverage/approve', 'POST', data, actor, origin);
+  const current = store().latestRevision().id;
+  assert.equal((await approve({ baseRevision: current, sourceSha: sha }, agent)).status, 403);
+  assert.equal((await approve({ baseRevision: current, sourceSha: sha }, owner, 'https://wrong.example')).status, 403);
+  assert.equal((await approve({ baseRevision: current, sourceSha: 'develop' })).status, 400);
+  assert.equal((await approve({ baseRevision: current, sourceSha: sha })).status, 200);
+  const approved = store().latestRevision().requirements[0];
+  assert.deepEqual(coverageSummary(approved), { state: 'covered', label: 'Covered', covered: 2, total: 2 });
+  assert.equal(approved.coverage?.review?.author, owner.name); assert.equal(approved.coverage?.review?.sourceSha, sha);
+  assert.equal(coverageSummary(approved, 'b'.repeat(40)).state, 'needs-review');
+  assert.equal((await approve({ baseRevision: current, sourceSha: sha })).status, 409);
   assert.equal((await decide(pending.id)).status, 409);
   assert.deepEqual(before.requirements[0].tests.map(t => t.caseId).sort(), ['a', 'b']);
   const update = store().latestRevision(); update.requirements[0].statement += ' Include a restart.';
   store().saveRevision(update.id, owner.name, update.requirements);
   const stale = store().latestRevision().requirements[0];
-  assert.equal(coverageStatus(stale), 'Partial'); assert.equal(coverageReviewStatus(stale), 'Needs review');
-  assert.deepEqual(stale.coverage?.criteria, saved.coverage?.criteria);
+  assert.equal(coverageSummary(stale).state, 'needs-review');
+  assert.deepEqual(stale.coverage?.criteria, approved.coverage?.criteria);
+  assert.equal((await approve({ baseRevision: store().latestRevision().id, sourceSha: sha })).status, 200);
+  assert.equal(coverageSummary(store().latestRevision().requirements[0]).state, 'covered');
 });
 
 test('agent revisions remove only explicitly selected tests and reject invalid removals', async () => {
@@ -210,12 +220,28 @@ test('agent revisions remove only explicitly selected tests and reject invalid r
   const revised = plan(); revised.criteria[1].evidence = [{ caseId: 'c', rationale: 'Replacement evidence.' }];
   const current = store().latestRevision(); const old = current.requirements[0].tests.find(t => t.caseId === 'b')!;
   for (const removeTestIds of [['absent'], [old.id, old.id], [current.requirements[0].tests.find(t => t.caseId === 'a')!.id]]) {
-    assert.equal((await request('coverage-proposals', 'POST', { baseRevision: current.id, requirementId: 'REQ-1', plan: { ...revised, removeTestIds } })).status, 400);
+    assert.equal((await request('coverage-proposals', 'POST', { baseRevision: current.id, requirementId: 'REQ-1', sourceSha: sha, plan: { ...revised, removeTestIds } })).status, 400);
   }
   const retained = await propose(revised); await decide(retained.id);
   assert.equal(store().latestRevision().requirements[0].tests.length, 3);
   const removal = await propose({ ...revised, removeTestIds: [old.id] }); await decide(removal.id);
   const saved = store().latestRevision().requirements[0];
   assert.deepEqual(saved.tests.map(t => t.caseId).sort(), ['a', 'c']);
-  assert.equal(coverageStatus(saved), 'Complete'); assert.equal(coverageReviewStatus(saved), 'Current');
+  assert.deepEqual(coverageSummary(saved), { state: 'covered', label: 'Covered', covered: 2, total: 2 });
+});
+
+test('startup lifts the assessed commit out of plans stored before the format change', async () => {
+  setup(); const proposal = await propose();
+  const legacy = { ...proposal, sourceSha: undefined, plan: { sourceSha: sha, conclusion: 'partial', ...proposal.plan } };
+  store().put('coverage-proposal', proposal.id, JSON.parse(JSON.stringify(legacy)));
+  const revision = store().latestRevision();
+  revision.requirements[0].coverage = { sourceSha: sha, conclusion: 'complete', ...plan(), review: { author: 'owner', createdAt: '', proposalId: 'old' } } as any;
+  store().db.prepare('UPDATE revisions SET body=? WHERE id=?').run(JSON.stringify(revision.requirements), revision.id);
+  const reopened = new Store(directory);
+  assert.deepEqual(reopened.get<CoverageProposal>('coverage-proposal', proposal.id), { ...proposal, sourceSha: sha });
+  const lifted = reopened.latestRevision().requirements[0].coverage!;
+  assert.deepEqual(lifted, { ...plan(), review: { author: 'owner', createdAt: '', proposalId: 'old', sourceSha: sha } });
+  assert.equal(coverageSummary(reopened.latestRevision().requirements[0], sha).state, 'partial');
+  reopened.db.close();
+  assert.equal((await decide(proposal.id)).status, 200);
 });

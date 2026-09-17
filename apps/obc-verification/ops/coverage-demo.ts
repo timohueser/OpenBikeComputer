@@ -36,13 +36,13 @@ const requirements: Requirement[] = [
   { id: 'SYS-030', title: 'Return to position', statement: 'The user shall be able to exit pan/zoom mode with one action. This shall restore following mode and center the map back on the users position given a GPS fix is available.', group: 'Map display on device', active: true, tests: [] }
 ];
 const plans: CoveragePlan[] = [
-  { sourceSha, conclusion: 'partial', rationale: 'Projection tests cover both render modes. They do not prove that a user can select a mode or retain that choice after restart.', criteria: [
+  { rationale: 'Projection tests cover both render modes. They do not prove that a user can select a mode or retain that choice after restart.', criteria: [
     { id: 'north-up', statement: 'The map can render north-up.', evidence: [{ caseId: cases[0].id, rationale: 'Checks the default viewport angle and projection of a point due north.' }], gap: '' },
     { id: 'heading-up', statement: 'The map can render heading-up.', evidence: [{ caseId: cases[1].id, rationale: 'Checks that the current course projects toward the top of the screen.' }], gap: '' },
     { id: 'selection', statement: 'The user can select either orientation.', evidence: [], gap: 'Add the orientation setting and an automated user-interaction test for both choices.' },
     { id: 'persistence', statement: 'The selected orientation survives a restart.', evidence: [], gap: 'Add a save/reload test that also starts a ride and checks that it respects the saved choice.' }
   ] },
-  { sourceSha, conclusion: 'complete', rationale: 'The shared application test exercises the single Back action, the resulting Follow mode, and recentering on a valid position fix.', criteria: [
+  { rationale: 'The shared application test exercises the single Back action, the resulting Follow mode, and recentering on a valid position fix.', criteria: [
     { id: 'return', statement: 'One action exits pan/zoom, restores following, and recenters on the available fix.', evidence: [{ caseId: cases[2].id, rationale: 'Runs the Back gesture and asserts the mode and camera position afterwards.' }], gap: '' }
   ] }
 ];
@@ -50,7 +50,7 @@ const credential = createAgentToken(owner, 'Local coverage demo agent', 240).tok
 const cookies = { get: () => undefined } as unknown as RequestEvent['cookies'];
 async function propose(index: number) {
   const request = new Request(`${process.env.ORIGIN}/api/coverage-proposals`, { method: 'POST', headers: { authorization: `Bearer ${credential}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ baseRevision: db.latestRevision().id, requirementId: requirements[index].id, plan: plans[index] }) });
+    body: JSON.stringify({ baseRevision: db.latestRevision().id, requirementId: requirements[index].id, sourceSha, plan: plans[index] }) });
   const response = await api({ request, params: { path: 'coverage-proposals' }, locals: { actor: authenticate(request, cookies) }, cookies } as unknown as RequestEvent);
   if (!response.ok) throw new Error(await response.text());
   return await response.json();
@@ -70,12 +70,11 @@ await propose(0);
 const changed = db.latestRevision();
 changed.requirements[1].statement += ' Returning shall also preserve the selected zoom level. (Demo addition.)';
 db.saveRevision(changed.id, 'Demo requirement edit', changed.requirements);
-plans[1].conclusion = 'partial';
 plans[1].criteria.push({ id: 'zoom', statement: 'Returning preserves the selected zoom level.', evidence: [], gap: 'Add an assertion for the new zoom-preservation obligation. This obligation is added only in the demo.' });
 plans[1].rationale = 'The requirement gained a zoom-preservation clause. Keep the existing Back-action evidence and record the new gap.';
 await propose(1);
 db.db.close();
 const child = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'dev', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: resolve(import.meta.dirname, '..'), env: process.env, stdio: 'inherit' });
-console.log(`\nLocal coverage demo: ${process.env.ORIGIN}\nUsername: demo\nPassword: ${password}\nDisposable database: ${directory}\nSYS-039: edit accepted coverage or review the proposed extension and test removal. SYS-030: a demo requirement edit needs review. The release candidate retains the earlier snapshot. New demo tests and all results are illustrative.\n`);
+console.log(`\nLocal coverage demo: ${process.env.ORIGIN}\nUsername: demo\nPassword: ${password}\nDisposable database: ${directory}\nSYS-039: approve or edit the proposed extension and test removal. SYS-030: a demo requirement edit needs review. The release candidate retains the earlier snapshot. New demo tests and all results are illustrative.\n`);
 for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => child.kill(signal));
 child.on('exit', code => { rmSync(directory, { recursive: true, force: true }); process.exitCode = code ?? 0; });

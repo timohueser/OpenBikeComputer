@@ -2,11 +2,12 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { ApprovedGitHubUser, Attachment, Candidate, Catalog, CoverageProposal, LinkProposal, Requirement, ReviewedCoverage, Revision } from '../types.ts';
+import { isDeepStrictEqual } from 'node:util';
+import type { ApprovedGitHubUser, Attachment, Candidate, Catalog, CoverageProposal, CoverageReview, LinkProposal, Requirement, ReviewedCoverage, Revision } from '../types.ts';
 import { assert, Problem, refresh } from './domain.ts';
 import { proposalConflict } from './proposals.ts';
-import { coverageConflict, coveragePlan } from './coverage-plan.ts';
-import { verificationDefinition } from '../coverage.ts';
+import { coverageConflict, linkEvidence, commitSha } from './coverage-plan.ts';
+import { coverageDefinition } from '../coverage.ts';
 
 const referencedRevisions = `SELECT json_extract(body, '$.revision.id') FROM records
   WHERE kind IN ('candidate', 'publication') AND json_type(body, '$.revision.id') = 'integer'`;
@@ -34,10 +35,35 @@ export class Store {
       id: 'EXAMPLE-001', title: 'Example — large route upload', active: false,
       statement: '**Illustrative only.** Upload a GPX route containing up to 500,000 GPS points. Replace this example with a requirement you have reviewed before activating it.', tests: []
     }]);
-    this.atomic(() => this.rememberRequirementNumbers([
-      ...this.revisions().flatMap(r => r.requirements),
-      ...['candidate', 'publication'].flatMap(kind => this.list<Candidate>(kind).flatMap(c => c.revision.requirements))
-    ]));
+    this.atomic(() => {
+      this.liftSourceCommits();
+      this.rememberRequirementNumbers([
+        ...this.revisions().flatMap(r => r.requirements),
+        ...['candidate', 'publication'].flatMap(kind => this.list<Candidate>(kind).flatMap(c => c.revision.requirements))
+      ]);
+    });
+  }
+  /** Records written before the assessed commit moved out of the plan: lift it onto the proposal or the review. Idempotent. */
+  private liftSourceCommits(): void {
+    const lift = (requirements: Requirement[]) => requirements.reduce((changed, r) => {
+      const plan = r.coverage as (ReviewedCoverage & { sourceSha?: string; conclusion?: string }) | undefined;
+      if (!plan || plan.sourceSha === undefined) return changed;
+      const { sourceSha, conclusion: ignored, ...rest } = plan;
+      r.coverage = { ...rest, ...(rest.review ? { review: { ...rest.review, sourceSha } } : {}) };
+      return true;
+    }, false);
+    for (const p of this.list<CoverageProposal & { plan: { sourceSha?: string; conclusion?: string } }>('coverage-proposal')) {
+      if (p.sourceSha !== undefined || typeof p.plan.sourceSha !== 'string') continue;
+      const { sourceSha, conclusion: ignored, ...plan } = p.plan;
+      this.put('coverage-proposal', p.id, { ...p, sourceSha, plan });
+    }
+    for (const row of this.db.prepare('SELECT id, body FROM revisions').all()) {
+      const requirements: Requirement[] = JSON.parse(String(row.body));
+      if (lift(requirements)) this.db.prepare('UPDATE revisions SET body=? WHERE id=?').run(JSON.stringify(requirements), row.id);
+    }
+    for (const kind of ['candidate', 'publication']) {
+      for (const c of this.list<Candidate>(kind)) if (lift(c.revision.requirements)) this.put(kind, c.id, c);
+    }
   }
   atomic<T>(operation: () => T): T {
     this.db.exec('BEGIN IMMEDIATE');
@@ -75,18 +101,19 @@ export class Store {
   saveRevision(base: number, author: string, requirements: Requirement[]): Revision {
     return this.atomic(() => this.writeRevision(base, author, requirements));
   }
-  private writeRevision(base: number, author: string, requirements: Requirement[], approved?: { requirementId: string; coverage: ReviewedCoverage }): Revision {
+  /** Approval is never taken from the input: it is granted here, or carried over while the approved definition is unchanged. */
+  private writeRevision(base: number, author: string, requirements: Requirement[], approved?: { requirementId: string; review: CoverageReview }): Revision {
     const row = this.db.prepare('SELECT MAX(id) AS id FROM revisions').get();
     assert(Number(row?.id ?? 0) === base, 'Requirements changed. Reload before saving.', 409);
     const previous = new Map((base ? this.revision(base).requirements : []).map(r => [r.id, r]));
     requirements = requirements.map(r => {
-      const { coverage: ignored, ...definition } = r;
+      const { coverage, ...definition } = r;
+      if (!coverage) return definition;
+      const plan: ReviewedCoverage = { rationale: coverage.rationale, criteria: structuredClone(coverage.criteria) };
       const before = previous.get(r.id);
-      if (approved?.requirementId === r.id) return { ...definition, coverage: approved.coverage };
-      if (!before?.coverage) return definition;
-      const coverage = structuredClone(before.coverage);
-      if (verificationDefinition(before) !== verificationDefinition(r)) delete coverage.review;
-      return { ...definition, coverage };
+      if (approved?.requirementId === r.id) plan.review = approved.review;
+      else if (before?.coverage?.review && coverageDefinition(before) === coverageDefinition(r)) plan.review = before.coverage.review;
+      return { ...definition, coverage: plan };
     });
     this.rememberRequirementNumbers(requirements);
     const createdAt = new Date().toISOString();
@@ -132,17 +159,14 @@ export class Store {
   file(id: string): Attachment { return this.get<Attachment>('file', id); }
   catalog(): Catalog { return this.maybe<Catalog>('catalog', 'current') ?? { sourceSha: '', updatedAt: '', cases: [] }; }
   proposals(): LinkProposal[] { return this.list<LinkProposal>('proposal'); }
-  saveCoverage(base: number, requirementId: string, author: string, value: unknown): Revision {
+  approveCoverage(base: number, requirementId: string, author: string, sourceSha: unknown): Revision {
     return this.atomic(() => {
       const revision = this.latestRevision();
-      assert(revision.id === base, 'Requirements changed. Reload before saving coverage.', 409);
+      assert(revision.id === base, 'Requirements changed. Reload before approving coverage.', 409);
       const requirement = revision.requirements.find(r => r.id === requirementId);
       assert(requirement, 'Requirement not found.', 404);
-      const plan = coveragePlan(value, requirement, this.catalog());
-      const proposal: CoverageProposal = { id: this.id(), baseRevision: base, requirementId, plan, author,
-        createdAt: new Date().toISOString(), status: 'pending' };
-      this.decideCoverage(proposal, author, true);
-      return this.latestRevision();
+      assert(requirement.coverage, 'Define coverage before approving it.');
+      return this.writeRevision(base, author, revision.requirements, { requirementId, review: { author, createdAt: new Date().toISOString(), sourceSha: commitSha(sourceSha) } });
     });
   }
   decideCoverageProposal(id: string, author: string, accept: boolean, feedback?: string): CoverageProposal {
@@ -159,14 +183,10 @@ export class Store {
       const requirement = revision.requirements.find(r => r.id === proposal.requirementId)!;
       const removedCases = new Set(requirement.tests.filter(t => proposal.plan.removeTestIds?.includes(t.id)).map(t => t.caseId));
       requirement.tests = requirement.tests.filter(t => !proposal.plan.removeTestIds?.includes(t.id));
-      for (const evidence of proposal.plan.criteria.flatMap(c => c.evidence)) {
-        if (evidence.caseId && !requirement.tests.some(t => t.caseId === evidence.caseId)) {
-          const found = catalog.cases.find(c => c.id === evidence.caseId)!;
-          requirement.tests.push({ id: this.id(), title: found.name.slice(0, 300), kind: 'automated', caseId: found.id, inputs: [] });
-        }
-      }
+      linkEvidence(requirement, proposal.plan, catalog, () => this.id());
+      requirement.coverage = { rationale: proposal.plan.rationale, criteria: proposal.plan.criteria };
       this.writeRevision(revision.id, author, revision.requirements, { requirementId: requirement.id,
-        coverage: { ...proposal.plan, removeTestIds: undefined, review: { author, createdAt: new Date().toISOString(), proposalId: id } } });
+        review: { author, createdAt: new Date().toISOString(), sourceSha: proposal.sourceSha, proposalId: id } });
       const includedCases = new Set(proposal.plan.criteria.flatMap(c => c.evidence.flatMap(e => e.caseId ? [e.caseId] : [])));
       for (const link of this.proposals()) {
         if (link.status === 'pending' && link.requirementId === requirement.id && ((link.action === 'add' && includedCases.has(link.caseId)) || (link.action === 'remove' && removedCases.has(link.caseId)))) {
