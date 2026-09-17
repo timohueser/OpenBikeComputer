@@ -28,7 +28,7 @@ const cases = [
   { id: 'rust-test::obc-app::main::app::heading_up_rotates_course_to_screen_top', suite: 'rust-test', name: 'Heading-up projection' },
   { id: 'rust-test::obc-app::harness::screens::pan_back_exits_and_recenters', suite: 'rust-test', name: 'Back exits pan and recenters' },
   { id: 'demo::orientation-selection', suite: 'Illustrative only — not an implemented test', name: 'DEMO ONLY: choosing an orientation' },
-  { id: 'demo::old-smoke-test', suite: 'Illustrative only — not an implemented test', name: 'DEMO ONLY: obsolete map smoke test' }
+  { id: 'demo::old-smoke-test', suite: 'Illustrative only — not an implemented test', name: 'DEMO ONLY: src/lib/map/smoke.test.ts / map view > opens the map and waits for the first frame, which is not an orientation assertion' }
 ];
 db.put('catalog', 'current', { sourceSha, updatedAt: new Date().toISOString(), cases });
 const requirements: Requirement[] = [
