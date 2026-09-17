@@ -128,7 +128,10 @@ final class UploadSheetModelTests: XCTestCase {
         XCTAssertFalse(model.shouldDismiss, "a drop is not terminal")
 
         // Nothing moves while parked.
-        try? await Task.sleep(for: .milliseconds(80))
+        let stayedParked = await neverHolds({
+            model.progress.bytesDone != stallBytes || model.phase != .interrupted
+        }, for: .milliseconds(80))
+        XCTAssertTrue(stayedParked, "a parked transfer must not move or resume itself")
         XCTAssertEqual(model.progress.bytesDone, stallBytes)
 
         model.resume()
@@ -194,18 +197,17 @@ final class UploadSheetModelTests: XCTestCase {
             onCompleted: { _, _ in completedCalls += 1 }
         )
         transport.assignedID.fulfill(DeviceObjectID(7))
+        transport.outcomePromise.fulfill(.completed)
         model.start()
 
-        // Let the outcome watcher reach its `await handle.outcome` suspension.
-        try? await Task.sleep(for: .milliseconds(20))
-
-        // Resolve + dismiss in one synchronous turn: fulfilling only *schedules*
-        // the watcher's resume, so `sheetDismissed()` cancels it first.
-        transport.outcomePromise.fulfill(.completed)
+        // The handle is already resolved when `start()` schedules its watcher. Dismiss in the
+        // same synchronous turn, before that watcher can act on the completion.
         model.sheetDismissed()
 
-        // Give the cancelled watcher its chance to (not) act.
-        try? await Task.sleep(for: .milliseconds(30))
+        let stayedDismissed = await neverHolds({
+            completedCalls > 0 || model.phase == .done || model.shouldDismiss
+        }, for: .milliseconds(30))
+        XCTAssertTrue(stayedDismissed, "the canceled watcher must not act on the resolved handle")
         XCTAssertEqual(completedCalls, 0, "onCompleted must not fire after dismiss")
         XCTAssertNotEqual(model.phase, .done, "a raced completion must not resurrect the sheet")
         XCTAssertFalse(model.shouldDismiss)
