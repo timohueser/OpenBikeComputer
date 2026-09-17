@@ -67,6 +67,7 @@ db.put('candidate', candidate.id, candidate);
 // An agent replaces obsolete evidence in an accepted partial plan. The omitted test is unlinked on approval.
 plans[0].criteria[2].evidence = [{ caseId: cases[3].id, rationale: 'Illustrative assertion: choose each orientation through the control and inspect the map. This test is invented for the demo, not production evidence.' }];
 plans[0].criteria[2].gap = '';
+delete plans[0].criteria[2].next;
 plans[0].criteria[3].evidence = [{ testId: 'ride-restart', rationale: 'Confirms on the device that the choice is still active after a power cycle.' }];
 plans[0].criteria[3].gap = 'No automated check yet; the ride check covers it until one exists.';
 plans[0].criteria[3].next = { level: 'unit', summary: 'Persist the choice to the settings store, reload, and assert the stored value.' };

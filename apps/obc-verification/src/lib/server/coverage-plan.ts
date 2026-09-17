@@ -75,7 +75,7 @@ export function linkEvidence(requirement: Requirement, plan: CoveragePlan, catal
 export function coverageConflict(proposal: CoverageProposal, current: Revision, catalog: Catalog): string | undefined {
   const now = current.requirements.find(r => r.id === proposal.requirementId);
   if (!now) return 'Requirement no longer exists. Request a fresh coverage proposal.';
-  try { coveragePlan(proposal.plan, now, catalog, proposal.procedures ?? []); }
+  try { coveragePlan(proposal.plan, now, catalog, proposalProcedures(proposal.procedures, now)); }
   catch (error) { return error instanceof Error ? error.message : 'Evidence is no longer available.'; }
 }
 /** What changed on the requirement since the proposal's base revision. The owner judges whether the plan still fits. */
