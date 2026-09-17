@@ -107,9 +107,8 @@ owner session, and never invent a requirement or claim a test is linked.
 
 To look up a requirement, run `obc req SYS-003` (`--json` for the raw record). It prints the
 statement, the coverage state, and the criteria numbered 1..n, so "criterion 2 of SYS-003" is the
-second one in that listing. The agent token lives at
-`~/.config/openbikecomputer/verification-agent.token`; the console API is described in
-[the application README](apps/obc-verification/README.md#agent-and-ci-api).
+second one in that listing. The agent token is stored at
+`~/.config/openbikecomputer/verification-agent.token`.
 
 - **When you implement or test behavior that a requirement describes**, say so in the pull
   request in one line: `Requirements: SYS-012, SYS-030` or `Requirements: none`. List a
