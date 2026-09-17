@@ -24,9 +24,12 @@
   const name = (e: CoverageEvidence) => evidenceTest(requirement, e)?.title ?? e.caseId ?? e.testId;
   const focus = (node: HTMLElement) => node.focus();
   function changed() { requirement = requirement; onchange(); }
+  /** The level picked for each criterion's next test, so a level chosen before the sentence is typed survives. */
+  let levels: Record<string, TestLevel> = {};
+  const level = (criterion: AcceptanceCriterion) => levels[criterion.id] ?? criterion.next?.level ?? 'system';
   /** The next test to build is kept only while it has a summary. */
-  function setNext(criterion: AcceptanceCriterion, level: TestLevel, summary: string) {
-    if (summary.trim()) criterion.next = { level, summary }; else delete criterion.next;
+  function setNext(criterion: AcceptanceCriterion, summary: string) {
+    if (summary.trim()) criterion.next = { level: level(criterion), summary }; else delete criterion.next;
     changed();
   }
   function addEvidence(criterion: AcceptanceCriterion, evidence: CoverageEvidence) {
@@ -108,7 +111,7 @@
             <button class="text-button add" on:click={() => { picker = criterion.id; search = ''; }}>+ Add evidence</button>
           {/if}
           <textarea class="gap" rows={1} maxlength={5000} aria-label="Remaining gap" placeholder={criterion.evidence.length ? 'Gap — leave empty if the evidence above is enough' : 'Gap — what is still missing? Optional.'} bind:value={criterion.gap} on:input={changed}></textarea>
-          <div class="next"><select aria-label="Proposed test level" value={criterion.next?.level ?? 'system'} on:change={e => setNext(criterion, e.currentTarget.value as TestLevel, criterion.next?.summary ?? '')}>{#each TEST_LEVELS as level}<option value={level}>{level}</option>{/each}</select><input maxlength={300} aria-label="Proposed test" placeholder="Next test to build — one sentence, optional" value={criterion.next?.summary ?? ''} on:input={e => setNext(criterion, criterion.next?.level ?? 'system', e.currentTarget.value)} /></div>
+          <div class="next"><select aria-label="Proposed test level" value={level(criterion)} on:change={e => { levels[criterion.id] = e.currentTarget.value as TestLevel; setNext(criterion, criterion.next?.summary ?? ''); }}>{#each TEST_LEVELS as level}<option value={level}>{level}</option>{/each}</select><input maxlength={300} aria-label="Proposed test" placeholder="Next test to build — one sentence, optional" value={criterion.next?.summary ?? ''} on:input={e => setNext(criterion, e.currentTarget.value)} /></div>
         </div>
       </fieldset>
     {/each}

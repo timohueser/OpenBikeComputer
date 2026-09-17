@@ -296,7 +296,9 @@ test('a proposal may name the next test to build and bring a manual procedure th
   value.criteria[1].next = { level: 'unit', summary: 'Persist the choice, reload, and assert the stored value.' };
   const post = (body: Record<string, unknown>) => request('coverage-proposals', 'POST', { baseRevision: store().latestRevision().id, requirementId: 'REQ-1', sourceSha: sha, ...body });
   assert.equal((await post({ plan: value })).status, 400);
-  assert.equal((await post({ plan: value, procedures: [{ ...procedure, id: 'other' }] })).status, 400);
+  const uncited = await post({ plan: value, procedures: [procedure, { ...procedure, id: 'extra' }] });
+  assert.equal(uncited.status, 400); assert.match(await uncited.text(), /must be cited/);
+  value.criteria[0].evidence.push({ testId: 'ride-restart', rationale: 'Also confirms routes after the restart.' });
   assert.equal((await post({ plan: { ...value, criteria: [{ ...value.criteria[1], next: { level: 'bogus', summary: 'x' } }] }, procedures: [procedure] })).status, 400);
   const created = await post({ plan: value, procedures: [procedure] });
   assert.equal(created.status, 201, await created.clone().text());
@@ -308,7 +310,7 @@ test('a proposal may name the next test to build and bring a manual procedure th
   const again = await post({ plan: value, procedures: [procedure] });
   assert.equal((await decide((await again.json() as CoverageProposal).id)).status, 200);
   const approved = store().latestRevision().requirements[0];
-  assert.deepEqual(approved.tests.find(t => t.id === 'ride-restart'), { ...procedure, kind: 'manual', inputs: [] });
+  assert.deepEqual(approved.tests.filter(t => t.id === 'ride-restart'), [{ ...procedure, kind: 'manual', inputs: [] }]);
   assert.deepEqual(approved.coverage?.criteria[1].next, value.criteria[1].next);
   assert.deepEqual(coverageSummary(approved), { state: 'partial', label: 'Partial', covered: 1, total: 2 });
   const draft = structuredClone(store().latestRevision().requirements); delete draft[0].coverage!.criteria[1].next;

@@ -31,7 +31,7 @@
     <label>Feedback for the agent<textarea rows={2} maxlength={5000} bind:value={feedback} placeholder="What should change?"></textarea></label>
     <div class="actions"><button class="danger-button" disabled={busy} on:click={() => ondecide(proposal.id, false, feedback)}>Reject proposal</button><button disabled={busy} on:click={() => rejecting = false}>Keep reviewing</button></div>
   {:else}
-    <div class="actions"><button class="primary" disabled={busy || dirty || !!proposal.conflict} on:click={() => ondecide(proposal.id, true, '')}>Approve</button><button disabled={busy} on:click={() => rejecting = true}>Reject…</button><span class="small muted">{dirty ? 'Save or discard your draft before approving.' : procedures.length ? 'Approval applies the evidence, creates the new procedure, and records your review.' : 'Approval records your review and applies the evidence above.'}</span></div>
+    <div class="actions"><button class="primary" disabled={busy || dirty || !!proposal.conflict} on:click={() => ondecide(proposal.id, true, '')}>Approve</button><button disabled={busy} on:click={() => rejecting = true}>Reject…</button><span class="small muted">{dirty ? 'Save or discard your draft before approving.' : procedures.length ? `Approval applies the evidence, creates the new ${procedures.length === 1 ? 'procedure' : 'procedures'}, and records your review.` : 'Approval records your review and applies the evidence above.'}</span></div>
   {/if}
 </article>
 <style>

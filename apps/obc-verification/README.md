@@ -112,8 +112,9 @@ Open `http://127.0.0.1:4180` and sign in as `demo` with password `local-coverage
 The disposable database starts with accepted plans and proposals that revise them:
 
 - **SYS-039**: an approved partial plan with a pending proposal above it. The proposal replaces an
-  obsolete smoke test with selection evidence; the omitted test is unlinked, persistence remains a
-  gap, and approval keeps coverage partial. Or select **Edit coverage**, add a manual procedure as
+  obsolete smoke test with selection evidence and brings a new ride-check procedure with a next
+  test to build; the omitted test is unlinked, persistence keeps its gap, and approval keeps
+  coverage partial. Or select **Edit coverage**, add a manual procedure as
   evidence, and save the revision.
 - **SYS-030**: a demo addition to the requirement statement, saved by the owner. Its proposal
   records the added zoom obligation as a gap. Its plan also cites a manual procedure.
@@ -417,7 +418,7 @@ Download a retained attachment with `GET /api/files/ID`.
 Prefer a whole coverage plan when assessing a requirement. Read the current requirement and its
 existing coverage first. Audit the source at an exact commit. Identify every obligation, preserve
 stable criterion IDs when revising a plan, map tests by their actual assertions, and describe
-missing tests or implementation in `gap`. For each gap, set `next`: the test to build, as one
+missing tests or implementation in `gap`. When you know the test to build for a gap, set `next`: one
 sentence with a `level` of `unit`, `integration`, `system`, or `ride`. Prefer an automated test.
 When no automated test can prove a criterion, propose a manual procedure instead: put it in
 `procedures` with its steps and expected result, and cite its `id` as `testId` evidence; approval

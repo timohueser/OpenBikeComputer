@@ -22,7 +22,7 @@
   /** A removed criterion takes all of its evidence with it. */
   $: kept = removed ? [] : criterion.evidence;
   $: dropped = removed ? criterion.evidence : previous?.evidence.filter(e => !criterion.evidence.some(n => evidenceKey(n) === evidenceKey(e))) ?? [];
-  $: footer = !removed && !!(criterion.gap || previous?.gap || criterion.next || previous?.next);
+  $: footer = !!(criterion.gap || previous?.gap || criterion.next || previous?.next);
   const resolve = (e: CoverageEvidence) => evidenceTest(requirement, e) ?? procedures.find(p => p.id === e.testId);
   const title = (e: CoverageEvidence) => resolve(e)?.title ?? catalog?.cases.find(c => c.id === e.caseId)?.name ?? evidenceKey(e);
   const isNew = (e: CoverageEvidence) => !!previous && !previous.evidence.some(p => evidenceKey(p) === evidenceKey(e));
@@ -83,7 +83,7 @@
   .tag { font-size: 10px; text-transform: uppercase; letter-spacing: .8px; color: var(--forest); font-weight: 700; margin-left: 6px; }
   .why details { margin-top: 2px; }
   .why h4 { margin: 8px 0 2px; }
-  .foot { margin: 10px -14px -12px; padding: 8px 14px 9px; border-top: 1px solid var(--line); background: var(--paper); border-radius: 0 0 8px 8px; font-size: 13px; display: flex; flex-direction: column; gap: 3px; }
+  .foot { margin: 10px -14px -12px -46px; padding: 8px 14px 9px 46px; border-top: 1px solid var(--line); background: var(--paper); border-radius: 0 0 8px 8px; font-size: 13px; display: flex; flex-direction: column; gap: 3px; }
   .covered .foot { border-top-color: #cfdcc9; }
   .gap { margin: 0; color: var(--amber); }
   .gap strong { font-weight: 650; }
