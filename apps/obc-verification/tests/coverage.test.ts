@@ -153,6 +153,10 @@ test('definition and test-link changes invalidate coverage while unrelated chang
   assert.match(listed.stale!, /statement and tests changed/);
   assert.equal((await decide(proposal.id)).status, 200);
   assert.equal(store().latestRevision().requirements[0].coverage?.review?.proposalId, proposal.id);
+  const renewal = await propose();
+  store().approveCoverage(store().latestRevision().id, 'REQ-1', 'owner');
+  const pending = (await (await request('coverage-proposals')).json() as CoverageProposalReview[]).find(p => p.id === renewal.id)!;
+  assert.equal(pending.stale, undefined);
 });
 
 test('coverage decisions recheck catalogue availability and roll back links and review together', async () => {

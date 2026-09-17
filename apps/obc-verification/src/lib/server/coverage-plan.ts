@@ -69,7 +69,7 @@ export function coverageStale(proposal: CoverageProposal, base: Revision | undef
     planOf(before) !== planOf(now) && 'coverage plan'
   ].filter((part): part is string => !!part);
   if (!changed.length) return;
-  return `The ${new Intl.ListFormat('en').format(changed)} changed after this proposal was made against r${proposal.baseRevision}. Check that the plan still fits before approving.`;
+  return `The ${new Intl.ListFormat('en').format(changed)} changed after this proposal was made against r${proposal.baseRevision}. Approving replaces the current plan and its test links; check that the plan still fits.`;
 }
 /** Attaches each requirement's validated draft plan and makes its tests the tests that plan cites. */
 export function draftCoverage(requirements: Requirement[], raw: unknown, catalog: Catalog, id: () => string): Requirement[] {

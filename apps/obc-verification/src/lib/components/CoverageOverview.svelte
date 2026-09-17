@@ -16,15 +16,15 @@
   const pct = (part: number, whole: number) => whole ? `${(100 * part / whole).toFixed(1)}%` : '0%';
   const day = (at: number) => new Date(at).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
 
-  /** Step chart geometry: time on x, count on y, the ceiling is the largest active count. */
-  const W = 900, H = 220, L = 40, R = 16, T = 12, B = 28;
+  /** Step chart geometry: time on x, count on y, the ceiling is the largest active count. The newest value holds to the right edge. */
+  const W = 900, H = 220, L = 40, R = 16, T = 12, B = 28, HOLD = 90;
   $: top = Math.max(1, ...history.map(h => h.active));
   $: first = history[0]?.at ?? 0;
   $: span = Math.max(1, (history[history.length - 1]?.at ?? 0) - first);
-  $: x = (at: number) => history.length < 2 ? (L + W - R) / 2 : L + (W - L - R) * (at - first) / span;
+  $: x = (at: number) => L + (W - L - R - HOLD) * (at - first) / span;
   $: y = (n: number) => T + (H - T - B) * (1 - n / top);
-  $: step = (key: 'covered' | 'assessed') => history.map((h, i) => i ? `H${x(h.at).toFixed(1)} V${y(h[key]).toFixed(1)}` : `M${x(h.at).toFixed(1)} ${y(h[key]).toFixed(1)}`).join(' ');
-  $: ticks = [0, Math.round(top / 2), top];
+  $: step = (key: 'covered' | 'assessed') => history.map((h, i) => i ? `H${x(h.at).toFixed(1)} V${y(h[key]).toFixed(1)}` : `M${x(h.at).toFixed(1)} ${y(h[key]).toFixed(1)}`).join(' ') + ` H${W - R}`;
+  $: ticks = [...new Set([0, Math.round(top / 2), top])];
 </script>
 <div class="page-heading"><div class="eyebrow">Product verification</div><h1>Coverage</h1><p class="muted">How much of what we promise is proven, and how that changes over time.</p></div>
 {#if error}<div class="alert error" role="alert">{error}</div>{/if}
@@ -51,7 +51,6 @@
     {#each ticks as t}<line x1={L} x2={W - R} y1={y(t)} y2={y(t)} class="grid" /><text x={L - 6} y={y(t) + 4} class="axis" text-anchor="end">{t}</text>{/each}
     {#if history.length}
       <path d={step('assessed')} class="assessed" /><path d={step('covered')} class="covered" />
-      {#if history.length === 1}<circle cx={x(first)} cy={y(history[0].covered)} r="4" class="dot" />{/if}
       <text x={L} y={H - 6} class="axis">{day(first)}</text>{#if history.length > 1}<text x={W - R} y={H - 6} class="axis" text-anchor="end">{day(history[history.length - 1].at)}</text>{/if}
     {/if}
   </svg>
@@ -73,5 +72,4 @@
   .axis { font-size: 11px; fill: var(--muted); }
   path { fill: none; stroke-width: 2.5; stroke-linejoin: round; }
   path.covered { stroke: var(--forest); } path.assessed { stroke: var(--amber); stroke-width: 2; stroke-dasharray: 4 3; }
-  .dot { fill: var(--forest); }
 </style>

@@ -4,87 +4,46 @@
     {
       "name": "web-builder",
       "runtimeExecutable": ".venv/bin/python",
-      "runtimeArgs": [
-        "-m",
-        "builder.server",
-        "--no-browser",
-        "--port",
-        "8000"
-      ],
+      "runtimeArgs": ["-m", "builder.server", "--no-browser", "--port", "8000"],
       "port": 8000
     },
     {
       "name": "web-builder-frontend",
       "runtimeExecutable": "npm",
-      "runtimeArgs": [
-        "run",
-        "dev",
-        "--",
-        "--port",
-        "5173"
-      ],
+      "runtimeArgs": ["run", "dev", "--", "--port", "5173"],
       "cwd": "builder/app",
       "port": 5173
     },
     {
       "name": "web-builder-static",
       "runtimeExecutable": "npm",
-      "runtimeArgs": [
-        "run",
-        "dev",
-        "--",
-        "--mode",
-        "web",
-        "--port",
-        "5173"
-      ],
+      "runtimeArgs": ["run", "dev", "--", "--mode", "web", "--port", "5173"],
       "cwd": "builder/app",
       "port": 5173
     },
     {
       "name": "web-builder-desktop",
       "runtimeExecutable": "npm",
-      "runtimeArgs": [
-        "run",
-        "dev",
-        "--",
-        "--mode",
-        "desktop",
-        "--port",
-        "5173"
-      ],
+      "runtimeArgs": ["run", "dev", "--", "--mode", "desktop", "--port", "5173"],
       "cwd": "builder/app",
       "port": 5173
     },
     {
       "name": "landing-page",
       "runtimeExecutable": "trunk",
-      "runtimeArgs": [
-        "serve",
-        "--config",
-        "docs/Trunk.toml"
-      ],
+      "runtimeArgs": ["serve", "--config", "docs/Trunk.toml"],
       "port": 8080
     },
     {
       "name": "docs-site",
       "runtimeExecutable": "python3",
-      "runtimeArgs": [
-        "-m",
-        "http.server",
-        "8081",
-        "--directory",
-        "docs"
-      ],
+      "runtimeArgs": ["-m", "http.server", "8081", "--directory", "docs"],
       "port": 8081
     },
     {
       "name": "verification-demo",
       "runtimeExecutable": "npm",
-      "runtimeArgs": [
-        "run",
-        "demo:coverage"
-      ],
+      "runtimeArgs": ["run", "demo:coverage"],
       "cwd": "apps/obc-verification",
       "port": 4180
     }
