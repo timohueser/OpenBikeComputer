@@ -752,6 +752,14 @@ clean *args:
 
 # ── Meta ─────────────────────────────────────────────────────────────────────
 
+# Print one system requirement from the verification console with its numbered criteria:
+# `obc req SYS-003` (add --json for the raw record). Needs the agent token file; see tools/req.py.
+req *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    _run python3 "$OBC_TOOLS/req.py" "$@"
+
 # Inspect the test selection plan from any directory.
 # The routes and the granularity policy live in docs/testing.md.
 # Args: check | select --base REF | run | gates | cargo-filter --tier TIER | validate-filters
