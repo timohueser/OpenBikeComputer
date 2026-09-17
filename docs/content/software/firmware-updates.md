@@ -103,8 +103,9 @@ The workflow builds the bootloader and application. It converts the application 
 ### Release archive and download service
 
 Each active system requirement needs an approved coverage plan. The plan maps acceptance criteria
-to tests and records remaining gaps. An agent can propose the whole plan or changes to accepted
-coverage; an owner approves or rejects each proposal. An owner edits the plan as part of the
+to tests, records remaining gaps, and can name the next test to build for each gap. An agent can
+propose the whole plan or changes to accepted coverage, including a new manual procedure that
+approval creates; an owner approves or rejects each proposal. An owner edits the plan as part of the
 requirement draft, together with its tests, and saving the revision approves it, because a saved
 revision is an owner's act. A requirement carries exactly the tests its plan cites: a plan that
 omits a test unlinks it, and approval of an agent proposal applies the criteria and the test links

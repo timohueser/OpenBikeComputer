@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import { randomBytes, scryptSync } from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import type { RequestEvent } from '@sveltejs/kit';
-import type { Candidate, CoveragePlan, Requirement } from '../src/lib/types.ts';
+import type { Candidate, CoveragePlan, Requirement, VerificationTest } from '../src/lib/types.ts';
 
 const directory = mkdtempSync(join(tmpdir(), 'obc-coverage-demo-'));
 const port = Number(process.env.VERIFICATION_DEMO_PORT || 4180);
@@ -40,7 +40,7 @@ const plans: CoveragePlan[] = [
   { rationale: 'Projection tests cover both render modes. They do not prove that a user can select a mode or retain that choice after restart.', criteria: [
     { id: 'north-up', statement: 'The map can render north-up.', evidence: [{ caseId: cases[0].id, rationale: 'Checks the default viewport angle and projection of a point due north.' }], gap: '' },
     { id: 'heading-up', statement: 'The map can render heading-up.', evidence: [{ caseId: cases[1].id, rationale: 'Checks that the current course projects toward the top of the screen.' }], gap: '' },
-    { id: 'selection', statement: 'The user can select either orientation.', evidence: [{ caseId: cases[4].id, rationale: 'Illustrative assertion: an old smoke test that only opens the map. It does not exercise the orientation control.' }], gap: 'Replace the smoke test with a real user-interaction test for both choices.' },
+    { id: 'selection', statement: 'The user can select either orientation.', evidence: [{ caseId: cases[4].id, rationale: 'Illustrative assertion: an old smoke test that only opens the map. It does not exercise the orientation control.' }], gap: 'Replace the smoke test with a real user-interaction test for both choices.', next: { level: 'system', summary: 'Drive the orientation control in the simulator and assert the map rotates for both choices.' } },
     { id: 'persistence', statement: 'The selected orientation survives a restart.', evidence: [], gap: 'Add a save/reload test that also starts a ride and checks that it respects the saved choice.' }
   ] },
   { rationale: 'The shared application test exercises the single Back action, the resulting Follow mode, and recentering on a valid position fix. A ride check confirms the same behavior on the device.', criteria: [
@@ -52,9 +52,9 @@ const plans: CoveragePlan[] = [
 ];
 const credential = createAgentToken(owner, 'Local coverage demo agent', new Date(Date.now() + 86_400_000).toISOString()).token;
 const cookies = { get: () => undefined } as unknown as RequestEvent['cookies'];
-async function propose(index: number) {
+async function propose(index: number, procedures: VerificationTest[] = []) {
   const request = new Request(`${process.env.ORIGIN}/api/coverage-proposals`, { method: 'POST', headers: { authorization: `Bearer ${credential}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ baseRevision: db.latestRevision().id, requirementId: requirements[index].id, sourceSha, plan: plans[index] }) });
+    body: JSON.stringify({ baseRevision: db.latestRevision().id, requirementId: requirements[index].id, sourceSha, plan: plans[index], ...(procedures.length ? { procedures } : {}) }) });
   const response = await api({ request, params: { path: 'coverage-proposals' }, locals: { actor: authenticate(request, cookies) }, cookies } as unknown as RequestEvent);
   if (!response.ok) throw new Error(await response.text());
   return await response.json();
@@ -67,8 +67,12 @@ db.put('candidate', candidate.id, candidate);
 // An agent replaces obsolete evidence in an accepted partial plan. The omitted test is unlinked on approval.
 plans[0].criteria[2].evidence = [{ caseId: cases[3].id, rationale: 'Illustrative assertion: choose each orientation through the control and inspect the map. This test is invented for the demo, not production evidence.' }];
 plans[0].criteria[2].gap = '';
-plans[0].rationale = 'Demo revision: replace the obsolete smoke test with evidence for user selection. Persistence remains a gap; coverage stays partial.';
-await propose(0);
+delete plans[0].criteria[2].next;
+plans[0].criteria[3].evidence = [{ testId: 'ride-restart', rationale: 'Confirms on the device that the choice is still active after a power cycle.' }];
+plans[0].criteria[3].gap = 'No automated check yet; the ride check covers it until one exists.';
+plans[0].criteria[3].next = { level: 'unit', summary: 'Persist the choice to the settings store, reload, and assert the stored value.' };
+plans[0].rationale = 'Demo revision: replace the obsolete smoke test with evidence for user selection and add a ride check for persistence. Coverage stays partial.';
+await propose(0, [{ id: 'ride-restart', kind: 'manual', title: 'DEMO ONLY: ride check after restart', steps: '1. Set heading-up.\n2. Power the device off and on.\n3. Start a ride.', expected: 'The map stays heading-up.', inputs: [] }]);
 // A requirement edit keeps its plan and is approved by the save; the candidate above stays frozen.
 const changed = db.latestRevision();
 changed.requirements[1].statement += ' Returning shall also preserve the selected zoom level. (Demo addition.)';

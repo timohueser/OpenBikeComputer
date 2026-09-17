@@ -9,7 +9,7 @@ import { dispatch, githubEnabled, sourceCommit, verifyPublished, verifyRun, publ
 import { boundedBody, download, upload } from './files.ts';
 import { approveGitHubUser, removeGitHubUser } from './accounts.ts';
 import { report } from './report.ts';
-import { coverageConflict, coveragePlan, coverageStale, commitSha, draftCoverage } from './coverage-plan.ts';
+import { coverageConflict, coveragePlan, coverageStale, commitSha, draftCoverage, proposalProcedures } from './coverage-plan.ts';
 
 async function body(event: RequestEvent): Promise<Record<string, any>> {
   assert(event.request.headers.get('content-type')?.includes('application/json'), 'JSON body required.', 415);
@@ -210,12 +210,14 @@ async function coverageProposals(event: RequestEvent, parts: string[]): Promise<
     const requirement = revision.requirements.find(r => r.id === requirementId);
     assert(requirement, 'Requirement not found.', 404);
     const sourceSha = commitSha(data.sourceSha);
-    const plan = coveragePlan(data.plan, requirement, store().catalog());
+    const procedures = proposalProcedures(data.procedures, requirement);
+    const plan = coveragePlan(data.plan, requirement, store().catalog(), procedures);
+    assert(procedures.every(p => plan.criteria.some(c => c.evidence.some(e => e.testId === p.id))), 'Every proposed procedure must be cited as evidence.');
     /** One pending proposal per requirement: an identical plan is reused, any other replaces every pending one. */
     const pending = store().list<CoverageProposal>('coverage-proposal').filter(p => p.status === 'pending' && p.requirementId === requirementId);
-    const identical = pending.find(p => p.baseRevision === baseRevision && p.sourceSha === sourceSha && isDeepStrictEqual(p.plan, plan));
+    const identical = pending.find(p => p.baseRevision === baseRevision && p.sourceSha === sourceSha && isDeepStrictEqual([p.plan, p.procedures ?? []], [plan, procedures]));
     if (identical) return json(identical);
-    const proposal: CoverageProposal = { id: store().id(), baseRevision, requirementId, sourceSha, plan,
+    const proposal: CoverageProposal = { id: store().id(), baseRevision, requirementId, sourceSha, plan, ...(procedures.length ? { procedures } : {}),
       author: actor.name, ...(actor.agentToken ? { agentToken: actor.agentToken } : {}), createdAt: new Date().toISOString(), status: 'pending', ...(pending.length ? { supersedes: pending[0].id } : {}) };
     store().atomic(() => {
       for (const previous of pending) store().put('coverage-proposal', previous.id, { ...previous, status: 'superseded' });

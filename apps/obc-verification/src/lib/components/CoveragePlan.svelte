@@ -8,5 +8,5 @@
   export let result: ((test: VerificationTest) => { outcome: string; detail?: string; label?: string; disabled?: boolean; onrun?: () => void }) | undefined = undefined;
 </script>
 <p class="wrap rationale">{plan.rationale}</p>
-<div class="criteria">{#each plan.criteria as criterion (criterion.id)}<CoverageCriterion {criterion} {requirement} {catalog} {result} />{/each}</div>
+<div class="criteria">{#each plan.criteria as criterion, index (criterion.id)}<CoverageCriterion {criterion} number={index + 1} {requirement} {catalog} {result} />{/each}</div>
 <style>.rationale { margin: 8px 0 12px; } .criteria { display: flex; flex-direction: column; gap: 8px; }</style>

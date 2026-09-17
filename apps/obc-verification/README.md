@@ -54,7 +54,8 @@ revision. It reads the saved revisions and needs no extra bookkeeping.
 Select **Define coverage** or **Edit coverage** on a requirement. The plan is part of the
 requirement draft, like its statement and tests: write each criterion, add evidence, say what each
 test proves, and note the gap for anything still missing. The checkmarks and the count update as
-you edit. Evidence comes from the CI catalogue or from a manual procedure; **+ New manual procedure**
+you edit. Below the gap, a criterion can name the next test to build: a level (unit, integration,
+system, or ride) and one sentence. Evidence comes from the CI catalogue or from a manual procedure; **+ New manual procedure**
 in the picker creates one on the spot, **Refresh catalogue** gets tests from a new CI import, and
 **Edit procedure** on manual evidence changes its steps, expected result, and input files. The plan
 attaches the tests: **Remove** on a piece of evidence unlinks its test. A manual procedure that no
@@ -70,10 +71,11 @@ under the earlier workflow and still waits for approval, whichever requirement t
 An agent can propose an initial plan or revise accepted coverage. Proposals appear on their
 requirement, above the current plan; the sidebar marks the requirement and the **proposals to
 review** button in the heading jumps to the next one. A proposal shows new, changed, and removed
-criteria, with new evidence marked and removed evidence struck through. If approval deletes a
+criteria, with new evidence marked and removed evidence struck through. A manual procedure the
+proposal brings is marked **new procedure**, with its steps collapsed. If approval deletes a
 manual procedure that the plan cites nowhere, a sentence above **Approve** names each one.
-**Approve** saves the plan, applies the links, and records your approval for the commit the agent
-assessed, in one action. **Reject** asks for feedback, which the agent can read before submitting a revision. Agents
+**Approve** saves the plan, applies the links, creates the new procedures, and records your
+approval for the commit the agent assessed, in one action. **Reject** asks for feedback, which the agent can read before submitting a revision. Agents
 cannot approve coverage.
 
 Save or discard requirement drafts before approving. A proposal cannot be approved once its
@@ -110,8 +112,9 @@ Open `http://127.0.0.1:4180` and sign in as `demo` with password `local-coverage
 The disposable database starts with accepted plans and proposals that revise them:
 
 - **SYS-039**: an approved partial plan with a pending proposal above it. The proposal replaces an
-  obsolete smoke test with selection evidence; the omitted test is unlinked, persistence remains a
-  gap, and approval keeps coverage partial. Or select **Edit coverage**, add a manual procedure as
+  obsolete smoke test with selection evidence and brings a new ride-check procedure with a next
+  test to build; the omitted test is unlinked, persistence keeps its gap, and approval keeps
+  coverage partial. Or select **Edit coverage**, add a manual procedure as
   evidence, and save the revision.
 - **SYS-030**: a demo addition to the requirement statement, saved by the owner. Its proposal
   records the added zoom obligation as a gap. Its plan also cites a manual procedure.
@@ -415,7 +418,11 @@ Download a retained attachment with `GET /api/files/ID`.
 Prefer a whole coverage plan when assessing a requirement. Read the current requirement and its
 existing coverage first. Audit the source at an exact commit. Identify every obligation, preserve
 stable criterion IDs when revising a plan, map tests by their actual assertions, and describe
-missing tests or implementation in `gap`. Do not change the requirement title or statement.
+missing tests or implementation in `gap`. When you know the test to build for a gap, set `next`: one
+sentence with a `level` of `unit`, `integration`, `system`, or `ride`. Prefer an automated test.
+When no automated test can prove a criterion, propose a manual procedure instead: put it in
+`procedures` with its steps and expected result, and cite its `id` as `testId` evidence; approval
+creates it on the requirement. Do not change the requirement title or statement.
 Keep `rationale` to two or three sentences: the scope of the audit and the conclusion. The
 criteria carry the detail. A plan is covered when every criterion has evidence and no gap;
 otherwise it is partial.
@@ -450,17 +457,21 @@ Read decisions and reviewer feedback with `GET /api/coverage-proposals`. Send
       {
         "id": "persistence",
         "statement": "The choice survives a restart.",
-        "evidence": [],
-        "gap": "Add a save/reload test that also starts a ride."
+        "evidence": [{ "testId": "ride-restart", "rationale": "Confirms the choice on the device after a power cycle." }],
+        "gap": "No automated check yet.",
+        "next": { "level": "unit", "summary": "Persist the choice to the settings store, reload, and assert the stored value." }
       }
     ]
-  }
+  },
+  "procedures": [
+    { "id": "ride-restart", "title": "Ride check after restart", "steps": "1. Set heading-up.\n2. Power the device off and on.\n3. Start a ride.", "expected": "The map stays heading-up." }
+  ]
 }
 ```
 
-Replace all placeholder IDs and the source SHA. For an existing manual check, use `testId` instead
-of `caseId`; an agent cannot create a manual procedure. Each evidence entry must identify exactly
-one test and explain its assertions. The server rejects unknown tests and duplicate criteria. A
+Replace all placeholder IDs and the source SHA. For an existing manual check, use `testId` with
+its ID; for a new one, add it to `procedures` and cite it the same way. Every proposed procedure
+must be cited. Each evidence entry must identify exactly one test and explain its assertions. The server rejects unknown tests and duplicate criteria. A
 criterion may have no evidence yet: an agent can propose the criteria first and evidence later,
 with or without a `gap` note.
 The requirement's tests become exactly the tests the plan cites. A plan that omits a test therefore

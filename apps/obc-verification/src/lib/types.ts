@@ -14,7 +14,11 @@ export interface VerificationTest {
   inputs: Attachment[];
 }
 export interface CoverageEvidence { caseId?: string; testId?: string; rationale: string }
-export interface AcceptanceCriterion { id: string; statement: string; evidence: CoverageEvidence[]; gap: string }
+export type TestLevel = 'unit' | 'integration' | 'system' | 'ride';
+export const TEST_LEVELS: TestLevel[] = ['unit', 'integration', 'system', 'ride'];
+/** The test to build for a gap: one level, one sentence. */
+export interface ProposedTest { level: TestLevel; summary: string }
+export interface AcceptanceCriterion { id: string; statement: string; evidence: CoverageEvidence[]; gap: string; next?: ProposedTest }
 export interface CoveragePlan { rationale: string; criteria: AcceptanceCriterion[] }
 /** An owner's approval of the saved statement, tests, and plan. It records the catalogue commit of that moment. */
 export interface CoverageReview { author: string; createdAt: string; sourceSha?: string; proposalId?: string }
@@ -37,6 +41,7 @@ export interface Candidate {
 }
 export interface Readiness { ready: boolean; missing: string[]; verified: number; total: number; excepted: number; excluded: number }
 export interface Bootstrap { actor: Actor; revision: Revision; catalog: Catalog; candidates: Candidate[]; configured: { github: boolean; oauth: boolean; demo?: boolean } }
-export interface CoverageProposal { id: string; baseRevision: number; requirementId: string; sourceSha: string; plan: CoveragePlan; author: string; agentToken?: AgentTokenIdentity; createdAt: string; status: 'pending' | 'accepted' | 'rejected' | 'superseded'; supersedes?: string; feedback?: string; decidedBy?: string; decidedAt?: string }
+/** `procedures` are new manual tests the plan cites; approval creates them on the requirement. */
+export interface CoverageProposal { id: string; baseRevision: number; requirementId: string; sourceSha: string; plan: CoveragePlan; procedures?: VerificationTest[]; author: string; agentToken?: AgentTokenIdentity; createdAt: string; status: 'pending' | 'accepted' | 'rejected' | 'superseded'; supersedes?: string; feedback?: string; decidedBy?: string; decidedAt?: string }
 /** `conflict` blocks approval; `stale` names what changed since the base revision and leaves the decision to the owner. */
 export interface CoverageProposalReview extends CoverageProposal { requirement?: Requirement; conflict?: string; stale?: string }
