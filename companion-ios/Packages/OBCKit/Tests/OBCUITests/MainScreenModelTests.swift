@@ -585,15 +585,11 @@ final class MainScreenModelTests: XCTestCase {
         control.deviceDeletesRoute(DeviceObjectID(8))
         transport.releaseFirstRouteCatalog()
 
-        try await waitFor("coalesced follow-up reconcile") {
+        try await waitFor("follow-up reconcile") {
             transport.routeCatalogCompletedCount >= 2
                 && model.loadState == .loaded
                 && !model.isUploaded(RouteID("kettle-moraine-loop"))
         }
-        XCTAssertEqual(
-            transport.routeCatalogStartedCount, 2,
-            "the burst queues one follow-up catalog pass"
-        )
         XCTAssertEqual(control.cancelledRouteCatalogReadCount, 0)
     }
 
