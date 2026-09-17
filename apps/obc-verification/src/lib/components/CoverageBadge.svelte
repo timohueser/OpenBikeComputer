@@ -2,13 +2,11 @@
   import type { Requirement } from '$lib/types';
   import { coverageSummary } from '$lib/coverage';
   export let requirement: Requirement;
-  /** Unsaved statement or test changes: the review is cleared once the draft is saved. */
-  export let changed = false;
   $: summary = coverageSummary(requirement);
-  $: state = changed && summary.state !== 'unassessed' ? 'needs-review' : summary.state;
+  $: state = summary.state;
 </script>
-<span class="coverage-badge {state}" title={state === 'covered' ? 'Every criterion has reviewed evidence' : state === 'partial' ? 'Reviewed, but gaps remain' : state === 'needs-review' ? 'The plan exists but its approval is not current' : 'No coverage plan yet'}>
-  <span class="dot" aria-hidden="true"></span>{changed && summary.state !== 'unassessed' ? 'Needs review' : summary.label}{#if summary.total}<span class="count">{summary.covered}/{summary.total}</span>{/if}
+<span class="coverage-badge {state}" title={state === 'covered' ? 'Every criterion has reviewed evidence' : state === 'partial' ? 'Reviewed, but gaps remain' : state === 'needs-review' ? 'Saved under the earlier workflow; the next save approves it' : 'No coverage plan yet'}>
+  <span class="dot" aria-hidden="true"></span>{summary.label}{#if summary.total}<span class="count">{summary.covered}/{summary.total}</span>{/if}
 </span>
 <style>
   .coverage-badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px 3px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 1.5; white-space: nowrap; background: var(--soft); color: var(--muted); }

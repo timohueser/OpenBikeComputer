@@ -93,10 +93,6 @@ async function route(event: RequestEvent): Promise<Response> {
     const ids = store().reserveRequirementIds(count);
     return json({ id: ids[0], ids });
   }
-  if (parts[0] === 'requirements' && parts.length === 4 && parts[2] === 'coverage' && parts[3] === 'approve' && method === 'POST') {
-    allow('owner'); const data = await body(event);
-    return json(store().approveCoverage(positive(data.baseRevision, 'Base revision'), identifier(parts[1]), actor.name));
-  }
   if (path === 'requirements' && method === 'PUT') {
     allow('owner'); const data = await body(event);
     const list = draftCoverage(requirements(data.requirements, (id) => store().file(id)), data.requirements, store().catalog(), () => store().id());
