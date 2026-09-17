@@ -25,6 +25,7 @@ export function removeGitHubUser(actor: Actor, id: string): void {
   assert(store().githubUser(id), 'Approved user not found.', 404);
   store().atomic(() => {
     store().db.prepare('DELETE FROM github_users WHERE id=?').run(id);
+    store().db.prepare("UPDATE agent_tokens SET revoked_at=COALESCE(revoked_at,?) WHERE json_extract(issuer,'$.provider')='github' AND json_extract(issuer,'$.userId')=?").run(Date.now(), id);
     store().db.prepare("DELETE FROM sessions WHERE json_extract(actor,'$.provider')='github' AND json_extract(actor,'$.userId')=?").run(id);
   });
 }

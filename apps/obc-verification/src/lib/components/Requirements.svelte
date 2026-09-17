@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from 'svelte';
-  import type { Revision, Requirement, Catalog, VerificationTest, LinkProposal } from '$lib/types';
+  import type { Revision, Requirement, Catalog, VerificationTest, ProposalReview } from '$lib/types';
   import { api, clone, date, message } from './api';
   import { parseRequirements, formatRequirements } from './markdown-requirements';
   import Markdown from './Markdown.svelte';
@@ -9,6 +9,7 @@
   import Files from './Files.svelte';
   import RequirementGroups from './RequirementGroups.svelte';
   import RequirementLabels from './RequirementLabels.svelte';
+  import LinkProposals from './LinkProposals.svelte';
   export let revision: Revision;
   export let catalog: Catalog;
   export let dirty = false;
@@ -28,7 +29,8 @@
   let notice = '';
   let history: Revision[] | null = null;
   let historical: Revision | null = null;
-  let proposals: LinkProposal[] | null = null;
+  let proposals: ProposalReview[] | null = null;
+  let moreMenu: HTMLDetailsElement;
   let deleting = false;
   let deleted: { requirement: Requirement; index: number }[] = [];
   let undo: { requirementId: string; test: VerificationTest; index: number } | null = null;
@@ -191,23 +193,34 @@
     try { catalog = await api<Catalog>('/api/catalog'); oncatalog(catalog); } catch (e) { error = message(e); } finally { busy = false; }
   }
   async function showHistory() { error = ''; try { history = await api<Revision[]>('/api/revisions'); } catch (e) { error = message(e); } }
-  async function showProposals() { error = ''; try { proposals = await api<LinkProposal[]>('/api/proposals'); } catch (e) { error = message(e); } }
+  async function showProposals() { moreMenu.open = false; error = ''; try { proposals = await api<ProposalReview[]>('/api/proposals'); } catch (e) { error = message(e); } }
   async function decide(id: string, accept: boolean) {
-    if (dirty) { error = 'Save or discard your draft before reviewing a link proposal.'; return; }
+    if (busy) return;
+    if (accept && dirty) { error = 'Save or discard your draft before approving a link proposal.'; return; }
     busy = true; error = '';
-    try { await api('/api/proposals/' + id, 'POST', { accept }); await refresh(); await showProposals(); } catch (e) { error = message(e); } finally { busy = false; }
+    try {
+      const decided = await api<{ revision: Revision }>('/api/proposals/' + id, 'POST', { accept });
+      if (accept) {
+        revision = decided.revision; requirements = clone(revision.requirements); onsaved(revision);
+        if (!requirements.some(r => r.id === selected)) selected = requirements[0]?.id || '';
+        undo = null; deleted = []; testDraft = null; edit = false; deleting = false;
+      }
+      proposals = await api<ProposalReview[]>('/api/proposals');
+      notice = accept ? 'Link change approved and saved.' : 'Proposal rejected.';
+    } catch (e) {
+      error = message(e);
+      try { proposals = await api<ProposalReview[]>('/api/proposals'); } catch { /* Keep the original decision error. */ }
+    } finally { busy = false; }
   }
 </script>
 <svelte:window on:keydown={(event) => { if (edit) editorKeys(event); }} />
-<div class="page-heading row"><div><div class="eyebrow">Product verification</div><h1>Requirements</h1><p class="muted">The promises we make, and how we check them.</p></div><div class="actions"><details class="menu"><summary class="button">More ▾</summary><div class="menu-list"><label class="menu-item">Import Markdown…<input class="visually-hidden" type="file" accept=".md,.markdown,text/markdown,text/plain" disabled={busy} on:change={importMarkdown} /></label><button class="menu-item" on:click={exportMarkdown}>Export Markdown</button><button class="menu-item" on:click={() => manageGroups = !manageGroups}>Manage groups</button><button class="menu-item" on:click={showProposals}>Link proposals</button><button class="menu-item" on:click={showHistory}>Revision history</button></div></details><button class="primary" disabled={busy} on:click={create}>+ Requirement</button></div></div>
+<div class="page-heading row"><div><div class="eyebrow">Product verification</div><h1>Requirements</h1><p class="muted">The promises we make, and how we check them.</p></div><div class="actions"><details class="menu" bind:this={moreMenu}><summary class="button">More ▾</summary><div class="menu-list"><label class="menu-item">Import Markdown…<input class="visually-hidden" type="file" accept=".md,.markdown,text/markdown,text/plain" disabled={busy} on:change={importMarkdown} /></label><button class="menu-item" on:click={exportMarkdown}>Export Markdown</button><button class="menu-item" on:click={() => manageGroups = !manageGroups}>Manage groups</button><button class="menu-item" on:click={showProposals}>Link proposals</button><button class="menu-item" on:click={showHistory}>Revision history</button></div></details><button class="primary" disabled={busy} on:click={create}>+ Requirement</button></div></div>
 {#if error}<div class="alert error" role="alert">{error}<button class="text-button" disabled={busy} on:click={refresh}>Reload saved revision</button></div>{/if}
 {#if notice}<div class="alert success" role="status">{notice}</div>{/if}
 {#if deleted.length}<div class="alert warning" role="status">Deleted {deleted[deleted.length - 1].requirement.id} from this draft. Save revision to apply. <button class="text-button" disabled={busy} on:click={restoreRequirement}>Undo deletion</button></div>{/if}
 {#if manageGroups}<RequirementGroups {groups} disabled={busy} onrename={renameGroup} onremove={removeGroup} onclose={() => manageGroups = false} />{/if}
 {#if proposals !== null}
-  <section class="panel"><div class="row"><h2>Proposed verification links</h2><button on:click={() => proposals = null}>Close</button></div><p class="muted small">Agents can propose links. Only your explicit approval changes a saved revision.</p>
-    {#each proposals.filter(p => p.status === 'pending') as p}<div class="test"><div class="row"><h3>{p.action === 'add' ? 'Link' : 'Unlink'} · {p.requirementId}</h3><span class="small muted">r{p.baseRevision} · {p.author}</span></div><code class="wrap">{p.caseId}</code><p>{p.reason}</p><div class="actions"><button class="primary" disabled={busy || dirty || p.baseRevision !== revision.id} on:click={() => decide(p.id, true)}>Approve link change</button><button disabled={busy} on:click={() => decide(p.id, false)}>Reject</button>{#if p.baseRevision !== revision.id}<span class="small warning">Based on an older revision. Request a fresh proposal.</span>{/if}</div></div>{:else}<p class="muted">No proposals awaiting your review.</p>{/each}
-  </section>
+  <LinkProposals {proposals} {busy} {dirty} ondecide={decide} onrefresh={showProposals} onclose={() => proposals = null} />
 {/if}
 {#if history !== null}
   <section class="panel"><div class="row"><h2>Revision history</h2><button on:click={() => { history = null; historical = null; }}>Close</button></div>

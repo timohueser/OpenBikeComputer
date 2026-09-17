@@ -25,6 +25,22 @@ Neither changes a saved revision until you select **Save revision**.
 **Revision history** shows each revision as a difference against the one before it: added,
 removed, and changed requirements, with the previous and new statement side by side.
 
+## Review link proposals
+
+Open **More → Link proposals** to review agent suggestions. Search by requirement, test, or reason.
+Each proposal shows the current requirement statement, the test identity, and the reason for the
+link. The status filter also shows accepted and rejected proposals.
+
+Approval saves the link change and decision together. It does not record a test pass. Other
+proposals remain available after an approval, including proposals for the same requirement.
+Changes to another requirement or another test link do not invalidate a proposal. Changes to the
+target requirement's title, statement, group, or labels require a fresh proposal. An add proposal
+is blocked if the test is missing from the catalogue or already linked. A removal is blocked if
+the link changed. The panel shows the conflict reason. The server checks again when the owner approves.
+
+Save or discard an unsaved requirement draft before approval. Rejecting a proposal keeps the draft.
+Existing candidates keep their saved requirement revisions.
+
 ## Requirement groups
 
 Each requirement can have one optional group, such as Navigation or Bluetooth. Groups are flat.
@@ -110,7 +126,6 @@ start the application or write credentials. Create `/etc/obc-verification/servic
 | `VERIFICATION_OWNER_USERNAME` | Local admin fallback account name |
 | `VERIFICATION_OWNER_PASSWORD_HASH` | Initial local admin hash; run `python3 ops/password_hash.py` |
 | `VERIFICATION_CI_TOKEN` | Random bearer token used only by CI |
-| `VERIFICATION_AGENT_TOKEN` | Separate random token for agent reads and link proposals |
 | `GITHUB_REPOSITORY` | `timohueser/OpenBikeComputer` |
 | `GITHUB_TOKEN` | Repository-scoped token with Actions read/write and contents read access |
 | `VERIFICATION_SOURCE_BRANCH` | Allowed candidate branch; default `develop` |
@@ -124,7 +139,9 @@ second proxy requires an explicit trusted-address configuration. Never enter cre
 an HTTP origin.
 
 The environment file and SSH private keys are not application assets. Back them up separately in a
-private credential store. Rotate the CI, agent, and GitHub credentials independently.
+private credential store. Rotate the CI and GitHub credentials independently. Create temporary
+agent tokens in **Account → Agent access**. The service does not accept `VERIFICATION_AGENT_TOKEN`;
+remove this unused variable from an existing service configuration.
 
 ## Accounts
 
@@ -143,8 +160,9 @@ Sign in with the local admin fallback, then open **Account → Users**. Add your
 with **Admin** selected. Add collaborators by their GitHub usernames. Approval is tied to GitHub's
 stable account ID, so a renamed account retains access and a reused username does not inherit it.
 All approved users can edit requirements, record test results, and manage releases. Admins can also
-add and remove users. You cannot remove your current GitHub account. Removal ends that account's
-sessions; it does not remove its historical test records or revisions.
+add and remove users and create or revoke agent tokens. You cannot remove your current GitHub
+account. Removal ends that account's sessions and revokes the agent tokens it issued. It does not
+remove its historical test records, proposals, or revisions.
 
 The local fallback always has admin access. Its initial password hash comes from the environment
 only when the database has no local admin hash. Change its password in **Account** while signed in
@@ -269,11 +287,44 @@ change. Manual results do not carry to another candidate.
 
 ## Agent and CI API
 
-On the maintainer Mac, the dedicated agent token is stored outside Git at
-`~/.config/openbikecomputer/verification-agent.token`. Read it into the request without printing it.
+An administrator can create a separate, temporary token for each agent task. Sign in with your
+approved GitHub admin account or the local administrator. No GitHub personal access token, SSH
+connection, or service restart is required.
+
+1. Open **Account → Agent access**.
+2. Enter a token name that identifies the machine or task.
+3. Set its lifetime in minutes. The default is 60; the allowed range is 1 to 240.
+4. Select **Create token**, then **Download token file** or **Copy token**. The secret is available
+   only in this view after creation. Save it before leaving the tab or selecting **Done — hide token**.
+5. Save the file outside Git at `~/.config/openbikecomputer/verification-agent.token`.
+   Give the directory mode 0700 and the file mode 0600. For a downloaded file, run:
+
+   ```sh
+   install -d -m 700 ~/.config/openbikecomputer
+   install -m 600 ~/Downloads/verification-agent.token ~/.config/openbikecomputer/verification-agent.token
+   rm ~/Downloads/verification-agent.token
+   ```
+
+6. Give the agent the file path. Do not paste the secret into chat or put it in a URL, command
+   history, or log. Read it into the request without printing it.
+
+The panel lists token names, issuers, expiry times, and last use. Select **Revoke token** to end
+access immediately. Select **Show expired and revoked tokens** to see old entries. Revocation and
+expiry keep submitted proposals available for review. Create a new token when more time is needed.
+
+The server stores a SHA-256 hash of each random 256-bit token. It checks expiry, revocation, and the
+issuing administrator's current access on every authenticated request. Each proposal records the
+token ID, name, and issuing account. A token grants agent permissions only, regardless of its
+issuer's permissions. The secret cannot be retrieved after creation.
+
+Administrators manage tokens through `GET` and `POST /api/admin/agent-tokens`, and
+`DELETE /api/admin/agent-tokens/ID`. Creation takes `{ "name": "Coverage review", "lifetimeMinutes": 60 }`
+and returns `{ "token": "...", "access": { ... } }`. Listing returns metadata only. These endpoints
+require an administrator session; writes also require the exact configured browser origin.
+
 Use `Authorization: Bearer TOKEN` with the dedicated agent token. The token can read
 `GET /api/bootstrap`, `/api/revisions`, `/api/revisions/ID`, `/api/catalog`, `/api/candidates`,
-and `/api/candidates/ID`. These responses use the same definitions as the owner interface.
+`/api/candidates/ID`, and `/api/proposals`. These responses use the same definitions as the owner interface.
 Download a retained attachment with `GET /api/files/ID`.
 
 After the owner explicitly asks for a proposal, send `POST /api/proposals` with JSON:
@@ -289,7 +340,12 @@ After the owner explicitly asks for a proposal, send `POST /api/proposals` with 
 ```
 
 Use a case ID returned by the catalogue, not the illustrative ID above. `action` can also be
-`remove`. The owner accepts or rejects the proposal in the UI. A stale revision returns HTTP 409.
+`remove`. The owner accepts or rejects the proposal in the UI. Submitting against a stale revision
+returns HTTP 409. Repeating a pending proposal for the same revision, requirement, test, and action
+returns the existing proposal. `GET /api/proposals` includes the current `requirement`, catalogue
+`test`, and a `conflict` message when a pending proposal cannot be approved. An older proposal can
+still be approved if its target requirement and link remain compatible; its original `baseRevision`
+is kept.
 The agent token cannot write requirement prose, upload files, record manual outcomes, or publish.
 Owner writes require a session and the exact configured browser origin.
 

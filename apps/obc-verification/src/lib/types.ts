@@ -1,5 +1,7 @@
 export type Role = 'owner' | 'agent' | 'ci';
-export interface Actor { name: string; role: Role; admin?: boolean; provider?: 'local' | 'github'; userId?: string }
+export interface Actor { name: string; role: Role; admin?: boolean; provider?: 'local' | 'github'; userId?: string; agentToken?: AgentTokenIdentity }
+export interface AgentTokenIdentity { id: string; name: string; issuedBy: Pick<Actor, 'name' | 'provider' | 'userId'> }
+export interface AgentToken extends AgentTokenIdentity { createdAt: string; expiresAt: string; lastUsedAt?: string; revokedAt?: string }
 export interface ApprovedGitHubUser { id: string; login: string; admin: boolean }
 export interface Attachment { id: string; name: string; size: number; sha256: string }
 export interface VerificationTest {
@@ -28,4 +30,5 @@ export interface Candidate {
 }
 export interface Readiness { ready: boolean; missing: string[]; verified: number; total: number; excepted: number; excluded: number }
 export interface Bootstrap { actor: Actor; revision: Revision; catalog: Catalog; candidates: Candidate[]; configured: { github: boolean; oauth: boolean } }
-export interface LinkProposal { id: string; baseRevision: number; requirementId: string; caseId: string; action: 'add' | 'remove'; reason: string; author: string; createdAt: string; status: 'pending' | 'accepted' | 'rejected' }
+export interface LinkProposal { id: string; baseRevision: number; requirementId: string; caseId: string; action: 'add' | 'remove'; reason: string; author: string; agentToken?: AgentTokenIdentity; createdAt: string; status: 'pending' | 'accepted' | 'rejected' }
+export interface ProposalReview extends LinkProposal { requirement?: Requirement; test?: CatalogCase; conflict?: string }

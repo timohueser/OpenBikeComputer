@@ -3,11 +3,12 @@ import { json } from '@sveltejs/kit';
 import type { Candidate, Catalog, LinkProposal, ManualRun, Role } from '../types.ts';
 import { attachments, assert, identifier, positive, Problem, readiness, requirements, testResults, text } from './domain.ts';
 import { store } from './store.ts';
-import { createSession, localLogin, logout, oauthEnabled, sameOrigin, requireAdmin, changePassword } from './auth.ts';
+import { createSession, localLogin, logout, oauthEnabled, sameOrigin, requireAdmin, changePassword, agentTokens, createAgentToken, revokeAgentToken } from './auth.ts';
 import { dispatch, githubEnabled, sourceCommit, verifyPublished, verifyRun, publicationRetry, verifyCatalog, reconcile } from './github.ts';
 import { boundedBody, download, upload } from './files.ts';
 import { approveGitHubUser, removeGitHubUser } from './accounts.ts';
 import { report } from './report.ts';
+import { proposalConflict } from './proposals.ts';
 
 async function body(event: RequestEvent): Promise<Record<string, any>> {
   assert(event.request.headers.get('content-type')?.includes('application/json'), 'JSON body required.', 415);
@@ -41,6 +42,18 @@ async function route(event: RequestEvent): Promise<Response> {
   const allow = (...roles: Role[]) => assert(roles.includes(actor.role), 'This credential cannot perform this action.', 403);
   if (write && actor.role === 'owner') sameOrigin(event.request);
   if (path === 'logout' && method === 'POST') { allow('owner'); logout(event.cookies); return json({ ok: true }); }
+  if (parts[0] === 'admin' && parts[1] === 'agent-tokens') {
+    requireAdmin(actor);
+    if (parts.length === 2 && method === 'GET') return json(agentTokens(actor));
+    if (parts.length === 2 && method === 'POST') {
+      const data = await body(event);
+      return json(createAgentToken(actor, data.name, data.lifetimeMinutes), { status: 201, headers: { 'Cache-Control': 'no-store' } });
+    }
+    if (parts.length === 3 && method === 'DELETE') {
+      revokeAgentToken(actor, identifier(parts[2])); return json({ ok: true });
+    }
+    throw new Problem(405, 'Method not allowed.');
+  }
   if (path === 'admin/history') {
     requireAdmin(actor);
     if (method === 'GET') return json(store().historySummary());
@@ -176,7 +189,17 @@ async function route(event: RequestEvent): Promise<Response> {
 }
 async function proposals(event: RequestEvent, parts: string[]): Promise<Response> {
   const actor = event.locals.actor!;
-  if (parts.length === 1 && event.request.method === 'GET') return json(store().proposals());
+  if (parts.length === 1 && event.request.method === 'GET') {
+    const revisions = store().revisions();
+    const revision = revisions[0];
+    const byId = new Map(revisions.map(r => [r.id, r]));
+    const catalog = store().catalog();
+    return json(store().proposals().map(proposal => ({ ...proposal,
+      requirement: revision.requirements.find(r => r.id === proposal.requirementId),
+      test: catalog.cases.find(c => c.id === proposal.caseId),
+      ...(proposal.status === 'pending' ? { conflict: proposalConflict(proposal, byId.get(proposal.baseRevision)!, revision, catalog) } : {})
+    })));
+  }
   const data = await body(event);
   assert(event.request.method === 'POST', 'Method not allowed.', 405);
   if (parts.length === 1) {
@@ -188,29 +211,18 @@ async function proposals(event: RequestEvent, parts: string[]): Promise<Response
     const caseId = text(data.caseId, 'Case ID', 1000);
     assert(['add', 'remove'].includes(data.action), 'Invalid proposal action.');
     if (data.action === 'add') assert(store().catalog().cases.some((c) => c.id === caseId), 'Case is not in the test catalogue.');
-    const proposal: LinkProposal = { id: store().id(), baseRevision, requirementId, caseId, action: data.action, reason: text(data.reason, 'Reason', 5000), author: actor.name, createdAt: new Date().toISOString(), status: 'pending' };
+    const proposal: LinkProposal = { id: store().id(), baseRevision, requirementId, caseId, action: data.action, reason: text(data.reason, 'Reason', 5000), author: actor.name, ...(actor.agentToken ? { agentToken: actor.agentToken } : {}), createdAt: new Date().toISOString(), status: 'pending' };
+    const revision = store().revision(baseRevision);
+    const conflict = proposalConflict(proposal, revision, revision, store().catalog());
+    assert(!conflict, conflict ?? '', 409);
+    const duplicate = store().proposals().find(p => p.status === 'pending' && p.baseRevision === baseRevision && p.requirementId === requirementId && p.caseId === caseId && p.action === proposal.action);
+    if (duplicate) return json(duplicate);
     store().put('proposal', proposal.id, proposal); return json(proposal, { status: 201 });
   }
   assert(parts.length === 2 && actor.role === 'owner', 'Only an owner may decide a proposal.', 403);
-  const proposal = store().get<LinkProposal>('proposal', identifier(parts[1]));
-  assert(proposal.status === 'pending', 'Proposal is already decided.', 409);
   assert(typeof data.accept === 'boolean', 'Accept must be boolean.');
-  if (data.accept) {
-    const revision = store().latestRevision();
-    assert(revision.id === proposal.baseRevision, 'Requirements changed. Create a new proposal for the current revision.', 409);
-    const req = revision.requirements.find((r) => r.id === proposal.requirementId)!;
-    if (proposal.action === 'add') {
-      const found = store().catalog().cases.find((c) => c.id === proposal.caseId);
-      assert(found, 'Test is no longer in the catalogue.');
-      assert(!req.tests.some((t) => t.caseId === proposal.caseId), 'Test is already linked.', 409);
-      req.tests.push({ id: store().id(), title: found.name, kind: 'automated', caseId: found.id, inputs: [] });
-    } else {
-      assert(req.tests.some((t) => t.kind === 'automated' && t.caseId === proposal.caseId), 'Link no longer exists.', 409);
-      req.tests = req.tests.filter((t) => t.kind !== 'automated' || t.caseId !== proposal.caseId);
-    }
-    store().saveRevision(revision.id, event.locals.actor!.name, revision.requirements);
-  }
-  proposal.status = data.accept ? 'accepted' : 'rejected'; store().put('proposal', proposal.id, proposal); return json(proposal);
+  const decided = store().decideProposal(identifier(parts[1]), actor.name, data.accept);
+  return json({ ...decided, revision: store().latestRevision() });
 }
 async function ci(event: RequestEvent, parts: string[]): Promise<Response> {
   if (parts[0] === 'catalog' && event.request.method === 'POST') {

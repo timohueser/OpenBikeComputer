@@ -1,7 +1,8 @@
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import type { Cookies } from '@sveltejs/kit';
-import type { Actor } from '../types.ts';
-import { assert } from './domain.ts';
+import type { SQLOutputValue } from 'node:sqlite';
+import type { Actor, AgentToken } from '../types.ts';
+import { assert, text } from './domain.ts';
 import { store } from './store.ts';
 
 export const digest = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -28,7 +29,16 @@ export function authenticate(request: Request, cookies: Cookies): Actor | undefi
   if (authorization?.startsWith('Bearer ')) {
     const token = authorization.slice(7);
     if (sameSecret(token, process.env.VERIFICATION_CI_TOKEN || '')) return { name: 'CI', role: 'ci' };
-    if (sameSecret(token, process.env.VERIFICATION_AGENT_TOKEN || '')) return { name: 'Coding agent', role: 'agent' };
+    const row = store().db.prepare('SELECT * FROM agent_tokens WHERE hash=? AND expires>? AND revoked_at IS NULL').get(digest(token), Date.now());
+    if (row) {
+      const access = agentTokenDetails(row);
+      if (!currentActor({ ...access.issuedBy, role: 'owner' })?.admin) {
+        store().db.prepare('UPDATE agent_tokens SET revoked_at=? WHERE id=?').run(Date.now(), access.id);
+        return;
+      }
+      store().db.prepare('UPDATE agent_tokens SET last_used=? WHERE id=?').run(Date.now(), access.id);
+      return { name: access.name, role: 'agent', agentToken: { id: access.id, name: access.name, issuedBy: access.issuedBy } };
+    }
     return;
   }
   const token = cookies.get('obc_session');
@@ -50,6 +60,33 @@ export function logout(cookies: Cookies): void {
   const token = cookies.get('obc_session');
   if (token) store().db.prepare('DELETE FROM sessions WHERE hash=?').run(digest(token));
   cookies.delete('obc_session', { path: '/' });
+}
+function agentTokenDetails(row: Record<string, SQLOutputValue>): AgentToken {
+  return { id: String(row.id), name: String(row.name), issuedBy: JSON.parse(String(row.issuer)),
+    createdAt: new Date(Number(row.created_at)).toISOString(), expiresAt: new Date(Number(row.expires)).toISOString(),
+    ...(row.last_used === null ? {} : { lastUsedAt: new Date(Number(row.last_used)).toISOString() }),
+    ...(row.revoked_at === null ? {} : { revokedAt: new Date(Number(row.revoked_at)).toISOString() }) };
+}
+export function agentTokens(actor: Actor): AgentToken[] {
+  requireAdmin(actor);
+  return store().db.prepare('SELECT id,name,issuer,created_at,expires,last_used,revoked_at FROM agent_tokens ORDER BY created_at DESC, rowid DESC').all().map(agentTokenDetails);
+}
+export function createAgentToken(actor: Actor, name: unknown, lifetimeMinutes: unknown = 60): { token: string; access: AgentToken } {
+  const admin = requireAdmin(actor);
+  const label = text(name, 'Token name', 100);
+  assert(typeof lifetimeMinutes === 'number' && Number.isInteger(lifetimeMinutes) && lifetimeMinutes >= 1 && lifetimeMinutes <= 240, 'Token lifetime must be between 1 and 240 minutes.');
+  const token = `obc_agent_${randomBytes(32).toString('base64url')}`;
+  const now = Date.now();
+  const expires = now + lifetimeMinutes * 60_000;
+  const access: AgentToken = { id: store().id(), name: label, issuedBy: { name: admin.name, provider: admin.provider, userId: admin.userId }, createdAt: new Date(now).toISOString(), expiresAt: new Date(expires).toISOString() };
+  store().db.prepare('INSERT INTO agent_tokens(id,hash,name,issuer,created_at,expires) VALUES(?,?,?,?,?,?)')
+    .run(access.id, digest(token), label, JSON.stringify(access.issuedBy), now, expires);
+  return { token, access };
+}
+export function revokeAgentToken(actor: Actor, id: string): void {
+  requireAdmin(actor);
+  const result = store().db.prepare('UPDATE agent_tokens SET revoked_at=COALESCE(revoked_at,?) WHERE id=?').run(Date.now(), id);
+  assert(result.changes, 'Agent token not found.', 404);
 }
 function passwordMatches(password: string, hash: string): boolean {
   const [salt, expected] = hash.split(':');
