@@ -99,17 +99,34 @@ Codex, or other — and only the owner can raise them:
 
 ## System requirements and release evidence
 
-The [verification console](https://releases.openbikecomputer.com) owns requirement revisions and
-linked tests. Read it before work that changes product behavior. If the console is unavailable,
-report that limitation. Do not invent a requirement or assume that a test is linked.
+The [verification console](https://releases.openbikecomputer.com) holds the system requirements
+(`SYS-nnn`), and for each one a coverage plan: acceptance criteria, the tests that are evidence
+for each criterion, and the gaps that remain. The owner writes requirement prose and approves
+plans. Agents propose plans. Read the console with the agent credential; never write with an
+owner session, and never invent a requirement or claim a test is linked.
 
-- The owner writes requirement titles and prose. Agents must not create or edit them unless the
-  owner explicitly requests an example. Example requirements remain inactive.
-- Alert the owner when requested behavior has no requirement, a changed test needs a link, or a
-  deleted test removes coverage. The console does not block ordinary development.
-- Read the API with the dedicated agent credential. Never use an owner session for agent writes.
-- Ask the owner before submitting a coverage proposal. Submission does not change a requirement;
-  an owner must approve it in the console. Do not record manual passes or publish a release on
-  behalf of the owner without an explicit instruction.
+- **When you implement or test behavior that a requirement describes**, say so in the pull
+  request in one line: `Requirements: SYS-012, SYS-030` or `Requirements: none`. List a
+  requirement when the change adds, removes, or alters behavior it describes, or adds or renames a
+  test its plan cites. This line is the whole per-PR duty; do not review requirements on every PR.
+- **When a listed requirement's plan is affected**, propose the update with
+  `POST /api/coverage-proposals` (see the README) after the change lands: new criteria for new
+  behavior, evidence for tests you added, a gap where a test is still missing. Proposing never
+  approves.
+- **Alert the owner** when requested behavior contradicts a requirement, when a change needs a
+  requirement that does not exist, or when a test cited as evidence was deleted or hollowed out.
+  The console does not block development; the alert is the duty.
+
+### Occasional requirements check
+
+Run this when asked, or when a milestone lands, not per pull request. It takes one session.
+
+1. Read the current revision and every plan from the console. Read `git log --since` the last
+   check (the previous check's report names its end commit).
+2. For each requirement touched by those commits, answer three questions: does the prose still
+   describe the product; does the plan still name the right tests, with no cited test removed or
+   emptied; is there new user-visible behavior that no requirement covers.
+3. Report the findings as a short list grouped by those three questions, name the end commit,
+   and propose plan updates for the second group. Requirement prose changes are for the owner.
 
 See [the application README](apps/obc-verification/README.md) for the API and release flow.
