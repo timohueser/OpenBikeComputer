@@ -46,7 +46,7 @@ test('persistent local credentials rotate sessions without resetting requirement
     createSession(cookies, actor); store().db.prepare('UPDATE sessions SET expires=0').run(); assert.equal(authenticate(request, cookies), undefined);
     process.env.VERIFICATION_AGENT_TOKEN = 'agent-token'; process.env.VERIFICATION_CI_TOKEN = 'ci-token';
     assert.equal(authenticate(new Request(request, { headers: { authorization: 'Bearer agent-token' } }), cookies), undefined);
-    const { token } = createAgentToken(actor, 'Local agent');
+    const { token } = createAgentToken(actor, 'Local agent', new Date(Date.now() + 3_600_000).toISOString());
     const agent = authenticate(new Request(request, { headers: { authorization: `Bearer ${token}` } }), cookies)!;
     assert.equal(agent.role, 'agent'); assert.throws(() => requireAdmin(agent), /administrator/);
     assert.equal(authenticate(new Request(request, { headers: { authorization: 'Bearer ci-token' } }), cookies)?.role, 'ci');

@@ -48,7 +48,7 @@ async function route(event: RequestEvent): Promise<Response> {
     if (parts.length === 2 && method === 'GET') return json(agentTokens(actor));
     if (parts.length === 2 && method === 'POST') {
       const data = await body(event);
-      return json(createAgentToken(actor, data.name, data.lifetimeMinutes), { status: 201, headers: { 'Cache-Control': 'no-store' } });
+      return json(createAgentToken(actor, data.name, data.expiresAt), { status: 201, headers: { 'Cache-Control': 'no-store' } });
     }
     if (parts.length === 3 && method === 'DELETE') {
       revokeAgentToken(actor, identifier(parts[2])); return json({ ok: true });
