@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import type { ApprovedGitHubUser, Attachment, Candidate, Catalog, CoverageProposal, LinkProposal, Requirement, ReviewedCoverage, Revision } from '../types.ts';
 import { assert, Problem, refresh } from './domain.ts';
 import { proposalConflict } from './proposals.ts';
-import { coverageConflict } from './coverage-plan.ts';
+import { coverageConflict, coveragePlan } from './coverage-plan.ts';
 import { verificationDefinition } from '../coverage.ts';
 
 const referencedRevisions = `SELECT json_extract(body, '$.revision.id') FROM records
@@ -132,37 +132,53 @@ export class Store {
   file(id: string): Attachment { return this.get<Attachment>('file', id); }
   catalog(): Catalog { return this.maybe<Catalog>('catalog', 'current') ?? { sourceSha: '', updatedAt: '', cases: [] }; }
   proposals(): LinkProposal[] { return this.list<LinkProposal>('proposal'); }
-  decideCoverageProposal(id: string, author: string, accept: boolean, feedback?: string): CoverageProposal {
+  saveCoverage(base: number, requirementId: string, author: string, value: unknown): Revision {
     return this.atomic(() => {
-      const proposal = this.get<CoverageProposal>('coverage-proposal', id);
-      assert(proposal.status === 'pending', 'Proposal is already decided.', 409);
-      if (accept) {
-        const revision = this.latestRevision();
-        const catalog = this.catalog();
-        const conflict = coverageConflict(proposal, this.revision(proposal.baseRevision), revision, catalog);
-        assert(!conflict, conflict ?? '', 409);
-        const requirement = revision.requirements.find(r => r.id === proposal.requirementId)!;
-        for (const evidence of proposal.plan.criteria.flatMap(c => c.evidence)) {
-          if (evidence.caseId && !requirement.tests.some(t => t.caseId === evidence.caseId)) {
-            const found = catalog.cases.find(c => c.id === evidence.caseId)!;
-            requirement.tests.push({ id: this.id(), title: found.name.slice(0, 300), kind: 'automated', caseId: found.id, inputs: [] });
-          }
-        }
-        this.writeRevision(revision.id, author, revision.requirements, { requirementId: requirement.id,
-          coverage: { ...proposal.plan, review: { author, createdAt: new Date().toISOString(), proposalId: id } } });
-        const includedCases = new Set(proposal.plan.criteria.flatMap(c => c.evidence.flatMap(e => e.caseId ? [e.caseId] : [])));
-        for (const link of this.proposals()) {
-          if (link.status === 'pending' && link.requirementId === requirement.id && link.action === 'add' && includedCases.has(link.caseId)) {
-            this.put('proposal', link.id, { ...link, status: 'superseded', resolvedByCoverage: id });
-          }
+      const revision = this.latestRevision();
+      assert(revision.id === base, 'Requirements changed. Reload before saving coverage.', 409);
+      const requirement = revision.requirements.find(r => r.id === requirementId);
+      assert(requirement, 'Requirement not found.', 404);
+      const plan = coveragePlan(value, requirement, this.catalog());
+      const proposal: CoverageProposal = { id: this.id(), baseRevision: base, requirementId, plan, author,
+        createdAt: new Date().toISOString(), status: 'pending' };
+      this.decideCoverage(proposal, author, true);
+      return this.latestRevision();
+    });
+  }
+  decideCoverageProposal(id: string, author: string, accept: boolean, feedback?: string): CoverageProposal {
+    return this.atomic(() => this.decideCoverage(this.get<CoverageProposal>('coverage-proposal', id), author, accept, feedback));
+  }
+  private decideCoverage(proposal: CoverageProposal, author: string, accept: boolean, feedback?: string): CoverageProposal {
+    const id = proposal.id;
+    assert(proposal.status === 'pending', 'Proposal is already decided.', 409);
+    if (accept) {
+      const revision = this.latestRevision();
+      const catalog = this.catalog();
+      const conflict = coverageConflict(proposal, this.revision(proposal.baseRevision), revision, catalog);
+      assert(!conflict, conflict ?? '', 409);
+      const requirement = revision.requirements.find(r => r.id === proposal.requirementId)!;
+      const removedCases = new Set(requirement.tests.filter(t => proposal.plan.removeTestIds?.includes(t.id)).map(t => t.caseId));
+      requirement.tests = requirement.tests.filter(t => !proposal.plan.removeTestIds?.includes(t.id));
+      for (const evidence of proposal.plan.criteria.flatMap(c => c.evidence)) {
+        if (evidence.caseId && !requirement.tests.some(t => t.caseId === evidence.caseId)) {
+          const found = catalog.cases.find(c => c.id === evidence.caseId)!;
+          requirement.tests.push({ id: this.id(), title: found.name.slice(0, 300), kind: 'automated', caseId: found.id, inputs: [] });
         }
       }
-      proposal.status = accept ? 'accepted' : 'rejected';
-      proposal.decidedBy = author; proposal.decidedAt = new Date().toISOString();
-      if (feedback) proposal.feedback = feedback;
-      this.put('coverage-proposal', id, proposal);
-      return proposal;
-    });
+      this.writeRevision(revision.id, author, revision.requirements, { requirementId: requirement.id,
+        coverage: { ...proposal.plan, removeTestIds: undefined, review: { author, createdAt: new Date().toISOString(), proposalId: id } } });
+      const includedCases = new Set(proposal.plan.criteria.flatMap(c => c.evidence.flatMap(e => e.caseId ? [e.caseId] : [])));
+      for (const link of this.proposals()) {
+        if (link.status === 'pending' && link.requirementId === requirement.id && ((link.action === 'add' && includedCases.has(link.caseId)) || (link.action === 'remove' && removedCases.has(link.caseId)))) {
+          this.put('proposal', link.id, { ...link, status: 'superseded', resolvedByCoverage: id });
+        }
+      }
+    }
+    proposal.status = accept ? 'accepted' : 'rejected';
+    proposal.decidedBy = author; proposal.decidedAt = new Date().toISOString();
+    if (feedback) proposal.feedback = feedback;
+    this.put('coverage-proposal', id, proposal);
+    return proposal;
   }
   decideProposal(id: string, author: string, accept: boolean): LinkProposal {
     return this.atomic(() => {

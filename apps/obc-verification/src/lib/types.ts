@@ -15,7 +15,7 @@ export interface VerificationTest {
 }
 export interface CoverageEvidence { caseId?: string; testId?: string; rationale: string }
 export interface AcceptanceCriterion { id: string; statement: string; evidence: CoverageEvidence[]; gap: string }
-export interface CoveragePlan { sourceSha: string; conclusion: 'partial' | 'complete'; rationale: string; criteria: AcceptanceCriterion[] }
+export interface CoveragePlan { sourceSha: string; conclusion: 'partial' | 'complete'; rationale: string; criteria: AcceptanceCriterion[]; removeTestIds?: string[] }
 export interface ReviewedCoverage extends CoveragePlan { review?: { author: string; createdAt: string; proposalId: string } }
 export interface Requirement { id: string; title: string; statement: string; group?: string; todo?: boolean; implementationNeeded?: boolean; active: boolean; tests: VerificationTest[]; coverage?: ReviewedCoverage }
 export interface Revision { id: number; createdAt: string; author: string; requirements: Requirement[] }

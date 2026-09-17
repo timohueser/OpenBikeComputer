@@ -1,10 +1,10 @@
-import type { CoverageEvidence, Requirement } from './types.ts';
+import type { CoverageEvidence, CoveragePlan, Requirement } from './types.ts';
 
 export function evidenceTest(requirement: Requirement, evidence: CoverageEvidence) {
   return requirement.tests.find(test => evidence.caseId ? test.kind === 'automated' && test.caseId === evidence.caseId : test.kind === 'manual' && test.id === evidence.testId);
 }
 export function verificationDefinition(requirement: Requirement): string {
-  return JSON.stringify([requirement.title, requirement.statement, requirement.group ?? '', requirement.active, !!requirement.todo, !!requirement.implementationNeeded,
+  return JSON.stringify([requirement.statement,
     [...requirement.tests].sort((a, b) => a.id.localeCompare(b.id)).map(t => [t.id, t.kind, t.title, t.caseId, t.steps, t.expected, t.inputs])]);
 }
 export function coverageIssues(requirement: Requirement, sourceSha?: string): string[] {
@@ -19,8 +19,26 @@ export function coverageIssues(requirement: Requirement, sourceSha?: string): st
   }
   return issues;
 }
-export function coverageStatus(requirement: Requirement, sourceSha?: string): string {
+export function coverageStatus(requirement: Requirement): string {
+  const plan = requirement.coverage;
+  if (!plan) return 'Unassessed';
+  return plan.conclusion === 'complete' && plan.criteria.length && plan.criteria.every(c => c.evidence.length && !c.gap && c.evidence.every(e => evidenceTest(requirement, e))) ? 'Complete' : 'Partial';
+}
+export function coverageReviewStatus(requirement: Requirement, sourceSha?: string): string {
   if (!requirement.coverage) return 'Not reviewed';
-  if (!requirement.coverage.review || (sourceSha && requirement.coverage.sourceSha !== sourceSha)) return 'Needs review';
-  return coverageIssues(requirement, sourceSha).length ? 'Partial' : 'Reviewed as complete';
+  return requirement.coverage.review && (!sourceSha || requirement.coverage.sourceSha === sourceSha) ? 'Current' : 'Needs review';
+}
+export function mappedBy(plan: CoveragePlan, test: Requirement['tests'][number]): boolean {
+  return plan.criteria.some(c => c.evidence.some(e => test.kind === 'automated' ? e.caseId === test.caseId : e.testId === test.id));
+}
+export function coverageChanges(requirement: Requirement, plan: CoveragePlan) {
+  const before = requirement.coverage?.criteria ?? [];
+  return {
+    added: plan.criteria.filter(c => !before.some(old => old.id === c.id)),
+    changed: plan.criteria.filter(c => before.some(old => old.id === c.id && JSON.stringify(old) !== JSON.stringify(c))),
+    removed: before.filter(c => !plan.criteria.some(next => next.id === c.id)),
+    addedCases: [...new Set(plan.criteria.flatMap(c => c.evidence.flatMap(e => e.caseId && !requirement.tests.some(t => t.caseId === e.caseId) ? [e.caseId] : [])))],
+    removedTests: requirement.tests.filter(t => plan.removeTestIds?.includes(t.id)),
+    unmappedTests: requirement.tests.filter(t => !plan.removeTestIds?.includes(t.id) && !mappedBy(plan, t))
+  };
 }
