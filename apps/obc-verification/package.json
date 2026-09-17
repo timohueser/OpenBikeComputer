@@ -7,6 +7,7 @@
   },
   "scripts": {
     "dev": "vite dev --host 127.0.0.1",
+    "demo:coverage": "node --experimental-strip-types ops/coverage-demo.ts",
     "build": "vite build",
     "start": "node build",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",

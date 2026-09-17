@@ -1,6 +1,7 @@
+import { isDeepStrictEqual } from 'node:util';
 import type { RequestEvent } from '@sveltejs/kit';
 import { json } from '@sveltejs/kit';
-import type { Candidate, Catalog, LinkProposal, ManualRun, Role } from '../types.ts';
+import type { Candidate, Catalog, CoverageProposal, LinkProposal, ManualRun, Role } from '../types.ts';
 import { attachments, assert, identifier, positive, Problem, readiness, requirements, testResults, text } from './domain.ts';
 import { store } from './store.ts';
 import { createSession, localLogin, logout, oauthEnabled, sameOrigin, requireAdmin, changePassword, agentTokens, createAgentToken, revokeAgentToken } from './auth.ts';
@@ -9,6 +10,7 @@ import { boundedBody, download, upload } from './files.ts';
 import { approveGitHubUser, removeGitHubUser } from './accounts.ts';
 import { report } from './report.ts';
 import { proposalConflict } from './proposals.ts';
+import { coverageConflict, coveragePlan } from './coverage-plan.ts';
 
 async function body(event: RequestEvent): Promise<Record<string, any>> {
   assert(event.request.headers.get('content-type')?.includes('application/json'), 'JSON body required.', 415);
@@ -82,7 +84,7 @@ async function route(event: RequestEvent): Promise<Response> {
   }
   if (parts[0] === 'ci') { allow('ci'); return ci(event, parts.slice(1)); }
   if (actor.role === 'ci') assert(parts[0] === 'files' || (parts[0] === 'candidates' && ['report', 'evidence'].includes(parts[2]) && method === 'GET'), 'CI access is limited to evidence ingestion and release artifacts.', 403);
-  if (path === 'bootstrap' && method === 'GET') return json({ actor, revision: store().latestRevision(), catalog: store().catalog(), candidates: store().list<Candidate>('candidate'), configured: { github: githubEnabled(), oauth: oauthEnabled() } });
+  if (path === 'bootstrap' && method === 'GET') return json({ actor, revision: store().latestRevision(), catalog: store().catalog(), candidates: store().list<Candidate>('candidate'), configured: { github: githubEnabled(), oauth: oauthEnabled(), ...(process.env.VERIFICATION_DEMO === '1' ? { demo: true } : {}) } });
   if (path === 'requirements/next-id' && method === 'POST') {
     allow('owner');
     const raw = event.request.body && event.request.headers.get('content-type')?.includes('application/json') ? (await boundedBody(event.request, 1024)).toString('utf8').trim() : '';
@@ -102,6 +104,7 @@ async function route(event: RequestEvent): Promise<Response> {
   if (path === 'files' && method === 'POST') { allow('owner', 'ci'); return json(await upload(event.request), { status: 201 }); }
   if (parts[0] === 'files' && parts.length === 2 && method === 'GET') return download(identifier(parts[1]));
   if (parts[0] === 'proposals') return proposals(event, parts);
+  if (parts[0] === 'coverage-proposals') { allow('agent', 'owner'); return coverageProposals(event, parts); }
   if (path === 'candidates' && method === 'GET') return json(store().list<Candidate>('candidate'));
   if (path === 'candidates' && method === 'POST') {
     allow('owner'); const data = await body(event);
@@ -186,6 +189,50 @@ async function route(event: RequestEvent): Promise<Response> {
     }
   }
   throw new Problem(404, 'Endpoint not found.');
+}
+async function coverageProposals(event: RequestEvent, parts: string[]): Promise<Response> {
+  const actor = event.locals.actor!;
+  if (parts.length === 1 && event.request.method === 'GET') {
+    const revision = store().latestRevision();
+    const revisions = new Map(store().revisions().map(r => [r.id, r]));
+    const catalog = store().catalog();
+    return json(store().list<CoverageProposal>('coverage-proposal').map(p => ({ ...p,
+      requirement: revision.requirements.find(r => r.id === p.requirementId),
+      ...(p.status === 'pending' ? { conflict: coverageConflict(p, revisions.get(p.baseRevision), revision, catalog) } : {})
+    })));
+  }
+  assert(event.request.method === 'POST', 'Method not allowed.', 405);
+  const data = await body(event);
+  if (parts.length === 1) {
+    const baseRevision = positive(data.baseRevision, 'Base revision');
+    const revision = store().latestRevision();
+    assert(revision.id === baseRevision, 'Requirements changed. Reload before proposing coverage.', 409);
+    const requirementId = identifier(data.requirementId);
+    const requirement = revision.requirements.find(r => r.id === requirementId);
+    assert(requirement, 'Requirement not found.', 404);
+    const plan = coveragePlan(data.plan, requirement, store().catalog());
+    const duplicate = store().list<CoverageProposal>('coverage-proposal').find(p => p.status === 'pending' && p.baseRevision === baseRevision && p.requirementId === requirementId && isDeepStrictEqual(p.plan, plan));
+    if (duplicate) return json(duplicate);
+    const proposal: CoverageProposal = { id: store().id(), baseRevision, requirementId, plan,
+      author: actor.name, ...(actor.agentToken ? { agentToken: actor.agentToken } : {}), createdAt: new Date().toISOString(), status: 'pending' };
+    store().atomic(() => {
+      if (data.supersedes !== undefined) {
+        const previous = store().get<CoverageProposal>('coverage-proposal', identifier(data.supersedes));
+        assert(previous.status === 'pending' && previous.requirementId === requirementId, 'Only a pending proposal for this requirement can be replaced.', 409);
+        const issuer = actor.agentToken?.issuedBy;
+        assert(actor.role === 'owner' || (issuer && previous.agentToken?.issuedBy.provider === issuer.provider && previous.agentToken?.issuedBy.userId === issuer.userId), 'Only the proposing account can replace this pending proposal.', 403);
+        previous.status = 'superseded'; store().put('coverage-proposal', previous.id, previous);
+        proposal.supersedes = previous.id;
+      }
+      store().put('coverage-proposal', proposal.id, proposal);
+    });
+    return json(proposal, { status: 201 });
+  }
+  assert(parts.length === 2 && actor.role === 'owner', 'Only an owner may review coverage.', 403);
+  assert(typeof data.accept === 'boolean', 'Accept must be boolean.');
+  const feedback = data.feedback === undefined || data.feedback === '' ? undefined : text(data.feedback, 'Review feedback', 5000);
+  const decided = store().decideCoverageProposal(identifier(parts[1]), actor.name, data.accept, feedback);
+  return json({ ...decided, revision: store().latestRevision() });
 }
 async function proposals(event: RequestEvent, parts: string[]): Promise<Response> {
   const actor = event.locals.actor!;
