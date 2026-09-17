@@ -22,7 +22,8 @@ On Linux, use `npx playwright install --with-deps chromium --only-shell` to inst
 libraries too. The package lock pins Playwright 1.63.0 and its Chromium headless shell revision
 1243 (153.0.8010.12). The suite runs on Linux and macOS. It starts a loopback server on port 4178,
 serves the existing `docs/dist`, and shuts the server down when tests finish. It never builds a
-second copy of the demo. Keep the port free; an existing server is an error.
+second copy of the demo. Set `OBC_BROWSER_PORT` to use a different free port in another worktree.
+An existing server on the selected port is an error.
 
 The `web.demo-browser` end-to-end suite selects Ride log and follows the real Save to Home. It
 uses the device controls to open Rides and Ride detail, switches to Load route, waits for reset
