@@ -71,13 +71,16 @@ export function agentTokens(actor: Actor): AgentToken[] {
   requireAdmin(actor);
   return store().db.prepare('SELECT id,name,issuer,created_at,expires,last_used,revoked_at FROM agent_tokens ORDER BY created_at DESC, rowid DESC').all().map(agentTokenDetails);
 }
-export function createAgentToken(actor: Actor, name: unknown, lifetimeMinutes: unknown = 60): { token: string; access: AgentToken } {
+const YEAR = 366 * 24 * 60 * 60_000;
+const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+/** `expiresAt` is an ISO timestamp with an explicit offset, at most a year ahead; agents read non-confidential data, so the owner picks the term. */
+export function createAgentToken(actor: Actor, name: unknown, expiresAt: unknown): { token: string; access: AgentToken } {
   const admin = requireAdmin(actor);
   const label = text(name, 'Token name', 100);
-  assert(typeof lifetimeMinutes === 'number' && Number.isInteger(lifetimeMinutes) && lifetimeMinutes >= 1 && lifetimeMinutes <= 240, 'Token lifetime must be between 1 and 240 minutes.');
-  const token = `obc_agent_${randomBytes(32).toString('base64url')}`;
   const now = Date.now();
-  const expires = now + lifetimeMinutes * 60_000;
+  const expires = typeof expiresAt === 'string' && ISO_INSTANT.test(expiresAt) ? Date.parse(expiresAt) : NaN;
+  assert(Number.isFinite(expires) && expires > now && expires <= now + YEAR, 'Token expiry must be an ISO timestamp with a time zone, within the next year.');
+  const token = `obc_agent_${randomBytes(32).toString('base64url')}`;
   const access: AgentToken = { id: store().id(), name: label, issuedBy: { name: admin.name, provider: admin.provider, userId: admin.userId }, createdAt: new Date(now).toISOString(), expiresAt: new Date(expires).toISOString() };
   store().db.prepare('INSERT INTO agent_tokens(id,hash,name,issuer,created_at,expires) VALUES(?,?,?,?,?,?)')
     .run(access.id, digest(token), label, JSON.stringify(access.issuedBy), now, expires);
