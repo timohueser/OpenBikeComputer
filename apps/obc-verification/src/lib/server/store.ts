@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { ApprovedGitHubUser, Attachment, Candidate, Catalog, LinkProposal, Requirement, Revision } from '../types.ts';
 import { assert, Problem, refresh } from './domain.ts';
+import { proposalConflict } from './proposals.ts';
 
 const referencedRevisions = `SELECT json_extract(body, '$.revision.id') FROM records
   WHERE kind IN ('candidate', 'publication') AND json_type(body, '$.revision.id') = 'integer'`;
@@ -21,6 +22,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS records (seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS record_lookup ON records(kind,id,seq);
       CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, actor TEXT NOT NULL, expires INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS agent_tokens (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, name TEXT NOT NULL, issuer TEXT NOT NULL, created_at INTEGER NOT NULL, expires INTEGER NOT NULL, last_used INTEGER, revoked_at INTEGER);
       CREATE TABLE IF NOT EXISTS github_users (id TEXT PRIMARY KEY, login TEXT NOT NULL, admin INTEGER NOT NULL CHECK(admin IN (0,1)));
       CREATE TABLE IF NOT EXISTS local_admin (id INTEGER PRIMARY KEY CHECK(id=1), password_hash TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS login_attempts (key TEXT PRIMARY KEY, count INTEGER NOT NULL, expires INTEGER NOT NULL);`);
@@ -69,14 +71,15 @@ export class Store {
   }
   reserveRequirementId(): string { return this.reserveRequirementIds(1)[0]; }
   saveRevision(base: number, author: string, requirements: Requirement[]): Revision {
-    return this.atomic(() => {
-      const row = this.db.prepare('SELECT MAX(id) AS id FROM revisions').get();
-      assert(Number(row?.id ?? 0) === base, 'Requirements changed. Reload before saving.', 409);
-      this.rememberRequirementNumbers(requirements);
-      const createdAt = new Date().toISOString();
-      const inserted = this.db.prepare('INSERT INTO revisions(created_at,author,body) VALUES (?,?,?)').run(createdAt, author, JSON.stringify(requirements));
-      return { id: Number(inserted.lastInsertRowid), author, createdAt, requirements };
-    });
+    return this.atomic(() => this.writeRevision(base, author, requirements));
+  }
+  private writeRevision(base: number, author: string, requirements: Requirement[]): Revision {
+    const row = this.db.prepare('SELECT MAX(id) AS id FROM revisions').get();
+    assert(Number(row?.id ?? 0) === base, 'Requirements changed. Reload before saving.', 409);
+    this.rememberRequirementNumbers(requirements);
+    const createdAt = new Date().toISOString();
+    const inserted = this.db.prepare('INSERT INTO revisions(created_at,author,body) VALUES (?,?,?)').run(createdAt, author, JSON.stringify(requirements));
+    return { id: Number(inserted.lastInsertRowid), author, createdAt, requirements };
   }
   historySummary() {
     const revisions = this.revisions();
@@ -117,6 +120,29 @@ export class Store {
   file(id: string): Attachment { return this.get<Attachment>('file', id); }
   catalog(): Catalog { return this.maybe<Catalog>('catalog', 'current') ?? { sourceSha: '', updatedAt: '', cases: [] }; }
   proposals(): LinkProposal[] { return this.list<LinkProposal>('proposal'); }
+  decideProposal(id: string, author: string, accept: boolean): LinkProposal {
+    return this.atomic(() => {
+      const proposal = this.get<LinkProposal>('proposal', id);
+      assert(proposal.status === 'pending', 'Proposal is already decided.', 409);
+      if (accept) {
+        const revision = this.latestRevision();
+        const catalog = this.catalog();
+        const conflict = proposalConflict(proposal, this.revision(proposal.baseRevision), revision, catalog);
+        assert(!conflict, conflict ?? '', 409);
+        const requirement = revision.requirements.find(r => r.id === proposal.requirementId)!;
+        if (proposal.action === 'add') {
+          const found = catalog.cases.find(c => c.id === proposal.caseId)!;
+          requirement.tests.push({ id: this.id(), title: found.name, kind: 'automated', caseId: found.id, inputs: [] });
+        } else {
+          requirement.tests = requirement.tests.filter(t => t.kind !== 'automated' || t.caseId !== proposal.caseId);
+        }
+        this.writeRevision(revision.id, author, revision.requirements);
+      }
+      proposal.status = accept ? 'accepted' : 'rejected';
+      this.put('proposal', proposal.id, proposal);
+      return proposal;
+    });
+  }
   githubUsers(): ApprovedGitHubUser[] {
     return this.db.prepare('SELECT id,login,admin FROM github_users ORDER BY login COLLATE NOCASE').all().map((row) => ({ id: String(row.id), login: String(row.login), admin: row.admin === 1 }));
   }
