@@ -108,8 +108,8 @@ report that limitation. Do not invent a requirement or assume that a test is lin
 - Alert the owner when requested behavior has no requirement, a changed test needs a link, or a
   deleted test removes coverage. The console does not block ordinary development.
 - Read the API with the dedicated agent credential. Never use an owner session for agent writes.
-- Ask the owner before submitting a test-link proposal. Submission does not change a requirement;
-  an owner must accept it in the console. Do not record manual passes or publish a release on
+- Ask the owner before submitting a coverage proposal. Submission does not change a requirement;
+  an owner must approve it in the console. Do not record manual passes or publish a release on
   behalf of the owner without an explicit instruction.
 
 See [the application README](apps/obc-verification/README.md) for the API and release flow.

@@ -2,10 +2,9 @@
   import type { Requirement } from '$lib/types';
   import { coverageSummary } from '$lib/coverage';
   export let requirement: Requirement;
-  export let sourceSha: string | undefined = undefined;
   /** Unsaved statement or test changes: the review is cleared once the draft is saved. */
   export let changed = false;
-  $: summary = coverageSummary(requirement, sourceSha);
+  $: summary = coverageSummary(requirement);
   $: state = changed && summary.state !== 'unassessed' ? 'needs-review' : summary.state;
 </script>
 <span class="coverage-badge {state}" title={state === 'covered' ? 'Every criterion has reviewed evidence' : state === 'partial' ? 'Reviewed, but gaps remain' : state === 'needs-review' ? 'The plan exists but its approval is not current' : 'No coverage plan yet'}>
