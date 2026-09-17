@@ -102,17 +102,18 @@ The workflow builds the bootloader and application. It converts the application 
 
 ### Release archive and download service
 
-Each active system requirement needs an approved coverage plan for the candidate's source commit.
-The plan maps acceptance criteria to tests and records remaining gaps. An agent can propose the
-whole plan or changes to accepted coverage. An owner edits the plan as part of the requirement
-draft, together with its tests, and approves the saved requirement with one action for one source
-commit. Approving an agent proposal applies its criteria, evidence, and explicit test-link removals
-in the same step. Each requirement shows
-one coverage state: not assessed, needs review, partial, or covered. Coverage and candidate test
-results remain separate; only a covered, approved plan satisfies verification, even if all linked
-tests pass. Statement or test-definition changes retain the plan
-but clear its approval; title and group edits preserve it. A new source commit needs a new
-assessment and review. Existing candidates retain their saved coverage and evidence.
+Each active system requirement needs an approved coverage plan. The plan maps acceptance criteria
+to tests and records remaining gaps. An agent can propose the whole plan or changes to accepted
+coverage. An owner edits the plan as part of the requirement draft, together with its tests, and
+approves the saved requirement with one action. Approving an agent proposal applies its criteria,
+evidence, and explicit test-link removals in the same step. Each requirement shows one coverage
+state: not assessed, needs review, partial, or covered. Coverage and candidate test results remain
+separate; only a covered, approved plan satisfies verification, even if all linked tests pass.
+Statement or test-definition changes retain the plan but clear its approval; title and group edits
+preserve it. The review records one source commit for the report: the commit the agent assessed,
+or the test catalogue commit when the owner approves the plan. The release gate checks that every
+linked test is present and passes in the candidate. Existing candidates retain their saved coverage
+and evidence.
 
 Every linked automated test needs a pass
 from this candidate's CI run. Every linked manual test needs a recorded pass for this candidate.
