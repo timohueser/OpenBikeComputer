@@ -50,7 +50,7 @@ const plans: CoveragePlan[] = [
     ], gap: '' }
   ] }
 ];
-const credential = createAgentToken(owner, 'Local coverage demo agent', 240).token;
+const credential = createAgentToken(owner, 'Local coverage demo agent', new Date(Date.now() + 86_400_000).toISOString()).token;
 const cookies = { get: () => undefined } as unknown as RequestEvent['cookies'];
 async function propose(index: number) {
   const request = new Request(`${process.env.ORIGIN}/api/coverage-proposals`, { method: 'POST', headers: { authorization: `Bearer ${credential}`, 'content-type': 'application/json' },
