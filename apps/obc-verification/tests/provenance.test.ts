@@ -84,7 +84,8 @@ test('standalone reports render Markdown without active content', () => {
 
 test('reports distinguish accepted gaps from passes and retain unfinished definitions and original failures', () => {
   const c: Candidate = { id: 'exceptions', version: 'v0.1.0-alpha', sourceRef: 'develop', sourceSha: 'a'.repeat(40), createdAt: '', status: 'ready', ciStatus: 'success',
-    revision: { id: 1, author: 'owner', createdAt: '', requirements: [{ id: 'REQ-1', title: 'Runtime', statement: 'Defined target', active: true, tests: [{ id: 'manual', title: 'Battery run', kind: 'manual', steps: 'Measure', expected: 'Meets target', inputs: [] }] }] },
+    revision: { id: 1, author: 'owner', createdAt: '', requirements: [{ id: 'REQ-1', title: 'Runtime', statement: 'Defined target', active: true, tests: [{ id: 'manual', title: 'Battery run', kind: 'manual', steps: 'Measure', expected: 'Meets target', inputs: [] }],
+      coverage: { rationale: 'The manual check measures the required target.', criteria: [{ id: 'runtime', statement: 'Meets the runtime target.', evidence: [{ testId: 'manual', rationale: 'Measures runtime on the board.' }], gap: '' }], review: { author: 'owner', createdAt: '', sourceSha: 'a'.repeat(40) } } }] },
     results: [], manualRuns: [{ id: 'run', requirementId: 'REQ-1', testId: 'manual', result: 'fail', device: 'alpha board', notes: 'Measured below target', evidence: [], author: 'tester', createdAt: '' }],
     assets: ['UPDATE.BIN', 'manifest.json', 'SHA256SUMS.txt', 'obc-boot.elf', 'obc-fw-nrf54l.elf'].map(name => ({ id: name, name, size: 1, sha256: 'a'.repeat(64) })),
     exceptions: [{ requirementId: 'REQ-1', reason: 'Alpha limitation <script>bad()</script>', author: 'admin', createdAt: '2026-09-16' }] };
@@ -110,8 +111,8 @@ test('reports distinguish accepted gaps from passes and retain unfinished defini
   assert.doesNotMatch(excluded, /REQ-2: no verification defined/);
   c.exceptions = [];
   c.manualRuns[0].result = 'pass';
+  // REQ-2 has no plan and therefore no tests.
   assert.match(report(c), /Coverage: Not assessed/);
   assert.match(report(c), /No coverage plan/);
-  c.revision.requirements[0].coverage = { rationale: 'The manual check measures the required target.', criteria: [{ id: 'runtime', statement: 'Meets the runtime target.', evidence: [{ testId: 'manual', rationale: 'Measures runtime on the board.' }], gap: '' }], review: { author: 'owner', createdAt: '', sourceSha: c.sourceSha } };
   assert.match(report(c), /<h2>Accepted with exclusions<\/h2>/);
 });

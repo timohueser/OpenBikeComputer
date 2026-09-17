@@ -1,5 +1,5 @@
 import type { Attachment, Candidate, Readiness, Requirement, TestResult } from '../types.ts';
-import { coverageIssues } from '../coverage.ts';
+import { citedTests, coverageIssues } from '../coverage.ts';
 
 export class Problem extends Error {
   status: number;
@@ -67,13 +67,15 @@ export function testResults(value: unknown): TestResult[] {
     return { caseId, status: r.status, ...(r.detail ? { detail: text(r.detail, 'Result detail', 20000) } : {}) };
   });
 }
+/** The plan decides what must pass: only the tests it cites are evidence, even in an older candidate snapshot. */
 export function requirementIssues(candidate: Candidate, requirement: Requirement, results = new Map(candidate.results.map((r) => [r.caseId, r.status]))): string[] {
   const missing: string[] = [];
+  const tests = citedTests(requirement);
   if (requirement.todo) missing.push(`${requirement.id}: definition is incomplete.`);
   if (requirement.implementationNeeded) missing.push(`${requirement.id}: implementation is incomplete.`);
-  if (!requirement.tests.length) missing.push(`${requirement.id}: no verification defined.`);
+  if (!tests.length) missing.push(`${requirement.id}: no verification defined.`);
   missing.push(...coverageIssues(requirement).map(issue => `${requirement.id}: ${issue}`));
-  for (const test of requirement.tests) {
+  for (const test of tests) {
     if (test.kind === 'automated') {
       if (!test.caseId || results.get(test.caseId) !== 'pass') missing.push(`${requirement.id} / ${test.title}: automated pass required.`);
     } else {

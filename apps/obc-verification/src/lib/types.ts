@@ -15,10 +15,11 @@ export interface VerificationTest {
 }
 export interface CoverageEvidence { caseId?: string; testId?: string; rationale: string }
 export interface AcceptanceCriterion { id: string; statement: string; evidence: CoverageEvidence[]; gap: string }
-export interface CoveragePlan { rationale: string; criteria: AcceptanceCriterion[]; removeTestIds?: string[] }
+export interface CoveragePlan { rationale: string; criteria: AcceptanceCriterion[] }
 /** An owner's approval of the saved statement, tests, and plan. It records the catalogue commit of that moment. */
 export interface CoverageReview { author: string; createdAt: string; sourceSha?: string; proposalId?: string }
 export interface ReviewedCoverage extends CoveragePlan { review?: CoverageReview }
+/** `tests` are exactly the tests the coverage plan cites. Results and manual runs refer to them by ID. */
 export interface Requirement { id: string; title: string; statement: string; group?: string; todo?: boolean; implementationNeeded?: boolean; active: boolean; tests: VerificationTest[]; coverage?: ReviewedCoverage }
 export interface Revision { id: number; createdAt: string; author: string; requirements: Requirement[] }
 export interface CatalogCase { id: string; suite: string; name: string; file?: string }

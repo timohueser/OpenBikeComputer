@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { AcceptanceCriterion, Catalog, CoveragePlan, CoverageProposal, Requirement, Revision } from '../types.ts';
-import { mappedBy, planProblem, verificationDefinition } from '../coverage.ts';
+import { evidenceKey, planProblem, verificationDefinition } from '../coverage.ts';
 import { assert, identifier, text } from './domain.ts';
 
 /** Validates a plan for a requirement. Automated evidence may name any catalogue case; it is linked when the plan is saved. */
@@ -31,31 +31,23 @@ export function coveragePlan(value: unknown, requirement: Requirement, catalog: 
   const result: CoveragePlan = { rationale: plan.rationale.trim(), criteria };
   const problem = planProblem(result);
   assert(!problem, problem ?? '');
-  const addedCases = new Set(criteria.flatMap(c => c.evidence.flatMap(e => e.caseId && !requirement.tests.some(t => t.caseId === e.caseId) ? [e.caseId] : [])));
-  const removals = plan.removeTestIds ?? [];
-  assert(Array.isArray(removals) && removals.length <= 100, 'At most 100 test links can be removed.');
-  const removeTestIds: string[] = removals.map((id: unknown) => identifier(id, 'Removed test ID'));
-  assert(new Set(removeTestIds).size === removeTestIds.length, 'Duplicate test removal.');
-  for (const id of removeTestIds) {
-    const test = requirement.tests.find(t => t.id === id);
-    assert(test, 'The test to remove is no longer linked.');
-    assert(!mappedBy(result, test), 'Cannot remove a test used by the proposed coverage.');
-  }
-  assert(requirement.tests.length - removeTestIds.length + addedCases.size <= 100, 'At most 100 tests can be linked to a requirement.');
-  return { ...result, ...(removeTestIds.length ? { removeTestIds } : {}) };
+  assert(new Set(criteria.flatMap(c => c.evidence.map(evidenceKey))).size <= 100, 'At most 100 tests can be evidence for a requirement.');
+  return result;
 }
 export function commitSha(value: unknown): string {
   assert(typeof value === 'string' && /^[a-f0-9]{40}$/.test(value), 'Use the exact 40-character source commit that you assessed.');
   return value;
 }
-/** Links every catalogue case a plan cites that the requirement does not carry yet. */
+/** Makes the requirement's tests exactly the tests its plan cites: links new catalogue cases and drops the rest. */
 export function linkEvidence(requirement: Requirement, plan: CoveragePlan, catalog: Catalog, id: () => string): void {
+  const cited = new Set(plan.criteria.flatMap(c => c.evidence.map(evidenceKey)));
   for (const evidence of plan.criteria.flatMap(c => c.evidence)) {
     if (evidence.caseId && !requirement.tests.some(t => t.caseId === evidence.caseId)) {
       const found = catalog.cases.find(c => c.id === evidence.caseId)!;
       requirement.tests.push({ id: id(), title: found.name.slice(0, 300), kind: 'automated', caseId: found.id, inputs: [] });
     }
   }
+  requirement.tests = requirement.tests.filter(t => cited.has(t.kind === 'automated' ? t.caseId! : t.id));
 }
 
 export function coverageConflict(proposal: CoverageProposal, base: Revision | undefined, current: Revision, catalog: Catalog): string | undefined {
@@ -66,12 +58,12 @@ export function coverageConflict(proposal: CoverageProposal, base: Revision | un
   try { coveragePlan(proposal.plan, now, catalog); }
   catch (error) { return error instanceof Error ? error.message : 'Evidence is no longer available.'; }
 }
-/** Attaches each requirement's validated draft plan and links the catalogue cases it cites. */
+/** Attaches each requirement's validated draft plan and makes its tests the tests that plan cites. */
 export function draftCoverage(requirements: Requirement[], raw: unknown, catalog: Catalog, id: () => string): Requirement[] {
   return requirements.map((requirement, index) => {
     const value = (raw as any)?.[index]?.coverage;
-    if (value === undefined || value === null) return requirement;
-    const { removeTestIds: ignored, ...plan } = coveragePlan(value, requirement, catalog);
+    if (value === undefined || value === null) return { ...requirement, tests: [] };
+    const plan = coveragePlan(value, requirement, catalog);
     linkEvidence(requirement, plan, catalog, id);
     return { ...requirement, coverage: plan };
   });

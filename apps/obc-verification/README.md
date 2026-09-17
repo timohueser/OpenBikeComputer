@@ -29,8 +29,9 @@ removed, and changed requirements, with the previous and new statement side by s
 
 Each requirement has a **Coverage** section: its acceptance criteria, the tests that are evidence
 for each criterion, and the gaps that remain. Several tests can support one criterion; one test can
-support several criteria. A criterion is covered once it has evidence and no gap. The badge next to
-the heading shows one state per requirement, with the count of covered criteria:
+support several criteria. A requirement's tests are exactly the tests its plan cites. A criterion is
+covered once it has evidence and no gap. The badge next to the heading shows one state per
+requirement, with the count of covered criteria:
 
 | State | Meaning |
 | --- | --- |
@@ -40,8 +41,8 @@ the heading shows one state per requirement, with the count of covered criteria:
 | Covered | Approved, and every criterion has evidence. Only this state satisfies the release gate. |
 
 Coverage and test results are separate. An active requirement needs covered, approved coverage and
-passing results for all its linked tests. Test names alone cannot establish coverage; an owner
-judges whether the criteria capture the whole requirement and the evidence supports each claim.
+passing results for all the tests its plan cites. Test names alone cannot establish coverage; an
+owner judges whether the criteria capture the whole requirement and the evidence supports each claim.
 A candidate exception remains a separate administrator decision.
 
 ### Edit coverage yourself
@@ -50,8 +51,10 @@ Select **Define coverage** or **Edit coverage** on a requirement. The plan is pa
 requirement draft, like its statement and tests: write each criterion, add evidence, say what each
 test proves, and note the gap for anything still missing. The checkmarks and the count update as
 you edit. Evidence comes from the CI catalogue or from a manual procedure; **+ New manual procedure**
-in the picker creates one on the spot. Adding catalogue evidence links the test to the requirement.
-A test that is used as evidence cannot be unlinked until it is removed from its criterion.
+in the picker creates one on the spot, **Refresh catalogue** gets tests from a new CI import, and
+**Edit procedure** on manual evidence changes its steps, expected result, and input files. The plan
+attaches the tests: **Remove** on a piece of evidence unlinks its test. A manual procedure that no
+criterion cites is deleted with its steps, so removing its last citation asks you to confirm.
 
 **Save revision** stores the plan with the requirement. Saving never approves: the badge shows
 **Needs review** until you select **Approve coverage**. Approval attests the saved statement, tests,
@@ -63,10 +66,11 @@ test results. Approving again after a change is the same single action, with not
 An agent can propose an initial plan or revise accepted coverage. Proposals appear on their
 requirement, above the current plan; the sidebar marks the requirement and the **proposals to
 review** button in the heading jumps to the next one. A proposal shows new, changed, and removed
-criteria, with new evidence marked and removed evidence struck through, plus the test links it adds
-or removes. **Approve** saves the plan, applies the links, and records your approval for the commit
-the agent assessed, in one action. **Reject** asks for feedback, which the agent can read before
-submitting a revision. Agents cannot approve coverage.
+criteria, with new evidence marked and removed evidence struck through. If approval deletes a
+manual procedure that the plan cites nowhere, a sentence above **Approve** names each one.
+**Approve** saves the plan, applies the links, and records your approval for the commit the agent
+assessed, in one action. **Reject** asks for feedback, which the agent can read before submitting a revision. Agents
+cannot approve coverage.
 
 Save or discard requirement drafts before approving. Approval rechecks the target requirement,
 coverage, test definitions, and catalogue; stale proposals must be refreshed. Changes to other
@@ -83,8 +87,8 @@ does not invalidate coverage. Labels still apply their own release gates. Change
 this requirement's approval.
 
 The review records one source commit for the report: the commit the agent assessed, or the CI
-catalogue commit when you approve the plan yourself. The release gate checks that every linked test
-is present and passes in the candidate. A new source commit thus does not clear an approval. Existing candidates keep their original requirement and coverage snapshots.
+catalogue commit when you approve the plan yourself. The release gate checks that every test the
+plan cites is present and passes in the candidate. A new source commit thus does not clear an approval. Existing candidates keep their original requirement and coverage snapshots.
 Published reports remain frozen.
 
 ### Local demonstration
@@ -98,12 +102,12 @@ npm run demo:coverage --prefix apps/obc-verification
 Open `http://127.0.0.1:4180` and sign in as `demo` with password `local-coverage-demo`.
 The disposable database starts with accepted plans and proposals that revise them:
 
-- **SYS-039**: an approved partial plan with a pending proposal above it. The proposal adds
-  selection evidence and unlinks an obsolete test; persistence remains a gap, so approval keeps
-  coverage partial. Or select **Edit coverage**, add a manual procedure as evidence, save the
-  revision, and approve.
+- **SYS-039**: an approved partial plan with a pending proposal above it. The proposal replaces an
+  obsolete smoke test with selection evidence; the omitted test is unlinked, persistence remains a
+  gap, and approval keeps coverage partial. Or select **Edit coverage**, add a manual procedure as
+  evidence, save the revision, and approve.
 - **SYS-030**: a demo addition to the requirement cleared the approval while keeping the criteria.
-  Its proposal records the added zoom obligation as a gap.
+  Its proposal records the added zoom obligation as a gap. Its plan also cites a manual procedure.
 - **Releases → v0.0.0-coverage-demo**: the candidate retains the earlier snapshot and simulated
   passing results. Later edits do not change its evidence.
 
@@ -145,8 +149,9 @@ all labels from their saved revision. The API retains `todo` for Definition inco
 for inclusion, and adds the optional `implementationNeeded` boolean. Existing saved requirements
 need no database conversion.
 
-**Delete requirement** removes the selected requirement and its test links from the draft after
-confirmation. **Undo** restores it before saving. Select **Save revision** to save the deletion.
+**Delete requirement**, in the requirement editor, removes the selected requirement and its tests
+from the draft after confirmation. **Undo** restores it before saving. Select **Save revision** to
+save the deletion.
 Earlier revisions and existing release candidates retain the requirement, tests, and attachments.
 
 ## Release exceptions
@@ -445,27 +450,27 @@ Read decisions and reviewer feedback with `GET /api/coverage-proposals`. Send
 ```
 
 Replace all placeholder IDs and the source SHA. For an existing manual check, use `testId` instead
-of `caseId`. Each evidence entry must identify exactly one test and explain its assertions.
-The server rejects unknown tests and duplicate criteria. A criterion may have no evidence yet:
-an agent can propose the criteria first and evidence later, with or without a `gap` note.
-To explicitly unlink existing tests, include `removeTestIds` in the plan. These
-are requirement test IDs, not catalogue case IDs. A removed test must not remain mapped to any
-criterion. Omitted removals retain the existing links. Approval applies additions, removals, and
-coverage review in one transaction. The proposal retains the requested removals for audit; the
-saved plan contains only its criteria and summary. The top-level source SHA identifies the commit
-the agent assessed; it is not a claim that tests have run, and approval records it.
+of `caseId`; an agent cannot create a manual procedure. Each evidence entry must identify exactly
+one test and explain its assertions. The server rejects unknown tests and duplicate criteria. A
+criterion may have no evidence yet: an agent can propose the criteria first and evidence later,
+with or without a `gap` note.
+The requirement's tests become exactly the tests the plan cites. A plan that omits a test therefore
+unlinks it, and a manual procedure that no criterion cites is deleted with its steps. Approval
+applies the criteria, the test links, and the coverage review in one transaction. The top-level
+source SHA identifies the commit the agent assessed; it is not a claim that tests have run, and
+approval records it.
 
 The response contains the pending proposal ID and agent attribution. A requirement has at most one
 pending proposal. An identical pending request is reused; a different plan replaces the pending
 proposal, which stays in history as superseded. After rejection, read `feedback` and submit a new
 proposal against the latest requirement revision. An agent cannot accept or reject plans. Owners
 edit the plan as part of the requirement draft: `PUT /api/requirements` accepts a `coverage` plan
-on each requirement, validates it the same way, links cited catalogue cases, and never accepts an
-approval. Owners approve a saved requirement with `POST /api/requirements/ID/coverage/approve` and
-`{ "baseRevision": N }`. Both require an owner session and exact browser origin. Owner review of
+on each requirement, validates it the same way, makes the requirement's tests the tests that plan
+cites, and never accepts an approval. Owners approve a saved requirement with
+`POST /api/requirements/ID/coverage/approve` and `{ "baseRevision": N }`. Both require an owner session and exact browser origin. Owner review of
 an agent proposal uses `POST /api/coverage-proposals/ID` with `{ "accept": true, "feedback": "" }`.
 
-Approval rechecks the requirement, existing test links, current coverage plan, and catalogue.
+Approval rechecks the requirement, its tests, the current coverage plan, and the catalogue.
 Changes to that requirement require a refreshed proposal; other requirements can be approved
 sequentially. After an approval, prepare a new candidate to use the saved coverage snapshot.
 
