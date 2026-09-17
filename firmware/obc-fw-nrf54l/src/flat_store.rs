@@ -1072,7 +1072,7 @@ pub(crate) async fn storage_task(
                 );
                 // The level the ride loop reads as `ExternalFacts::note_transfer` is published from
                 // here, so a plan the rider asks for next is no longer refused by a peer that left.
-                publish_upload(engine);
+                publish_upload(store, engine);
                 None
             }
         };
@@ -1240,12 +1240,12 @@ fn serve(
         }
         Request::Control { link, record, out } => {
             let reaction = engine.on_control(link, store, policy, record, out);
-            publish_upload(engine);
+            publish_upload(store, engine);
             Ok(Outcome::Reacted { reaction, out })
         }
         Request::Stream { link, record, out } => {
             let reaction = engine.on_stream(link, store, policy, record, out);
-            publish_upload(engine);
+            publish_upload(store, engine);
             Ok(Outcome::Reacted { reaction, out })
         }
         Request::StreamStaged { record, out } => {
@@ -1269,7 +1269,7 @@ fn serve(
                     engine.on_link_lost(Link::Usb, store);
                     Reaction::Close(obc_link::flat::Channel::Stream)
                 });
-            publish_upload(engine);
+            publish_upload(store, engine);
             Ok(Outcome::Reacted { reaction, out })
         }
         Request::StreamStagedBatch { request, offset, len, out } => {
@@ -1289,7 +1289,7 @@ fn serve(
                     engine.on_link_lost(Link::Usb, store);
                     Reaction::Close(obc_link::flat::Channel::Stream)
                 });
-            publish_upload(engine);
+            publish_upload(store, engine);
             Ok(Outcome::Reacted { reaction, out })
         }
         Request::FinishUsbStage => {
@@ -1300,7 +1300,7 @@ fn serve(
         }
         Request::Pump { link, out } => {
             let reaction = engine.poll(link, store, out);
-            publish_upload(engine);
+            publish_upload(store, engine);
             Ok(Outcome::Reacted { reaction, out })
         }
         Request::LinkUp { link, ceilings } => {
@@ -1325,7 +1325,7 @@ fn serve(
             // `ExternalFacts::note_transfer` would stay `true` until some later engine request
             // happened to run, withdrawing heavy-operation admission in between; the #927 card would
             // stay up for the same window.
-            publish_upload(engine);
+            publish_upload(store, engine);
             defmt::info!(
                 "flat/v4: link up ({}) — control {=usize} B, stream {=usize} B",
                 match link {
@@ -1339,7 +1339,7 @@ fn serve(
         }
         Request::LinkLost { link } => {
             engine.on_link_lost(link, store);
-            publish_upload(engine);
+            publish_upload(store, engine);
             Ok(Outcome::Done)
         }
         Request::LiveTransfer => Ok(Outcome::Live(engine.live_transfer())),
@@ -1354,7 +1354,44 @@ pub(crate) fn take_route_storage_full() -> bool {
     ROUTE_STORAGE_FULL.swap(false, core::sync::atomic::Ordering::Relaxed)
 }
 
-fn publish_upload(engine: &mut BoardEngine) {
+/// **A committed map is not yet a readable map.** The USB map path skips the whole-payload CRC on
+/// purpose, so until now the first code that ever looked at these bytes was the next boot. Re-open
+/// the object and parse its tables: the header, the section bounds, the LOD table, the style table
+/// and the place and navigation directories. That is about 3 KB of structure in some forty small
+/// reads, tens of milliseconds against a transfer that took minutes.
+///
+/// It proves the map mounts. It does not prove the bytes are undamaged — nothing here reads a
+/// geometry chunk, and OBCM carries no checksum that would make reading them cheap.
+///
+/// `#[inline(never)]` for the reason [`open_map`] carries it: `MapTables` and its parse scratch are
+/// a few KiB, and a value built inside an async block is a permanent slot in that task's poll frame
+/// (#1084/#1108). Keeping the parse in its own out-of-line sync frame keeps it off the store task.
+#[inline(never)]
+fn check_committed_map(store: &'static FlatStore<FlatCard>, id: ObjectId) -> Option<crate::link::MapVerifyFault> {
+    use crate::link::MapVerifyFault;
+    match store.with_source(id, None, |source| obc_reader::MapTables::parse(source).map(|_tables| ())) {
+        Ok(Ok(())) => None,
+        // A read that failed part way through the parse says nothing about the map: the card is the
+        // fault, and the rider's fix is a different card rather than a different builder.
+        Ok(Err(obc_reader::Error::Source(_) | obc_reader::Error::CacheBusy)) | Err(_) => {
+            defmt::error!(
+                "flat: map object {=u64} committed and could not be read back — reporting a card fault",
+                id.0
+            );
+            Some(MapVerifyFault::Storage)
+        }
+        Ok(Err(error)) => {
+            defmt::error!(
+                "flat: map object {=u64} committed and will not parse ({}) — reporting the transfer as unreadable",
+                id.0,
+                defmt::Debug2Format(&error)
+            );
+            Some(MapVerifyFault::NotAMap)
+        }
+    }
+}
+
+fn publish_upload(store: &'static FlatStore<FlatCard>, engine: &mut BoardEngine) {
     let live = engine.live_upload();
     let ended = engine.take_upload_end();
     if matches!(
@@ -1369,17 +1406,27 @@ fn publish_upload(engine: &mut BoardEngine) {
     }
     // The transfer *level* — every kind, not just the map the card shows. See [`LIVE_TRANSFER`].
     LIVE_TRANSFER.store(engine.live_transfer().is_some(), core::sync::atomic::Ordering::Relaxed);
+    // A map's structure is checked here, after the commit, because the store has no read seam over
+    // an uncommitted upload. The card says installed only if the bytes parse.
+    let mut fault = None;
     if let Some((kind, obc_link::flat::UploadEnd::Committed { id, replaced })) = ended {
-        let kind = match kind {
-            obc_link::flat::ObjectKind::Route => Some(CatalogUploadKind::Route),
-            obc_link::flat::ObjectKind::Trip => Some(CatalogUploadKind::Trip),
-            _ => None,
-        };
-        if let Some(kind) = kind {
-            note_catalog_upload(CatalogUpload::new(kind, id.0, replaced));
+        match kind {
+            obc_link::flat::ObjectKind::Route => {
+                note_catalog_upload(CatalogUpload::new(CatalogUploadKind::Route, id.0, replaced))
+            }
+            obc_link::flat::ObjectKind::Trip => {
+                note_catalog_upload(CatalogUpload::new(CatalogUploadKind::Trip, id.0, replaced))
+            }
+            // The link and the store each name objects with their own `ObjectId` newtype over the
+            // same u64; the seam between them is this crate's job, as everywhere else here.
+            obc_link::flat::ObjectKind::MapShard => fault = check_committed_map(store, ObjectId(id.0)),
+            _ => {}
         }
     }
     crate::link::publish_map_transfer(live, ended);
+    if let Some(fault) = fault {
+        crate::link::publish_map_verify_failure(fault);
+    }
 }
 
 // ══════════════════════════ the protocol-v4 engine ══════════════════════════

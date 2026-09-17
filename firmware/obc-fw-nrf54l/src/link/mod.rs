@@ -202,6 +202,31 @@ pub fn map_transfer_state() -> Option<obc_app::screen::MapTransfer> {
     })
 }
 
+/// Why a committed map failed the structure check that runs before its card says installed.
+pub(crate) enum MapVerifyFault {
+    /// The bytes do not parse as a map this firmware reads. Send a map this build agrees with.
+    NotAMap,
+    /// The card could not be read back. The map may be perfectly good; the medium is the suspect.
+    Storage,
+}
+
+/// **A committed map failed its structure check.** Published right after [`publish_map_transfer`]
+/// has stored the installed phase, so the terminal card becomes the failure instead of success.
+/// Both phases already exist with their own copy, so this needed no new screen and no new strings.
+///
+/// The map stays committed either way. The previous map is already gone by this point: the publish
+/// frees it in the same commit that writes the new one, so there is nothing to roll back to. The
+/// rider re-sends, and a reboot before they do lands on MAP UNREADABLE with USB recovery running.
+pub(crate) fn publish_map_verify_failure(fault: MapVerifyFault) {
+    MAP_PHASE.store(
+        match fault {
+            MapVerifyFault::NotAMap => 5,
+            MapVerifyFault::Storage => 3,
+        },
+        Ordering::Relaxed,
+    );
+}
+
 /// Clear the map-transfer state — called when the rider dismisses the terminal card, so the ride
 /// loop's next pass doesn't immediately push it back.
 ///
