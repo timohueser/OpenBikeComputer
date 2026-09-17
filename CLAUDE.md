@@ -38,6 +38,10 @@ Use the nearest README for surface-specific setup. `companion-ios/CLAUDE.md` is 
 
 ## Build and verification
 
+- Run `obc` inside the task's checkout; check the printed root. Outside OBC it uses the installed
+  checkout. Read [active plans](docs/plans.md), use `obc docs review` for related prose, and see
+  [simulator diagnostics](apps/obc-sim/README.md#journey-diagnostics) to inspect a scripted journey.
+
 - Read [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/testing.md](docs/testing.md) before choosing
   verification. Use focused checks for the changed package or surface:
 
