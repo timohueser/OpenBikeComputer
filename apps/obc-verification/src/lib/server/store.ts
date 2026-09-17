@@ -2,11 +2,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { isDeepStrictEqual } from 'node:util';
-import type { ApprovedGitHubUser, Attachment, Candidate, Catalog, CoverageProposal, CoverageReview, LinkProposal, Requirement, ReviewedCoverage, Revision } from '../types.ts';
+import type { ApprovedGitHubUser, Attachment, Candidate, Catalog, CoverageProposal, CoverageReview, Requirement, ReviewedCoverage, Revision } from '../types.ts';
 import { assert, Problem, refresh } from './domain.ts';
-import { proposalConflict } from './proposals.ts';
-import { coverageConflict, linkEvidence, commitSha } from './coverage-plan.ts';
+import { coverageConflict, linkEvidence } from './coverage-plan.ts';
 import { coverageDefinition } from '../coverage.ts';
 
 const referencedRevisions = `SELECT json_extract(body, '$.revision.id') FROM records
@@ -136,6 +134,7 @@ export class Store {
       const inserted = this.db.prepare('INSERT INTO revisions(created_at,author,body) VALUES(?,?,?)').run(createdAt, author, JSON.stringify(requirements));
       const id = Number(inserted.lastInsertRowid);
       this.db.prepare(`DELETE FROM revisions WHERE id <> ? AND id NOT IN (${referencedRevisions})`).run(id);
+      // 'proposal' holds inert link proposals from older databases.
       this.db.prepare("DELETE FROM records WHERE kind IN ('proposal', 'coverage-proposal')").run();
       return { id, author, createdAt, requirements };
     });
@@ -158,15 +157,15 @@ export class Store {
   }
   file(id: string): Attachment { return this.get<Attachment>('file', id); }
   catalog(): Catalog { return this.maybe<Catalog>('catalog', 'current') ?? { sourceSha: '', updatedAt: '', cases: [] }; }
-  proposals(): LinkProposal[] { return this.list<LinkProposal>('proposal'); }
-  approveCoverage(base: number, requirementId: string, author: string, sourceSha: unknown): Revision {
+  approveCoverage(base: number, requirementId: string, author: string): Revision {
     return this.atomic(() => {
       const revision = this.latestRevision();
       assert(revision.id === base, 'Requirements changed. Reload before approving coverage.', 409);
       const requirement = revision.requirements.find(r => r.id === requirementId);
       assert(requirement, 'Requirement not found.', 404);
       assert(requirement.coverage, 'Define coverage before approving it.');
-      return this.writeRevision(base, author, revision.requirements, { requirementId, review: { author, createdAt: new Date().toISOString(), sourceSha: commitSha(sourceSha) } });
+      const sourceSha = this.catalog().sourceSha;
+      return this.writeRevision(base, author, revision.requirements, { requirementId, review: { author, createdAt: new Date().toISOString(), ...(sourceSha ? { sourceSha } : {}) } });
     });
   }
   decideCoverageProposal(id: string, author: string, accept: boolean, feedback?: string): CoverageProposal {
@@ -181,47 +180,17 @@ export class Store {
       const conflict = coverageConflict(proposal, this.revision(proposal.baseRevision), revision, catalog);
       assert(!conflict, conflict ?? '', 409);
       const requirement = revision.requirements.find(r => r.id === proposal.requirementId)!;
-      const removedCases = new Set(requirement.tests.filter(t => proposal.plan.removeTestIds?.includes(t.id)).map(t => t.caseId));
       requirement.tests = requirement.tests.filter(t => !proposal.plan.removeTestIds?.includes(t.id));
       linkEvidence(requirement, proposal.plan, catalog, () => this.id());
       requirement.coverage = { rationale: proposal.plan.rationale, criteria: proposal.plan.criteria };
       this.writeRevision(revision.id, author, revision.requirements, { requirementId: requirement.id,
         review: { author, createdAt: new Date().toISOString(), sourceSha: proposal.sourceSha, proposalId: id } });
-      const includedCases = new Set(proposal.plan.criteria.flatMap(c => c.evidence.flatMap(e => e.caseId ? [e.caseId] : [])));
-      for (const link of this.proposals()) {
-        if (link.status === 'pending' && link.requirementId === requirement.id && ((link.action === 'add' && includedCases.has(link.caseId)) || (link.action === 'remove' && removedCases.has(link.caseId)))) {
-          this.put('proposal', link.id, { ...link, status: 'superseded', resolvedByCoverage: id });
-        }
-      }
     }
     proposal.status = accept ? 'accepted' : 'rejected';
     proposal.decidedBy = author; proposal.decidedAt = new Date().toISOString();
     if (feedback) proposal.feedback = feedback;
     this.put('coverage-proposal', id, proposal);
     return proposal;
-  }
-  decideProposal(id: string, author: string, accept: boolean): LinkProposal {
-    return this.atomic(() => {
-      const proposal = this.get<LinkProposal>('proposal', id);
-      assert(proposal.status === 'pending', 'Proposal is already decided.', 409);
-      if (accept) {
-        const revision = this.latestRevision();
-        const catalog = this.catalog();
-        const conflict = proposalConflict(proposal, this.revision(proposal.baseRevision), revision, catalog);
-        assert(!conflict, conflict ?? '', 409);
-        const requirement = revision.requirements.find(r => r.id === proposal.requirementId)!;
-        if (proposal.action === 'add') {
-          const found = catalog.cases.find(c => c.id === proposal.caseId)!;
-          requirement.tests.push({ id: this.id(), title: found.name, kind: 'automated', caseId: found.id, inputs: [] });
-        } else {
-          requirement.tests = requirement.tests.filter(t => t.kind !== 'automated' || t.caseId !== proposal.caseId);
-        }
-        this.writeRevision(revision.id, author, revision.requirements);
-      }
-      proposal.status = accept ? 'accepted' : 'rejected';
-      this.put('proposal', proposal.id, proposal);
-      return proposal;
-    });
   }
   githubUsers(): ApprovedGitHubUser[] {
     return this.db.prepare('SELECT id,login,admin FROM github_users ORDER BY login COLLATE NOCASE').all().map((row) => ({ id: String(row.id), login: String(row.login), admin: row.admin === 1 }));
