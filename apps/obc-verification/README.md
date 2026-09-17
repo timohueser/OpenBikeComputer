@@ -27,7 +27,9 @@ removed, and changed requirements, with the previous and new statement side by s
 
 ## Review link proposals
 
-Open **More → Link proposals** to review agent suggestions. Search by requirement, test, or reason.
+Open **Review proposals** to review agent suggestions. **Coverage plans** groups a requirement's
+criteria, evidence, and gaps into one decision. **Individual links** shows test-link suggestions.
+Search by requirement, test, or reason.
 Each proposal shows the current requirement statement, the test identity, and the reason for the
 link. The status filter also shows accepted and rejected proposals.
 
@@ -40,6 +42,59 @@ the link changed. The panel shows the conflict reason. The server checks again w
 
 Save or discard an unsaved requirement draft before approval. Rejecting a proposal keeps the draft.
 Existing candidates keep their saved requirement revisions.
+
+## Coverage plans
+
+Passing linked tests does not establish that the whole requirement is covered. A coverage plan
+lists acceptance criteria, the evidence for each criterion, and remaining gaps. Each evidence
+link has a rationale. Several tests can support one criterion; a test can support several criteria.
+All linked tests remain required, including tests outside the plan. Evidence can use catalogue
+case IDs or existing manual test IDs. An agent cannot create a manual pass.
+
+An agent proposes the entire plan and recommends **partial** or **complete** coverage. The owner
+reviews the requirement, criteria, evidence, and gaps, then selects **Approve partial plan**,
+**Approve complete coverage**, or **Reject plan**. Optional feedback is returned to the agent.
+The review shows added, changed, and removed criteria and the previous plan. The owner does not
+need to map each test manually. Approval saves the plan and links all referenced automated tests
+in one transaction. Pending individual add-link proposals included in that plan become superseded.
+Other linked tests remain in place.
+
+Complete coverage requires at least one criterion, evidence for every criterion, and no recorded
+criterion gaps. An owner must still judge whether the criteria represent the whole requirement
+and whether the assertions are sufficient. The application cannot establish this from test names.
+
+Coverage status and candidate test results are separate. **Not reviewed**, **Needs review**, and
+**Partial** coverage block verification even if every linked test passes. The gate requires an
+approved complete plan for the candidate's exact source commit, plus all required test passes.
+An administrator can accept a candidate exception; it is reported separately and never counted
+as verified. Existing requirements without plans need coverage review before new verification.
+
+Requirement definition, label, group, or test-link changes clear that requirement's coverage
+approval. The previous criteria and gaps remain visible for a new proposal. Unrelated requirement
+edits do not clear it. A new source commit requires a fresh assessment and owner approval. This
+conservative rule also covers changes to what a test asserts. Existing candidates keep their
+snapshots. Published report bytes remain frozen.
+
+### Local demonstration
+
+Run with Node 24 from the repository root:
+
+```sh
+npm run demo:coverage --prefix apps/obc-verification
+```
+
+Open `http://127.0.0.1:4180`, sign in as `demo` with password `local-coverage-demo`, and open
+**Review proposals**. The disposable local database contains copies of SYS-039 and SYS-030:
+
+- SYS-039 has projection evidence but lacks selection and persistence checks. Approve the partial
+  plan to record the gaps without claiming complete coverage.
+- SYS-030 has a complete proposal. Approval links its test and records the coverage review.
+- **Releases → v0.0.0-coverage-demo** contains a separate snapshot with simulated passing test
+  results. Only SYS-030 counts as verified. SYS-039 remains blocked by its coverage gaps.
+
+The demo disables GitHub integration and uses a separate temporary database. It makes no production
+changes. Stop it with Ctrl+C; restart the command to reset the example. Set `VERIFICATION_DEMO_PORT`
+to use another local port.
 
 ## Requirement groups
 
@@ -326,6 +381,70 @@ Use `Authorization: Bearer TOKEN` with the dedicated agent token. The token can 
 `GET /api/bootstrap`, `/api/revisions`, `/api/revisions/ID`, `/api/catalog`, `/api/candidates`,
 `/api/candidates/ID`, and `/api/proposals`. These responses use the same definitions as the owner interface.
 Download a retained attachment with `GET /api/files/ID`.
+
+### Propose coverage
+
+Prefer a whole coverage plan when assessing a requirement. Read the current requirement and its
+existing coverage first. Audit the source at an exact commit. Identify every obligation, preserve
+stable criterion IDs when revising a plan, map tests by their actual assertions, and describe
+missing tests or implementation in `gap`. Do not change the requirement title or statement.
+Use `partial` when the combined evidence is insufficient. Proposing a plan never approves it.
+
+Read decisions and reviewer feedback with `GET /api/coverage-proposals`. Send
+`POST /api/coverage-proposals` with:
+
+```json
+{
+  "baseRevision": 7,
+  "requirementId": "SYS-039",
+  "plan": {
+    "sourceSha": "EXACT_40_CHARACTER_COMMIT_SHA",
+    "conclusion": "partial",
+    "rationale": "Projection is tested. User selection and persistence are not.",
+    "criteria": [
+      {
+        "id": "projection",
+        "statement": "Both orientations render correctly.",
+        "evidence": [
+          { "caseId": "REAL_NORTH_UP_CATALOGUE_ID", "rationale": "Checks north-up projection." },
+          { "caseId": "REAL_HEADING_UP_CATALOGUE_ID", "rationale": "Checks course rotation." }
+        ],
+        "gap": ""
+      },
+      {
+        "id": "selection",
+        "statement": "The user can select either orientation.",
+        "evidence": [],
+        "gap": "Add the user setting and an interaction test."
+      },
+      {
+        "id": "persistence",
+        "statement": "The choice survives a restart.",
+        "evidence": [],
+        "gap": "Add a save/reload test that also starts a ride."
+      }
+    ]
+  }
+}
+```
+
+Replace all placeholder IDs and the source SHA. For an existing manual check, use `testId` instead
+of `caseId`. Each evidence entry must identify exactly one test and explain its assertions.
+The server rejects unknown tests, duplicate criteria, and complete plans with gaps or missing
+evidence. A source SHA identifies the agent's assessment; it is not a claim that tests have run.
+
+The response contains the pending proposal ID and agent attribution. An identical pending request
+is reused. To revise your account's pending proposal, submit the new plan with its ID in the
+optional top-level `supersedes` field. The old proposal remains in history as superseded.
+After rejection, read `feedback` and submit a new proposal against the latest requirement revision.
+An agent cannot accept or reject plans. Owner review uses
+`POST /api/coverage-proposals/ID` with `{ "accept": true, "feedback": "" }`.
+
+Approval rechecks the requirement, existing test links, current coverage plan, and catalogue.
+Changes to that requirement require a refreshed proposal; other requirements can be approved
+sequentially. After an approval, prepare a new candidate to use the saved coverage snapshot.
+
+### Propose an individual link
 
 After the owner explicitly asks for a proposal, send `POST /api/proposals` with JSON:
 

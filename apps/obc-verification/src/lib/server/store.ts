@@ -2,9 +2,11 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { ApprovedGitHubUser, Attachment, Candidate, Catalog, LinkProposal, Requirement, Revision } from '../types.ts';
+import type { ApprovedGitHubUser, Attachment, Candidate, Catalog, CoverageProposal, LinkProposal, Requirement, ReviewedCoverage, Revision } from '../types.ts';
 import { assert, Problem, refresh } from './domain.ts';
 import { proposalConflict } from './proposals.ts';
+import { coverageConflict } from './coverage-plan.ts';
+import { verificationDefinition } from '../coverage.ts';
 
 const referencedRevisions = `SELECT json_extract(body, '$.revision.id') FROM records
   WHERE kind IN ('candidate', 'publication') AND json_type(body, '$.revision.id') = 'integer'`;
@@ -73,9 +75,19 @@ export class Store {
   saveRevision(base: number, author: string, requirements: Requirement[]): Revision {
     return this.atomic(() => this.writeRevision(base, author, requirements));
   }
-  private writeRevision(base: number, author: string, requirements: Requirement[]): Revision {
+  private writeRevision(base: number, author: string, requirements: Requirement[], approved?: { requirementId: string; coverage: ReviewedCoverage }): Revision {
     const row = this.db.prepare('SELECT MAX(id) AS id FROM revisions').get();
     assert(Number(row?.id ?? 0) === base, 'Requirements changed. Reload before saving.', 409);
+    const previous = new Map((base ? this.revision(base).requirements : []).map(r => [r.id, r]));
+    requirements = requirements.map(r => {
+      const { coverage: ignored, ...definition } = r;
+      const before = previous.get(r.id);
+      if (approved?.requirementId === r.id) return { ...definition, coverage: approved.coverage };
+      if (!before?.coverage) return definition;
+      const coverage = structuredClone(before.coverage);
+      if (verificationDefinition(before) !== verificationDefinition(r)) delete coverage.review;
+      return { ...definition, coverage };
+    });
     this.rememberRequirementNumbers(requirements);
     const createdAt = new Date().toISOString();
     const inserted = this.db.prepare('INSERT INTO revisions(created_at,author,body) VALUES (?,?,?)').run(createdAt, author, JSON.stringify(requirements));
@@ -97,7 +109,7 @@ export class Store {
       const inserted = this.db.prepare('INSERT INTO revisions(created_at,author,body) VALUES(?,?,?)').run(createdAt, author, JSON.stringify(requirements));
       const id = Number(inserted.lastInsertRowid);
       this.db.prepare(`DELETE FROM revisions WHERE id <> ? AND id NOT IN (${referencedRevisions})`).run(id);
-      this.db.prepare("DELETE FROM records WHERE kind='proposal'").run();
+      this.db.prepare("DELETE FROM records WHERE kind IN ('proposal', 'coverage-proposal')").run();
       return { id, author, createdAt, requirements };
     });
   }
@@ -120,6 +132,38 @@ export class Store {
   file(id: string): Attachment { return this.get<Attachment>('file', id); }
   catalog(): Catalog { return this.maybe<Catalog>('catalog', 'current') ?? { sourceSha: '', updatedAt: '', cases: [] }; }
   proposals(): LinkProposal[] { return this.list<LinkProposal>('proposal'); }
+  decideCoverageProposal(id: string, author: string, accept: boolean, feedback?: string): CoverageProposal {
+    return this.atomic(() => {
+      const proposal = this.get<CoverageProposal>('coverage-proposal', id);
+      assert(proposal.status === 'pending', 'Proposal is already decided.', 409);
+      if (accept) {
+        const revision = this.latestRevision();
+        const catalog = this.catalog();
+        const conflict = coverageConflict(proposal, this.revision(proposal.baseRevision), revision, catalog);
+        assert(!conflict, conflict ?? '', 409);
+        const requirement = revision.requirements.find(r => r.id === proposal.requirementId)!;
+        for (const evidence of proposal.plan.criteria.flatMap(c => c.evidence)) {
+          if (evidence.caseId && !requirement.tests.some(t => t.caseId === evidence.caseId)) {
+            const found = catalog.cases.find(c => c.id === evidence.caseId)!;
+            requirement.tests.push({ id: this.id(), title: found.name.slice(0, 300), kind: 'automated', caseId: found.id, inputs: [] });
+          }
+        }
+        this.writeRevision(revision.id, author, revision.requirements, { requirementId: requirement.id,
+          coverage: { ...proposal.plan, review: { author, createdAt: new Date().toISOString(), proposalId: id } } });
+        const includedCases = new Set(proposal.plan.criteria.flatMap(c => c.evidence.flatMap(e => e.caseId ? [e.caseId] : [])));
+        for (const link of this.proposals()) {
+          if (link.status === 'pending' && link.requirementId === requirement.id && link.action === 'add' && includedCases.has(link.caseId)) {
+            this.put('proposal', link.id, { ...link, status: 'superseded', resolvedByCoverage: id });
+          }
+        }
+      }
+      proposal.status = accept ? 'accepted' : 'rejected';
+      proposal.decidedBy = author; proposal.decidedAt = new Date().toISOString();
+      if (feedback) proposal.feedback = feedback;
+      this.put('coverage-proposal', id, proposal);
+      return proposal;
+    });
+  }
   decideProposal(id: string, author: string, accept: boolean): LinkProposal {
     return this.atomic(() => {
       const proposal = this.get<LinkProposal>('proposal', id);

@@ -2,6 +2,7 @@ import { marked } from 'marked';
 import sanitize from 'sanitize-html';
 import type { Candidate } from '../types.ts';
 import { readiness, requirementIssues } from './domain.ts';
+import { coverageStatus, evidenceTest } from '../coverage.ts';
 const escape = (s: unknown) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 const markdown = (source: string) => sanitize(marked.parse(source, { async: false }), { allowedTags: sanitize.defaults.allowedTags, allowedAttributes: { a: ['href', 'title'] }, allowedSchemes: ['https', 'http'] });
 export function report(candidate: Candidate): string {
@@ -28,6 +29,9 @@ ${r.todo ? '<p class="todo">Definition incomplete — requirement definition nee
 ${r.implementationNeeded ? '<p class="todo">Implementation needed — known implementation gap.</p>' : ''}
 ${exception ? '<p><strong>Accepted with exception — not verified.</strong> See the decision above.</p>' : ''}
 ${markdown(r.statement)}${issues.map(issue => `<p>${escape(issue)}</p>`).join('')}
+<h3>Coverage: ${escape(coverageStatus(r, candidate.sourceSha))}</h3>
+${r.coverage ? `<p>Assessed source <code>${escape(r.coverage.sourceSha)}</code></p><p>${escape(r.coverage.rationale)}</p>${r.coverage.review ? `<p>Reviewed by ${escape(r.coverage.review.author)} · ${escape(r.coverage.review.createdAt)}</p>` : '<p>Coverage review required.</p>'}${r.coverage.criteria.map(c => `<h4>${escape(c.id)} — ${escape(c.statement)}</h4>${c.evidence.map(e => `<p>${escape(evidenceTest(r, e)?.title ?? e.caseId ?? e.testId)}: ${escape(e.rationale)}</p>`).join('')}${c.gap ? `<p class="todo">Gap: ${escape(c.gap)}</p>` : ''}${!c.evidence.length ? '<p>No evidence mapped.</p>' : ''}`).join('')}` : '<p>No reviewed coverage plan.</p>'}
+<h3>Test results</h3>
 ${r.tests.map(t => `<h3>${escape(t.title)} · ${t.kind}</h3>${t.kind === 'manual' ? markdown(t.steps || '') + '<h4>Expected</h4>' + markdown(t.expected || '') : `<p><code>${escape(t.caseId)}</code>: ${escape(results.get(t.caseId || '') || 'missing')}</p>`}
 <h4>Inputs</h4>${t.inputs.map(a => `<p>${escape(a.name)} — SHA-256 <code>${a.sha256}</code></p>`).join('')}
 ${candidate.manualRuns.filter(run => run.requirementId === r.id && run.testId === t.id).map(run => `<p><strong>${run.result}</strong> · ${escape(run.author)} · ${escape(run.createdAt)} · ${escape(run.device)}</p>${markdown(run.notes)}${run.evidence.map(a => `<p>Evidence: ${escape(a.name)} — <code>${a.sha256}</code></p>`).join('')}`).join('')}`).join('')}</article>`;

@@ -1,4 +1,5 @@
 import type { Attachment, Candidate, Readiness, Requirement, TestResult } from '../types.ts';
+import { coverageIssues } from '../coverage.ts';
 
 export class Problem extends Error {
   status: number;
@@ -71,6 +72,7 @@ export function requirementIssues(candidate: Candidate, requirement: Requirement
   if (requirement.todo) missing.push(`${requirement.id}: definition is incomplete.`);
   if (requirement.implementationNeeded) missing.push(`${requirement.id}: implementation is incomplete.`);
   if (!requirement.tests.length) missing.push(`${requirement.id}: no verification defined.`);
+  missing.push(...coverageIssues(requirement, candidate.sourceSha).map(issue => `${requirement.id}: ${issue}`));
   for (const test of requirement.tests) {
     if (test.kind === 'automated') {
       if (!test.caseId || results.get(test.caseId) !== 'pass') missing.push(`${requirement.id} / ${test.title}: automated pass required.`);
