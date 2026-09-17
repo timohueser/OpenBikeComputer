@@ -38,4 +38,5 @@ export interface Candidate {
 export interface Readiness { ready: boolean; missing: string[]; verified: number; total: number; excepted: number; excluded: number }
 export interface Bootstrap { actor: Actor; revision: Revision; catalog: Catalog; candidates: Candidate[]; configured: { github: boolean; oauth: boolean; demo?: boolean } }
 export interface CoverageProposal { id: string; baseRevision: number; requirementId: string; sourceSha: string; plan: CoveragePlan; author: string; agentToken?: AgentTokenIdentity; createdAt: string; status: 'pending' | 'accepted' | 'rejected' | 'superseded'; supersedes?: string; feedback?: string; decidedBy?: string; decidedAt?: string }
-export interface CoverageProposalReview extends CoverageProposal { requirement?: Requirement; conflict?: string }
+/** `conflict` blocks approval; `stale` names what changed since the base revision and leaves the decision to the owner. */
+export interface CoverageProposalReview extends CoverageProposal { requirement?: Requirement; conflict?: string; stale?: string }

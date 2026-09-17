@@ -8,7 +8,7 @@ import type { Actor, Candidate, CoveragePlan, CoverageProposal, CoverageProposal
 import { api } from '../src/lib/server/api.ts';
 import { Store, store } from '../src/lib/server/store.ts';
 import { readiness } from '../src/lib/server/domain.ts';
-import { coverageSummary, coverageChanges } from '../src/lib/coverage.ts';
+import { coverageSummary, coverageChanges, coverageProgress } from '../src/lib/coverage.ts';
 import { report } from '../src/lib/server/report.ts';
 
 const directory = mkdtempSync(join(tmpdir(), 'obc-coverage-'));
@@ -146,12 +146,13 @@ test('definition and test-link changes invalidate coverage while unrelated chang
   assert.equal(store().latestRevision().requirements[0].coverage?.review, undefined);
   assert.equal(readiness(candidate()).ready, false);
   const proposal = await propose();
-  const revision = store().latestRevision(); revision.requirements[0].tests.pop();
+  const revision = store().latestRevision(); revision.requirements[0].tests.pop(); revision.requirements[0].statement = 'Preserve routes.';
   store().saveRevision(revision.id, 'owner', revision.requirements);
-  assert.equal((await decide(proposal.id)).status, 409);
-  const listed = await (await request('coverage-proposals')).json() as CoverageProposalReview[];
-  assert.match(listed.find(p => p.id === proposal.id)!.conflict!, /changed/);
-  assert.equal((await decide(proposal.id, false)).status, 200);
+  const listed = (await (await request('coverage-proposals')).json() as CoverageProposalReview[]).find(p => p.id === proposal.id)!;
+  assert.equal(listed.conflict, undefined);
+  assert.match(listed.stale!, /statement and tests changed/);
+  assert.equal((await decide(proposal.id)).status, 200);
+  assert.equal(store().latestRevision().requirements[0].coverage?.review?.proposalId, proposal.id);
 });
 
 test('coverage decisions recheck catalogue availability and roll back links and review together', async () => {
@@ -201,7 +202,8 @@ test('owners edit the plan and its tests in one draft, then approve the saved de
   assert.deepEqual(coverageSummary(approved), { state: 'covered', label: 'Covered', covered: 2, total: 2 });
   assert.equal(approved.coverage?.review?.author, owner.name); assert.equal(approved.coverage?.review?.sourceSha, sha);
   assert.equal((await approve({ baseRevision: current })).status, 409);
-  assert.equal((await decide(pending.id)).status, 409);
+  const listed = (await (await request('coverage-proposals')).json() as CoverageProposalReview[]).find(p => p.id === pending.id)!;
+  assert.match(listed.stale!, /tests and coverage plan changed/); assert.equal((await decide(pending.id, false)).status, 200);
   assert.deepEqual(before.requirements[0].tests.map(t => t.caseId).sort(), ['a', 'b']);
   const update = store().latestRevision(); update.requirements[0].statement += ' Include a restart.';
   store().saveRevision(update.id, owner.name, update.requirements);
@@ -275,4 +277,13 @@ test('startup lifts the assessed commit out of plans stored before the format ch
   assert.equal(coverageSummary(reopened.latestRevision().requirements[0]).state, 'partial');
   reopened.db.close();
   assert.equal((await decide(proposal.id)).status, 200);
+});
+
+test('coverage progress counts active requirements, their criteria, and the catalogue tests their plans cite', async () => {
+  setup(); const proposal = await propose(); await decide(proposal.id);
+  const revision = store().latestRevision();
+  const catalog = store().catalog();
+  assert.deepEqual(coverageProgress(revision.requirements, catalog), { states: { unassessed: 1, 'needs-review': 0, partial: 0, covered: 1 }, active: 2, criteria: { covered: 2, total: 2 }, tests: { cited: 2, catalog: 3, manual: 0 } });
+  const excluded = structuredClone(revision.requirements); excluded[1].active = false;
+  assert.equal(coverageProgress(excluded, catalog).active, 1);
 });

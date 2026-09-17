@@ -9,7 +9,7 @@ import { dispatch, githubEnabled, sourceCommit, verifyPublished, verifyRun, publ
 import { boundedBody, download, upload } from './files.ts';
 import { approveGitHubUser, removeGitHubUser } from './accounts.ts';
 import { report } from './report.ts';
-import { coverageConflict, coveragePlan, commitSha, draftCoverage } from './coverage-plan.ts';
+import { coverageConflict, coveragePlan, coverageStale, commitSha, draftCoverage } from './coverage-plan.ts';
 
 async function body(event: RequestEvent): Promise<Record<string, any>> {
   assert(event.request.headers.get('content-type')?.includes('application/json'), 'JSON body required.', 415);
@@ -201,7 +201,7 @@ async function coverageProposals(event: RequestEvent, parts: string[]): Promise<
     const catalog = store().catalog();
     return json(store().list<CoverageProposal>('coverage-proposal').map(p => ({ ...p,
       requirement: revision.requirements.find(r => r.id === p.requirementId),
-      ...(p.status === 'pending' ? { conflict: coverageConflict(p, revisions.get(p.baseRevision), revision, catalog) } : {})
+      ...(p.status === 'pending' ? { conflict: coverageConflict(p, revision, catalog), stale: coverageStale(p, revisions.get(p.baseRevision), revision) } : {})
     })));
   }
   assert(event.request.method === 'POST', 'Method not allowed.', 405);
