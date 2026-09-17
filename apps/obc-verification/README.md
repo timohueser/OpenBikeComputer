@@ -369,13 +369,13 @@ change. Manual results do not carry to another candidate.
 
 ## Agent and CI API
 
-An administrator can create a separate, temporary token for each agent task. Sign in with your
+An administrator can create a separate token for each agent or machine. Sign in with your
 approved GitHub admin account or the local administrator. No GitHub personal access token, SSH
 connection, or service restart is required.
 
 1. Open **Account → Agent access**.
 2. Enter a token name that identifies the machine or task.
-3. Set its lifetime in minutes. The default is 60; the allowed range is 1 to 240.
+3. Choose the day it expires, at most one year ahead. The default is 30 days.
 4. Select **Create token**, then **Download token file** or **Copy token**. The secret is available
    only in this view after creation. Save it before leaving the tab or selecting **Done — hide token**.
 5. Save the file outside Git at `~/.config/openbikecomputer/verification-agent.token`.
@@ -400,7 +400,7 @@ token ID, name, and issuing account. A token grants agent permissions only, rega
 issuer's permissions. The secret cannot be retrieved after creation.
 
 Administrators manage tokens through `GET` and `POST /api/admin/agent-tokens`, and
-`DELETE /api/admin/agent-tokens/ID`. Creation takes `{ "name": "Coverage review", "lifetimeMinutes": 60 }`
+`DELETE /api/admin/agent-tokens/ID`. Creation takes `{ "name": "Coverage review", "expiresAt": "2027-01-31T23:59:59Z" }`, an ISO timestamp at most a year ahead,
 and returns `{ "token": "...", "access": { ... } }`. Listing returns metadata only. These endpoints
 require an administrator session; writes also require the exact configured browser origin.
 
