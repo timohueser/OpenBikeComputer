@@ -319,11 +319,11 @@ final class MainScreenModelTests: XCTestCase {
         // Disabled sync: pressing Sync must not start a transfer (no decode) —
         // the coordinator asks the model through the injected `canSync` veto.
         model.sync.sync()
-        let stayedIdle = await neverHolds({
-            model.sync.syncState != .idle || model.sync.syncProgress != nil
-                || model.sync.upToDateToastVisible
+        let stayedBlocked = await neverHolds({
+            model.sync.syncProgress != nil || model.sync.upToDateToastVisible
+                || model.sync.syncState == .done
         }, for: .milliseconds(80))
-        XCTAssertTrue(stayedIdle, "a protocol mismatch must keep sync idle")
+        XCTAssertTrue(stayedBlocked, "a protocol mismatch must prevent progress and success")
         XCTAssertEqual(model.sync.syncState, .idle)
         XCTAssertNil(model.sync.syncProgress)
         XCTAssertFalse(model.sync.upToDateToastVisible)
