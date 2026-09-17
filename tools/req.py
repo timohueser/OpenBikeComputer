@@ -64,15 +64,30 @@ def render(requirement: dict, revision: dict, proposals: list[dict]) -> str:
     lines = [" · ".join(head), requirement["title"], "", requirement["statement"].strip(), ""]
     plan = requirement.get("coverage")
     if not plan:
-        lines.append("No coverage plan.")
-        return "\n".join(lines)
+        lines.append("No approved coverage plan.")
+    else:
+        lines += [coverage_header(plan), plan["rationale"].strip(), ""]
+        lines += criteria_lines(requirement, plan)
+    for proposal in (p for p in proposals if p["requirementId"] == requirement["id"] and p["status"] == "pending"):
+        note = proposal.get("conflict") or proposal.get("stale") or "read it with GET /api/coverage-proposals."
+        count = len(proposal["plan"]["criteria"])
+        lines += ["", f"Pending proposal by {proposal['author']} ({proposal['createdAt'][:10]}, commit {proposal['sourceSha'][:10]}): "
+                      f"{count} {'criterion' if count == 1 else 'criteria'}; {note}"]
+    return "\n".join(lines)
+
+
+def coverage_header(plan: dict) -> str:
     review = plan.get("review")
-    header = "Coverage"
-    if review:
-        header += f" — approved by {review['author']}, {review['createdAt'][:10]}"
-        if review.get("sourceSha"):
-            header += f", commit {review['sourceSha'][:10]}"
-    lines += [header, plan["rationale"].strip(), ""]
+    if not review:
+        return "Coverage — not approved"
+    header = f"Coverage — approved by {review['author']}, {review['createdAt'][:10]}"
+    if review.get("sourceSha"):
+        header += f", commit {review['sourceSha'][:10]}"
+    return header
+
+
+def criteria_lines(requirement: dict, plan: dict) -> list[str]:
+    lines: list[str] = []
     for number, criterion in enumerate(plan["criteria"], 1):
         mark = "✓" if criterion_covered(requirement, criterion) else "○"
         lines.append(f"{number} {mark} {criterion['statement'].strip()}")
@@ -86,11 +101,7 @@ def render(requirement: dict, revision: dict, proposals: list[dict]) -> str:
             lines.append(f"    gap: {criterion['gap'].strip()}")
         if criterion.get("next"):
             lines.append(f"    next [{criterion['next']['level']}]: {criterion['next']['summary'].strip()}")
-    for proposal in (p for p in proposals if p["requirementId"] == requirement["id"] and p["status"] == "pending"):
-        note = proposal.get("conflict") or proposal.get("stale") or "read it with GET /api/coverage-proposals."
-        lines += ["", f"Pending proposal by {proposal['author']} ({proposal['createdAt'][:10]}, commit {proposal['sourceSha'][:10]}): "
-                      f"{len(proposal['plan']['criteria'])} criteria; {note}"]
-    return "\n".join(lines)
+    return lines
 
 
 def main(argv: list[str]) -> int:
