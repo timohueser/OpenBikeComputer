@@ -26,7 +26,12 @@ export function planProblem(plan: CoveragePlan): string | undefined {
   if (!plan.criteria.length) return 'Add at least one criterion.';
   if (plan.criteria.some(c => !c.statement.trim())) return 'Every criterion needs a statement.';
   if (plan.criteria.some(c => c.evidence.some(e => !e.rationale.trim()))) return 'Say what each piece of evidence proves.';
-  if (plan.criteria.some(c => !c.evidence.length && !c.gap.trim())) return 'A criterion without evidence needs a gap that says what is still missing.';
+}
+/** A pending link suggestion that a proposed plan already contains is resolved when that plan is approved. */
+export function absorbedBy(plan: CoveragePlan, requirement: Requirement, suggestion: { caseId: string; action: 'add' | 'remove' }): boolean {
+  return suggestion.action === 'add'
+    ? plan.criteria.some(c => c.evidence.some(e => e.caseId === suggestion.caseId))
+    : (plan.removeTestIds ?? []).some(id => requirement.tests.find(t => t.id === id)?.caseId === suggestion.caseId);
 }
 export function planBlank(plan: CoveragePlan): boolean {
   return !plan.rationale.trim() && plan.criteria.every(c => !c.statement.trim() && !c.evidence.length && !c.gap.trim());

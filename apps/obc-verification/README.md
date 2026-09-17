@@ -68,8 +68,8 @@ or removes. **Approve** saves the plan, applies the links, and records your appr
 the agent assessed, in one action. **Reject** asks for feedback, which the agent can read before
 submitting a revision. Agents cannot approve coverage.
 
-Individual link suggestions from older agents appear in the same place and are resolved
-automatically when a matching coverage plan is approved. Save or discard requirement drafts before
+Individual link suggestions from older agents appear in the same place. A suggestion that a
+pending plan already contains is folded into that plan and resolved when the plan is approved. Save or discard requirement drafts before
 approving. Approval rechecks the target requirement, coverage, test definitions, and catalogue;
 stale proposals must be refreshed. Changes to other requirements do not prevent approval.
 
@@ -445,8 +445,9 @@ Read decisions and reviewer feedback with `GET /api/coverage-proposals`. Send
 
 Replace all placeholder IDs and the source SHA. For an existing manual check, use `testId` instead
 of `caseId`. Each evidence entry must identify exactly one test and explain its assertions.
-The server rejects unknown tests, duplicate criteria, and criteria that have neither evidence nor
-a gap. To explicitly unlink existing tests, include `removeTestIds` in the plan. These
+The server rejects unknown tests and duplicate criteria. A criterion may have no evidence yet:
+an agent can propose the criteria first and evidence later, with or without a `gap` note.
+To explicitly unlink existing tests, include `removeTestIds` in the plan. These
 are requirement test IDs, not catalogue case IDs. A removed test must not remain mapped to any
 criterion. Omitted removals retain the existing links. Approval applies additions, removals, and
 coverage review in one transaction. The proposal retains the requested removals for audit; the

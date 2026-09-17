@@ -8,7 +8,7 @@ import type { Actor, Candidate, CoveragePlan, CoverageProposal, CoverageProposal
 import { api } from '../src/lib/server/api.ts';
 import { Store, store } from '../src/lib/server/store.ts';
 import { readiness } from '../src/lib/server/domain.ts';
-import { coverageSummary, coverageChanges } from '../src/lib/coverage.ts';
+import { absorbedBy, coverageSummary, coverageChanges } from '../src/lib/coverage.ts';
 import { report } from '../src/lib/server/report.ts';
 
 const directory = mkdtempSync(join(tmpdir(), 'obc-coverage-'));
@@ -111,7 +111,6 @@ test('invalid plans cannot claim complete coverage or reference unavailable evid
   const base = setup();
   const invalid: CoveragePlan[] = [];
   let p = plan(); p.criteria = []; invalid.push(p);
-  p = plan(); p.criteria[1].evidence = []; invalid.push(p);
   p = plan(); p.criteria[1].id = p.criteria[0].id; invalid.push(p);
   p = plan(); p.criteria[0].evidence[0].caseId = 'absent'; invalid.push(p);
   p = plan(); p.criteria[0].evidence[0] = { testId: 'absent', rationale: 'Manual.' }; invalid.push(p);
@@ -228,6 +227,21 @@ test('agent revisions remove only explicitly selected tests and reject invalid r
   const saved = store().latestRevision().requirements[0];
   assert.deepEqual(saved.tests.map(t => t.caseId).sort(), ['a', 'c']);
   assert.deepEqual(coverageSummary(saved), { state: 'covered', label: 'Covered', covered: 2, total: 2 });
+});
+
+test('a plan may propose criteria before any evidence, and absorbed link suggestions are recognised', async () => {
+  setup();
+  const outline = { rationale: '', criteria: [{ id: 'routes', statement: 'Routes remain intact.', evidence: [], gap: '' }, { id: 'settings', statement: 'Settings remain intact.', evidence: [], gap: 'Needs a settings test.' }] };
+  const proposal = await propose(outline);
+  assert.equal((await decide(proposal.id)).status, 200);
+  const saved = store().latestRevision().requirements[0];
+  assert.deepEqual(coverageSummary(saved), { state: 'partial', label: 'Partial', covered: 0, total: 2 });
+  assert.equal(saved.tests.length, 0);
+  assert.match(readiness({ ...candidate(), revision: { ...store().latestRevision(), requirements: [saved] } }).missing.join(' '), /Routes remain intact.*: no evidence mapped/);
+  const requirement = store().latestRevision().requirements[1];
+  assert.equal(absorbedBy(plan(), requirement, { caseId: 'a', action: 'add' }), true);
+  assert.equal(absorbedBy(plan(), requirement, { caseId: 'c', action: 'add' }), false);
+  assert.equal(absorbedBy(plan(), requirement, { caseId: 'a', action: 'remove' }), false);
 });
 
 test('startup lifts the assessed commit out of plans stored before the format change', async () => {
