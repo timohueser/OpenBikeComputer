@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from 'svelte';
-  import type { Revision, Requirement, Catalog, VerificationTest, ProposalReview } from '$lib/types';
+  import type { Revision, Requirement, Catalog, VerificationTest, ProposalReview, CoverageProposalReview } from '$lib/types';
   import { api, clone, date, message } from './api';
   import { parseRequirements, formatRequirements } from './markdown-requirements';
   import Markdown from './Markdown.svelte';
@@ -10,6 +10,8 @@
   import RequirementGroups from './RequirementGroups.svelte';
   import RequirementLabels from './RequirementLabels.svelte';
   import LinkProposals from './LinkProposals.svelte';
+  import CoveragePlan from './CoveragePlan.svelte';
+  import { coverageStatus, verificationDefinition } from '$lib/coverage';
   export let revision: Revision;
   export let catalog: Catalog;
   export let dirty = false;
@@ -30,6 +32,7 @@
   let history: Revision[] | null = null;
   let historical: Revision | null = null;
   let proposals: ProposalReview[] | null = null;
+  let coverageProposals: CoverageProposalReview[] = [];
   let moreMenu: HTMLDetailsElement;
   let deleting = false;
   let deleted: { requirement: Requirement; index: number }[] = [];
@@ -39,7 +42,7 @@
   $: requirement = requirements.find(r => r.id === selected);
   $: groups = groupOrder(requirements).filter(Boolean).map(name => ({ name, count: requirements.filter(r => groupName(r) === name).length }));
   $: filtered = requirements.filter(r => matches(r, query));
-  $: sections = groupOrder(filtered).map(name => { const list = filtered.filter(r => groupName(r) === name); return { name, requirements: list, unverified: list.filter(r => r.active && !r.tests.length).length, expanded: !!query || !!open[name] }; });
+  $: sections = groupOrder(filtered).map(name => { const list = filtered.filter(r => groupName(r) === name); return { name, requirements: list, unverified: list.filter(r => r.active && coverageStatus(r) !== 'Reviewed as complete').length, expanded: !!query || !!open[name] }; });
   $: matching = catalog.cases.filter(c => `${c.name} ${c.suite} ${c.id} ${c.file || ''}`.toLowerCase().includes(search.toLowerCase()));
   function groupName(r: Requirement | undefined) { return r?.group?.trim() || ''; }
   /** Groups in the order they first appear in the draft; ungrouped last. */
@@ -159,7 +162,7 @@
     const was = new Map((before?.requirements ?? []).map(r => [r.id, r]));
     const now = new Map(target.requirements.map(r => [r.id, r]));
     const canon = (v: unknown): string => JSON.stringify(v, (_, value) => value && typeof value === 'object' && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).filter(([, x]) => x !== undefined && x !== false).sort()) : value);
-    const fields = (a: Requirement, b: Requirement) => (['title', 'statement', 'group', 'todo', 'implementationNeeded', 'active'] as const).filter(k => canon(a[k] ?? null) !== canon(b[k] ?? null));
+    const fields = (a: Requirement, b: Requirement) => (['title', 'statement', 'group', 'todo', 'implementationNeeded', 'active', 'coverage'] as const).filter(k => canon(a[k] ?? null) !== canon(b[k] ?? null));
     return {
       before,
       added: target.requirements.filter(r => !was.has(r.id)),
@@ -193,34 +196,37 @@
     try { catalog = await api<Catalog>('/api/catalog'); oncatalog(catalog); } catch (e) { error = message(e); } finally { busy = false; }
   }
   async function showHistory() { error = ''; try { history = await api<Revision[]>('/api/revisions'); } catch (e) { error = message(e); } }
-  async function showProposals() { moreMenu.open = false; error = ''; try { proposals = await api<ProposalReview[]>('/api/proposals'); } catch (e) { error = message(e); } }
-  async function decide(id: string, accept: boolean) {
+  async function loadProposals() {
+    [proposals, coverageProposals] = await Promise.all([api<ProposalReview[]>('/api/proposals'), api<CoverageProposalReview[]>('/api/coverage-proposals')]);
+  }
+  async function showProposals() { moreMenu.open = false; error = ''; try { await loadProposals(); } catch (e) { error = message(e); } }
+  async function decide(id: string, accept: boolean, kind = 'proposals', feedback = '') {
     if (busy) return;
-    if (accept && dirty) { error = 'Save or discard your draft before approving a link proposal.'; return; }
+    if (accept && dirty) { error = 'Save or discard your draft before approving a proposal.'; return; }
     busy = true; error = '';
     try {
-      const decided = await api<{ revision: Revision }>('/api/proposals/' + id, 'POST', { accept });
+      const decided = await api<{ revision: Revision }>(`/api/${kind}/${id}`, 'POST', { accept, feedback });
       if (accept) {
         revision = decided.revision; requirements = clone(revision.requirements); onsaved(revision);
         if (!requirements.some(r => r.id === selected)) selected = requirements[0]?.id || '';
         undo = null; deleted = []; testDraft = null; edit = false; deleting = false;
       }
-      proposals = await api<ProposalReview[]>('/api/proposals');
-      notice = accept ? 'Link change approved and saved.' : 'Proposal rejected.';
+      await loadProposals();
+      notice = accept ? kind === 'coverage-proposals' ? 'Coverage plan approved and tests linked. Existing candidates keep their original coverage review.' : 'Link change saved. Coverage needs a fresh review.' : 'Proposal rejected. The agent can read your feedback.';
     } catch (e) {
       error = message(e);
-      try { proposals = await api<ProposalReview[]>('/api/proposals'); } catch { /* Keep the original decision error. */ }
+      try { await loadProposals(); } catch { /* Keep the original decision error. */ }
     } finally { busy = false; }
   }
 </script>
 <svelte:window on:keydown={(event) => { if (edit) editorKeys(event); }} />
-<div class="page-heading row"><div><div class="eyebrow">Product verification</div><h1>Requirements</h1><p class="muted">The promises we make, and how we check them.</p></div><div class="actions"><details class="menu" bind:this={moreMenu}><summary class="button">More ▾</summary><div class="menu-list"><label class="menu-item">Import Markdown…<input class="visually-hidden" type="file" accept=".md,.markdown,text/markdown,text/plain" disabled={busy} on:change={importMarkdown} /></label><button class="menu-item" on:click={exportMarkdown}>Export Markdown</button><button class="menu-item" on:click={() => manageGroups = !manageGroups}>Manage groups</button><button class="menu-item" on:click={showProposals}>Link proposals</button><button class="menu-item" on:click={showHistory}>Revision history</button></div></details><button class="primary" disabled={busy} on:click={create}>+ Requirement</button></div></div>
+<div class="page-heading row"><div><div class="eyebrow">Product verification</div><h1>Requirements</h1><p class="muted">The promises we make, and how we check them.</p></div><div class="actions"><details class="menu" bind:this={moreMenu}><summary class="button">More ▾</summary><div class="menu-list"><label class="menu-item">Import Markdown…<input class="visually-hidden" type="file" accept=".md,.markdown,text/markdown,text/plain" disabled={busy} on:change={importMarkdown} /></label><button class="menu-item" on:click={exportMarkdown}>Export Markdown</button><button class="menu-item" on:click={() => manageGroups = !manageGroups}>Manage groups</button><button class="menu-item" on:click={showProposals}>Coverage &amp; link proposals</button><button class="menu-item" on:click={showHistory}>Revision history</button></div></details><button disabled={busy} on:click={showProposals}>Review proposals</button><button class="primary" disabled={busy} on:click={create}>+ Requirement</button></div></div>
 {#if error}<div class="alert error" role="alert">{error}<button class="text-button" disabled={busy} on:click={refresh}>Reload saved revision</button></div>{/if}
 {#if notice}<div class="alert success" role="status">{notice}</div>{/if}
 {#if deleted.length}<div class="alert warning" role="status">Deleted {deleted[deleted.length - 1].requirement.id} from this draft. Save revision to apply. <button class="text-button" disabled={busy} on:click={restoreRequirement}>Undo deletion</button></div>{/if}
 {#if manageGroups}<RequirementGroups {groups} disabled={busy} onrename={renameGroup} onremove={removeGroup} onclose={() => manageGroups = false} />{/if}
 {#if proposals !== null}
-  <LinkProposals {proposals} {busy} {dirty} ondecide={decide} onrefresh={showProposals} onclose={() => proposals = null} />
+  <LinkProposals {proposals} {coverageProposals} {catalog} {busy} {dirty} ondecide={decide} oncoverage={(id, accept, feedback) => decide(id, accept, 'coverage-proposals', feedback)} onrefresh={showProposals} onclose={() => proposals = null} />
 {/if}
 {#if history !== null}
   <section class="panel"><div class="row"><h2>Revision history</h2><button on:click={() => { history = null; historical = null; }}>Close</button></div>
@@ -243,8 +249,8 @@
   <label class="search-label">Find a requirement<input type="search" value={query} on:input={(event) => { if (!setQuery(event.currentTarget.value)) event.currentTarget.value = query; }} placeholder="ID, title, text, or group…" /></label>
   <div class="muted small sidebar-caption">{query ? `${filtered.length} of ${requirements.length} match` : `${requirements.length} requirements · ${groups.length} groups`} · r{revision.id}</div>
   {#each sections as section (section.name)}
-    <button type="button" class="group-heading" aria-expanded={section.expanded} on:click={() => open = { ...open, [section.name]: !section.expanded }}><span class="chevron" aria-hidden="true">{section.expanded ? '▾' : '▸'}</span><span class="group-name">{section.name || 'Ungrouped'}</span>{#if section.unverified}<span class="group-warning" title="{section.unverified} without verification">{section.unverified} ⚠</span>{/if}<span class="group-count">{section.requirements.length}</span></button>
-    {#if section.expanded}{#each section.requirements as r (r.id)}<button id={'entry-' + r.id} class="entry" class:selected={selected === r.id} on:click={() => select(r.id)}><span class="entry-head"><span class="eyebrow">{r.id}</span>{#if r.active && !r.tests.length}<span class="entry-flag warning" title="No verification defined">no checks</span>{:else if r.tests.length}<span class="entry-flag muted">{r.tests.length} {r.tests.length === 1 ? 'check' : 'checks'}</span>{/if}</span><strong>{r.title || 'Untitled requirement'}</strong><RequirementLabels requirement={r} /></button>{/each}{/if}
+    <button type="button" class="group-heading" aria-expanded={section.expanded} on:click={() => open = { ...open, [section.name]: !section.expanded }}><span class="chevron" aria-hidden="true">{section.expanded ? '▾' : '▸'}</span><span class="group-name">{section.name || 'Ungrouped'}</span>{#if section.unverified}<span class="group-warning" title="{section.unverified} without complete coverage review">{section.unverified} ⚠</span>{/if}<span class="group-count">{section.requirements.length}</span></button>
+    {#if section.expanded}{#each section.requirements as r (r.id)}<button id={'entry-' + r.id} class="entry" class:selected={selected === r.id} on:click={() => select(r.id)}><span class="entry-head"><span class="eyebrow">{r.id}</span>{#if r.active && !r.tests.length}<span class="entry-flag warning" title="No verification defined">no checks</span>{:else if r.tests.length}<span class="entry-flag muted">{r.tests.length} {r.tests.length === 1 ? 'check' : 'checks'}</span>{/if}</span><strong>{r.title || 'Untitled requirement'}</strong><span class="small" class:warning={coverageStatus(r) !== 'Reviewed as complete'}>{coverageStatus(r)}</span><RequirementLabels requirement={r} /></button>{/each}{/if}
   {:else}<p class="muted small">{requirements.length ? 'No matching requirements.' : 'Start with one important product promise, or import a Markdown draft.'}</p>{/each}
 </div></aside>
 <section class="detail">
@@ -253,11 +259,20 @@
   {#if deleting}<div class="alert warning"><strong>Delete {requirement.id} · {requirement.title || 'Untitled requirement'}?</strong><p>This removes the requirement and its {requirement.tests.length} linked tests from the draft. Save revision to apply. Existing revisions and release candidates stay unchanged.</p><div class="actions"><button class="danger" disabled={busy} on:click={removeRequirement}>Delete from draft</button><button on:click={() => deleting = false}>Keep requirement</button></div></div>{/if}
   {#if edit}<div class="section"><label>Title<input id="requirement-title" bind:value={requirement.title} on:input={() => requirements = [...requirements]} placeholder="A clear product promise" /></label><label>Group <span class="small muted">· Optional</span><input disabled={busy} list="requirement-group-names" maxlength={80} value={requirement.group || ''} on:input={(event) => setGroup(event.currentTarget.value)} placeholder="Choose an existing group or type a new name" /><datalist id="requirement-group-names">{#each groups as group}<option value={group.name}></option>{/each}</datalist></label><MarkdownField label="Requirement" bind:value={requirement.statement} /><div class="section"><h3>Labels</h3><RequirementLabels {requirement} editable disabled={busy} onchange={update} /><p class="small muted">Click a label to apply or remove it. An incomplete definition blocks publication and cannot be excepted. Implementation needed blocks publication unless an administrator accepts a candidate exception. Excluded requirements stay visible outside release verification. Existing candidates never change.</p></div><div class="row"><div class="actions"><button on:click={() => edit = false}>Done editing</button><button class="primary" disabled={busy} title="Ctrl+Enter or ⌘+Enter" on:click={create}>Done, add next</button></div><div class="actions"><span class="small muted">Position in group</span><button class="text-button" disabled={busy} on:click={() => move(-1)}>↑ Move up</button><button class="text-button" disabled={busy} on:click={() => move(1)}>↓ Move down</button></div></div></div>
   {:else}<h2 class="requirement-title">{requirement.title || 'Untitled requirement'}</h2><div class="statement"><Markdown text={requirement.statement} /></div>{/if}
+  {@const saved = revision.requirements.find(r => r.id === requirement.id)}
+    {@const changed = saved && verificationDefinition(saved) !== verificationDefinition(requirement)}
+  <section class="section" aria-label="Requirement coverage">
+    <div class="row"><h2>Coverage</h2><span class="badge" class:warning={changed || coverageStatus(requirement) !== 'Reviewed as complete'}>{changed ? 'Needs review after saving' : coverageStatus(requirement)}</span></div>
+    {#if requirement.coverage}
+      {#if requirement.coverage.review}<p class="small muted">Reviewed by {requirement.coverage.review.author} · {date(requirement.coverage.review.createdAt)}. Approval applies to the assessed source commit.</p>{/if}
+      <CoveragePlan plan={requirement.coverage} {requirement} {catalog} />
+    {:else}<p class="muted">No coverage plan reviewed. Ask an agent to propose acceptance criteria, evidence for each criterion, and remaining gaps. Linked tests alone do not establish complete coverage.</p>{/if}
+  </section>
   {#if testDraft}<div class="section"><TestEditor bind:test={testDraft} onsave={keepTest} oncancel={() => { if (!testChanged || confirm('Discard these manual test changes?')) testDraft = null; }} /></div>
   {:else if picker}<div class="section"><div class="row"><h2>Link an automated test</h2><div class="actions"><button disabled={busy} on:click={refreshCatalog}>Refresh catalogue</button><button on:click={() => picker = false}>Back to requirement</button></div></div><p class="muted small">Select a real test from the latest CI catalogue. CI still runs complete suites.</p><input type="search" aria-label="Search automated tests" bind:value={search} placeholder="Search test name, suite, or file…" />{#if catalog.sourceSha}<p class="muted small">Catalogue from <code>{catalog.sourceSha.slice(0, 10)}</code> · {date(catalog.updatedAt)}</p>{/if}<div class="catalog">{#if matching.length > 100}<p class="small muted">Showing the first 100 of {matching.length} matches. Refine your search to find a specific test.</p>{/if}{#each matching.slice(0, 100) as c}<div class="test"><div class="row"><h3>{c.name}</h3><button disabled={requirement.tests.some(t => t.caseId === c.id)} on:click={() => link(c.id, c.name)}>{requirement.tests.some(t => t.caseId === c.id) ? 'Linked' : 'Link test'}</button></div><div class="small muted">{c.suite}{c.file ? ' · ' + c.file : ''}</div><code class="wrap small">{c.id}</code></div>{:else}<div class="empty"><h3>{catalog.cases.length ? 'No matching tests' : 'No CI catalogue yet'}</h3><p class="muted">{catalog.cases.length ? 'Try a test name or suite name.' : 'The verification workflow imports real test results. After its first run, refresh the catalogue to browse available tests.'}</p></div>{/each}</div></div>
-  {:else}<div class="section"><div class="row"><h2>Verification <span class="muted">{requirement.tests.length}</span></h2><div class="actions"><button on:click={() => picker = true}>Link automated test</button><button on:click={() => testDraft = { id: crypto.randomUUID(), kind: 'manual', title: '', steps: '', expected: '', inputs: [] }}>+ Manual test</button></div></div>
+  {:else}<div class="section"><div class="row"><h2>Linked tests <span class="muted">{requirement.tests.length}</span></h2><div class="actions"><button on:click={() => picker = true}>Link automated test</button><button on:click={() => testDraft = { id: crypto.randomUUID(), kind: 'manual', title: '', steps: '', expected: '', inputs: [] }}>+ Manual test</button></div></div>
     {#if undo}<div class="alert" role="status">Test removed from draft. <button class="text-button" on:click={restoreTest}>Undo</button></div>{/if}
     {#each requirement.tests as t}<div class="test"><div class="row"><div><div class="eyebrow">{t.kind}</div><h3>{t.title}</h3></div><div class="actions">{#if t.kind === 'manual'}<button on:click={() => testDraft = clone(t)}>Edit test</button>{/if}<button class="text-button danger" on:click={() => removeTest(t)}>{t.kind === 'manual' ? 'Remove test' : 'Unlink'}</button></div></div>{#if t.kind === 'automated'}<code class="wrap small">{t.caseId}</code>{#if !catalog.cases.some(c => c.id === t.caseId)}<p class="warning small">This test is absent from the latest catalogue. Check the link before preparing a release.</p>{/if}{:else}<details><summary>Procedure and input files</summary><Markdown text={t.steps || ''} /><h4>Expected result</h4><Markdown text={t.expected || ''} /><Files files={t.inputs} label="Input files" /></details>{/if}</div>{:else}<div class="empty"><h3>How will we verify this?</h3><p class="muted">Link an automated test or add a manual procedure. An active requirement without checks blocks publication.</p></div>{/each}</div>{/if}
 {:else}<div class="empty"><h2>{requirements.length ? 'No matching requirements' : 'Make the important promises explicit.'}</h2><p class="muted">{requirements.length ? 'Clear your search or choose another group.' : 'Write a measurable requirement, then define the checks that provide evidence. You can also import a Markdown draft.'}</p><button class="primary" disabled={busy} on:click={create}>Create requirement</button></div>{/if}
 </section></div>
-<div class="savebar row"><span class="small">{dirty ? 'You have unsaved changes' : `Saved revision r${revision.id}`} <span class="muted">· Candidates use saved revisions only.</span></span><div class="actions">{#if dirty}<button disabled={busy} on:click={refresh}>Discard draft</button>{/if}<button class="primary" disabled={busy || !dirty || !!testDraft} on:click={save}>{busy ? 'Saving…' : 'Save revision'}</button></div></div>
+{#if dirty || proposals === null}<div class="savebar row"><span class="small">{dirty ? 'You have unsaved changes' : `Saved revision r${revision.id}`} <span class="muted">· Candidates use saved revisions only.</span></span><div class="actions">{#if dirty}<button disabled={busy} on:click={refresh}>Discard draft</button>{/if}<button class="primary" disabled={busy || !dirty || !!testDraft} on:click={save}>{busy ? 'Saving…' : 'Save revision'}</button></div></div>{/if}

@@ -102,7 +102,13 @@ The workflow builds the bootloader and application. It converts the application 
 
 ### Release archive and download service
 
-Each active system requirement must have linked tests. Every linked automated test needs a pass
+Each active system requirement needs an approved coverage plan for the candidate's source commit.
+The plan maps acceptance criteria to tests and records remaining gaps. An agent can propose the
+whole plan; an owner reviews whether it covers the requirement. A partial or unreviewed plan
+blocks verification even if all linked tests pass. Changes to a requirement or its test links
+clear its coverage approval. A new source commit needs a new assessment and review.
+
+Every linked automated test needs a pass
 from this candidate's CI run. Every linked manual test needs a recorded pass for this candidate.
 The owner can attach input files to manual procedures and evidence files to manual results. A new
 candidate needs new manual results. Missing tests, skipped tests, and failed checks block publication
