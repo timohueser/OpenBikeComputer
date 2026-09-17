@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { AcceptanceCriterion, Catalog, CatalogCase, CoverageEvidence, Requirement, VerificationTest } from '$lib/types';
+  import { TEST_LEVELS, type AcceptanceCriterion, type Catalog, type CatalogCase, type CoverageEvidence, type Requirement, type TestLevel, type VerificationTest } from '$lib/types';
   import { coverageChanges, criterionCovered, evidenceTest } from '$lib/coverage';
   import { clone } from './api';
   import TestEditor from './TestEditor.svelte';
@@ -24,6 +24,14 @@
   const name = (e: CoverageEvidence) => evidenceTest(requirement, e)?.title ?? e.caseId ?? e.testId;
   const focus = (node: HTMLElement) => node.focus();
   function changed() { requirement = requirement; onchange(); }
+  /** The level picked for each criterion's next test, so a level chosen before the sentence is typed survives. */
+  let levels: Record<string, TestLevel> = {};
+  const level = (criterion: AcceptanceCriterion) => levels[criterion.id] ?? criterion.next?.level ?? 'system';
+  /** The next test to build is kept only while it has a summary. */
+  function setNext(criterion: AcceptanceCriterion, summary: string) {
+    if (summary.trim()) criterion.next = { level: level(criterion), summary }; else delete criterion.next;
+    changed();
+  }
   function addEvidence(criterion: AcceptanceCriterion, evidence: CoverageEvidence) {
     criterion.evidence.push(evidence); picker = null; manualDraft = null; changed();
   }
@@ -103,6 +111,7 @@
             <button class="text-button add" on:click={() => { picker = criterion.id; search = ''; }}>+ Add evidence</button>
           {/if}
           <textarea class="gap" rows={1} maxlength={5000} aria-label="Remaining gap" placeholder={criterion.evidence.length ? 'Gap — leave empty if the evidence above is enough' : 'Gap — what is still missing? Optional.'} bind:value={criterion.gap} on:input={changed}></textarea>
+          <div class="next"><select aria-label="Proposed test level" value={level(criterion)} on:change={e => { levels[criterion.id] = e.currentTarget.value as TestLevel; setNext(criterion, criterion.next?.summary ?? ''); }}>{#each TEST_LEVELS as level}<option value={level}>{level}</option>{/each}</select><input maxlength={300} aria-label="Proposed test" placeholder="Next test to build — one sentence, optional" value={criterion.next?.summary ?? ''} on:input={e => setNext(criterion, e.currentTarget.value)} /></div>
         </div>
       </fieldset>
     {/each}
@@ -135,6 +144,9 @@
   .choice span { display: block; }
   .gap { min-height: 0; margin: 10px 0 0; font-size: 13px; padding: 7px 10px; field-sizing: content; color: var(--amber); border-color: #e6d9bf; background: #fffcf4; }
   .gap::placeholder { color: #b39a6b; }
+  .next { display: flex; gap: 8px; margin-top: 8px; }
+  .next select { width: auto; margin: 0; font-size: 12px; padding: 6px 8px; text-transform: uppercase; letter-spacing: .3px; }
+  .next input { margin: 0; font-size: 13px; padding: 7px 10px; }
   .editor > button { margin-top: 10px; }
   .note { margin: 14px 0 0; }
   .actions { margin-top: 6px; }

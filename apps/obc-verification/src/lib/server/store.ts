@@ -171,7 +171,7 @@ export class Store {
       const conflict = coverageConflict(proposal, revision, catalog);
       assert(!conflict, conflict ?? '', 409);
       const requirement = revision.requirements.find(r => r.id === proposal.requirementId)!;
-      linkEvidence(requirement, proposal.plan, catalog, () => this.id());
+      linkEvidence(requirement, proposal.plan, catalog, () => this.id(), proposal.procedures ?? []);
       requirement.coverage = { rationale: proposal.plan.rationale, criteria: proposal.plan.criteria };
       this.writeRevision(revision.id, author, revision.requirements, { requirementId: requirement.id,
         review: { author, createdAt: new Date().toISOString(), sourceSha: proposal.sourceSha, proposalId: id } });

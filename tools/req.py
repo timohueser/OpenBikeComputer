@@ -84,6 +84,8 @@ def render(requirement: dict, revision: dict, proposals: list[dict]) -> str:
             lines.append("    no evidence")
         if criterion["gap"].strip():
             lines.append(f"    gap: {criterion['gap'].strip()}")
+        if criterion.get("next"):
+            lines.append(f"    next [{criterion['next']['level']}]: {criterion['next']['summary'].strip()}")
     for proposal in (p for p in proposals if p["requirementId"] == requirement["id"] and p["status"] == "pending"):
         note = proposal.get("conflict") or proposal.get("stale") or "read it with GET /api/coverage-proposals."
         lines += ["", f"Pending proposal by {proposal['author']} ({proposal['createdAt'][:10]}, commit {proposal['sourceSha'][:10]}): "
