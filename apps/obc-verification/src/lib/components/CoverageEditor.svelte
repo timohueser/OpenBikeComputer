@@ -67,7 +67,7 @@
           {:else}
             <button class="text-button add" on:click={() => { picker = criterion.id; search = ''; }}>+ Add evidence</button>
           {/if}
-          <textarea class="gap" rows={1} maxlength={5000} aria-label="Remaining gap" placeholder={criterion.evidence.length ? 'Gap — leave empty if the evidence above is enough' : 'Gap — what is still missing?'} bind:value={criterion.gap} on:input={changed}></textarea>
+          <textarea class="gap" rows={1} maxlength={5000} aria-label="Remaining gap" placeholder={criterion.evidence.length ? 'Gap — leave empty if the evidence above is enough' : 'Gap — what is still missing? Optional.'} bind:value={criterion.gap} on:input={changed}></textarea>
         </div>
       </fieldset>
     {/each}
