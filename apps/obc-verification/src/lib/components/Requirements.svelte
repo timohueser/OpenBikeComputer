@@ -14,7 +14,7 @@
   import CoverageEditor from './CoverageEditor.svelte';
   import CoverageBadge from './CoverageBadge.svelte';
   import CoverageProposal from './CoverageProposal.svelte';
-  import { coverageDefinition, coverageIssues, mappedBy, planBlank, planProblem } from '$lib/coverage';
+  import { absorbedBy, coverageDefinition, coverageIssues, mappedBy, planBlank, planProblem } from '$lib/coverage';
   export let revision: Revision;
   export let catalog: Catalog;
   export let dirty = false;
@@ -299,13 +299,15 @@
   {@const saved = revision.requirements.find(r => r.id === requirement.id)}
     {@const changed = !!saved?.coverage?.review && coverageDefinition(saved) !== coverageDefinition(requirement)}
   {@const plans = pendingPlans.filter(p => p.requirementId === requirement.id)}
-  {@const links = pendingLinks.filter(p => p.requirementId === requirement.id)}
+  {@const suggestions = pendingLinks.filter(p => p.requirementId === requirement.id)}
+  {@const links = suggestions.filter(p => !plans.some(plan => absorbedBy(plan.plan, requirement, p)))}
   {@const decided = coverageProposals.filter(p => p.requirementId === requirement.id && p.status !== 'pending' && p.status !== 'superseded')}
   <section class="section" aria-label="Requirement coverage">
     <div class="row"><div class="row coverage-head"><h2>Coverage</h2><CoverageBadge {requirement} {changed} /></div>{#if !coverageEditing}<button disabled={busy} on:click={editCoverage}>{requirement.coverage ? 'Edit coverage' : 'Define coverage'}</button>{/if}</div>
     {#if coverageEditing}<CoverageEditor {requirement} {catalog} {busy} onchange={() => requirements = [...requirements]} ondone={closeCoverage} />
     {:else}
       {#each plans as p (p.id)}<CoverageProposal proposal={p} {requirement} {catalog} {busy} {dirty} ondecide={(id, accept, feedback) => decide('coverage-proposals', id, accept, feedback)} />{/each}
+      {#if suggestions.length > links.length}<p class="small muted absorbed">{suggestions.length - links.length} earlier link {suggestions.length - links.length === 1 ? 'suggestion is' : 'suggestions are'} part of the proposal above and resolve with it.</p>{/if}
       <LinkSuggestions suggestions={links} {busy} {dirty} ondecide={(id, accept) => decide('proposals', id, accept)} />
       {#if requirement.coverage}
         {#if plans.length}<p class="eyebrow current-plan">Current plan</p>{/if}
