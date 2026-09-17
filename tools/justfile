@@ -752,8 +752,9 @@ clean *args:
 
 # ── Meta ─────────────────────────────────────────────────────────────────────
 
-# Print one system requirement from the verification console with its numbered criteria:
-# `obc req SYS-003` (add --json for the raw record). Needs the agent token file; see tools/req.py.
+# Read and write the verification console: `obc req SYS-003` prints one requirement with its
+# criteria numbered. Also `list`, `proposal ID`, `tests QUERY`, `changed --since rN`, and
+# `propose plan.json` (check it with --check first). Needs the agent token file; see tools/req.py.
 req *args:
     #!/usr/bin/env bash
     set -euo pipefail
