@@ -6,40 +6,57 @@
   export let criterion: AcceptanceCriterion;
   export let requirement: Requirement;
   export let catalog: Catalog | undefined = undefined;
+  /** Position in the plan, so "criterion 2 of SYS-003" is the card labelled 2. Removed criteria have none. */
+  export let number: number | undefined = undefined;
   /** When set, the card shows what changed since this earlier version of the criterion. */
   export let previous: AcceptanceCriterion | undefined = undefined;
   export let tag = '';
   export let removed = false;
   /** A proposed criterion is judged on its own evidence, which is linked when the plan is approved. */
   export let proposed = false;
+  /** Manual procedures a proposal brings; they exist on the requirement only after approval. */
+  export let procedures: VerificationTest[] = [];
   /** The release view sets this to show each evidence test's outcome in one candidate. */
   export let result: ((test: VerificationTest) => { outcome: string; detail?: string; label?: string; disabled?: boolean; onrun?: () => void }) | undefined = undefined;
   $: covered = !removed && (proposed ? proposedCovered(criterion) : criterionCovered(requirement, criterion));
   /** A removed criterion takes all of its evidence with it. */
   $: kept = removed ? [] : criterion.evidence;
   $: dropped = removed ? criterion.evidence : previous?.evidence.filter(e => !criterion.evidence.some(n => evidenceKey(n) === evidenceKey(e))) ?? [];
-  const title = (e: CoverageEvidence) => evidenceTest(requirement, e)?.title ?? catalog?.cases.find(c => c.id === e.caseId)?.name ?? evidenceKey(e);
+  $: footer = !removed && !!(criterion.gap || previous?.gap || criterion.next || previous?.next);
+  const resolve = (e: CoverageEvidence) => evidenceTest(requirement, e) ?? procedures.find(p => p.id === e.testId);
+  const title = (e: CoverageEvidence) => resolve(e)?.title ?? catalog?.cases.find(c => c.id === e.caseId)?.name ?? evidenceKey(e);
   const isNew = (e: CoverageEvidence) => !!previous && !previous.evidence.some(p => evidenceKey(p) === evidenceKey(e));
+  const isProposedProcedure = (e: CoverageEvidence) => !!e.testId && !evidenceTest(requirement, e) && procedures.some(p => p.id === e.testId);
+  const nextChanged = () => !!previous && JSON.stringify(previous.next ?? null) !== JSON.stringify(criterion.next ?? null);
 </script>
 <article class="criterion" class:covered class:removed>
   <span class="mark" aria-hidden="true">{covered ? '✓' : ''}</span>
   <div class="body">
     <div class="head">
-      <p class="statement wrap">{#if previous && previous.statement !== criterion.statement}<del>{previous.statement}</del> {/if}{criterion.statement}</p>
+      <p class="statement wrap">{#if number}<span class="num" aria-label={`Criterion ${number}`}>{number}</span>{/if}{#if previous && previous.statement !== criterion.statement}<del>{previous.statement}</del> {/if}{criterion.statement}</p>
       {#if tag}<span class="badge" class:success={tag === 'New'} class:warning={tag === 'Changed'} class:error={tag === 'Removed'}>{tag}</span>{/if}
     </div>
     {#each kept as e}
-      {@const test = evidenceTest(requirement, e)}
+      {@const test = resolve(e)}
       {@const found = test && result ? result(test) : undefined}
-      <div class="evidence wrap" class:added={isNew(e)} title={evidenceKey(e)}>
-        <p class="line"><strong>{title(e)}</strong>{#if isNew(e)}<span class="tag">new</span>{/if}<span class="muted">{' — '}{e.rationale}</span>{#if found}<span class="badge outcome" class:success={found.outcome === 'pass'} class:error={found.outcome === 'fail' || found.outcome === 'error'} class:warning={!['pass', 'fail', 'error'].includes(found.outcome)}>{found.outcome}</span>{#if found.onrun}<button class="run small" disabled={found.disabled} on:click={found.onrun}>{found.label}</button>{/if}{/if}</p>
-        {#if test?.kind === 'manual'}<details class="small"><summary>Procedure</summary><Markdown text={test.steps || ''} /><h4>Expected result</h4><Markdown text={test.expected || ''} />{#if test.inputs.length}<Files files={test.inputs} label="Input files" />{/if}</details>{/if}
-        {#if found?.detail}<details class="small"><summary>Test output</summary><pre class="wrap">{found.detail}</pre></details>{/if}
+      <div class="evidence" class:added={isNew(e)}>
+        <div class="name wrap"><strong>{title(e)}</strong>{#if isProposedProcedure(e)}<span class="tag">new procedure</span>{:else if isNew(e)}<span class="tag">new</span>{/if}<small>{e.caseId ?? 'manual'}</small></div>
+        <div class="why wrap">
+          <p class="line">{e.rationale}{#if found}<span class="badge outcome" class:success={found.outcome === 'pass'} class:error={found.outcome === 'fail' || found.outcome === 'error'} class:warning={!['pass', 'fail', 'error'].includes(found.outcome)}>{found.outcome}</span>{#if found.onrun}<button class="run small" disabled={found.disabled} on:click={found.onrun}>{found.label}</button>{/if}{/if}</p>
+          {#if test?.kind === 'manual'}<details class="small"><summary>Procedure</summary><Markdown text={test.steps || ''} /><h4>Expected result</h4><Markdown text={test.expected || ''} />{#if test.inputs.length}<Files files={test.inputs} label="Input files" />{/if}</details>{/if}
+          {#if found?.detail}<details class="small"><summary>Test output</summary><pre class="wrap">{found.detail}</pre></details>{/if}
+        </div>
       </div>
     {/each}
-    {#each dropped as e}<p class="evidence wrap dropped" title={evidenceKey(e)}><del><strong>{title(e)}</strong>{' — '}{e.rationale}</del></p>{/each}
-    {#if !criterion.evidence.length}<p class="evidence none">No evidence yet</p>{/if}
-    {#if criterion.gap}<p class="gap wrap"><strong>Gap:</strong> {criterion.gap}</p>{:else if previous?.gap}<p class="gap wrap"><del>Gap: {previous.gap}</del></p>{/if}
+    {#each dropped as e}<div class="evidence dropped"><div class="name wrap"><del><strong>{title(e)}</strong></del><small>{e.caseId ?? 'manual'}</small></div><div class="why wrap"><p class="line"><del>{e.rationale}</del></p></div></div>{/each}
+    {#if !criterion.evidence.length && !removed}<p class="none small">No evidence yet</p>{/if}
+    {#if footer}
+      <div class="foot">
+        {#if criterion.gap}<p class="gap wrap"><strong>Gap</strong> · {criterion.gap}</p>{:else if previous?.gap}<p class="gap wrap"><del>Gap · {previous.gap}</del></p>{/if}
+        {#if criterion.next}<p class="next wrap">{#if nextChanged() && previous?.next}<del>{previous.next.summary}</del> {/if}<span class="level">{criterion.next.level}</span>{criterion.next.summary}</p>
+        {:else if previous?.next}<p class="next wrap"><del><span class="level">{previous.next.level}</span>{previous.next.summary}</del></p>{/if}
+      </div>
+    {/if}
   </div>
 </article>
 <style>
@@ -49,20 +66,29 @@
   .mark { flex-shrink: 0; width: 20px; height: 20px; margin-top: 1px; border-radius: 50%; border: 1.5px solid var(--amber); color: white; font-size: 13px; font-weight: 700; display: grid; place-items: center; }
   .covered .mark { background: var(--forest); border-color: var(--forest); }
   .removed .mark { border-color: var(--line); }
-  .body { flex: 1; min-width: 0; }
+  .body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   .head { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
   .statement { margin: 0; font-weight: 600; line-height: 1.45; }
-  .evidence { margin: 6px 0 0; font-size: 13px; line-height: 1.5; padding-left: 12px; border-left: 2px solid var(--line); }
-  .evidence.added { border-left-color: var(--forest); }
-  .evidence.dropped { border-left-color: var(--bad); }
+  .num { font: 600 11px/1 ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--muted); margin-right: 8px; vertical-align: 1px; }
+  .evidence { display: grid; grid-template-columns: minmax(150px, 34%) 1fr; gap: 2px 14px; margin: 8px 0 0; font-size: 13px; line-height: 1.5; }
+  .name strong { font-weight: 600; }
+  .name small { display: block; font: 11px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--muted); }
+  .added .name strong { color: var(--forest); }
+  .dropped { opacity: .7; }
+  .why { color: var(--muted); }
   .line { margin: 0; }
   .outcome { margin-left: 6px; }
   .run { margin-left: 8px; padding: 3px 9px; }
-  .none { color: var(--amber); }
-  .covered .evidence { border-left-color: #cfdcc9; }
-  .tag { font-size: 10px; text-transform: uppercase; letter-spacing: .8px; color: var(--forest); font-weight: 700; margin-left: 4px; }
-  .evidence details { margin-top: 2px; }
-  .evidence h4 { margin: 8px 0 2px; }
-  .gap { margin: 8px 0 0; font-size: 13px; color: var(--amber); }
+  .none { margin: 6px 0 0; color: var(--amber); }
+  .tag { font-size: 10px; text-transform: uppercase; letter-spacing: .8px; color: var(--forest); font-weight: 700; margin-left: 6px; }
+  .why details { margin-top: 2px; }
+  .why h4 { margin: 8px 0 2px; }
+  .foot { margin: 10px -14px -12px; padding: 8px 14px 9px; border-top: 1px solid var(--line); background: var(--paper); border-radius: 0 0 8px 8px; font-size: 13px; display: flex; flex-direction: column; gap: 3px; }
+  .covered .foot { border-top-color: #cfdcc9; }
+  .gap { margin: 0; color: var(--amber); }
+  .gap strong { font-weight: 650; }
+  .next { margin: 0; }
+  .level { font-size: 10px; padding: 1px 6px; margin-right: 7px; border-radius: 4px; border: 1px solid var(--line); color: var(--muted); font-weight: 600; letter-spacing: .3px; text-transform: uppercase; vertical-align: 1px; }
   del { color: var(--muted); }
+  @media (max-width: 650px) { .evidence { grid-template-columns: 1fr; } }
 </style>

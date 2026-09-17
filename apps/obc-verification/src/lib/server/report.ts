@@ -38,7 +38,7 @@ ${markdown(r.statement)}${issues.map(issue => `<p>${escape(issue)}</p>`).join(''
 ${(() => { const s = coverageSummary(r); return `<h3>Coverage: ${escape(s.label)}</h3>${s.total ? `<p>${s.covered} of ${s.total} criteria covered</p>` : ''}`; })()}
 ${r.coverage ? `<p>${escape(r.coverage.rationale)}</p>${r.coverage.review ? `<p>Approved by ${escape(r.coverage.review.author)} · ${escape(r.coverage.review.createdAt)}${r.coverage.review.sourceSha ? ` · source <code>${escape(r.coverage.review.sourceSha)}</code>` : ''}</p>` : '<p>Coverage approval required.</p>'}${r.coverage.criteria.map(c => `<h4>${escape(c.statement)}</h4>${c.evidence.map(e => { const t = evidenceTest(r, e);
       const first = !!t && !recorded.has(evidenceKey(e)); if (first) recorded.add(evidenceKey(e));
-      return `<p>${escape(t?.title ?? e.caseId ?? e.testId)}: ${escape(e.rationale)}</p>${first ? record(t!) : ''}`; }).join('')}${c.gap ? `<p class="todo">Gap: ${escape(c.gap)}</p>` : ''}${!c.evidence.length ? '<p>No evidence mapped.</p>' : ''}`).join('')}` : '<p>No coverage plan.</p>'}</article>`;
+      return `<p>${escape(t?.title ?? e.caseId ?? e.testId)}: ${escape(e.rationale)}</p>${first ? record(t!) : ''}`; }).join('')}${c.gap ? `<p class="todo">Gap: ${escape(c.gap)}</p>` : ''}${c.next ? `<p>Next test (${escape(c.next.level)}): ${escape(c.next.summary)}</p>` : ''}${!c.evidence.length ? '<p>No evidence mapped.</p>' : ''}`).join('')}` : '<p>No coverage plan.</p>'}</article>`;
   }).join('')}
 <h2>Firmware assets</h2>${candidate.assets.map(a => `<p>${escape(a.name)} — ${a.size} bytes — <code>${a.sha256}</code></p>`).join('')}
 <p>Automated run: ${candidate.runId ?? 'not received'} / attempt ${candidate.runAttempt ?? '—'}</p></html>`;

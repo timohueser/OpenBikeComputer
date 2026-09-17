@@ -16,7 +16,7 @@ def requirement(**overrides):
             "tests": [NORTH, RIDE],
             "coverage": {"rationale": "Render tests cover both modes.", "review": {"author": "timo", "createdAt": "2026-09-16T10:00:00Z", "sourceSha": "ad2ada724b00"},
                          "criteria": [{"id": "a", "statement": "North-up renders.", "evidence": [{"caseId": "map::north_up", "rationale": "Checks the angle."}], "gap": ""},
-                                      {"id": "b", "statement": "Choice survives a restart.", "evidence": [{"testId": "t2", "rationale": "Confirms on the device."}], "gap": "Add a save/reload test."},
+                                      {"id": "b", "statement": "Choice survives a restart.", "evidence": [{"testId": "t2", "rationale": "Confirms on the device."}], "gap": "Add a save/reload test.", "next": {"level": "unit", "summary": "Reload the setting and assert it."}},
                                       {"id": "c", "statement": "Heading-up renders.", "evidence": [], "gap": ""}]}}
     return {**base, **overrides}
 
@@ -27,7 +27,7 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(text.splitlines()[0], "SYS-003 · Map · Partial 1/3 · r58")
         self.assertIn("Coverage — approved by timo, 2026-09-16, commit ad2ada724b", text)
         self.assertIn("1 ✓ North-up renders.\n    North-up projection [map::north_up] — Checks the angle.", text)
-        self.assertIn("2 ○ Choice survives a restart.\n    Ride check [manual] — Confirms on the device.\n    gap: Add a save/reload test.", text)
+        self.assertIn("2 ○ Choice survives a restart.\n    Ride check [manual] — Confirms on the device.\n    gap: Add a save/reload test.\n    next [unit]: Reload the setting and assert it.", text)
         self.assertIn("3 ○ Heading-up renders.\n    no evidence", text)
 
     def test_evidence_must_name_a_linked_test_of_the_right_kind(self):
