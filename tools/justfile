@@ -459,13 +459,14 @@ ios-companion *args:
     device="$(ios_phone "${1:-}")"
     ios_install OBCCompanion Release com.openbikecomputer.companion "$device"
 
-# Show and validate human ownership of documentation prose. Args: [status|check]
+# Inspect documentation ownership or review source-related prose. Args: [status|check|review]
 docs *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init
     cd "$OBC_ROOT"
-    if (( $# )); then _run python3 "$OBC_TOOLS/docs_copy.py" "$@"
+    if [[ "${1:-}" == review ]]; then shift; _run python3 "$OBC_TOOLS/docs_review.py" "$@"
+    elif (( $# )); then _run python3 "$OBC_TOOLS/docs_copy.py" "$@"
     else _run python3 "$OBC_TOOLS/docs_copy.py" status
     fi
 

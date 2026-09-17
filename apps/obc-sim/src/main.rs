@@ -15,6 +15,7 @@ use obc_ports::{Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, L
 mod calib;
 mod card;
 mod dfu;
+mod diagnostics;
 mod framebuffer;
 mod gui;
 mod headless_script;
@@ -87,6 +88,7 @@ enum DfuSeed {
 }
 
 struct Args {
+    diagnostics: Option<String>,
     map: String,
     width: u32,
     height: u32,
@@ -195,6 +197,7 @@ impl Default for Args {
     /// off-device experiments).
     fn default() -> Self {
         Args {
+            diagnostics: None,
             map: String::new(),
             width: obc_display::ls021::FRAME_W as u32,
             height: obc_display::ls021::FRAME_H as u32,
@@ -553,6 +556,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             }
             "--zoom" => a.zoom_mul = it.next().and_then(|s| s.parse().ok()).ok_or("bad --zoom")?,
             "--no-backlight" => a.no_backlight = true,
+            "--diagnostics" => a.diagnostics = Some(it.next().ok_or("--diagnostics needs a new JSONL path")?),
             "--script" => a.script = Some(it.next().ok_or("--script needs a token string")?),
             "--script-after" => a.script_after = Some(it.next().ok_or("--script-after needs a token string")?),
             "--expect-screen" => a.expect_screen = Some(it.next().ok_or("--expect-screen needs a screen name")?),
@@ -638,6 +642,9 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
     }
     if a.utc_offset_min.is_some() && a.clock.is_none() && a.clock_after_script.is_none() {
         return Err("--utc-offset-min requires --clock or --clock-after-script".into());
+    }
+    if a.diagnostics.is_some() && (a.png.is_none() || a.palette || a.import.is_some() || a.create_card.is_some()) {
+        return Err("--diagnostics requires a normal --png session".into());
     }
     // `--palette` and `--import` need no map file.
     if a.card.is_some() && (a.create_card.is_some() || !a.map.is_empty() || a.routes_dir.is_some()) {
@@ -854,6 +861,8 @@ enum ScriptHook {
     Render,
     /// Run one route-aware pass (the `T` token).
     Tick,
+    Before(char),
+    After(char),
 }
 
 /// Feed one batch of raw events to the app at time `now` (ms).
@@ -919,8 +928,11 @@ fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut
     };
 
     for ch in script.chars() {
+        if ch == ' ' {
+            continue;
+        }
+        hook(app, ScriptHook::Before(ch), now);
         match ch {
-            ' ' => {}
             'd' => step(app, &mut now, 1),
             'u' => step(app, &mut now, -1),
 
@@ -986,6 +998,7 @@ fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut
             }
             other => eprintln!("warning: ignoring unknown --script token '{other}'"),
         }
+        hook(app, ScriptHook::After(ch), now);
     }
     now
 }
@@ -1037,6 +1050,7 @@ Scripted snapshots:
                            Q quick-drawer tap, A held Up+Select (Assistant), C context-drawer squeeze,
                            w wait, f frame, T tick, I idle)
   --no-backlight          Model a panel with no controllable light (three quick-drawer controls)
+  --diagnostics PATH      Write a new JSONL journey trace (requires --png)
   --expect-screen NAME    Refuse unless the script lands on this screen
   --hold PLAN             Consume without starting one request: nav|detour
   --inject EVENT          nav-fail=KIND|detour-fail=KIND|upload=ID|
@@ -1066,6 +1080,26 @@ fn main() {
             std::process::exit(2);
         }
     };
+
+    let diagnostics = diagnostics::Diagnostics::open(args.diagnostics.as_deref()).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(1);
+    });
+    if diagnostics.enabled() {
+        if args.png.as_ref().and_then(|path| std::fs::canonicalize(path).ok())
+            == args.diagnostics.as_ref().and_then(|path| std::fs::canonicalize(path).ok())
+        {
+            eprintln!("diagnostics and PNG must use different paths");
+            std::process::exit(2);
+        }
+        diagnostics.record(
+            "session",
+            serde_json::json!({
+                "schema": 1, "args": std::env::args().collect::<Vec<_>>(),
+                "cwd": std::env::current_dir().ok(), "version": env!("CARGO_PKG_VERSION"),
+            }),
+        );
+    }
 
     // `--palette`: the device's 64-color gamut on a standalone color-test screen. Needs no
     // map. With `--png` it writes the frame headlessly (diffable in CI); else a minimal window.
@@ -1140,6 +1174,15 @@ fn main() {
         });
     let source = map.map_source();
     eprintln!("card {:?} | map {} revision {}", source.store_id(), source.id().0, source.revision().0);
+    if diagnostics.enabled() {
+        diagnostics.record(
+            "map",
+            serde_json::json!({
+                "store": format!("{:?}", source.store_id()), "object": source.id().0,
+                "revision": source.revision().0, "fingerprint": format!("{:?}", source.fingerprint()),
+            }),
+        );
+    }
     if args.create_card.is_some() {
         eprintln!("card created; inputs unchanged");
         return;
@@ -1307,6 +1350,9 @@ fn main() {
         // The same host-protocol owner the interactive simulator drives. Headless runs each plan
         // to completion inside a pass; its planned detour stays resident here until commit/cancel.
         let mut host = HostLoop::new();
+        if diagnostics.enabled() {
+            host.set_trace(Box::new(diagnostics.clone()));
+        }
         if let Some(scope) = store.store_scope() {
             host.facts().note_store_revision(scope);
         }
@@ -1367,6 +1413,7 @@ fn main() {
             let mut stores =
                 Stores { routes: &mut store, rides: &mut ride_store, trips: &mut trip_store, tracks: &mut tracks };
             script_now = headless_script::Session {
+                diagnostics: diagnostics.clone(),
                 host: &mut host,
                 route: &mut session,
                 stores: &mut stores,
@@ -1678,6 +1725,7 @@ fn main() {
 
         if let Some(script) = &args.script_after {
             script_now = headless_script::Session {
+                diagnostics: diagnostics.clone(),
                 host: &mut host,
                 route: &mut session,
                 stores: &mut stores,
@@ -1722,6 +1770,10 @@ fn main() {
         if let Some(expected) = &args.expect_screen {
             let landed = app.top_screen().name();
             if landed != expected {
+                diagnostics.record("failed", serde_json::json!({"expected_screen": expected, "screen": landed}));
+                if let Err(error) = diagnostics.check() {
+                    eprintln!("{error}");
+                }
                 eprintln!("error: --expect-screen {expected}, but the script landed on {landed}");
                 std::process::exit(1);
             }
@@ -1741,6 +1793,16 @@ fn main() {
         );
         stats.render_us = t0.elapsed().as_micros() as u32;
         peak_runtime.note_frame_presented(&app);
+        if diagnostics.enabled() {
+            diagnostics.record(
+                "render",
+                serde_json::json!({
+                    "screen": app.top_screen().name(), "host_render_us": stats.render_us,
+                    "map_reads": stats.map_sd_reads, "map_bytes": stats.map_bytes_read,
+                    "features_drawn": stats.features_drawn, "features_dropped": stats.features_dropped,
+                }),
+            );
+        }
         let cache_reqs = stats.map_chunk_hits + stats.map_chunk_misses;
         let hit_pct = if cache_reqs == 0 { 0.0 } else { 100.0 * stats.map_chunk_hits as f32 / cache_reqs as f32 };
         eprintln!(
@@ -1779,6 +1841,11 @@ fn main() {
             std::process::exit(1);
         }
 
+        diagnostics.record("finished", serde_json::json!({"png": path, "screen": app.top_screen().name()}));
+        if let Err(error) = diagnostics.check() {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
         eprintln!("wrote {path}");
         return;
     }
