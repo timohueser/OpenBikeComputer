@@ -38,6 +38,14 @@ class RenderTest(unittest.TestCase):
         r["coverage"]["criteria"] = []
         self.assertEqual(req.state(r), "Partial 0/0")
 
+    def test_a_pending_proposal_is_named_even_with_no_approved_plan(self):
+        proposal = {"requirementId": "SYS-003", "status": "pending", "author": "agent", "createdAt": "2026-09-17T08:00:00Z",
+                    "sourceSha": "0123456789ab", "plan": {"criteria": [{}, {}]}}
+        text = req.render(requirement(coverage=None), REVISION, [proposal])
+        self.assertIn("No approved coverage plan.", text)
+        self.assertIn("Pending proposal by agent (2026-09-17, commit 0123456789): 2 criteria", text)
+        self.assertIn("1 criterion;", req.render(requirement(coverage=None), REVISION, [{**proposal, "plan": {"criteria": [{}]}}]))
+
     def test_states_labels_and_pending_proposals(self):
         self.assertEqual(req.state(requirement(coverage=None)), "Not assessed")
         unreviewed = requirement(); del unreviewed["coverage"]["review"]
