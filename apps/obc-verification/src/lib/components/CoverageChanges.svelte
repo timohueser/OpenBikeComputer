@@ -1,26 +1,32 @@
 <script lang="ts">
   import type { Catalog, CoveragePlan, Requirement } from '$lib/types';
-  import { coverageChanges, coverageStatus } from '$lib/coverage';
+  import { coverageChanges, linkChanges } from '$lib/coverage';
   import CoverageCriterion from './CoverageCriterion.svelte';
   export let requirement: Requirement;
   export let plan: CoveragePlan;
   export let catalog: Catalog;
+  $: before = requirement.coverage?.criteria ?? [];
   $: delta = coverageChanges(requirement, plan);
+  $: touched = new Set([...delta.added, ...delta.changed].map(c => c.id));
+  $: unchanged = plan.criteria.filter(c => !touched.has(c.id));
+  $: links = linkChanges(requirement, plan, catalog);
 </script>
-<div class="changes">
-  <p><strong>Coverage: {coverageStatus(requirement)} → {plan.conclusion === 'complete' ? 'Complete' : 'Partial'}</strong></p>
-  <p class="wrap">{plan.rationale}</p>
-  {#if requirement.coverage && requirement.coverage.rationale !== plan.rationale}<details><summary>Previous assessment</summary><p class="wrap">{requirement.coverage.rationale}</p></details>{/if}
-  <p class="small muted">Criteria: {delta.added.length} added · {delta.changed.length} changed · {delta.removed.length} removed. Assessed source: <code>{plan.sourceSha.slice(0, 10)}</code>.</p>
-  {#if requirement.coverage && requirement.coverage.sourceSha !== plan.sourceSha}<p class="small">Source assessment changes from <code>{requirement.coverage.sourceSha.slice(0, 10)}</code> to <code>{plan.sourceSha.slice(0, 10)}</code>.</p>{/if}
-  {#each delta.changed as criterion}
-    <div class="comparison"><div><p class="eyebrow">Current</p><CoverageCriterion criterion={requirement.coverage!.criteria.find(c => c.id === criterion.id)!} {requirement} {catalog} /></div><div><p class="eyebrow">Proposed</p><CoverageCriterion {criterion} {requirement} {catalog} /></div></div>
+<p class="wrap rationale">{plan.rationale}</p>
+{#if requirement.coverage && requirement.coverage.rationale !== plan.rationale}<details class="small"><summary>Previous explanation</summary><p class="wrap">{requirement.coverage.rationale}</p></details>{/if}
+<div class="criteria">
+  {#each plan.criteria.filter(c => touched.has(c.id)) as criterion (criterion.id)}
+    {@const old = before.find(o => o.id === criterion.id)}
+    <CoverageCriterion {criterion} {requirement} {catalog} previous={old} tag={old ? 'Changed' : 'New'} />
   {/each}
-  {#each delta.added as criterion}<p class="eyebrow">Added criterion</p><CoverageCriterion {criterion} {requirement} {catalog} />{/each}
-  {#each delta.removed as criterion}<div class="alert warning"><strong>Remove criterion</strong><CoverageCriterion {criterion} {requirement} {catalog} /></div>{/each}
-  {#if delta.addedCases.length}<p><strong>Tests to link ({delta.addedCases.length})</strong></p><ul>{#each delta.addedCases as id}<li class="wrap">{catalog.cases.find(c => c.id === id)?.name ?? id}</li>{/each}</ul>{/if}
-  {#if delta.removedTests.length}<div class="alert warning"><strong>Tests to unlink ({delta.removedTests.length})</strong><ul>{#each delta.removedTests as t}<li class="wrap">{t.title}{t.kind === 'manual' ? ' — removes this manual procedure from the requirement' : ''}</li>{/each}</ul><p class="small">These tests will no longer be required by future candidates. Existing candidates keep their saved tests and results.</p></div>{/if}
-  {#if delta.unmappedTests.length}<p class="small muted">{delta.unmappedTests.length} existing tests remain linked without a criterion mapping. They still require passing results for a release.</p>{/if}
-  {#if !delta.added.length && !delta.changed.length && !delta.removed.length}<p class="muted">Criteria and evidence mappings are unchanged. Approval renews the review with this assessment.</p>{/if}
+  {#each delta.removed as criterion (criterion.id)}<CoverageCriterion {criterion} {requirement} {catalog} removed tag="Removed" />{/each}
 </div>
-<style>.comparison { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; } @media(max-width: 900px) { .comparison { grid-template-columns: minmax(0, 1fr); } }</style>
+{#if !touched.size && !delta.removed.length}<p class="muted small">No criteria change. Approval renews the review with this explanation.</p>{/if}
+{#if unchanged.length}<details class="small unchanged"><summary>{unchanged.length} unchanged {unchanged.length === 1 ? 'criterion' : 'criteria'}</summary><div class="criteria">{#each unchanged as criterion (criterion.id)}<CoverageCriterion {criterion} {requirement} {catalog} />{/each}</div></details>{/if}
+{#each links as line}<p class="small links">{line}</p>{/each}
+{#if delta.unmappedTests.length}<p class="small muted">{delta.unmappedTests.length} linked {delta.unmappedTests.length === 1 ? 'test stays' : 'tests stay'} linked without being evidence and must still pass.</p>{/if}
+<style>
+  .rationale { margin: 8px 0 12px; }
+  .criteria { display: flex; flex-direction: column; gap: 8px; }
+  .unchanged { margin-top: 10px; }
+  .links { margin: 12px 0 0; color: var(--amber); }
+</style>

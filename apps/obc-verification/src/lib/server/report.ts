@@ -2,7 +2,7 @@ import { marked } from 'marked';
 import sanitize from 'sanitize-html';
 import type { Candidate } from '../types.ts';
 import { readiness, requirementIssues } from './domain.ts';
-import { coverageReviewStatus, coverageStatus, evidenceTest } from '../coverage.ts';
+import { coverageSummary, evidenceTest } from '../coverage.ts';
 const escape = (s: unknown) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 const markdown = (source: string) => sanitize(marked.parse(source, { async: false }), { allowedTags: sanitize.defaults.allowedTags, allowedAttributes: { a: ['href', 'title'] }, allowedSchemes: ['https', 'http'] });
 export function report(candidate: Candidate): string {
@@ -29,8 +29,8 @@ ${r.todo ? '<p class="todo">Definition incomplete — requirement definition nee
 ${r.implementationNeeded ? '<p class="todo">Implementation needed — known implementation gap.</p>' : ''}
 ${exception ? '<p><strong>Accepted with exception — not verified.</strong> See the decision above.</p>' : ''}
 ${markdown(r.statement)}${issues.map(issue => `<p>${escape(issue)}</p>`).join('')}
-<h3>Coverage: ${escape(coverageStatus(r))}</h3><p>Review: ${escape(coverageReviewStatus(r, candidate.sourceSha))}</p>
-${r.coverage ? `<p>Assessed source <code>${escape(r.coverage.sourceSha)}</code></p><p>${escape(r.coverage.rationale)}</p>${r.coverage.review ? `<p>Reviewed by ${escape(r.coverage.review.author)} · ${escape(r.coverage.review.createdAt)}</p>` : '<p>Coverage review required.</p>'}${r.coverage.criteria.map(c => `<h4>${escape(c.id)} — ${escape(c.statement)}</h4>${c.evidence.map(e => `<p>${escape(evidenceTest(r, e)?.title ?? e.caseId ?? e.testId)}: ${escape(e.rationale)}</p>`).join('')}${c.gap ? `<p class="todo">Gap: ${escape(c.gap)}</p>` : ''}${!c.evidence.length ? '<p>No evidence mapped.</p>' : ''}`).join('')}` : '<p>No reviewed coverage plan.</p>'}
+${(() => { const s = coverageSummary(r, candidate.sourceSha); return `<h3>Coverage: ${escape(s.label)}</h3>${s.total ? `<p>${s.covered} of ${s.total} criteria covered</p>` : ''}`; })()}
+${r.coverage ? `<p>${escape(r.coverage.rationale)}</p>${r.coverage.review ? `<p>Approved by ${escape(r.coverage.review.author)} · ${escape(r.coverage.review.createdAt)} · source <code>${escape(r.coverage.review.sourceSha)}</code></p>` : '<p>Coverage approval required.</p>'}${r.coverage.criteria.map(c => `<h4>${escape(c.statement)}</h4>${c.evidence.map(e => `<p>${escape(evidenceTest(r, e)?.title ?? e.caseId ?? e.testId)}: ${escape(e.rationale)}</p>`).join('')}${c.gap ? `<p class="todo">Gap: ${escape(c.gap)}</p>` : ''}${!c.evidence.length ? '<p>No evidence mapped.</p>' : ''}`).join('')}` : '<p>No coverage plan.</p>'}
 <h3>Test results</h3>
 ${r.tests.map(t => `<h3>${escape(t.title)} · ${t.kind}</h3>${t.kind === 'manual' ? markdown(t.steps || '') + '<h4>Expected</h4>' + markdown(t.expected || '') : `<p><code>${escape(t.caseId)}</code>: ${escape(results.get(t.caseId || '') || 'missing')}</p>`}
 <h4>Inputs</h4>${t.inputs.map(a => `<p>${escape(a.name)} — SHA-256 <code>${a.sha256}</code></p>`).join('')}

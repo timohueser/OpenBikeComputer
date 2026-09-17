@@ -10,7 +10,7 @@ import { boundedBody, download, upload } from './files.ts';
 import { approveGitHubUser, removeGitHubUser } from './accounts.ts';
 import { report } from './report.ts';
 import { proposalConflict } from './proposals.ts';
-import { coverageConflict, coveragePlan } from './coverage-plan.ts';
+import { coverageConflict, coveragePlan, commitSha, draftCoverage } from './coverage-plan.ts';
 
 async function body(event: RequestEvent): Promise<Record<string, any>> {
   assert(event.request.headers.get('content-type')?.includes('application/json'), 'JSON body required.', 415);
@@ -94,13 +94,14 @@ async function route(event: RequestEvent): Promise<Response> {
     const ids = store().reserveRequirementIds(count);
     return json({ id: ids[0], ids });
   }
-  if (parts[0] === 'requirements' && parts.length === 3 && parts[2] === 'coverage' && method === 'PUT') {
+  if (parts[0] === 'requirements' && parts.length === 4 && parts[2] === 'coverage' && parts[3] === 'approve' && method === 'POST') {
     allow('owner'); const data = await body(event);
-    return json(store().saveCoverage(positive(data.baseRevision, 'Base revision'), identifier(parts[1]), actor.name, data.plan));
+    return json(store().approveCoverage(positive(data.baseRevision, 'Base revision'), identifier(parts[1]), actor.name, data.sourceSha));
   }
   if (path === 'requirements' && method === 'PUT') {
     allow('owner'); const data = await body(event);
-    return json(store().saveRevision(positive(data.baseRevision, 'Base revision'), actor.name, requirements(data.requirements, (id) => store().file(id))));
+    const list = draftCoverage(requirements(data.requirements, (id) => store().file(id)), data.requirements, store().catalog(), () => store().id());
+    return json(store().saveRevision(positive(data.baseRevision, 'Base revision'), actor.name, list));
   }
   if (path === 'revisions' && method === 'GET') return json(store().revisions());
   if (parts[0] === 'revisions' && parts.length === 2 && method === 'GET') return json(store().revision(positive(Number(parts[1]), 'Revision')));
@@ -214,10 +215,11 @@ async function coverageProposals(event: RequestEvent, parts: string[]): Promise<
     const requirementId = identifier(data.requirementId);
     const requirement = revision.requirements.find(r => r.id === requirementId);
     assert(requirement, 'Requirement not found.', 404);
+    const sourceSha = commitSha(data.sourceSha);
     const plan = coveragePlan(data.plan, requirement, store().catalog());
-    const duplicate = store().list<CoverageProposal>('coverage-proposal').find(p => p.status === 'pending' && p.baseRevision === baseRevision && p.requirementId === requirementId && isDeepStrictEqual(p.plan, plan));
+    const duplicate = store().list<CoverageProposal>('coverage-proposal').find(p => p.status === 'pending' && p.baseRevision === baseRevision && p.requirementId === requirementId && p.sourceSha === sourceSha && isDeepStrictEqual(p.plan, plan));
     if (duplicate) return json(duplicate);
-    const proposal: CoverageProposal = { id: store().id(), baseRevision, requirementId, plan,
+    const proposal: CoverageProposal = { id: store().id(), baseRevision, requirementId, sourceSha, plan,
       author: actor.name, ...(actor.agentToken ? { agentToken: actor.agentToken } : {}), createdAt: new Date().toISOString(), status: 'pending' };
     store().atomic(() => {
       if (data.supersedes !== undefined) {

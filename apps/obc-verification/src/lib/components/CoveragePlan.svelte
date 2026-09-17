@@ -5,6 +5,6 @@
   export let requirement: Requirement;
   export let catalog: Catalog | undefined = undefined;
 </script>
-<p class="small muted">Assessed source <code>{plan.sourceSha.slice(0, 10)}</code> · {plan.criteria.length} acceptance criteria · assessment: <strong>{plan.conclusion}</strong></p>
-<p class="wrap">{plan.rationale}</p>
-{#each plan.criteria as criterion (criterion.id)}<CoverageCriterion {criterion} {requirement} {catalog} />{/each}
+<p class="wrap rationale">{plan.rationale}</p>
+<div class="criteria">{#each plan.criteria as criterion (criterion.id)}<CoverageCriterion {criterion} {requirement} {catalog} />{/each}</div>
+<style>.rationale { margin: 8px 0 12px; } .criteria { display: flex; flex-direction: column; gap: 8px; }</style>
