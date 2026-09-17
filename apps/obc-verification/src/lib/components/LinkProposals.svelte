@@ -14,7 +14,6 @@
   export let onclose: () => void;
   let search = '';
   let status = 'pending';
-  let kind = 'coverage';
   $: coverageMatching = coverageProposals.filter(p => (status === 'all' || p.status === status) && `${p.requirementId} ${p.requirement?.title ?? ''} ${p.plan.rationale} ${p.plan.criteria.map(c => c.statement).join(' ')}`.toLowerCase().includes(search.toLowerCase()));
   $: pending = proposals.filter(p => p.status === 'pending');
   $: conflicts = pending.filter(p => p.conflict).length;
@@ -22,16 +21,17 @@
     `${p.requirementId} ${p.requirement?.title ?? ''} ${p.requirement?.group ?? ''} ${p.test?.name ?? ''} ${p.caseId} ${p.reason}`.toLowerCase().includes(search.toLowerCase()));
 </script>
 
-<section class="panel" aria-label="Proposed verification links">
-  <div class="row"><h2>Coverage and test proposals</h2><div class="actions"><button disabled={busy} on:click={onrefresh}>Refresh proposals</button><button on:click={onclose}>Close</button></div></div>
-  <div class="actions"><button aria-pressed={kind === 'coverage'} on:click={() => kind = 'coverage'}>Coverage plans ({coverageProposals.filter(p => p.status === 'pending').length})</button><button aria-pressed={kind === 'links'} on:click={() => kind = 'links'}>Individual links ({pending.length})</button></div>
-  <p class="muted small">{kind === 'links' ? `${pending.length} pending · ${pending.length - conflicts} ready for review · ${conflicts} with conflicts. Individual link changes require a fresh coverage review.` : 'Review the whole coverage plan in one decision. Tests are linked automatically when you approve. Approval does not record a test pass.'}</p>
+<section class="panel" aria-label="Coverage proposals">
+  <div class="row"><h2>Coverage proposals</h2><div class="actions"><button disabled={busy} on:click={onrefresh}>Refresh proposals</button><button on:click={onclose}>Close</button></div></div>
+  <p class="muted small">Review changes to criteria, evidence, and gaps together. Approval applies the displayed test-link changes; it does not record a test pass.</p>
   {#if dirty}<p class="alert warning">Save or discard your draft before approving a proposal. You can still reject proposals.</p>{/if}
   <div class="row">
     <label>Find a proposal<input type="search" bind:value={search} placeholder="Requirement, test, or reason…" /></label>
     <label>Status<select aria-label="Proposal status" bind:value={status}><option value="pending">Pending</option><option value="accepted">Accepted</option><option value="rejected">Rejected</option><option value="all">All</option></select></label>
   </div>
-  {#if kind === 'coverage'}<CoverageReview proposals={coverageMatching} {catalog} {busy} {dirty} ondecide={oncoverage} />{:else}
+  <CoverageReview proposals={coverageMatching} {catalog} {busy} {dirty} ondecide={oncoverage} />
+  <details><summary>Individual link suggestions ({pending.length} pending)</summary>
+  <p class="small muted">Prefer coverage proposals so evidence and gaps are reviewed together. These older link-only suggestions do not assess coverage. Approving a matching coverage plan resolves them automatically. {conflicts} suggestions have conflicts.</p>
   {#each matching as p (p.id)}
     <div class="test">
       <div class="row"><h3>{p.action === 'add' ? 'Link test' : 'Unlink test'} · {p.requirementId}{p.requirement ? ` · ${p.requirement.title}` : ''}</h3><span class="badge">{p.status}</span></div>
@@ -48,5 +48,5 @@
       {/if}
     </div>
   {:else}<p class="muted">{search ? 'No proposals match this search.' : 'No proposals with this status.'}</p>{/each}
-  {/if}
+  </details>
 </section>

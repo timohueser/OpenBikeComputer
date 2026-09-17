@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { AcceptanceCriterion, Catalog, CoveragePlan, CoverageProposal, Requirement, Revision } from '../types.ts';
-import { verificationDefinition } from '../coverage.ts';
+import { mappedBy, verificationDefinition } from '../coverage.ts';
 import { assert, identifier, text } from './domain.ts';
 
 export function coveragePlan(value: unknown, requirement: Requirement, catalog: Catalog): CoveragePlan {
@@ -31,8 +31,18 @@ export function coveragePlan(value: unknown, requirement: Requirement, catalog: 
     return { id, statement: text(entry.statement, 'Acceptance criterion', 5000), evidence, gap };
   });
   const addedCases = new Set(criteria.flatMap(c => c.evidence.flatMap(e => e.caseId && !requirement.tests.some(t => t.caseId === e.caseId) ? [e.caseId] : [])));
-  assert(requirement.tests.length + addedCases.size <= 100, 'At most 100 tests can be linked to a requirement.');
-  return { sourceSha: plan.sourceSha, conclusion: plan.conclusion, rationale: text(plan.rationale, 'Coverage rationale', 10000), criteria };
+  const result: CoveragePlan = { sourceSha: plan.sourceSha, conclusion: plan.conclusion, rationale: text(plan.rationale, 'Coverage rationale', 10000), criteria };
+  const removals = plan.removeTestIds ?? [];
+  assert(Array.isArray(removals) && removals.length <= 100, 'At most 100 test links can be removed.');
+  const removeTestIds: string[] = removals.map((id: unknown) => identifier(id, 'Removed test ID'));
+  assert(new Set(removeTestIds).size === removeTestIds.length, 'Duplicate test removal.');
+  for (const id of removeTestIds) {
+    const test = requirement.tests.find(t => t.id === id);
+    assert(test, 'The test to remove is no longer linked.');
+    assert(!mappedBy(result, test), 'Cannot remove a test used by the proposed coverage.');
+  }
+  assert(requirement.tests.length - removeTestIds.length + addedCases.size <= 100, 'At most 100 tests can be linked to a requirement.');
+  return { ...result, ...(removeTestIds.length ? { removeTestIds } : {}) };
 }
 
 export function coverageConflict(proposal: CoverageProposal, base: Revision | undefined, current: Revision, catalog: Catalog): string | undefined {

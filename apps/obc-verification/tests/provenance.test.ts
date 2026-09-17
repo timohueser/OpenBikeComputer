@@ -110,7 +110,8 @@ test('reports distinguish accepted gaps from passes and retain unfinished defini
   assert.doesNotMatch(excluded, /REQ-2: no verification defined/);
   c.exceptions = [];
   c.manualRuns[0].result = 'pass';
-  assert.match(report(c), /Coverage: Not reviewed/);
+  assert.match(report(c), /Coverage: Unassessed/);
+  assert.match(report(c), /Review: Not reviewed/);
   c.revision.requirements[0].coverage = { sourceSha: c.sourceSha, conclusion: 'complete', rationale: 'The manual check measures the required target.', criteria: [{ id: 'runtime', statement: 'Meets the runtime target.', evidence: [{ testId: 'manual', rationale: 'Measures runtime on the board.' }], gap: '' }], review: { author: 'owner', createdAt: '', proposalId: 'review' } };
   assert.match(report(c), /<h2>Accepted with exclusions<\/h2>/);
 });
