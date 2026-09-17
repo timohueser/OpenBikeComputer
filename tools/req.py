@@ -124,7 +124,7 @@ def coverage_header(plan: dict) -> str:
     return header
 
 
-def evidence_name(requirement: dict, evidence: dict, known: set[str]) -> str:
+def evidence_name(requirement: dict, evidence: dict, known: set[str] | None) -> str:
     """What to call a piece of evidence in a terminal.
 
     A case id is the citable thing and already carries the suite, the file and the test name, so
@@ -132,7 +132,8 @@ def evidence_name(requirement: dict, evidence: dict, known: set[str]) -> str:
     id worth reading, so it goes by its title.
     """
     if evidence.get("caseId"):
-        return evidence["caseId"] + ("" if evidence["caseId"] in known else "   (not in the catalogue)")
+        gone = known is not None and evidence["caseId"] not in known
+        return evidence["caseId"] + ("   (not in the catalogue)" if gone else "")
     test = evidence_test(requirement, evidence)
     return f"manual: {test['title']}" if test else f"unlinked manual test {evidence.get('testId')}"
 
@@ -146,7 +147,7 @@ def criteria_lines(requirement: dict, plan: dict, known: set[str] | None = None,
             else criterion_covered(requirement, criterion)
         lines.append(f"{number} {'✓' if covered else '○'} {criterion['statement'].strip()}")
         for evidence in criterion["evidence"]:
-            lines.append(f"    {evidence_name(requirement, evidence, known or set())}")
+            lines.append(f"    {evidence_name(requirement, evidence, known)}")
             lines.append(f"        {evidence['rationale'].strip()}")
         if not criterion["evidence"]:
             lines.append("    no evidence")
@@ -269,16 +270,20 @@ def changed_lines(before: dict, after: dict) -> list[str]:
 # ───────────────────────────────── writing ─────────────────────────────────
 
 
-def plan_problems(entry: dict, requirement: dict, baseline: dict | None, catalog_ids: set[str]) -> list[str]:
-    """Everything wrong with one plan, in the console's terms.
+def plan_problems(entry: dict, requirement: dict, baseline: dict | None,
+                  catalog_ids: set[str]) -> tuple[list[str], list[str]]:
+    """What is wrong with one plan, split into what blocks it and what is worth saying.
 
-    The server rejects a subset of these. The rest are what a reviewer would send back: a criterion
-    id that drifted from the plan being revised, a gap that names no test to build, a procedure no
-    criterion cites. Catching them here means a batch is either wholly submittable or wholly not.
+    Errors are what the server refuses, plus what is plainly broken; one anywhere in a batch stops
+    the whole batch, so a half-submitted run cannot happen. Warnings are judgement calls a reviewer
+    might raise and an author may have meant: a criterion that is new, a gap with no test named yet.
+    Those print and do not block, because adding a criterion is the usual reason to revise a plan.
     """
     rid = entry.get("requirementId", "?")
     found: list[str] = []
+    notes: list[str] = []
     say = found.append
+    note = notes.append
     plan = entry.get("plan") or {}
     procedures = entry.get("procedures") or []
     if not plan.get("rationale", "").strip():
@@ -287,25 +292,46 @@ def plan_problems(entry: dict, requirement: dict, baseline: dict | None, catalog
         say(f"{rid}: the rationale is {len(plan['rationale'])} characters, too long for the card")
     if not plan.get("criteria"):
         say(f"{rid}: the plan has no criteria")
-        return found
+        return found, notes
+    if len(plan["criteria"]) > 100:
+        say(f"{rid}: {len(plan['criteria'])} criteria; the server takes at most 100")
+    if len(procedures) > 20:
+        say(f"{rid}: {len(procedures)} procedures; the server takes at most 20")
     now = [c.get("id") for c in plan["criteria"]]
+    for repeated in sorted({i for i in now if now.count(i) > 1}):
+        say(f"{rid}: criterion id {repeated} is used more than once")
     if baseline:
         was = [c["id"] for c in baseline["criteria"]]
         for lost in sorted(set(was) - set(now)):
-            say(f"{rid}: criterion {lost} is in the plan being revised and not in this one")
+            note(f"{rid}: criterion {lost} was in the plan being revised and is not in this one")
         for gained in sorted(set(now) - set(was)):
-            say(f"{rid}: criterion {gained} is new; keep stable ids when revising a plan")
+            note(f"{rid}: criterion {gained} is new")
+    linked_cases = {t.get("caseId") for t in requirement["tests"] if t["kind"] == "automated"}
     existing = {t["id"] for t in requirement["tests"]}
     proposed = {p.get("id") for p in procedures}
     cited: set[str] = set()
     for criterion in plan["criteria"]:
         cid = criterion.get("id", "?")
+        if not identifier_ok(cid):
+            say(f"{rid}: criterion id {cid!r} has characters the server refuses")
+        if not criterion.get("statement", "").strip():
+            say(f"{rid}: criterion {cid} has no statement")
+        if len(criterion.get("evidence", [])) > 100:
+            say(f"{rid}: criterion {cid} has more than 100 pieces of evidence")
+        seen: set[str] = set()
         for evidence in criterion.get("evidence", []):
-            if bool(evidence.get("caseId")) == bool(evidence.get("testId")):
+            # The server discriminates on the type, not on truthiness, so an empty string counts.
+            if isinstance(evidence.get("caseId"), str) == isinstance(evidence.get("testId"), str):
                 say(f"{rid}: criterion {cid} has evidence naming neither exactly one case nor one manual test")
                 continue
-            if evidence.get("caseId") and evidence["caseId"] not in catalog_ids:
-                say(f"{rid}: criterion {cid} cites {evidence['caseId']}, which is not in the catalogue")
+            key = evidence.get("caseId") or evidence.get("testId")
+            if key in seen:
+                say(f"{rid}: criterion {cid} cites {key} twice")
+            seen.add(key)
+            # A case the requirement already links stays valid evidence even once the catalogue has
+            # moved on, which is what the server accepts.
+            if evidence.get("caseId") and evidence["caseId"] not in catalog_ids | linked_cases:
+                say(f"{rid}: criterion {cid} cites {evidence['caseId']}, which is neither in the catalogue nor already linked")
             if evidence.get("testId"):
                 cited.add(evidence["testId"])
                 if evidence["testId"] not in existing | proposed:
@@ -315,9 +341,9 @@ def plan_problems(entry: dict, requirement: dict, baseline: dict | None, catalog
         gap = criterion.get("gap", "").strip()
         nxt = criterion.get("next")
         if gap and not nxt:
-            say(f"{rid}: criterion {cid} has a gap and does not name the test to build")
+            note(f"{rid}: criterion {cid} has a gap and names no test to build")
         if nxt and not gap:
-            say(f"{rid}: criterion {cid} names a test to build but records no gap")
+            note(f"{rid}: criterion {cid} names a test to build but records no gap")
         if nxt and nxt.get("level") not in LEVELS:
             say(f"{rid}: criterion {cid} has level {nxt.get('level')!r}; use one of {', '.join(LEVELS)}")
         if nxt and not nxt.get("summary", "").strip():
@@ -325,6 +351,10 @@ def plan_problems(entry: dict, requirement: dict, baseline: dict | None, catalog
         if nxt and len(nxt.get("summary", "")) > 300:
             say(f"{rid}: criterion {cid} has a {len(nxt['summary'])}-character summary; keep it to one sentence")
     for procedure in procedures:
+        if not identifier_ok(procedure.get("id", "")):
+            say(f"{rid}: procedure id {procedure.get('id')!r} has characters the server refuses")
+        if procedure.get("kind", "manual") != "manual":
+            say(f"{rid}: procedure {procedure.get('id')} is not a manual test")
         if procedure.get("id") not in cited:
             say(f"{rid}: procedure {procedure.get('id')} is cited by no criterion, so the server refuses it")
         if procedure.get("id") in existing:
@@ -332,7 +362,13 @@ def plan_problems(entry: dict, requirement: dict, baseline: dict | None, catalog
         for field in ("title", "steps", "expected"):
             if not procedure.get(field, "").strip():
                 say(f"{rid}: procedure {procedure.get('id')} has no {field}")
-    return found
+    return found, notes
+
+
+def identifier_ok(value: str) -> bool:
+    """The server's own identifier rule (`identifier` in src/lib/server/domain.ts)."""
+    return bool(value) and value[0].isascii() and value[0].isalnum() and all(
+        c.isascii() and (c.isalnum() or c in "._-") for c in value)
 
 
 def head_sha() -> str:
@@ -353,9 +389,18 @@ def propose(console: Console, paths: list[str], sha: str, check_only: bool) -> i
     catalog_ids = {c["id"] for c in console.call("/api/catalog")["cases"]}
     entries: list[dict] = []
     for path in paths:
-        loaded = json.loads(Path(path).read_text())
-        entries.extend(loaded if isinstance(loaded, list) else [loaded])
+        try:
+            loaded = json.loads(Path(path).read_text())
+        except OSError as error:
+            raise Problem(f"could not read {path}: {error}") from None
+        except json.JSONDecodeError as error:
+            raise Problem(f"{path} is not valid JSON: {error}") from None
+        for entry in loaded if isinstance(loaded, list) else [loaded]:
+            if not isinstance(entry, dict) or not isinstance(entry.get("plan"), dict):
+                raise Problem(f"{path} must hold a plan object, or a list of them, each with a `plan`")
+            entries.append(entry)
     problems: list[str] = []
+    notes: list[str] = []
     for entry in entries:
         requirement = requirements.get(entry.get("requirementId"))
         if not requirement:
@@ -363,12 +408,16 @@ def propose(console: Console, paths: list[str], sha: str, check_only: bool) -> i
             continue
         pending = pending_for(proposals, requirement["id"])
         baseline = (pending or {}).get("plan") or requirement.get("coverage")
-        problems += plan_problems(entry, requirement, baseline, catalog_ids)
+        found, said = plan_problems(entry, requirement, baseline, catalog_ids)
+        problems += found
+        notes += said
     criteria = [c for e in entries for c in e.get("plan", {}).get("criteria", [])]
     print(f"r{revision['id']} · {len(entries)} plans · {len(criteria)} criteria · "
           f"{sum(1 for c in criteria if c.get('gap', '').strip())} gaps · "
           f"{sum(1 for c in criteria if c.get('next'))} named tests · "
           f"{sum(len(e.get('procedures') or []) for e in entries)} procedures · commit {sha[:10]}")
+    for note in notes:
+        print(f"  note · {note}")
     for problem in problems:
         print(f"  {problem}")
     if problems:
@@ -377,6 +426,7 @@ def propose(console: Console, paths: list[str], sha: str, check_only: bool) -> i
     if check_only:
         print("\nEvery plan is valid. Drop --check to submit them.")
         return 0
+    known_ids = {p["id"] for p in proposals}
     failed = 0
     for entry in entries:
         body = {"baseRevision": revision["id"], "requirementId": entry["requirementId"], "sourceSha": sha,
@@ -385,8 +435,11 @@ def propose(console: Console, paths: list[str], sha: str, check_only: bool) -> i
             body["procedures"] = entry["procedures"]
         try:
             result = console.call("/api/coverage-proposals", body)
-            print(f"  submitted {entry['requirementId']}"
-                  + (" (superseded the pending one)" if result.get("supersedes") else ""))
+            if result["id"] in known_ids:
+                print(f"  unchanged {entry['requirementId']}: the console already holds this exact plan")
+            else:
+                print(f"  submitted {entry['requirementId']}"
+                      + (" (superseded the pending one)" if result.get("supersedes") else ""))
         except Problem as error:
             failed += 1
             print(f"  FAILED {entry['requirementId']}: {error}")
@@ -406,14 +459,24 @@ def flag_value(argv: list[str], name: str) -> str | None:
     return None
 
 
+"""The flags each command takes. Anything else is refused, because `--checks` must not submit."""
+ALLOWED = {"": {"--json"}, "list": {"--gaps", "--no-plan", "--pending", "--flagged"},
+           "proposal": {"--json"}, "tests": set(), "changed": {"--since"}, "propose": {"--check", "--sha"}}
+
+
 def main(argv: list[str]) -> int:
     flags = {a.split("=", 1)[0] for a in argv if a.startswith("--")}
-    consumed = {v for name in ("since", "sha") if (v := flag_value(argv, name)) and f"--{name}" in argv}
-    words = [a for a in argv if not a.startswith("--") and a not in consumed]
+    consumed = {index + 1 for index, word in enumerate(argv) if word in ("--since", "--sha")}
+    words = [a for index, a in enumerate(argv) if not a.startswith("--") and index not in consumed]
     if not words:
         print(__doc__.strip(), file=sys.stderr)
         return 2
     command, rest = words[0], words[1:]
+    allowed = ALLOWED.get("" if command.upper().startswith("SYS-") else command)
+    if allowed is None:
+        raise Problem(f"unknown command {command!r}. Run `obc req` with no arguments for the list.")
+    for flag in sorted(flags - allowed):
+        raise Problem(f"{command} does not take {flag}. It takes {', '.join(sorted(allowed)) or 'no flags'}.")
     console = Console()
 
     if command.upper().startswith("SYS-") and not rest:
@@ -447,8 +510,14 @@ def main(argv: list[str]) -> int:
             print(json.dumps(proposal, indent=2, ensure_ascii=False))
             return 0
         revision = console.call("/api/bootstrap")["revision"]
+        requirement = next((r for r in revision["requirements"] if r["id"] == wanted), None)
+        if requirement is None:
+            # `coverageConflict` produces exactly this, and the conflict line is the useful answer.
+            print(f"{wanted} · proposed by {proposal['author']} · against r{proposal['baseRevision']}")
+            print(f"CONFLICT: {proposal.get('conflict') or 'the requirement is no longer in this revision.'}")
+            return 0
         known = {c["id"] for c in console.call("/api/catalog")["cases"]}
-        print(render_proposal(proposal, next(r for r in revision["requirements"] if r["id"] == wanted), known))
+        print(render_proposal(proposal, requirement, known))
         return 0
 
     if command == "tests":
@@ -465,8 +534,12 @@ def main(argv: list[str]) -> int:
         return 0
 
     if command == "changed":
+        if rest:
+            raise Problem(f"changed takes no arguments; did you mean --since {rest[0]}?")
         latest = console.call("/api/bootstrap")["revision"]
         raw = flag_value(argv, "since")
+        if "--since" in flags and not raw:
+            raise Problem("--since needs a revision number")
         try:
             since = int(raw.lstrip("rR")) if raw else latest["id"] - 1
         except ValueError:
@@ -481,7 +554,12 @@ def main(argv: list[str]) -> int:
     if command == "propose":
         if not rest:
             raise Problem("name at least one plan file, for example: obc req propose plan.json")
-        return propose(console, rest, flag_value(argv, "sha") or head_sha(), "--check" in flags)
+        sha = flag_value(argv, "sha")
+        if "--sha" in flags and not sha:
+            raise Problem("--sha needs a 40-character commit")
+        if sha and (len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha.lower())):
+            raise Problem(f"--sha takes the exact 40-character commit, not {sha!r}")
+        return propose(console, rest, sha or head_sha(), "--check" in flags)
 
     raise Problem(f"unknown command {command!r}. Run `obc req` with no arguments for the list.")
 
