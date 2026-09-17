@@ -24,7 +24,9 @@ impl VisitHarness {
         Self::with_access(route, true)
     }
     fn with_access(route: &[u8], mapped: bool) -> Self {
-        let mut h = Harness::with_route(route);
+        Self::with_harness(Harness::with_route(route), mapped)
+    }
+    fn with_harness(mut h: Harness, mapped: bool) -> Self {
         h.app.activate_route(0);
         h.app.set_nav_profiles(obc_reader::Reader::new(h.map.as_ref().unwrap(), &h.tables, &h.cache).nav_profiles());
         h.app.set_map_nav_graph(true);
@@ -602,4 +604,67 @@ fn easier_terminal_anchor_at_the_last_required_coordinate_finishes_without_anoth
     h.h.app.cancel_assistant();
     h.settle(ReviewStatus::Idle);
     h.h.assert_clean();
+}
+
+#[test]
+fn closed_place_can_be_previewed_and_accepted_even_if_it_closes_during_review() {
+    struct Position;
+    impl obc_ports::LocationSource for Position {
+        fn poll(&mut self) -> Option<obc_ports::Fix> {
+            Some(obc_ports::Fix::at(500_000, 500_000))
+        }
+    }
+    let mut schedule = obc_pack::hours::Schedule::default();
+    for day in &mut schedule.days {
+        day[0].close_q = 48;
+    }
+    let bytes = map_with_hours(Some(schedule));
+    for closed_at_search in [false, true] {
+        let mut h = VisitHarness::with_harness(Harness::with_map(&route(), &bytes), true);
+        h.h.app.cancel_assistant();
+        h.settle(ReviewStatus::Idle);
+        h.h.app.set_settings(obc_app::Settings { find_hide_closed: !closed_at_search, ..*h.h.app.settings() });
+        let clock = obc_ports::DateTime {
+            year: 2026,
+            month: 9,
+            day: 16,
+            hour: if closed_at_search { 13 } else { 11 },
+            minute: 0,
+        };
+        h.h.app.stamp_clock_ble(clock.to_unix(), 0);
+        h.h.app.bind_place_map(Some(flat_store::planner_map_key(h.h.store)));
+        h.h.app.open_find_place();
+        h.h.app.apply_gesture(obc_app::Gesture::Press);
+        let prepare = |h: &mut VisitHarness| {
+            if h.h.guard.is_none() {
+                let reader = obc_reader::Reader::new(h.h.map.as_ref().unwrap(), &h.h.tables, &h.h.cache);
+                let source = h.h.original.as_ref().unwrap();
+                let index = obc_route::RouteIndex::read(source).unwrap();
+                let route = obc_route::RouteReader::new(&index, source);
+                h.h.app.prepare_find(Some(&reader), Some(&route));
+            }
+        };
+        for _ in 0..2000 {
+            if h.h.writer.pending().is_some() {
+                h.h.writer.complete();
+            }
+            h.pass_with(&mut Position, true);
+            prepare(&mut h);
+            if h.h.app.find_place_state() == obc_app::find_place::State::Ready {
+                break;
+            }
+        }
+        assert_eq!(h.h.app.find_place_state(), obc_app::find_place::State::Ready);
+        assert_eq!(h.h.app.find_place_result_count(), 1);
+        h.h.app.apply_gesture(obc_app::Gesture::Press);
+        prepare(&mut h);
+        assert!(matches!(h.h.app.top_screen(), obc_app::screen::Screen::VisitReview(_)));
+        h.settle(ReviewStatus::Preview);
+        h.h.app.stamp_clock_ble(obc_ports::DateTime { hour: 13, ..clock }.to_unix(), 0);
+        prepare(&mut h);
+        assert_eq!(h.h.app.assistant_review_status(), ReviewStatus::Preview);
+        h.h.app.apply_gesture(obc_app::Gesture::Press);
+        h.settle(ReviewStatus::Accepted);
+        assert!(h.h.app.assistant_checkpoint().is_some());
+    }
 }

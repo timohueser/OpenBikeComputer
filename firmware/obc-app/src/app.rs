@@ -2243,7 +2243,11 @@ impl App {
     /// while a new consumer (U5's "Next: \<category\>" stat fields) adds its own `corridor_request`
     /// arm rather than calling this.
     pub fn arm_corridor(&mut self, filter: obc_reader::PoiCategorySet, anchor_m: u32) {
-        self.ui.corridor_scratch.arm(crate::corridor::CorridorKey { filter, anchor_m });
+        self.ui.corridor_scratch.arm(crate::corridor::CorridorKey {
+            hours_filter: obc_reader::reader::places::HoursFilter::HideClosed,
+            filter,
+            anchor_m,
+        });
     }
 
     /// Drop the held corridor snapshot **and** the request — the Up-ahead screen closing. The
@@ -2740,6 +2744,7 @@ impl App {
         // Admit Start before the next gesture, after its requested screen transition, so a
         // recovery decision takes precedence over the requested riding view.
         self.advance_recorder_session();
+        self.sync_find_preferences();
         self.handle_find_action();
         self.sync_detour_preview(detour_planned_before);
         // Opening a POI list drops any previous snapshot so its first draw re-queries at the current
@@ -4847,7 +4852,11 @@ mod tests {
         app.advance_animations(InputClock(3_000));
         assert_eq!(
             app.ui.corridor_scratch.armed(),
-            Some(crate::corridor::CorridorKey { filter: PoiCategorySet::only(PoiCategory::Water), anchor_m: 1_500 }),
+            Some(crate::corridor::CorridorKey {
+                hours_filter: obc_reader::reader::places::HoursFilter::HideClosed,
+                filter: PoiCategorySet::only(PoiCategory::Water),
+                anchor_m: 1_500
+            }),
             "one category per query (the 16-result cap makes a union query unable to answer)"
         );
         assert!(app.corridor_snapshot_pending(), "…and the host is asked for the Reader until it lands");
@@ -5096,7 +5105,11 @@ mod tests {
         app.advance_animations(InputClock(3_000));
         assert_eq!(
             app.ui.next_ahead.request(),
-            Some(crate::corridor::CorridorKey { filter: PoiCategorySet::only(PoiCategory::Water), anchor_m: 0 }),
+            Some(crate::corridor::CorridorKey {
+                hours_filter: obc_reader::reader::places::HoursFilter::HideClosed,
+                filter: PoiCategorySet::only(PoiCategory::Water),
+                anchor_m: 0
+            }),
             "…and the identical route index re-queries against the new bytes"
         );
     }

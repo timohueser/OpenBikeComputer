@@ -13,9 +13,9 @@ use obc_route::{visit::VisitTarget, RouteReader};
 
 pub const NEARBY_M: u32 = 10_000;
 pub const FORWARD_M: u32 = 20_000;
-pub const SOURCE_LIMIT: usize = 4;
+pub const SOURCE_LIMIT: usize = 6;
 pub const PLAN_LIMIT: usize = SOURCE_LIMIT * 2;
-pub const RESULT_LIMIT: usize = 4;
+pub const RESULT_LIMIT: usize = SOURCE_LIMIT;
 pub const ON_WAY_M: u32 = 400;
 const QUERY_STEPS: usize = 64;
 
@@ -85,6 +85,8 @@ pub struct FindState {
     pub state: State,
     pub(crate) action: Action,
     pub category: PoiCategory,
+    limit: usize,
+    hours_filter: obc_reader::reader::places::HoursFilter,
     pub map: Option<RouteSourceKey>,
     bound_map: Option<RouteSourceKey>,
     pub origin: (i32, i32),
@@ -114,13 +116,15 @@ impl FindState {
             state: State::Idle,
             action: Action::None,
             category: PoiCategory::Water,
+            limit: 4,
+            hours_filter: obc_reader::reader::places::HoursFilter::HideClosed,
             map: None,
             bound_map: None,
             origin: (0, 0),
             results: heapless::Vec::new(),
             places: heapless::Vec::new(),
             costs: [None; PLAN_LIMIT],
-            corridor_candidates: [0, 1, 2, 3],
+            corridor_candidates: [0, 1, 2, 3, 4, 5],
             retained: [RetainedReview::NONE; PLAN_LIMIT],
             retained_store: None,
             next: 0,
@@ -151,6 +155,9 @@ impl FindState {
         corridor: &'a [obc_reader::CorridorPoi],
     ) -> Option<&'a Poi> {
         let i = id as usize / 2;
+        if i >= self.limit {
+            return None;
+        }
         if id.is_multiple_of(2) { nearby.pois.get(i) } else { corridor.get(*self.corridor_candidates.get(i)? as usize) }
             .map(|hit| &hit.poi)
     }
@@ -181,15 +188,15 @@ impl FindState {
                 (c.arrival_m, c.arrival_ascent_m.unwrap_or(u32::MAX), id)
             };
             let at = list.iter().position(|id| key(i as u8) < key(*id)).unwrap_or(list.len());
-            if at < RESULT_LIMIT {
+            if at < self.limit {
                 if list.is_full() {
                     list.pop();
                 }
                 let _ = list.insert(at, i as u8);
             }
         }
-        let slots = RESULT_LIMIT - usize::from(!alternatives.is_empty());
-        for id in on_way.iter().take(slots).chain(alternatives.iter()).take(RESULT_LIMIT) {
+        let slots = self.limit - usize::from(!alternatives.is_empty());
+        for id in on_way.iter().take(slots).chain(alternatives.iter()).take(self.limit) {
             let _ = self.results.push(*id);
         }
     }
@@ -354,6 +361,33 @@ impl crate::App {
             self.ui.next_wake_ms = Some(1);
         }
     }
+    pub(crate) fn sync_find_preferences(&mut self) {
+        let limit = self.settings().find_results.limit();
+        let hours_filter = self.settings().find_hours_filter();
+        if (self.ui.find.limit, self.ui.find.hours_filter) == (limit, hours_filter) {
+            return;
+        }
+        if self.ui.find.owns_pages() {
+            self.cancel_assistant();
+            self.ui.corridor_scratch.disarm();
+        }
+        self.ui.find.limit = limit;
+        self.ui.find.hours_filter = hours_filter;
+        self.ui.find.state = State::Idle;
+        self.ui.find.action = Action::None;
+        self.ui.find.results.clear();
+        self.ui.find.places.clear();
+        self.ui.poi_scratch.invalidate();
+        self.ui.poi_scratch.hours_filter = hours_filter;
+        for screen in &mut self.ui.stack {
+            match screen {
+                Screen::FindPlace(s) => s.refresh_selection(),
+                Screen::PoiList(s) => s.refresh(),
+                _ => {}
+            }
+        }
+    }
+
     pub(crate) fn handle_find_action(&mut self) {
         if matches!(self.ui.find.action, Action::CancelVisit | Action::Resume | Action::Preview(_)) {
             return;
@@ -389,11 +423,6 @@ impl crate::App {
                     .assistant_review_context()
                     .is_some_and(|c| c.purpose == crate::navigator::ReviewPurpose::ReturnToRoute)
                     || self.ui.poi_scratch.detail_valid
-                        && !self
-                            .ui
-                            .poi_scratch
-                            .detail_schedule
-                            .is_some_and(|s| s.status(self.place_local_time()) == OpeningStatus::Closed)
                 {
                     if let Some(origin) = self.current_review_origin() {
                         self.accept_assistant(origin);
@@ -466,11 +495,6 @@ impl crate::App {
             || (detail.is_landmark() && poi.metadata.approach.is_none())
             || detail.hours_pending(&self.ui.poi_scratch)
             || !self.ui.poi_scratch.detail_valid
-            || self
-                .ui
-                .poi_scratch
-                .detail_schedule
-                .is_some_and(|s| s.status(self.place_local_time()) == OpeningStatus::Closed)
         {
             return true;
         }
@@ -529,9 +553,7 @@ impl crate::App {
         self.ui.poi_scratch.detail_source = poi.metadata.source.0;
         self.ui.poi_scratch.detail_valid = schedule.is_ok();
         self.ui.poi_scratch.detail_schedule = schedule.ok().flatten();
-        if !self.ui.poi_scratch.detail_valid
-            || self.ui.poi_scratch.detail_schedule.is_some_and(|s| s.status(local) == OpeningStatus::Closed)
-        {
+        if !self.ui.poi_scratch.detail_valid {
             return;
         }
         let Some(map) = self.ui.find.map else { return };
@@ -572,6 +594,13 @@ impl crate::App {
     }
     /// Advance place queries and candidate ownership while streamed readers are available.
     pub fn prepare_find(&mut self, reader: Option<&Reader>, route: Option<&RouteReader>) {
+        self.sync_find_preferences();
+        if self.ui.find.state == State::Idle
+            && matches!(self.ui.stack.iter().rev().find(|s| !s.is_overlay()), Some(Screen::FindPlace(s)) if s.choices())
+        {
+            self.ui.find.action = Action::Refresh;
+            self.handle_find_action();
+        }
         let local = self.place_local_time();
         if let Some(Screen::VisitReview(screen)) = self.ui.stack.last() {
             if let Some(target) = screen.pending_target {
@@ -664,11 +693,6 @@ impl crate::App {
                 self.ui.map_dirty = true;
                 return;
             }
-            if !screen.returning
-                && self.ui.poi_scratch.detail_schedule.is_some_and(|s| s.status(local) == OpeningStatus::Closed)
-            {
-                self.invalidate_assistant_preview();
-            }
             self.ui.find.review = self.assistant_review_status();
             // Exact candidate metrics are copied before cancellation retracts its publication.
             if self.ui.find.review_costs.is_none() && self.assistant_preview().is_some() {
@@ -717,16 +741,22 @@ impl crate::App {
             self.ui.find.clock = (local.is_some(), self.settings().utc_offset_min);
             self.ui.find.profile = self.settings().bike_profile_idx;
             self.ui.find.local = local;
+            self.ui.find.limit = self.settings().find_results.limit();
+            self.ui.find.hours_filter = self.settings().find_hours_filter();
             let scratch = &mut self.ui.poi_scratch;
-            scratch.query = Some(PlaceQuery::new(
-                scratch.generation,
-                PoiCategorySet::only(self.ui.find.category),
-                PlaceWindow::Nearby { position: self.ui.find.origin, radius_m: NEARBY_M },
-                local,
-            ));
+            scratch.query = Some(
+                PlaceQuery::new(
+                    scratch.generation,
+                    PoiCategorySet::only(self.ui.find.category),
+                    PlaceWindow::Nearby { position: self.ui.find.origin, radius_m: NEARBY_M },
+                    local,
+                )
+                .with_hours_filter(self.ui.find.hours_filter),
+            );
             scratch.status = QueryProgress::Pending;
             if route.is_some() {
                 self.ui.corridor_scratch.arm(crate::corridor::CorridorKey {
+                    hours_filter: self.ui.find.hours_filter,
                     filter: PoiCategorySet::only(self.ui.find.category),
                     anchor_m: progress,
                 });
@@ -888,7 +918,7 @@ impl crate::App {
         while (self.ui.find.next as usize) < PLAN_LIMIT {
             let i = self.ui.find.next;
             let poi = self.ui.find.candidate(i, &self.ui.poi_scratch, self.ui.corridor_scratch.entries()).cloned();
-            let Some(poi) = poi.filter(|p| p.opening != OpeningStatus::Closed) else {
+            let Some(poi) = poi.filter(|p| self.ui.find.hours_filter.includes(p.opening)) else {
                 self.ui.find.next += 1;
                 continue;
             };
@@ -924,7 +954,7 @@ impl crate::App {
                 .ui
                 .find
                 .candidate(i as u8, &self.ui.poi_scratch, self.ui.corridor_scratch.entries())
-                .is_none_or(|p| p.opening == OpeningStatus::Closed)
+                .is_none_or(|p| !self.ui.find.hours_filter.includes(p.opening))
             {
                 self.ui.find.costs[i] = None;
             }
@@ -1086,12 +1116,98 @@ mod tests {
             .collect();
         // The first corridor hit is near the outbound pass, but the planner visits it on the return.
         assert!(obc_route::visit::visit_anchor(&route, 0, points[0]).unwrap() > 4000);
-        assert_eq!(corridor_candidates(&route, &places, 0, map, 0), [1, 2, 3, 4]);
+        assert_eq!(corridor_candidates(&route, &places, 0, map, 0), [1, 2, 3, 4, 0, u8::MAX]);
         assert_eq!(places.iter().map(|p| p.dist_along_m).collect::<std::vec::Vec<_>>(), [0, 1, 2, 3, 4]);
         places[1].poi.metadata.approach =
             Some(PoiApproach { source: SourceId::osm(1, 10), lon: 6000, lat: 0, profile_mask: 2 });
-        assert_eq!(corridor_candidates(&route, &places, 0, map, 0), [2, 3, 4, 0]);
-        assert_eq!(corridor_candidates(&route, &places, route.total_distance_m + 1, map, 0), [u8::MAX; 4]);
+        assert_eq!(corridor_candidates(&route, &places, 0, map, 0), [2, 3, 4, 0, u8::MAX, u8::MAX]);
+        assert_eq!(corridor_candidates(&route, &places, route.total_distance_m + 1, map, 0), [u8::MAX; SOURCE_LIMIT]);
+    }
+
+    #[test]
+    fn find_drawer_preferences_are_global_and_refresh_both_browsers() {
+        use crate::{input::Chord, settings::FindResults, Gesture};
+        use obc_ports::InputClock;
+        let mut app = crate::App::new_idle(crate::AppState::new(50_000, 50_000, 1.0));
+        app.open_find_place();
+        assert!(app.apply_chord(Chord::Context));
+        app.apply_gesture(Gesture::Press);
+        assert!(!app.settings().find_hide_closed);
+        app.apply_gesture(Gesture::Step(1));
+        app.apply_gesture(Gesture::Press);
+        app.advance_animations(InputClock(1000));
+        app.apply_gesture(Gesture::Step(1));
+        app.apply_gesture(Gesture::Press);
+        assert_eq!(app.settings().find_results, FindResults::Six);
+        app.advance_animations(InputClock(2000));
+        app.apply_gesture(Gesture::Back);
+        app.apply_gesture(Gesture::Press);
+        assert_eq!(app.ui.find.limit, 6);
+        assert_eq!(app.ui.find.hours_filter, obc_reader::reader::places::HoursFilter::All);
+        app.ui.find.state = State::Ready;
+        app.ui.find.results.push(0).unwrap();
+        assert!(app.apply_chord(Chord::Context));
+        app.apply_gesture(Gesture::Press);
+        assert!(app.settings().find_hide_closed);
+        assert!(app.ui.find.results.is_empty());
+        app.apply_gesture(Gesture::Back);
+        app.prepare_find(None, None);
+        assert_ne!(app.ui.find.state, State::Ready);
+        app.ui.find.action = Action::More;
+        app.handle_find_action();
+        assert!(matches!(app.top_screen(), Screen::PoiList(_)));
+        assert!(app.apply_chord(Chord::Context));
+        app.apply_gesture(Gesture::Press);
+        assert!(!app.settings().find_hide_closed);
+        assert!(app.ui.poi_scratch.query.is_none());
+        app.apply_gesture(Gesture::Back);
+        app.apply_gesture(Gesture::Back);
+        app.apply_gesture(Gesture::Back);
+        app.apply_gesture(Gesture::Step(1));
+        app.apply_gesture(Gesture::Press);
+        assert_eq!(app.ui.find.category, PoiCategory::Campsite);
+        let saved = crate::settings::decode(&crate::settings::encode(app.settings())).unwrap();
+        let mut rebooted = crate::App::new_idle(crate::AppState::new(0, 0, 1.0));
+        rebooted.set_settings(saved);
+        rebooted.open_find_place();
+        rebooted.apply_gesture(Gesture::Press);
+        assert_eq!(rebooted.ui.find.limit, 6);
+        assert_eq!(rebooted.ui.find.hours_filter, obc_reader::reader::places::HoursFilter::All);
+    }
+
+    #[test]
+    fn result_setting_bounds_both_candidate_sources_and_ranked_choices() {
+        let mut nearby = crate::screen::PoiScratch::new();
+        let poi = Poi {
+            opening: OpeningStatus::Unknown,
+            metadata: Default::default(),
+            lat: 0,
+            lon: 0,
+            subtype: 1,
+            name: Default::default(),
+            hours_ref: 0xffff,
+            distance_m: 0,
+        };
+        for _ in 0..8 {
+            nearby.pois.push(obc_reader::CorridorPoi { poi: poi.clone(), dist_along_m: 0, offset_m: 0 }).unwrap();
+        }
+        for limit in [2, 4, 6] {
+            let mut find = FindState::new();
+            find.limit = limit;
+            assert_eq!(
+                (0..PLAN_LIMIT as u8).filter(|&id| find.candidate(id, &nearby, &nearby.pois).is_some()).count(),
+                limit * 2
+            );
+            assert_eq!((0..PLAN_LIMIT as u8).filter(|&id| find.candidate(id, &nearby, &[]).is_some()).count(), limit);
+            for i in 0..limit * 2 {
+                find.costs[i] = cost(10_000 - i as u32 * 100, Some(100), 100);
+            }
+            find.rank();
+            assert_eq!(
+                find.results.as_slice(),
+                (limit..limit * 2).rev().map(|i| i as u8).collect::<std::vec::Vec<_>>()
+            );
+        }
     }
 
     fn hours_map() -> std::vec::Vec<u8> {
@@ -1099,6 +1215,10 @@ mod tests {
         for day in 0..7 {
             open[2 + day * 4] = 96;
         }
+        map_with_hours(open)
+    }
+
+    fn map_with_hours(schedule: [u8; 29]) -> std::vec::Vec<u8> {
         obcm_testkit::build_poi_map_with_hours(
             (0, 0, 100_000, 100_000),
             512,
@@ -1112,7 +1232,7 @@ mod tests {
                     hours_ref: 0,
                 }],
             )],
-            &[open],
+            &[schedule],
         )
     }
 
@@ -1171,47 +1291,58 @@ mod tests {
 
     #[test]
     fn direct_find_preview_resolves_hours_and_rejects_stale_or_abandoned_selection() {
-        let bytes = hours_map();
-        let source = SliceSource(&bytes);
-        let tables = MapTables::parse(&source).unwrap();
-        let cache = MapCache::new();
-        let reader = Reader::new(&source, &tables, &cache);
-        for invalid in 0..4 {
-            let mut app = crate::App::new_idle(crate::AppState::new(50_000, 50_000, 1.0));
-            let map = RouteSourceKey { store: [1; 16], object: 1, revision: 1 };
-            app.bind_place_map(Some(map));
-            app.open_find_place();
-            app.apply_gesture(crate::Gesture::Press);
-            let mut query = PlaceQuery::new(
-                0,
-                PoiCategorySet::ALL,
-                PlaceWindow::Nearby { position: (50_000, 50_000), radius_m: 1000 },
-                None,
-            );
-            while query.step(&reader, None, 0, &mut app.ui.poi_scratch.pois) == QueryProgress::Pending {}
-            app.ui.find.results.push(0).unwrap();
-            app.ui.find.state = State::Ready;
-            app.ui.find.map = Some(map);
-            app.ui.find.profile = app.settings().bike_profile_idx;
-            app.ui.find.clock = (false, app.settings().utc_offset_min);
-            match invalid {
-                1 => app.ui.find.map = Some(RouteSourceKey { revision: 2, ..map }),
-                2 => app.ui.find.profile = app.settings().bike_profile_idx.wrapping_add(1),
-                3 => app.apply_gesture(crate::Gesture::Back),
-                _ => {}
-            }
-            app.ui.find.action = Action::Preview(0);
-            app.prepare_find(Some(&reader), None);
-            assert_eq!(app.ui.find.action, Action::None);
-            if invalid == 0 {
-                assert!(matches!(app.top_screen(), Screen::VisitReview(_)));
-                assert!(app.ui.poi_scratch.detail_valid);
-                assert_eq!(app.ui.poi_scratch.detail_source, app.ui.poi_scratch.pois[0].poi.metadata.source.0);
-                assert!(!app.ui.stack.iter().any(|screen| matches!(screen, Screen::PoiDetail(_))));
-            } else {
-                assert!(matches!(app.top_screen(), Screen::FindPlace(_)));
-                assert!(!app.ui.poi_scratch.detail_valid);
-                assert!(matches!(app.ui.find.state, State::Stale | State::Ready));
+        for closed in [false, true] {
+            let bytes = if closed { map_with_hours([0; 29]) } else { hours_map() };
+            let source = SliceSource(&bytes);
+            let tables = MapTables::parse(&source).unwrap();
+            let cache = MapCache::new();
+            let reader = Reader::new(&source, &tables, &cache);
+            for invalid in 0..4 {
+                let mut app = crate::App::new_idle(crate::AppState::new(50_000, 50_000, 1.0));
+                let map = RouteSourceKey { store: [1; 16], object: 1, revision: 1 };
+                app.bind_place_map(Some(map));
+                app.stamp_clock_ble(1_727_000_000, 0);
+                app.open_find_place();
+                app.apply_gesture(crate::Gesture::Press);
+                let mut query = PlaceQuery::new(
+                    0,
+                    PoiCategorySet::ALL,
+                    PlaceWindow::Nearby { position: (50_000, 50_000), radius_m: 1000 },
+                    None,
+                );
+                while query.step(&reader, None, 0, &mut app.ui.poi_scratch.pois) == QueryProgress::Pending {}
+                app.ui.find.results.push(0).unwrap();
+                app.ui.find.state = State::Ready;
+                app.ui.find.map = Some(map);
+                app.ui.find.profile = app.settings().bike_profile_idx;
+                app.ui.find.clock = (true, app.settings().utc_offset_min);
+                match invalid {
+                    1 => app.ui.find.map = Some(RouteSourceKey { revision: 2, ..map }),
+                    2 => app.ui.find.profile = app.settings().bike_profile_idx.wrapping_add(1),
+                    3 => app.apply_gesture(crate::Gesture::Back),
+                    _ => {}
+                }
+                if invalid == 0 {
+                    if closed {
+                        app.ui.poi_scratch.pois[0].poi.opening = OpeningStatus::Closed;
+                    }
+                    app.apply_gesture(crate::Gesture::Press);
+                    assert_eq!(app.ui.find.action, Action::Preview(0));
+                } else {
+                    app.ui.find.action = Action::Preview(0);
+                }
+                app.prepare_find(Some(&reader), None);
+                assert_eq!(app.ui.find.action, Action::None);
+                if invalid == 0 {
+                    assert!(matches!(app.top_screen(), Screen::VisitReview(_)));
+                    assert!(app.ui.poi_scratch.detail_valid);
+                    assert_eq!(app.ui.poi_scratch.detail_source, app.ui.poi_scratch.pois[0].poi.metadata.source.0);
+                    assert!(!app.ui.stack.iter().any(|screen| matches!(screen, Screen::PoiDetail(_))));
+                } else {
+                    assert!(matches!(app.top_screen(), Screen::FindPlace(_)));
+                    assert!(!app.ui.poi_scratch.detail_valid);
+                    assert!(matches!(app.ui.find.state, State::Stale | State::Ready));
+                }
             }
         }
     }
@@ -1361,7 +1492,11 @@ mod tests {
             app.open_find_place();
             app.apply_gesture(crate::Gesture::Press);
             let local = app.place_local_time();
-            app.ui.corridor_scratch.arm(crate::corridor::CorridorKey { filter: PoiCategorySet::ALL, anchor_m: 0 });
+            app.ui.corridor_scratch.arm(crate::corridor::CorridorKey {
+                hours_filter: obc_reader::reader::places::HoursFilter::HideClosed,
+                filter: PoiCategorySet::ALL,
+                anchor_m: 0,
+            });
             app.ui.corridor_scratch.clock_changed(local, 0);
             while app.ui.corridor_scratch.pending() {
                 app.ui.corridor_scratch.prepare_to(Some(&reader), Some(&route), local, FORWARD_M);

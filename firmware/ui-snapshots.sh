@@ -217,6 +217,18 @@ LANDMARKS="A d d d d d p f"
 "$SIM" "$CORK" --boot --heading 0 --center -9829419,51482665 --script "A p p f" \
     --expect-screen FindPlace --png "$OUT/find-place.png"
 
+# Find preferences share the existing drawer from overview, recommendations, and the browser.
+FIND_READY="f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f"
+"$SIM" "$CORK" --boot --script "A p C w" \
+    --expect-screen ContextDrawer --png "$OUT/find-context.png"
+"$SIM" "$CORK" --boot --script "A p C w p" \
+    --expect-screen ContextDrawer --png "$OUT/find-context-all.png"
+"$SIM" "$CORK" --boot --script "A p C w d p w d" \
+    --expect-screen ContextDrawer --png "$OUT/find-results-six.png"
+"$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T23:00" \
+    --script "A p C w p d p w d p w b d d d p $FIND_READY" \
+    --expect-screen FindPlace --png "$OUT/find-six-closed.png"
+
 # The existing Detour planner uses the real imported Monaco loop and an actual replay fix.
 "$SIM" --import "$MONACO_FIXTURES/tracks/monaco-upahead.gpx" --routes-dir "$NAVDIR" >/dev/null
 DETOUR_PRE="p p p p T"
