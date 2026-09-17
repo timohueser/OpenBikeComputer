@@ -234,7 +234,7 @@ where
     let label = if sources || state.peak.is_some() {
         rx.t(Msg::AssistantBack)
     } else {
-        rx.t(visit_action(state, rx.poi_scratch, rx.place_local, rx.settings.bike_profile_idx))
+        rx.t(visit_action(state, rx.poi_scratch, rx.settings.bike_profile_idx))
     };
     cv.round(rect(4, 282, 232, 34), 6, AMBER);
     cv.text(label, Point::new(120, 286), Font::Label, TextAlign::Center, INK);
@@ -242,7 +242,6 @@ where
 pub(super) fn visit_action(
     state: &crate::landmarks::Landmarks,
     scratch: &super::poi_list::PoiScratch,
-    local: Option<(u8, u16)>,
     profile: u8,
 ) -> Msg {
     if !state.ready()
@@ -251,12 +250,6 @@ pub(super) fn visit_action(
         || scratch.detail_source != state.record.and_then(|r| r.osm).map_or(0, |m| m.source.0)
     {
         Msg::AssistantAccessUnavailable
-    } else if scratch
-        .detail_schedule
-        .as_ref()
-        .is_some_and(|s| s.status(local) == obc_reader::hours::OpeningStatus::Closed)
-    {
-        Msg::AssistantClosed
     } else if state
         .record
         .and_then(|r| r.osm)
@@ -341,19 +334,19 @@ mod tests {
         });
         let mut scratch = super::super::PoiScratch::new();
         scratch.detail_valid = true;
-        assert!(matches!(visit_action(&state, &scratch, None, 0), Msg::AssistantNoAccess));
+        assert!(matches!(visit_action(&state, &scratch, 0), Msg::AssistantNoAccess));
         state.record.as_mut().unwrap().osm = Some(PoiMetadata {
             source: SourceId(42),
             approach: Some(PoiApproach { source: SourceId(43), lat: 0, lon: 0, profile_mask: 1 }),
         });
-        assert!(matches!(visit_action(&state, &scratch, None, 0), Msg::AssistantAccessUnavailable));
+        assert!(matches!(visit_action(&state, &scratch, 0), Msg::AssistantAccessUnavailable));
         scratch.detail_source = 42;
-        assert!(matches!(visit_action(&state, &scratch, None, 0), Msg::AssistantVisit));
-        assert!(matches!(visit_action(&state, &scratch, None, 1), Msg::AssistantNoAccess));
+        assert!(matches!(visit_action(&state, &scratch, 0), Msg::AssistantVisit));
+        assert!(matches!(visit_action(&state, &scratch, 1), Msg::AssistantNoAccess));
         scratch.detail_schedule = obc_reader::WeeklySchedule::decode(&[0; 29]);
-        assert!(matches!(visit_action(&state, &scratch, Some((0, 30)), 0), Msg::AssistantClosed));
-        assert!(matches!(visit_action(&state, &scratch, None, 0), Msg::AssistantVisit));
+        assert!(matches!(visit_action(&state, &scratch, 0), Msg::AssistantVisit));
+        assert!(matches!(visit_action(&state, &scratch, 0), Msg::AssistantVisit));
         state.invalidate();
-        assert!(matches!(visit_action(&state, &scratch, None, 0), Msg::AssistantAccessUnavailable));
+        assert!(matches!(visit_action(&state, &scratch, 0), Msg::AssistantAccessUnavailable));
     }
 }

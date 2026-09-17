@@ -456,9 +456,6 @@ fn run_find(scenario: Scenario) {
                     continue;
                 }
                 app.stamp_clock_ble(1_727_007_200, 0);
-                app.apply_gesture(Gesture::Press);
-                assert!(routes.read_checkpoint().unwrap().is_none(), "a place that closed cannot be accepted");
-                assert_ne!(app.assistant_review_status(), obc_app::navigator::ReviewStatus::Saving);
                 phase = 7;
             }
             12 if app.assistant_review_status() == obc_app::navigator::ReviewStatus::Accepted
@@ -502,7 +499,10 @@ fn run_find(scenario: Scenario) {
                 break;
             }
             7 => {
-                assert_ne!(app.assistant_review_status(), obc_app::navigator::ReviewStatus::Preview);
+                assert_eq!(app.assistant_review_status(), obc_app::navigator::ReviewStatus::Preview);
+                assert_eq!(app.assistant_preview(), selected_preview, "closing hours preserve the reviewed route");
+                assert_eq!(app.assistant_preview_shape(), selected_shape);
+                assert!(routes.read_checkpoint().unwrap().is_none());
                 app.apply_gesture(Gesture::Back);
                 phase = 3;
             }

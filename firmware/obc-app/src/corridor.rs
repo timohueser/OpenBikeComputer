@@ -13,6 +13,7 @@ use obc_route::RouteReader;
 pub struct CorridorKey {
     /// The categories the list shows ("Everything" is [`PoiCategorySet::ALL`]).
     pub filter: PoiCategorySet,
+    pub hours_filter: obc_reader::reader::places::HoursFilter,
     /// Live route progress (m) at the moment the screen armed the request. Distances in the
     /// snapshot are relative to this, not to progress as it advances.
     pub anchor_m: u32,
@@ -222,6 +223,7 @@ impl CorridorScratch {
                 PlaceWindow::Corridor { from_m: key.anchor_m, to_m, half_width_m: 300 },
                 local,
             )
+            .with_hours_filter(key.hours_filter)
         });
         for _ in 0..64 {
             self.status = query.step(reader, Some(path), self.generation, &mut self.pois);
@@ -249,7 +251,7 @@ mod tests {
     use obc_reader::PoiCategory;
 
     fn key(filter: PoiCategorySet, anchor_m: u32) -> CorridorKey {
-        CorridorKey { filter, anchor_m }
+        CorridorKey { hours_filter: obc_reader::reader::places::HoursFilter::HideClosed, filter, anchor_m }
     }
 
     /// A fresh scratch wants nothing, so the reader seam stays quiet — the normal case, where no

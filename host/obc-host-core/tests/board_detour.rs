@@ -83,6 +83,9 @@ fn route() -> Vec<u8> {
     sink.into_bytes()
 }
 fn map_bytes() -> Vec<u8> {
+    map_with_hours(None)
+}
+fn map_with_hours(hours: Option<obc_pack::hours::Schedule>) -> Vec<u8> {
     use obc_pack::nav::{Edge, NavGraph, Node};
     let coords = [
         (500_000, 500_000),
@@ -118,7 +121,7 @@ fn map_bytes() -> Vec<u8> {
             lat_udeg: 510_000,
             name: Some("Water".into()),
             from_node: true,
-            hours: None,
+            hours,
             elevation_m: None,
         }],
         &NavGraph { nodes, edges },
@@ -132,11 +135,14 @@ impl Harness {
         Self::with_route(&route())
     }
     fn with_route(route: &[u8]) -> Self {
+        Self::with_map(route, &map_bytes())
+    }
+    fn with_map(route: &[u8], map_bytes: &[u8]) -> Self {
         let media = Box::leak(Box::new(obc_storage::flat::sim::SparseDisk::blank(2_000_000, 7)));
         let disk = Box::leak(Box::new(obc_storage::flat::sim::FaultOnce::new(&*media)));
         let store = Box::leak(Box::new(FlatStore::initialize(&*disk, StoreId([0x54; 16])).unwrap()));
         let id = put(store, ObjectKind::Route, route, None);
-        let map_id = put(store, ObjectKind::MapShard, &map_bytes(), None);
+        let map_id = put(store, ObjectKind::MapShard, map_bytes, None);
         let original = store.source(id, None).unwrap();
         let map = store.source(map_id, None).unwrap();
         flat_store::mount_sources(store, &original, &map);
