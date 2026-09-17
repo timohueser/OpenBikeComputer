@@ -31,8 +31,8 @@
 <div class="tiles">
   <section class="tile" aria-label="Requirements">
     <div class="eyebrow">Requirements</div><div class="n">{now.states.covered} <small>of {now.active} covered</small></div>
-    <div class="bar"><span class="covered" style:width={pct(now.states.covered, now.active)}></span><span class="partial" style:width={pct(now.states.partial, now.active)}></span></div>
-    <div class="legend"><span><i class="covered"></i>{now.states.covered} covered</span><span><i class="partial"></i>{now.states.partial} partial</span><span><i class="none"></i>{now.states.unassessed} not assessed</span></div>
+    <div class="bar"><span class="covered" style:width={pct(now.states.covered, now.active)}></span><span class="partial" style:width={pct(now.states.partial, now.active)}></span><span class="review" style:width={pct(now.states['needs-review'], now.active)}></span></div>
+    <div class="legend"><span><i class="covered"></i>{now.states.covered} covered</span><span><i class="partial"></i>{now.states.partial} partial</span>{#if now.states['needs-review']}<span><i class="review"></i>{now.states['needs-review']} needs review</span>{/if}<span><i class="none"></i>{now.states.unassessed} not assessed</span></div>
   </section>
   <section class="tile" aria-label="Acceptance criteria">
     <div class="eyebrow">Acceptance criteria</div><div class="n">{now.criteria.covered} <small>of {now.criteria.total} covered</small></div>
@@ -65,7 +65,7 @@
   .bar span { display: block; }
   .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
   .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
-  .covered { background: var(--forest); } .partial { background: var(--amber); } .none { background: #c9ccbd; } .manual { background: #7c8db5; }
+  .covered { background: var(--forest); } .partial { background: var(--amber); } .review { background: #a1452f; } .none { background: #c9ccbd; } .manual { background: #7c8db5; }
   .chart h3 { margin-bottom: 4px; }
   svg { display: block; width: 100%; height: auto; margin-top: 6px; }
   .grid { stroke: var(--line); }

@@ -279,6 +279,14 @@ test('startup lifts the assessed commit out of plans stored before the format ch
   assert.equal((await decide(proposal.id)).status, 200);
 });
 
+test('a snapshot with an unapproved plan from the earlier workflow does not pass the gate', async () => {
+  setup(); const proposal = await propose(); await decide(proposal.id);
+  const c = candidate(); delete c.revision.requirements[0].coverage!.review;
+  assert.equal(coverageSummary(c.revision.requirements[0]).state, 'needs-review');
+  assert.equal(readiness(c).ready, false);
+  assert.match(readiness(c).missing.join(' '), /not been approved/);
+});
+
 test('coverage progress counts active requirements, their criteria, and the catalogue tests their plans cite', async () => {
   setup(); const proposal = await propose(); await decide(proposal.id);
   const revision = store().latestRevision();
