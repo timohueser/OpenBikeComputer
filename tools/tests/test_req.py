@@ -1,4 +1,6 @@
 """obc req: the rendering, the listing, the revision delta, and the checks that gate a submission."""
+import contextlib
+import io
 import json
 import sys
 import unittest
@@ -132,10 +134,30 @@ class ValidationTest(unittest.TestCase):
             {"caseId": "map::north_up", "rationale": "r"}, {"caseId": "map::north_up", "rationale": "r"}]}])
         self.assertIn("cites map::north_up twice", " ".join(self.check(dupe)))
         odd = self.entry(criteria=[{"id": "a b", "statement": "x", "evidence": [], "gap": ""}])
-        self.assertIn("characters the server refuses", " ".join(self.check(odd)))
+        self.assertIn("is not one the server accepts", " ".join(self.check(odd)))
         empty = self.entry(criteria=[{"id": "a", "statement": "x", "gap": "", "evidence": [
             {"caseId": "", "testId": "t2", "rationale": "r"}]}])
         self.assertIn("neither exactly one case nor one manual test", " ".join(self.check(empty)))
+        long_id = self.entry(criteria=[{"id": "a" * 201, "statement": "x", "evidence": [], "gap": ""}])
+        self.assertIn("is not one the server accepts", " ".join(self.check(long_id)))
+
+    def test_a_null_or_absent_field_is_named_rather_than_raising(self):
+        """A generator that writes null for "nothing here" must get a sentence, not a traceback."""
+        for criterion, expected in (
+            ({"id": "a", "statement": "x", "evidence": [], "gap": None}, "needs a gap string"),
+            ({"id": "a", "statement": "x", "evidence": []}, "needs a gap string"),
+            ({"id": "a", "statement": "x", "gap": "", "evidence": None}, "needs an evidence list"),
+            ({"id": "a", "statement": "x", "gap": ""}, "needs an evidence list"),
+            ({"id": "a", "statement": None, "evidence": [], "gap": ""}, "has no statement"),
+            ({"id": "a", "statement": "x", "evidence": [], "gap": "g", "next": "soon"}, "next that is not an object"),
+        ):
+            self.assertIn(expected, " ".join(self.check(self.entry(criteria=[criterion]))))
+        self.assertIn("the plan has no rationale", " ".join(self.check(self.entry(rationale=None))))
+
+    def test_a_long_rationale_is_a_note_because_the_server_allows_it(self):
+        entry = self.entry(rationale="y" * 901)
+        self.assertEqual(self.check(entry), [])
+        self.assertIn("reads long on the card", " ".join(self.notes(entry)))
 
     def test_a_case_the_requirement_already_links_stays_valid_evidence(self):
         """The server accepts evidence naming a case the requirement links, catalogue or not."""
@@ -217,7 +239,8 @@ class WritePathTest(unittest.TestCase):
         self.addCleanup(self.plan.unlink)
 
     def run_cli(self, *argv):
-        return req.main(list(argv))
+        with contextlib.redirect_stdout(io.StringIO()):
+            return req.main(list(argv))
 
     def test_check_submits_nothing_and_a_mistyped_flag_refuses(self):
         self.assertEqual(self.run_cli("propose", str(self.plan), "--check", f"--sha={'a' * 40}"), 0)
