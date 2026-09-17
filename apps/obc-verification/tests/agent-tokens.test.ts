@@ -40,7 +40,7 @@ async function issue(name: string, minutes = 60, credential: Cookies = admin) {
   return await response.json() as { token: string; access: AgentToken };
 }
 
-test('only current administrators can issue, list, or revoke tokens, with origin and lifetime checks', async () => {
+test('only current administrators can issue, list, or revoke tokens, with origin and expiry checks', async () => {
   for (const credential of [anonymous, maintainer, 'test-ci-token']) {
     for (const [path, method, body] of [
       ['admin/agent-tokens', 'GET', undefined],
@@ -52,16 +52,17 @@ test('only current administrators can issue, list, or revoke tokens, with origin
     assert.equal((await request('admin/agent-tokens', 'POST', { name: 'Denied' }, admin, origin)).status, 403);
     assert.equal((await request('admin/agent-tokens/missing', 'DELETE', undefined, admin, origin)).status, 403);
   }
-  for (const expiresAt of [undefined, null, '', 'soon', 60, ahead(0), ahead(-1), ahead(367 * 24 * 60)]) {
+  for (const expiresAt of [undefined, null, '', 'soon', 60, '2027', '2026-12-01T10:00:00', ahead(0), ahead(-1), ahead(367 * 24 * 60)]) {
     assert.equal((await request('admin/agent-tokens', 'POST', { name: 'Invalid', expiresAt })).status, 400);
   }
   for (const name of ['', '  ', 'x'.repeat(101)]) assert.equal((await request('admin/agent-tokens', 'POST', { name })).status, 400);
-  const response = await request('admin/agent-tokens', 'POST', { name: '  Laptop  ', expiresAt: ahead(60), role: 'owner', admin: true, issuedBy: { name: 'forged' } });
+  const sent = ahead(60);
+  const response = await request('admin/agent-tokens', 'POST', { name: '  Laptop  ', expiresAt: sent, role: 'owner', admin: true, issuedBy: { name: 'forged' } });
   assert.equal(response.status, 201);
   const issued = await response.json();
   assert.equal(issued.access.name, 'Laptop');
   assert.equal(issued.access.issuedBy.userId, '1');
-  assert.equal(Date.parse(issued.access.expiresAt) - Date.parse(issued.access.createdAt), 60 * 60_000);
+  assert.equal(issued.access.expiresAt, sent);
   const far = ahead(366 * 24 * 60);
   const max = await (await request('admin/agent-tokens', 'POST', { name: 'Maximum', expiresAt: far })).json();
   assert.equal(max.access.expiresAt, far);

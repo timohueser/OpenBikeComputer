@@ -221,8 +221,8 @@ second proxy requires an explicit trusted-address configuration. Never enter cre
 an HTTP origin.
 
 The environment file and SSH private keys are not application assets. Back them up separately in a
-private credential store. Rotate the CI and GitHub credentials independently. Create temporary
-agent tokens in **Account → Agent access**. The service does not accept `VERIFICATION_AGENT_TOKEN`;
+private credential store. Rotate the CI and GitHub credentials independently. Create agent
+tokens in **Account → Agent access**. The service does not accept `VERIFICATION_AGENT_TOKEN`;
 remove this unused variable from an existing service configuration.
 
 ## Accounts
@@ -400,7 +400,7 @@ token ID, name, and issuing account. A token grants agent permissions only, rega
 issuer's permissions. The secret cannot be retrieved after creation.
 
 Administrators manage tokens through `GET` and `POST /api/admin/agent-tokens`, and
-`DELETE /api/admin/agent-tokens/ID`. Creation takes `{ "name": "Coverage review", "expiresAt": "2027-01-31T23:59:59Z" }`, an ISO timestamp at most a year ahead,
+`DELETE /api/admin/agent-tokens/ID`. Creation takes `{ "name": "Coverage review", "expiresAt": "2027-01-31T23:59:59Z" }`, an ISO timestamp with an explicit time zone at most a year ahead,
 and returns `{ "token": "...", "access": { ... } }`. Listing returns metadata only. These endpoints
 require an administrator session; writes also require the exact configured browser origin.
 

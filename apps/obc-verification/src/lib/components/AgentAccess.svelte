@@ -7,8 +7,8 @@
   let tokens: AgentToken[] = [];
   let loading = true;
   let name = '';
-  /** Calendar day `offset` days ahead, as the date input wants it. */
-  const day = (offset: number) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+  /** Local calendar day `offset` days ahead, as the date input wants it; the token expires at the end of the chosen local day. */
+  const day = (offset: number) => new Date(Date.now() + offset * 86_400_000).toLocaleDateString('en-CA');
   let expiresOn = day(30);
   let fresh: { token: string; access: AgentToken } | undefined;
   let showInactive = false;
