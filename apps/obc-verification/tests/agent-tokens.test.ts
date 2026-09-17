@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Cookies, RequestEvent } from '@sveltejs/kit';
-import type { Actor, AgentToken, Candidate, LinkProposal } from '../src/lib/types.ts';
+import type { Actor, AgentToken, Candidate, CoverageProposal } from '../src/lib/types.ts';
 import { authenticate, createSession } from '../src/lib/server/auth.ts';
 import { api } from '../src/lib/server/api.ts';
 import { Store, store } from '../src/lib/server/store.ts';
@@ -101,14 +101,15 @@ test('agent tokens submit attributed proposals but cannot exercise owner, admini
   store().put('catalog', 'current', { sourceSha: 'a'.repeat(40), updatedAt: '', cases: [{ id: 'test-a', suite: 'unit', name: 'Test A' }] });
   const candidate: Candidate = { id: 'candidate', version: 'v0.1.0', sourceRef: 'develop', sourceSha: 'a'.repeat(40), revision, createdAt: '', status: 'queued', ciStatus: 'pending', results: [], manualRuns: [], assets: [] };
   store().put('candidate', candidate.id, candidate);
-  for (const path of ['bootstrap', 'catalog', 'revisions', `revisions/${revision.id}`, 'candidates', 'proposals']) {
+  for (const path of ['bootstrap', 'catalog', 'revisions', `revisions/${revision.id}`, 'candidates', 'coverage-proposals']) {
     assert.equal((await request(path, 'GET', undefined, token)).status, 200, path);
   }
   const bootstrap = await (await request('bootstrap', 'GET', undefined, token)).json();
   assert.equal((bootstrap.actor as Actor).role, 'agent'); assert.equal(bootstrap.actor.admin, undefined);
-  const proposed = await request('proposals', 'POST', { baseRevision: revision.id, requirementId: 'EXAMPLE-001', caseId: 'test-a', action: 'add', reason: 'Checks behavior.', agentToken: { id: 'forged' }, author: 'forged' }, token, '');
+  const plan = { rationale: 'The catalogue test checks the stated behavior.', criteria: [{ id: 'behavior', statement: 'The upload keeps every point.', evidence: [{ caseId: 'test-a', rationale: 'Asserts the retained point count.' }], gap: '' }] };
+  const proposed = await request('coverage-proposals', 'POST', { baseRevision: revision.id, requirementId: 'EXAMPLE-001', sourceSha: 'a'.repeat(40), plan, agentToken: { id: 'forged' }, author: 'forged' }, token, '');
   assert.equal(proposed.status, 201);
-  const proposal = await proposed.json() as LinkProposal;
+  const proposal = await proposed.json() as CoverageProposal;
   assert.equal(proposal.author, access.name);
   assert.deepEqual(proposal.agentToken, { id: access.id, name: access.name, issuedBy: access.issuedBy });
   for (const [path, method] of [
@@ -116,12 +117,12 @@ test('agent tokens submit attributed proposals but cannot exercise owner, admini
     ['admin/history', 'POST'], ['users', 'GET'], ['account/password', 'POST'], ['requirements', 'PUT'],
     ['requirements/next-id', 'POST'], ['files', 'POST'], ['candidates', 'POST'], ['candidates/candidate/runs', 'POST'],
     ['candidates/candidate/publish', 'POST'], ['candidates/candidate/exceptions', 'POST'], ['ci/catalog', 'POST'],
-    [`proposals/${proposal.id}`, 'POST']
+    [`coverage-proposals/${proposal.id}`, 'POST']
   ]) assert.equal((await request(path, method, method === 'POST' ? { accept: true } : undefined, token)).status, 403, path);
   await request(`admin/agent-tokens/${access.id}`, 'DELETE');
-  assert.equal(store().get<LinkProposal>('proposal', proposal.id).status, 'pending');
-  assert.equal((await request(`proposals/${proposal.id}`, 'POST', { accept: true })).status, 200);
-  assert.deepEqual(store().get<LinkProposal>('proposal', proposal.id).agentToken, proposal.agentToken);
+  assert.equal(store().get<CoverageProposal>('coverage-proposal', proposal.id).status, 'pending');
+  assert.equal((await request(`coverage-proposals/${proposal.id}`, 'POST', { accept: true })).status, 200);
+  assert.deepEqual(store().get<CoverageProposal>('coverage-proposal', proposal.id).agentToken, proposal.agentToken);
 });
 
 test('removing an issuer permanently revokes their tokens and current privileges are checked on every request', async () => {

@@ -17,7 +17,7 @@ process.env.ORIGIN = 'https://verify.example.com';
 function request(path: string, method = 'GET', data?: unknown, actor?: Actor, origin = process.env.ORIGIN) {
   return api({ params: { path }, url: new URL(`${process.env.ORIGIN}/api/${path}`), request: new Request(`${process.env.ORIGIN}/api/${path}`, { method, headers: { 'content-type': 'application/json', ...(origin ? { origin } : {}) }, body: data === undefined ? undefined : JSON.stringify(data) }), locals: { actor }, cookies: { get: () => undefined }, getClientAddress: () => '127.0.0.1' } as unknown as RequestEvent);
 }
-test('API enforces prose ownership, origins, proposed link approval, and frozen evidence', async () => {
+test('API enforces prose ownership, origins, coverage approval, and frozen evidence', async () => {
   const owner: Actor = { name: 'owner', role: 'owner' };
   const agent: Actor = { name: 'agent', role: 'agent' };
   const ci: Actor = { name: 'ci', role: 'ci' };
@@ -60,11 +60,12 @@ test('API enforces prose ownership, origins, proposed link approval, and frozen 
     assert.equal((await request('requirements', 'PUT', payload, ci)).status, 403);
     assert.equal((await request('requirements', 'PUT', payload, owner, 'https://attacker.example')).status, 403);
     store().put('catalog', 'current', { sourceSha: 'a'.repeat(40), updatedAt: '', cases: [{ id: 'suite::class::case', suite: 'suite', name: 'A case' }] });
-    const proposalResponse = await request('proposals', 'POST', { baseRevision: revision.id, requirementId: 'EXAMPLE-001', caseId: 'suite::class::case', action: 'add', reason: 'Please link the existing case.' }, agent);
+    const plan = { rationale: 'The existing case checks the stated behavior.', criteria: [{ id: 'upload', statement: 'A large route uploads completely.', evidence: [{ caseId: 'suite::class::case', rationale: 'Asserts the retained point count.' }], gap: '' }] };
+    const proposalResponse = await request('coverage-proposals', 'POST', { baseRevision: revision.id, requirementId: 'EXAMPLE-001', sourceSha: 'a'.repeat(40), plan }, agent);
     assert.equal(proposalResponse.status, 201); const proposal = await proposalResponse.json();
     assert.equal(store().latestRevision().id, revision.id);
-    assert.equal((await request(`proposals/${proposal.id}`, 'POST', { accept: true }, agent)).status, 403);
-    assert.equal((await request(`proposals/${proposal.id}`, 'POST', { accept: true }, owner)).status, 200);
+    assert.equal((await request(`coverage-proposals/${proposal.id}`, 'POST', { accept: true }, agent)).status, 403);
+    assert.equal((await request(`coverage-proposals/${proposal.id}`, 'POST', { accept: true }, owner)).status, 200);
     assert.equal(store().latestRevision().requirements[0].statement, revision.requirements[0].statement);
     const candidate: Candidate = { id: 'candidate', version: '0.1.0', sourceRef: 'develop', sourceSha: 'a'.repeat(40), createdAt: '', status: 'published', ciStatus: 'success', revision: { ...revision, requirements: [{ ...revision.requirements[0], tests: [{ id: 'manual', kind: 'manual', title: 'Check', steps: 'Do it', expected: 'Done', inputs: [] }] }] }, results: [], assets: [], manualRuns: [] };
     store().put('candidate', candidate.id, candidate); store().put('publication', candidate.id, candidate);

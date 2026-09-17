@@ -8,9 +8,9 @@ export function evidenceKey(evidence: CoverageEvidence): string { return evidenc
 export function criterionCovered(requirement: Requirement, criterion: AcceptanceCriterion): boolean {
   return criterion.evidence.length > 0 && !criterion.gap.trim() && criterion.evidence.every(e => evidenceTest(requirement, e));
 }
-/** A proposed plan counts as covered on its own terms: its evidence is linked when it is approved. */
-export function planCovered(plan: CoveragePlan): boolean {
-  return plan.criteria.length > 0 && plan.criteria.every(c => c.evidence.length > 0 && !c.gap.trim());
+/** Criteria a proposed plan covers on its own terms: its evidence is linked when it is approved. */
+export function planCoveredCount(plan: CoveragePlan): number {
+  return plan.criteria.filter(c => c.evidence.length > 0 && !c.gap.trim()).length;
 }
 export function verificationDefinition(requirement: Requirement): string {
   return JSON.stringify([requirement.statement,
@@ -27,20 +27,13 @@ export function planProblem(plan: CoveragePlan): string | undefined {
   if (plan.criteria.some(c => !c.statement.trim())) return 'Every criterion needs a statement.';
   if (plan.criteria.some(c => c.evidence.some(e => !e.rationale.trim()))) return 'Say what each piece of evidence proves.';
 }
-/** A pending link suggestion that a proposed plan already contains is resolved when that plan is approved. */
-export function absorbedBy(plan: CoveragePlan, requirement: Requirement, suggestion: { caseId: string; action: 'add' | 'remove' }): boolean {
-  return suggestion.action === 'add'
-    ? plan.criteria.some(c => c.evidence.some(e => e.caseId === suggestion.caseId))
-    : (plan.removeTestIds ?? []).some(id => requirement.tests.find(t => t.id === id)?.caseId === suggestion.caseId);
-}
 export function planBlank(plan: CoveragePlan): boolean {
   return !plan.rationale.trim() && plan.criteria.every(c => !c.statement.trim() && !c.evidence.length && !c.gap.trim());
 }
-export function coverageIssues(requirement: Requirement, sourceSha?: string): string[] {
+export function coverageIssues(requirement: Requirement): string[] {
   const plan = requirement.coverage;
   if (!plan?.review) return ['Coverage has not been approved for this requirement and its test links.'];
   const issues: string[] = [];
-  if (sourceSha && plan.review.sourceSha !== sourceSha) issues.push('Coverage must be approved for this source commit.');
   if (!plan.criteria.length) issues.push('No acceptance criteria defined.');
   for (const criterion of plan.criteria) {
     if (!criterionCovered(requirement, criterion)) issues.push(`“${criterion.statement}”: ${criterion.gap || (criterion.evidence.length ? 'evidence is no longer a linked test.' : 'no evidence mapped.')}`);
@@ -52,12 +45,12 @@ export type CoverageState = 'unassessed' | 'needs-review' | 'partial' | 'covered
 export interface CoverageSummary { state: CoverageState; label: string; covered: number; total: number }
 const labels: Record<CoverageState, string> = { unassessed: 'Not assessed', 'needs-review': 'Needs review', partial: 'Partial', covered: 'Covered' };
 /** One state per requirement. "Covered" is the only state that satisfies the release gate. */
-export function coverageSummary(requirement: Requirement, sourceSha?: string): CoverageSummary {
+export function coverageSummary(requirement: Requirement): CoverageSummary {
   const plan = requirement.coverage;
   const total = plan?.criteria.length ?? 0;
   const covered = plan?.criteria.filter(c => criterionCovered(requirement, c)).length ?? 0;
   const state: CoverageState = !plan ? 'unassessed'
-    : !plan.review || (sourceSha && plan.review.sourceSha !== sourceSha) ? 'needs-review'
+    : !plan.review ? 'needs-review'
     : total > 0 && covered === total ? 'covered' : 'partial';
   return { state, label: labels[state], covered, total };
 }

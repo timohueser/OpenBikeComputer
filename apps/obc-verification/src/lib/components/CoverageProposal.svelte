@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Catalog, CoverageProposalReview, Requirement } from '$lib/types';
-  import { coverageSummary, planCovered } from '$lib/coverage';
+  import { planCoveredCount } from '$lib/coverage';
   import { date } from './api';
   import CoverageChanges from './CoverageChanges.svelte';
   export let proposal: CoverageProposalReview;
@@ -9,14 +9,14 @@
   export let busy: boolean;
   export let dirty: boolean;
   export let ondecide: (id: string, accept: boolean, feedback: string) => void;
-  let rejecting = false;
+  /** Bound by the parent so that Escape can close the reject box. */
+  export let rejecting = false;
   let feedback = '';
-  $: from = coverageSummary(requirement).label;
-  $: to = planCovered(proposal.plan) ? 'Covered' : 'Partial';
+  $: covered = planCoveredCount(proposal.plan);
 </script>
 <article class="proposal" aria-label={`Coverage proposal for ${proposal.requirementId}`}>
   <div class="row">
-    <div><div class="eyebrow">Proposed by {proposal.author}</div><h3><span class="badge">{from}</span> <span class="arrow" aria-hidden="true">→</span> <span class="badge" class:success={to === 'Covered'} class:warning={to === 'Partial'}>{to}</span></h3></div>
+    <div><div class="eyebrow">Proposed by {proposal.author}</div><h3>{covered} of {proposal.plan.criteria.length} criteria covered after approval</h3></div>
     <span class="small muted">{date(proposal.createdAt)} · commit <code>{proposal.sourceSha.slice(0, 10)}</code></span>
   </div>
   <CoverageChanges {requirement} plan={proposal.plan} {catalog} />
@@ -30,7 +30,6 @@
 </article>
 <style>
   .proposal { padding: 16px 18px; margin: 12px 0 18px; border: 1px solid #e8d3c8; border-left: 4px solid var(--coral); border-radius: 8px; background: #fffaf7; }
-  h3 { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
-  .arrow { color: var(--muted); }
+  h3 { margin-top: 4px; }
   .actions { margin-top: 14px; }
 </style>
