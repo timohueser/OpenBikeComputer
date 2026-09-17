@@ -39,6 +39,13 @@
       "runtimeExecutable": "python3",
       "runtimeArgs": ["-m", "http.server", "8081", "--directory", "docs"],
       "port": 8081
+    },
+    {
+      "name": "verification-demo",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "demo:coverage"],
+      "cwd": "apps/obc-verification",
+      "port": 4180
     }
   ]
 }
