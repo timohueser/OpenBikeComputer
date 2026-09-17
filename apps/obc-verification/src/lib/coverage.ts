@@ -1,4 +1,4 @@
-import type { AcceptanceCriterion, CoverageEvidence, CoveragePlan, Requirement, VerificationTest } from './types.ts';
+import type { AcceptanceCriterion, Catalog, CoverageEvidence, CoveragePlan, Requirement, VerificationTest } from './types.ts';
 
 export function evidenceTest(requirement: Requirement, evidence: CoverageEvidence) {
   return requirement.tests.find(test => evidence.caseId ? test.kind === 'automated' && test.caseId === evidence.caseId : test.kind === 'manual' && test.id === evidence.testId);
@@ -18,9 +18,12 @@ export function evidenceKey(evidence: CoverageEvidence): string { return evidenc
 export function criterionCovered(requirement: Requirement, criterion: AcceptanceCriterion): boolean {
   return criterion.evidence.length > 0 && !criterion.gap.trim() && criterion.evidence.every(e => evidenceTest(requirement, e));
 }
-/** Criteria a proposed plan covers on its own terms: its evidence is linked when it is approved. */
+/** A proposed criterion counts as covered on its own terms: its evidence is linked when the plan is approved. */
+export function proposedCovered(criterion: AcceptanceCriterion): boolean {
+  return criterion.evidence.length > 0 && !criterion.gap.trim();
+}
 export function planCoveredCount(plan: CoveragePlan): number {
-  return plan.criteria.filter(c => c.evidence.length > 0 && !c.gap.trim()).length;
+  return plan.criteria.filter(proposedCovered).length;
 }
 export function verificationDefinition(requirement: Requirement): string {
   return JSON.stringify([requirement.statement,
@@ -73,4 +76,20 @@ export function coverageChanges(requirement: Requirement, plan: CoveragePlan) {
     /** Manual procedures this plan cites nowhere. Saving the plan deletes them with their content. */
     deletedProcedures: requirement.tests.filter(t => t.kind === 'manual' && !plan.criteria.some(c => c.evidence.some(e => e.testId === t.id)))
   };
+}
+export interface CoverageProgress { states: Record<CoverageState, number>; active: number; criteria: { covered: number; total: number }; tests: { cited: number; catalog: number; manual: number } }
+/** Progress across the active requirements of one revision: requirement states, criteria, and the catalogue tests their plans cite. */
+export function coverageProgress(requirements: Requirement[], catalog: Catalog): CoverageProgress {
+  const active = requirements.filter(r => r.active);
+  const states: Record<CoverageState, number> = { unassessed: 0, 'needs-review': 0, partial: 0, covered: 0 };
+  const criteria = { covered: 0, total: 0 };
+  const known = new Set(catalog.cases.map(c => c.id));
+  const cited = new Set<string>();
+  let manual = 0;
+  for (const r of active) {
+    const summary = coverageSummary(r);
+    states[summary.state]++; criteria.covered += summary.covered; criteria.total += summary.total;
+    for (const t of r.tests) if (t.kind === 'manual') manual++; else if (t.caseId && known.has(t.caseId)) cited.add(t.caseId);
+  }
+  return { states, active: active.length, criteria, tests: { cited: cited.size, catalog: catalog.cases.length, manual } };
 }

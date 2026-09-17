@@ -177,7 +177,7 @@ export class Store {
     if (accept) {
       const revision = this.latestRevision();
       const catalog = this.catalog();
-      const conflict = coverageConflict(proposal, this.revision(proposal.baseRevision), revision, catalog);
+      const conflict = coverageConflict(proposal, revision, catalog);
       assert(!conflict, conflict ?? '', 409);
       const requirement = revision.requirements.find(r => r.id === proposal.requirementId)!;
       linkEvidence(requirement, proposal.plan, catalog, () => this.id());

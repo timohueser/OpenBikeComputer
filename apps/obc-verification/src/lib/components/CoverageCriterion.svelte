@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { AcceptanceCriterion, Catalog, CoverageEvidence, Requirement, VerificationTest } from '$lib/types';
-  import { criterionCovered, evidenceKey, evidenceTest } from '$lib/coverage';
+  import { criterionCovered, evidenceKey, evidenceTest, proposedCovered } from '$lib/coverage';
   import Markdown from './Markdown.svelte';
   import Files from './Files.svelte';
   export let criterion: AcceptanceCriterion;
@@ -10,9 +10,11 @@
   export let previous: AcceptanceCriterion | undefined = undefined;
   export let tag = '';
   export let removed = false;
+  /** A proposed criterion is judged on its own evidence, which is linked when the plan is approved. */
+  export let proposed = false;
   /** The release view sets this to show each evidence test's outcome in one candidate. */
   export let result: ((test: VerificationTest) => { outcome: string; detail?: string; label?: string; disabled?: boolean; onrun?: () => void }) | undefined = undefined;
-  $: covered = !removed && criterionCovered(requirement, criterion);
+  $: covered = !removed && (proposed ? proposedCovered(criterion) : criterionCovered(requirement, criterion));
   /** A removed criterion takes all of its evidence with it. */
   $: kept = removed ? [] : criterion.evidence;
   $: dropped = removed ? criterion.evidence : previous?.evidence.filter(e => !criterion.evidence.some(n => evidenceKey(n) === evidenceKey(e))) ?? [];

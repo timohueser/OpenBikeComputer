@@ -21,7 +21,7 @@
     <span class="small muted">{date(proposal.createdAt)} · commit <code>{proposal.sourceSha.slice(0, 10)}</code></span>
   </div>
   <CoverageChanges {requirement} plan={proposal.plan} {catalog} />
-  {#if proposal.conflict}<p class="alert warning">{proposal.conflict}</p>{/if}
+  {#if proposal.conflict}<p class="alert error">{proposal.conflict}</p>{:else if proposal.stale}<p class="alert warning">{proposal.stale}</p>{/if}
   {#if deleted.length}<p class="small deletes">Approval deletes {deleted.length} manual {deleted.length === 1 ? 'procedure' : 'procedures'}, with {deleted.length === 1 ? 'its' : 'their'} steps and input files: {deleted.map(t => t.title).join(', ')}.</p>{/if}
   {#if rejecting}
     <label>Feedback for the agent<textarea rows={2} maxlength={5000} bind:value={feedback} placeholder="What should change?"></textarea></label>
