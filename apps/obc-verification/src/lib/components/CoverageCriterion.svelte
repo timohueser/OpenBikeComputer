@@ -25,6 +25,8 @@
   $: footer = !!(criterion.gap || previous?.gap || criterion.next || previous?.next);
   const resolve = (e: CoverageEvidence) => evidenceTest(requirement, e) ?? procedures.find(p => p.id === e.testId);
   const title = (e: CoverageEvidence) => resolve(e)?.title ?? catalog?.cases.find(c => c.id === e.caseId)?.name ?? evidenceKey(e);
+  /** Catalogue names carry the whole nested test title, so the card clamps them and the tooltip holds the full text. */
+  const fullName = (e: CoverageEvidence) => `${title(e)}\n${e.caseId ?? 'manual procedure'}`;
   const isNew = (e: CoverageEvidence) => !!previous && !previous.evidence.some(p => evidenceKey(p) === evidenceKey(e));
   const isProposedProcedure = (e: CoverageEvidence) => !!e.testId && !evidenceTest(requirement, e) && procedures.some(p => p.id === e.testId);
   const nextChanged = () => !!previous && JSON.stringify(previous.next ?? null) !== JSON.stringify(criterion.next ?? null);
@@ -40,7 +42,7 @@
       {@const test = resolve(e)}
       {@const found = test && result ? result(test) : undefined}
       <div class="evidence" class:added={isNew(e)}>
-        <div class="name wrap"><strong>{title(e)}</strong>{#if isProposedProcedure(e)}<span class="tag">new procedure</span>{:else if isNew(e)}<span class="tag">new</span>{/if}<small>{e.caseId ?? 'manual'}</small></div>
+        <div class="name wrap" title={fullName(e)}><span class="label"><strong>{title(e)}</strong>{#if isProposedProcedure(e)}<span class="tag">new procedure</span>{:else if isNew(e)}<span class="tag">new</span>{/if}</span><small>{e.caseId ?? 'manual'}</small></div>
         <div class="why wrap">
           <p class="line">{e.rationale}{#if found}<span class="badge outcome" class:success={found.outcome === 'pass'} class:error={found.outcome === 'fail' || found.outcome === 'error'} class:warning={!['pass', 'fail', 'error'].includes(found.outcome)}>{found.outcome}</span>{#if found.onrun}<button class="run small" disabled={found.disabled} on:click={found.onrun}>{found.label}</button>{/if}{/if}</p>
           {#if test?.kind === 'manual'}<details class="small"><summary>Procedure</summary><Markdown text={test.steps || ''} /><h4>Expected result</h4><Markdown text={test.expected || ''} />{#if test.inputs.length}<Files files={test.inputs} label="Input files" />{/if}</details>{/if}
@@ -48,7 +50,7 @@
         </div>
       </div>
     {/each}
-    {#each dropped as e}<div class="evidence dropped"><div class="name wrap"><del><strong>{title(e)}</strong></del><small>{e.caseId ?? 'manual'}</small></div><div class="why wrap"><p class="line"><del>{e.rationale}</del></p></div></div>{/each}
+    {#each dropped as e}<div class="evidence dropped"><div class="name wrap" title={fullName(e)}><span class="label"><del><strong>{title(e)}</strong></del></span><small>{e.caseId ?? 'manual'}</small></div><div class="why wrap"><p class="line"><del>{e.rationale}</del></p></div></div>{/each}
     {#if !criterion.evidence.length && !removed}<p class="none small">No evidence yet</p>{/if}
     {#if footer}
       <div class="foot">
@@ -72,7 +74,8 @@
   .num { font: 600 11px/1 ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--muted); margin-right: 8px; vertical-align: 1px; }
   .evidence { display: grid; grid-template-columns: minmax(150px, 34%) 1fr; gap: 2px 14px; margin: 8px 0 0; font-size: 13px; line-height: 1.5; }
   .name strong { font-weight: 600; }
-  .name small { display: block; font: 11px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--muted); }
+  .label { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .name small { display: block; font: 11px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .added .name strong { color: var(--forest); }
   .dropped { opacity: .7; }
   .why { color: var(--muted); }
