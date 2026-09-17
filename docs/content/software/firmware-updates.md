@@ -104,9 +104,12 @@ The workflow builds the bootloader and application. It converts the application 
 
 Each active system requirement needs an approved coverage plan for the candidate's source commit.
 The plan maps acceptance criteria to tests and records remaining gaps. An agent can propose the
-whole plan; an owner reviews whether it covers the requirement. A partial or unreviewed plan
-blocks verification even if all linked tests pass. Changes to a requirement or its test links
-clear its coverage approval. A new source commit needs a new assessment and review.
+whole plan or changes to accepted coverage. An owner can also edit coverage directly. Review
+applies the criteria, evidence, and explicit test-link removals together. Coverage status, review
+status, and candidate test results remain separate. A partial or unreviewed plan blocks
+verification even if all linked tests pass. Statement or test-definition changes retain the plan
+but clear its approval; title and group edits preserve it. A new source commit needs a new
+assessment and review. Existing candidates retain their saved coverage and evidence.
 
 Every linked automated test needs a pass
 from this candidate's CI run. Every linked manual test needs a recorded pass for this candidate.
