@@ -32,8 +32,9 @@ async function request(path: string, method = 'GET', data?: unknown, credential:
   const req = new Request(`${process.env.ORIGIN}/api/${path}`, { method, headers, body: data === undefined ? undefined : JSON.stringify(data) });
   return api({ params: { path }, url: new URL(req.url), request: req, cookies, locals: { actor: authenticate(req, cookies) } } as unknown as RequestEvent);
 }
-async function issue(name: string, lifetimeMinutes?: number, credential: Cookies = admin) {
-  const response = await request('admin/agent-tokens', 'POST', { name, lifetimeMinutes }, credential);
+const ahead = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString();
+async function issue(name: string, minutes = 60, credential: Cookies = admin) {
+  const response = await request('admin/agent-tokens', 'POST', { name, expiresAt: ahead(minutes) }, credential);
   assert.equal(response.status, 201, await response.clone().text());
   assert.equal(response.headers.get('cache-control'), 'no-store');
   return await response.json() as { token: string; access: AgentToken };
@@ -51,18 +52,19 @@ test('only current administrators can issue, list, or revoke tokens, with origin
     assert.equal((await request('admin/agent-tokens', 'POST', { name: 'Denied' }, admin, origin)).status, 403);
     assert.equal((await request('admin/agent-tokens/missing', 'DELETE', undefined, admin, origin)).status, 403);
   }
-  for (const lifetimeMinutes of [0, -1, 241, 1.5, '60', null]) {
-    assert.equal((await request('admin/agent-tokens', 'POST', { name: 'Invalid', lifetimeMinutes })).status, 400);
+  for (const expiresAt of [undefined, null, '', 'soon', 60, ahead(0), ahead(-1), ahead(367 * 24 * 60)]) {
+    assert.equal((await request('admin/agent-tokens', 'POST', { name: 'Invalid', expiresAt })).status, 400);
   }
   for (const name of ['', '  ', 'x'.repeat(101)]) assert.equal((await request('admin/agent-tokens', 'POST', { name })).status, 400);
-  const response = await request('admin/agent-tokens', 'POST', { name: '  Laptop  ', role: 'owner', admin: true, issuedBy: { name: 'forged' } });
+  const response = await request('admin/agent-tokens', 'POST', { name: '  Laptop  ', expiresAt: ahead(60), role: 'owner', admin: true, issuedBy: { name: 'forged' } });
   assert.equal(response.status, 201);
   const issued = await response.json();
   assert.equal(issued.access.name, 'Laptop');
   assert.equal(issued.access.issuedBy.userId, '1');
   assert.equal(Date.parse(issued.access.expiresAt) - Date.parse(issued.access.createdAt), 60 * 60_000);
-  const max = await issue('Maximum', 240);
-  assert.equal(Date.parse(max.access.expiresAt) - Date.parse(max.access.createdAt), 4 * 60 * 60_000);
+  const far = ahead(366 * 24 * 60);
+  const max = await (await request('admin/agent-tokens', 'POST', { name: 'Maximum', expiresAt: far })).json();
+  assert.equal(max.access.expiresAt, far);
 });
 
 test('tokens persist as hashes, expose metadata only after creation, and stop exactly at expiry or revocation', async t => {

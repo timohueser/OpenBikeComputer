@@ -7,7 +7,9 @@
   let tokens: AgentToken[] = [];
   let loading = true;
   let name = '';
-  let lifetimeMinutes = 60;
+  /** Calendar day `offset` days ahead, as the date input wants it. */
+  const day = (offset: number) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+  let expiresOn = day(30);
   let fresh: { token: string; access: AgentToken } | undefined;
   let showInactive = false;
   let now = Date.now();
@@ -25,7 +27,7 @@
   async function create() {
     busy = true; error = ''; notice = '';
     try {
-      fresh = await api('/api/admin/agent-tokens', 'POST', { name, lifetimeMinutes });
+      fresh = await api('/api/admin/agent-tokens', 'POST', { name, expiresAt: new Date(`${expiresOn}T23:59:59`).toISOString() });
       tokens = [fresh!.access, ...tokens]; name = '';
     } catch (e) { error = message(e); }
     finally { busy = false; }
@@ -71,11 +73,11 @@
   </section>
 {/if}
 <form class="inset" on:submit|preventDefault={create}>
-  <h3>Create a temporary token</h3>
+  <h3>Create a token</h3>
   <fieldset disabled={busy || loading || !!fresh}>
     <label>Token name<input required maxlength={100} bind:value={name} placeholder="Laptop: requirement coverage" autocomplete="off" /></label>
-    <label>Lifetime in minutes<input type="number" required min={1} max={240} step={1} bind:value={lifetimeMinutes} /></label>
-    <p class="small muted">Maximum 4 hours. Tokens expire automatically and can be revoked at any time.</p>
+    <label>Expires on<input type="date" required min={day(1)} max={day(365)} bind:value={expiresOn} /></label>
+    <p class="small muted">At the end of that day, at most one year ahead. A token can be revoked at any time.</p>
     <button class="primary">Create token</button>
   </fieldset>
 </form>
