@@ -36,7 +36,7 @@ requirement, with the count of covered criteria:
 | State | Meaning |
 | --- | --- |
 | Not assessed | No plan has been saved. |
-| Needs review | A plan in an older snapshot that was saved before saving counted as approval. |
+| Needs review | A plan saved under the earlier workflow and not yet approved. The next save approves it. |
 | Partial | Approved, but gaps remain. |
 | Covered | Approved, and every criterion has evidence. Only this state satisfies the release gate. |
 
@@ -62,7 +62,8 @@ criterion cites is deleted with its steps, so removing its last citation asks yo
 
 **Save revision** stores the plan with the requirement and approves it, exactly like saving the
 statement: a revision is an owner's act. The review records the CI catalogue commit of that moment
-for the report and does not create test results.
+for the report and does not create test results. A save also approves any plan that was saved
+under the earlier workflow and still waits for approval, whichever requirement the save touched.
 
 ### Review an agent's proposal
 
@@ -111,7 +112,7 @@ The disposable database starts with accepted plans and proposals that revise the
 - **SYS-039**: an approved partial plan with a pending proposal above it. The proposal replaces an
   obsolete smoke test with selection evidence; the omitted test is unlinked, persistence remains a
   gap, and approval keeps coverage partial. Or select **Edit coverage**, add a manual procedure as
-  evidence, save the revision, and approve.
+  evidence, and save the revision.
 - **SYS-030**: a demo addition to the requirement statement, saved by the owner. Its proposal
   records the added zoom obligation as a gap. Its plan also cites a manual procedure.
 - **Releases → v0.0.0-coverage-demo**: the candidate retains the earlier snapshot and simulated
@@ -474,8 +475,8 @@ proposal, which stays in history as superseded. After rejection, read `feedback`
 proposal against the latest requirement revision. An agent cannot accept or reject plans. Owners
 edit the plan as part of the requirement draft: `PUT /api/requirements` accepts a `coverage` plan
 on each requirement, validates it the same way, makes the requirement's tests the tests that plan
-cites, and never accepts an approval. Owners approve a saved requirement with
-`POST /api/requirements/ID/coverage/approve` and `{ "baseRevision": N }`. Both require an owner session and exact browser origin. Owner review of
+cites, and never accepts an approval from the client: the save itself records the owner's review
+on each plan it changes. It requires an owner session and exact browser origin. Owner review of
 an agent proposal uses `POST /api/coverage-proposals/ID` with `{ "accept": true, "feedback": "" }`.
 
 Approval rechecks the requirement, its tests, the current coverage plan, and the catalogue.
