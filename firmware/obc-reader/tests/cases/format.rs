@@ -53,6 +53,22 @@ fn two_lod_file() -> Vec<u8> {
     )
 }
 
+/// **A file shorter than its offsets claim must fail the parse.** The board now parses these tables
+/// right after a map commits over USB, where it is the only check the bytes get, and a truncated
+/// transfer is the damage that path is most likely to produce. `rejects_bad_input` already covers a
+/// forged magic and version, and `a_scale_outside_zero_to_nine_is_bad_scale_not_bad_version` the
+/// offset scale.
+#[test]
+fn a_truncated_map_is_refused_rather_than_half_opened() {
+    let good = two_lod_file();
+    assert!(MapTables::parse(&SliceSource(&good)).is_ok(), "the fixture must parse while it is intact");
+    let truncated = good[..good.len() / 2].to_vec();
+    // The variant matters, not only the failure: the board reads `Error::Source` as a card fault and
+    // everything else as a map this firmware cannot read, so structural damage must not arrive as
+    // `Source`. The prologue validates every region against the length before any of those reads.
+    assert!(matches!(MapTables::parse(&SliceSource(&truncated)), Err(Error::TooShort | Error::BadOffset)));
+}
+
 #[test]
 fn header_and_lod_table() {
     let bytes = two_lod_file();

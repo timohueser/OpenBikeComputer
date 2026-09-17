@@ -60,12 +60,15 @@ const BAR_H: i32 = 14;
 /// correct.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapTransferError {
-    /// The card refused the write, or the commit could not finish — nothing durable landed.
+    /// The card refused the write, the commit could not finish, or a committed map could not be
+    /// read back to check it. In the first two nothing durable landed; in the last the map is on the
+    /// card and unverified, and the medium is the suspect rather than the map.
     Storage,
     /// The bytes arrived, the whole-object CRC did not match. Re-send.
     Damaged,
-    /// The bytes arrived intact and are not an OBCM this firmware reads (wrong format, or a map
-    /// built for a different OBCM version).
+    /// The bytes do not parse as an OBCM this firmware reads: a wrong format, a map built for a
+    /// different OBCM version, or damage that nothing on the path caught. Intactness is not implied,
+    /// because a map arriving over USB is not rehashed.
     NotAMap,
     /// A file of a **volume set** was refused before it streamed, mid-set: the set is incomplete
     /// and nothing of it will mount. The rider's action is the same either way — send it again from
@@ -96,7 +99,8 @@ pub enum MapTransfer {
     Receiving { received_kib: u32, total_kib: u32 },
     /// The map committed. It is the selected map from the next boot.
     Installed,
-    /// The transfer ended with nothing stored.
+    /// The transfer failed. Nothing durable landed, with one exception: a map that committed and
+    /// then failed its structure check stays on the card and is what the next boot tries to mount.
     Failed(MapTransferError),
 }
 

@@ -26,9 +26,12 @@ class Fs7BoardCompositionTests(unittest.TestCase):
     def test_successful_upload_is_typed_only_after_catalog_rescan(self) -> None:
         publish = body(FLAT_STORE, "fn publish_upload", "// ══════════════════════════ the protocol-v4 engine")
         self.assertIn("UploadEnd::Committed { id, replaced }", publish)
-        self.assertIn("ObjectKind::Route => Some(CatalogUploadKind::Route)", publish)
-        self.assertIn("ObjectKind::Trip => Some(CatalogUploadKind::Trip)", publish)
-        self.assertIn("note_catalog_upload(CatalogUpload::new(kind, id.0, replaced))", publish)
+        # One expression per kind, so the kind, the committed id and the replaced flag are pinned
+        # together rather than through a separate `kind` binding.
+        self.assertIn("note_catalog_upload(CatalogUpload::new(CatalogUploadKind::Route, id.0, replaced))", publish)
+        self.assertIn("note_catalog_upload(CatalogUpload::new(CatalogUploadKind::Trip, id.0, replaced))", publish)
+        # A committed map is checked before its card, and never produces a catalog upload fact.
+        self.assertIn("ObjectKind::MapShard => fault = check_committed_map(store, ObjectId(id.0))", publish)
 
         delivery = body(RIDE, "fn note_catalog_uploads", "async fn read_catalogs")
         self.assertIn("note_route_upload", delivery)
