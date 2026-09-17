@@ -63,7 +63,10 @@ fn a_truncated_map_is_refused_rather_than_half_opened() {
     let good = two_lod_file();
     assert!(MapTables::parse(&SliceSource(&good)).is_ok(), "the fixture must parse while it is intact");
     let truncated = good[..good.len() / 2].to_vec();
-    assert!(MapTables::parse(&SliceSource(&truncated)).is_err());
+    // The variant matters, not only the failure: the board reads `Error::Source` as a card fault and
+    // everything else as a map this firmware cannot read, so structural damage must not arrive as
+    // `Source`. The prologue validates every region against the length before any of those reads.
+    assert!(matches!(MapTables::parse(&SliceSource(&truncated)), Err(Error::TooShort | Error::BadOffset)));
 }
 
 #[test]
