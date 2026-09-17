@@ -107,8 +107,11 @@ owner session, and never invent a requirement or claim a test is linked.
 
 To look up a requirement, run `obc req SYS-003` (`--json` for the raw record). It prints the
 statement, the coverage state, and the criteria numbered 1..n, so "criterion 2 of SYS-003" is the
-second one in that listing. The agent token is stored at
-`~/.config/openbikecomputer/verification-agent.token`.
+second one in that listing. `obc req` with no arguments lists the rest: `list` with filters,
+`proposal SYS-003`, `tests <query>` to search the CI catalogue, `changed --since rN` for the
+requirements a revision added or reworded, and `propose plan.json` to validate a coverage plan and
+submit it. Always `propose --check` first; it catches what a reviewer would send back. The agent
+token is stored at `~/.config/openbikecomputer/verification-agent.token`.
 
 - **When you implement or test behavior that a requirement describes**, say so in the pull
   request in one line: `Requirements: SYS-012, SYS-030` or `Requirements: none`. List a
