@@ -53,28 +53,17 @@ fn two_lod_file() -> Vec<u8> {
     )
 }
 
-/// **A damaged map must fail the parse rather than half-open.** The device parses these tables
-/// twice: at boot, and now right after a map commits over USB, where it is the only check the
-/// bytes get. Both readings depend on damage in the header being refused outright.
+/// **A file shorter than its offsets claim must fail the parse.** The board now parses these tables
+/// right after a map commits over USB, where it is the only check the bytes get, and a truncated
+/// transfer is the damage that path is most likely to produce. `rejects_bad_input` already covers a
+/// forged magic and version, and `a_scale_outside_zero_to_nine_is_bad_scale_not_bad_version` the
+/// offset scale.
 #[test]
-fn a_damaged_map_is_refused_rather_than_half_opened() {
+fn a_truncated_map_is_refused_rather_than_half_opened() {
     let good = two_lod_file();
     assert!(MapTables::parse(&SliceSource(&good)).is_ok(), "the fixture must parse while it is intact");
-
-    let mut wrong_magic = good.clone();
-    wrong_magic[0] ^= 0xFF;
-    assert!(matches!(MapTables::parse(&SliceSource(&wrong_magic)), Err(Error::BadMagic)));
-
-    let mut wrong_version = good.clone();
-    wrong_version[4] = wrong_version[4].wrapping_add(1);
-    assert!(matches!(MapTables::parse(&SliceSource(&wrong_version)), Err(Error::BadVersion)));
-
-    let mut wrong_scale = good.clone();
-    wrong_scale[HEADER_OFFSET_SCALE_OFF] = 0xFF;
-    assert!(MapTables::parse(&SliceSource(&wrong_scale)).is_err(), "an impossible offset scale is refused");
-
     let truncated = good[..good.len() / 2].to_vec();
-    assert!(MapTables::parse(&SliceSource(&truncated)).is_err(), "a file shorter than its offsets claim is refused");
+    assert!(MapTables::parse(&SliceSource(&truncated)).is_err());
 }
 
 #[test]

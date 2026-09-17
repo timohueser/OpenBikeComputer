@@ -1367,24 +1367,26 @@ pub(crate) fn take_route_storage_full() -> bool {
 /// a few KiB, and a value built inside an async block is a permanent slot in that task's poll frame
 /// (#1084/#1108). Keeping the parse in its own out-of-line sync frame keeps it off the store task.
 #[inline(never)]
-fn map_is_readable(store: &'static FlatStore<FlatCard>, id: ObjectId) -> bool {
+fn check_committed_map(store: &'static FlatStore<FlatCard>, id: ObjectId) -> Option<crate::link::MapVerifyFault> {
+    use crate::link::MapVerifyFault;
     match store.with_source(id, None, |source| obc_reader::MapTables::parse(source).map(|_tables| ())) {
-        Ok(Ok(())) => true,
+        Ok(Ok(())) => None,
+        // A read that failed part way through the parse says nothing about the map: the card is the
+        // fault, and the rider's fix is a different card rather than a different builder.
+        Ok(Err(obc_reader::Error::Source(_) | obc_reader::Error::CacheBusy)) | Err(_) => {
+            defmt::error!(
+                "flat: map object {=u64} committed and could not be read back — reporting a card fault",
+                id.0
+            );
+            Some(MapVerifyFault::Storage)
+        }
         Ok(Err(error)) => {
             defmt::error!(
                 "flat: map object {=u64} committed and will not parse ({}) — reporting the transfer as unreadable",
                 id.0,
                 defmt::Debug2Format(&error)
             );
-            false
-        }
-        Err(error) => {
-            defmt::error!(
-                "flat: map object {=u64} committed and will not open ({}) — reporting the transfer as unreadable",
-                id.0,
-                defmt::Debug2Format(&error)
-            );
-            false
+            Some(MapVerifyFault::NotAMap)
         }
     }
 }
@@ -1404,29 +1406,26 @@ fn publish_upload(store: &'static FlatStore<FlatCard>, engine: &mut BoardEngine)
     }
     // The transfer *level* — every kind, not just the map the card shows. See [`LIVE_TRANSFER`].
     LIVE_TRANSFER.store(engine.live_transfer().is_some(), core::sync::atomic::Ordering::Relaxed);
+    // A map's structure is checked here, after the commit, because the store has no read seam over
+    // an uncommitted upload. The card says installed only if the bytes parse.
+    let mut fault = None;
     if let Some((kind, obc_link::flat::UploadEnd::Committed { id, replaced })) = ended {
-        let kind = match kind {
-            obc_link::flat::ObjectKind::Route => Some(CatalogUploadKind::Route),
-            obc_link::flat::ObjectKind::Trip => Some(CatalogUploadKind::Trip),
-            _ => None,
-        };
-        if let Some(kind) = kind {
-            note_catalog_upload(CatalogUpload::new(kind, id.0, replaced));
-        }
-    }
-    // The map's structure is checked here, after the commit, because the store has no read seam
-    // over an uncommitted upload. The card says installed only if the bytes parse.
-    let unreadable = match ended {
-        Some((obc_link::flat::ObjectKind::MapShard, obc_link::flat::UploadEnd::Committed { id, .. })) => {
+        match kind {
+            obc_link::flat::ObjectKind::Route => {
+                note_catalog_upload(CatalogUpload::new(CatalogUploadKind::Route, id.0, replaced))
+            }
+            obc_link::flat::ObjectKind::Trip => {
+                note_catalog_upload(CatalogUpload::new(CatalogUploadKind::Trip, id.0, replaced))
+            }
             // The link and the store each name objects with their own `ObjectId` newtype over the
             // same u64; the seam between them is this crate's job, as everywhere else here.
-            !map_is_readable(store, ObjectId(id.0))
+            obc_link::flat::ObjectKind::MapShard => fault = check_committed_map(store, ObjectId(id.0)),
+            _ => {}
         }
-        _ => false,
-    };
+    }
     crate::link::publish_map_transfer(live, ended);
-    if unreadable {
-        crate::link::publish_map_unreadable();
+    if let Some(fault) = fault {
+        crate::link::publish_map_verify_failure(fault);
     }
 }
 
