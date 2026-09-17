@@ -319,7 +319,11 @@ final class MainScreenModelTests: XCTestCase {
         // Disabled sync: pressing Sync must not start a transfer (no decode) —
         // the coordinator asks the model through the injected `canSync` veto.
         model.sync.sync()
-        try? await Task.sleep(for: .milliseconds(80))
+        let stayedIdle = await neverHolds({
+            model.sync.syncState != .idle || model.sync.syncProgress != nil
+                || model.sync.upToDateToastVisible
+        }, for: .milliseconds(80))
+        XCTAssertTrue(stayedIdle, "a protocol mismatch must keep sync idle")
         XCTAssertEqual(model.sync.syncState, .idle)
         XCTAssertNil(model.sync.syncProgress)
         XCTAssertFalse(model.sync.upToDateToastVisible)
@@ -566,22 +570,30 @@ final class MainScreenModelTests: XCTestCase {
     /// leaves its closing result available to be mistaken for the next upload.
     func testStoreChangeBurstDoesNotCancelAnInFlightCatalogRead() async throws {
         let control = MockControl(scenario: .happyPath)
-        control.latency = .milliseconds(200)
+        control.latency = .zero
         let library = InMemoryLibraryStore()
         control.seedLibrary(into: library)
-        let model = MainScreenModel(transport: MockTransport(control: control), library: library)
+        let transport = ObservedMockTransport(control: control, gateFirstRouteCatalog: true)
+        let model = MainScreenModel(transport: transport, library: library)
 
         model.start()
-        try? await Task.sleep(for: .milliseconds(50))
+        defer { transport.releaseFirstRouteCatalog() }
+        try await waitFor("opened catalog read and change subscription") {
+            transport.routeCatalogStartedCount == 1 && transport.catalogChangesObserved
+        }
         control.deviceDeletesRoute(DeviceObjectID(7))
         control.deviceDeletesRoute(DeviceObjectID(8))
+        transport.releaseFirstRouteCatalog()
 
-        try await waitFor("coalesced delete reconcile") {
-            model.loadState == .loaded
+        try await waitFor("coalesced follow-up reconcile") {
+            transport.routeCatalogCompletedCount >= 2
+                && model.loadState == .loaded
                 && !model.isUploaded(RouteID("kettle-moraine-loop"))
         }
-        // Let the dirty follow-up pass drain as well; neither pass is cancelled.
-        try? await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(
+            transport.routeCatalogStartedCount, 2,
+            "the burst queues one follow-up catalog pass"
+        )
         XCTAssertEqual(control.cancelledRouteCatalogReadCount, 0)
     }
 
@@ -868,7 +880,10 @@ final class MainScreenModelTests: XCTestCase {
         try await startLoaded(model)
         try await waitFor("the identity scope") { model.connectedScope != nil }
         XCTAssertEqual(model.onDeviceState(record.id), .notOnDevice, "crc32 = 0 proves nothing — no badge")
-        try? await Task.sleep(for: .milliseconds(50))   // let any reconcile write land
+        let keptUnknownLink = await neverHolds({
+            library.plannedRoutes().first { $0.id == record.id }?.deviceLink == nil
+        }, for: .milliseconds(50))
+        XCTAssertTrue(keptUnknownLink, "an unknown CRC must not clear the link")
         XCTAssertNotNil(library.plannedRoutes().first { $0.id == record.id }?.deviceLink,
                         "an unknown CRC is not a disproof — the link is kept")
     }
@@ -890,7 +905,10 @@ final class MainScreenModelTests: XCTestCase {
         try await waitFor("the identity scope") { model.connectedScope != nil }
         XCTAssertEqual(model.onDeviceState(record.id), .notOnDevice, "device B's link never badges on device A")
         XCTAssertNil(model.plannedDeviceObjectID(for: record.id), "…and never threads a replace target")
-        try? await Task.sleep(for: .milliseconds(50))
+        let keptForeignLink = await neverHolds({
+            library.plannedRoutes().first { $0.id == record.id }?.deviceLink != foreignLink
+        }, for: .milliseconds(50))
+        XCTAssertTrue(keptForeignLink, "device A must not rewrite device B's link")
         XCTAssertEqual(
             library.plannedRoutes().first { $0.id == record.id }?.deviceLink, foreignLink,
             "device A's reconcile must not clear device B's link")

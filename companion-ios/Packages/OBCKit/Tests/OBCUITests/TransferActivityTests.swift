@@ -27,14 +27,14 @@ struct TransferActivityTests {
         let second = activity.begin()
 
         let resumed = Flag()
+        activity.end(first)
         let waiter = Task {
             await activity.waitUntilIdle()
             resumed.value = true
         }
 
-        try? await Task.sleep(for: .milliseconds(50))
-        activity.end(first)
-        try? await Task.sleep(for: .milliseconds(50))
+        let stayedParked = await neverHolds({ resumed.value }, for: .milliseconds(50))
+        #expect(stayedParked, "one claim still open — the drain keeps waiting")
         #expect(!resumed.value, "one claim still open — the drain keeps waiting")
 
         activity.end(second)
@@ -58,7 +58,6 @@ struct TransferActivityTests {
         let activity = TransferActivity()
         let token = activity.begin()
         let waiter = Task { await activity.waitUntilIdle() }
-        try? await Task.sleep(for: .milliseconds(50))
         waiter.cancel()
         await waiter.value  // must resume promptly despite the open claim
         #expect(activity.isActive)
@@ -158,7 +157,11 @@ struct TransferActivityTests {
         // leave nothing to wait on, so settle, then assert nothing moved —
         // slow delivery only makes the negative asserts vacuously true.
         transport.progress.yield(TransferProgress(bytesDone: 20_000, total: 100_000))
-        try? await Task.sleep(for: .milliseconds(100))
+        let stayedParked = await neverHolds({
+            model.progress.bytesDone != 10_000 || model.phase != .interrupted
+                || activity.isActive
+        }, for: .milliseconds(100))
+        #expect(stayedParked, "a stale tick must not change the parked upload")
         #expect(model.progress.bytesDone == 10_000, "a stale pre-drop tick must not move the parked bar")
         #expect(model.phase == .interrupted, "…or resurrect .uploading")
         #expect(!activity.isActive, "…or re-claim the ledger")

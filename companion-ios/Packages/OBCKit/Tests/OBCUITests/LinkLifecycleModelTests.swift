@@ -22,11 +22,6 @@ struct LinkLifecycleModelTests {
         return (model, transport, grace, activity)
     }
 
-    /// A beat for negative assertions ("nothing further happens").
-    private func settle() async {
-        try? await Task.sleep(for: .milliseconds(120))
-    }
-
     private func startConnected(
         _ model: LinkLifecycleModel, _ transport: SpyTransport
     ) async throws {
@@ -47,7 +42,10 @@ struct LinkLifecycleModelTests {
         #expect(model.phase == .draining)
         #expect(grace.begun.count == 1, "the drain runs under a system grace window")
 
-        await settle()
+        let stayedConnected = await neverHolds({
+            transport.count("suspendLink") > 0
+        }, for: .milliseconds(120))
+        #expect(stayedConnected, "an in-flight transfer is never dropped")
         #expect(transport.count("suspendLink") == 0, "an in-flight transfer is never dropped")
 
         activity.end(token)
@@ -111,7 +109,11 @@ struct LinkLifecycleModelTests {
 
         model.scenePhaseChanged(to: .inactive)
         model.scenePhaseChanged(to: .active)
-        await settle()
+        let stayedUp = await neverHolds({
+            transport.count("suspendLink") > 0 || transport.count("disconnect") > 0
+                || !grace.begun.isEmpty
+        }, for: .milliseconds(120))
+        #expect(stayedUp, "an inactive flicker must not churn the link")
         #expect(transport.count("suspendLink") == 0)
         #expect(transport.count("disconnect") == 0)
         #expect(model.phase == .foreground)
@@ -130,7 +132,10 @@ struct LinkLifecycleModelTests {
         // link: the suspend went through `suspendLink()` (whose contract is
         // drop + pause the transport's own reconnect loop) and the model never
         // resumes without a foreground transition.
-        await settle()
+        let stayedPaused = await neverHolds({
+            transport.count("resumeLink") > 0 || transport.count("connect") > 0
+        }, for: .milliseconds(120))
+        #expect(stayedPaused, "the backgrounded model must not raise the link")
         #expect(transport.count("suspendLink") == 1)
         #expect(transport.count("disconnect") == 0)
         #expect(transport.count("resumeLink") == 0)
@@ -156,7 +161,10 @@ struct LinkLifecycleModelTests {
 
         // The transfer finishing later must not fire the canceled suspend.
         activity.end(token)
-        await settle()
+        let stayedConnected = await neverHolds({
+            transport.count("suspendLink") > 0 || transport.count("resumeLink") > 0
+        }, for: .milliseconds(120))
+        #expect(stayedConnected, "the canceled drain must not act after foregrounding")
         #expect(transport.count("suspendLink") == 0, "the link never dropped")
         #expect(transport.count("resumeLink") == 0, "nothing to resume")
     }
@@ -181,7 +189,10 @@ struct LinkLifecycleModelTests {
         model.scenePhaseChanged(to: .active)
         try await waitFor("resume after a forced suspend") { transport.count("resumeLink") == 1 }
         activity.end(token)
-        await settle()
+        let stayedOnce = await neverHolds({
+            transport.count("suspendLink") > 1
+        }, for: .milliseconds(120))
+        #expect(stayedOnce, "the late drain must not suspend twice")
         #expect(transport.count("suspendLink") == 1, "the late drain must not re-suspend")
     }
 
@@ -194,7 +205,10 @@ struct LinkLifecycleModelTests {
         model.scenePhaseChanged(to: .background)
         try await waitFor("suspended") { model.phase == .suspended }
         model.scenePhaseChanged(to: .active)
-        await settle()
+        let stayedIdle = await neverHolds({
+            transport.count("resumeLink") > 0 || transport.count("connect") > 0
+        }, for: .milliseconds(120))
+        #expect(stayedIdle, "a never-connected session must not start a scan")
         #expect(
             transport.count("resumeLink") == 0,
             "no link existed at suspend time — checking a text must not start a scan")

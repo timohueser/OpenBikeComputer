@@ -113,8 +113,10 @@ struct TripReconcileModelTests {
         model.fileRoute(newRoute, into: .existing(tripID))
         await singleRouteUpload(model, control: control, routeID: newRoute)
 
-        // Give any (erroneous) adoption push a beat, then assert none happened.
-        try? await Task.sleep(for: .milliseconds(80))
+        let stayedStandalone = await neverHolds({
+            control.deviceTripCount > 0
+        }, for: .milliseconds(80))
+        #expect(stayedStandalone, "an offline trip must not be adopted by a route-only upload")
         #expect(control.deviceTripCount == 0)
     }
 
