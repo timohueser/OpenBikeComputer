@@ -45,6 +45,10 @@ passing results for all the tests its plan cites. Test names alone cannot establ
 owner judges whether the criteria capture the whole requirement and the evidence supports each claim.
 A candidate exception remains a separate administrator decision.
 
+The **Coverage** tab shows the same states for the whole revision: covered requirements, covered
+criteria, the catalogue tests that plans cite, and a chart of covered requirements per saved
+revision. It reads the saved revisions and needs no extra bookkeeping.
+
 ### Edit coverage yourself
 
 Select **Define coverage** or **Edit coverage** on a requirement. The plan is part of the
@@ -72,11 +76,13 @@ manual procedure that the plan cites nowhere, a sentence above **Approve** names
 assessed, in one action. **Reject** asks for feedback, which the agent can read before submitting a revision. Agents
 cannot approve coverage.
 
-Save or discard requirement drafts before approving. Approval rechecks the target requirement,
-coverage, test definitions, and catalogue; stale proposals must be refreshed. Changes to other
-requirements do not prevent approval. After a decision, the next requirement in the review queue
-opens. While a proposal is on screen, Ctrl+Enter (or ⌘+Enter) approves it and Escape closes the
-feedback box.
+Save or discard requirement drafts before approving. A proposal cannot be approved once its
+requirement is deleted or its evidence has left the catalogue. If the statement, the tests, or the
+plan changed after the agent assessed them, a warning names what changed; approval stays possible,
+so a typo fix or a removed obligation does not force a new proposal. Changes to other requirements
+do not affect a proposal. After a decision, the view stays on the requirement; the **proposals to
+review** button opens the next one. While a proposal is on screen, Ctrl+Enter (or ⌘+Enter)
+approves it and Escape closes the feedback box.
 
 ### When a requirement changes
 
@@ -409,7 +415,9 @@ Prefer a whole coverage plan when assessing a requirement. Read the current requ
 existing coverage first. Audit the source at an exact commit. Identify every obligation, preserve
 stable criterion IDs when revising a plan, map tests by their actual assertions, and describe
 missing tests or implementation in `gap`. Do not change the requirement title or statement.
-A plan is covered when every criterion has evidence and no gap; otherwise it is partial.
+Keep `rationale` to two or three sentences: the scope of the audit and the conclusion. The
+criteria carry the detail. A plan is covered when every criterion has evidence and no gap;
+otherwise it is partial.
 Proposing a plan never approves it.
 
 Read decisions and reviewer feedback with `GET /api/coverage-proposals`. Send
