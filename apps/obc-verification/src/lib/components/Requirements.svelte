@@ -196,16 +196,6 @@
       await loadProposals();
     } catch (e) { error = message(e); } finally { busy = false; }
   }
-  async function approveCoverage() {
-    if (!requirement || busy) return;
-    busy = true; error = ''; notice = '';
-    try {
-      const saved = await api<Revision>(`/api/requirements/${requirement.id}/coverage/approve`, 'POST', { baseRevision: revision.id });
-      revision = saved; requirements = clone(saved.requirements); onsaved(saved);
-      notice = 'Coverage approved. Test results and existing candidates are unchanged.';
-      await loadProposals();
-    } catch (e) { error = message(e); } finally { busy = false; }
-  }
   async function refresh() {
     if (dirty && !confirm('Discard this draft and load the latest saved revision?')) return;
     busy = true; error = '';
@@ -288,19 +278,18 @@
   </div>
   {:else}<h2 class="requirement-title">{requirement.title || 'Untitled requirement'}</h2><div class="requirement-statement"><Markdown text={requirement.statement} /></div>{/if}
   {@const saved = revision.requirements.find(r => r.id === requirement.id)}
-    {@const changed = !!saved?.coverage?.review && coverageDefinition(saved) !== coverageDefinition(requirement)}
+  {@const changed = !saved || coverageDefinition(saved) !== coverageDefinition(requirement)}
   {@const plans = pendingPlans.filter(p => p.requirementId === requirement.id)}
   {@const decided = coverageProposals.filter(p => p.requirementId === requirement.id && p.status !== 'pending' && p.status !== 'superseded')}
   <section class="section coverage-section" aria-label="Requirement coverage">
-    <div class="row"><div class="row coverage-head"><h2>Coverage</h2><CoverageBadge {requirement} {changed} /></div>{#if !coverageEditing}<button disabled={busy} on:click={editCoverage}>{requirement.coverage ? 'Edit coverage' : 'Define coverage'}</button>{/if}</div>
+    <div class="row"><div class="row coverage-head"><h2>Coverage</h2><CoverageBadge {requirement} /></div>{#if !coverageEditing}<button disabled={busy} on:click={editCoverage}>{requirement.coverage ? 'Edit coverage' : 'Define coverage'}</button>{/if}</div>
     {#if coverageEditing}<CoverageEditor {requirement} {catalog} {busy} bind:editing={procedureOpen} onchange={() => requirements = [...requirements]} ondone={closeCoverage} onrefresh={refreshCatalog} />
     {:else}
       {#each plans as p (p.id)}<CoverageProposal proposal={p} {requirement} {catalog} {busy} {dirty} bind:rejecting ondecide={decide} />{/each}
       {#if requirement.coverage}
         {#if plans.length}<p class="eyebrow current-plan">Current plan</p>{/if}
-        {#if requirement.coverage.review && !changed}<p class="small muted">Approved by {requirement.coverage.review.author} · {date(requirement.coverage.review.createdAt)}{#if requirement.coverage.review.sourceSha}{' · '}catalogue <code>{requirement.coverage.review.sourceSha.slice(0, 10)}</code>{/if}</p>
-        {:else if dirty}<p class="small muted">Save the revision, then approve the coverage.</p>
-        {:else}<div class="approve row"><div class="actions"><button class="primary" disabled={busy} on:click={approveCoverage}>Approve coverage</button><span class="small muted">Attests this statement, its tests, and this plan.</span></div></div>{/if}
+        {#if changed}<p class="small muted">Approved when you save the revision.</p>
+        {:else if requirement.coverage.review}<p class="small muted">Approved by {requirement.coverage.review.author} · {date(requirement.coverage.review.createdAt)}{#if requirement.coverage.review.sourceSha}{' · '}catalogue <code>{requirement.coverage.review.sourceSha.slice(0, 10)}</code>{/if}</p>{/if}
         <CoveragePlan plan={requirement.coverage} {requirement} {catalog} />
       {:else if !plans.length}<div class="empty coverage-empty"><h3>What would prove this requirement?</h3><p class="muted">Break it into checkable criteria, attach the tests that prove each one, and note the gaps. Define coverage to start, or wait for an agent proposal.</p></div>{/if}
       {#if decided.length}<details class="small history"><summary>Earlier proposals ({decided.length})</summary>{#each decided as p (p.id)}<p class="small wrap"><span class="badge" class:success={p.status === 'accepted'} class:error={p.status === 'rejected'}>{p.status}</span> {p.author} · {date(p.createdAt)}{#if p.decidedBy} · decided by {p.decidedBy}{/if}{#if p.feedback} · “{p.feedback}”{/if}</p>{/each}</details>{/if}

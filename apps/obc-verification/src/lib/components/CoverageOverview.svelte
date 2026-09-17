@@ -32,7 +32,7 @@
   <section class="tile" aria-label="Requirements">
     <div class="eyebrow">Requirements</div><div class="n">{now.states.covered} <small>of {now.active} covered</small></div>
     <div class="bar"><span class="covered" style:width={pct(now.states.covered, now.active)}></span><span class="partial" style:width={pct(now.states.partial, now.active)}></span><span class="review" style:width={pct(now.states['needs-review'], now.active)}></span></div>
-    <div class="legend"><span><i class="covered"></i>{now.states.covered} covered</span><span><i class="partial"></i>{now.states.partial} partial</span><span><i class="review"></i>{now.states['needs-review']} needs review</span><span><i class="none"></i>{now.states.unassessed} not assessed</span></div>
+    <div class="legend"><span><i class="covered"></i>{now.states.covered} covered</span><span><i class="partial"></i>{now.states.partial} partial</span>{#if now.states['needs-review']}<span><i class="review"></i>{now.states['needs-review']} needs review</span>{/if}<span><i class="none"></i>{now.states.unassessed} not assessed</span></div>
   </section>
   <section class="tile" aria-label="Acceptance criteria">
     <div class="eyebrow">Acceptance criteria</div><div class="n">{now.criteria.covered} <small>of {now.criteria.total} covered</small></div>

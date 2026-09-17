@@ -36,7 +36,7 @@ requirement, with the count of covered criteria:
 | State | Meaning |
 | --- | --- |
 | Not assessed | No plan has been saved. |
-| Needs review | A plan exists, but the statement, the tests, or the plan changed after approval. |
+| Needs review | A plan saved under the earlier workflow and not yet approved. The next save approves it. |
 | Partial | Approved, but gaps remain. |
 | Covered | Approved, and every criterion has evidence. Only this state satisfies the release gate. |
 
@@ -60,10 +60,10 @@ in the picker creates one on the spot, **Refresh catalogue** gets tests from a n
 attaches the tests: **Remove** on a piece of evidence unlinks its test. A manual procedure that no
 criterion cites is deleted with its steps, so removing its last citation asks you to confirm.
 
-**Save revision** stores the plan with the requirement. Saving never approves: the badge shows
-**Needs review** until you select **Approve coverage**. Approval attests the saved statement, tests,
-and plan. It records the CI catalogue commit of that moment for the report, and does not create
-test results. Approving again after a change is the same single action, with nothing to re-enter.
+**Save revision** stores the plan with the requirement and approves it, exactly like saving the
+statement: a revision is an owner's act. The review records the CI catalogue commit of that moment
+for the report and does not create test results. A save also approves any plan that was saved
+under the earlier workflow and still waits for approval, whichever requirement the save touched.
 
 ### Review an agent's proposal
 
@@ -86,14 +86,15 @@ approves it and Escape closes the feedback box.
 
 ### When a requirement changes
 
-A change to the statement, the tests, or the plan itself keeps the criteria, evidence, and gaps
-but clears the approval; the badge shows **Needs review**. Check the plan, or ask an agent to
-reassess it, then approve again. Renaming a requirement, changing its group, or changing labels
-does not invalidate coverage. Labels still apply their own release gates. Changes to another requirement do not clear
-this requirement's approval.
+A change to the statement, the tests, or the plan itself keeps the criteria, evidence, and gaps,
+and the save renews the review with your name and the current catalogue commit. Renaming a
+requirement, changing its group, or changing labels keeps the existing review, including one that
+came from an agent's proposal. Labels still apply their own release gates. Changes to another
+requirement do not touch this requirement's review. Pending proposals for a changed requirement
+show a warning, as described above.
 
 The review records one source commit for the report: the commit the agent assessed, or the CI
-catalogue commit when you approve the plan yourself. The release gate checks that every test the
+catalogue commit when you save the plan yourself. The release gate checks that every test the
 plan cites is present and passes in the candidate. A new source commit thus does not clear an approval. Existing candidates keep their original requirement and coverage snapshots.
 Published reports remain frozen.
 
@@ -111,9 +112,9 @@ The disposable database starts with accepted plans and proposals that revise the
 - **SYS-039**: an approved partial plan with a pending proposal above it. The proposal replaces an
   obsolete smoke test with selection evidence; the omitted test is unlinked, persistence remains a
   gap, and approval keeps coverage partial. Or select **Edit coverage**, add a manual procedure as
-  evidence, save the revision, and approve.
-- **SYS-030**: a demo addition to the requirement cleared the approval while keeping the criteria.
-  Its proposal records the added zoom obligation as a gap. Its plan also cites a manual procedure.
+  evidence, and save the revision.
+- **SYS-030**: a demo addition to the requirement statement, saved by the owner. Its proposal
+  records the added zoom obligation as a gap. Its plan also cites a manual procedure.
 - **Releases → v0.0.0-coverage-demo**: the candidate retains the earlier snapshot and simulated
   passing results. Later edits do not change its evidence.
 
@@ -474,8 +475,8 @@ proposal, which stays in history as superseded. After rejection, read `feedback`
 proposal against the latest requirement revision. An agent cannot accept or reject plans. Owners
 edit the plan as part of the requirement draft: `PUT /api/requirements` accepts a `coverage` plan
 on each requirement, validates it the same way, makes the requirement's tests the tests that plan
-cites, and never accepts an approval. Owners approve a saved requirement with
-`POST /api/requirements/ID/coverage/approve` and `{ "baseRevision": N }`. Both require an owner session and exact browser origin. Owner review of
+cites, and never accepts an approval from the client: the save itself records the owner's review
+on each plan it changes. It requires an owner session and exact browser origin. Owner review of
 an agent proposal uses `POST /api/coverage-proposals/ID` with `{ "accept": true, "feedback": "" }`.
 
 Approval rechecks the requirement, its tests, the current coverage plan, and the catalogue.

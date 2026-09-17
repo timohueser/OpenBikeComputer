@@ -99,11 +99,13 @@ export class Store {
   saveRevision(base: number, author: string, requirements: Requirement[]): Revision {
     return this.atomic(() => this.writeRevision(base, author, requirements));
   }
-  /** Approval is never taken from the input: it is granted here, or carried over while the approved definition is unchanged. */
+  /** Approval is never taken from the input. Saving is an owner's act: a plan whose statement, tests, or criteria changed is approved by the save. An accepted proposal carries its own review. */
   private writeRevision(base: number, author: string, requirements: Requirement[], approved?: { requirementId: string; review: CoverageReview }): Revision {
     const row = this.db.prepare('SELECT MAX(id) AS id FROM revisions').get();
     assert(Number(row?.id ?? 0) === base, 'Requirements changed. Reload before saving.', 409);
     const previous = new Map((base ? this.revision(base).requirements : []).map(r => [r.id, r]));
+    const createdAt = new Date().toISOString();
+    const sourceSha = this.catalog().sourceSha;
     requirements = requirements.map(r => {
       const { coverage, ...definition } = r;
       if (!coverage) return definition;
@@ -111,10 +113,10 @@ export class Store {
       const before = previous.get(r.id);
       if (approved?.requirementId === r.id) plan.review = approved.review;
       else if (before?.coverage?.review && coverageDefinition(before) === coverageDefinition(r)) plan.review = before.coverage.review;
+      else plan.review = { author, createdAt, ...(sourceSha ? { sourceSha } : {}) };
       return { ...definition, coverage: plan };
     });
     this.rememberRequirementNumbers(requirements);
-    const createdAt = new Date().toISOString();
     const inserted = this.db.prepare('INSERT INTO revisions(created_at,author,body) VALUES (?,?,?)').run(createdAt, author, JSON.stringify(requirements));
     return { id: Number(inserted.lastInsertRowid), author, createdAt, requirements };
   }
@@ -157,17 +159,6 @@ export class Store {
   }
   file(id: string): Attachment { return this.get<Attachment>('file', id); }
   catalog(): Catalog { return this.maybe<Catalog>('catalog', 'current') ?? { sourceSha: '', updatedAt: '', cases: [] }; }
-  approveCoverage(base: number, requirementId: string, author: string): Revision {
-    return this.atomic(() => {
-      const revision = this.latestRevision();
-      assert(revision.id === base, 'Requirements changed. Reload before approving coverage.', 409);
-      const requirement = revision.requirements.find(r => r.id === requirementId);
-      assert(requirement, 'Requirement not found.', 404);
-      assert(requirement.coverage, 'Define coverage before approving it.');
-      const sourceSha = this.catalog().sourceSha;
-      return this.writeRevision(base, author, revision.requirements, { requirementId, review: { author, createdAt: new Date().toISOString(), ...(sourceSha ? { sourceSha } : {}) } });
-    });
-  }
   decideCoverageProposal(id: string, author: string, accept: boolean, feedback?: string): CoverageProposal {
     return this.atomic(() => this.decideCoverage(this.get<CoverageProposal>('coverage-proposal', id), author, accept, feedback));
   }

@@ -69,7 +69,7 @@ plans[0].criteria[2].evidence = [{ caseId: cases[3].id, rationale: 'Illustrative
 plans[0].criteria[2].gap = '';
 plans[0].rationale = 'Demo revision: replace the obsolete smoke test with evidence for user selection. Persistence remains a gap; coverage stays partial.';
 await propose(0);
-// A requirement edit retains its plan but invalidates review; the candidate above stays frozen.
+// A requirement edit keeps its plan and is approved by the save; the candidate above stays frozen.
 const changed = db.latestRevision();
 changed.requirements[1].statement += ' Returning shall also preserve the selected zoom level. (Demo addition.)';
 db.saveRevision(changed.id, 'Demo requirement edit', changed.requirements);
@@ -78,6 +78,6 @@ plans[1].rationale = 'The requirement gained a zoom-preservation clause. Keep th
 await propose(1);
 db.db.close();
 const child = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'dev', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: resolve(import.meta.dirname, '..'), env: process.env, stdio: 'inherit' });
-console.log(`\nLocal coverage demo: ${process.env.ORIGIN}\nUsername: demo\nPassword: ${password}\nDisposable database: ${directory}\nSYS-039: approve or edit the proposed evidence replacement. SYS-030: a demo requirement edit needs review. The release candidate retains the earlier snapshot. New demo tests and all results are illustrative.\n`);
+console.log(`\nLocal coverage demo: ${process.env.ORIGIN}\nUsername: demo\nPassword: ${password}\nDisposable database: ${directory}\nSYS-039: approve or edit the proposed evidence replacement. SYS-030: a proposal records a demo requirement addition as a gap. The release candidate retains the earlier snapshot. New demo tests and all results are illustrative.\n`);
 for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => child.kill(signal));
 child.on('exit', code => { rmSync(directory, { recursive: true, force: true }); process.exitCode = code ?? 0; });
