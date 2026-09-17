@@ -104,17 +104,16 @@ The workflow builds the bootloader and application. It converts the application 
 
 Each active system requirement needs an approved coverage plan. The plan maps acceptance criteria
 to tests and records remaining gaps. An agent can propose the whole plan or changes to accepted
-coverage. An owner edits the plan as part of the requirement draft, together with its tests, and
-approves the saved requirement with one action. A requirement carries exactly the tests its plan
-cites: a plan that omits a test unlinks it, and approval of an agent proposal applies the criteria
-and the test links in the same step. Each requirement shows one coverage
-state: not assessed, needs review, partial, or covered. Coverage and candidate test results remain
-separate; only a covered, approved plan satisfies verification, even if all its tests pass.
-Statement or test-definition changes retain the plan but clear its approval; title and group edits
-preserve it. The review records one source commit for the report: the commit the agent assessed,
-or the test catalogue commit when the owner approves the plan. The release gate checks that every
-cited test is present and passes in the candidate. Existing candidates retain their saved coverage
-and evidence.
+coverage; an owner approves or rejects each proposal. An owner edits the plan as part of the
+requirement draft, together with its tests, and saving the revision approves it, because a saved
+revision is an owner's act. A requirement carries exactly the tests its plan cites: a plan that
+omits a test unlinks it, and approval of an agent proposal applies the criteria and the test links
+in the same step. Each requirement shows one coverage state: not assessed, partial, or covered.
+Coverage and candidate test results remain separate; only a covered, approved plan satisfies
+verification, even if all its tests pass. The review records one source commit for the report: the
+commit the agent assessed, or the test catalogue commit when the owner saved the plan. The release
+gate checks that every cited test is present and passes in the candidate. Existing candidates
+retain their saved coverage and evidence.
 
 Every cited automated test needs a pass
 from this candidate's CI run. Every cited manual test needs a recorded pass for this candidate.
