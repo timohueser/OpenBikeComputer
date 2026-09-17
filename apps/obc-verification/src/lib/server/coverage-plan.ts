@@ -1,4 +1,3 @@
-import { isDeepStrictEqual } from 'node:util';
 import type { AcceptanceCriterion, Catalog, CoveragePlan, CoverageProposal, Requirement, Revision } from '../types.ts';
 import { evidenceKey, planProblem, verificationDefinition } from '../coverage.ts';
 import { assert, identifier, text } from './domain.ts';
@@ -50,13 +49,27 @@ export function linkEvidence(requirement: Requirement, plan: CoveragePlan, catal
   requirement.tests = requirement.tests.filter(t => cited.has(t.kind === 'automated' ? t.caseId! : t.id));
 }
 
-export function coverageConflict(proposal: CoverageProposal, base: Revision | undefined, current: Revision, catalog: Catalog): string | undefined {
-  const before = base?.requirements.find(r => r.id === proposal.requirementId);
+/** Why a proposal cannot be approved: its requirement is gone or its evidence is no longer available. */
+export function coverageConflict(proposal: CoverageProposal, current: Revision, catalog: Catalog): string | undefined {
   const now = current.requirements.find(r => r.id === proposal.requirementId);
-  if (!before || !now) return 'Requirement no longer exists. Request a fresh coverage proposal.';
-  if (verificationDefinition(before) !== verificationDefinition(now) || !isDeepStrictEqual(before.coverage, now.coverage)) return 'Requirement, test links, or coverage plan changed. Request an updated proposal.';
+  if (!now) return 'Requirement no longer exists. Request a fresh coverage proposal.';
   try { coveragePlan(proposal.plan, now, catalog); }
   catch (error) { return error instanceof Error ? error.message : 'Evidence is no longer available.'; }
+}
+/** What changed on the requirement since the proposal's base revision. The owner judges whether the plan still fits. */
+export function coverageStale(proposal: CoverageProposal, base: Revision | undefined, current: Revision): string | undefined {
+  const before = base?.requirements.find(r => r.id === proposal.requirementId);
+  const now = current.requirements.find(r => r.id === proposal.requirementId);
+  if (!now) return;
+  if (!before) return `Proposed against revision r${proposal.baseRevision}, which no longer holds this requirement. Check that the plan fits before approving.`;
+  const planOf = (r: Requirement) => JSON.stringify(r.coverage ? [r.coverage.rationale, r.coverage.criteria] : null);
+  const changed = [
+    before.statement !== now.statement && 'statement',
+    verificationDefinition({ ...before, statement: now.statement }) !== verificationDefinition(now) && 'tests',
+    planOf(before) !== planOf(now) && 'coverage plan'
+  ].filter((part): part is string => !!part);
+  if (!changed.length) return;
+  return `The ${new Intl.ListFormat('en').format(changed)} changed after this proposal was made against r${proposal.baseRevision}. Approving replaces the current plan and its test links; check that the plan still fits.`;
 }
 /** Attaches each requirement's validated draft plan and makes its tests the tests that plan cites. */
 export function draftCoverage(requirements: Requirement[], raw: unknown, catalog: Catalog, id: () => string): Requirement[] {
