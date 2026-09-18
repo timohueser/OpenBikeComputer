@@ -54,17 +54,39 @@ export function coverageIssues(requirement: Requirement): string[] {
   return issues;
 }
 
-export type CoverageState = 'unassessed' | 'needs-review' | 'partial' | 'covered';
+/** Makes the requirement's tests exactly the tests its plan cites: links new catalogue cases, adds the proposal's procedures, and drops the rest. */
+export function linkEvidence(requirement: Requirement, plan: CoveragePlan, catalog: Catalog, id: () => string, procedures: VerificationTest[] = []): void {
+  const cited = new Set(plan.criteria.flatMap(c => c.evidence.map(evidenceKey)));
+  for (const evidence of plan.criteria.flatMap(c => c.evidence)) {
+    // A case the catalogue no longer has is left alone; validating the plan is what refuses it.
+    const found = evidence.caseId && !requirement.tests.some(t => t.caseId === evidence.caseId)
+      ? catalog.cases.find(c => c.id === evidence.caseId) : undefined;
+    if (found) requirement.tests.push({ id: id(), title: found.name.slice(0, 300), kind: 'automated', caseId: found.id, inputs: [] });
+    const procedure = evidence.testId && !requirement.tests.some(t => t.id === evidence.testId) ? procedures.find(p => p.id === evidence.testId) : undefined;
+    if (procedure) requirement.tests.push(structuredClone(procedure));
+  }
+  requirement.tests = requirement.tests.filter(t => cited.has(t.kind === 'automated' ? t.caseId! : t.id));
+}
+
+export type CoverageState = 'unassessed' | 'needs-review' | 'uncovered' | 'partial' | 'covered';
 export interface CoverageSummary { state: CoverageState; label: string; covered: number; total: number }
-const labels: Record<CoverageState, string> = { unassessed: 'Not assessed', 'needs-review': 'Needs review', partial: 'Partial', covered: 'Covered' };
-/** One state per requirement. "Covered" is the only state that satisfies the release gate. */
+const labels: Record<CoverageState, string> = { unassessed: 'Not assessed', 'needs-review': 'Needs review', uncovered: 'Not covered', partial: 'Partial', covered: 'Covered' };
+/**
+ * One state per requirement. "Covered" is the only state that satisfies the release gate.
+ *
+ * Writing the criteria down is not coverage: a plan whose criteria all still want evidence is "not
+ * covered", the same as a requirement with no plan at all. "Partial" means at least one criterion
+ * has its evidence.
+ */
 export function coverageSummary(requirement: Requirement): CoverageSummary {
   const plan = requirement.coverage;
   const total = plan?.criteria.length ?? 0;
   const covered = plan?.criteria.filter(c => criterionCovered(requirement, c)).length ?? 0;
   const state: CoverageState = !plan ? 'unassessed'
     : !plan.review ? 'needs-review'
-    : total > 0 && covered === total ? 'covered' : 'partial';
+    : total > 0 && covered === total ? 'covered'
+    : covered > 0 ? 'partial'
+    : 'uncovered';
   return { state, label: labels[state], covered, total };
 }
 export function coverageChanges(requirement: Requirement, plan: CoveragePlan) {
@@ -81,7 +103,7 @@ export interface CoverageProgress { states: Record<CoverageState, number>; activ
 /** Progress across the active requirements of one revision: requirement states, criteria, and the catalogue tests their plans cite. */
 export function coverageProgress(requirements: Requirement[], catalog: Catalog): CoverageProgress {
   const active = requirements.filter(r => r.active);
-  const states: Record<CoverageState, number> = { unassessed: 0, 'needs-review': 0, partial: 0, covered: 0 };
+  const states: Record<CoverageState, number> = { unassessed: 0, 'needs-review': 0, uncovered: 0, partial: 0, covered: 0 };
   const criteria = { covered: 0, total: 0 };
   const known = new Set(catalog.cases.map(c => c.id));
   const cited = new Set<string>();
