@@ -51,6 +51,10 @@ final class PhoneSensors: NSObject, CLLocationManagerDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(pushBattery),
             name: UIDevice.batteryLevelDidChangeNotification, object: nil)
+
+        #if DEBUG
+            restartPretendTimer()
+        #endif
     }
 
     /// Stop every sensor. The host pointer goes first: nothing must reach a closed host.
@@ -63,10 +67,18 @@ final class PhoneSensors: NSObject, CLLocationManagerDelegate {
         UIDevice.current.isBatteryMonitoringEnabled = false
         NotificationCenter.default.removeObserver(
             self, name: UIDevice.batteryLevelDidChangeNotification, object: nil)
+        #if DEBUG
+            // The place itself stays set: `attach(to:)` starts the timer again on a reopen.
+            pretendTimer?.invalidate()
+            pretendTimer = nil
+        #endif
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         MainActor.assumeIsolated {
+            #if DEBUG
+                if pretend != nil { return }
+            #endif
             for location in locations where location.horizontalAccuracy >= 0 { push(location) }
         }
     }
@@ -97,6 +109,46 @@ final class PhoneSensors: NSObject, CLLocationManagerDelegate {
             push(altitude: Float(location.altitude))
         }
     }
+
+    #if DEBUG
+        /// A pretend position, set from the developer sheet. While it holds a coordinate the real
+        /// fixes are dropped and this one goes to the host once a second, the cadence a real fix
+        /// has: the app then sees a live rider who stands still, not one fix that goes stale.
+        ///
+        /// The compass, the barometer and the battery stay real, and nothing here is saved.
+        var pretend: CLLocationCoordinate2D? {
+            didSet { restartPretendTimer() }
+        }
+
+        private var pretendTimer: Timer?
+
+        /// Push the place now and once a second from here. Common mode, as the display link uses:
+        /// a `.default` timer stops while a list scrolls, and five seconds of that is the app's
+        /// "No GPS Fix".
+        private func restartPretendTimer() {
+            pretendTimer?.invalidate()
+            pretendTimer = nil
+            guard let pretend else { return }
+            push(pretend)
+            let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.push(pretend) }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            pretendTimer = timer
+        }
+
+        /// A rider who stands still: no course, a speed of zero, and the stamp of this second, so
+        /// the wall clock stays right and the fix is never stale.
+        private func push(_ coordinate: CLLocationCoordinate2D) {
+            guard let host else { return }
+            obc_ios_push_fix(
+                host,
+                Int32((coordinate.latitude * 1e6).rounded()),
+                Int32((coordinate.longitude * 1e6).rounded()),
+                .nan, 0,
+                UInt32(clamping: Int64(Date.now.timeIntervalSince1970)))
+        }
+    #endif
 
     private func push(altitude metres: Float) {
         guard let host else { return }

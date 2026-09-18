@@ -19,6 +19,10 @@ struct DevSheet: View {
                     LabeledContent("Screen", value: controller.screen.isEmpty ? "—" : controller.screen)
                 }
 
+                #if DEBUG
+                    PretendLocationSection(controller: controller)
+                #endif
+
                 Section("Documents") {
                     if inbox.isEmpty {
                         Text("Nothing dropped yet").foregroundStyle(.secondary)
