@@ -1914,16 +1914,31 @@ mod tests {
         );
     }
 
-    /// Contours stay thin, distinct from rock and trails, with index lines visible farther out.
+    /// Perceived brightness of a style colour as the panel's 64-colour gamut renders it.
+    fn luma(color: u16) -> f32 {
+        let (r, g, b) = obc_reader::rgb565_to_device64(color);
+        0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32
+    }
+
+    /// Contours stay thin, readable over every fill they cross, distinct from trails, with index
+    /// lines visible farther out.
     #[test]
     fn the_shipped_schema_carries_both_contour_classes() {
         let cfg = corpus_config();
         for class in [ContourClass::Major, ContourClass::Index] {
             let style = cfg.contour_style(class).unwrap_or_else(|| panic!("{class:?} must be styled"));
             assert_eq!(style.weight, 1, "every contour is authored weight 1");
-            assert_eq!(style.color, 0xAD4A);
-            assert_ne!(style.color, cfg.feature_style("natural", "bare_rock").unwrap().color);
+            assert_eq!(style.color, 0x02AA);
+            // Being a *different* colour is not enough. The panel shows 64 colours, so a contour
+            // one step off a fill is drawn and still unreadable, which is what `0xAD4A` was over
+            // rock. Hold every background a contour crosses to a real luminance gap.
+            for name in ["bare_rock", "wood", "grassland", "land"] {
+                let background = cfg.feature_style("natural", name).unwrap().color;
+                let gap = luma(style.color) - luma(background);
+                assert!(gap.abs() >= 50.0, "{class:?} is only {gap:.0} of 255 from {name}");
+            }
             assert_ne!(style.color, cfg.feature_style("highway", "path").unwrap().color);
+            assert_ne!(style.color, cfg.feature_style("highway", "track").unwrap().color);
             assert!(style.fixed_width, "a contour has no width on the ground — it is off the ramp");
             assert!(style.terrain_layer, "and it is what the device's terrain toggle suppresses");
             let expected_mpp = match class {
