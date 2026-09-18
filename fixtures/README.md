@@ -101,11 +101,12 @@ sources as the v17 revision. No box was self-sourced from a header.
 | `sim-assistant-west-cork` | 2 426 077 B | 2 435 919 B | `west-cork.obcm` | 4 749 504 B | 4 783 296 B |
 | `sim-freiburg` | — | 4 034 978 B | `freiburg.obcm` | — | 5 924 352 B |
 
-**Settlements are the small part of that growth.** A settlement is one 64-byte record, so
-Grimsel's 19 of them cost a few kilobytes with their quadtree. The rest comes from pull request
-#1893, which changed `builder/presets/schema.json` and the packer's path and contour
-handling; these fixtures were last packed before it, so the format bump is the first time
-that work reaches them.
+**Settlements are the small part of that growth.** Grimsel packed from the same source with
+the settlement rows removed gives 4 772 560 B, so its 19 settlements cost 2 048 B — four
+512-byte chunks with their index. The other 800 768 B come from pull request #1893, which
+changed `builder/presets/schema.json` and the packer's path and contour handling. These
+fixtures were last packed before it, so the format bump is the first time that work reaches
+them.
 
 Grimsel's OBCT sidecar is byte-identical again (786 560 B), and the shipped demo map keeps
 the surface terrain it already carried, both verified by digest. The routing pin also holds:
