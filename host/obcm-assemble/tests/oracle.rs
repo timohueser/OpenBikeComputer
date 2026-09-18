@@ -1792,3 +1792,44 @@ fn peak_articles_follow_summit_ids_through_regional_cut_and_assembly() {
     assert!(d.find(&section, SourceId::osm(1, 101)).unwrap().is_none());
     assert!(d.find(&section, SourceId::osm(1, 102)).unwrap().is_some());
 }
+
+/// Settlements travel the cell path unchanged: the cutter puts them in the cells their coordinates
+/// select, the merge collects them into one category-9 block, and the payload the packer wrote — the
+/// population in hundreds of people — comes back as the population the reader reports. A repeated
+/// source identity gives one record, which is the merge's own dedup key.
+#[test]
+fn settlements_survive_assembly_with_their_payload() {
+    use obc_formats::obcm::SettlementClass;
+    use obc_map_scene::BBox;
+    let cfg = config();
+    let (mut ing, ways) = fixture(&cfg);
+    // One settlement each side of the seam, plus a third that repeats the west identity in the
+    // east cell — the case a single-cell fixture cannot produce.
+    let west = Poi { population: Some(250_000), ..poi(21, LAT + 40_000, SEAM - 40_000, "Weststadt") };
+    let east = Poi { population: None, ..poi(23, LAT + 40_000, SEAM + 40_000, "Grüßau") };
+    let twin = Poi { lon_udeg: (SEAM + 60_000) as i32, ..west.clone() };
+    ing.pois.extend([west, east, twin]);
+
+    let dir = scratch("settlements");
+    let summary = cut(&dir, &cfg, &ing, &ways);
+    let (bytes, _) = assembled(&dir, &cfg, &summary);
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).expect("the assembled map parses");
+    let cache = MapCache::new_boxed();
+    let reader = Reader::new(&src, &tables, &cache);
+    let view = BBox {
+        min_lat: LAT as i32 - 200_000,
+        max_lat: LAT as i32 + 200_000,
+        min_lon: SEAM as i32 - 200_000,
+        max_lon: SEAM as i32 + 200_000,
+    };
+    let mut found = Vec::new();
+    reader.visit_settlements_in(&view, |s| found.push(s)).expect("the settlement query runs");
+    found.sort_by(|a, b| a.name.cmp(&b.name));
+    let seen: Vec<_> = found.iter().map(|s| (s.class, s.name.as_str(), s.population)).collect();
+    assert_eq!(
+        seen,
+        vec![(SettlementClass::Village, "Grüßau", None), (SettlementClass::City, "Weststadt", Some(250_000))],
+        "three records, two identities: the stored name and population survive the merge"
+    );
+}
