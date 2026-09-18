@@ -378,7 +378,10 @@ A name is centred on its place, across and down. A name near a side of the scree
 inside it, which moves it by at most half its width, so a long name beside the screen edge is
 still shown. A name is dropped when its place is off the screen, when the name is wider than
 the screen, or when there is no clear space for it. Names keep 12 pixels of clear space from
-each other and from the rider mark, the clock band, the bottom chip band and the scale bar.
+each other, and keep off the map chrome. The chrome is measured for each frame: the rider
+mark, the clock digits when the clock is on, the low-battery cue when the charge is low, the
+pan cues while the rider inspects the map, the bottom chip band and the scale bar. Chrome that
+the frame does not draw holds no space, so the names get that part of the screen.
 Names draw above the terrain and the route and below the waypoints and the rider.
 
 A row can also hold a **value** in place of a screen. Such a row slides the sheet to a nested
