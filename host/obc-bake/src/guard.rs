@@ -82,14 +82,18 @@ pub fn check(url: Option<&str>) -> Result<GuardOutcome, String> {
 
 /// The pure half, so the interesting cases are testable without a network.
 pub fn evaluate(body: &str) -> Result<GuardOutcome, String> {
-    let root: Catalog = serde_json::from_str(body).map_err(|e| format!("catalog: {e}"))?;
-    if root.schema_version != obc_pack::catalog::CATALOG_SCHEMA_VERSION {
+    // Read the envelope version before the document. A catalog of another version need not parse
+    // into this build's model at all, and "missing field `x`" hides the one fact that explains it.
+    let envelope: serde_json::Value = serde_json::from_str(body).map_err(|e| format!("catalog: {e}"))?;
+    let published = envelope.get("schema_version").and_then(serde_json::Value::as_u64);
+    if published != Some(u64::from(obc_pack::catalog::CATALOG_SCHEMA_VERSION)) {
         return Err(format!(
-            "catalog: schema_version {} — this build implements {}",
-            root.schema_version,
+            "catalog: schema_version {} — this build implements {}. Re-bake and publish the catalog.",
+            published.map_or_else(|| "absent".into(), |v| v.to_string()),
             obc_pack::catalog::CATALOG_SCHEMA_VERSION
         ));
     }
+    let root: Catalog = serde_json::from_str(body).map_err(|e| format!("catalog: {e}"))?;
     let expected = obc_formats::obcm::VERSION;
     let cells: usize = root.cell_index.iter().map(|band| band.cell_count as usize).sum();
     if root.schema.obcm_version == expected {
@@ -517,6 +521,25 @@ mod tests {
         let text = outcome.render();
         assert!(text.contains("FAILED"), "{text}");
         assert!(text.contains("obc-bake bake"), "the failure must say what to do: {text}");
+    }
+
+    /// A catalog of the previous envelope version does not parse into this build's model at all —
+    /// its skin records still carry `dashed`. The reader must name the version, not the field.
+    #[test]
+    fn an_older_envelope_reports_its_version_and_asks_for_a_re_bake() {
+        let stale = serde_json::from_str::<serde_json::Value>(obc_pack::catalog::CATALOG_EXAMPLE_JSON)
+            .map(|mut v| {
+                v["schema_version"] = serde_json::json!(obc_pack::catalog::CATALOG_SCHEMA_VERSION - 1);
+                v["skins"][0]["styles"][0]
+                    .as_object_mut()
+                    .map(|s| s.remove("line_style").and_then(|_| s.insert("dashed".into(), false.into())));
+                v.to_string()
+            })
+            .expect("the checked-in example parses");
+        let err = evaluate(&stale).expect_err("an older envelope is refused");
+        assert!(err.contains("schema_version"), "{err}");
+        assert!(err.contains("Re-bake"), "{err}");
+        assert!(!err.contains("missing field"), "the version explains it, not a field: {err}");
     }
 
     #[test]

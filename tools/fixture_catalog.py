@@ -85,7 +85,7 @@ def schema_examples() -> dict[str, bytes]:
     catalog.pop("network_terrain_revision", None)
     for ref in catalog["cell_index"]:
         doc = fine if ref["band"] == "fine" else {
-            "schema_version": 2, "schema_revision": catalog["schema"]["revision"],
+            "schema_version": 3, "schema_revision": catalog["schema"]["revision"],
             "band": ref["band"], "cells": [], "known_empty": [],
         }
         ref.update(_document(objects, f"/{ref['band']}.json", doc))
@@ -169,7 +169,7 @@ def web_assemble() -> dict[str, bytes]:
             {
                 "feature_type": FEATURE_TYPES[s["id"]],
                 "color": s["color"], "weight": s["weight"], "z_index": s["z_index"],
-                "priority": s["priority"], "dashed": s["dashed"],
+                "priority": s["priority"], "line_style": s["line_style"],
                 "fixed_width": s["fixed_width"], "terrain_layer": s["terrain_layer"],
                 "color2": s["color2"],
             }
@@ -189,7 +189,7 @@ def web_assemble() -> dict[str, bytes]:
     for band in sorted(schema["bands"], key=lambda b: -b["cell_log2"]):
         cells = by_band[band["id"]]
         document = {
-            "schema_version": 2, "schema_revision": SCHEMA_REVISION, "band": band["id"],
+            "schema_version": 3, "schema_revision": SCHEMA_REVISION, "band": band["id"],
             "cells": cells, "known_empty": [],
         }
         ref = {"band": band["id"], "cell_log2": band["cell_log2"],
@@ -204,7 +204,7 @@ def web_assemble() -> dict[str, bytes]:
         entry.update(pin(objects, _cell_path("terrain", cell["id"], "obcd"), body))
         terrain_cells.append(entry)
     terrain_index = {
-        "schema_version": 2, "terrain_revision": TERRAIN_REVISION,
+        "schema_version": 3, "terrain_revision": TERRAIN_REVISION,
         "dataset_id": DATASET_ID, "dataset_version": DATASET_VERSION,
         "posting_log2": terrain_doc["posting_log2"], "cell_log2": terrain_doc["cell_log2"],
         "cells": terrain_cells, "known_empty": [],
@@ -219,7 +219,7 @@ def web_assemble() -> dict[str, bytes]:
     }
 
     region_cells = {
-        "schema_version": 2, "schema_revision": SCHEMA_REVISION, "region_id": REGION_ID,
+        "schema_version": 3, "schema_revision": SCHEMA_REVISION, "region_id": REGION_ID,
         "cells": {band: [cell["id"] for cell in cells] for band, cells in by_band.items() if cells},
         "terrain": [cell["id"] for cell in terrain_cells],
     }
@@ -246,7 +246,7 @@ def web_assemble() -> dict[str, bytes]:
     region.update({f"cells_{key}": value for key, value in pinned.items()})
 
     catalog = {
-        "schema_version": 2,
+        "schema_version": 3,
         "generated_at": GENERATED_AT,
         "source": {
             "dataset_id": "fixture",
