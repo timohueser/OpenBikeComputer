@@ -1,4 +1,4 @@
-//! Tests for the `schema_version 2` producer.
+//! Tests for the `schema_version 3` producer.
 //!
 //! The synthetic tree in [`example_tree`] is the source of the four checked-in
 //! worked examples, so it is deliberately small and deliberately covers the shapes a

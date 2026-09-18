@@ -53,7 +53,7 @@ export function fixtureIndex(
     const band = catalog.schema.bands.find((b) => b.id === bandId);
     if (!band) throw new Error(`no band ${bandId}`);
     const doc = {
-        schema_version: 2,
+        schema_version: 3,
         schema_revision: catalog.schema.revision,
         band: bandId,
         known_empty: knownEmpty.map((run) => ({

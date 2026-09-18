@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "OpenBikeComputer map catalog (schema_version 2)",
-  "description": "The schema_version 2 map catalog: one schema, a set of skins, named cell-set regions with drawable boundaries, and digest-pinned per-band cell indices. A consumer prices a selection from this document alone — total bytes and bytes per band, which is the per-file projection a volume set needs — and verifies each satellite against the `bytes` + `sha256` pinned here. The satellite documents are `$defs/CellIndexDocument`, `$defs/RegionCellsDocument` and `$defs/TerrainIndexDocument`. The optional `terrain` block is a second artifact class on its own revision track (§13). Normative contract: OBCC_Spec.md, with OBCA_Spec.md for the grid, bands, and assembly and OBCT_Spec.md for the raster.",
+  "title": "OpenBikeComputer map catalog (schema_version 3)",
+  "description": "The schema_version 3 map catalog: one schema, a set of skins, named cell-set regions with drawable boundaries, and digest-pinned per-band cell indices. A consumer prices a selection from this document alone — total bytes and bytes per band, which is the per-file projection a volume set needs — and verifies each satellite against the `bytes` + `sha256` pinned here. The satellite documents are `$defs/CellIndexDocument`, `$defs/RegionCellsDocument` and `$defs/TerrainIndexDocument`. The optional `terrain` block is a second artifact class on its own revision track (§13). Normative contract: OBCC_Spec.md, with OBCA_Spec.md for the grid, bands, and assembly and OBCT_Spec.md for the raster.",
   "type": "object",
   "properties": {
     "schema_version": {
