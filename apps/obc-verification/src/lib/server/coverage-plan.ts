@@ -33,7 +33,12 @@ export function coveragePlan(value: unknown, requirement: Requirement, catalog: 
       return { ...ref, rationale: text(e.rationale, 'Evidence rationale', 5000) };
     });
     const next = entry.next === undefined || entry.next === null ? undefined : proposedTest(entry.next);
-    return { id, statement: text(entry.statement, 'Acceptance criterion', 5000), evidence, gap: entry.gap.trim(), ...(next ? { next } : {}) };
+    const gap = entry.gap.trim();
+    // A criterion with evidence and no gap is covered, so there is nothing left to build. The common
+    // way this goes wrong is a manual procedure written up twice — once as evidence, once as the
+    // next test — which leaves a covered criterion looking unfinished.
+    assert(!next || gap, 'A next test belongs to a gap. Describe what is missing, or remove the next test.');
+    return { id, statement: text(entry.statement, 'Acceptance criterion', 5000), evidence, gap, ...(next ? { next } : {}) };
   });
   const result: CoveragePlan = { rationale: plan.rationale.trim(), criteria };
   const problem = planProblem(result);
