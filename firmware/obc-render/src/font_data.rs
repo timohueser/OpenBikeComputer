@@ -4,7 +4,7 @@
 //! bold monospace bitmap font. Each tier is one Terminus BDF converted to embedded-graphics'
 //! `MonoFont` strip layout (16 glyphs/row, 1bpp MSB-first) by `fonts/convert_bdf.py`.
 //!
-//! The three text tiers ship the **`latin` charset** — ASCII `0x20..=0x7F` + Latin-1 Supplement
+//! The four text tiers ship the **`latin` charset** — ASCII `0x20..=0x7F` + Latin-1 Supplement
 //! `0xA0..=0xFF` + Latin Extended-A `0x100..=0x17F` (320 glyphs, 20 rows) — so European route,
 //! ride and POI names render their umlauts and accents (ä ö ü ß é è à č š ž ł ő ű …) instead of
 //! `?` (issue #489). Their glyph order matches the [`LATIN`] mapping below. `Huge` is the clock
@@ -14,6 +14,7 @@
 //!
 //! | Tier      | source       | cap px | ≈ mm | charset |
 //! |-----------|--------------|--------|------|---------|
+//! | `Caption` | ter-u20 bold |   13   | 1.76 | latin   |
 //! | `Label`   | ter-u24 bold |   15   | 2.03 | latin   |
 //! | `Body`    | ter-u28 bold |   18   | 2.44 | latin   |
 //! | `Display` | ter-u32 bold |   20   | 2.71 | latin   |
@@ -65,6 +66,11 @@ const fn mono(
         strikethrough: DecorationDimensions::new(cell.1 / 2, 1),
     }
 }
+
+/// Terminus 10×20 bold — cap 13 px (≈ 1.76 mm). The `Caption` tier. A native Terminus cut, not a
+/// reduction of a larger one: the strokes are hinted for this cell, so the face stays legible at
+/// 83 % of the `Label` width.
+pub static TER_U20B: MonoFont = mono(include_bytes!("../fonts/terminus/ter_u20b.raw"), (10, 20), 16, &LATIN);
 
 /// Terminus 12×24 bold — cap 15 px (≈ 2.0 mm). The `Label` tier.
 pub static TER_U24B: MonoFont = mono(include_bytes!("../fonts/terminus/ter_u24b.raw"), (12, 24), 19, &LATIN);

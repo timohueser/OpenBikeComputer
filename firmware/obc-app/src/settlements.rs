@@ -35,10 +35,16 @@ use crate::screen::vocab::marquee::{fit, Fitted};
 const MAX_CANDIDATES: usize = 16;
 /// Labels drawn in one frame. One constant for every scale.
 const MAX_LABELS: usize = 6;
-/// Clear space around a label, in pixels. One constant for every scale.
-const LABEL_MARGIN_PX: i32 = 12;
-/// Characters shown. 12 at the 12 by 24 face is 144 pixels, 60 percent of the panel.
-const MAX_LABEL_CHARS: usize = 12;
+/// The face the names are drawn in. A name annotates a place the rider already sees on the map, so
+/// it is set one tier below the chrome it sits among; every metric below follows from this.
+const LABEL_FONT: Font = Font::Caption;
+/// Clear space around a label, in pixels. One constant for every scale. It holds the same share of
+/// a glyph cell as the 12 px margin held at the `Label` face.
+const LABEL_MARGIN_PX: i32 = 10;
+/// Characters shown. 14 at the 10 by 20 face is 140 pixels, under 60 percent of the panel: the
+/// share 12 characters took at the `Label` face, so no label is wider than before, but a name of up
+/// to 14 characters now reads whole.
+const MAX_LABEL_CHARS: usize = 14;
 /// Slack around the panel, so a small pan needs no new query.
 const CANDIDATE_PAD_PX: f32 = 48.0;
 /// The scale band, in metres per pixel, in which each class shows a name: the class, then `min`,
@@ -193,7 +199,7 @@ fn label_of(c: &Candidate) -> Fitted {
 /// through the shared halo, and never rotated: a name reads upright at every heading.
 pub(crate) fn draw_labels(cv: &mut impl Surface, vp: &Viewport, cache: &SettlementCache, place: &mut PointPlacement) {
     for (at, i) in placements(vp, cache, place) {
-        halo_text(cv, &label_of(&cache.items[usize::from(i)]), at, Font::Label, TextAlign::Center, INK, PARCHMENT);
+        halo_text(cv, &label_of(&cache.items[usize::from(i)]), at, LABEL_FONT, TextAlign::Center, INK, PARCHMENT);
     }
 }
 
@@ -202,7 +208,7 @@ pub(crate) fn draw_labels(cv: &mut impl Surface, vp: &Viewport, cache: &Settleme
 /// The box is centred on the place, both ways, and then shifted back inside the panel, which moves
 /// it by at most half its size because the place itself is on the panel. A wide name near an edge
 /// therefore leans in instead of being refused — without that, an 11-character name needs its place
-/// 66 px clear of both sides of a 240 px panel, which is exactly what starves the large places.
+/// 55 px clear of both sides of a 240 px panel, which is exactly what starves the large places.
 ///
 /// A name is dropped when its place is off the panel, when it is wider than the panel, or when
 /// `place` refuses the box: reserved chrome, or within [`LABEL_MARGIN_PX`] of a name already
@@ -231,8 +237,8 @@ fn placements(vp: &Viewport, cache: &SettlementCache, place: &mut PointPlacement
         if !(0..w).contains(&x) || !(0..h).contains(&y) {
             continue;
         }
-        let tw = text_width(&label_of(c), Font::Label) as i32;
-        let th = Font::Label.line_height() as i32;
+        let tw = text_width(&label_of(c), LABEL_FONT) as i32;
+        let th = LABEL_FONT.line_height() as i32;
         if tw > w || th > h {
             continue;
         }
@@ -556,7 +562,7 @@ mod tests {
         let drawn = drawn_at(&vp, &cache, &mut open_panel());
         let names: StdVec<_> = drawn.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, ["Westedge"], "a place off the panel has no label");
-        let tw = text_width("Westedge", Font::Label) as i32;
+        let tw = text_width("Westedge", LABEL_FONT) as i32;
         assert_eq!(drawn[0].1.x, tw / 2, "the box leans in against the left edge instead of being dropped");
     }
 
@@ -597,7 +603,7 @@ mod tests {
     fn a_long_name_is_cut_with_two_dots() {
         let vp = vp_at(CAM, 30.0);
         let cache = cache_of(&[at_screen(&vp, 120.0, 160.0, SettlementClass::Town, "Sankt Peter im Tal", 5_000)]);
-        assert_eq!(drawn(&vp, &cache, &mut open_panel()), ["Sankt Pete.."]);
+        assert_eq!(drawn(&vp, &cache, &mut open_panel()), ["Sankt Peter.."]);
     }
 
     #[test]
@@ -629,7 +635,7 @@ mod tests {
             candidate(SettlementClass::Town, "Emmendingen", 28_000, 48_121_100, 7_849_700),
         ]);
         let (x, _) = vp.to_screen(7_849_700, 48_121_100);
-        let tw = text_width("Emmendingen", Font::Label) as i32;
+        let tw = text_width("Emmendingen", LABEL_FONT) as i32;
         assert!(x < tw / 2, "the place is nearer the left edge than half the name is wide");
 
         let drawn = drawn_at(&vp, &cache, &mut open_panel());
