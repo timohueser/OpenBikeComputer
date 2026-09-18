@@ -3,7 +3,7 @@
         "id": "default",
         "name": "Default",
         "description": "The shipped look: cream paper, warm through-roads, indigo cycleways, green vegetation.",
-        "version": 3,
+        "version": 4,
         "swatch": [
             "#FF5500",
             "#FFAA00",
@@ -31,10 +31,14 @@
             "living_street": {"color": "0xFFFF", "z_index": 29, "weight": 1, "priority": 3, "color2": "0x52AA"},
             "service": {"color": "0xFFFF", "z_index": 28, "weight": 1, "priority": 3, "color2": "0x52AA"},
             "pedestrian": {"color": "0xFFFF", "z_index": 28, "weight": 1, "priority": 3, "color2": "0x52AA"},
-            "track": {"color": "0xAAA0", "z_index": 24, "weight": 1, "priority": 3},
-            "path": {"color": "0xAAA0", "z_index": 24, "weight": 1, "priority": 3},
-            "footway": {"color": "0xAAA0", "z_index": 24, "weight": 1, "priority": 3},
-            "cycleway": {"color": "0x501F", "z_index": 26, "weight": 2, "priority": 3}
+            "track": {"color": "0xAAA0", "z_index": 24, "weight": 1, "priority": 3, "fixed_width": true},
+            "path": {"color": "0x52A0", "z_index": 24, "weight": 1, "priority": 3, "fixed_width": true},
+            "footway": {"color": "0x52A0", "z_index": 24, "weight": 1, "priority": 3, "line_style": "dashed", "fixed_width": true},
+            "cycleway": {"color": "0x501F", "z_index": 26, "weight": 2, "priority": 3},
+            "steps": {"color": "0x52A0", "z_index": 24, "weight": 1, "priority": 3, "line_style": "dashed", "fixed_width": true},
+            "bridleway": {"color": "0x52A0", "z_index": 24, "weight": 1, "priority": 3, "fixed_width": true},
+            "via_ferrata": {"color": "0x501F", "z_index": 24, "weight": 1, "priority": 3, "line_style": "dashed", "fixed_width": true},
+            "ladder": {"color": "0x501F", "z_index": 24, "weight": 1, "priority": 3, "line_style": "dashed", "fixed_width": true}
         },
         "railway": {
             "rail": {"color": "0x0000", "z_index": 40, "weight": 2, "priority": 2, "line_style": "dashed", "color2": "0xAD55"},
@@ -58,7 +62,13 @@
             "water": {"color": "0x555F", "z_index": 14, "weight": 1, "priority": 2},
             "wood": {"color": "0x554A", "z_index": 4, "weight": 1, "priority": 2},
             "scrub": {"color": "0xAFF5", "z_index": 6, "weight": 1, "priority": 2},
-            "grassland": {"color": "0xAFF5", "z_index": 6, "weight": 1, "priority": 2}
+            "grassland": {"color": "0xAFF5", "z_index": 6, "weight": 1, "priority": 2},
+            "bare_rock": {"z_index": 7, "color": "0xAD55", "weight": 1, "priority": 2},
+            "scree": {"z_index": 7, "color": "0xAD55", "weight": 1, "priority": 2},
+            "shingle": {"z_index": 7, "color": "0xAD55", "weight": 1, "priority": 2},
+            "glacier": {"z_index": 7, "color": "0xAFFF", "weight": 1, "priority": 2},
+            "cliff": {"z_index": 11, "color": "0x52AA", "weight": 1, "priority": 2, "fixed_width": true},
+            "heath": {"color": "0xAFF5", "z_index": 6, "weight": 1, "priority": 2}
         },
         "landuse": {
             "residential": {"color": "0xAD55", "z_index": 2, "weight": 1, "priority": 2},
@@ -76,14 +86,29 @@
             "allotments": {"color": "0xAFF5", "z_index": 6, "weight": 1, "priority": 2}
         },
         "leisure": {
-            "park": {"color": "0xAFF5", "z_index": 6, "weight": 1, "priority": 4}
+            "park": {"color": "0xAFF5", "z_index": 6, "weight": 1, "priority": 4},
+            "garden": {"color": "0xAFF5", "z_index": 6, "weight": 1, "priority": 2},
+            "golf_course": {"color": "0xAFF5", "z_index": 6, "weight": 1, "priority": 2},
+            "recreation_ground": {"color": "0xAFF5", "z_index": 6, "weight": 1, "priority": 2}
         },
         "admin_level": {
             "2": {"color": "0xAAB5", "z_index": 100, "weight": 2, "priority": 3, "line_style": "dashed"}
         },
         "contour": {
-            "major": {"color": "0xAD55", "z_index": 8, "weight": 1, "priority": 4, "line_style": "dashed", "fixed_width": true, "terrain_layer": true},
-            "index": {"color": "0xAD55", "z_index": 9, "weight": 1, "priority": 4, "fixed_width": true, "terrain_layer": true}
+            "major": {"color": "0xAD4A", "z_index": 8, "weight": 1, "priority": 4, "line_style": "dashed", "fixed_width": true, "terrain_layer": true},
+            "index": {"color": "0xAD4A", "z_index": 9, "weight": 1, "priority": 4, "line_style": "dashed", "fixed_width": true, "terrain_layer": true}
+        },
+        "aerialway": {
+            "cable_car": {"z_index": 27, "color": "0x52AA", "weight": 1, "priority": 3, "line_style": "dashed", "fixed_width": true},
+            "gondola": {"z_index": 27, "color": "0x52AA", "weight": 1, "priority": 3, "line_style": "dashed", "fixed_width": true},
+            "chair_lift": {"z_index": 27, "color": "0x52AA", "weight": 1, "priority": 3, "line_style": "dashed", "fixed_width": true},
+            "mixed_lift": {"z_index": 27, "color": "0x52AA", "weight": 1, "priority": 3, "line_style": "dashed", "fixed_width": true},
+            "drag_lift": {"z_index": 27, "color": "0x52AA", "weight": 1, "priority": 3, "line_style": "dashed", "fixed_width": true},
+            "t-bar": {"z_index": 27, "color": "0x52AA", "weight": 1, "priority": 3, "line_style": "dashed", "fixed_width": true},
+            "j-bar": {"z_index": 27, "color": "0x52AA", "weight": 1, "priority": 3, "line_style": "dashed", "fixed_width": true},
+            "platter": {"z_index": 27, "color": "0x52AA", "weight": 1, "priority": 3, "line_style": "dashed", "fixed_width": true},
+            "rope_tow": {"z_index": 27, "color": "0x52AA", "weight": 1, "priority": 3, "line_style": "dashed", "fixed_width": true},
+            "magic_carpet": {"z_index": 27, "color": "0x52AA", "weight": 1, "priority": 3, "line_style": "dashed", "fixed_width": true}
         }
     },
     "marker": {"color": "0xF800"}

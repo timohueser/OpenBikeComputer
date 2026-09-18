@@ -902,6 +902,8 @@ impl Config {
             for (value, style) in values {
                 let class = match (key.as_str(), value.as_str()) {
                     ("natural", "land") => Some(SemanticClass::Base),
+                    ("natural", "bare_rock" | "scree" | "shingle") => Some(SemanticClass::Rock),
+                    ("natural", "glacier") => Some(SemanticClass::Ice),
                     ("natural", "water" | "wetland")
                     | ("waterway", "riverbank")
                     | ("landuse", "reservoir" | "basin") => Some(SemanticClass::Water),
@@ -912,7 +914,9 @@ impl Config {
                     ("landuse", "forest") | ("natural", "wood") => Some(SemanticClass::Forest),
                     ("natural", "scrub" | "grassland" | "heath")
                     | ("landuse", "grass" | "grassland" | "recreation_ground" | "village_green")
-                    | ("leisure", "park" | "recreation_ground") => Some(SemanticClass::Grass),
+                    | ("leisure", "park" | "recreation_ground" | "garden" | "golf_course") => {
+                        Some(SemanticClass::Grass)
+                    }
                     ("landuse", "farmland" | "farmyard" | "meadow" | "orchard" | "vineyard" | "allotments") => {
                         Some(SemanticClass::Farmland)
                     }
@@ -1411,21 +1415,19 @@ mod tests {
             cfg.features.iter().find(|(k, _)| k == key).and_then(|(_, m)| m.get(val)).map(|s| s.id)
         };
         assert_eq!(id("highway", "motorway"), Some(1));
-        assert_eq!(id("highway", "cycleway"), Some(19)); // last highway value
-        assert_eq!(id("railway", "rail"), Some(20)); // counter carries across keys
-        assert_eq!(id("building", "*"), Some(29)); // the default preset's building catch-all
-        assert_eq!(id("natural", "land"), Some(31));
-        assert_eq!(id("admin_level", "2"), Some(50));
-        // The synthetic contour classes are appended last on purpose: every OSM style above keeps
-        // the id it had before contours existed.
-        assert_eq!(id("contour", "major"), Some(51));
-        assert_eq!(id("contour", "index"), Some(52)); // last value in the document
+        assert_eq!(id("highway", "cycleway"), Some(19)); // cycleway entry
+        assert_eq!(id("railway", "rail"), Some(24)); // counter carries across keys
+        assert_eq!(id("building", "*"), Some(33)); // the default preset's building catch-all
+        assert_eq!(id("natural", "land"), Some(35));
+        assert_eq!(id("admin_level", "2"), Some(63));
+        assert_eq!(id("contour", "major"), Some(64));
+        assert_eq!(id("contour", "index"), Some(65));
 
         // Every id is unique and within 1..=254.
         let mut ids: Vec<u8> = cfg.styles().iter().map(|s| s.id).collect();
         ids.sort_unstable();
         assert_eq!(ids.first(), Some(&1));
-        assert_eq!(ids.last(), Some(&52));
+        assert_eq!(ids.last(), Some(&75));
         let n = ids.len();
         ids.dedup();
         assert_eq!(ids.len(), n, "style ids must be unique");
@@ -1439,6 +1441,9 @@ mod tests {
             ("natural", "water", SemanticClass::Water),
             ("natural", "wood", SemanticClass::Forest),
             ("natural", "scrub", SemanticClass::Grass),
+            ("natural", "bare_rock", SemanticClass::Rock),
+            ("natural", "scree", SemanticClass::Rock),
+            ("natural", "glacier", SemanticClass::Ice),
             ("landuse", "residential", SemanticClass::Urban),
             ("landuse", "forest", SemanticClass::Forest),
             ("landuse", "grassland", SemanticClass::Grass),
@@ -1448,6 +1453,30 @@ mod tests {
             let style = cfg.feature_style(key, value).unwrap_or_else(|| panic!("shipped style {key}={value}"));
             assert_eq!(scheme.class_of(style.id), Some(expected), "{key}={value}");
         }
+    }
+
+    #[test]
+    fn shipped_way_types_keep_distinct_strokes_without_difficulty_rules() {
+        let cfg = corpus_config();
+        let mut strokes = Vec::new();
+        for highway in ["track", "path", "footway"] {
+            let plain = HashMap::from([("highway", highway)]);
+            let tagged = HashMap::from([("highway", highway), ("sac_scale", "alpine_hiking"), ("mtb:scale", "4")]);
+            let style = cfg.get_style(&plain).unwrap().to_style();
+            assert_eq!(style.id, cfg.get_style(&tagged).unwrap().id);
+            assert!(style.fixed_width);
+            strokes.push((style.weight, style.dashed));
+        }
+        assert_eq!(strokes, [(1, false), (1, false), (1, true)]);
+        let service_lod = cfg.feature_style("highway", "service").unwrap().min_lod;
+        for highway in ["track", "path", "footway", "cycleway", "steps", "bridleway", "via_ferrata", "ladder"] {
+            let min_lod = cfg.feature_style("highway", highway).unwrap().min_lod;
+            assert!(min_lod >= service_lod, "{highway} must not outlast its connecting streets");
+        }
+        assert!(
+            cfg.feature_style("contour", "index").unwrap().min_lod
+                < cfg.feature_style("contour", "major").unwrap().min_lod
+        );
     }
 
     #[test]
@@ -1886,38 +1915,29 @@ mod tests {
         );
     }
 
-    /// The shipped preset ships E3 (#1095): both classes styled, all weight 1, `major` dashed and
-    /// `index` solid — the emphasis is continuity, not mass — both off the width ramp and both
-    /// tagged terrain, and the block itself **on**. Every one of those was argued from a rendered
-    /// frame, so each is pinned rather than left to a re-read of the JSON.
-    ///
-    /// Both classes reach **LOD 9** (#1104), one tier above the planning tier (LOD 10) where #1095
-    /// first put them; LODs 0–8 stay contour-free. (The reach was authored as LOD 2 and moved with
-    /// each ladder expansion — the *tier* is the same one, renumbered.) The reach is the same
-    /// number for both on purpose: index-only there was
-    /// tried and rejected — solid grey lines with no dashes around them read as paths, because
-    /// emphasis-by-continuity only means anything while the dashes are present (Timo's on-glass
-    /// pick, 2026-08-03).
+    /// Contours stay thin, distinct from rock and trails, with index lines visible farther out.
     #[test]
     fn the_shipped_schema_carries_both_contour_classes() {
         let cfg = corpus_config();
         for class in [ContourClass::Major, ContourClass::Index] {
             let style = cfg.contour_style(class).unwrap_or_else(|| panic!("{class:?} must be styled"));
             assert_eq!(style.weight, 1, "every contour is authored weight 1");
-            assert_eq!(style.color, 0xAD55, "one grey, never a second colour");
+            assert_eq!(style.color, 0xAD4A);
+            assert_ne!(style.color, cfg.feature_style("natural", "bare_rock").unwrap().color);
+            assert_ne!(style.color, cfg.feature_style("highway", "path").unwrap().color);
             assert!(style.fixed_width, "a contour has no width on the ground — it is off the ramp");
             assert!(style.terrain_layer, "and it is what the device's terrain toggle suppresses");
-            assert_eq!(
-                style.min_lod, 9,
-                "#1104: {class:?} reaches LOD 9 — index-only there read as paths, so both classes \
-                 travel together (Timo's on-glass pick 2026-08-03)"
-            );
+            let expected_mpp = match class {
+                ContourClass::Major => 10.0,
+                ContourClass::Index => 35.0,
+            };
+            assert_eq!(cfg.lods[style.min_lod].max_mpp, Some(expected_mpp));
         }
         assert_eq!(cfg.contour_style(ContourClass::Major).unwrap().line_style, LineStyle::Dashed);
         assert_eq!(
             cfg.contour_style(ContourClass::Index).unwrap().line_style,
-            LineStyle::Solid,
-            "index is the solid one"
+            LineStyle::Dashed,
+            "index contours must not resemble solid access roads"
         );
         assert_eq!(cfg.contours, Contours { enabled: true, interval_m: 100, index_every: 5, simplify_m: 15.0 });
     }

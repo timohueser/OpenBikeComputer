@@ -88,6 +88,17 @@ Style IDs start at 1 and follow document order.
 A style contains color, paint order, width, priority, minimum LOD, and line properties.
 The style table can contain at most 254 entries.
 
+The shipped style uses fixed one-pixel strokes for tracks, paths, footways, steps, and
+bridleways. Tracks are light brown; paths and bridleways are darker solid lines. Footways and
+steps use dark dashes. Via ferratas and ladders use purple dashes. These marks use the OSM way
+type. They do not indicate hiking or mountain bike difficulty. These minor ways and cycleways
+appear at up to 5 m per pixel, together with service roads. Residential roads remain visible
+through 10 m per pixel. Passenger cableways and ski lifts
+use thin grey dashes, with no new line format. Gardens, golf courses, recreation grounds, and heath share the green vegetation fill.
+Rock, scree, and shingle share a grey fill. Glaciers have a separate pale cyan
+fill. Cliffs use thin dark edge lines, including closed cliff rims; the lines do not indicate
+which side is lower.
+
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
 <svg viewBox="0 0 720 250" role="img" aria-label="A way's tags, highway=primary and building=yes, are matched against the config rules in document order: highway comes before building, so the highway=primary rule wins and produces a style with id 5, a colour, a z-index, a priority, and a min-LOD.">
@@ -272,6 +283,9 @@ It skips a lattice square if one corner has no height.
 
 The packer creates `contour.major` and `contour.index` line features.
 The defaults are a 100 m interval and an index at every fifth contour.
+The shipped style shows the 500 m index contours at up to 35 m per pixel and the other contours
+at up to 10 m per pixel. Both use muted dashed strokes, fixed at one pixel wide. Their colour
+differs from rock fills, tracks, and paths.
 The default pre-LOD simplify tolerance is 15 m.
 The configuration can change these values.
 
@@ -594,6 +608,10 @@ The packer builds each LOD independently.
 - `merge_lines` joins connected lines with the same render identity.
 - `min_line_km` removes short joined lines.
 - Coverage simplification creates coarse semantic coverage.
+
+Rock and ice participate in the same coarse land-cover generalization as vegetation and towns.
+Rock, scree, and shingle share one output class. Ice remains separate from rock and water.
+The output uses ordinary polygons and the existing device renderer.
 
 `min_line_km` requires `merge_lines`.
 The finest LOD does not use `min_area_px`.
