@@ -31,6 +31,11 @@ final class HostController {
     private(set) var isImporting = false
     /// Physical pixels per panel pixel. One panel pixel is one point by default.
     var pixelScale = Int(UIScreen.main.scale)
+    #if DEBUG
+        /// Where the developer sheet says the phone is. Nothing writes it to disk: a launch is
+        /// always on the real GPS, so a forgotten override can never look like broken hardware.
+        private(set) var pretendPlace: PretendPlace?
+    #endif
 
     let frameWidth = Int(obc_ios_frame_width())
     let frameHeight = Int(obc_ios_frame_height())
@@ -95,6 +100,14 @@ final class HostController {
         default: state = .failed(hostError)
         }
     }
+
+    #if DEBUG
+        /// Pretend to be somewhere else, or `nil` to go back to the phone's own GPS.
+        func pretend(_ place: PretendPlace?) {
+            pretendPlace = place
+            sensors.pretend = place?.coordinate
+        }
+    #endif
 
     /// Close the host and give the phone its screen timeout back. Safe to call twice.
     func close() {
