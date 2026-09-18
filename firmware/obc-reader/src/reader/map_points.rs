@@ -55,7 +55,7 @@ impl MapPointQuery {
                 .read_at(start + (cursor * POI_RECORD_LEN) as u64, &mut scratch[..take * POI_RECORD_LEN])
                 .map_err(Error::Source)?;
             let mut ended = cursor + take == size / POI_RECORD_LEN;
-            for bytes in scratch[..take * POI_RECORD_LEN].chunks_exact(POI_RECORD_LEN) {
+            for bytes in scratch[..take * POI_RECORD_LEN].as_chunks::<POI_RECORD_LEN>().0 {
                 let subtype = bytes[8];
                 if subtype == 0xff {
                     ended = true;

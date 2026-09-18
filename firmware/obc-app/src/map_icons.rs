@@ -14,6 +14,8 @@ use crate::Settings;
 
 const CAPACITY: usize = 64;
 const DRAW_LIMIT: usize = 24;
+const GLYPH_SCALE: i32 = 2;
+const HALO_RADIUS: i32 = 14;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -78,6 +80,13 @@ struct Selection {
     categories: PoiCategorySet,
 }
 impl Selection {
+    fn includes(self, kind: Kind) -> bool {
+        match kind {
+            Kind::Peak => self.peaks,
+            Kind::Landmark => self.landmarks,
+            _ => PoiCategory::ALL.into_iter().any(|cat| Kind::service(cat) == kind && self.categories.contains(cat)),
+        }
+    }
     fn for_view(settings: &Settings, mpp: f32) -> Self {
         let mut categories = PoiCategorySet::EMPTY;
         if settings.map_pois && mpp <= 10.0 {
@@ -153,7 +162,9 @@ impl MapIcons {
         }
         let retry = !pending && self.wake_in(now) == Some(0);
         if fresh || retry {
-            self.marks.clear();
+            if self.generation != reader.generation() {
+                self.marks.clear();
+            }
             self.generation = reader.generation();
             self.selection = Some(selection);
             self.visible = Some(visible);
@@ -165,6 +176,8 @@ impl MapIcons {
                 min_lat: visible.min_lat.saturating_sub(dy),
                 max_lat: visible.max_lat.saturating_add(dy),
             };
+            // Reproject valid cached marks while the bounded query fills the new view.
+            self.marks.retain(|mark| selection.includes(mark.kind) && in_bounds(bounds, mark.position));
             self.coverage = Some(bounds);
             self.query = Some(MapPointQuery::new(self.generation, bounds, selection.categories, selection.peaks));
             self.landmarks = None;
@@ -185,11 +198,10 @@ impl MapIcons {
             return;
         }
         self.marks.sort_unstable_by_key(|mark| mark.rank());
-        self.next_at = (self.query.is_some() || self.landmarks.is_some()).then_some(now.wrapping_add(50));
+        self.next_at = (self.query.is_some() || self.landmarks.is_some()).then_some(now.wrapping_add(1));
     }
 
     fn failed(&mut self, now: u32) {
-        self.marks.clear();
         self.query = None;
         self.landmarks = None;
         // Two delayed retries recover transient reads; a persistent failure does not spin.
@@ -328,7 +340,7 @@ impl MapIcons {
         } else {
             DRAW_LIMIT
         };
-        let spacing = if mpp > 20.0 { 36 } else { 22 };
+        let spacing = if mpp > 20.0 { 40 } else { 30 };
         let mut placed = Vec::<(Point, Kind), DRAW_LIMIT>::new();
         let rider = rider.map(|(lon, lat)| vp.to_screen(lon, lat));
         for mark in &self.marks {
@@ -337,15 +349,15 @@ impl MapIcons {
             }
             let (x, y) = vp.to_screen(mark.position.0, mark.position.1);
             // Keep the clock, battery, scale, warning chip and pan controls free.
-            if x < 9 || x > vp.w as i32 - 9 || y < 38 || y > vp.h as i32 - 58 {
+            if x < HALO_RADIUS + 2 || x > vp.w as i32 - HALO_RADIUS - 2 || y < 45 || y > vp.h as i32 - 65 {
                 continue;
             }
-            if rider.is_some_and(|(rx, ry)| near(x, y, rx, ry, 24)) {
+            if rider.is_some_and(|(rx, ry)| near(x, y, rx, ry, 31)) {
                 continue;
             }
             if waypoints.iter().any(|wp| {
                 let (wx, wy) = vp.to_screen(wp.lon, wp.lat);
-                near(x, y, wx, wy, 16)
+                near(x, y, wx, wy, 23)
             }) {
                 continue;
             }
@@ -369,7 +381,7 @@ fn near(x: i32, y: i32, a: i32, b: i32, r: i32) -> bool {
     (x - a).abs() < r && (y - b).abs() < r
 }
 
-// Eleven-pixel glyphs retain the menu's drop, tent, bed, basket, cross, bicycle and train meanings.
+// Scale the compact bitmaps to legible device pixels without a larger asset or cache.
 fn draw_glyph(cv: &mut impl Surface, p: Point, kind: Kind) {
     let rows: [u16; 11] = match kind {
         Kind::Peak => {
@@ -480,12 +492,15 @@ fn draw_glyph(cv: &mut impl Surface, p: Point, kind: Kind) {
             0,
         ],
     };
-    cv.disc(p, 7, 0xffff);
+    cv.disc(p, HALO_RADIUS as u32, 0xffff);
     let ink = if kind == Kind::Water { 0x0015 } else { 0x2104 };
     for (y, bits) in rows.into_iter().enumerate() {
         for x in 0..11 {
             if bits & (1 << (10 - x)) != 0 {
-                cv.fill(rect(p.x + x - 5, p.y + y as i32 - 5, 1, 1), ink);
+                cv.fill(
+                    rect(p.x + x * GLYPH_SCALE - 11, p.y + y as i32 * GLYPH_SCALE - 11, GLYPH_SCALE, GLYPH_SCALE),
+                    ink,
+                );
             }
         }
     }
@@ -570,7 +585,14 @@ mod tests {
         let rotated = Viewport::new_rotated(240.0, 320.0, vp.cam_lon + 50, vp.cam_lat, vp.zoom, 0.3);
         settle(&mut icons, Some(&reader), &rotated, &settings);
         assert_eq!(reads, source.reads.get(), "pan and rotation inside cover do not read storage");
+        let zoomed = Viewport::new(240.0, 320.0, vp.cam_lon, vp.cam_lat, obc_render::zoom_for_mpp(9.0));
+        icons.prepare(Some(&reader), &zoomed, &settings, 1000);
+        assert_eq!(icons.marks.len(), 8, "zoom retains existing marks before refill finishes");
+        assert!(icons.query.is_some(), "transition is exercised during a partial query");
+        assert_eq!(icons.wake_in(1000), Some(1), "refill resumes on the next available frame");
         settings.map_poi_categories = 3;
+        icons.prepare(Some(&reader), &vp, &settings, 1001);
+        assert_eq!(icons.marks.len(), 3, "disabled categories disappear without blanking enabled marks");
         settle(&mut icons, Some(&reader), &vp, &settings);
         assert_eq!(icons.marks.len(), 3);
         settings.map_pois = false;
@@ -618,9 +640,9 @@ mod tests {
         assert!(!placed.is_empty() && placed.len() <= DRAW_LIMIT);
         assert_eq!(placed, icons.placements(&vp, Some(rider), &[]));
         for (i, (p, _)) in placed.iter().enumerate() {
-            assert!(p.y >= 38 && p.y <= 262);
-            assert!(!near(p.x, p.y, 120, 160, 24));
-            assert!(!placed[..i].iter().any(|(q, _)| near(p.x, p.y, q.x, q.y, 22)));
+            assert!(p.y >= 45 && p.y <= 255);
+            assert!(!near(p.x, p.y, 120, 160, 31));
+            assert!(!placed[..i].iter().any(|(q, _)| near(p.x, p.y, q.x, q.y, 30)));
         }
         let mut settings = Settings::default();
         assert!(Selection::for_view(&settings, 10.01).categories.is_empty());
