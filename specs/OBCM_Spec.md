@@ -1,4 +1,4 @@
-# OBCM File Format Specification (v17)
+# OBCM File Format Specification (v18)
 
 OBCM (OpenStreetMap Binary Chunked Map) is a compact binary map format designed
 for efficient rendering on memory-constrained devices such as microcontrollers
@@ -166,9 +166,11 @@ integration (§8.4); the edge record length is unchanged.
 
 **Version 17** extends the header to 65 bytes and adds the separate peak article collection (§10).
 
-**v17 is the only supported version**; earlier maps get repacked. A reader MUST
+**Version 18** adds the optional settlement-name category 9 to the POI section (§7).
+
+**v18 is the only supported version**; earlier maps get repacked. A reader MUST
 check `Version` before it reads any later field and MUST refuse every value other
-than `0x11`. The header version applies to the whole file.
+than `0x12`. The header version applies to the whole file.
 
 
 **Within v12** (issue #1095, same elevation epic) two of the style record's reserved
@@ -247,7 +249,7 @@ Packed as `struct "<4sBiiiiIBIHIIBIIIIII"`.
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCM"` |
-| 4 | Version | 1 | `uint8` | `0x11` |
+| 4 | Version | 1 | `uint8` | `0x12` |
 | 5 | Min Lat | 4 | `int32` | Global bbox min latitude (microdegrees) |
 | 9 | Min Lon | 4 | `int32` | Global bbox min longitude |
 | 13 | Max Lat | 4 | `int32` | Global bbox max latitude |
@@ -814,7 +816,8 @@ the trailing **hours-pool section** (§7.5), reached from the directory's
 ### 7.1 POI Directory
 
 ```
-uint8   Category Count            (7, or 8 when named summits are present)
+uint8   Category Count            (7, plus the optional landmark and settlement
+                                  categories: 7, 8, 9 or 10)
 uint16  Chunk Size                (POI chunk capacity in bytes — the packer writes 512)
 per category (Category Count entries, 13 bytes each):
   uint8   Category ID
@@ -866,8 +869,8 @@ records/chunk). Each record is exactly 64 bytes. A `0xFF`
 | 4 | Lon | 4 | `int32` | Longitude, **absolute** microdegrees |
 | 8 | Subtype | 1 | `uint8` | Canonical subtype id (§7.4); `0xFF` = end-of-chunk sentinel |
 | 9 | Name Len | 1 | `uint8` | Length of the stored name in bytes (`0` = unnamed) |
-| 10 | Name | 24 | `char[24]` | Printable ASCII for services; UTF-8 for summits; unused tail bytes are `0xFF` |
-| 34 | Payload | 2 | `uint16` or `int16` | Services: `HoursRef`, a 0-based pool index (`0xFFFF` = none). Summits: signed elevation in metres (`-32768` = unknown). |
+| 10 | Name | 24 | `char[24]` | Printable ASCII for services; UTF-8 for summits and settlements; unused tail bytes are `0xFF` |
+| 34 | Payload | 2 | `uint16` or `int16` | Services: `HoursRef`, a 0-based pool index (`0xFFFF` = none). Summits: signed elevation in metres (`-32768` = unknown). Settlements: population in hundreds of people, saturated at `0xFFFE`; `0xFFFF` = unknown. |
 | 36 | Source | 8 | `uint64` | OSM source identity: upper two bits node=1, way=2, relation=3; lower 62 bits positive OSM ID |
 | 44 | Approach Source | 8 | `uint64` | Explicit mapped access-node identity, or zero when unavailable |
 | 52 | Approach Lat | 4 | `int32` | Access coordinate latitude in microdegrees |
@@ -911,6 +914,13 @@ The producer uses the OSM `ele` tag and fills missing elevations from the map DE
 `-32768` means unknown; all other `int16` values are valid, including negative heights.
 Assemblers preserve this trailer and do not include summits in the hours pool.
 
+Settlements (subtypes 21 to 24) keep their UTF-8 name, case and diacritics, under the same
+rules as summits. The name must not be empty, must hold no control character, and must end on
+a complete character inside the 24-byte field. The trailer is the population in hundreds of
+people, as an unsigned little-endian value. `0xFFFF` means unknown. The producer saturates a
+larger population at `0xFFFE`. Assemblers keep this trailer and do not put settlements in the
+hours pool.
+
 ### 7.4 Canonical category / subtype table (normative)
 
 This is the **normative home** of the id table; `obc-formats/src/obcm.rs` is its code
@@ -943,6 +953,10 @@ end-of-chunk sentinel and can never be a subtype id.
 | 6 | Bike shop | 18 | `shop=bicycle` | Bike shop |
 | 7 | Summit landmark | 19 | Named `natural=peak` node | Summit |
 | 8 | Train station | 20 | `railway=station` | Train station |
+| 9 | Settlement | 21 | `place=city` | City |
+| 9 | Settlement | 22 | `place=town` | Town |
+| 9 | Settlement | 23 | `place=village` | Village |
+| 9 | Settlement | 24 | `place=hamlet` | Hamlet |
 
 The seven service categories (IDs 1–6 and 8) are always present in the directory. Category 7 is an optional
 landmark index for Peak View and is not part of the service POI browser. The producer emits
@@ -950,6 +964,10 @@ it only when named summit nodes exist. Closed-way centroids and unnamed peaks ar
 Each subtype belongs to exactly one category; its record must be stored in that category.
 Summit coordinates are the original node coordinates rounded to microdegrees. Distinct
 summits less than 50 metres apart remain separate; only repeated source identities collapse.
+
+Category 9 is an optional settlement-name index for the map overlay. It is not part of the
+service POI browser. The producer writes it only when named settlement nodes or areas exist.
+Unnamed settlements are excluded. A settlement area contributes its ring centroid.
 
 ### 7.5 Hours-pool section (v7)
 
