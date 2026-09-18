@@ -10,6 +10,8 @@
   export let onchange: () => void;
   export let ondone: () => void;
   export let onrefresh: () => void;
+  /** The criterion a failed save named. It is marked and scrolled to, so "criterion 1" is a place. */
+  export let flag = '';
   /** True while a manual procedure is open for editing. The parent blocks saving until it is kept or cancelled. */
   export let editing = false;
   let picker: string | null = null;
@@ -23,6 +25,9 @@
   $: automated = catalog.cases.filter(c => `${c.name} ${c.suite} ${c.file ?? ''}`.toLowerCase().includes(search.toLowerCase()));
   const name = (e: CoverageEvidence) => evidenceTest(requirement, e)?.title ?? e.caseId ?? e.testId;
   const focus = (node: HTMLElement) => node.focus();
+  // Next frame: the parent scrolls the sidebar to the requirement as this editor opens, and the
+  // last scroll wins.
+  const reveal = (node: HTMLElement) => { requestAnimationFrame(() => node.scrollIntoView({ block: 'center' })); };
   function changed() { requirement = requirement; onchange(); }
   /** The level picked for each criterion's next test, so a level chosen before the sentence is typed survives. */
   let levels: Record<string, TestLevel> = {};
@@ -77,7 +82,8 @@
   <div class="criteria">
     {#each plan.criteria as criterion, index (criterion.id)}
       {@const done = criterionCovered(requirement, criterion)}
-      <fieldset class="criterion" class:done disabled={busy}>
+      <fieldset class="criterion" class:done class:flagged={!!flag && criterion.id === flag} disabled={busy}>
+        {#if flag && criterion.id === flag}<span class="flag small" use:reveal>The failed save named this criterion.</span>{/if}
         <span class="mark" aria-hidden="true">{done ? '✓' : ''}</span>
         <div class="body">
           <div class="head">
@@ -117,7 +123,7 @@
             <button class="text-button add" on:click={() => { picker = criterion.id; search = ''; }}>+ Add evidence</button>
           {/if}
           <textarea class="gap" rows={1} maxlength={5000} aria-label="Remaining gap" placeholder={criterion.evidence.length ? 'Gap — leave empty if the evidence above is enough' : 'Gap — what is still missing? Optional.'} bind:value={criterion.gap} on:input={changed}></textarea>
-          <div class="next"><select aria-label="Proposed test level" value={level(criterion)} on:change={e => { levels[criterion.id] = e.currentTarget.value as TestLevel; setNext(criterion, criterion.next?.summary ?? ''); }}>{#each TEST_LEVELS as level}<option value={level}>{level}</option>{/each}</select><input maxlength={300} aria-label="Proposed test" placeholder="Next test to build — one sentence, optional" value={criterion.next?.summary ?? ''} on:input={e => setNext(criterion, e.currentTarget.value)} /></div>
+          <div class="next"><select aria-label="Proposed test level" value={level(criterion)} on:change={e => { levels[criterion.id] = e.currentTarget.value as TestLevel; setNext(criterion, criterion.next?.summary ?? ''); }}>{#if !(TEST_LEVELS as string[]).includes(level(criterion))}<option value={level(criterion)}>{level(criterion)} — not a level</option>{/if}{#each TEST_LEVELS as level}<option value={level}>{level}</option>{/each}</select><input maxlength={300} aria-label="Proposed test" placeholder="Next test to build — one sentence, optional" value={criterion.next?.summary ?? ''} on:input={e => setNext(criterion, e.currentTarget.value)} /></div>
         </div>
       </fieldset>
     {/each}
@@ -153,6 +159,8 @@
   .choice span { display: block; }
   .gap { min-height: 0; margin: 10px 0 0; font-size: 13px; padding: 7px 10px; field-sizing: content; color: var(--amber); border-color: #e6d9bf; background: #fffcf4; }
   .gap::placeholder { color: #b39a6b; }
+  .criterion.flagged { border-color: var(--coral); background: #fff7f4; }
+  .flag { display: block; margin: 0 0 6px; color: var(--coral); font-weight: 600; }
   .next { display: flex; gap: 8px; margin-top: 8px; }
   .next select { width: auto; margin: 0; font-size: 12px; padding: 6px 8px; text-transform: uppercase; letter-spacing: .3px; }
   .next input { margin: 0; font-size: 13px; padding: 7px 10px; }

@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { RequestEvent } from '@sveltejs/kit';
 import { json } from '@sveltejs/kit';
 import type { Candidate, Catalog, CoverageProposal, ManualRun, Role } from '../types.ts';
-import { attachments, assert, identifier, positive, Problem, readiness, requirements, testResults, text } from './domain.ts';
+import { attachments, assert, identifier, positive, Problem, readiness, requirements, testResults, text, within } from './domain.ts';
 import { store } from './store.ts';
 import { createSession, localLogin, logout, oauthEnabled, sameOrigin, requireAdmin, changePassword, agentTokens, createAgentToken, revokeAgentToken } from './auth.ts';
 import { dispatch, githubEnabled, sourceCommit, verifyPublished, verifyRun, publicationRetry, verifyCatalog, reconcile } from './github.ts';
@@ -23,7 +23,7 @@ export async function api(event: RequestEvent): Promise<Response> {
   try { return await route(event); }
   catch (error) {
     if (!(error instanceof Problem)) console.error('Verification API error', error);
-    return json({ error: error instanceof Problem ? error.message : 'The request failed. Try again or contact the administrator.' }, { status: error instanceof Problem ? error.status : 500 });
+    return json({ error: error instanceof Problem ? error.message : 'The request failed. Try again or contact the administrator.', ...(error instanceof Problem && error.at ? { at: error.at } : {}) }, { status: error instanceof Problem ? error.status : 500 });
   }
 }
 async function route(event: RequestEvent): Promise<Response> {
@@ -210,8 +210,10 @@ async function coverageProposals(event: RequestEvent, parts: string[]): Promise<
     const requirement = revision.requirements.find(r => r.id === requirementId);
     assert(requirement, 'Requirement not found.', 404);
     const sourceSha = commitSha(data.sourceSha);
-    const procedures = proposalProcedures(data.procedures, requirement);
-    const plan = coveragePlan(data.plan, requirement, store().catalog(), procedures);
+    const { procedures, plan } = within(`${requirement.id} · ${requirement.title}`, { requirementId: requirement.id }, () => {
+      const procedures = proposalProcedures(data.procedures, requirement);
+      return { procedures, plan: coveragePlan(data.plan, requirement, store().catalog(), procedures) };
+    });
     assert(procedures.every(p => plan.criteria.some(c => c.evidence.some(e => e.testId === p.id))), 'Every proposed procedure must be cited as evidence.');
     /** One pending proposal per requirement: an identical plan is reused, any other replaces every pending one. */
     const pending = store().list<CoverageProposal>('coverage-proposal').filter(p => p.status === 'pending' && p.requirementId === requirementId);

@@ -1,5 +1,8 @@
+import type { ProblemAt } from '$lib/types';
+
 export class ApiError extends Error {
-  constructor(public status: number, message: string) { super(message); }
+  /** The requirement and criterion the server's message is about, when it names one. */
+  constructor(public status: number, message: string, public at?: ProblemAt) { super(message); }
 }
 
 export async function api<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
@@ -9,7 +12,7 @@ export async function api<T>(path: string, method = 'GET', body?: unknown): Prom
   });
   if (response.status === 401) { window.location.assign('/login'); throw new Error('Please sign in.'); }
   const value = await response.json().catch(() => ({ error: `The server could not complete this request (HTTP ${response.status}). Please try again.` }));
-  if (!response.ok) throw new ApiError(response.status, response.status === 409 && path === '/api/requirements' ? `${value.error} Your draft has been kept. Refresh before saving again.` : value.error || 'The request failed. Please try again.');
+  if (!response.ok) throw new ApiError(response.status, response.status === 409 && path === '/api/requirements' ? `${value.error} Your draft has been kept. Refresh before saving again.` : value.error || 'The request failed. Please try again.', value.at);
   return value as T;
 }
 export function date(value: string) { return new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }); }
