@@ -20,7 +20,14 @@ export function coveragePlan(value: unknown, requirement: Requirement, catalog: 
     const evidence = entry.evidence.map((e: any) => {
       assert(e && typeof e === 'object' && (typeof e.caseId === 'string') !== (typeof e.testId === 'string'), 'Evidence must identify either a catalogue case or an existing manual test.');
       const ref = e.caseId !== undefined ? { caseId: text(e.caseId, 'Case ID', 1000) } : { testId: identifier(e.testId, 'Manual test ID') };
-      assert(ref.caseId ? caseIds.has(ref.caseId) || requirement.tests.some(t => t.caseId === ref.caseId) : requirement.tests.some(t => t.id === ref.testId && t.kind === 'manual') || procedures.some(p => p.id === ref.testId), 'Evidence test is not available.');
+      // A case ID carries the test's own describe/it names, so a rename or a move retires the old ID
+      // while the test itself keeps running. Say which ID is unknown, and where to find the new one.
+      assert(ref.caseId
+        ? caseIds.has(ref.caseId) || requirement.tests.some(t => t.caseId === ref.caseId)
+        : requirement.tests.some(t => t.id === ref.testId && t.kind === 'manual') || procedures.some(p => p.id === ref.testId),
+        ref.caseId
+          ? `No test in the catalogue has the case ID “${ref.caseId}”. A test that is renamed, moved or deleted loses its old case ID. Search the catalogue for the test and cite the ID it has now.`
+          : `No manual procedure has the ID “${ref.testId}”. Cite a procedure this requirement already has, or send the new procedure with this proposal.`);
       const key = JSON.stringify(ref);
       assert(!seen.has(key), 'Duplicate evidence for a criterion.'); seen.add(key);
       return { ...ref, rationale: text(e.rationale, 'Evidence rationale', 5000) };

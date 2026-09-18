@@ -118,6 +118,13 @@ test('invalid plans cannot claim complete coverage or reference unavailable evid
   p = plan(); p.criteria[0].evidence[0].rationale = ''; invalid.push(p);
   p = plan(); p.criteria[0].evidence.push(p.criteria[0].evidence[0]); invalid.push(p);
   for (const value of invalid) assert.equal((await request('coverage-proposals', 'POST', { baseRevision: base.id, requirementId: 'REQ-1', sourceSha: sha, plan: value })).status, 400);
+  // A renamed test is the common way evidence goes missing, and the two ways it can go missing have
+  // different fixes — so each refusal names the ID it could not find and says where to look for it.
+  const absentCase = plan(); absentCase.criteria[0].evidence[0].caseId = 'renamed-away';
+  const absentManual = plan(); absentManual.criteria[0].evidence[0] = { testId: 'no-such-procedure', rationale: 'Manual.' };
+  const refusal = async (value: CoveragePlan) => (await (await request('coverage-proposals', 'POST', { baseRevision: base.id, requirementId: 'REQ-1', sourceSha: sha, plan: value })).json() as { error: string }).error;
+  assert.match(await refusal(absentCase), /catalogue.*“renamed-away”.*renamed/s);
+  assert.match(await refusal(absentManual), /procedure.*“no-such-procedure”/s);
   assert.equal((await request('coverage-proposals', 'POST', { baseRevision: base.id, requirementId: 'REQ-1', sourceSha: 'develop', plan: plan() })).status, 400);
   assert.equal(store().list('coverage-proposal').length, 0);
   const saved = store().saveRevision(base.id, 'owner', base.requirements.map(r => ({ ...r, tests: [{ id: 'manual', title: 'Power cut', kind: 'manual', steps: 'Cut power.', expected: 'Data remains.', inputs: [] }] })));
