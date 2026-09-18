@@ -1083,7 +1083,7 @@ where
     I: IntoIterator<Item = (&'a str, &'a str)>,
 {
     let tags: Vec<_> = tags.into_iter().collect();
-    if let Some(poi::Classification { subtype, name, raw_hours, elevation_m }) =
+    if let Some(poi::Classification { subtype, name, raw_hours, elevation_m, population }) =
         poi::classify_linked(tags.iter().copied())
     {
         out.push(
@@ -1103,6 +1103,7 @@ where
                 from_node: true,
                 hours: raw_hours.and_then(hours::parse),
                 elevation_m,
+                population,
             },
         );
     }
@@ -1174,7 +1175,7 @@ fn process_way(
     // all). The building-tagged supermarket way and the area campsite are the
     // motivating cases; relations are out of scope (#115).
     if is_closed || tags.contains_key("wikidata") || tags.contains_key("wikipedia") {
-        if let Some(poi::Classification { subtype, name, raw_hours, elevation_m }) =
+        if let Some(poi::Classification { subtype, name, raw_hours, elevation_m, population }) =
             poi::classify_linked(tags.iter().map(|(&k, &v)| (k, v)))
                 .filter(|p| p.subtype != obc_formats::obcm::SUMMIT_SUBTYPE_ID)
         {
@@ -1197,6 +1198,7 @@ fn process_way(
                     from_node: false,
                     hours: raw_hours.and_then(hours::parse),
                     elevation_m,
+                    population,
                 },
             );
         }
@@ -1345,8 +1347,8 @@ mod tests {
             Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json")).expect("config");
         let ing = ingest_osm(&sources(&[POI_PBF]), &cfg, None, &quiet()).expect("ingest");
 
-        // 7 candidates (5 nodes + 2 way-centroids), 2 dedup-dropped ⇒ 5 kept.
-        assert_eq!(ing.pois.len(), 7, "distinct OSM identities survive");
+        // 14 candidates (11 nodes + 3 way-centroids), 2 dedup-dropped ⇒ 12 kept.
+        assert_eq!(ing.pois.len(), 14, "distinct OSM identities survive");
 
         let find = |name: Option<&str>, subtype: u8| {
             ing.pois
@@ -1372,6 +1374,19 @@ mod tests {
         assert_eq!((w2.lat_udeg, w2.lon_udeg, w2.from_node), (48_000_200, 7_870_200, false));
         // N4 (amenity=parking) never classified.
         assert_eq!(crate::poi::format_counts(&ing.pois, 0).matches("water 4").count(), 1);
+
+        // The settlement rows: one of each class, the fall-backs, and the area centroid.
+        let city = find(Some("Testville"), 21);
+        assert_eq!(city.population, Some(250_000));
+        assert_eq!(find(Some("Kleinstadt"), 22).population, None);
+        find(Some("Grüßau"), 23);
+        find(Some("A very long settlement n"), 24);
+        find(Some("Tokyo"), 23);
+        find(Some("Baeckerdorf"), 15);
+        let ring = find(Some("Ringdorf"), 23);
+        assert_eq!((ring.lat_udeg, ring.lon_udeg, ring.from_node), (47_950_200, 7_900_200, false));
+        assert!(!ing.pois.iter().any(|p| p.name.as_deref() == Some("Мирный")), "no fall-back ⇒ no record");
+        assert_eq!(crate::poi::format_counts(&ing.pois, 0).matches("settlement 6").count(), 1);
     }
 
     /// The `--bbox` contract is user-facing, so the parser is as strict as
