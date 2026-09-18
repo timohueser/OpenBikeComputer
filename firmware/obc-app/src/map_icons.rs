@@ -145,7 +145,7 @@ impl MapIcons {
             || self.selection != Some(selection)
             || (!pending && self.needs_refill(visible))
             || !self.coverage.is_some_and(|cover| {
-                contains(cover, visible) && cover.max_lon - cover.min_lon <= 4 * (visible.max_lon - visible.min_lon)
+                cover.contains(&visible) && cover.max_lon - cover.min_lon <= 4 * (visible.max_lon - visible.min_lon)
             });
         if fresh {
             self.retries = 0;
@@ -431,9 +431,6 @@ impl MapIcons {
 fn in_bounds(b: BBox, p: (i32, i32)) -> bool {
     p.0 >= b.min_lon && p.0 <= b.max_lon && p.1 >= b.min_lat && p.1 <= b.max_lat
 }
-fn contains(a: BBox, b: BBox) -> bool {
-    a.min_lon <= b.min_lon && a.max_lon >= b.max_lon && a.min_lat <= b.min_lat && a.max_lat >= b.max_lat
-}
 fn near(x: i32, y: i32, a: i32, b: i32, r: i32) -> bool {
     (x - a).abs() < r && (y - b).abs() < r
 }
@@ -601,13 +598,13 @@ mod tests {
                     lon: 8_000_000 + 100 * i as i32,
                     subtype,
                     name: "".into(),
-                    hours_ref: 0xffff
+                    payload: 0xffff
                 }],
             ));
         }
         cats.push((
             7,
-            std::vec![PoiSpec { lat: 46_000_500, lon: 8_000_000, subtype: 19, name: "".into(), hours_ref: 3000 }],
+            std::vec![PoiSpec { lat: 46_000_500, lon: 8_000_000, subtype: 19, name: "".into(), payload: 3000 }],
         ));
         build_poi_map((7_900_000, 45_900_000, 8_100_000, 46_100_000), 512, &cats)
     }
@@ -783,7 +780,7 @@ mod tests {
         let mut pois = std::vec::Vec::new();
         for i in 0..68 {
             let position = vp.to_map(if i < 64 { 60.0 + i as f32 } else { 300.0 + (i - 64) as f32 }, 160.0);
-            pois.push(PoiSpec { lon: position.0, lat: position.1, subtype: 1, name: "".into(), hours_ref: 0xffff });
+            pois.push(PoiSpec { lon: position.0, lat: position.1, subtype: 1, name: "".into(), payload: 0xffff });
         }
         let bytes = build_poi_map((7_900_000, 45_900_000, 8_100_000, 46_100_000), 512, &[(1, pois)]);
         let source = CountSource { bytes: &bytes, reads: Cell::new(0), fail: Cell::new(false) };
@@ -803,7 +800,7 @@ mod tests {
         assert_eq!(source.reads.get(), reads, "small camera changes reuse even a full cache");
         let (lon, lat) = vp.to_map(239.0, 160.0);
         let panned = Viewport::new(240.0, 320.0, lon, lat, vp.zoom);
-        assert!(contains(icons.coverage.unwrap(), panned.visible_bbox()));
+        assert!(icons.coverage.unwrap().contains(&panned.visible_bbox()));
         assert!(icons.marks.iter().any(|m| in_bounds(panned.visible_bbox(), m.position)));
         assert!(icons.placements(&panned, None, &[]).is_empty(), "remaining cached points are clipped at the edge");
         icons.prepare(Some(&reader), &panned, &settings, 1001);
@@ -811,7 +808,7 @@ mod tests {
         assert!(icons.query.is_some());
         let (lon, lat) = vp.to_map(309.0, 160.0);
         let moving = Viewport::new(240.0, 320.0, lon, lat, vp.zoom);
-        assert!(contains(icons.coverage.unwrap(), moving.visible_bbox()));
+        assert!(icons.coverage.unwrap().contains(&moving.visible_bbox()));
         icons.prepare(Some(&reader), &moving, &settings, 1002);
         assert_eq!(icons.visible, Some(panned.visible_bbox()), "an in-coverage pan does not restart a pending query");
         let mut now = 1002;
