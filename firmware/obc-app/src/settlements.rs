@@ -7,8 +7,9 @@
 //! [`MAX_LABELS`] are placed.
 //!
 //! [`rank`] holds no camera value, which is the whole stability mechanism: a label that is drawn in
-//! one frame is drawn in the next one unless it leaves the panel, unless its class drops below its
-//! scale limit, or unless a better settlement takes its space. No history and no timer are needed.
+//! one frame is drawn in the next one unless it leaves the panel, unless its class leaves its scale
+//! band, or unless a better settlement takes its space. Priority decides every frame from scratch;
+//! there is no history and no timer.
 
 use core::cmp::Reverse;
 
@@ -40,32 +41,29 @@ const LABEL_MARGIN_PX: i32 = 12;
 const MAX_LABEL_CHARS: usize = 12;
 /// Slack around the panel, so a small pan needs no new query.
 const CANDIDATE_PAD_PX: f32 = 48.0;
-/// Gap between the place point and the top of its name.
-const LABEL_ANCHOR_DY: i32 = 3;
-
-/// The coarsest scale, in metres per pixel, at which each class still shows a name. 180, 50 and 16
-/// are tiers of the shipped level-of-detail ladder.
-const CITY_MAX_MPP: f32 = 600.0;
-const TOWN_MAX_MPP: f32 = 180.0;
-const VILLAGE_MAX_MPP: f32 = 50.0;
-const HAMLET_MAX_MPP: f32 = 16.0;
-/// Below this scale the rider is inside the settlement and the name only covers the roads.
-const SETTLEMENT_MIN_MPP: f32 = 2.0;
+/// The scale band, in metres per pixel, in which each class shows a name: the class, then `min`,
+/// then `max`. One table, and the only place a scale decision is written.
+///
+/// A name appears when the place roughly fits the panel and goes when the place is a dot among too
+/// many others. The 240 px panel is 9.6 km wide at 40 m/px, which is about the size of a city, and
+/// 2.9 km at 12 m/px, which is about the size of a town. Under the minimum the rider is inside the
+/// place and the name only covers the roads it is riding.
+const CLASS_BANDS: [(SettlementClass, f32, f32); 4] = [
+    (SettlementClass::City, 40.0, 600.0),
+    (SettlementClass::Town, 12.0, 180.0),
+    (SettlementClass::Village, 4.0, 50.0),
+    (SettlementClass::Hamlet, 2.0, 16.0),
+];
 
 /// The classes that show a name at `mpp`, as a bit for each [`SettlementClass`] discriminant. Zero
 /// means the overlay is quiet: nothing is queried and nothing is drawn.
 fn class_mask(mpp: f32) -> u8 {
-    if !(mpp.is_finite() && mpp >= SETTLEMENT_MIN_MPP) {
+    if !(mpp.is_finite() && mpp > 0.0) {
         return 0;
     }
     let mut mask = 0;
-    for (class, limit) in [
-        (SettlementClass::City, CITY_MAX_MPP),
-        (SettlementClass::Town, TOWN_MAX_MPP),
-        (SettlementClass::Village, VILLAGE_MAX_MPP),
-        (SettlementClass::Hamlet, HAMLET_MAX_MPP),
-    ] {
-        if mpp <= limit {
+    for (class, min, max) in CLASS_BANDS {
+        if (min..=max).contains(&mpp) {
             mask |= 1 << class as u8;
         }
     }
@@ -199,15 +197,23 @@ pub(crate) fn draw_labels(cv: &mut impl Surface, vp: &Viewport, cache: &Settleme
     }
 }
 
-/// The labels this frame draws, as `(anchor, candidate index)` in the order they were placed.
+/// The labels this frame draws, as `(draw point, candidate index)` in the order they were placed.
 ///
-/// A name that does not fit is dropped, never moved: `place` refuses a box that crosses the panel
-/// bounds, sits on reserved chrome, or comes within [`LABEL_MARGIN_PX`] of a name already placed.
-/// A class past its scale limit for *this* camera is skipped, whatever the cache holds.
+/// The box is centred on the place, both ways, and then shifted back inside the panel, which moves
+/// it by at most half its size because the place itself is on the panel. A wide name near an edge
+/// therefore leans in instead of being refused — without that, an 11-character name needs its place
+/// 66 px clear of both sides of a 240 px panel, which is exactly what starves the large places.
+///
+/// A name is dropped when its place is off the panel, when it is wider than the panel, or when
+/// `place` refuses the box: reserved chrome, or within [`LABEL_MARGIN_PX`] of a name already
+/// placed. The whole set is re-ordered by [`rank`] every frame, so a lower-priority name never
+/// holds a slot a better one needs. A class past its scale band for *this* camera is skipped,
+/// whatever the cache holds.
 fn placements(vp: &Viewport, cache: &SettlementCache, place: &mut PointPlacement) -> Vec<(Point, u8), MAX_LABELS> {
     // The scale limits answer to the camera that draws, which is not always the one the cache was
     // filled for: the browse screens fit a whole route into the panel at a much coarser scale.
     let mask = class_mask(vp.meters_per_pixel());
+    let (w, h) = (vp.w as i32, vp.h as i32);
     // Sort small indices, so the held set keeps the order the query gave it.
     let mut order: Vec<u8, MAX_CANDIDATES> = (0..cache.items.len() as u8).collect();
     order.sort_unstable_by_key(|&i| rank(&cache.items[usize::from(i)]));
@@ -222,11 +228,19 @@ fn placements(vp: &Viewport, cache: &SettlementCache, place: &mut PointPlacement
             continue;
         }
         let (x, y) = vp.to_screen(c.lon, c.lat);
-        let at = Point::new(x, y + LABEL_ANCHOR_DY);
+        if !(0..w).contains(&x) || !(0..h).contains(&y) {
+            continue;
+        }
         let tw = text_width(&label_of(c), Font::Label) as i32;
         let th = Font::Label.line_height() as i32;
-        if place.try_place(rect(at.x - tw / 2, at.y, tw, th), LABEL_MARGIN_PX) {
-            let _ = placed.push((at, i));
+        if tw > w || th > h {
+            continue;
+        }
+        let left = (x - tw / 2).clamp(0, w - tw);
+        let top = (y - th / 2).clamp(0, h - th);
+        if place.try_place(rect(left, top, tw, th), LABEL_MARGIN_PX) {
+            // `halo_text` centres on x and takes y as the top of the line.
+            let _ = placed.push((Point::new(left + tw / 2, top), i));
         }
     }
     placed
@@ -286,9 +300,14 @@ mod tests {
 
     /// The names a frame draws, in placement order.
     fn drawn(vp: &Viewport, cache: &SettlementCache, place: &mut PointPlacement) -> StdVec<String> {
+        drawn_at(vp, cache, place).into_iter().map(|(name, _)| name).collect()
+    }
+
+    /// The names a frame draws with their draw points: the centre x and the top y of the text line.
+    fn drawn_at(vp: &Viewport, cache: &SettlementCache, place: &mut PointPlacement) -> StdVec<(String, Point)> {
         placements(vp, cache, place)
             .into_iter()
-            .map(|(_, i)| label_of(&cache.items[usize::from(i)]).as_str().into())
+            .map(|(at, i)| (label_of(&cache.items[usize::from(i)]).as_str().into(), at))
             .collect()
     }
 
@@ -306,21 +325,19 @@ mod tests {
     fn the_class_mask_follows_the_scale() {
         assert_eq!(class_mask(400.0), 0b0001, "only cities at 400 m/px");
         assert_eq!(class_mask(100.0), 0b0011, "towns join at 100 m/px");
-        assert_eq!(class_mask(30.0), 0b0111, "villages join at 30 m/px");
-        assert_eq!(class_mask(10.0), 0b1111, "hamlets join at 10 m/px");
-        assert_eq!(class_mask(SETTLEMENT_MIN_MPP), 0b1111, "the riding end of the band still shows every class");
-        assert_eq!(class_mask(1.0), 0, "inside a settlement the names only cover the roads");
+        assert_eq!(class_mask(30.0), 0b0110, "at 30 m/px a city no longer fits the panel; towns and villages do");
+        assert_eq!(class_mask(10.0), 0b1100, "villages and hamlets at 10 m/px");
+        assert_eq!(class_mask(3.0), 0b1000, "only hamlets at 3 m/px");
+        assert_eq!(class_mask(1.0), 0, "inside a place the name only covers the roads");
         assert_eq!(class_mask(700.0), 0, "past the city limit nothing is named");
 
-        // The locked edges themselves: a changed constant has to fail here.
-        for (limit, at_limit, above) in [
-            (CITY_MAX_MPP, 0b0001, 0b0000),
-            (TOWN_MAX_MPP, 0b0011, 0b0001),
-            (VILLAGE_MAX_MPP, 0b0111, 0b0011),
-            (HAMLET_MAX_MPP, 0b1111, 0b0111),
-        ] {
-            assert_eq!(class_mask(limit), at_limit, "the class still shows a name at {limit} m/px");
-            assert_eq!(class_mask(limit * 1.01), above, "just past {limit} m/px it is gone");
+        // Both edges of every band: a changed constant has to fail here.
+        for (class, min, max) in CLASS_BANDS {
+            let bit = 1 << class as u8;
+            assert!(class_mask(min) & bit != 0, "{class:?} shows at {min} m/px");
+            assert!(class_mask(min * 0.99) & bit == 0, "{class:?} is gone just under {min} m/px");
+            assert!(class_mask(max) & bit != 0, "{class:?} shows at {max} m/px");
+            assert!(class_mask(max * 1.01) & bit == 0, "{class:?} is gone just past {max} m/px");
         }
         for degenerate in [f32::NAN, f32::INFINITY, 0.0, -1.0] {
             assert_eq!(class_mask(degenerate), 0, "{degenerate} is not a scale");
@@ -403,20 +420,20 @@ mod tests {
     fn the_cache_holds_while_the_padded_region_covers_the_view() {
         let bytes = freiburg_map();
         reader_over!(bytes, source, reader);
-        let vp = vp_at(CAM, 10.0);
+        let vp = vp_at(CAM, 30.0);
         let mut cache = SettlementCache::new();
         cache.prepare(Some(&reader), &vp, true);
-        assert_eq!(cache.items.len(), 4, "every class is inside the padded view at 10 m/px");
+        assert_eq!(cache.items.len(), 2, "the town and the village are in the band at 30 m/px");
         let region = cache.region;
         let reads = source.reads.get();
 
         let (lon, lat) = vp.to_map(PANEL.0 / 2.0 + 10.0, PANEL.1 / 2.0);
-        cache.prepare(Some(&reader), &vp_at((lon, lat), 10.0), true);
+        cache.prepare(Some(&reader), &vp_at((lon, lat), 30.0), true);
         assert_eq!(source.reads.get(), reads, "a 10 px pan stays inside the padded region and reads nothing");
         assert_eq!(cache.region, region, "the held region is untouched");
 
         let (lon, lat) = vp.to_map(PANEL.0 / 2.0 + 200.0, PANEL.1 / 2.0);
-        cache.prepare(Some(&reader), &vp_at((lon, lat), 10.0), true);
+        cache.prepare(Some(&reader), &vp_at((lon, lat), 30.0), true);
         assert!(source.reads.get() > reads, "a 200 px pan leaves the padded region and refills");
         assert_ne!(cache.region, region);
     }
@@ -427,18 +444,21 @@ mod tests {
         reader_over!(bytes, source, reader);
         let mut cache = SettlementCache::new();
         cache.prepare(Some(&reader), &vp_at(CAM, 10.0), true);
-        assert_eq!(cache.items.len(), 4);
+        assert_eq!(cache.items.len(), 2, "the village and the hamlet at 10 m/px");
         let reads = source.reads.get();
 
-        // 12 m/px is inside the hamlet band, and the padded region still covers the wider view.
-        cache.prepare(Some(&reader), &vp_at(CAM, 12.0), true);
-        assert_eq!(source.reads.get(), reads, "a scale change inside one band reuses the set");
+        // 9 m/px holds the same two bands, over a narrower view the padded region still covers.
+        cache.prepare(Some(&reader), &vp_at(CAM, 9.0), true);
+        assert_eq!(source.reads.get(), reads, "a scale change that crosses no band edge reuses the set");
 
         cache.prepare(Some(&reader), &vp_at(CAM, 20.0), true);
         assert!(source.reads.get() > reads, "crossing the hamlet limit refills");
         let names: StdVec<_> = cache.items.iter().map(|c| c.name.as_str()).collect();
-        assert!(!names.contains(&"Hofsgrund"), "the hamlet is out of the band");
-        assert!(names.contains(&"Denzlingen") && names.contains(&"Freiburg"));
+        assert_eq!(
+            names,
+            ["Emmendingen", "Denzlingen"],
+            "the hamlet is out of its band at 20 m/px, and the town is in"
+        );
     }
 
     #[test]
@@ -508,7 +528,7 @@ mod tests {
 
     // ---- the draw pass ----
 
-    /// The class limits answer to the camera that draws. The browse screens fit a route into the
+    /// The class bands answer to the camera that draws. The browse screens fit a route into the
     /// panel at their own coarse scale, with a cache that was filled while riding.
     #[test]
     fn the_drawn_scale_decides_the_classes_whatever_the_cache_holds() {
@@ -517,48 +537,51 @@ mod tests {
             at_screen(&riding, 120.0, 100.0, SettlementClass::City, "Freiburg", 230_000),
             at_screen(&riding, 120.0, 200.0, SettlementClass::Hamlet, "Hofsgrund", 300),
         ]);
-        assert_eq!(drawn(&riding, &cache, &mut open_panel()), ["Freiburg", "Hofsgrund"], "both at 10 m/px");
+        assert_eq!(drawn(&riding, &cache, &mut open_panel()), ["Hofsgrund"], "at 10 m/px a city does not fit");
 
         let fitted = vp_at(CAM, 100.0);
-        assert_eq!(drawn(&fitted, &cache, &mut open_panel()), ["Freiburg"], "the hamlet is past its limit at 100 m/px");
+        assert_eq!(drawn(&fitted, &cache, &mut open_panel()), ["Freiburg"], "at 100 m/px the hamlet is a dot");
 
         let far = vp_at(CAM, 900.0);
         assert!(drawn(&far, &cache, &mut open_panel()).is_empty(), "no class is named at 900 m/px");
     }
 
     #[test]
-    fn a_label_that_crosses_the_panel_edge_is_dropped() {
-        let vp = vp_at(CAM, 30.0);
+    fn a_label_at_the_panel_edge_leans_in_and_one_off_the_panel_is_dropped() {
+        let vp = vp_at(CAM, 100.0);
         let cache = cache_of(&[
             at_screen(&vp, 6.0, 160.0, SettlementClass::City, "Westedge", 9),
-            at_screen(&vp, 120.0, 318.0, SettlementClass::City, "Southedge", 8),
-            at_screen(&vp, 120.0, 160.0, SettlementClass::City, "Middle", 7),
+            at_screen(&vp, -40.0, 100.0, SettlementClass::City, "Outside", 8),
         ]);
-        assert_eq!(drawn(&vp, &cache, &mut open_panel()), ["Middle"], "an edge label is dropped, never moved");
+        let drawn = drawn_at(&vp, &cache, &mut open_panel());
+        let names: StdVec<_> = drawn.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["Westedge"], "a place off the panel has no label");
+        let tw = text_width("Westedge", Font::Label) as i32;
+        assert_eq!(drawn[0].1.x, tw / 2, "the box leans in against the left edge instead of being dropped");
     }
 
     #[test]
     fn the_margin_suppresses_a_lower_priority_neighbour() {
-        // 10 m/px, where every class shows a name.
-        let vp = vp_at(CAM, 10.0);
+        // 30 m/px, where the town band and the village band overlap.
+        let vp = vp_at(CAM, 30.0);
         let close = cache_of(&[
-            at_screen(&vp, 120.0, 150.0, SettlementClass::City, "Freiburg", 230_000),
-            at_screen(&vp, 120.0, 158.0, SettlementClass::Hamlet, "Hofsgrund", 300),
+            at_screen(&vp, 120.0, 150.0, SettlementClass::Town, "Emmendingen", 28_000),
+            at_screen(&vp, 120.0, 158.0, SettlementClass::Village, "Maleck", 400),
         ]);
-        assert_eq!(drawn(&vp, &close, &mut open_panel()), ["Freiburg"], "8 px apart is inside the 12 px margin");
+        assert_eq!(drawn(&vp, &close, &mut open_panel()), ["Emmendingen"], "8 px apart is inside the 12 px margin");
 
         // The same pair with the panel rows the margin asks for: the label is 24 px tall, so the
         // second name clears at 36 px.
         let clear = cache_of(&[
-            at_screen(&vp, 120.0, 150.0, SettlementClass::City, "Freiburg", 230_000),
-            at_screen(&vp, 120.0, 186.0, SettlementClass::Hamlet, "Hofsgrund", 300),
+            at_screen(&vp, 120.0, 150.0, SettlementClass::Town, "Emmendingen", 28_000),
+            at_screen(&vp, 120.0, 186.0, SettlementClass::Village, "Maleck", 400),
         ]);
-        assert_eq!(drawn(&vp, &clear, &mut open_panel()), ["Freiburg", "Hofsgrund"]);
+        assert_eq!(drawn(&vp, &clear, &mut open_panel()), ["Emmendingen", "Maleck"]);
     }
 
     #[test]
     fn the_reserved_chrome_and_the_rider_refuse_a_label() {
-        let vp = vp_at(CAM, 30.0);
+        let vp = vp_at(CAM, 100.0);
         let rider = rect(108, 148, 24, 24);
         let chip_band = rect(0, 250, 240, 70);
         let cache = cache_of(&[
@@ -595,6 +618,26 @@ mod tests {
         assert_eq!(drawn(&vp, &cache, &mut open_panel()).len(), MAX_LABELS);
     }
 
+    /// The owner's case, with the real places. East of Emmendingen at 30 m/px the town sits 40 px
+    /// from the left edge, where its 11-character name is 132 px wide. The edge-drop rule refused
+    /// it and drew Maleck, a village of 400, in the middle of the panel.
+    #[test]
+    fn a_wide_town_name_at_the_edge_beats_a_small_village_in_the_middle() {
+        let vp = vp_at((7_881_900, 48_121_100), 30.0);
+        let cache = cache_of(&[
+            candidate(SettlementClass::Village, "Maleck", 400, 48_123_600, 7_889_400),
+            candidate(SettlementClass::Town, "Emmendingen", 28_000, 48_121_100, 7_849_700),
+        ]);
+        let (x, _) = vp.to_screen(7_849_700, 48_121_100);
+        let tw = text_width("Emmendingen", Font::Label) as i32;
+        assert!(x < tw / 2, "the place is nearer the left edge than half the name is wide");
+
+        let drawn = drawn_at(&vp, &cache, &mut open_panel());
+        let names: StdVec<_> = drawn.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["Emmendingen"], "the town is drawn, and it takes the village's space");
+        assert_eq!(drawn[0].1.x, tw / 2, "the name leans in against the edge");
+    }
+
     /// Stability: the same candidates under a moved camera keep their labels, and a better
     /// settlement that enters takes the space of the one it collides with.
     #[test]
@@ -610,9 +653,10 @@ mod tests {
         let panned = vp_at((lon, lat), 30.0);
         assert_eq!(drawn(&panned, &before, &mut open_panel()), ["Denzlingen", "Vörstetten"]);
 
-        // A city enters, on the village's row. It outranks the village and takes the space.
-        let city = at_screen(&panned, 124.0, 162.0, SettlementClass::City, "Freiburg", 230_000);
-        let after = cache_of(&[village, far, city]);
-        assert_eq!(drawn(&panned, &after, &mut open_panel()), ["Freiburg", "Vörstetten"]);
+        // A town enters, on the village's row. It outranks the village and takes the space in the
+        // same frame: the order is decided from scratch, and holding a slot buys nothing.
+        let town = at_screen(&panned, 124.0, 162.0, SettlementClass::Town, "Emmendingen", 28_000);
+        let after = cache_of(&[village, far, town]);
+        assert_eq!(drawn(&panned, &after, &mut open_panel()), ["Emmendingen", "Vörstetten"]);
     }
 }
