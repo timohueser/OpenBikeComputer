@@ -90,23 +90,9 @@ const EDITOR_H: i32 = 148;
 /// height its content needs, and to prefer a bounded scrolling sheet over quietly becoming a page.
 const MAX_SHEET_H: i32 = 244;
 
-/// The widest table a context may declare — **five rows**, derived from [`MAX_SHEET_H`] rather than
-/// asserted beside it, so the two can never drift.
-///
-/// The render key's availability bitmask is one `u8` ([`ContextDrawerScreen::key`]), which would
-/// allow eight; the panel is the tighter limit and therefore the real one.
-///
-/// **Five is where D4c stopped, and why.** The Map needs the ride's four actions *and* its three
-/// display modifiers; seven flat rows are 332 px and fit no sheet at any height. So the Map declares
-/// [`MAP`] — the four ride actions, unchanged, plus one door onto [`MAP_DISPLAY`] — which is the
-/// row list #1515's own body enumerates. A sixth row would be 288 px, and at that point the sheet is
-/// a page: #1515's remedy for real overflow is a **bounded scrolling sheet**, not a taller one, and
-/// that is the slice a seventh row has to wait for.
-const MAX_ROWS: usize = ((MAX_SHEET_H - SHEET_PAD * 2) / ROW_H) as usize;
-
-/// The bitmask in [`ContextDrawerScreen::key`] is one `u8`, so the panel had better be the tighter
-/// limit. If a geometry pass ever makes it not so, this is where that is caught.
-const _: () = assert!(MAX_ROWS <= 8, "the render key carries row availability in one byte");
+/// At most five rows are visible; longer category menus scroll within the sheet.
+const VISIBLE_ROWS: usize = ((MAX_SHEET_H - SHEET_PAD * 2) / ROW_H) as usize;
+const MAX_ROWS: usize = 8;
 
 // ---- The declarative model ------------------------------------------------------------------
 
@@ -272,6 +258,10 @@ pub enum ContextToggle {
     /// that review's verdict — the row migrated here, it was not retired.
     MapContours,
     FindHideClosed,
+    MapPeaks,
+    MapLandmarks,
+    MapPois,
+    MapPoiCategory(PoiCategory),
 }
 
 impl ContextToggle {
@@ -279,6 +269,10 @@ impl ContextToggle {
     /// selected row's committed state.
     fn read(self, f: &ContextFacts) -> bool {
         match self {
+            ContextToggle::MapPeaks => f.settings.map_peaks,
+            ContextToggle::MapLandmarks => f.settings.map_landmarks,
+            ContextToggle::MapPois => f.settings.map_pois,
+            ContextToggle::MapPoiCategory(cat) => f.settings.map_poi_categories & category_bit(cat) != 0,
             ContextToggle::MapClock => f.settings.map_clock,
             ContextToggle::MapScaleBar => f.settings.map_scale_bar,
             ContextToggle::MapContours => f.settings.map_contours,
@@ -291,12 +285,20 @@ impl ContextToggle {
     /// in-flight older revision, so three of them cannot queue three competing writes.
     fn flip(self, cx: &mut Ctx) {
         match self {
+            ContextToggle::MapPeaks => cx.settings.map_peaks = !cx.settings.map_peaks,
+            ContextToggle::MapLandmarks => cx.settings.map_landmarks = !cx.settings.map_landmarks,
+            ContextToggle::MapPois => cx.settings.map_pois = !cx.settings.map_pois,
+            ContextToggle::MapPoiCategory(cat) => cx.settings.map_poi_categories ^= category_bit(cat),
             ContextToggle::MapClock => cx.settings.map_clock = !cx.settings.map_clock,
             ContextToggle::MapScaleBar => cx.settings.map_scale_bar = !cx.settings.map_scale_bar,
             ContextToggle::MapContours => cx.settings.map_contours = !cx.settings.map_contours,
             ContextToggle::FindHideClosed => cx.settings.find_hide_closed = !cx.settings.find_hide_closed,
         }
     }
+}
+
+fn category_bit(cat: PoiCategory) -> u8 {
+    1 << PoiCategory::ALL.iter().position(|item| *item == cat).expect("service category")
 }
 
 /// The category a filter ordinal names, or `None` for ordinal 0 ("Everything").
@@ -341,6 +343,8 @@ pub enum ContextAction {
     /// forced: a nested *sliding* page over a map costs a map render per frame of the slide, while
     /// a swap costs exactly one. See [`ContextDrawerScreen::swapped_in`].
     MapDisplay,
+    MapIcons,
+    MapPoiCategories,
     /// A `bool` the row flips **in place**: the sheet stays up, the row's own slider is the
     /// feedback, and the screen underneath is redrawn once, when the sheet closes — so setting all
     /// three map modifiers costs one map render, not three.
@@ -371,7 +375,10 @@ impl ContextAction {
             // A display modifier is a preference no ride state can invalidate, and the door onto
             // them is as live as they are. Stated rather than left implicit, so the one-predicate
             // rule has something to hold here too.
-            ContextAction::MapDisplay | ContextAction::Toggle(_) => true,
+            ContextAction::MapDisplay
+            | ContextAction::MapIcons
+            | ContextAction::MapPoiCategories
+            | ContextAction::Toggle(_) => true,
         }
     }
 
@@ -391,6 +398,10 @@ impl ContextAction {
             ContextAction::Routes => Screen::RouteMenu(RouteMenuScreen::new()),
 
             // The shorter sheet takes the taller one's place, already landed.
+            ContextAction::MapIcons => Screen::ContextDrawer(ContextDrawerScreen::swapped_in(&MAP_ICONS, cx.now_ms)),
+            ContextAction::MapPoiCategories => {
+                Screen::ContextDrawer(ContextDrawerScreen::swapped_in(&MAP_POI_CATEGORIES, cx.now_ms))
+            }
             ContextAction::MapDisplay => {
                 Screen::ContextDrawer(ContextDrawerScreen::swapped_in(&MAP_DISPLAY, cx.now_ms))
             }
@@ -408,6 +419,15 @@ impl ContextAction {
 pub struct ContextRow {
     pub label: Msg,
     pub action: ContextAction,
+}
+
+fn row_font(row: &ContextRow, label: &str) -> Font {
+    let room = if matches!(row.action, ContextAction::Toggle(_)) { 136 } else { 172 };
+    if label.contains('\n') || obc_render::text::text_width(label, Font::Body) > room {
+        Font::Label
+    } else {
+        Font::Body
+    }
 }
 
 /// A screen's declared contextual content — the rows the bottom sheet offers, in sheet order.
@@ -454,6 +474,49 @@ pub static MAP_DISPLAY: ContextMenu = ContextMenu {
         ContextRow { label: Msg::MapContextClock, action: ContextAction::Toggle(ContextToggle::MapClock) },
         ContextRow { label: Msg::MapContextScaleBar, action: ContextAction::Toggle(ContextToggle::MapScaleBar) },
         ContextRow { label: Msg::MapContextContours, action: ContextAction::Toggle(ContextToggle::MapContours) },
+        ContextRow { label: Msg::MapContextIcons, action: ContextAction::MapIcons },
+    ],
+};
+
+pub static MAP_ICONS: ContextMenu = ContextMenu {
+    rows: &[
+        ContextRow { label: Msg::MenuPeaks, action: ContextAction::Toggle(ContextToggle::MapPeaks) },
+        ContextRow { label: Msg::MapContextLandmarks, action: ContextAction::Toggle(ContextToggle::MapLandmarks) },
+        ContextRow { label: Msg::MapContextPois, action: ContextAction::Toggle(ContextToggle::MapPois) },
+        ContextRow { label: Msg::MapContextCategories, action: ContextAction::MapPoiCategories },
+    ],
+};
+
+pub static MAP_POI_CATEGORIES: ContextMenu = ContextMenu {
+    rows: &[
+        ContextRow {
+            label: Msg::PoiCatWater,
+            action: ContextAction::Toggle(ContextToggle::MapPoiCategory(PoiCategory::Water)),
+        },
+        ContextRow {
+            label: Msg::MapContextCampsites,
+            action: ContextAction::Toggle(ContextToggle::MapPoiCategory(PoiCategory::Campsite)),
+        },
+        ContextRow {
+            label: Msg::PoiCatAccommodation,
+            action: ContextAction::Toggle(ContextToggle::MapPoiCategory(PoiCategory::Accommodation)),
+        },
+        ContextRow {
+            label: Msg::PoiCatResupply,
+            action: ContextAction::Toggle(ContextToggle::MapPoiCategory(PoiCategory::Resupply)),
+        },
+        ContextRow {
+            label: Msg::PoiCatPharmacy,
+            action: ContextAction::Toggle(ContextToggle::MapPoiCategory(PoiCategory::Pharmacy)),
+        },
+        ContextRow {
+            label: Msg::MapContextBikeShops,
+            action: ContextAction::Toggle(ContextToggle::MapPoiCategory(PoiCategory::BikeShop)),
+        },
+        ContextRow {
+            label: Msg::MapContextTrains,
+            action: ContextAction::Toggle(ContextToggle::MapPoiCategory(PoiCategory::Train)),
+        },
     ],
 };
 
@@ -497,7 +560,7 @@ impl Page {
     /// same three lines.
     fn height(self, menu: &ContextMenu) -> i32 {
         match self {
-            Page::Root => SHEET_PAD * 2 + ROW_H * menu.rows.len() as i32,
+            Page::Root => SHEET_PAD * 2 + ROW_H * menu.rows.len().min(VISIBLE_ROWS) as i32,
             Page::Editor => EDITOR_H,
         }
     }
@@ -658,6 +721,12 @@ impl ContextDrawerScreen {
                         Transition::None
                     }
                 }
+            }
+            Gesture::Back if core::ptr::eq(self.menu, &MAP_POI_CATEGORIES) => {
+                Transition::Replace(Screen::ContextDrawer(Self::swapped_in(&MAP_ICONS, cx.now_ms)))
+            }
+            Gesture::Back if core::ptr::eq(self.menu, &MAP_ICONS) => {
+                Transition::Replace(Screen::ContextDrawer(Self::swapped_in(&MAP_DISPLAY, cx.now_ms)))
             }
             Gesture::Back => Transition::Pop,
             // Select-hold stays local and object-scoped; a context row has no held action.
@@ -881,13 +950,35 @@ impl ContextDrawerScreen {
     /// brightness control makes. A taller value row is a question for D5's geometry pass.
     fn draw_root(&self, cv: &mut impl Surface, rx: &Render, top: i32, x: i32) {
         let facts = rx.context_facts();
-        for (i, row) in self.menu.rows.iter().enumerate() {
-            let area = rect(x + rows::ROW_X, top + SHEET_PAD + i as i32 * ROW_H, rx.w - 2 * rows::ROW_X, ROW_H - 4);
+        let first = (self.selected as usize).saturating_sub(VISIBLE_ROWS - 1);
+        for (i, row) in self.menu.rows.iter().enumerate().skip(first).take(VISIBLE_ROWS) {
+            let area =
+                rect(x + rows::ROW_X, top + SHEET_PAD + (i - first) as i32 * ROW_H, rx.w - 2 * rows::ROW_X, ROW_H - 4);
             let live = row.action.available(&facts);
             rows::row_cursor(cv, area, i as u8 == self.selected, false);
             let ink = if live { palette::INK } else { palette::CONTOUR };
             let label = rx.t(row.label);
-            if let Some((first, second)) = label.split_once('\n') {
+            if row.action == ContextAction::MapPoiCategories {
+                use core::fmt::Write as _;
+                let mut summary = heapless::String::<16>::new();
+                let _ = write!(summary, "{} / {}", rx.settings.map_poi_categories.count_ones(), PoiCategory::ALL.len());
+                cv.text_vcentered(
+                    label,
+                    area.top_left.x + 14,
+                    (area.top_left.y, 20),
+                    Font::Label,
+                    TextAlign::Left,
+                    ink,
+                );
+                cv.text_vcentered(
+                    &summary,
+                    area.top_left.x + 14,
+                    (area.top_left.y + 20, 20),
+                    Font::Label,
+                    TextAlign::Left,
+                    ink,
+                );
+            } else if let Some((first, second)) = label.split_once('\n') {
                 for (line, text) in [first, second].into_iter().enumerate() {
                     cv.text_vcentered(
                         text,
@@ -903,7 +994,7 @@ impl ContextDrawerScreen {
                     label,
                     area.top_left.x + 14,
                     (area.top_left.y, ROW_H - 4),
-                    Font::Body,
+                    row_font(row, label),
                     TextAlign::Left,
                     ink,
                 );
@@ -918,6 +1009,15 @@ impl ContextDrawerScreen {
                 _ => {}
             }
         }
+        super::vocab::list::scrollbar(
+            cv,
+            x + rx.w - 7,
+            top + SHEET_PAD,
+            ROW_H * VISIBLE_ROWS as i32,
+            self.menu.rows.len(),
+            first,
+            VISIBLE_ROWS,
+        );
     }
 
     /// The nested value editor: the row's own label as the title, the staged choice spelled out
@@ -1185,10 +1285,11 @@ mod tests {
     #[test]
     fn pinned_by_the_row_tables() {
         // The derivation itself, so a geometry change is read here rather than asserted twice.
-        assert_eq!(MAX_ROWS, 5, "24 px of padding plus 44 px rows inside a {MAX_SHEET_H} px sheet");
+        assert_eq!(VISIBLE_ROWS, 5, "24 px of padding plus 44 px rows inside a {MAX_SHEET_H} px sheet");
 
         // Every table the tree declares; each D4 slice added its own to this list.
-        let declared: &[&ContextMenu] = &[&RIDE, &MAP, &MAP_DISPLAY, &UP_AHEAD, &ROUTE_PLAN, &FIND_PLACE];
+        let declared: &[&ContextMenu] =
+            &[&RIDE, &MAP, &MAP_DISPLAY, &MAP_ICONS, &MAP_POI_CATEGORIES, &UP_AHEAD, &ROUTE_PLAN, &FIND_PLACE];
         for menu in declared {
             assert!(menu.rows.len() <= MAX_ROWS, "{} rows outgrow the sheet", menu.rows.len());
             for page in [Page::Root, Page::Editor] {
@@ -1481,10 +1582,12 @@ mod tests {
         let facts = w.facts();
         let (mut worst_row, mut worst_choice) = (0, 0);
         for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
-            for menu in [&RIDE, &MAP, &MAP_DISPLAY, &UP_AHEAD, &ROUTE_PLAN, &FIND_PLACE] {
+            for menu in
+                [&RIDE, &MAP, &MAP_DISPLAY, &MAP_ICONS, &MAP_POI_CATEGORIES, &UP_AHEAD, &ROUTE_PLAN, &FIND_PLACE]
+            {
                 for row in menu.rows {
                     let label = t(row.label, lang);
-                    let font = if label.contains('\n') { Font::Label } else { Font::Body };
+                    let font = row_font(row, label);
                     assert!(label.lines().count() <= 2);
                     let lw = label.lines().map(|line| text_width(line, font) as i32).max().unwrap_or(0);
                     let room = match row.action {
@@ -1557,7 +1660,9 @@ mod tests {
     /// `key` that reports 0 for a switch row (the slider would not move until the sheet closed).
     #[test]
     fn a_toggle_row_flips_in_place_and_keeps_the_sheet() {
-        for (i, toggle) in MAP_DISPLAY.rows.iter().enumerate() {
+        for (i, toggle) in
+            MAP_DISPLAY.rows.iter().enumerate().filter(|(_, row)| matches!(row.action, ContextAction::Toggle(_)))
+        {
             let ContextAction::Toggle(t) = toggle.action else { panic!("the display sheet is all switch rows") };
             let mut w = World::riding();
             let mut d = ContextDrawerScreen::opening(&MAP_DISPLAY);
@@ -1572,13 +1677,13 @@ mod tests {
             // The other two are untouched: a flip is one bit, not a sheet-wide act.
             let others = MAP_DISPLAY.rows.iter().enumerate().filter(|(j, _)| *j != i);
             for (_, row) in others {
-                let ContextAction::Toggle(other) = row.action else { unreachable!() };
+                let ContextAction::Toggle(other) = row.action else { continue };
                 assert!(other.read(&w.facts()), "the other switches are untouched");
             }
 
             w.press(&mut d, Gesture::Press);
             assert!(t.read(&w.facts()), "off -> on again, from the same row");
-            assert_eq!(d.key(&w.facts()).4, 0b111, "every switch row is always live");
+            assert_eq!(d.key(&w.facts()).4, 0b1111, "every switch row is always live");
         }
     }
 
@@ -1786,5 +1891,34 @@ mod tests {
         assert_eq!(d.staged, 0, "stepping back off Gravel lands on Road");
         w.press(&mut d, Gesture::Step(-1));
         assert_eq!(d.staged, 3, "…and off Road wraps to the last profile the map carries");
+    }
+    #[test]
+    fn map_categories_scroll_and_survive_master_switch_and_restart() {
+        let mut world = World::riding();
+        let mut categories = ContextDrawerScreen::opening(&MAP_POI_CATEGORIES);
+        assert_eq!(Page::Root.height(&MAP_POI_CATEGORIES), MAX_SHEET_H);
+        world.press(&mut categories, Gesture::Step(2));
+        for _ in 2..PoiCategory::ALL.len() {
+            world.press(&mut categories, Gesture::Press);
+            world.press(&mut categories, Gesture::Step(1));
+        }
+        assert_eq!(world.settings.map_poi_categories, 3);
+        let Transition::Replace(Screen::ContextDrawer(mut icons)) = world.press(&mut categories, Gesture::Back) else {
+            panic!("back returns to icon controls")
+        };
+        world.press(&mut icons, Gesture::Step(2));
+        world.press(&mut icons, Gesture::Press);
+        assert!(!world.settings.map_pois);
+        assert!(world.settings.map_peaks && world.settings.map_landmarks);
+        let restored = crate::settings::decode(&crate::settings::encode(&world.settings)).unwrap();
+        assert_eq!(restored.map_poi_categories, 3);
+        assert!(!restored.map_pois);
+        world.settings = restored;
+        world.press(&mut icons, Gesture::Press);
+        assert!(world.settings.map_pois);
+        assert_eq!(world.settings.map_poi_categories, 3);
+        world.press(&mut icons, Gesture::Step(-2));
+        world.press(&mut icons, Gesture::Press);
+        assert!(!world.settings.map_peaks && world.settings.map_landmarks && world.settings.map_pois);
     }
 }

@@ -37,6 +37,8 @@ export const TEST_KIND_NOTES: { key: string; title: string; note: string }[] = [
 ];
 /** The test to build for a gap: one level, one sentence. A criterion with no gap has nothing to build. */
 export interface ProposedTest { level: TestLevel; summary: string }
+/** Where a validation error came from, so the editor can name the place and go to it. */
+export interface ProblemAt { requirementId?: string; criterionId?: string; criterion?: number }
 export interface AcceptanceCriterion { id: string; statement: string; evidence: CoverageEvidence[]; gap: string; next?: ProposedTest }
 export interface CoveragePlan { rationale: string; criteria: AcceptanceCriterion[] }
 /** An owner's approval of the saved statement, tests, and plan. It records the catalogue commit of that moment. */

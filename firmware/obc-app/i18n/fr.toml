@@ -221,6 +221,13 @@ idle_sub = "délai"
 
 # --- The map sheet's row labels (#1515 D4c) — the only home these three switches have ---
 [map_context]
+landmarks = "Repères"
+campsites = "Camping"
+bike_shops = "Vélocistes"
+trains = "Gares"
+icons = "Icônes carte"
+pois = "POI"
+categories = "Catégories"
 map_display = "Affichage"
 clock = "Horloge"
 scale_bar = "Échelle"

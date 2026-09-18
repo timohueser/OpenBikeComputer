@@ -1,12 +1,31 @@
-import { MANUAL_REASONS, type Attachment, type Candidate, type ManualReason, type Readiness, type Requirement, type TestResult } from '../types.ts';
+import { MANUAL_REASONS, type Attachment, type Candidate, type ManualReason, type ProblemAt, type Readiness, type Requirement, type TestResult } from '../types.ts';
 import { citedTests, coverageIssues } from '../coverage.ts';
 
 export class Problem extends Error {
   status: number;
+  /** The requirement and criterion the message is about, when it is about one. */
+  at?: ProblemAt;
   constructor(status: number, message: string) { super(message); this.status = status; }
 }
 export function assert(value: unknown, message: string, status = 400): asserts value {
   if (!value) throw new Problem(status, message);
+}
+/**
+ * Runs `check` and says where it failed. A save validates a whole draft, so "Test level must be one
+ * of unit, integration, system" on its own leaves the owner to search 39 requirements for it.
+ *
+ * Labels nest from the outside in, so the message reads
+ * `SYS-019 · Transfer speed — criterion 1 — Test level must be one of unit, integration, system.`,
+ * and `at` carries the ids the editor needs to go straight there.
+ */
+export function within<T>(label: string, at: ProblemAt, check: () => T): T {
+  try { return check(); }
+  catch (error) {
+    if (!(error instanceof Problem)) throw error;
+    error.message = `${label} — ${error.message}`;
+    error.at = { ...at, ...error.at };
+    throw error;
+  }
 }
 export function text(value: unknown, label: string, max = 10000): string {
   assert(typeof value === 'string' && value.trim().length > 0 && value.length <= max, `${label} is required (maximum ${max} characters).`);
@@ -34,32 +53,35 @@ export function attachments(value: unknown, lookup: (id: string) => Attachment):
 export function requirements(value: unknown, lookup: (id: string) => Attachment): Requirement[] {
   assert(Array.isArray(value) && value.length <= 1000, 'Requirements must be a list of at most 1000 entries.');
   const ids = new Set<string>();
-  return value.map((r) => {
-    assert(r && typeof r === 'object', 'Invalid requirement.');
-    const id = identifier(r.id, 'Requirement ID');
-    assert(!ids.has(id), 'Requirement IDs must be unique.'); ids.add(id);
-    assert(typeof r.active === 'boolean', 'Active must be a boolean.');
-    assert(Array.isArray(r.tests) && r.tests.length <= 100, 'At most 100 tests per requirement.');
-    assert(r.group === undefined || (typeof r.group === 'string' && r.group.length <= 80), 'Group must be a name of at most 80 characters.');
-    const group = r.group?.trim();
-    assert(!group || !/[\u0000-\u001f\u007f]/.test(group), 'Group must be a single line.');
-    assert(r.todo === undefined || typeof r.todo === 'boolean', 'Definition status must be a boolean.');
-    assert(r.implementationNeeded === undefined || typeof r.implementationNeeded === 'boolean', 'Implementation status must be a boolean.');
-    const tests = new Set<string>();
-    return { id, title: text(r.title, 'Title', 300), statement: text(r.statement, 'Statement', 50000), ...(group ? { group } : {}), ...(r.todo ? { todo: true } : {}), ...(r.implementationNeeded ? { implementationNeeded: true } : {}), active: r.active,
-      tests: r.tests.map((t: Record<string, unknown>) => {
-        const testId = identifier(t.id, 'Test ID');
-        assert(!tests.has(testId), 'Test IDs must be unique within a requirement.'); tests.add(testId);
-        assert(t.kind === 'manual' || t.kind === 'automated', 'Unknown test kind.');
-        assert(t.manualReason === undefined || (t.kind === 'manual' && MANUAL_REASONS.includes(t.manualReason as ManualReason)),
-          `Only a manual test has a type, and it must be one of: ${MANUAL_REASONS.join(', ')}.`);
-        return { id: testId, kind: t.kind, title: text(t.title, 'Test title', 300), inputs: attachments(t.inputs, lookup),
-          ...(t.kind === 'manual'
-            ? { steps: text(t.steps, 'Steps', 50000), expected: text(t.expected, 'Expected outcome', 50000),
-                ...(t.manualReason ? { manualReason: t.manualReason as ManualReason } : {}) }
-            : { caseId: text(t.caseId, 'Automated case ID', 1000) }) };
-      }) };
-  });
+  return value.map((r, index) => within(
+    typeof r?.id === 'string' && r.id.trim() ? r.id.trim() : `Requirement ${index + 1}`,
+    typeof r?.id === 'string' && r.id.trim() ? { requirementId: r.id.trim() } : {},
+    () => {
+      assert(r && typeof r === 'object', 'Invalid requirement.');
+      const id = identifier(r.id, 'Requirement ID');
+      assert(!ids.has(id), 'Requirement IDs must be unique.'); ids.add(id);
+      assert(typeof r.active === 'boolean', 'Active must be a boolean.');
+      assert(Array.isArray(r.tests) && r.tests.length <= 100, 'At most 100 tests per requirement.');
+      assert(r.group === undefined || (typeof r.group === 'string' && r.group.length <= 80), 'Group must be a name of at most 80 characters.');
+      const group = r.group?.trim();
+      assert(!group || !/[\u0000-\u001f\u007f]/.test(group), 'Group must be a single line.');
+      assert(r.todo === undefined || typeof r.todo === 'boolean', 'Definition status must be a boolean.');
+      assert(r.implementationNeeded === undefined || typeof r.implementationNeeded === 'boolean', 'Implementation status must be a boolean.');
+      const tests = new Set<string>();
+      return { id, title: text(r.title, 'Title', 300), statement: text(r.statement, 'Statement', 50000), ...(group ? { group } : {}), ...(r.todo ? { todo: true } : {}), ...(r.implementationNeeded ? { implementationNeeded: true } : {}), active: r.active,
+        tests: r.tests.map((t: Record<string, unknown>) => {
+          const testId = identifier(t.id, 'Test ID');
+          assert(!tests.has(testId), 'Test IDs must be unique within a requirement.'); tests.add(testId);
+          assert(t.kind === 'manual' || t.kind === 'automated', 'Unknown test kind.');
+          assert(t.manualReason === undefined || (t.kind === 'manual' && MANUAL_REASONS.includes(t.manualReason as ManualReason)),
+            `Only a manual test has a type, and it must be one of: ${MANUAL_REASONS.join(', ')}.`);
+          return { id: testId, kind: t.kind, title: text(t.title, 'Test title', 300), inputs: attachments(t.inputs, lookup),
+            ...(t.kind === 'manual'
+              ? { steps: text(t.steps, 'Steps', 50000), expected: text(t.expected, 'Expected outcome', 50000),
+                  ...(t.manualReason ? { manualReason: t.manualReason as ManualReason } : {}) }
+              : { caseId: text(t.caseId, 'Automated case ID', 1000) }) };
+        }) };
+    }));
 }
 export function testResults(value: unknown): TestResult[] {
   assert(Array.isArray(value) && value.length <= 100000, 'Invalid result list.');

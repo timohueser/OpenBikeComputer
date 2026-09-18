@@ -594,6 +594,12 @@ settings_table! {
         /// Find a Place search filter, shared by all categories and the paged browser.
         find_hide_closed: bool = true, since(21);
         find_results: FindResults = FindResults::Four, since(21);
+        /// Map icon switches are independent of Find a Place filters.
+        map_peaks: bool = true, since(22);
+        map_landmarks: bool = true, since(22);
+        map_pois: bool = true, since(22);
+        /// Bit positions follow PoiCategory::ALL, not the wire category IDs.
+        map_poi_categories: u8 = 0x7f, since(22), range(0, 0x7f);
     }
 
     pub const DEFAULT;
@@ -628,7 +634,7 @@ settings_table! {
 /// Config cache, the `.rodata` [`DEFAULT`](Settings::DEFAULT) image), so a field that silently
 /// widens the struct widens every one of those — this makes the growth an explicit decision.
 ///
-const _: () = assert!(core::mem::size_of::<Settings>() == 114, "Settings grew — was that deliberate?");
+const _: () = assert!(core::mem::size_of::<Settings>() == 118, "Settings grew — was that deliberate?");
 
 impl Settings {
     pub(crate) fn find_hours_filter(&self) -> obc_reader::reader::places::HoursFilter {
@@ -650,7 +656,7 @@ impl Settings {
 }
 
 /// Current settings layout version.
-pub const VERSION: u8 = 21;
+pub const VERSION: u8 = 22;
 
 /// Settings use the current layout. Other versions reset to defaults.
 pub const MIN_SUPPORTED: u8 = 19;
@@ -698,7 +704,7 @@ const _: () = {
     assert!(off::brightness == 112, "brightness moved");
     assert!(off::find_hide_closed == 113);
     assert!(off::find_results == 114);
-    assert!(PAYLOAD_LEN == 115, "the CRC moved");
+    assert!(PAYLOAD_LEN == 119, "the CRC moved");
     assert!(ENCODED_LEN == 128, "the blob is no longer 11 RRAM lines");
 };
 
@@ -754,6 +760,10 @@ mod tests {
             map_clock: false,
             map_scale_bar: false,
             map_contours: false,
+            map_peaks: false,
+            map_landmarks: false,
+            map_pois: false,
+            map_poi_categories: 3,
             bike_profile_idx: 3,
             waypoint_mode: WaypointMode::Always,
             language: Language::De,
