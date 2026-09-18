@@ -25,12 +25,12 @@ use obc_formats::obcm::{
 // The OBCM constants the serializer lays out are owned by `obc-formats`; imported here (the
 // `VERSION as OBCM_VERSION` rename is a module-local readability alias). Not re-exported.
 use obc_formats::obcm::{
-    nav_edge_id, nav_index_padding, OffsetScale, UnitWriter, FILLER, HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE,
-    NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_EDGE_MAX_CHUNKS, NAV_EDGE_MAX_RECORDS_PER_CHUNK, NAV_MAX_DEGREE,
-    NAV_MAX_PROFILES, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN,
+    nav_edge_id, nav_index_padding, settlement_class_of, OffsetScale, UnitWriter, FILLER, HEADER_LEN, LOD_ENTRY_LEN,
+    NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_EDGE_MAX_CHUNKS, NAV_EDGE_MAX_RECORDS_PER_CHUNK,
+    NAV_MAX_DEGREE, NAV_MAX_PROFILES, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN,
     NAV_PROFILE_RESERVED_LEN, NAV_SNAP_ANCHOR_GAP_M, NAV_SNAP_EDGE_MIN_M, NAV_SNAP_RECORD_LEN, POI_CAT_ENTRY_LEN,
-    settlement_class_of, POI_CHUNK_SIZE, POI_HOURS_BLOB_LEN, POI_HOURS_REF_NONE, POI_NAME_LEN, POI_RECORD_LEN,
-    SETTLEMENT_CATEGORY_ID, SUMMIT_CATEGORY_ID, SUMMIT_ELEVATION_UNKNOWN, SUMMIT_SUBTYPE_ID, VERSION as OBCM_VERSION,
+    POI_CHUNK_SIZE, POI_HOURS_BLOB_LEN, POI_HOURS_REF_NONE, POI_NAME_LEN, POI_RECORD_LEN, SETTLEMENT_CATEGORY_ID,
+    SUMMIT_CATEGORY_ID, SUMMIT_ELEVATION_UNKNOWN, SUMMIT_SUBTYPE_ID, VERSION as OBCM_VERSION,
 };
 
 /// The `Offset Scale` every `.obcm` this packer writes carries (§1.1): `U = 16`, a 64 GiB
@@ -862,9 +862,8 @@ pub fn serialize_poi_section(
 ) -> io::Result<Vec<u8>> {
     // Dedup the weekly schedules into a pool once over the whole list; `refs[k]` is
     // POI k's 0-based pool index (or `None` ⇒ no hours). Aligned to `pois`.
-    let (pool, refs) = crate::hours::build_hours_pool(pois, |p| {
-        has_hours(p.subtype).then_some(p.hours.as_ref()).flatten()
-    });
+    let (pool, refs) =
+        crate::hours::build_hours_pool(pois, |p| has_hours(p.subtype).then_some(p.hours.as_ref()).flatten());
     serialize_poi_pool(pois, global_bbox, section_offset, &pool, &refs)
 }
 

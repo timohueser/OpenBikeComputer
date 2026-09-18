@@ -14,10 +14,13 @@
 use std::collections::HashMap;
 
 use obc_formats::obcm::{
-    poi_directory_category_of, poi_label_of, settlement_class_of, POI_NAME_LEN, SETTLEMENT_POPULATION_MAX,
-    SETTLEMENT_POPULATION_UNKNOWN, SETTLEMENT_SUBTYPE_CITY, SETTLEMENT_SUBTYPE_HAMLET, SETTLEMENT_SUBTYPE_TOWN,
-    SETTLEMENT_SUBTYPE_VILLAGE, SUMMIT_SUBTYPE_ID,
+    poi_directory_category_of, poi_label_of, settlement_class_of, POI_NAME_LEN, SETTLEMENT_POPULATION_UNKNOWN,
+    SETTLEMENT_SUBTYPE_CITY, SETTLEMENT_SUBTYPE_HAMLET, SETTLEMENT_SUBTYPE_TOWN, SETTLEMENT_SUBTYPE_VILLAGE,
+    SUMMIT_SUBTYPE_ID,
 };
+
+/// The largest population the payload can hold: every value below the unknown one is real.
+const SETTLEMENT_POPULATION_MAX: u16 = SETTLEMENT_POPULATION_UNKNOWN - 1;
 
 use crate::hours::Schedule;
 
@@ -285,9 +288,8 @@ fn pick_settlement_name(local: &str, name_en: Option<&str>, int_name: Option<&st
     if local.chars().all(device_can_show) {
         return Some(local.into());
     }
-    normalize_name(local).or_else(|| {
-        [name_en, int_name].into_iter().flatten().find(|n| n.chars().all(device_can_show)).map(Into::into)
-    })
+    normalize_name(local)
+        .or_else(|| [name_en, int_name].into_iter().flatten().find(|n| n.chars().all(device_can_show)).map(Into::into))
 }
 
 /// Fill missing summit heights from the shared geographic terrain lattice.
@@ -821,9 +823,7 @@ mod tests {
 
     #[test]
     fn a_population_becomes_hundreds_and_saturates() {
-        let payload = |tags: &[(&str, &str)]| {
-            settlement_payload(place("city", tags).expect("classifies").population)
-        };
+        let payload = |tags: &[(&str, &str)]| settlement_payload(place("city", tags).expect("classifies").population);
         assert_eq!(payload(&[("name", "Testville"), ("population", "250000")]), 2500);
         assert_eq!(payload(&[("name", "Testville"), ("population", "900000000")]), SETTLEMENT_POPULATION_MAX);
         assert_eq!(payload(&[("name", "Testville")]), SETTLEMENT_POPULATION_UNKNOWN);

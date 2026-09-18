@@ -7,6 +7,7 @@ from datetime import datetime
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,9 @@ sys.path.insert(0, str(ROOT))
 from tools.fixtures import Catalog, FixtureError, Store, build_package, cache_root, sha256_file
 
 REGIONS = {"meiringen": "europe/switzerland", "west-cork": "europe/ireland/west-cork"}
+# The one OBCM version literal in the tree is the format crate's constant.
+OBCM_VERSION = int(re.search(r"pub const VERSION: u8 = (\d+);",
+                             (ROOT / "firmware/obc-formats/src/obcm.rs").read_text())[1])
 
 
 def input_packages(region: str) -> tuple[str, ...]:
@@ -130,8 +134,8 @@ def bake(region: str, work: Path, store: Store, bin_dir: Path, landmarks: Path |
 def package(region: str, output: Path, map_path: Path, provenance: dict, catalog: Catalog, store: Store) -> None:
     with map_path.open("rb") as source:
         header = source.read(5)
-    if len(header) != 5 or header[:4] != b"OBCM" or header[4] != 17:
-        raise FixtureError("the scenario requires an OBCM v17 map")
+    if len(header) != 5 or header[:4] != b"OBCM" or header[4] != OBCM_VERSION:
+        raise FixtureError(f"the scenario requires an OBCM v{OBCM_VERSION} map")
     digest = sha256_file(map_path)
     expected = provenance.get("map")
     if expected and (expected["sha256"] != digest or expected["bytes"] != map_path.stat().st_size):
@@ -148,7 +152,7 @@ def package(region: str, output: Path, map_path: Path, provenance: dict, catalog
             shutil.copyfile(replay_root / replay["gpx"], stage / replay["gpx"])
     write_json(stage / "build.json", {"schema": 2, "region": region, "coverage": "regional crop",
         "source_packages": {p: catalog.packages[p]["sha256"] for p in input_packages(region)}, "provenance": provenance,
-        "map": {"bytes": map_path.stat().st_size, "sha256": digest, "obcm_version": 17}})
+        "map": {"bytes": map_path.stat().st_size, "sha256": digest, "obcm_version": OBCM_VERSION}})
     size, digest = build_package(package_id, stage, output / (package_id + ".tar.gz"))
     print(f"{package_id}: bytes={size} sha256={digest}")
 
