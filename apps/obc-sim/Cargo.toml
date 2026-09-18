@@ -10,6 +10,7 @@ description = "Desktop simulator for OBCM maps using embedded-graphics (same ren
 external-fixtures = []
 
 [dependencies]
+serde_json = "1"
 obc-storage = { path = "../../firmware/obc-storage" }
 obc-fixtures = { path = "../../host/obc-fixtures" }
 obc-reader = { path = "../../firmware/obc-reader" }

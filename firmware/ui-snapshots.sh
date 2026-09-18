@@ -397,15 +397,21 @@ FREIBURG="$fixture_root/sim-freiburg/freiburg.obcm"
 # past their bands and stay quiet, which is the whole point of the bands.
 "$SIM" "$FREIBURG" --clock "2025-06-29T14:40" --center 7850000,47995000 --zoom 1.49 \
     --expect-screen Map --png "$OUT/map-settlements.png"
-# 30 m/px, with the camera east of Emmendingen so the town sits ~40 px from the left edge: its
-# 11-character name leans back inside the panel instead of being dropped, and Maleck — a village of
-# 400 under the name's box, named in the frame below — loses the space to it.
+# 30 m/px, with the camera east of Emmendingen so the town sits ~40 px from the left edge. A name is
+# pinned to its place, so both it and Mundingen hang over the left edge and the panel clips them;
+# Maleck, a village of 400 under the town's box and named in the frame below, loses the space to it.
 "$SIM" "$FREIBURG" --clock "2025-06-29T14:40" --center 7881900,48121100 --zoom 4.9668 \
     --expect-screen Map --png "$OUT/map-settlements-dense.png"
 # 15 m/px over Maleck: village and hamlet names, no city name anywhere, and the 14-character cut
 # ("Vordere Zais..").
 "$SIM" "$FREIBURG" --clock "2025-06-29T14:40" --center 7889400,48123600 --zoom 9.9336 \
     --expect-screen Map --png "$OUT/map-settlements-village.png"
+# The same 100 m/px camera in pan mode, with Freiburg placed right under the bottom Up/Down cue.
+# Pan suppresses every bottom pill, so this cue is the only thing holding that corner: the city's
+# name is correctly absent here, and a regression that stopped reserving the cue would draw it over
+# the chevron. The other three pan frames use Grimsel, which holds almost no place records.
+"$SIM" "$FREIBURG" --clock "2025-06-29T14:40" --center 7849401,48114690 --zoom 1.49 --script "h w" \
+    --expect-screen Map --png "$OUT/map-settlements-pan.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p b" --gpx "$GPX" --at 30 --expect-screen Statistics --png "$OUT/statistics.png"
 # Elevation-profile Inspect mirrors the Map: hold enters Pan, Select tap toggles Zoom, and another
 # Select tap returns to Pan without discarding the magnification. `w` clears the entry hold bulge.

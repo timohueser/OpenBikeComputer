@@ -1,5 +1,14 @@
 # Ride Assistant implementation handoff
 
+**Status: Historical planning handoff.** Production implementation is present. Use the
+[current simulator guide](../../../../apps/obc-sim/README.md#ride-assistant) and
+[current architecture](../../../content/software/architecture.md) for current behavior.
+The [epic](https://github.com/timohueser/OpenBikeComputer/issues/1734) remains open for acceptance;
+check its outstanding items before claiming completion. The branch, machine paths, and commands
+below describe the original planning session. They are not current setup instructions.
+
+## Original handoff
+
 The [epic](epic.md) is the current plan for [GitHub #1734](https://github.com/timohueser/OpenBikeComputer/issues/1734).
 It replaces the earlier broad question shortlist. The accepted four screens are Find a place,
 What's next, Landmarks and Easier route. Production implementation has not started in this

@@ -21,6 +21,9 @@
 //! the board's `present_bulge` does with its row span, so modelling it here is what makes the
 //! comparison mean something.
 
+#[path = "cases/diagnostics.rs"]
+mod diagnostics;
+
 use embedded_graphics::{
     draw_target::DrawTarget,
     geometry::{OriginDimensions, Size},

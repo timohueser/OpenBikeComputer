@@ -152,7 +152,7 @@ def print_status(pages: list[Page]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, epilog="Source-related review queue: obc docs review --help")
     parser.add_argument("command", nargs="?", choices=("status", "check"), default="status")
     parser.add_argument("--content", type=Path, default=CONTENT, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)

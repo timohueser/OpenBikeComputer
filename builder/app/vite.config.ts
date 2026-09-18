@@ -76,7 +76,7 @@ export default defineConfig(({ mode }) => {
             // Dev mode: `python -m builder.server --no-browser` on :8000 serves
             // the API; Vite proxies it (plain http-proxy streams SSE fine).
             proxy: {
-                "/api": "http://127.0.0.1:8000",
+                "/api": `http://127.0.0.1:${process.env.OBC_BUILDER_PORT || "8000"}`,
             },
         },
         test: {

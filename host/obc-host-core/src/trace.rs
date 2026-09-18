@@ -269,9 +269,25 @@ pub struct TraceRecorder<S> {
     normalizer: Normalizer,
 }
 
-/// Observation seam for an executor. Policy remains in the executor; this sink only records values
-/// at the real bulk feeder call sites.
+/// Observe pass boundaries and actual bulk feeder calls. Policy remains in the executor.
 pub trait TraceSink {
+    /// Observe pending answers before DeviceCore consumes them.
+    fn pass_input(
+        &mut self,
+        _now: obc_app::device_core::PassClock,
+        _gestures: &[obc_app::Gesture],
+        _outcomes: &obc_app::device_core::OutcomeSlots,
+        _facts: &obc_app::device_core::ExternalFacts,
+        _screen: &str,
+    ) {
+    }
+
+    /// Observe the plan before the executor takes its effects.
+    fn pass_output(&mut self, _plan: &obc_app::device_core::PassPlan, _screen: &str) {}
+
+    /// Observe completed work waiting for the next pass.
+    fn executed(&mut self, _outcomes: &obc_app::device_core::OutcomeSlots, _screen: &str) {}
+
     fn feeder(&mut self, call: FeederCall);
 
     /// Record feeder data keyed to a raw catalog identity. The recording sink normalizes it;

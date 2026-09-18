@@ -3,6 +3,9 @@ use super::{palette::*, vocab::list, Ctx, RenderFrame, Screen, Transition};
 use crate::{landmarks::Status, Gesture, Msg};
 use core::fmt::Write;
 use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
+/// Top row of the opaque bottom panel, and the camera's bottom bound.
+const PANEL_TOP: i32 = 208;
+
 use obc_render::{
     rect,
     text::{text_width, Font, TextAlign},
@@ -87,8 +90,8 @@ impl LandmarksScreen {
             min = (min.0.min(row.position.0), min.1.min(row.position.1));
             max = (max.0.max(row.position.0), max.1.max(row.position.1));
         }
-        let vp = super::find_place::fit(min, max, rx.w, rx.h, 208);
-        let _ = super::map::draw_map_scene(cv, rx, &vp, None);
+        let vp = super::find_place::fit(min, max, rx.w, rx.h, PANEL_TOP);
+        let _ = super::map::draw_map_scene(cv, rx, &vp, None, &[super::find_place::panel(rx.w, rx.h, PANEL_TOP)]);
         for (i, row) in rx.landmarks.rows.iter().enumerate() {
             let (x, y) = vp.to_screen(row.position.0, row.position.1);
             cv.round(rect(x - 11, y - 12, 23, 24), 4, if i == rx.landmarks.selected { AMBER } else { PARCHMENT });
@@ -97,7 +100,7 @@ impl LandmarksScreen {
         let (x, y) = vp.to_screen(rx.landmarks.origin.0, rx.landmarks.origin.1);
         cv.disc(Point::new(x, y), 5, INK);
         header(cv, rx.t(Msg::AssistantLandmarks), None, None);
-        cv.fill(rect(0, 208, 240, 112), PARCHMENT);
+        cv.fill(super::find_place::panel(rx.w, rx.h, PANEL_TOP), PARCHMENT);
         cv.round(rect(6, 210, 228, 104), 6, AMBER);
         let state = rx.landmarks;
         if state.selected >= state.rows.len() && state.status == Status::Ready {

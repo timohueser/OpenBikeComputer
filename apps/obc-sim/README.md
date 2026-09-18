@@ -258,6 +258,39 @@ fixtures, synthetic routes, scripted arrival events, or `--assistant-*` controls
   `fragmented`, and `untrusted`; failure reasons are `notstarted` and `reverted`.
 - `--freeze` engages the production recalculation freeze for an over-map banner snapshot.
 
+## Journey diagnostics
+
+Add `--diagnostics PATH` to a normal headless `--png` run to write a new JSONL trace:
+
+```sh
+cargo build -p obc-sim --bin obc-sim --locked
+target/debug/obc-sim apps/obc-sim/assets/grimsel-demo.obcm --boot \
+  --script 'Q f' --png drawer.png --diagnostics drawer.jsonl
+```
+
+Use the same map, GPX, card and input options as the reported problem. The trace records the
+command, working directory, map object identity and stored payload fingerprint, script tokens
+and screen changes, pass inputs, issued plans, pending outcomes, observed bulk feeders, and final
+render counters. Effect and outcome debug values include their operation tokens. Each line has a
+sequence number, event name and data object. Domain values use Rust debug text; they are diagnostic
+information, not a stable wire contract. The trace does not contain a copy of the map or GPX.
+
+The observer uses the existing host executor. It does not inject results or run extra passes.
+`host_since_pass_us` is elapsed host time since pass entry, including observation overhead;
+`host_render_us` measures the final render. Neither value measures device performance.
+Raw sensor samples and intermediate images are not captured. The PNG remains the final frame.
+
+The output file must be new and different from the PNG. Records are written immediately, so a
+failed screen assertion retains its preceding observations and a `failed` record. A successful
+run ends with `finished`; a missing terminal record means the trace is incomplete. Output errors
+fail the command. Without `--diagnostics`, the host has no attached observer.
+
+Inspect selected events with a JSONL reader, for example:
+
+```sh
+jq 'select(.event == "input_result" or .event == "pass_output" or .event == "executed")' drawer.jsonl
+```
+
 ## Help
 
 - `-h` or `--help` prints the grouped command reference and exits successfully without a map.

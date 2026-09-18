@@ -389,6 +389,10 @@ an empty report or run tests again to obtain results. These reports cover the bu
 which uses Node and a simulated DOM. The `web.builder-browser` journey below is the builder's
 real-browser evidence.
 
+For simultaneous browser runs in separate worktrees, set `OBC_BROWSER_PORT` to a distinct free
+port for each run. Both browser suites use it for their server, readiness check, and browser URL.
+The defaults remain 4180 for the builder and 4178 for the web demo.
+
 ## Builder browser journey
 
 `web.builder-browser` is an affected end-to-end suite for the map builder. The `web-browser` CI job

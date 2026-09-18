@@ -8,6 +8,21 @@ fixtures are ordinary work behind an explicit sync, `test-weekly.yml` names its 
 directly, and physical procedures stay in their owning issue. Selection is per suite, never per
 test function.
 
+## Selecting a checkout
+
+`obc` is a global entry point for humans and agents. Inside an OBC checkout or linked worktree,
+it uses that checkout's tools. Outside OBC, including inside another project, it uses the checkout
+where `obc` was installed. Main-checkout use stays the same. Relative input paths still start at
+the caller's current directory. Each invocation prints the selected checkout on stderr.
+
+Run commands inside the task's worktree and check that printed path. With an older installed
+wrapper, use `./tools/obc` from the worktree root until the installed checkout has this change.
+
+For concurrent browser sessions, set `OBC_BROWSER_PORT` to a free port before the builder or web
+demo browser suite. For a separate builder frontend, start the backend with `obc web --port 8001`
+and Vite with `OBC_BUILDER_PORT=8001 npm run dev -- --port 5174 --strictPort` from `builder/app`.
+Ports must be distinct for simultaneous sessions; the defaults stay unchanged.
+
 ## Verification is proportional to the change
 
 The normal development loop is **scoped verification**, not the complete repository gate. Every

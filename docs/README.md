@@ -23,6 +23,20 @@ python3 docs/build_docs.py --check-links
 Blog folders, front matter, comparison images and 3D models are documented in
 [`BLOG.md`](BLOG.md).
 
+## Current guidance and implementation history
+
+[plans.md](plans.md) indexes active implementation plans and remaining acceptance work. Add complex
+work there when it starts. When it ends, remove its active row and mark its handoff **Historical**
+with a link to current guidance. Keep past decisions and measurements in the historical record.
+A partly complete plan must state the work that remains; do not infer physical acceptance from CI.
+
+Before a PR, run `obc docs review --base origin/develop`. For a weekly maintenance pass, run
+`obc docs review --since 1.week`. These commands list the nearest README and Markdown pages that
+link to changed files or directories. Review those candidates against source, check the active
+plan index, and update stale guidance. Use the copy-review process below for protected prose.
+The queue is a local read-only aid, not a scheduled agent or proof that the prose is correct.
+It cannot find claims that have no source link. Check those during review and add useful links.
+
 ## Diagram style
 
 Use inline SVG for diagrams. Keep screen captures and hardware concepts as separate image assets.
