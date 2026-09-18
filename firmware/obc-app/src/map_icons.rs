@@ -16,6 +16,8 @@ const CAPACITY: usize = 64;
 const DRAW_LIMIT: usize = 24;
 const GLYPH_SCALE: i32 = 2;
 const HALO_RADIUS: i32 = 14;
+// The shipped map schema adds non-index contours at LOD 10 (10 metres per pixel).
+const FULL_CONTOURS_MAX_MPP: f32 = 10.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -83,7 +85,11 @@ impl Selection {
                 }
             }
         }
-        Self { peaks: settings.map_peaks && mpp <= 50.0, landmarks: settings.map_landmarks && mpp <= 20.0, categories }
+        Self {
+            peaks: settings.map_peaks && settings.map_contours && mpp <= FULL_CONTOURS_MAX_MPP,
+            landmarks: settings.map_landmarks && mpp <= 20.0,
+            categories,
+        }
     }
 }
 
@@ -679,7 +685,11 @@ mod tests {
         }
         let mut settings = Settings::default();
         assert!(Selection::for_view(&settings, 10.01).categories.is_empty());
-        assert!(!Selection::for_view(&settings, 50.01).peaks);
+        assert!(Selection::for_view(&settings, 10.0).peaks);
+        assert!(!Selection::for_view(&settings, 10.01).peaks, "index-only contours do not show peaks");
+        settings.map_contours = false;
+        assert!(!Selection::for_view(&settings, 1.0).peaks, "the contour switch also hides peaks");
+        settings.map_contours = true;
         settings.map_peaks = false;
         assert!(!Selection::for_view(&settings, 1.0).peaks);
     }
