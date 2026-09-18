@@ -7,7 +7,8 @@ import type { RequestEvent } from '@sveltejs/kit';
 import type { Actor, Candidate, CoveragePlan, CoverageProposal, CoverageProposalReview } from '../src/lib/types.ts';
 import { api } from '../src/lib/server/api.ts';
 import { Store, store } from '../src/lib/server/store.ts';
-import { readiness } from '../src/lib/server/domain.ts';
+import { Problem, readiness, requirements } from '../src/lib/server/domain.ts';
+import { draftCoverage } from '../src/lib/server/coverage-plan.ts';
 import { coverageSummary, coverageChanges, coverageProgress } from '../src/lib/coverage.ts';
 import { report } from '../src/lib/server/report.ts';
 
@@ -351,4 +352,22 @@ test('coverage progress counts active requirements, their criteria, and the cata
   assert.deepEqual(coverageProgress(revision.requirements, catalog), { states: { unassessed: 1, 'needs-review': 0, partial: 0, covered: 1 }, active: 2, criteria: { covered: 2, total: 2 }, tests: { cited: 2, catalog: 3, manual: 0 } });
   const excluded = structuredClone(revision.requirements); excluded[1].active = false;
   assert.equal(coverageProgress(excluded, catalog).active, 1);
+});
+
+test('a rejected save names the requirement and the criterion it failed in', () => {
+  const requirement = { id: 'SYS-019', title: 'Transfer speed', statement: 'The transfer is fast.', active: true, tests: [] };
+  const plan = {
+    rationale: 'One criterion.',
+    criteria: [
+      { id: 'usb-rate', statement: 'The rate is measured.', evidence: [], gap: 'No timed transfer runs in CI.',
+        // `ride` was a test level until it was removed; plans saved before that still carry it.
+        next: { level: 'ride', summary: 'Time a map of known size over USB.' } }
+    ]
+  };
+  const draft = [{ ...requirement, coverage: plan }];
+  let failure: Problem | undefined;
+  try { draftCoverage(requirements(draft, (id) => { throw new Error(id); }), draft, { sourceSha: sha, updatedAt: '', cases: [] }, () => 'id'); }
+  catch (error) { failure = error as Problem; }
+  assert.equal(failure?.message, 'SYS-019 · Transfer speed — criterion 1 — Test level must be one of unit, integration, system.');
+  assert.deepEqual(failure?.at, { requirementId: 'SYS-019', criterionId: 'usb-rate', criterion: 1 });
 });

@@ -25,6 +25,11 @@ Neither changes a saved revision until you select **Save revision**.
 **Revision history** shows each revision as a difference against the one before it: added,
 removed, and changed requirements, with the previous and new statement side by side.
 
+A save validates the whole draft, so a rejected save names the place: `SYS-019 · Transfer speed —
+criterion 1 — …`. The message carries a button that opens that requirement and marks the criterion.
+A value that is no longer valid, such as a test level that was removed after the plan was written,
+shows itself in the field as `ride — not a level`: choose a current value and save again.
+
 Each prose field is checked for spelling and grammar as you type. The notes below the field give
 the problem text, what is wrong with it, and the corrections. Select a correction to apply it, or
 select the problem text to find it in the field. The checker is
