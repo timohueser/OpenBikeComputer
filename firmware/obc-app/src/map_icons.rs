@@ -141,12 +141,9 @@ impl MapIcons {
         let selection = Selection::for_view(settings, vp.meters_per_pixel());
         let visible = vp.visible_bbox();
         let pending = self.query.is_some() || self.landmarks.is_some();
-        let view_empty = !pending
-            && self.visible != Some(visible)
-            && !self.marks.iter().any(|mark| in_bounds(visible, mark.position));
         let fresh = self.generation != reader.generation()
             || self.selection != Some(selection)
-            || view_empty
+            || (!pending && self.needs_refill(visible))
             || !self.coverage.is_some_and(|cover| {
                 contains(cover, visible) && cover.max_lon - cover.min_lon <= 4 * (visible.max_lon - visible.min_lon)
             });
@@ -190,7 +187,30 @@ impl MapIcons {
             self.failed(now);
             return;
         }
-        self.next_at = (self.query.is_some() || self.landmarks.is_some()).then_some(now.wrapping_add(1));
+        self.next_at = (self.query.is_some() || self.landmarks.is_some() || self.needs_refill(visible))
+            .then_some(now.wrapping_add(1));
+    }
+
+    fn needs_refill(&self, visible: BBox) -> bool {
+        if self.visible == Some(visible) {
+            return false;
+        }
+        if !self.marks.iter().any(|mark| in_bounds(visible, mark.position)) {
+            return true;
+        }
+        // A full cache may have dropped points inside its padding. Revisit it after
+        // a quarter-view shift, but let each bounded query finish before starting another.
+        self.marks.is_full()
+            && self.visible.is_some_and(|old| {
+                let dx = (i64::from(visible.min_lon) - i64::from(old.min_lon))
+                    .abs()
+                    .max((i64::from(visible.max_lon) - i64::from(old.max_lon)).abs());
+                let dy = (i64::from(visible.min_lat) - i64::from(old.min_lat))
+                    .abs()
+                    .max((i64::from(visible.max_lat) - i64::from(old.max_lat)).abs());
+                dx > (i64::from(old.max_lon) - i64::from(old.min_lon)) / 4
+                    || dy > (i64::from(old.max_lat) - i64::from(old.min_lat)) / 4
+            })
     }
 
     fn failed(&mut self, now: u32) {
@@ -758,11 +778,11 @@ mod tests {
     }
 
     #[test]
-    fn visible_candidates_beat_padding_and_empty_pans_refill_with_bounded_reads() {
+    fn visible_candidates_beat_padding_and_dense_pans_refill_with_bounded_reads() {
         let vp = view();
         let mut pois = std::vec::Vec::new();
         for i in 0..68 {
-            let position = vp.to_map(if i < 64 { 60.0 + i as f32 * 0.1 } else { 300.0 + (i - 64) as f32 }, 160.0);
+            let position = vp.to_map(if i < 64 { 60.0 + i as f32 } else { 300.0 + (i - 64) as f32 }, 160.0);
             pois.push(PoiSpec { lon: position.0, lat: position.1, subtype: 1, name: "".into(), hours_ref: 0xffff });
         }
         let bytes = build_poi_map((7_900_000, 45_900_000, 8_100_000, 46_100_000), 512, &[(1, pois)]);
@@ -776,12 +796,39 @@ mod tests {
         settle(&mut icons, Some(&reader), &vp, &settings);
         assert_eq!(icons.marks.len(), CAPACITY);
         assert!(icons.marks.iter().all(|m| in_bounds(vp.visible_bbox(), m.position)));
+        let reads = source.reads.get();
+        let (lon, lat) = vp.to_map(125.0, 160.0);
+        let jittered = Viewport::new(240.0, 320.0, lon, lat, vp.zoom);
+        icons.prepare(Some(&reader), &jittered, &settings, 1000);
+        assert_eq!(source.reads.get(), reads, "small camera changes reuse even a full cache");
         let (lon, lat) = vp.to_map(239.0, 160.0);
         let panned = Viewport::new(240.0, 320.0, lon, lat, vp.zoom);
         assert!(contains(icons.coverage.unwrap(), panned.visible_bbox()));
-        assert!(!icons.marks.iter().any(|m| in_bounds(panned.visible_bbox(), m.position)));
-        settle(&mut icons, Some(&reader), &panned, &settings);
         assert!(icons.marks.iter().any(|m| in_bounds(panned.visible_bbox(), m.position)));
+        assert!(icons.placements(&panned, None, &[]).is_empty(), "remaining cached points are clipped at the edge");
+        icons.prepare(Some(&reader), &panned, &settings, 1001);
+        assert_eq!(icons.marks.len(), CAPACITY, "refill does not blank the existing icons");
+        assert!(icons.query.is_some());
+        let (lon, lat) = vp.to_map(309.0, 160.0);
+        let moving = Viewport::new(240.0, 320.0, lon, lat, vp.zoom);
+        assert!(contains(icons.coverage.unwrap(), moving.visible_bbox()));
+        icons.prepare(Some(&reader), &moving, &settings, 1002);
+        assert_eq!(icons.visible, Some(panned.visible_bbox()), "an in-coverage pan does not restart a pending query");
+        let mut now = 1002;
+        for _ in 0..2000 {
+            if icons.visible == Some(moving.visible_bbox()) && icons.wake_in(now).is_none() {
+                break;
+            }
+            let delay = icons.wake_in(now).expect("a completed old-view query must wake to refill the latest view");
+            now += delay.max(1);
+            icons.prepare(Some(&reader), &moving, &settings, now);
+        }
+        assert_eq!(icons.visible, Some(moving.visible_bbox()));
+        assert!(icons.wake_in(now).is_none());
+        assert!(!icons.placements(&moving, None, &[]).is_empty(), "newly visible padded points are discovered");
+        let reads = source.reads.get();
+        icons.prepare(Some(&reader), &moving, &settings, 10000);
+        assert_eq!(source.reads.get(), reads, "a settled dense view does not keep reading");
         let mut query = MapPointQuery::new(reader.generation(), vp.visible_bbox(), PoiCategorySet::ALL, true);
         for _ in 0..1000 {
             let before = source.reads.get();
