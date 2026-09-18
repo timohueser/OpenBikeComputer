@@ -28,7 +28,9 @@ impl Reader<'_> {
     /// Only the leaves that meet `view` are read, through a 512-byte scratch buffer. The caller
     /// owns each result and chooses its own label budget and ranking. The query order is spatial,
     /// not sorted. A map without settlement data gives no results. A malformed record is dropped
-    /// on its own; a read failure ends the query with `Err`.
+    /// on its own; a read failure ends the query with `Err`. `view` is a plain minimum/maximum box:
+    /// a view that crosses the antimeridian (`min_lon > max_lon`) gives no results, so a caller
+    /// that must span it queries the two halves.
     pub fn visit_settlements_in(&self, view: &BBox, mut visit: impl FnMut(Settlement)) -> Result<(), Error> {
         let dir = &self.tables.pois;
         let Some(entry) = dir.entries.iter().find(|e| e.category_id == SETTLEMENT_CATEGORY_ID && !e.is_empty()) else {
