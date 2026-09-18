@@ -40,6 +40,7 @@ from pathlib import Path
 DEFAULT_URL = "https://releases.openbikecomputer.com"
 DEFAULT_TOKEN = Path.home() / ".config/openbikecomputer/verification-agent.token"
 LEVELS = ("unit", "integration", "system")
+MANUAL_REASONS = ("human", "until-automated")
 """Requirement fields the console treats as part of the requirement itself, for `changed`."""
 TRACKED = ("title", "statement", "group", "todo", "implementationNeeded", "active")
 
@@ -347,6 +348,10 @@ def plan_problems(entry: dict, requirement: dict, baseline: dict | None,
                     say(f"{rid}: criterion {cid} cites manual test {evidence['testId']}, which does not exist")
             if not as_text(evidence.get("rationale")).strip():
                 say(f"{rid}: criterion {cid} has evidence with no rationale")
+            if evidence.get("level") is not None and evidence["level"] not in LEVELS:
+                say(f"{rid}: criterion {cid} has evidence at level {evidence['level']!r}; use one of {', '.join(LEVELS)}")
+            if evidence.get("level") is None:
+                note(f"{rid}: criterion {cid} cites a test with no level")
         gap = as_text(criterion.get("gap")).strip()
         nxt = criterion.get("next")
         if nxt is not None and not isinstance(nxt, dict):
@@ -365,6 +370,11 @@ def plan_problems(entry: dict, requirement: dict, baseline: dict | None,
     for procedure in procedures:
         if not identifier_ok(procedure.get("id", "")):
             say(f"{rid}: procedure id {procedure.get('id')!r} has characters the server refuses")
+        reason = procedure.get("manualReason")
+        if reason is not None and reason not in MANUAL_REASONS:
+            say(f"{rid}: procedure {procedure.get('id')} has manualReason {reason!r}; use one of {', '.join(MANUAL_REASONS)}")
+        if reason is None:
+            note(f"{rid}: procedure {procedure.get('id')} does not say why a person runs it")
         if procedure.get("kind", "manual") != "manual":
             say(f"{rid}: procedure {procedure.get('id')} is not a manual test")
         if procedure.get("id") not in cited:

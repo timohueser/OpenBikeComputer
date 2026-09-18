@@ -88,7 +88,13 @@
             {@const test = evidenceTest(requirement, evidence)}
             <div class="evidence">
               <div class="row"><strong class="small wrap">{name(evidence)}</strong><span class="actions">{#if test?.kind === 'manual'}<button class="text-button small" on:click={() => procedureDraft = { criterionId: criterion.id, test: clone(test) }}>Edit procedure</button>{/if}<button class="text-button small" on:click={() => removeEvidence(criterion, i)}>Remove</button></span></div>
-              <input maxlength={5000} aria-label="What this test proves" placeholder="What does this test prove?" bind:value={evidence.rationale} on:input={changed} />
+              <div class="evidence-line">
+                <select class="level-pick" aria-label="Test level" value={evidence.level ?? ''} on:change={e => { const v = e.currentTarget.value; if (v) evidence.level = v as TestLevel; else delete evidence.level; changed(); }}>
+                  <option value="">level?</option>
+                  {#each TEST_LEVELS as l}<option value={l}>{l}</option>{/each}
+                </select>
+                <input maxlength={5000} aria-label="What this test proves" placeholder="What does this test prove?" bind:value={evidence.rationale} on:input={changed} />
+              </div>
               {#if procedureDraft && procedureDraft.criterionId === criterion.id && procedureDraft.test.id === test?.id}<TestEditor bind:test={procedureDraft.test} onsave={keepProcedure} oncancel={cancelProcedure} />{/if}
             </div>
           {/each}
@@ -123,6 +129,9 @@
 </div>
 <style>
   .editor { margin-top: 12px; }
+  .evidence-line { display: flex; gap: 7px; align-items: center; }
+  .evidence-line input { margin-top: 0; }
+  .level-pick { width: auto; flex-shrink: 0; margin-top: 0; padding: 7px 8px; font-size: 12px; }
   .progress { margin: 0 0 12px; }
   .criteria { display: flex; flex-direction: column; gap: 8px; }
   .criterion { display: flex; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }

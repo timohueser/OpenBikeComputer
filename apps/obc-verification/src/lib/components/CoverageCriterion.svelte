@@ -3,6 +3,7 @@
   import { criterionCovered, evidenceKey, evidenceTest, proposedCovered } from '$lib/coverage';
   import Markdown from './Markdown.svelte';
   import Files from './Files.svelte';
+  import TestKindPill from './TestKindPill.svelte';
   export let criterion: AcceptanceCriterion;
   export let requirement: Requirement;
   export let catalog: Catalog | undefined = undefined;
@@ -42,7 +43,7 @@
       {@const test = resolve(e)}
       {@const found = test && result ? result(test) : undefined}
       <div class="evidence" class:added={isNew(e)}>
-        <div class="name wrap" title={fullName(e)}><span class="label"><strong>{title(e)}</strong>{#if isProposedProcedure(e)}<span class="tag">new procedure</span>{:else if isNew(e)}<span class="tag">new</span>{/if}</span><small>{e.caseId ?? 'manual'}</small></div>
+        <div class="name wrap" title={fullName(e)}><span class="label"><strong>{title(e)}</strong>{#if isProposedProcedure(e)}<span class="tag">new procedure</span>{:else if isNew(e)}<span class="tag">new</span>{/if}</span><span class="pills">{#if e.level}<TestKindPill kind={e.level} />{/if}{#if test?.kind === 'manual'}<TestKindPill kind={test.manualReason ?? 'manual'} />{/if}</span>{#if e.caseId}<small>{e.caseId}</small>{/if}</div>
         <div class="why wrap">
           <p class="line">{e.rationale}{#if found}<span class="badge outcome" class:success={found.outcome === 'pass'} class:error={found.outcome === 'fail' || found.outcome === 'error'} class:warning={!['pass', 'fail', 'error'].includes(found.outcome)}>{found.outcome}</span>{#if found.onrun}<button class="run small" disabled={found.disabled} on:click={found.onrun}>{found.label}</button>{/if}{/if}</p>
           {#if test?.kind === 'manual'}<details class="small"><summary>Procedure</summary><Markdown text={test.steps || ''} /><h4>Expected result</h4><Markdown text={test.expected || ''} />{#if test.inputs.length}<Files files={test.inputs} label="Input files" />{/if}</details>{/if}
@@ -55,8 +56,8 @@
     {#if footer}
       <div class="foot">
         {#if criterion.gap}<p class="gap wrap"><strong>Gap</strong> · {criterion.gap}</p>{:else if previous?.gap}<p class="gap wrap"><del>Gap · {previous.gap}</del></p>{/if}
-        {#if criterion.next}<p class="next wrap">{#if nextChanged() && previous?.next}<del>{previous.next.summary}</del> {/if}<span class="level">{criterion.next.level}</span>{criterion.next.summary}</p>
-        {:else if previous?.next}<p class="next wrap"><del><span class="level">{previous.next.level}</span>{previous.next.summary}</del></p>{/if}
+        {#if criterion.next}<p class="next wrap">{#if nextChanged() && previous?.next}<del>{previous.next.summary}</del> {/if}<TestKindPill kind={criterion.next.level} /> {criterion.next.summary}</p>
+        {:else if previous?.next}<p class="next wrap"><del><TestKindPill kind={previous.next.level} /> {previous.next.summary}</del></p>{/if}
       </div>
     {/if}
   </div>
@@ -91,7 +92,7 @@
   .gap { margin: 0; color: var(--amber); }
   .gap strong { font-weight: 650; }
   .next { margin: 0; }
-  .level { font-size: 10px; padding: 1px 6px; margin-right: 7px; border-radius: 4px; border: 1px solid var(--line); color: var(--muted); font-weight: 600; letter-spacing: .3px; text-transform: uppercase; vertical-align: 1px; }
+  .pills { display: flex; flex-wrap: wrap; gap: 4px; margin: 3px 0 1px; }
   del { color: var(--muted); }
   @media (max-width: 650px) { .evidence { grid-template-columns: 1fr; } }
 </style>
