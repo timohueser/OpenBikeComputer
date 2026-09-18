@@ -21,3 +21,5 @@ mod poi_corridor;
 mod poi_hours;
 #[path = "cases/poi_query.rs"]
 mod poi_query;
+#[path = "cases/settlement.rs"]
+mod settlement;

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Re-pack the simulator map fixtures (Grimsel or Monaco) from
+# Re-pack the simulator map fixtures (Grimsel, Monaco or Freiburg) from
 # their PINNED sources and extract bboxes. This script is the single source of
 # truth for map-fixture provenance — see README.md next to it before changing
 # anything here.
@@ -20,6 +20,7 @@
 #   fixtures/build-map-package.sh terrain [dem_dir]
 #   fixtures/build-map-package.sh grimsel [switzerland.osm.pbf]
 #   fixtures/build-map-package.sh monaco  [monaco.osm.pbf]
+#   fixtures/build-map-package.sh freiburg [freiburg-regbez.osm.pbf]
 #   fixtures/build-map-package.sh all     [switzerland.osm.pbf] [monaco.osm.pbf] [dem_dir]
 #
 # With no source argument the current Geofabrik snapshot is downloaded (the
@@ -32,6 +33,7 @@
 #
 # Set OBC_GRIMSEL_LANDMARKS to compiled content.json and OBC_GRIMSEL_PEAKS
 # to compiled peaks.json for Grimsel. OBC_DEMO_PEAKS selects demo peak content.
+# OBC_DEMO_SURFACE names an existing demo surface sidecar to embed again.
 # After re-packing, run the fixture consumer suites from docs/testing.md and
 # record source and output identities in fixtures/sources/.
 
@@ -41,7 +43,8 @@ FIXTURES_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$FIXTURES_DIR/.." && pwd)"
 BUILD_DIR="${OBC_FIXTURE_BUILD_DIR:-$FIXTURES_DIR/build}"
 PRESET="$REPO_ROOT/builder/presets/schema.json"
-mkdir -p "$BUILD_DIR/sim-grimsel/routes" "$BUILD_DIR/sim-grimsel/tracks" "$BUILD_DIR/sim-monaco/tracks"
+mkdir -p "$BUILD_DIR/sim-grimsel/routes" "$BUILD_DIR/sim-grimsel/tracks" "$BUILD_DIR/sim-monaco/tracks" \
+    "$BUILD_DIR/sim-freiburg"
 
 # --- Pinned provenance (canonical — do not derive from fixture headers) -----
 GRIMSEL_SOURCE_URL="https://download.geofabrik.de/europe/switzerland-latest.osm.pbf"
@@ -56,6 +59,11 @@ GRIMSEL_BBOX="8.15034,46.48261,8.46007,46.72070" # Grimsel Pass region (lon,lat,
 GRIMSEL_DEMO_BBOX="8.26,46.54,8.37,46.67" # Grimsel climb corridor, demo-only
 MONACO_SOURCE_URL="https://download.geofabrik.de/europe/monaco-latest.osm.pbf"
 MONACO_BBOX="7.39,43.71,7.47,43.77" # Monaco principality, tight
+# freiburg: the settlement-density fixture. A Rhine-plain box from Freiburg
+# north to Emmendingen — one city, its towns, and the villages and hamlets
+# between them. Canonical + hand-picked, like every box above.
+FREIBURG_SOURCE_URL="https://download.geofabrik.de/europe/germany/baden-wuerttemberg/freiburg-regbez-latest.osm.pbf"
+FREIBURG_BBOX="7.77,47.97,7.93,48.14" # Freiburg to Emmendingen (lon,lat,lon,lat)
 # -----------------------------------------------------------------------------
 
 WORK="$(mktemp -d)"
@@ -90,6 +98,7 @@ repack() { # repack <name> <source_pbf> <bbox> [terrain_obcd]
     case "$name" in
       grimsel) output="$BUILD_DIR/sim-grimsel/grimsel.obcm" ;;
       monaco) output="$BUILD_DIR/sim-monaco/monaco.obcm" ;;
+      freiburg) output="$BUILD_DIR/sim-freiburg/freiburg.obcm" ;;
       grimsel-demo) output="$REPO_ROOT/apps/obc-sim/assets/grimsel-demo.obcm" ;;
       *) echo "unknown map package $name" >&2; exit 2 ;;
     esac
@@ -127,15 +136,19 @@ do_grimsel_demo() {
     fi
     local dem="${OBC_DEMO_DEM_DIR:-$BUILD_DIR/demo-dem}"
     local native="$BUILD_DIR/grimsel-demo-native.obcd"
-    local surface="$BUILD_DIR/grimsel-demo-surface.obcd"
+    local surface="${OBC_DEMO_SURFACE:-$BUILD_DIR/grimsel-demo-surface.obcd}"
     # Wider than the ride corridor: Peak View needs the surrounding skyline.
     local terrain_bbox="46.3,7.9,46.95,8.75"
-    (cd "$REPO_ROOT" && cargo build --release --bin obc-dem)
-    local obc_dem="$REPO_ROOT/target/release/obc-dem"
-    "$obc_dem" fetch --bbox "$terrain_bbox" --out "$dem"
-    "$obc_dem" bake --sources "$dem" --bbox "$terrain_bbox" --posting-log2 9 \
-        --cell-log2 16 --shard "$native" --quiet
-    "$obc_dem" surface "$native" "$surface"
+    # Terrain keeps its own revision track, so a map re-pack embeds the surface it already has.
+    # Baking runs only when that file is absent.
+    if [[ ! -f "$surface" ]]; then
+        (cd "$REPO_ROOT" && cargo build --release --bin obc-dem)
+        local obc_dem="$REPO_ROOT/target/release/obc-dem"
+        "$obc_dem" fetch --bbox "$terrain_bbox" --out "$dem"
+        "$obc_dem" bake --sources "$dem" --bbox "$terrain_bbox" --posting-log2 9 \
+            --cell-log2 16 --shard "$native" --quiet
+        "$obc_dem" surface "$native" "$surface"
+    fi
     repack grimsel-demo "$src" "$GRIMSEL_DEMO_BBOX" "$surface"
     # obc-pack samples terrain for contours/ascent but leaves the terrain region empty.
     python3 - "$REPO_ROOT/apps/obc-sim/assets/grimsel-demo.obcm" "$surface" \
@@ -174,6 +187,17 @@ do_monaco() {
     cp "$FIXTURES_DIR/sources/sim-monaco/tracks/monaco-upahead.gpx" "$BUILD_DIR/sim-monaco/tracks/"
     python3 "$REPO_ROOT/tools/fixtures.py" pack sim-monaco "$BUILD_DIR/sim-monaco" \
       --output "$BUILD_DIR/sim-monaco.tar.gz"
+}
+
+do_freiburg() {
+    local src="${1:-}"
+    if [[ -z "$src" ]]; then
+        src="$WORK/freiburg-regbez.osm.pbf"
+        fetch "$FREIBURG_SOURCE_URL" "$src"
+    fi
+    repack freiburg "$src" "$FREIBURG_BBOX"
+    python3 "$REPO_ROOT/tools/fixtures.py" pack sim-freiburg "$BUILD_DIR/sim-freiburg" \
+      --output "$BUILD_DIR/sim-freiburg.tar.gz"
 }
 
 # === Terrain sidecars (OBCT, epic #1068 / #1070) =============================
@@ -230,15 +254,18 @@ assistant) python3 "$FIXTURES_DIR/build-assistant-package.py" "${2:-all}" ;;
 grimsel) do_grimsel "${2:-}" ;;
 grimsel-demo) do_grimsel_demo "${2:-}" ;;
 monaco) do_monaco "${2:-}" ;;
+freiburg) do_freiburg "${2:-}" ;;
 terrain) do_terrain "${2:-}" ;;
 all)
     do_terrain "${4:-}"
     do_grimsel "${2:-}"
     do_grimsel_demo "${2:-}"
     do_monaco "${3:-}"
+    do_freiburg
     ;;
 *)
-    echo "usage: $0 grimsel|grimsel-demo|monaco|terrain|all|assistant [source.osm.pbf ... | meiringen|west-cork|all]" >&2
+    echo "usage: $0 grimsel|grimsel-demo|monaco|freiburg|terrain|all|assistant \
+[source.osm.pbf ... | meiringen|west-cork|all]" >&2
     exit 2
     ;;
 esac

@@ -15,6 +15,7 @@ Run from the repo root with the uv-managed venv, e.g.::
 """
 import json
 import os
+import re
 import struct
 import subprocess
 
@@ -35,7 +36,9 @@ SURFACE_CLASSES = ["unknown", "paved", "compacted", "gravel", "dirt", "rough", "
 NAME_LEN = 12
 PROFILE_RECORD_LEN = 56  # 12 name + 32 highway + 8 surface + climb_weight + 3 reserved (v12)
 CLIMB_WEIGHT_OFF = 52
-OBCM_VERSION = 17
+# The one OBCM version literal in the tree is the format crate's constant.
+OBCM_VERSION = int(re.search(r"pub const VERSION: u8 = (\d+);",
+                             open(os.path.join(REPO_ROOT, "firmware/obc-formats/src/obcm.rs")).read())[1])
 
 
 def _pack_bin():

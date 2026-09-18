@@ -601,13 +601,13 @@ mod tests {
                     lon: 8_000_000 + 100 * i as i32,
                     subtype,
                     name: "".into(),
-                    hours_ref: 0xffff
+                    payload: 0xffff
                 }],
             ));
         }
         cats.push((
             7,
-            std::vec![PoiSpec { lat: 46_000_500, lon: 8_000_000, subtype: 19, name: "".into(), hours_ref: 3000 }],
+            std::vec![PoiSpec { lat: 46_000_500, lon: 8_000_000, subtype: 19, name: "".into(), payload: 3000 }],
         ));
         build_poi_map((7_900_000, 45_900_000, 8_100_000, 46_100_000), 512, &cats)
     }
@@ -783,7 +783,7 @@ mod tests {
         let mut pois = std::vec::Vec::new();
         for i in 0..68 {
             let position = vp.to_map(if i < 64 { 60.0 + i as f32 } else { 300.0 + (i - 64) as f32 }, 160.0);
-            pois.push(PoiSpec { lon: position.0, lat: position.1, subtype: 1, name: "".into(), hours_ref: 0xffff });
+            pois.push(PoiSpec { lon: position.0, lat: position.1, subtype: 1, name: "".into(), payload: 0xffff });
         }
         let bytes = build_poi_map((7_900_000, 45_900_000, 8_100_000, 46_100_000), 512, &[(1, pois)]);
         let source = CountSource { bytes: &bytes, reads: Cell::new(0), fail: Cell::new(false) };
