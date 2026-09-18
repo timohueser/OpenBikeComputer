@@ -54,8 +54,9 @@ revision. It reads the saved revisions and needs no extra bookkeeping.
 Select **Define coverage** or **Edit coverage** on a requirement. The plan is part of the
 requirement draft, like its statement and tests: write each criterion, add evidence, say what each
 test proves, and note the gap for anything still missing. The checkmarks and the count update as
-you edit. Below the gap, a criterion can name the next test to build: a level (unit, integration,
-system, or ride) and one sentence. Evidence comes from the CI catalogue or from a manual procedure; **+ New manual procedure**
+you edit. Below the gap, a criterion can name the next test to build: a level (unit, integration or
+system) and one sentence. A criterion with no gap has nothing left to build, so it takes no next
+test. Evidence comes from the CI catalogue or from a manual procedure; **+ New manual procedure**
 in the picker creates one on the spot, **Refresh catalogue** gets tests from a new CI import, and
 **Edit procedure** on manual evidence changes its steps, expected result, and input files. The plan
 attaches the tests: **Remove** on a piece of evidence unlinks its test. A manual procedure that no
@@ -419,10 +420,25 @@ Prefer a whole coverage plan when assessing a requirement. Read the current requ
 existing coverage first. Audit the source at an exact commit. Identify every obligation, preserve
 stable criterion IDs when revising a plan, map tests by their actual assertions, and describe
 missing tests or implementation in `gap`. When you know the test to build for a gap, set `next`: one
-sentence with a `level` of `unit`, `integration`, `system`, or `ride`. Prefer an automated test.
-When no automated test can prove a criterion, propose a manual procedure instead: put it in
-`procedures` with its steps and expected result, and cite its `id` as `testId` evidence; approval
-creates it on the requirement. Do not change the requirement title or statement.
+sentence with a `level`. The level says how much of the product the test exercises: `unit` for one
+module, `integration` for several together, and `system` for the assembled product. It does not say
+who runs the test — automated evidence cites a catalogue case and manual evidence cites a procedure,
+so the plan already carries that.
+
+Prefer an automated test. When no automated test can prove a criterion, propose a manual procedure
+instead: put it in `procedures` with its steps and expected result, and cite its `id` as `testId`
+evidence; approval creates it on the requirement. Do not change the requirement title or statement.
+
+**A manual procedure is complete evidence.** A criterion it covers gets a checkmark like any other,
+so leave `gap` empty. Do not use `gap` to explain why the evidence is manual, and never repeat the
+procedure as the next test to build: both make a covered criterion look unfinished. The release gate
+asks separately for a manual pass on the candidate, which is where the procedure is run.
+
+`gap` is for what is missing. A manual procedure that you intend to replace with an automated test
+is one such thing — write that gap plainly, and let `next` name the automated test. A manual
+procedure that is the right answer, because only real hardware or a real rider can prove the
+criterion, is not a gap at all.
+
 Keep `rationale` to two or three sentences: the scope of the audit and the conclusion. The
 criteria carry the detail. A plan is covered when every criterion has evidence and no gap;
 otherwise it is partial.
@@ -442,7 +458,7 @@ Read decisions and reviewer feedback with `GET /api/coverage-proposals`. Send
   "requirementId": "SYS-039",
   "sourceSha": "EXACT_40_CHARACTER_COMMIT_SHA",
   "plan": {
-    "rationale": "Projection is tested. User selection and persistence are not.",
+    "rationale": "Projection is tested and persistence is covered by a ride check. User selection does not exist yet.",
     "criteria": [
       {
         "id": "projection",
@@ -457,14 +473,14 @@ Read decisions and reviewer feedback with `GET /api/coverage-proposals`. Send
         "id": "selection",
         "statement": "The user can select either orientation.",
         "evidence": [],
-        "gap": "Add the user setting and an interaction test."
+        "gap": "The setting does not exist yet, so nothing can select an orientation.",
+        "next": { "level": "unit", "summary": "Set each orientation through the settings store and assert the stored value." }
       },
       {
         "id": "persistence",
         "statement": "The choice survives a restart.",
         "evidence": [{ "testId": "ride-restart", "rationale": "Confirms the choice on the device after a power cycle." }],
-        "gap": "No automated check yet.",
-        "next": { "level": "unit", "summary": "Persist the choice to the settings store, reload, and assert the stored value." }
+        "gap": ""
       }
     ]
   },

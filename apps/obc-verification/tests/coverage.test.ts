@@ -117,6 +117,9 @@ test('invalid plans cannot claim complete coverage or reference unavailable evid
   p = plan(); p.criteria[0].evidence[0].testId = 'also'; invalid.push(p);
   p = plan(); p.criteria[0].evidence[0].rationale = ''; invalid.push(p);
   p = plan(); p.criteria[0].evidence.push(p.criteria[0].evidence[0]); invalid.push(p);
+  // A covered criterion has nothing left to build, so a next test without a gap is refused: it is
+  // how a manual procedure gets written up twice and leaves a covered criterion looking unfinished.
+  p = plan(); p.criteria[0].next = { level: 'unit', summary: 'Assert the saved value.' }; invalid.push(p);
   for (const value of invalid) assert.equal((await request('coverage-proposals', 'POST', { baseRevision: base.id, requirementId: 'REQ-1', sourceSha: sha, plan: value })).status, 400);
   // A renamed test is the common way evidence goes missing, and the two ways it can go missing have
   // different fixes — so each refusal names the ID it could not find and says where to look for it.

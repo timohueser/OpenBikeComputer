@@ -14,9 +14,12 @@ export interface VerificationTest {
   inputs: Attachment[];
 }
 export interface CoverageEvidence { caseId?: string; testId?: string; rationale: string }
-export type TestLevel = 'unit' | 'integration' | 'system' | 'ride';
-export const TEST_LEVELS: TestLevel[] = ['unit', 'integration', 'system', 'ride'];
-/** The test to build for a gap: one level, one sentence. */
+/** How much of the product a test exercises: one module, several together, or the assembled product.
+ *  It says nothing about who runs the test — automated evidence cites a catalogue case, and manual
+ *  evidence cites a procedure, so the plan already carries that. */
+export type TestLevel = 'unit' | 'integration' | 'system';
+export const TEST_LEVELS: TestLevel[] = ['unit', 'integration', 'system'];
+/** The test to build for a gap: one level, one sentence. A criterion with no gap has nothing to build. */
 export interface ProposedTest { level: TestLevel; summary: string }
 export interface AcceptanceCriterion { id: string; statement: string; evidence: CoverageEvidence[]; gap: string; next?: ProposedTest }
 export interface CoveragePlan { rationale: string; criteria: AcceptanceCriterion[] }
