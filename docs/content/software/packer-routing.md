@@ -284,8 +284,11 @@ It skips a lattice square if one corner has no height.
 The packer creates `contour.major` and `contour.index` line features.
 The defaults are a 100 m interval and an index at every fifth contour.
 The shipped style shows the 500 m index contours at up to 35 m per pixel and the other contours
-at up to 10 m per pixel. Both use muted dashed strokes, fixed at one pixel wide. Their colour
-differs from rock fills, tracks, and paths.
+at up to 10 m per pixel. Both use muted dashed strokes, fixed at one pixel wide.
+Their colour is a dark teal.
+The panel shows 64 colours, so a colour that only differs from a fill can still be unreadable.
+This colour keeps a clear brightness difference from rock, forest, grassland, and the land base.
+It also stays outside the warm colour group that tracks and paths use.
 The default pre-LOD simplify tolerance is 15 m.
 The configuration can change these values.
 
