@@ -113,7 +113,7 @@ impl FindPlaceScreen {
             }
         }
         let vp = fit(min, max, rx.w, rx.h, 208);
-        let _ = super::map::draw_map_scene(cv, rx, &vp, None, None);
+        let _ = super::map::draw_map_scene(cv, rx, &vp, None, &[rect(0, 208, rx.w, rx.h - 208)]);
         for i in 0..rx.find.results.len() {
             if let Some(p) = rx.find.selected(i, rx.poi_scratch, rx.corridor) {
                 let (x, y) = vp.to_screen(p.lon, p.lat);
@@ -305,7 +305,7 @@ impl VisitReviewScreen {
         } else {
             rx.state.viewport(rx.w as f32, rx.h as f32)
         };
-        let marker_color = super::map::draw_map_scene(cv, rx, &vp, None, None);
+        let marker_color = super::map::draw_map_scene(cv, rx, &vp, None, &[rect(0, 192, rx.w, rx.h - 192)]);
         if visible {
             if let Some(scratch) = rx.scratch.as_deref_mut() {
                 let (target, color) = cv.split();

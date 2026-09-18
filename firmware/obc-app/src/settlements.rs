@@ -199,16 +199,16 @@ pub(crate) fn draw_labels(cv: &mut impl Surface, vp: &Viewport, cache: &Settleme
 
 /// The labels this frame draws, as `(draw point, candidate index)` in the order they were placed.
 ///
-/// The box is centred on the place, both ways, and then shifted back inside the panel, which moves
-/// it by at most half its size because the place itself is on the panel. A wide name near an edge
-/// therefore leans in instead of being refused — without that, an 11-character name needs its place
-/// 66 px clear of both sides of a 240 px panel, which is exactly what starves the large places.
+/// A name is pinned to its place: the box is centred on it, both ways, and never moves. A name near
+/// an edge therefore hangs over it and the panel clips what falls outside, rather than sliding in.
+/// The overlap tests use the whole unclipped box, so two names can never overprint and a clipped
+/// name still holds the chrome off. A name that slides while the rider pans looks wrong on a map;
+/// pinning is what makes a name read as part of the place.
 ///
-/// A name is dropped when its place is off the panel, when it is wider than the panel, or when
-/// `place` refuses the box: reserved chrome, or within [`LABEL_MARGIN_PX`] of a name already
-/// placed. The whole set is re-ordered by [`rank`] every frame, so a lower-priority name never
-/// holds a slot a better one needs. A class past its scale band for *this* camera is skipped,
-/// whatever the cache holds.
+/// A name is dropped when its place is off the panel, or when `place` refuses the box: reserved
+/// chrome, or within [`LABEL_MARGIN_PX`] of a name already placed. The whole set is re-ordered by
+/// [`rank`] every frame, so a lower-priority name never holds a slot a better one needs. A class
+/// past its scale band for *this* camera is skipped, whatever the cache holds.
 fn placements(vp: &Viewport, cache: &SettlementCache, place: &mut PointPlacement) -> Vec<(Point, u8), MAX_LABELS> {
     // The scale limits answer to the camera that draws, which is not always the one the cache was
     // filled for: the browse screens fit a whole route into the panel at a much coarser scale.
@@ -233,14 +233,10 @@ fn placements(vp: &Viewport, cache: &SettlementCache, place: &mut PointPlacement
         }
         let tw = text_width(&label_of(c), Font::Label) as i32;
         let th = Font::Label.line_height() as i32;
-        if tw > w || th > h {
-            continue;
-        }
-        let left = (x - tw / 2).clamp(0, w - tw);
-        let top = (y - th / 2).clamp(0, h - th);
-        if place.try_place(rect(left, top, tw, th), LABEL_MARGIN_PX) {
+        let top = y - th / 2;
+        if place.try_place(rect(x - tw / 2, top, tw, th), LABEL_MARGIN_PX) {
             // `halo_text` centres on x and takes y as the top of the line.
-            let _ = placed.push((Point::new(left + tw / 2, top), i));
+            let _ = placed.push((Point::new(x, top), i));
         }
     }
     placed
@@ -293,9 +289,9 @@ mod tests {
         cache
     }
 
-    /// A placer over the whole panel with no reserved chrome.
+    /// A placer with no reserved chrome.
     fn open_panel() -> PointPlacement {
-        PointPlacement::new(rect(0, 0, PANEL.0 as i32, PANEL.1 as i32), &[])
+        PointPlacement::new(&[])
     }
 
     /// The names a frame draws, in placement order.
@@ -546,8 +542,10 @@ mod tests {
         assert!(drawn(&far, &cache, &mut open_panel()).is_empty(), "no class is named at 900 m/px");
     }
 
+    /// A name is pinned to its place: it hangs over the edge and the panel clips it, rather than
+    /// sliding in or being refused. A place off the panel still has no name at all.
     #[test]
-    fn a_label_at_the_panel_edge_leans_in_and_one_off_the_panel_is_dropped() {
+    fn a_label_at_the_panel_edge_is_clipped_and_one_off_the_panel_is_dropped() {
         let vp = vp_at(CAM, 100.0);
         let cache = cache_of(&[
             at_screen(&vp, 6.0, 160.0, SettlementClass::City, "Westedge", 9),
@@ -557,7 +555,8 @@ mod tests {
         let names: StdVec<_> = drawn.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, ["Westedge"], "a place off the panel has no label");
         let tw = text_width("Westedge", Font::Label) as i32;
-        assert_eq!(drawn[0].1.x, tw / 2, "the box leans in against the left edge instead of being dropped");
+        assert_eq!(drawn[0].1.x, 6, "the name stays centred on its place");
+        assert!(6 - tw / 2 < 0, "and the name is wide enough that the panel really clips it");
     }
 
     #[test]
@@ -589,7 +588,7 @@ mod tests {
             at_screen(&vp, 120.0, 270.0, SettlementClass::City, "Onchip", 8),
             at_screen(&vp, 120.0, 60.0, SettlementClass::City, "Clear", 7),
         ]);
-        let mut place = PointPlacement::new(rect(0, 0, 240, 320), &[rider, chip_band]);
+        let mut place = PointPlacement::new(&[rider, chip_band]);
         assert_eq!(drawn(&vp, &cache, &mut place), ["Clear"]);
     }
 
@@ -606,6 +605,7 @@ mod tests {
         // The chrome this frame really owns: no fix, so the `No GPS Fix` chip is up and the scale
         // bar steps above its band.
         let h = PANEL.1 as i32;
+        let w = PANEL.0 as i32;
         let bar = crate::screen::map::ScaleBar::new(
             h,
             crate::screen::map::CHIP_H,
@@ -614,8 +614,9 @@ mod tests {
         )
         .expect("the fixture camera yields a bar")
         .ink();
-        let chrome = crate::screen::map::label_reserved(&vp, None, PANEL.0 as i32, h, Some(bar));
-        let mut place = PointPlacement::new(rect(0, 0, PANEL.0 as i32, h), &chrome);
+        let pill = crate::screen::map::chip_band_box(w, h);
+        let chrome = crate::screen::map::label_reserved(&vp, None, w, &[pill, bar]);
+        let mut place = PointPlacement::new(&chrome);
 
         // The city has to land beside that box, or the test pins nothing: a repack of the fixture
         // that moved it up the panel would leave a name with no chrome anywhere near it.
@@ -670,7 +671,7 @@ mod tests {
         let drawn = drawn_at(&vp, &cache, &mut open_panel());
         let names: StdVec<_> = drawn.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, ["Emmendingen"], "the town is drawn, and it takes the village's space");
-        assert_eq!(drawn[0].1.x, tw / 2, "the name leans in against the edge");
+        assert_eq!(drawn[0].1.x, x, "the name stays pinned to its place and the panel clips it");
     }
 
     /// Stability: the same candidates under a moved camera keep their labels, and a better
