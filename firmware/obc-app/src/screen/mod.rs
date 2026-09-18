@@ -39,7 +39,7 @@ mod home;
 mod journey;
 mod landmark_photo;
 mod landmarks;
-mod map;
+pub(crate) mod map;
 mod map_transfer;
 mod menu;
 mod nav_route;
@@ -352,6 +352,7 @@ pub struct Render<'a> {
     pub find: &'a crate::find_place::FindState,
     pub landmarks: &'a crate::landmarks::Landmarks,
     pub(crate) map_icons: &'a crate::map_icons::MapIcons,
+    pub(crate) settlements: &'a crate::settlements::SettlementCache,
     pub ahead: &'a crate::whats_next::AheadState,
     pub peak_view: Option<&'a crate::peak_view::Panorama>,
     /// The frame's borrowed render scratch — the host owns it and lends it for this call (#1146).

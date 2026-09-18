@@ -33,5 +33,7 @@ mod palette;
 mod poi;
 #[path = "cases/ride_recovery.rs"]
 mod ride_recovery;
+#[path = "cases/settlements.rs"]
+mod settlements;
 #[path = "cases/trips.rs"]
 mod trips;
