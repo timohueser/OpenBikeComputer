@@ -1235,8 +1235,12 @@ fn process_way(
 }
 
 /// Closed-way area heuristic: `area=yes` ⇒ area; `area=no` ⇒ never; otherwise
-/// area iff it carries any [`AREA_TAGS`] key.
+/// area iff it carries any [`AREA_TAGS`] key. Cliff rims remain lines.
 fn is_area(tags: &HashMap<&str, &str>) -> bool {
+    // A cliff can form a closed rim, but it still marks an edge, not a filled area.
+    if tags.get("natural") == Some(&"cliff") {
+        return false;
+    }
     match tags.get("area") {
         Some(&"yes") => true,
         Some(&"no") => false,
@@ -1303,19 +1307,17 @@ mod tests {
         }
         let n = |id: u8, poly: bool| counts.get(&(id, poly)).copied().unwrap_or(0);
 
-        // Style ids: forest=40, pedestrian=15, residential=12, primary=5,
-        // trunk=3, admin_level/2=50, water=32 (see config doc order).
-        assert_eq!(n(40, true), 3, "W5 closed forest + R2's two outer rings ⇒ 3 polygons");
-        assert_eq!(n(32, true), 1, "R1 natural=water ⇒ 1 polygon (lake)");
+        assert_eq!(n(50, true), 3, "W5 closed forest + R2's two outer rings ⇒ 3 polygons");
+        assert_eq!(n(36, true), 1, "R1 natural=water ⇒ 1 polygon (lake)");
         assert_eq!(n(15, true), 1, "W11 highway=pedestrian area=yes ⇒ 1 polygon");
         assert_eq!(n(12, false), 1, "W6 closed highway=residential ⇒ 1 line");
         assert_eq!(n(5, false), 1, "W7 highway=primary ⇒ 1 line");
         assert_eq!(n(3, false), 1, "W7b highway=trunk ⇒ 1 line");
-        assert_eq!(n(50, false), 1, "W9 admin_level=2 ⇒ 1 line");
-        assert_eq!(n(32, false), 1, "W12 natural=water area=no ⇒ 1 line");
+        assert_eq!(n(63, false), 1, "W9 admin_level=2 ⇒ 1 line");
+        assert_eq!(n(36, false), 1, "W12 natural=water area=no ⇒ 1 line");
 
         // R1 is a lake WITH an island (one hole).
-        let lake = ing.features.iter().find(|f| f.style_id == 32 && is_polygon(&f.geom)).expect("water polygon");
+        let lake = ing.features.iter().find(|f| f.style_id == 36 && is_polygon(&f.geom)).expect("water polygon");
         match &lake.geom {
             Geom::Polygon { interiors, .. } => assert_eq!(interiors.len(), 1, "R1 has one hole"),
             _ => unreachable!(),
@@ -1431,25 +1433,25 @@ mod tests {
         let n = |id: u8, poly: bool| counts.get(&(id, poly)).copied().unwrap_or(0);
 
         // R1 (both member ways inside) still assembles, hole and all.
-        assert_eq!(n(32, true), 1, "R1 lake survives whole");
-        let lake = ing.features.iter().find(|f| f.style_id == 32 && is_polygon(&f.geom)).expect("water polygon");
+        assert_eq!(n(36, true), 1, "R1 lake survives whole");
+        let lake = ing.features.iter().find(|f| f.style_id == 36 && is_polygon(&f.geom)).expect("water polygon");
         match &lake.geom {
             Geom::Polygon { interiors, .. } => assert_eq!(interiors.len(), 1, "island hole kept"),
             _ => unreachable!(),
         }
         // R2 touches the box through W3, so W4 is pulled in and both disjoint
         // outer rings survive. W5 is an unrelated closed forest outside the box.
-        assert_eq!(n(40, true), 2, "R2's complete two-outer forest survives");
+        assert_eq!(n(50, true), 2, "R2's complete two-outer forest survives");
         // Out of the box entirely: W5/W6/W11 (lat ≥ 47.996), W9 (48.000), W8 coast.
         assert_eq!(n(15, true), 0, "W11 pedestrian area is north of the box");
         assert_eq!(n(12, false), 0, "W6 residential loop is north of the box");
-        assert_eq!(n(42, false), 0, "W9 admin line is north of the box");
+        assert_eq!(n(63, false), 0, "W9 admin line is north of the box");
         assert!(ing.coastlines.is_empty(), "W8 coastline sits east of the box");
         // Kept: W7 primary, W7b trunk, W12 water line, R1's polygon, and both
         // of R2's forest polygons.
         assert_eq!(n(5, false), 1, "W7 primary crosses the east edge and is kept");
         assert_eq!(n(3, false), 1, "W7b trunk crosses the east edge and is kept");
-        assert_eq!(n(32, false), 1, "W12 water line is inside");
+        assert_eq!(n(36, false), 1, "W12 water line is inside");
         assert_eq!(ing.features.len(), 6, "1 lake + 2 forest polygons + 3 lines");
 
         // The headline: the trunk is not trimmed at the box edge (lon 7.809) — it
@@ -1461,7 +1463,7 @@ mod tests {
         let outside_forest = ing
             .features
             .iter()
-            .filter(|f| f.style_id == 40 && is_polygon(&f.geom))
+            .filter(|f| f.style_id == 50 && is_polygon(&f.geom))
             .map(|f| f.geom.bounds().2)
             .fold(f64::NEG_INFINITY, f64::max);
         assert!(
@@ -1667,6 +1669,7 @@ mod tests {
     fn is_area_overrides_and_tag_fallback() {
         assert!(is_area(&tags(&[("area", "yes")])), "area=yes ⇒ area regardless of other tags");
         assert!(!is_area(&tags(&[("area", "no"), ("natural", "water")])), "area=no ⇒ never an area");
+        assert!(!is_area(&tags(&[("natural", "cliff")])), "a closed cliff remains a line");
         for key in AREA_TAGS {
             assert!(is_area(&tags(&[(key, "whatever")])), "AREA_TAGS key {key} ⇒ area");
         }

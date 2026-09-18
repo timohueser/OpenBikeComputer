@@ -545,6 +545,8 @@ fn prepare_lod<'a>(
                             | SemanticClass::Grass
                             | SemanticClass::Forest
                             | SemanticClass::Urban
+                            | SemanticClass::Rock
+                            | SemanticClass::Ice
                             | SemanticClass::Water
                     )
                 ))
