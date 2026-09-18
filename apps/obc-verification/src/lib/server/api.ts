@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { RequestEvent } from '@sveltejs/kit';
 import { json } from '@sveltejs/kit';
 import type { Candidate, Catalog, CoverageProposal, ManualRun, Role } from '../types.ts';
-import { attachments, assert, identifier, positive, Problem, readiness, requirements, testResults, text } from './domain.ts';
+import { attachments, assert, identifier, positive, Problem, readiness, requirements, testResults, text, within } from './domain.ts';
 import { store } from './store.ts';
 import { createSession, localLogin, logout, oauthEnabled, sameOrigin, requireAdmin, changePassword, agentTokens, createAgentToken, revokeAgentToken } from './auth.ts';
 import { dispatch, githubEnabled, sourceCommit, verifyPublished, verifyRun, publicationRetry, verifyCatalog, reconcile } from './github.ts';
@@ -23,7 +23,7 @@ export async function api(event: RequestEvent): Promise<Response> {
   try { return await route(event); }
   catch (error) {
     if (!(error instanceof Problem)) console.error('Verification API error', error);
-    return json({ error: error instanceof Problem ? error.message : 'The request failed. Try again or contact the administrator.' }, { status: error instanceof Problem ? error.status : 500 });
+    return json({ error: error instanceof Problem ? error.message : 'The request failed. Try again or contact the administrator.', ...(error instanceof Problem && error.at ? { at: error.at } : {}) }, { status: error instanceof Problem ? error.status : 500 });
   }
 }
 async function route(event: RequestEvent): Promise<Response> {
@@ -96,7 +96,10 @@ async function route(event: RequestEvent): Promise<Response> {
   if (path === 'requirements' && method === 'PUT') {
     allow('owner'); const data = await body(event);
     const list = draftCoverage(requirements(data.requirements, (id) => store().file(id)), data.requirements, store().catalog(), () => store().id());
-    return json(store().saveRevision(positive(data.baseRevision, 'Base revision'), actor.name, list));
+    // The proposals this draft applied. Saving is the approval, so the batch is one revision.
+    assert(data.accept === undefined || (Array.isArray(data.accept) && data.accept.length <= 1000), 'Accepted proposals must be a list.');
+    const accept = ((data.accept ?? []) as unknown[]).map(id => identifier(id, 'Proposal ID'));
+    return json(store().saveRevision(positive(data.baseRevision, 'Base revision'), actor.name, list, accept));
   }
   if (path === 'revisions' && method === 'GET') return json(store().revisions());
   if (parts[0] === 'revisions' && parts.length === 2 && method === 'GET') return json(store().revision(positive(Number(parts[1]), 'Revision')));
@@ -210,8 +213,10 @@ async function coverageProposals(event: RequestEvent, parts: string[]): Promise<
     const requirement = revision.requirements.find(r => r.id === requirementId);
     assert(requirement, 'Requirement not found.', 404);
     const sourceSha = commitSha(data.sourceSha);
-    const procedures = proposalProcedures(data.procedures, requirement);
-    const plan = coveragePlan(data.plan, requirement, store().catalog(), procedures);
+    const { procedures, plan } = within(`${requirement.id} · ${requirement.title}`, { requirementId: requirement.id }, () => {
+      const procedures = proposalProcedures(data.procedures, requirement);
+      return { procedures, plan: coveragePlan(data.plan, requirement, store().catalog(), procedures) };
+    });
     assert(procedures.every(p => plan.criteria.some(c => c.evidence.some(e => e.testId === p.id))), 'Every proposed procedure must be cited as evidence.');
     /** One pending proposal per requirement: an identical plan is reused, any other replaces every pending one. */
     const pending = store().list<CoverageProposal>('coverage-proposal').filter(p => p.status === 'pending' && p.requirementId === requirementId);
@@ -227,8 +232,9 @@ async function coverageProposals(event: RequestEvent, parts: string[]): Promise<
   }
   assert(parts.length === 2 && actor.role === 'owner', 'Only an owner may review coverage.', 403);
   assert(typeof data.accept === 'boolean', 'Accept must be boolean.');
+  assert(data.accept === false, 'A proposal is accepted by saving the revision that applies it, not through this endpoint.');
   const feedback = data.feedback === undefined || data.feedback === '' ? undefined : text(data.feedback, 'Review feedback', 5000);
-  const decided = store().decideCoverageProposal(identifier(parts[1]), actor.name, data.accept, feedback);
+  const decided = store().rejectCoverageProposal(identifier(parts[1]), actor.name, feedback);
   return json({ ...decided, revision: store().latestRevision() });
 }
 async function ci(event: RequestEvent, parts: string[]): Promise<Response> {

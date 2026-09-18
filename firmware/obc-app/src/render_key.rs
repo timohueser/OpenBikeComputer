@@ -601,7 +601,7 @@ mod tests {
 
         let quiet = app.render_key();
         assert!(quiet.map.is_none(), "no map fact survives under either sheet");
-        assert_eq!(quiet.drawer.map(|d| d.enabled), Some(0b111), "all three switches are always live");
+        assert_eq!(quiet.drawer.map(|d| d.enabled), Some(0b1111), "all display rows are always live");
         assert_eq!(quiet.drawer.map(|d| d.committed), Some(1), "the selected row reads its own bit");
 
         // The base moving under the sheet is not a pixel either sheet draws.

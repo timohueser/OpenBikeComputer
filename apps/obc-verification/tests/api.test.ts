@@ -65,7 +65,9 @@ test('API enforces prose ownership, origins, coverage approval, and frozen evide
     assert.equal(proposalResponse.status, 201); const proposal = await proposalResponse.json();
     assert.equal(store().latestRevision().id, revision.id);
     assert.equal((await request(`coverage-proposals/${proposal.id}`, 'POST', { accept: true }, agent)).status, 403);
-    assert.equal((await request(`coverage-proposals/${proposal.id}`, 'POST', { accept: true }, owner)).status, 200);
+    // Acceptance is a revision save; this endpoint only rejects.
+    assert.equal((await request(`coverage-proposals/${proposal.id}`, 'POST', { accept: true }, owner)).status, 400);
+    assert.equal((await request(`coverage-proposals/${proposal.id}`, 'POST', { accept: false }, owner)).status, 200);
     assert.equal(store().latestRevision().requirements[0].statement, revision.requirements[0].statement);
     const candidate: Candidate = { id: 'candidate', version: '0.1.0', sourceRef: 'develop', sourceSha: 'a'.repeat(40), createdAt: '', status: 'published', ciStatus: 'success', revision: { ...revision, requirements: [{ ...revision.requirements[0], tests: [{ id: 'manual', kind: 'manual', title: 'Check', steps: 'Do it', expected: 'Done', inputs: [] }], coverage: { rationale: 'The manual check covers the upload.', criteria: [{ id: 'upload', statement: 'A large route uploads completely.', evidence: [{ testId: 'manual', rationale: 'Checks the retained point count by hand.' }], gap: '' }] } }] }, results: [], assets: [], manualRuns: [] };
     store().put('candidate', candidate.id, candidate); store().put('publication', candidate.id, candidate);
