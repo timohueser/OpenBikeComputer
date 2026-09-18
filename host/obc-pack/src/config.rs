@@ -1914,16 +1914,68 @@ mod tests {
         );
     }
 
-    /// Contours stay thin, distinct from rock and trails, with index lines visible farther out.
+    /// Perceived brightness of a style colour as the panel's 64-colour gamut renders it.
+    fn luma(color: u16) -> f32 {
+        let (r, g, b) = obc_reader::rgb565_to_device64(color);
+        0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32
+    }
+
+    /// How many quantization steps apart two colours land on the 64-colour gamut. One step is a
+    /// colour a rider cannot name apart from its neighbour at a one-pixel stroke.
+    fn steps_apart(a: u16, b: u16) -> u32 {
+        let (x, y) = (obc_reader::rgb565_to_device64(a), obc_reader::rgb565_to_device64(b));
+        [(x.0, y.0), (x.1, y.1), (x.2, y.2)].iter().map(|(p, q)| p.abs_diff(*q) as u32 / 85).sum()
+    }
+
+    /// Two strokes of the same width and dash are told apart by colour alone, so a one-step
+    /// neighbour reads as the same line. Contours and lifts were exactly that pair: both one pixel,
+    /// both dashed, and one step apart. The warm road ladder is deliberately one step per class,
+    /// but those are solid and of differing widths, so this holds only over the dashed thin group.
+    #[test]
+    fn no_two_thin_dashed_lines_share_a_colour_neighbourhood() {
+        let cfg = corpus_config();
+        let mut thin: Vec<(String, u16)> = Vec::new();
+        for (key, values) in &cfg.features {
+            for (value, style) in values {
+                if style.weight == 1 && style.line_style == LineStyle::Dashed {
+                    thin.push((format!("{key}/{value}"), style.color));
+                }
+            }
+        }
+        thin.sort();
+        assert!(thin.len() > 10, "the shipped schema carries a real thin dashed group: {}", thin.len());
+        for (i, (a, ca)) in thin.iter().enumerate() {
+            for (b, cb) in &thin[i + 1..] {
+                if ca == cb {
+                    continue; // One look deliberately shared, such as every lift kind.
+                }
+                assert!(
+                    steps_apart(*ca, *cb) >= 2,
+                    "{a} {ca:#06X} and {b} {cb:#06X} are one step apart and cannot be told apart"
+                );
+            }
+        }
+    }
+
+    /// Contours stay thin, readable over every fill they cross, distinct from trails, with index
+    /// lines visible farther out.
     #[test]
     fn the_shipped_schema_carries_both_contour_classes() {
         let cfg = corpus_config();
         for class in [ContourClass::Major, ContourClass::Index] {
             let style = cfg.contour_style(class).unwrap_or_else(|| panic!("{class:?} must be styled"));
             assert_eq!(style.weight, 1, "every contour is authored weight 1");
-            assert_eq!(style.color, 0xAD4A);
-            assert_ne!(style.color, cfg.feature_style("natural", "bare_rock").unwrap().color);
+            assert_eq!(style.color, 0x02AA);
+            // Being a *different* colour is not enough. The panel shows 64 colours, so a contour
+            // one step off a fill is drawn and still unreadable, which is what `0xAD4A` was over
+            // rock. Hold every background a contour crosses to a real luminance gap.
+            for name in ["bare_rock", "wood", "grassland", "land"] {
+                let background = cfg.feature_style("natural", name).unwrap().color;
+                let gap = luma(style.color) - luma(background);
+                assert!(gap.abs() >= 50.0, "{class:?} is only {gap:.0} of 255 from {name}");
+            }
             assert_ne!(style.color, cfg.feature_style("highway", "path").unwrap().color);
+            assert_ne!(style.color, cfg.feature_style("highway", "track").unwrap().color);
             assert!(style.fixed_width, "a contour has no width on the ground — it is off the ramp");
             assert!(style.terrain_layer, "and it is what the device's terrain toggle suppresses");
             let expected_mpp = match class {
