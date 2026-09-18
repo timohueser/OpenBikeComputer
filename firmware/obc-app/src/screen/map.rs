@@ -642,23 +642,15 @@ fn draw_waypoint_chip(cv: &mut impl Surface, w: i32, h: i32, name: &str, dist: &
 // ---- Haloed map text ------------------------------------------------------
 
 /// Draw `s` with a one-pixel halo, so it stays readable over any map fill: the string four times
-/// at ±1 px in `halo`, then once at `at` in `ink`. Returns the ink draw's end point.
+/// at ±1 px in `halo`, then once at `at` in `ink`.
 ///
 /// The map chrome halos in [`palette::PARCHMENT`](super::palette::PARCHMENT) over
 /// [`palette::INK`](super::palette::INK), which reads over every fill the map draws.
-pub(crate) fn halo_text(
-    cv: &mut impl Surface,
-    s: &str,
-    at: Point,
-    font: Font,
-    align: TextAlign,
-    ink: u16,
-    halo: u16,
-) -> Point {
+pub(crate) fn halo_text(cv: &mut impl Surface, s: &str, at: Point, font: Font, align: TextAlign, ink: u16, halo: u16) {
     for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
         cv.text(s, Point::new(at.x + dx, at.y + dy), font, align, halo);
     }
-    cv.text(s, at, font, align, ink)
+    cv.text(s, at, font, align, ink);
 }
 
 // ---- Clock (top-centre) ---------------------------------------------------
