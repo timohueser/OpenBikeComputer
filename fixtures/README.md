@@ -80,11 +80,12 @@ Generated design-review screenshots belong in PRs or project documentation, not 
   pins its source and output identities.
 - `sim-freiburg`: an **OBCM v18** file packed from the Geofabrik
   `europe/germany/baden-wuerttemberg/freiburg-regbez` snapshot dated 2026-08-03, on the
-  canonical box `7.81,47.99,7.89,48.13`. It is the Rhine plain from Freiburg north to
-  Emmendingen, which has the settlement density of a typical ride: one city, three towns,
-  nine villages and four hamlets. It holds no terrain, no route and no track, because it
-  exists for the settlement labels. [The build record](sources/ride-assistant/freiburg-v18.json)
-  pins its source and output identities.
+  canonical box `7.77,47.97,7.93,48.14`. It is 12 by 19 km of the Rhine plain, from the city of
+  Freiburg north to Emmendingen, with the settlement density of a typical ride: one city, three
+  towns, 26 villages and 14 hamlets, 16 of them with a population. It holds no terrain, no route
+  and no track, because it exists for the settlement labels.
+  [The build record](sources/ride-assistant/freiburg-v18.json) pins its source and output
+  identities.
 
 ### Revision log: repacked at OBCM v18 (settlements, #1899)
 
@@ -99,7 +100,7 @@ sources as the v17 revision. No box was self-sourced from a header.
 | `sim-monaco` | 443 213 B | 456 152 B | `monaco.obcm` | 724 480 B | 742 400 B |
 | `sim-assistant-meiringen` | 30 400 331 B | 33 484 269 B | `meiringen.obcm` | 44 881 840 B | 48 740 272 B |
 | `sim-assistant-west-cork` | 2 426 077 B | 2 435 919 B | `west-cork.obcm` | 4 749 504 B | 4 783 296 B |
-| `sim-freiburg` | — | 4 034 978 B | `freiburg.obcm` | — | 5 924 352 B |
+| `sim-freiburg` | — | 8 135 648 B | `freiburg.obcm` | — | 11 746 304 B |
 
 **Settlements are the small part of that growth.** Grimsel packed from the same source with
 the settlement rows removed gives 4 772 560 B, so its 19 settlements cost 2 048 B — four
