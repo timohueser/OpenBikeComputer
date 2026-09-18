@@ -1920,6 +1920,43 @@ mod tests {
         0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32
     }
 
+    /// How many quantization steps apart two colours land on the 64-colour gamut. One step is a
+    /// colour a rider cannot name apart from its neighbour at a one-pixel stroke.
+    fn steps_apart(a: u16, b: u16) -> u32 {
+        let (x, y) = (obc_reader::rgb565_to_device64(a), obc_reader::rgb565_to_device64(b));
+        [(x.0, y.0), (x.1, y.1), (x.2, y.2)].iter().map(|(p, q)| p.abs_diff(*q) as u32 / 85).sum()
+    }
+
+    /// Two strokes of the same width and dash are told apart by colour alone, so a one-step
+    /// neighbour reads as the same line. Contours and lifts were exactly that pair: both one pixel,
+    /// both dashed, and one step apart. The warm road ladder is deliberately one step per class,
+    /// but those are solid and of differing widths, so this holds only over the dashed thin group.
+    #[test]
+    fn no_two_thin_dashed_lines_share_a_colour_neighbourhood() {
+        let cfg = corpus_config();
+        let mut thin: Vec<(String, u16)> = Vec::new();
+        for (key, values) in &cfg.features {
+            for (value, style) in values {
+                if style.weight == 1 && style.line_style == LineStyle::Dashed {
+                    thin.push((format!("{key}/{value}"), style.color));
+                }
+            }
+        }
+        thin.sort();
+        assert!(thin.len() > 10, "the shipped schema carries a real thin dashed group: {}", thin.len());
+        for (i, (a, ca)) in thin.iter().enumerate() {
+            for (b, cb) in &thin[i + 1..] {
+                if ca == cb {
+                    continue; // One look deliberately shared, such as every lift kind.
+                }
+                assert!(
+                    steps_apart(*ca, *cb) >= 2,
+                    "{a} {ca:#06X} and {b} {cb:#06X} are one step apart and cannot be told apart"
+                );
+            }
+        }
+    }
+
     /// Contours stay thin, readable over every fill they cross, distinct from trails, with index
     /// lines visible farther out.
     #[test]
