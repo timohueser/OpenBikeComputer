@@ -226,6 +226,7 @@ struct Inbox {
 /// planned-but-uncommitted detour, and the resident active-route
 /// parse. A host owns one for its lifetime.
 pub struct HostLoop {
+    trace: Option<Box<dyn TraceSink>>,
     inbox: Inbox,
     plan: Option<InflightPlan>,
     /// The operation the planner is running under — the token every planner answer carries back.
@@ -264,6 +265,7 @@ impl Default for HostLoop {
     /// flat store's live sequence on every pass.
     fn default() -> Self {
         let mut host = HostLoop {
+            trace: None,
             inbox: Inbox::default(),
             plan: None,
             plan_token: None,
@@ -284,6 +286,11 @@ impl HostLoop {
     /// A fresh host loop (nothing owed, no plan, nothing parsed).
     pub fn new() -> Self {
         HostLoop::default()
+    }
+
+    /// Attach an observer to this host session. It cannot change the pass or its results.
+    pub fn set_trace(&mut self, trace: Box<dyn TraceSink>) {
+        self.trace = Some(trace);
     }
 
     /// Take selected searches without starting them — the deterministic-harness freeze. Set once at
@@ -350,7 +357,10 @@ impl HostLoop {
         support: PlatformSupport,
     ) -> PassPlan {
         let Inbox { outcomes, facts, derived, ride_preview, nav_preview } = &mut self.inbox;
-        app.run_pass(PassInputs {
+        if let Some(trace) = &mut self.trace {
+            trace.pass_input(now, gestures, outcomes, facts, app.top_screen().name());
+        }
+        let plan = app.run_pass(PassInputs {
             now,
             gestures,
             sensors,
@@ -361,7 +371,11 @@ impl HostLoop {
             facts,
             derived: *derived,
             targets: DerivedTargets { ride_preview: ride_preview.as_slice(), nav_preview: nav_preview.as_slice() },
-        })
+        });
+        if let Some(trace) = &mut self.trace {
+            trace.pass_output(&plan, app.top_screen().name());
+        }
+        plan
     }
 
     /// Perform the plan's bounded work and leave token-carrying outcomes for the next pass.
@@ -471,6 +485,9 @@ impl HostLoop {
         self.serve_derived(app, plan, session, routes, rides);
         if let Some(scope) = routes.store_scope() {
             self.inbox.facts.note_store_revision(scope);
+        }
+        if let Some(trace) = &mut self.trace {
+            trace.executed(&self.inbox.outcomes, app.top_screen().name());
         }
     }
 
@@ -624,10 +641,10 @@ impl HostLoop {
                 {
                     return CatalogOutcome::Failed { token, error: CatalogError::Stale };
                 }
-                feed_routes(app, routes, &mut NoTrace);
+                feed_routes(app, routes, self.trace.as_deref_mut().unwrap_or(&mut NoTrace));
                 // After the routes, so the trips' stage ids resolve against the fresh catalog.
                 trips.refeed(app);
-                feed_rides(app, rides, &mut NoTrace);
+                feed_rides(app, rides, self.trace.as_deref_mut().unwrap_or(&mut NoTrace));
                 CatalogOutcome::CatalogRead { token, scope }
             }
             CatalogEffect::RemoveObject { token, object, kind } => {
@@ -685,7 +702,7 @@ impl HostLoop {
                                 &obc_formats::io::SliceSource(bytes),
                                 app.assistant_review_context().unwrap(),
                             );
-                            feed_routes(app, routes, &mut NoTrace);
+                            feed_routes(app, routes, self.trace.as_deref_mut().unwrap_or(&mut NoTrace));
                             match preview {
                                 Ok(preview) => {
                                     let outcome = app.assistant_preview_outcome(token, preview);
@@ -712,13 +729,22 @@ impl HostLoop {
                         Err(error) => NavigatorOutcome::Failed { token, error },
                     });
                 }
-                Some(match commit_nav_plan(app, routes, Ok(*stats), bytes, tile_stats, &mut NoTrace) {
-                    Ok(publication) => {
-                        self.publication = Some(publication);
-                        NavigatorOutcome::PlanFinished { token, route: publication.id }
-                    }
-                    Err(error) => NavigatorOutcome::Failed { token, error },
-                })
+                Some(
+                    match commit_nav_plan(
+                        app,
+                        routes,
+                        Ok(*stats),
+                        bytes,
+                        tile_stats,
+                        self.trace.as_deref_mut().unwrap_or(&mut NoTrace),
+                    ) {
+                        Ok(publication) => {
+                            self.publication = Some(publication);
+                            NavigatorOutcome::PlanFinished { token, route: publication.id }
+                        }
+                        Err(error) => NavigatorOutcome::Failed { token, error },
+                    },
+                )
             }
             NavigatorEffect::CommitDetour { .. } => {
                 let Some(preview) = self.detour_ready.as_ref() else { return failed(NavigatorError::Workspace) };
@@ -726,13 +752,21 @@ impl HostLoop {
                     return failed(NavigatorError::SourceChanged);
                 }
                 let Some(orig) = preview.sources.original() else { return failed(NavigatorError::Workspace) };
-                Some(match commit_detour(app, routes, &orig, &preview.ready, &mut NoTrace) {
-                    Ok(publication) => {
-                        self.publication = Some(publication);
-                        NavigatorOutcome::DetourCommitted { token, route: publication.id }
-                    }
-                    Err(error) => NavigatorOutcome::Failed { token, error },
-                })
+                Some(
+                    match commit_detour(
+                        app,
+                        routes,
+                        &orig,
+                        &preview.ready,
+                        self.trace.as_deref_mut().unwrap_or(&mut NoTrace),
+                    ) {
+                        Ok(publication) => {
+                            self.publication = Some(publication);
+                            NavigatorOutcome::DetourCommitted { token, route: publication.id }
+                        }
+                        Err(error) => NavigatorOutcome::Failed { token, error },
+                    },
+                )
             }
             NavigatorEffect::Release { family, retain_result, .. } => {
                 let keep_preview = retain_result && self.publication.is_none();
@@ -747,7 +781,7 @@ impl HostLoop {
                         })
                     }) {
                         match routes.retract_nav_route(publication) {
-                            Ok(()) => feed_routes(app, routes, &mut NoTrace),
+                            Ok(()) => feed_routes(app, routes, self.trace.as_deref_mut().unwrap_or(&mut NoTrace)),
                             Err(CatalogError::RemoveFailed) => {
                                 self.releasing = Some(effect);
                                 return None;
@@ -1027,8 +1061,13 @@ impl HostLoop {
             }
             InflightPlan::Detour(plan) => {
                 let sources = self.sources.take().expect("admitted sources");
-                let (ready, result) =
-                    plan_detour_preview(app, Ok(stats), plan, sources.original().as_ref(), &mut NoTrace);
+                let (ready, result) = plan_detour_preview(
+                    app,
+                    Ok(stats),
+                    plan,
+                    sources.original().as_ref(),
+                    self.trace.as_deref_mut().unwrap_or(&mut NoTrace),
+                );
                 self.detour_ready = ready.map(|ready| Preview { ready, sources });
                 match result {
                     Ok(preview) => NavigatorOutcome::DetourFinished { token, preview },

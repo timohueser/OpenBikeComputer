@@ -2995,6 +2995,7 @@ dependencies = [
  "obcm-testkit",
  "pollster",
  "rfd",
+ "serde_json",
 ]
 
 [[package]]

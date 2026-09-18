@@ -16,7 +16,7 @@
 //! inspection zoom state, and one prepared coordinate/bounds record; the preview additionally
 //! reads the host-fed decimated detour polyline through [`Render::detour_preview`].
 
-use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
+use embedded_graphics::{draw_target::DrawTarget, prelude::Point, primitives::Rectangle};
 use obc_map_scene::{cos_lat, BBox};
 use obc_render::{
     rect,
@@ -57,6 +57,11 @@ const INSPECT_MAX_LEVEL: u8 = (INSPECT_MAX_EXP - INSPECT_MIN_EXP + 1) as u8;
 const HUD_H: i32 = 76;
 const HUD_MARGIN: i32 = 10;
 const FIT_MARGIN: f32 = 24.0;
+
+/// The bottom pill both Detour screens draw over the map — the box a settlement name keeps off.
+fn hud_box(w: i32, h: i32) -> Rectangle {
+    rect(HUD_MARGIN, h - HUD_H - HUD_MARGIN, w - 2 * HUD_MARGIN, HUD_H)
+}
 
 #[derive(Debug, Clone, Copy)]
 struct PreparedDetour {
@@ -270,17 +275,16 @@ impl DetourScreen {
             candidate: p.candidate,
             detour: &[],
         });
-        let _ = draw_map_scene(cv, rx, &vp, overlay);
+        let _ = draw_map_scene(cv, rx, &vp, overlay, &[hud_box(rx.w, rx.h)]);
         self.draw_hud(cv, rx);
     }
 
     fn draw_hud(&self, cv: &mut impl Surface, rx: &Render) {
         use super::palette::*;
-        let x = HUD_MARGIN;
-        let y = rx.h - HUD_H - HUD_MARGIN;
-        let w = rx.w - 2 * HUD_MARGIN;
-        cv.round(rect(x, y, w, HUD_H), 11, PARCHMENT);
-        cv.round_outline(rect(x, y, w, HUD_H), 11, INK);
+        let pill = hud_box(rx.w, rx.h);
+        let (x, y, w) = (pill.top_left.x, pill.top_left.y, pill.size.width as i32);
+        cv.round(pill, 11, PARCHMENT);
+        cv.round_outline(pill, 11, INK);
         let title = if self.inspecting() { rx.t(Msg::RideContextInspectRejoin) } else { rx.t(Msg::RideContextDetour) };
         cv.text(title, Point::new(rx.w / 2, y + 7), Font::Label, TextAlign::Center, INK);
 
@@ -456,17 +460,16 @@ impl DetourPreviewScreen {
             candidate: p.candidate,
             detour: rx.detour_preview,
         });
-        let _ = draw_map_scene(cv, rx, &vp, overlay);
+        let _ = draw_map_scene(cv, rx, &vp, overlay, &[hud_box(rx.w, rx.h)]);
         self.draw_hud(cv, rx);
     }
 
     fn draw_hud(&self, cv: &mut impl Surface, rx: &Render) {
         use super::palette::*;
-        let x = HUD_MARGIN;
-        let y = rx.h - HUD_H - HUD_MARGIN;
-        let w = rx.w - 2 * HUD_MARGIN;
-        cv.round(rect(x, y, w, HUD_H), 11, PARCHMENT);
-        cv.round_outline(rect(x, y, w, HUD_H), 11, INK);
+        let pill = hud_box(rx.w, rx.h);
+        let (x, y, w) = (pill.top_left.x, pill.top_left.y, pill.size.width as i32);
+        cv.round(pill, 11, PARCHMENT);
+        cv.round_outline(pill, 11, INK);
         cv.text(rx.t(Msg::DetourTitle), Point::new(rx.w / 2, y + 7), Font::Label, TextAlign::Center, INK);
 
         if self.error {

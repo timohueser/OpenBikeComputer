@@ -3,6 +3,7 @@ use super::*;
 use obc_ports::RideClock;
 
 pub(crate) struct Session<'a, 's> {
+    pub diagnostics: diagnostics::Diagnostics,
     pub host: &'a mut HostLoop,
     pub route: &'a mut ActiveRouteSession,
     pub stores: &'a mut Stores<'s>,
@@ -18,6 +19,15 @@ impl Session<'_, '_> {
     pub fn run(&mut self, app: &mut App, script: &str, now: u32, ride: RideClock, position: Option<f64>) -> u32 {
         let mut scratch = Box::new(obc_render::RenderScratch::new());
         let mut hook = |app: &mut App, what: ScriptHook, now: u32| {
+            if let ScriptHook::Before(token) | ScriptHook::After(token) = what {
+                if self.diagnostics.enabled() {
+                    self.diagnostics.record(
+                        if matches!(what, ScriptHook::Before(_)) { "input" } else { "input_result" },
+                        serde_json::json!({"token": token.to_string(), "ui_ms": now, "screen": app.top_screen().name()}),
+                    );
+                }
+                return;
+            }
             if what == ScriptHook::Tick {
                 if let Some(player) = self.player.as_mut() {
                     // A refresh at the current position emits through the normal GPS port.
@@ -119,6 +129,7 @@ mod tests {
         }));
         let mut app = App::new(AppState::new(8_300_000, 46_700_000, 0.01));
         let mut script = Session {
+            diagnostics: diagnostics::Diagnostics::default(),
             host: &mut host,
             route: &mut route,
             stores: &mut stores,
