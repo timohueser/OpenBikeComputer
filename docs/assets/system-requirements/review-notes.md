@@ -2,7 +2,7 @@
 
 This file accompanies [requirements-draft.md](requirements-draft.md) and [acceptance-targets.md](acceptance-targets.md). Keep decisions, rationale, and source observations separate from the requirement text entered into the console.
 
-The revised draft contains 371 active requirements in 27 groups. IDs run through REQ-372; REQ-321 is retired after tunnel warnings were removed from scope, and its ID is not reused. The owner's feedback resolves scope decisions, but it is not verification evidence. Some requirements describe current behavior and others describe required future work. No entry is assigned a passing status.
+The revised draft contains 383 active requirements in 27 groups. IDs run through REQ-384; REQ-321 is retired after tunnel warnings were removed from scope, and its ID is not reused. The owner's feedback resolves scope decisions, but it is not verification evidence. Some requirements describe current behavior and others describe required future work. No entry is assigned a passing status.
 
 ## Scope
 
@@ -210,7 +210,17 @@ For blazes, supported symbols and overlapping marked routes remain TODO; no broa
 
 **Boundary:** The commitment enables independent maintenance and porting. It does not guarantee compatibility with every future operating system. Optional external services retain their own consent and authorization rules. Replacement of lost devices and restoration of personal libraries remain undefined and are not added.
 
-**Deferred:** Riding usability, glanceability, and action-count promises need a separate owner discussion. Battery targets remain TODO pending final hardware decisions and power measurements.
+**Deferred:** Battery targets remain TODO pending final hardware decisions and power measurements. Riding usability decisions are recorded in D27.
+
+### D27 — Riding usability and interruptions
+
+**Accepted:** Required while-moving controls are riding-view switching, map zoom, and pause/continue. Assistant access must be convenient, but Assistant flows are not promised for use while moving. Brightness remains convenient through the quick drawer without a new while-moving guarantee. Essential failure/navigation status must be recognizable without a menu or full sentence. The rider must be able to configure the listed glanceable fields and whole-route profile; they need not all be on one page. See REQ-373–375 and UI-01–03.
+
+**Accepted:** Pause and continue each take one short press from the relevant ride views. Main menu, Assistant, and the top/bottom drawers each take one gesture. Fixed feature and setting access has a four-action target with each selection step counted. Reaching the control is distinct from editing a value or browsing a variable-length content list. Return to the live map takes at most two actions from ordinary browsing; the main menu must always open with Map selected. See REQ-376–378, REQ-382–383, and UI-04–07/10. A full action-count audit remains future work; four is not established current behavior.
+
+**Accepted policy with delegated popup judgment:** An active, unpaused recording restricts unsolicited full-screen messages to critical faults, even at zero speed. Waypoint, off-route, and sharp-turn information uses partial banners/indicators with required sound. A route deliberately sent from an application is an explicit full-screen exception, including the coverage notice, without requiring pause. Preserve recording and navigation on dismissal/timeout, and defer the prompt during a gesture, pending confirmation, emergency-location display, or higher-priority critical warning. Paused/idle use has no added full-screen restriction. See REQ-379–381 and UI-08–09. Existing opt-in automatic Climb behavior is unchanged.
+
+**Read-only implementation observations:** The main menu currently lists Routes first and Map third in `firmware/obc-app/src/screen/menu.rs`; changing the default is future work. `card_scheduler.rs` already chooses a route-swap prompt while tracking. The phone/sensor link documentation describes simultaneous BLE peripheral and central roles, so sensor use is not a reason to require pause for route upload. REQ-384 and UI-11 define the desired concurrent behavior; hardware throughput and coexistence were not measured. The existing active-route replacement path adopts uploaded geometry before its informational popup; that does not establish compliance with REQ-049 or the new requirement to preserve navigation on dismissal. No code is changed by these decisions.
 
 ## Review additions (16 September)
 
