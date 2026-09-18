@@ -2,14 +2,14 @@
   "schema": 3,
   "package": "sim-assistant-meiringen",
   "archive": {
-    "bytes": 33484269,
-    "sha256": "93c1c77b85a3b83c0c12ca6227d8d7bcddc27d78ea67561ac168bf811f549c93"
+    "bytes": 33484275,
+    "sha256": "0ec2fbcb97baec35ba738fceede4726d8f305df047b2f9416b539cbe354c05e3"
   },
   "producer": {
-    "source_commit": "e5209f0dae0cf425d861daccd70820382ca41019",
+    "source_commit": "3d835f672",
     "executables_sha256": {
-      "obc-pack": "65afa24bf309b58587acc3fc81b3f799b618ac4b29041d883638cf9bd318c3de",
-      "obc-bake": "749af102d879077492fd72de1089700d4acfb553ddc5b2927dfaf13f60c7c69f",
+      "obc-pack": "94593bc035466f33eff445914bced6d87acf658c0b58262dac01add7dd5dc01d",
+      "obc-bake": "d54eaf480cfb47b95818891cda3fb770f863f68b58cb6ce00c94c5728ce570bf",
       "obc-dem": "2f69a941c0de98529e12f31bc28e0f1cd9fc5ac87618593d07b54d31fe3f91dc",
       "obcm-assemble": "7cdd8f52acce5d99ed3c20599a78a464bf1c7cd51618bc9194ffd83a4aadd222"
     }
@@ -34,7 +34,7 @@
   },
   "map": {
     "bytes": 48740272,
-    "sha256": "5ea6d75f9277fc925a6001c4df3bc60e4e0086704bf3e6bb7d2c80fa7718368d",
+    "sha256": "232d44072991da3470ea29e48bf44a30fbd81de8d80d56465dcf9e10cee01e48",
     "obcm_version": 18
   },
   "land_source": {

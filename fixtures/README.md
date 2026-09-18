@@ -96,11 +96,11 @@ sources as the v17 revision. No box was self-sourced from a header.
 
 | package | v17 archive | v18 archive | map file | v17 | v18 |
 | --- | ---: | ---: | --- | ---: | ---: |
-| `sim-grimsel` | 3 478 964 B | 4 137 072 B | `grimsel.obcm` | 3 971 792 B | 4 774 608 B |
+| `sim-grimsel` | 3 478 964 B | 4 137 061 B | `grimsel.obcm` | 3 971 792 B | 4 774 608 B |
 | `sim-monaco` | 443 213 B | 456 152 B | `monaco.obcm` | 724 480 B | 742 400 B |
-| `sim-assistant-meiringen` | 30 400 331 B | 33 484 269 B | `meiringen.obcm` | 44 881 840 B | 48 740 272 B |
-| `sim-assistant-west-cork` | 2 426 077 B | 2 435 919 B | `west-cork.obcm` | 4 749 504 B | 4 783 296 B |
-| `sim-freiburg` | — | 8 135 648 B | `freiburg.obcm` | — | 11 746 304 B |
+| `sim-assistant-meiringen` | 30 400 331 B | 33 484 275 B | `meiringen.obcm` | 44 881 840 B | 48 740 272 B |
+| `sim-assistant-west-cork` | 2 426 077 B | 2 435 914 B | `west-cork.obcm` | 4 749 504 B | 4 783 296 B |
+| `sim-freiburg` | — | 8 135 640 B | `freiburg.obcm` | — | 11 746 304 B |
 
 **Settlements are the small part of that growth.** Grimsel packed from the same source with
 the settlement rows removed gives 4 772 560 B, so its 19 settlements cost 2 048 B — four
@@ -108,6 +108,11 @@ the settlement rows removed gives 4 772 560 B, so its 19 settlements cost 2 048 
 changed `builder/presets/schema.json` and the packer's path and contour handling. These
 fixtures were last packed before it, so the format bump is the first time that work reaches
 them.
+
+A settlement stores its OSM `short_name` when that name is shorter, because the map shows 12
+characters: the Freiburg record reads `Freiburg`, and Meiringen's seven `Hasliberg …` and
+`… bei Interlaken` records read their short names. Nine records over all the packages changed
+name for this rule; every other settlement is unchanged.
 
 Grimsel's OBCT sidecar is byte-identical again (786 560 B), and the shipped demo map keeps
 the surface terrain it already carried, both verified by digest. The routing pin also holds:

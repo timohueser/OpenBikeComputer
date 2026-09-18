@@ -2,14 +2,14 @@
   "schema": 3,
   "package": "sim-grimsel",
   "archive": {
-    "bytes": 4137072,
-    "sha256": "e1f6eaded78068ab99db9158f06a2df5a731a990abea61103e377858ccc69585"
+    "bytes": 4137061,
+    "sha256": "b3b284ab09f9a2b72856cc9c26fd92a7d23ce6fdd7297a5882b1717dc063abb6"
   },
   "producer": {
-    "source_commit": "e5209f0dae0cf425d861daccd70820382ca41019",
+    "source_commit": "3d835f672",
     "executables_sha256": {
-      "obc-pack": "65afa24bf309b58587acc3fc81b3f799b618ac4b29041d883638cf9bd318c3de",
-      "obc-bake": "749af102d879077492fd72de1089700d4acfb553ddc5b2927dfaf13f60c7c69f",
+      "obc-pack": "94593bc035466f33eff445914bced6d87acf658c0b58262dac01add7dd5dc01d",
+      "obc-bake": "d54eaf480cfb47b95818891cda3fb770f863f68b58cb6ce00c94c5728ce570bf",
       "obc-dem": "2f69a941c0de98529e12f31bc28e0f1cd9fc5ac87618593d07b54d31fe3f91dc",
       "obcm-assemble": "7cdd8f52acce5d99ed3c20599a78a464bf1c7cd51618bc9194ffd83a4aadd222"
     }
@@ -32,7 +32,7 @@
   },
   "map": {
     "bytes": 4774608,
-    "sha256": "a52af0261d3d245ac4f5e40e6e4e5c35e18ddfb2c0434a329ec17053a959573d",
+    "sha256": "16f826a2e3d4283221dc47cb502cc9c2e7689d94a447d61dc591202de0e5c209",
     "obcm_version": 18,
     "settlement_records": 19,
     "landmark_records": 7,
