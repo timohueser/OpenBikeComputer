@@ -137,7 +137,8 @@ impl EasierScreen {
             fit(self.bounds, rx.w, rx.h)
         };
         let active = rx.route.take();
-        super::map::draw_map_scene(cv, rx, &vp, None, &[super::find_place::panel(rx.w, rx.h, PANEL_TOP)]);
+        let chrome = [super::landmarks::header_box(rx.w), super::find_place::panel(rx.w, rx.h, PANEL_TOP)];
+        super::map::draw_map_scene(cv, rx, &vp, None, &chrome);
         rx.route = active;
         let progress = self.progress_m;
         let proposed = rx.nav_preview;

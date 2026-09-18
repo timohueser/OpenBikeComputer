@@ -113,7 +113,8 @@ impl FindPlaceScreen {
             }
         }
         let vp = fit(min, max, rx.w, rx.h, RESULTS_PANEL_TOP);
-        let _ = super::map::draw_map_scene(cv, rx, &vp, None, &[panel(rx.w, rx.h, RESULTS_PANEL_TOP)]);
+        let chrome = [super::landmarks::header_box(rx.w), panel(rx.w, rx.h, RESULTS_PANEL_TOP)];
+        let _ = super::map::draw_map_scene(cv, rx, &vp, None, &chrome);
         for i in 0..rx.find.results.len() {
             if let Some(p) = rx.find.selected(i, rx.poi_scratch, rx.corridor) {
                 let (x, y) = vp.to_screen(p.lon, p.lat);
@@ -318,8 +319,14 @@ impl VisitReviewScreen {
                 |hours| hours.as_str(),
             )
         });
-        let chrome: heapless::Vec<Rectangle, 2> =
-            [Some(panel(rx.w, rx.h, REVIEW_PANEL_TOP)), hours_label.map(hours_pill)].into_iter().flatten().collect();
+        let chrome: heapless::Vec<Rectangle, 3> = [
+            Some(super::landmarks::header_box(rx.w)),
+            Some(panel(rx.w, rx.h, REVIEW_PANEL_TOP)),
+            hours_label.map(hours_pill),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
         let marker_color = super::map::draw_map_scene(cv, rx, &vp, None, &chrome);
         if visible {
             if let Some(scratch) = rx.scratch.as_deref_mut() {

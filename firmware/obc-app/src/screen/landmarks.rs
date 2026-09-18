@@ -2,7 +2,7 @@
 use super::{palette::*, vocab::list, Ctx, RenderFrame, Screen, Transition};
 use crate::{landmarks::Status, Gesture, Msg};
 use core::fmt::Write;
-use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
+use embedded_graphics::{draw_target::DrawTarget, prelude::Point, primitives::Rectangle};
 /// Top row of the opaque bottom panel, and the camera's bottom bound.
 const PANEL_TOP: i32 = 208;
 
@@ -91,7 +91,8 @@ impl LandmarksScreen {
             max = (max.0.max(row.position.0), max.1.max(row.position.1));
         }
         let vp = super::find_place::fit(min, max, rx.w, rx.h, PANEL_TOP);
-        let _ = super::map::draw_map_scene(cv, rx, &vp, None, &[super::find_place::panel(rx.w, rx.h, PANEL_TOP)]);
+        let chrome = [header_box(rx.w), super::find_place::panel(rx.w, rx.h, PANEL_TOP)];
+        let _ = super::map::draw_map_scene(cv, rx, &vp, None, &chrome);
         for (i, row) in rx.landmarks.rows.iter().enumerate() {
             let (x, y) = vp.to_screen(row.position.0, row.position.1);
             cv.round(rect(x - 11, y - 12, 23, 24), 4, if i == rx.landmarks.selected { AMBER } else { PARCHMENT });
@@ -264,6 +265,13 @@ pub(super) fn visit_action(
         Msg::AssistantNoAccess
     }
 }
+/// The band a map screen's top title bar inks: the rounded bar and the four-pixel margin round it,
+/// which the results and review screens also fill with parchment. Passed as chrome, so a settlement
+/// name keeps off it.
+pub(super) fn header_box(w: i32) -> Rectangle {
+    rect(0, 0, w, 40)
+}
+
 pub(super) fn header(
     cv: &mut impl Surface,
     title: &str,

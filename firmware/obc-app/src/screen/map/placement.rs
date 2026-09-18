@@ -20,7 +20,7 @@
 
 use embedded_graphics::primitives::Rectangle;
 
-/// How many boxes one frame can hold: 4 for the chrome and 6 for the labels, with room to spare.
+/// How many boxes one frame can hold: 5 for the chrome and 6 for the labels, with room to spare.
 /// The point icons keep their own occupancy today, so they take no slot here. The list is 384 bytes
 /// of transient stack inside the draw pass.
 const MAX_PLACED: usize = 24;
