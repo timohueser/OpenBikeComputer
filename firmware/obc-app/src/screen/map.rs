@@ -166,7 +166,7 @@ impl MapScreen {
         // Clock overlay: a minute rollover self-dirties just the pill region, armed only while the
         // pill is visible (setting on, not panning, a frame drawn). Hidden, still observe the minute
         // so a later show doesn't fire a stale rollover.
-        let (clk_changed, clk_wake, clk_region) = if !map_clock || pan_active || w == 0 {
+        let (clk_changed, clk_wake, clk_region) = if !clock_cue(map_clock, pan_active) || w == 0 {
             let _ = self.ticker.changed(now);
             (false, None, None)
         } else {
@@ -257,25 +257,29 @@ impl MapScreen {
             None
         };
 
-        // What this frame inks over the map after the names. With no pill and no pan cue the
-        // bottom is bare map, and a name is welcome to it.
-        let chrome = map_chrome(rx.w, rx.h, chip_band, scale_bar.as_ref(), rx.state.pan);
+        // What this frame inks over the map after the names, top and bottom alike. Each piece is
+        // gated here by the same condition that draws it below, so the box that is reserved and the
+        // pixels that are drawn cannot drift. With no pill, no clock and no pan cue the panel is
+        // bare map, and a name is welcome to all of it.
+        let clock_up = clock_cue(rx.settings.map_clock, panning);
+        let low_battery = low_battery_cue(rx.state.device.battery_pct);
+        let chrome = map_chrome(rx.w, rx.h, chip_band, scale_bar.as_ref(), rx.state.pan, clock_up, low_battery);
         let Some(marker565) = draw_map_scene(cv, rx, &vp, None, &chrome) else { return };
 
         // The remaining chrome draws in the palette vocabulary, back through the canvas.
         //
         // Low-battery cue (top-left corner): a small warning-red battery glyph only when the charge
         // has dropped below LOW_BATTERY_PCT — nothing above it, so there's no permanent map battery
-        // indicator. Shown in pan mode too (the top-right corner belongs to the pan compass rose).
-        if rx.state.device.battery_pct < LOW_BATTERY_PCT {
+        // indicator. Shown in pan mode too (the top centre belongs to the pan HUD's cue).
+        if low_battery {
             draw_low_battery(cv);
         }
 
         // Clock (top-centre): a floating HH:MM — bare ink digits with a 1 px parchment halo, no
         // pill, so it informs without drawing the eye. Shown when the setting is on. Hidden while
-        // panning — the pan HUD's top chevron / compass own the top edge — so it never fights the
+        // panning — the pan HUD's top cue owns the top-centre slot — so it never fights the
         // chevron; `tick_timers` mirrors that gate when arming the minute wake.
-        if rx.settings.map_clock && !panning {
+        if clock_up {
             draw_clock(cv, rx.w, rx.now);
         }
 
@@ -351,9 +355,9 @@ pub(crate) struct DetourMapOverlay<'a> {
 /// breadcrumb, waypoints, rider and candidate). Map chrome stays in [`MapScreen::draw`]; the
 /// Detour chooser/preview add their own floating HUD after this returns.
 ///
-/// `chrome` is what this screen will ink over the map below it — its bottom panel or pill, and the
-/// scale bar ([`ScaleBar::ink`]) — so a settlement name keeps off it. A screen that draws nothing
-/// down there passes an empty slice and the names get the whole panel.
+/// `chrome` is what this screen will ink over the map — its header, its bottom panel or pill, and
+/// the scale bar ([`ScaleBar::ink`]) — so a settlement name keeps off it. A screen that draws no
+/// chrome passes an empty slice and the names get the whole panel.
 pub(crate) fn draw_map_scene<D, F, S>(
     cv: &mut Canvas<D, F>,
     rx: &mut RenderFrame<'_, S>,
@@ -428,7 +432,7 @@ where
     rx.stats = stats;
 
     // Settlement names: over the terrain and the route ink, under the waypoints and the rider.
-    let reserved = label_reserved(vp, rx.state.user_fix, rx.w, chrome);
+    let reserved = label_reserved(vp, rx.state.user_fix, chrome);
     let mut place = PointPlacement::new(&reserved);
     crate::settlements::draw_labels(cv, vp, rx.settlements, &mut place);
 
@@ -453,9 +457,12 @@ where
 /// Side (px) of the box the rider mark owns — the chevron reaches 12 px ahead and 8 px out.
 const RIDER_BOX_PX: i32 = 24;
 
-/// The most chrome boxes one screen hands to [`label_reserved`]: the scale bar and the pan HUD's
-/// two side cues, which is the widest set any frame reaches.
-pub(crate) const MAX_CHROME: usize = 3;
+/// The most chrome boxes one screen hands to [`label_reserved`]. The Map reaches it two ways, and
+/// both come to four: not panning, the clock digits, the low-battery cue, a bottom pill's band and
+/// the scale bar; panning, the low-battery cue, the bar and the pan HUD's two cues — pan mode
+/// suppresses the clock and every pill, so the two sets never add up. No other screen asks for
+/// more: the Detour hands one box, the browse screens two, and the visit review three.
+pub(crate) const MAX_CHROME: usize = 4;
 
 /// A screen's own chrome boxes, as [`label_reserved`] takes them.
 pub(crate) type Chrome = heapless::Vec<Rectangle, MAX_CHROME>;
@@ -463,29 +470,27 @@ pub(crate) type Chrome = heapless::Vec<Rectangle, MAX_CHROME>;
 /// The boxes the map chrome owns, so a settlement name never covers one. A name may sit flush
 /// against a box, so each one has to hold the ink it protects.
 ///
-/// Only the top band is constant — the clock, the low-battery cue and the pan compass all sit
-/// inside it on every screen, and it is one text line tall. Everything the caller draws below the
-/// map comes in through `chrome`, measured for this frame: nothing there means nothing reserved.
-/// The rider mark is the one box this function measures itself.
+/// Every box a screen inks over the map comes in through `chrome`, measured for this frame: a
+/// piece of chrome the frame does not draw reserves nothing, top edge and bottom alike. The rider
+/// mark is the one box this function measures itself.
 pub(crate) fn label_reserved(
     vp: &Viewport,
     fix: Option<Fix>,
-    w: i32,
     chrome: &[Rectangle],
-) -> heapless::Vec<Rectangle, { MAX_CHROME + 2 }> {
-    // The top band and the rider mark are the two this function adds itself; the rest is `chrome`.
-    // Past the capacity a push is dropped, and a dropped rider box is a name over the rider.
+) -> heapless::Vec<Rectangle, { MAX_CHROME + 1 }> {
+    // The rider mark is the one this function adds itself; the rest is `chrome`. Past the capacity
+    // a push is dropped, and a dropped rider box is a name over the rider.
     debug_assert!(chrome.len() <= MAX_CHROME, "a screen handed more chrome than MAX_CHROME");
     let mut boxes = heapless::Vec::new();
-    // Top: the clock digits, the low-battery cue and the pan HUD's compass rose.
-    let _ = boxes.push(rect(0, 0, w, CLOCK_TOP + Font::Body.line_height() as i32 + 2));
     for r in chrome {
         let _ = boxes.push(*r);
     }
     if let Some(fix) = fix {
         let (x, y) = vp.to_screen(fix.lon, fix.lat);
         let r = RIDER_BOX_PX / 2;
-        let _ = boxes.push(rect(x - r, y - r, RIDER_BOX_PX, RIDER_BOX_PX));
+        if boxes.push(rect(x - r, y - r, RIDER_BOX_PX, RIDER_BOX_PX)).is_err() {
+            debug_assert!(false, "the rider box was dropped, so a name may cover the rider");
+        }
     }
     boxes
 }
@@ -636,10 +641,10 @@ pub(crate) fn chip_band_box(w: i32, h: i32) -> Rectangle {
     rect(0, h - band, w, band)
 }
 
-/// The Up/Down cue boxes the pan HUD inks over the map, apart from the one at the top edge, which
-/// the top band already holds. Zoom draws its plus and minus at the top and bottom; Free draws
-/// chevrons at the two edges of its axis; Route draws none, because the moving route is its own
-/// feedback. The box is the chevron's widest reach, which also covers the smaller zoom glyph.
+/// The Up/Down cue boxes the pan HUD inks over the map. Zoom draws its plus and minus at the top
+/// and bottom; Free draws chevrons at the two edges of its axis; Route draws none, because the
+/// moving route is its own feedback. Never more than one pair, so two boxes is the exact bound.
+/// The box is the chevron's widest reach, which also covers the smaller zoom glyph.
 pub(crate) fn pan_cue_boxes(w: i32, h: i32, pan: Pan) -> heapless::Vec<Rectangle, 2> {
     use hud::*;
     let r = (CHEV_SPREAD + CHEV_HW + OUTLINE) as i32;
@@ -647,6 +652,7 @@ pub(crate) fn pan_cue_boxes(w: i32, h: i32, pan: Pan) -> heapless::Vec<Rectangle
     let cue = |x: i32, y: i32| rect(x - r, y - r, 2 * r, 2 * r);
     let mut boxes = heapless::Vec::new();
     if pan.tool == PanTool::Zoom || pan.basis == PanBasis::Vertical {
+        let _ = boxes.push(cue(w / 2, inset));
         let _ = boxes.push(cue(w / 2, h - inset));
     } else if pan.basis == PanBasis::Horizontal {
         let _ = boxes.push(cue(inset, h / 2));
@@ -655,19 +661,42 @@ pub(crate) fn pan_cue_boxes(w: i32, h: i32, pan: Pan) -> heapless::Vec<Rectangle
     boxes
 }
 
-/// Everything the Map screen will ink over the map after the settlement names: the bottom pill's
-/// band when one is up, the scale bar, and the pan HUD's Up/Down cues while panning. A pill and a
-/// pan cue never coexist — every pill is suppressed in pan mode — so [`MAX_CHROME`] holds.
-fn map_chrome(w: i32, h: i32, chip_band: i32, bar: Option<&ScaleBar>, pan: Option<Pan>) -> Chrome {
+/// Everything the Map screen will ink over the map after the settlement names: the clock digits and
+/// the low-battery cue at the top, the bottom pill's band when one is up, the scale bar, and the
+/// pan HUD's Up/Down cues while panning. Each caller-side flag is the very condition that draws the
+/// thing, so a piece of chrome the frame leaves out reserves nothing.
+///
+/// The widest set is [`MAX_CHROME`]; a box past it is dropped, which is a name over the chrome, so
+/// a debug build says so.
+fn map_chrome(
+    w: i32,
+    h: i32,
+    chip_band: i32,
+    bar: Option<&ScaleBar>,
+    pan: Option<Pan>,
+    clock: bool,
+    low_battery: bool,
+) -> Chrome {
     let mut boxes: Chrome = heapless::Vec::new();
+    let mut push = |r| {
+        if boxes.push(r).is_err() {
+            debug_assert!(false, "the map chrome holds more boxes than MAX_CHROME");
+        }
+    };
+    if clock {
+        push(clock_region(w));
+    }
+    if low_battery {
+        push(low_battery_box());
+    }
     if chip_band > 0 {
-        let _ = boxes.push(chip_band_box(w, h));
+        push(chip_band_box(w, h));
     }
     if let Some(bar) = bar {
-        let _ = boxes.push(bar.ink());
+        push(bar.ink());
     }
     for cue in pan.map(|pan| pan_cue_boxes(w, h, pan)).unwrap_or_default() {
-        let _ = boxes.push(cue);
+        push(cue);
     }
     boxes
 }
@@ -797,6 +826,13 @@ pub fn clock_region(w: i32) -> Rectangle {
     Rectangle::new(Point::new((w - tw) / 2 - 2, CLOCK_TOP - 2), Size::new(tw as u32 + 4, th as u32 + 4))
 }
 
+/// Whether the map's clock digits are up: the `Clock on map` setting decides, and panning overrides
+/// it — the pan HUD's top cue owns the slot the digits would take. The one home of that rule, so
+/// the pixels drawn, the box reserved for them and the minute wake cannot disagree.
+pub(crate) const fn clock_cue(map_clock: bool, panning: bool) -> bool {
+    map_clock && !panning
+}
+
 /// Draw the top-centre `HH:MM` clock: bare ink digits floating on the map — no pill, no white
 /// backing, just the scale-bar label's 1 px parchment halo so they stay readable over dark terrain.
 /// One font step up from the rest of the map chrome ([`Font::Body`]) so the time reads at a glance;
@@ -822,13 +858,27 @@ pub(crate) const fn low_battery_cue(battery_pct: u8) -> bool {
     battery_pct < LOW_BATTERY_PCT
 }
 
+/// Top-left origin of the low-battery glyph, its shell size and its nub width. One set of values
+/// answers both [`low_battery_box`] — the box a settlement name keeps off — and
+/// [`draw_low_battery`], so the box that is reserved and the pixels that are drawn cannot drift.
+const BATTERY_AT: (i32, i32) = (10, 10);
+const BATTERY_SIZE: (i32, i32) = (26, 13);
+const BATTERY_NUB: i32 = 3;
+
+/// The pixels the low-battery cue inks: the shell grown by its one-pixel ink halo, reaching right
+/// to the nub, which carries no halo of its own.
+fn low_battery_box() -> Rectangle {
+    let ((x, y), (bw, bh)) = (BATTERY_AT, BATTERY_SIZE);
+    rect(x - 1, y - 1, bw + BATTERY_NUB + 1, bh + 2)
+}
+
 /// Draw the low-battery cue: a small warning-red battery silhouette in the top-left corner (a
 /// scaled-down cousin of the Home gauge's shell). Filled solid red — this is the "act now" state, not
 /// a level readout — with an ink halo behind it so it reads over any terrain.
 fn draw_low_battery(cv: &mut impl Surface) {
     use super::palette::*;
-    let (x, y) = (10, 10);
-    let (bw, bh, nub) = (26, 13, 3);
+    let (x, y) = BATTERY_AT;
+    let (bw, bh, nub) = (BATTERY_SIZE.0, BATTERY_SIZE.1, BATTERY_NUB);
     // Ink halo (the shell + nub grown by 1px) so it reads over any map colour.
     cv.round_outline(rect(x - 1, y - 1, bw + 2, bh + 2), 3, INK);
     cv.round_outline(rect(x, y, bw, bh), 3, WARNING);
@@ -1493,7 +1543,8 @@ mod tests {
         // A name centred on the bottom-centre cue, and one clear of it in the middle of the panel.
         let under_cue = rect(72, 288, 96, 24);
         let clear = rect(72, 150, 96, 24);
-        let placer = |pan| PointPlacement::new(&label_reserved(&vp, None, 240, &map_chrome(240, 320, 0, None, pan)));
+        let placer =
+            |pan| PointPlacement::new(&label_reserved(&vp, None, &map_chrome(240, 320, 0, None, pan, false, false)));
 
         for (name, pan) in [("free vertical", vertical), ("zoom", zoom)] {
             let mut place = placer(Some(pan));
@@ -1509,6 +1560,98 @@ mod tests {
         let mut place = placer(Some(horizontal));
         assert!(!place.try_place(rect(0, 148, 60, 24), 0), "a name under the left cue is refused");
         assert!(place.try_place(under_cue, 0), "and the bottom centre is free");
+    }
+
+    /// The top of the panel is measured, like the bottom: only what a frame really inks up there is
+    /// held back from the names. The clock answers to its setting, the low-battery cue to the
+    /// charge, and the pan HUD's top cue to pan mode — which hides the clock, so the cue is held
+    /// whatever the setting says. A bare top belongs to the names.
+    #[test]
+    fn the_top_chrome_is_only_what_the_frame_inks() {
+        let vp = Viewport::new(240.0, 320.0, 0, 0, 1.0);
+        let placer = |map_clock: bool, low_battery: bool, pan: Option<Pan>| {
+            let clock = clock_cue(map_clock, pan.is_some());
+            PointPlacement::new(&label_reserved(&vp, None, &map_chrome(240, 320, 0, None, pan, clock, low_battery)))
+        };
+        // One name under each piece of top chrome, each clear of the other two. They all sit inside
+        // the band the Map used to refuse outright.
+        let under_clock = rect(90, 8, 60, 24);
+        let under_battery = rect(10, 10, 26, 13);
+        let under_top_cue = rect(100, 10, 40, 24);
+        for r in [under_clock, under_battery, under_top_cue] {
+            let bottom = r.top_left.y + r.size.height as i32;
+            assert!(bottom <= CLOCK_TOP + Font::Body.line_height() as i32 + 2, "the case sits in the old top band");
+        }
+
+        // The owner's case: the clock off and the charge healthy, and the whole band is map again.
+        let mut bare = placer(false, false, None);
+        assert!(bare.try_place(under_battery, 0), "the corner is free");
+        assert!(bare.try_place(under_clock, 0), "and so is the centre");
+
+        // Each cue refuses its own name and no other.
+        let mut clock_on = placer(true, false, None);
+        assert!(!clock_on.try_place(under_clock, 0), "the clock refuses the name under the digits");
+        assert!(clock_on.try_place(under_battery, 0), "and leaves the corner alone");
+        let mut flat = placer(false, true, None);
+        assert!(!flat.try_place(under_battery, 0), "a low charge refuses the name under the cue");
+        assert!(flat.try_place(under_clock, 0), "and leaves the centre alone");
+
+        // Panning, the HUD's top cue takes the centre whatever the clock setting is.
+        let mut st = crate::AppState::new(0, 0, 1.0);
+        st.enter_pan(false, 0);
+        let vertical = st.pan.expect("pan mode is on");
+        for map_clock in [false, true] {
+            assert!(
+                !placer(map_clock, false, Some(vertical)).try_place(under_top_cue, 0),
+                "map_clock={map_clock}: the pan cue is reserved",
+            );
+        }
+    }
+
+    /// The two top boxes hold every pixel they protect. A name may sit flush against a box and the
+    /// chrome draws after the names, so a column left out is a column the clock's or the cue's halo
+    /// erases from a glyph stroke.
+    #[test]
+    fn the_top_chrome_boxes_hold_every_pixel_they_draw() {
+        use crate::harness::support::Buf;
+        use embedded_graphics::pixelcolor::Rgb888;
+        use obc_render::Canvas;
+        let color = |c| {
+            let (r, g, b) = obc_reader::rgb565_to_rgb888(c);
+            Rgb888::new(r, g, b)
+        };
+        let drawn_box = |buf: &Buf| {
+            let black = Rgb888::new(0, 0, 0);
+            let mut drawn: Option<(i32, i32, i32, i32)> = None;
+            for y in 0..320 {
+                for x in 0..240 {
+                    if buf.get(x, y) != black {
+                        let e = drawn.get_or_insert((x, y, x + 1, y + 1));
+                        *e = (e.0.min(x), e.1.min(y), e.2.max(x + 1), e.3.max(y + 1));
+                    }
+                }
+            }
+            drawn.expect("the cue draws something")
+        };
+        let inside = |drawn: (i32, i32, i32, i32), r: Rectangle, what: &str| {
+            let (l, t, right, bottom) = drawn;
+            let (bx, by) = (r.top_left.x, r.top_left.y);
+            let (bw, bh) = (r.size.width as i32, r.size.height as i32);
+            assert!(
+                l >= bx && t >= by && right <= bx + bw && bottom <= by + bh,
+                "{what}: drawn ({l},{t})-({right},{bottom}) is outside the reserved ({bx},{by})-({},{})",
+                bx + bw,
+                by + bh,
+            );
+        };
+        // The digits are monospace, so any time is the region's fixed five glyphs wide.
+        let mut clock = Buf::new(240, 320);
+        draw_clock(&mut Canvas::new(&mut clock, &color), 240, dt(23, 59));
+        inside(drawn_box(&clock), clock_region(240), "the clock");
+
+        let mut battery = Buf::new(240, 320);
+        draw_low_battery(&mut Canvas::new(&mut battery, &color));
+        inside(drawn_box(&battery), low_battery_box(), "the low-battery cue");
     }
 
     /// A degenerate camera (non-finite or non-positive mpp) yields no bar, never a bogus one.
