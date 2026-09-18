@@ -257,13 +257,9 @@ impl MapScreen {
             None
         };
 
-        // What this frame inks below the map: the pill band when a pill is up, and the scale bar.
-        // With no pill the bottom is bare map, and a name is welcome to it.
-        let chrome: heapless::Vec<Rectangle, 2> =
-            [(chip_band > 0).then(|| chip_band_box(rx.w, rx.h)), scale_bar.as_ref().map(ScaleBar::ink)]
-                .into_iter()
-                .flatten()
-                .collect();
+        // What this frame inks over the map after the names. With no pill and no pan cue the
+        // bottom is bare map, and a name is welcome to it.
+        let chrome = map_chrome(rx.w, rx.h, chip_band, scale_bar.as_ref(), rx.state.pan);
         let Some(marker565) = draw_map_scene(cv, rx, &vp, None, &chrome) else { return };
 
         // The remaining chrome draws in the palette vocabulary, back through the canvas.
@@ -457,6 +453,13 @@ where
 /// Side (px) of the box the rider mark owns — the chevron reaches 12 px ahead and 8 px out.
 const RIDER_BOX_PX: i32 = 24;
 
+/// The most chrome boxes one screen hands to [`label_reserved`]: the scale bar and the pan HUD's
+/// two side cues, which is the widest set any frame reaches.
+pub(crate) const MAX_CHROME: usize = 3;
+
+/// A screen's own chrome boxes, as [`label_reserved`] takes them.
+pub(crate) type Chrome = heapless::Vec<Rectangle, MAX_CHROME>;
+
 /// The boxes the map chrome owns, so a settlement name never covers one. A name may sit flush
 /// against a box, so each one has to hold the ink it protects.
 ///
@@ -469,7 +472,10 @@ pub(crate) fn label_reserved(
     fix: Option<Fix>,
     w: i32,
     chrome: &[Rectangle],
-) -> heapless::Vec<Rectangle, 4> {
+) -> heapless::Vec<Rectangle, { MAX_CHROME + 2 }> {
+    // The top band and the rider mark are the two this function adds itself; the rest is `chrome`.
+    // Past the capacity a push is dropped, and a dropped rider box is a name over the rider.
+    debug_assert!(chrome.len() <= MAX_CHROME, "a screen handed more chrome than MAX_CHROME");
     let mut boxes = heapless::Vec::new();
     // Top: the clock digits, the low-battery cue and the pan HUD's compass rose.
     let _ = boxes.push(rect(0, 0, w, CLOCK_TOP + Font::Body.line_height() as i32 + 2));
@@ -628,6 +634,42 @@ const CHIP_MARGIN: i32 = 10;
 pub(crate) fn chip_band_box(w: i32, h: i32) -> Rectangle {
     let band = HINT_LINE_PITCH + Font::Label.line_height() as i32 + 2 * HINT_PAD_Y + CHIP_MARGIN;
     rect(0, h - band, w, band)
+}
+
+/// The Up/Down cue boxes the pan HUD inks over the map, apart from the one at the top edge, which
+/// the top band already holds. Zoom draws its plus and minus at the top and bottom; Free draws
+/// chevrons at the two edges of its axis; Route draws none, because the moving route is its own
+/// feedback. The box is the chevron's widest reach, which also covers the smaller zoom glyph.
+pub(crate) fn pan_cue_boxes(w: i32, h: i32, pan: Pan) -> heapless::Vec<Rectangle, 2> {
+    use hud::*;
+    let r = (CHEV_SPREAD + CHEV_HW + OUTLINE) as i32;
+    let inset = CHEV_INSET as i32;
+    let cue = |x: i32, y: i32| rect(x - r, y - r, 2 * r, 2 * r);
+    let mut boxes = heapless::Vec::new();
+    if pan.tool == PanTool::Zoom || pan.basis == PanBasis::Vertical {
+        let _ = boxes.push(cue(w / 2, h - inset));
+    } else if pan.basis == PanBasis::Horizontal {
+        let _ = boxes.push(cue(inset, h / 2));
+        let _ = boxes.push(cue(w - inset, h / 2));
+    }
+    boxes
+}
+
+/// Everything the Map screen will ink over the map after the settlement names: the bottom pill's
+/// band when one is up, the scale bar, and the pan HUD's Up/Down cues while panning. A pill and a
+/// pan cue never coexist — every pill is suppressed in pan mode — so [`MAX_CHROME`] holds.
+fn map_chrome(w: i32, h: i32, chip_band: i32, bar: Option<&ScaleBar>, pan: Option<Pan>) -> Chrome {
+    let mut boxes: Chrome = heapless::Vec::new();
+    if chip_band > 0 {
+        let _ = boxes.push(chip_band_box(w, h));
+    }
+    if let Some(bar) = bar {
+        let _ = boxes.push(bar.ink());
+    }
+    for cue in pan.map(|pan| pan_cue_boxes(w, h, pan)).unwrap_or_default() {
+        let _ = boxes.push(cue);
+    }
+    boxes
 }
 
 // ---- Waypoint chip (bottom-centre) ----------------------------------------
@@ -1423,6 +1465,50 @@ mod tests {
             // exact. Only the top edge is loose, by the label's top bearing.
             assert_eq!((l, r, b), (bx, if bar_is_wider { bx + bw } else { r }, by + bh), "{case:?}: the tight edges");
         }
+    }
+
+    /// Pan mode suppresses every bottom pill, so nothing else reserves the bottom of the panel —
+    /// but the pan HUD still inks its Up/Down cue there, after the names. The cue comes in as
+    /// chrome, so a name under it is refused rather than overprinted.
+    #[test]
+    fn the_pan_cue_keeps_a_settlement_name_off_the_bottom_of_the_panel() {
+        let vp = Viewport::new(240.0, 320.0, 0, 0, 1.0);
+        // Real pan states, built the way the gestures build them.
+        let mut st = crate::AppState::new(0, 0, 1.0);
+        st.enter_pan(false, 0);
+        let vertical = st.pan.expect("pan mode is on");
+        st.cycle_pan_mode(false);
+        let zoom = st.pan.expect("pan mode is on");
+        st.cycle_pan_mode(false);
+        st.toggle_pan_free_axis();
+        let horizontal = st.pan.expect("pan mode is on");
+        st.enter_pan(true, 0);
+        let route = st.pan.expect("pan mode is on");
+        assert_eq!(
+            [vertical.basis, zoom.basis, horizontal.basis, route.basis],
+            [PanBasis::Vertical, PanBasis::Vertical, PanBasis::Horizontal, PanBasis::Route],
+        );
+        assert_eq!(zoom.tool, PanTool::Zoom);
+
+        // A name centred on the bottom-centre cue, and one clear of it in the middle of the panel.
+        let under_cue = rect(72, 288, 96, 24);
+        let clear = rect(72, 150, 96, 24);
+        let placer = |pan| PointPlacement::new(&label_reserved(&vp, None, 240, &map_chrome(240, 320, 0, None, pan)));
+
+        for (name, pan) in [("free vertical", vertical), ("zoom", zoom)] {
+            let mut place = placer(Some(pan));
+            assert!(!place.try_place(under_cue, 0), "{name}: a name under the cue is refused");
+            assert!(place.try_place(clear, 0), "{name}: one clear of it is placed");
+        }
+
+        // Route movement draws no cue, and with no pill either the bottom is bare map.
+        assert!(placer(Some(route)).try_place(under_cue, 0), "route movement inks no cue, so the corner is free");
+
+        // Free horizontal moves the pair to the sides, and the bottom centre comes back.
+        assert_eq!(pan_cue_boxes(240, 320, horizontal).len(), 2, "one cue box for each side");
+        let mut place = placer(Some(horizontal));
+        assert!(!place.try_place(rect(0, 148, 60, 24), 0), "a name under the left cue is refused");
+        assert!(place.try_place(under_cue, 0), "and the bottom centre is free");
     }
 
     /// A degenerate camera (non-finite or non-positive mpp) yields no bar, never a bogus one.

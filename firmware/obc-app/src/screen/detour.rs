@@ -281,11 +281,10 @@ impl DetourScreen {
 
     fn draw_hud(&self, cv: &mut impl Surface, rx: &Render) {
         use super::palette::*;
-        let x = HUD_MARGIN;
-        let y = rx.h - HUD_H - HUD_MARGIN;
-        let w = rx.w - 2 * HUD_MARGIN;
-        cv.round(rect(x, y, w, HUD_H), 11, PARCHMENT);
-        cv.round_outline(rect(x, y, w, HUD_H), 11, INK);
+        let pill = hud_box(rx.w, rx.h);
+        let (x, y, w) = (pill.top_left.x, pill.top_left.y, pill.size.width as i32);
+        cv.round(pill, 11, PARCHMENT);
+        cv.round_outline(pill, 11, INK);
         let title = if self.inspecting() { rx.t(Msg::RideContextInspectRejoin) } else { rx.t(Msg::RideContextDetour) };
         cv.text(title, Point::new(rx.w / 2, y + 7), Font::Label, TextAlign::Center, INK);
 
@@ -467,11 +466,10 @@ impl DetourPreviewScreen {
 
     fn draw_hud(&self, cv: &mut impl Surface, rx: &Render) {
         use super::palette::*;
-        let x = HUD_MARGIN;
-        let y = rx.h - HUD_H - HUD_MARGIN;
-        let w = rx.w - 2 * HUD_MARGIN;
-        cv.round(rect(x, y, w, HUD_H), 11, PARCHMENT);
-        cv.round_outline(rect(x, y, w, HUD_H), 11, INK);
+        let pill = hud_box(rx.w, rx.h);
+        let (x, y, w) = (pill.top_left.x, pill.top_left.y, pill.size.width as i32);
+        cv.round(pill, 11, PARCHMENT);
+        cv.round_outline(pill, 11, INK);
         cv.text(rx.t(Msg::DetourTitle), Point::new(rx.w / 2, y + 7), Font::Label, TextAlign::Center, INK);
 
         if self.error {
