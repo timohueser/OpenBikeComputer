@@ -34,19 +34,19 @@ db.put('catalog', 'current', { sourceSha, updatedAt: new Date().toISOString(), c
 const requirements: Requirement[] = [
   { id: 'SYS-039', title: 'Map orientation', statement: 'The user shall be able to choose heading-up or north-up map orientation. The choice shall be persistent through restarts.', group: 'Map display on device', active: true, tests: [] },
   { id: 'SYS-030', title: 'Return to position', statement: 'The user shall be able to exit pan/zoom mode with one action. This shall restore following mode and center the map back on the users position given a GPS fix is available.', group: 'Map display on device', active: true,
-    tests: [{ id: 'manual-return', kind: 'manual', title: 'DEMO ONLY: ride check for return to position', steps: '1. Start a ride with a position fix.\n2. Pan the map away from the position.\n3. Use the Back action once.', expected: 'The map follows the position again and centers on it.', inputs: [] }] }
+    tests: [{ id: 'manual-return', kind: 'manual', manualReason: 'human', title: 'DEMO ONLY: ride check for return to position', steps: '1. Start a ride with a position fix.\n2. Pan the map away from the position.\n3. Use the Back action once.', expected: 'The map follows the position again and centers on it.', inputs: [] }] }
 ];
 const plans: CoveragePlan[] = [
   { rationale: 'Projection tests cover both render modes. They do not prove that a user can select a mode or retain that choice after restart.', criteria: [
-    { id: 'north-up', statement: 'The map can render north-up.', evidence: [{ caseId: cases[0].id, rationale: 'Checks the default viewport angle and projection of a point due north.' }], gap: '' },
-    { id: 'heading-up', statement: 'The map can render heading-up.', evidence: [{ caseId: cases[1].id, rationale: 'Checks that the current course projects toward the top of the screen.' }], gap: '' },
-    { id: 'selection', statement: 'The user can select either orientation.', evidence: [{ caseId: cases[4].id, rationale: 'Illustrative assertion: an old smoke test that only opens the map. It does not exercise the orientation control.' }], gap: 'Replace the smoke test with a real user-interaction test for both choices.', next: { level: 'system', summary: 'Drive the orientation control in the simulator and assert the map rotates for both choices.' } },
+    { id: 'north-up', statement: 'The map can render north-up.', evidence: [{ caseId: cases[0].id, level: 'unit', rationale: 'Checks the default viewport angle and projection of a point due north.' }], gap: '' },
+    { id: 'heading-up', statement: 'The map can render heading-up.', evidence: [{ caseId: cases[1].id, level: 'unit', rationale: 'Checks that the current course projects toward the top of the screen.' }], gap: '' },
+    { id: 'selection', statement: 'The user can select either orientation.', evidence: [{ caseId: cases[4].id, level: 'system', rationale: 'Illustrative assertion: an old smoke test that only opens the map. It does not exercise the orientation control.' }], gap: 'Replace the smoke test with a real user-interaction test for both choices.', next: { level: 'system', summary: 'Drive the orientation control in the simulator and assert the map rotates for both choices.' } },
     { id: 'persistence', statement: 'The selected orientation survives a restart.', evidence: [], gap: 'Add a save/reload test that also starts a ride and checks that it respects the saved choice.' }
   ] },
   { rationale: 'The shared application test exercises the single Back action, the resulting Follow mode, and recentering on a valid position fix. A ride check confirms the same behavior on the device.', criteria: [
     { id: 'return', statement: 'One action exits pan/zoom, restores following, and recenters on the available fix.', evidence: [
-      { caseId: cases[2].id, rationale: 'Runs the Back gesture and asserts the mode and camera position afterwards.' },
-      { testId: 'manual-return', rationale: 'Confirms the same behavior on the device, with a real position fix.' }
+      { caseId: cases[2].id, level: 'integration', rationale: 'Runs the Back gesture and asserts the mode and camera position afterwards.' },
+      { testId: 'manual-return', level: 'system', rationale: 'Confirms the same behavior on the device, with a real position fix.' }
     ], gap: '' }
   ] }
 ];
@@ -65,14 +65,14 @@ const candidate: Candidate = { id: 'coverage-demo', version: 'v0.0.0-coverage-de
   results: cases.map(c => ({ caseId: c.id, status: 'pass', detail: 'Simulated result for the local coverage demonstration. This is not release evidence.' })), manualRuns: [], assets: [] };
 db.put('candidate', candidate.id, candidate);
 // An agent replaces obsolete evidence in an accepted partial plan. The omitted test is unlinked on approval.
-plans[0].criteria[2].evidence = [{ caseId: cases[3].id, rationale: 'Illustrative assertion: choose each orientation through the control and inspect the map. This test is invented for the demo, not production evidence.' }];
+plans[0].criteria[2].evidence = [{ caseId: cases[3].id, level: 'system', rationale: 'Illustrative assertion: choose each orientation through the control and inspect the map. This test is invented for the demo, not production evidence.' }];
 plans[0].criteria[2].gap = '';
 delete plans[0].criteria[2].next;
-plans[0].criteria[3].evidence = [{ testId: 'ride-restart', rationale: 'Confirms on the device that the choice is still active after a power cycle.' }];
+plans[0].criteria[3].evidence = [{ testId: 'ride-restart', level: 'system', rationale: 'Confirms on the device that the choice is still active after a power cycle.' }];
 plans[0].criteria[3].gap = 'No automated check yet; the ride check covers it until one exists.';
 plans[0].criteria[3].next = { level: 'unit', summary: 'Persist the choice to the settings store, reload, and assert the stored value.' };
 plans[0].rationale = 'Demo revision: replace the obsolete smoke test with evidence for user selection and add a ride check for persistence. Coverage stays partial.';
-await propose(0, [{ id: 'ride-restart', kind: 'manual', title: 'DEMO ONLY: ride check after restart', steps: '1. Set heading-up.\n2. Power the device off and on.\n3. Start a ride.', expected: 'The map stays heading-up.', inputs: [] }]);
+await propose(0, [{ id: 'ride-restart', kind: 'manual', manualReason: 'until-automated', title: 'DEMO ONLY: ride check after restart', steps: '1. Set heading-up.\n2. Power the device off and on.\n3. Start a ride.', expected: 'The map stays heading-up.', inputs: [] }]);
 // A requirement edit keeps its plan and is approved by the save; the candidate above stays frozen.
 const changed = db.latestRevision();
 changed.requirements[1].statement += ' Returning shall also preserve the selected zoom level. (Demo addition.)';

@@ -119,6 +119,14 @@ class ValidationTest(unittest.TestCase):
         gapless = self.entry(criteria=[{"id": "a", "statement": "x", "evidence": [], "gap": "",
                                         "next": {"level": "unit", "summary": "y"}}])
         self.assertIn("records no gap", " ".join(self.check(gapless)))
+        # Evidence carries the same level vocabulary, and saying nothing is allowed but noted.
+        wrong = self.entry(criteria=[{"id": "a", "statement": "x", "gap": "",
+                                      "evidence": [{"caseId": "map::north_up", "rationale": "r", "level": "smoke"}]}])
+        self.assertIn("evidence at level 'smoke'", " ".join(self.check(wrong)))
+        silent = self.entry(criteria=[{"id": "a", "statement": "x", "gap": "",
+                                       "evidence": [{"caseId": "map::north_up", "rationale": "r"}]}])
+        self.assertEqual(self.check(silent), [])
+        self.assertIn("no level", " ".join(self.notes(silent)))
 
     def test_evidence_must_resolve_and_name_exactly_one_test(self):
         unknown = self.entry(criteria=[{"id": "a", "statement": "x", "evidence": [{"caseId": "nope", "rationale": "r"}], "gap": ""}])

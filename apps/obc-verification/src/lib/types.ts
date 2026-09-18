@@ -12,13 +12,29 @@ export interface VerificationTest {
   steps?: string;
   expected?: string;
   inputs: Attachment[];
+  /** Manual tests only: `human` for a test a person must always run, `until-automated` for one that
+   *  waits for an automated test. Absent when it is not set. */
+  manualReason?: ManualReason;
 }
-export interface CoverageEvidence { caseId?: string; testId?: string; rationale: string }
+/** One cited test, and what the plan says it proves. `level` is the scope of that test. It is
+ *  optional, because plans written before it existed do not have one. */
+export interface CoverageEvidence { caseId?: string; testId?: string; rationale: string; level?: TestLevel }
 /** How much of the product a test exercises: one module, several together, or the assembled product.
  *  It says nothing about who runs the test — automated evidence cites a catalogue case, and manual
  *  evidence cites a procedure, so the plan already carries that. */
 export type TestLevel = 'unit' | 'integration' | 'system';
 export const TEST_LEVELS: TestLevel[] = ['unit', 'integration', 'system'];
+/** The type of a manual test. Automated tests have none. */
+export type ManualReason = 'human' | 'until-automated';
+export const MANUAL_REASONS: ManualReason[] = ['human', 'until-automated'];
+/** One short description per kind, for the panel that any pill opens. */
+export const TEST_KIND_NOTES: { key: string; title: string; note: string }[] = [
+  { key: 'unit', title: 'Unit', note: 'One module, on a CI runner. It shows that the module is correct on its own.' },
+  { key: 'integration', title: 'Integration', note: 'Two or more modules together, on a CI runner or a hardware rig. It shows that the modules work correctly together.' },
+  { key: 'system', title: 'System', note: 'The complete product, on real or simulated hardware. It shows that the product does what the requirement states.' },
+  { key: 'human', title: 'Human check', note: 'A person must run this test. For example, a real phone with a real device, or a check that needs human judgement. A release runs these tests by hand.' },
+  { key: 'until-automated', title: 'Until automated', note: 'A person runs this test because no automated test exists yet. Replace it when one is written.' },
+];
 /** The test to build for a gap: one level, one sentence. A criterion with no gap has nothing to build. */
 export interface ProposedTest { level: TestLevel; summary: string }
 export interface AcceptanceCriterion { id: string; statement: string; evidence: CoverageEvidence[]; gap: string; next?: ProposedTest }
