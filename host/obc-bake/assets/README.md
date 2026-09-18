@@ -137,16 +137,16 @@ not, and the version byte (`0x0D` → `0x0E`) is what to check.
 
 ## Current OBCM v17 source
 
-The current preview was packed on 2026-09-16 with the current routing preset,
-the canonical bbox above, and no terrain. The cached Geofabrik Freiburg source
-has snapshot metadata `2026-08-04`, Last-Modified `2026-08-04T03:56:44Z`, size
-158362659 bytes, and SHA-256
+The preview was packed on 2026-09-18 with Bikepacking v10, the canonical bbox
+above, `--no-land`, and no terrain. This refresh includes the current style ID
+assignment and the fourteen-level detail ladder. The cached Geofabrik Freiburg
+source has replication timestamp `2026-08-03T20:21:36Z`, Last-Modified
+`2026-08-04T03:56:44Z`, size 158362659 bytes, and SHA-256
 `1f1928036dbed787f42b3176d5bca8f4d213c64a936fa86d242d3dc993300707`.
 The source URL is
 `https://download.geofabrik.de/europe/germany/baden-wuerttemberg/freiburg-regbez-latest.osm.pbf`.
-The source file was already cached locally; the repack did not need a download.
-The output is 483840 bytes. It uses the OBCM v17 header and an empty peak section.
-The map was packed with network access disabled. Its SHA-256 is
-`8b9060985dcc26f18a84f969389e664a5a4e32a2b8e720ededc3bc6a0643642c`.
-The 64-byte service identity and approach records remain unchanged. The source date differs from the prior preview; tests check distinct,
-deterministic skin renders and do not use a fixed golden PNG.
+The repack used the cached source without a download.
+The output is 477184 bytes, with an OBCM v17 header and an empty peak section.
+Its SHA-256 is `4dcdc11168aa1d5076ef0dea3a78607230ca3e29a954a1fb32893537a8f206a4`.
+The tests check distinct, deterministic skin renders and residential coverage;
+they do not use a fixed golden PNG.
