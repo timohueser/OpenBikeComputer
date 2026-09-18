@@ -6,7 +6,8 @@
 use crate::common::CountingSource;
 use obc_formats::obcm::{
     SettlementClass, SETTLEMENT_CATEGORY_ID, SETTLEMENT_POPULATION_UNKNOWN, SETTLEMENT_SUBTYPE_CITY,
-    SETTLEMENT_SUBTYPE_HAMLET, SETTLEMENT_SUBTYPE_TOWN, SETTLEMENT_SUBTYPE_VILLAGE,
+    SETTLEMENT_SUBTYPE_HAMLET, SETTLEMENT_SUBTYPE_TOWN, SETTLEMENT_SUBTYPE_VILLAGE, SUMMIT_CATEGORY_ID,
+    SUMMIT_SUBTYPE_ID,
 };
 use obc_map_scene::BBox;
 use obc_reader::{MapCache, MapTables, Reader, Settlement, SliceSource};
@@ -43,20 +44,25 @@ fn record_at(map: &[u8], name: &str) -> usize {
     map.windows(name.len()).position(|w| w == name.as_bytes()).expect("stored name") - 10
 }
 
+/// Summits beside settlements is the directory a real v18 map has: nine entries, which is
+/// `POI_MAX_CATEGORIES`. The summit category must not reach this query.
 #[test]
 fn settlements_inside_the_view_are_visited() {
     let map = build_poi_map(
         BBOX,
         CS,
-        &[(
-            SETTLEMENT_CATEGORY_ID,
-            vec![
-                spec(43_700_000, 7_100_000, SETTLEMENT_SUBTYPE_CITY, "Freiburg", 2_300),
-                spec(43_710_000, 7_110_000, SETTLEMENT_SUBTYPE_TOWN, "Emmendingen", 280),
-                spec(43_720_000, 7_120_000, SETTLEMENT_SUBTYPE_VILLAGE, "Denzlingen", 130),
-                spec(43_730_000, 7_130_000, SETTLEMENT_SUBTYPE_HAMLET, "Hofsgrund", 3),
-            ],
-        )],
+        &[
+            (
+                SETTLEMENT_CATEGORY_ID,
+                vec![
+                    spec(43_700_000, 7_100_000, SETTLEMENT_SUBTYPE_CITY, "Freiburg", 2_300),
+                    spec(43_710_000, 7_110_000, SETTLEMENT_SUBTYPE_TOWN, "Emmendingen", 280),
+                    spec(43_720_000, 7_120_000, SETTLEMENT_SUBTYPE_VILLAGE, "Denzlingen", 130),
+                    spec(43_730_000, 7_130_000, SETTLEMENT_SUBTYPE_HAMLET, "Hofsgrund", 3),
+                ],
+            ),
+            (SUMMIT_CATEGORY_ID, vec![spec(43_740_000, 7_140_000, SUMMIT_SUBTYPE_ID, "Schauinsland", 1_284)]),
+        ],
     );
     let mut found: Vec<_> = settlements(&map, &WHOLE_MAP)
         .into_iter()

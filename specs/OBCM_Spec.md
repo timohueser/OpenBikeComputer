@@ -802,10 +802,11 @@ style remain valid.
 ## 7. POI Section (v7)
 
 Point-of-interest features the packer classifies from OSM nodes and closed-way
-centroids (see the category table below). Unlike geometry, POIs are **not**
-rendered on the map; the device surfaces them as a category → nearest-list
-browser. They are indexed for a nearest-N query, not a viewport walk, so each
-category gets its own small quadtree over 64-byte point records.
+centroids (see the category table below). The device surfaces the service
+categories as a category → nearest-list browser and does not render them on the
+map; they are indexed for a nearest-N query. The optional settlement category 9
+(§7.4) is different: the device walks it by viewport and draws its names on the
+map. Each category gets its own small quadtree over 64-byte point records.
 
 The section is reached from `POI Section Offset` (header offset 32) and is
 **always present**: a map with no POIs writes a directory of seven empty service
@@ -816,8 +817,8 @@ the trailing **hours-pool section** (§7.5), reached from the directory's
 ### 7.1 POI Directory
 
 ```
-uint8   Category Count            (7, plus the optional landmark and settlement
-                                  categories: 7, 8, 9 or 10)
+uint8   Category Count            (7, 8 or 9: the seven service categories plus the
+                                  optional landmark and settlement categories)
 uint16  Chunk Size                (POI chunk capacity in bytes — the packer writes 512)
 per category (Category Count entries, 13 bytes each):
   uint8   Category ID
@@ -918,8 +919,9 @@ Settlements (subtypes 21 to 24) keep their UTF-8 name, case and diacritics, unde
 rules as summits. The name must not be empty, must hold no control character, and must end on
 a complete character inside the 24-byte field. The trailer is the population in hundreds of
 people, as an unsigned little-endian value. `0xFFFF` means unknown. The producer saturates a
-larger population at `0xFFFE`. Assemblers keep this trailer and do not put settlements in the
-hours pool.
+larger population at `0xFFFE`. A settlement has no routable approach, so the producer writes all
+20 approach and reserved bytes as zero. Assemblers keep this trailer and do not put settlements in
+the hours pool.
 
 ### 7.4 Canonical category / subtype table (normative)
 

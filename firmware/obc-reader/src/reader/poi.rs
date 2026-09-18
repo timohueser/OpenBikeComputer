@@ -42,7 +42,7 @@ const POI_SCAN_WINDOW: usize = 512;
 /// reuses the same convention.
 #[derive(Debug, Clone, Copy)]
 pub struct PoiCatEntry {
-    /// Canonical category id (services 1..6, summit landmarks 7; spec §7.4).
+    /// Canonical category id (services 1..6 and 8, summit landmarks 7, settlements 9; spec §7.4).
     pub category_id: u8,
     /// Byte offset to this category's quadtree index.
     pub index_offset: u64,

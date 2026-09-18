@@ -411,10 +411,9 @@ pub const SETTLEMENT_SUBTYPE_CITY: u8 = 21;
 pub const SETTLEMENT_SUBTYPE_TOWN: u8 = 22;
 pub const SETTLEMENT_SUBTYPE_VILLAGE: u8 = 23;
 pub const SETTLEMENT_SUBTYPE_HAMLET: u8 = 24;
-/// The record payload when the source gives no population.
+/// The record payload when the source gives no population. Every other value is a population in
+/// hundreds of people, so `0xFFFE` is the largest the payload can hold.
 pub const SETTLEMENT_POPULATION_UNKNOWN: u16 = 0xFFFF;
-/// The largest population the payload can hold. The payload counts hundreds of people.
-pub const SETTLEMENT_POPULATION_MAX: u16 = 0xFFFE;
 pub const POI_RECORD_LEN: usize = 64;
 /// OSM identity: top two bits are node=1, way=2, relation=3; lower 62 bits are the ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]

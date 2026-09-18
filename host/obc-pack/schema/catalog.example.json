@@ -339,8 +339,8 @@
       "cell_count": 1,
       "known_empty_count": 0,
       "bytes": 590,
-      "sha256": "0c2e9acf192b2d1b553b094e6c85bb26490f0ffb63dedac84dd86f4a948d7ec3",
-      "url": "https://maps.example.org/catalog/cells/coarse/index.0c2e9acf192b2d1b553b094e6c85bb26490f0ffb63dedac84dd86f4a948d7ec3.json"
+      "sha256": "be0a41631b6d1ea99fb1e927f2ae0469a4dfabe8555d07b8e83974aeb4f2c141",
+      "url": "https://maps.example.org/catalog/cells/coarse/index.be0a41631b6d1ea99fb1e927f2ae0469a4dfabe8555d07b8e83974aeb4f2c141.json"
     },
     {
       "band": "mid",
@@ -348,8 +348,8 @@
       "cell_count": 1,
       "known_empty_count": 0,
       "bytes": 584,
-      "sha256": "6a595e725cd2b0e0af5fdf1fdb59ffc28fe732c1a02a99ddc07ef719f5e95c27",
-      "url": "https://maps.example.org/catalog/cells/mid/index.6a595e725cd2b0e0af5fdf1fdb59ffc28fe732c1a02a99ddc07ef719f5e95c27.json"
+      "sha256": "4f58d4edd7314584fd00b8c052274ed12907b6f689225daa9c82014b5bf7ad9f",
+      "url": "https://maps.example.org/catalog/cells/mid/index.4f58d4edd7314584fd00b8c052274ed12907b6f689225daa9c82014b5bf7ad9f.json"
     },
     {
       "band": "fine",
@@ -357,8 +357,8 @@
       "cell_count": 2,
       "known_empty_count": 1,
       "bytes": 1414,
-      "sha256": "adcf8b198c6109cbade29237b45ae7888263fb3da7ddec7497360f5b7ee1676c",
-      "url": "https://maps.example.org/catalog/cells/fine/index.adcf8b198c6109cbade29237b45ae7888263fb3da7ddec7497360f5b7ee1676c.json"
+      "sha256": "8712a34c58297acd7b888c2a1ec752890db3dc2714c7a19f58f965168af3a454",
+      "url": "https://maps.example.org/catalog/cells/fine/index.8712a34c58297acd7b888c2a1ec752890db3dc2714c7a19f58f965168af3a454.json"
     },
     {
       "band": "network",
@@ -366,8 +366,8 @@
       "cell_count": 2,
       "known_empty_count": 0,
       "bytes": 1072,
-      "sha256": "e65634e12b91ab121f25ebbf1367772f240145b155f889fda6673a3d6f7356ad",
-      "url": "https://maps.example.org/catalog/cells/network/index.e65634e12b91ab121f25ebbf1367772f240145b155f889fda6673a3d6f7356ad.json"
+      "sha256": "fe35750bb79659042727e7ce46d7e31537b5aa319e99acef26e617bf78e3c98c",
+      "url": "https://maps.example.org/catalog/cells/network/index.fe35750bb79659042727e7ce46d7e31537b5aa319e99acef26e617bf78e3c98c.json"
     }
   ],
   "terrain": {
