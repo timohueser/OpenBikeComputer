@@ -1,12 +1,15 @@
 import hashlib
 import re
+import struct
 import sys
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
+from ui_frames import compare as compare_tool  # noqa: E402
 from ui_frames import manifest as manifest_tool  # noqa: E402
 from ui_frames import table as table_tool  # noqa: E402
 
@@ -214,3 +217,113 @@ class CommittedTableTests(unittest.TestCase):
             [],
             "a screen listed as uncovered now has a frame — remove it from UNCOVERED_SCREENS",
         )
+
+
+def paeth(a: int, b: int, c: int) -> int:
+    p = a + b - c
+    pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+    return a if pa <= pb and pa <= pc else (b if pb <= pc else c)
+
+
+def filtered(kind: int, line: bytes, previous: bytes) -> bytearray:
+    """One scanline as a PNG encoder writes it, under filter `kind`."""
+    out = bytearray()
+    for at, value in enumerate(line):
+        a = line[at - 3] if at >= 3 else 0
+        b = previous[at]
+        c = previous[at - 3] if at >= 3 else 0
+        predictor = (0, a, b, (a + b) // 2, paeth(a, b, c))[kind]
+        out.append((value - predictor) & 0xFF)
+    return out
+
+
+def chunk(kind: bytes, body: bytes) -> bytes:
+    return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+
+def encode(width: int, height: int, rgb: bytes, filters: list[int], depth=8, colour=2, interlace=0) -> bytes:
+    """A PNG, built here rather than with an imaging library the CI runners do not have."""
+    stride, raw, previous = width * 3, bytearray(), bytes(width * 3)
+    for row, kind in enumerate(filters):
+        line = rgb[row * stride : (row + 1) * stride]
+        raw.append(kind)
+        raw += filtered(kind, line, previous)
+        previous = line
+    header = struct.pack(">IIBBBBB", width, height, depth, colour, 0, 0, interlace)
+    body = chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(bytes(raw))) + chunk(b"IEND", b"")
+    return compare_tool.SIGNATURE + body
+
+
+def noise(count: int, seed: int = 0x2A) -> bytes:
+    """Bytes with no run and no ramp, so the four predictors disagree everywhere."""
+    state, out = seed, bytearray()
+    for _ in range(count):
+        state = (state * 1103515245 + 12345) & 0x7FFFFFFF
+        out.append((state >> 16) & 0xFF)
+    return bytes(out)
+
+
+class CompareTests(unittest.TestCase):
+    """The PNG reader behind `--vs`. Its number is read *instead of* the picture — `0.00%` means
+    nobody opens the frame — so a predictor that silently decodes to the wrong bytes is the failure
+    here that costs the most."""
+
+    WIDTH, HEIGHT = 5, 4
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.rgb = noise(self.WIDTH * self.HEIGHT * 3)
+        self.addCleanup(self._tmp.cleanup)
+
+    def write(self, name: str, rgb: bytes, filters: list[int], **shape) -> Path:
+        path = self.root / name
+        path.write_bytes(encode(self.WIDTH, self.HEIGHT, rgb, filters, **shape))
+        return path
+
+    def test_every_filter_predictor_round_trips(self):
+        written = {}
+        for kind in range(5):
+            path = self.write(f"filter-{kind}.png", self.rgb, [kind] * self.HEIGHT)
+            width, height, pixels = compare_tool.pixels(path)
+            self.assertEqual((width, height), (self.WIDTH, self.HEIGHT))
+            self.assertEqual(pixels, self.rgb, f"filter {kind} does not round trip")
+            written[kind] = path.read_bytes()
+        self.assertEqual(
+            len(set(written.values())), 5, "this image does not separate the five filters, so it proves nothing"
+        )
+
+    def test_a_frame_with_a_different_filter_on_each_row_round_trips(self):
+        """What a real encoder writes: it picks a filter for each row."""
+        path = self.write("mixed.png", self.rgb, [3, 1, 4, 2])
+        self.assertEqual(compare_tool.pixels(path)[2], self.rgb)
+
+    def test_a_file_that_is_not_a_png_is_refused(self):
+        path = self.root / "not-a-frame.png"
+        path.write_bytes(b"GIF89a" + noise(64))
+        with self.assertRaisesRegex(ValueError, "not a PNG"):
+            compare_tool.pixels(path)
+
+    def test_a_png_that_is_not_plain_8_bit_rgb_is_refused(self):
+        for name, shape in (("deep", {"depth": 16}), ("alpha", {"colour": 6}), ("interlaced", {"interlace": 1})):
+            path = self.write(f"{name}.png", self.rgb, [0] * self.HEIGHT, **shape)
+            with self.assertRaisesRegex(ValueError, "plain 8-bit RGB"):
+                compare_tool.pixels(path)
+
+    def test_two_frames_of_different_sizes_are_refused(self):
+        first = self.write("first.png", self.rgb, [0] * self.HEIGHT)
+        smaller = self.root / "smaller.png"
+        smaller.write_bytes(encode(2, 2, noise(12), [0, 0]))
+        with self.assertRaises(ValueError):
+            compare_tool.changed(first, smaller)
+
+    def test_changed_counts_pixels_and_not_bytes(self):
+        """Two bytes of one pixel and one byte of another are two changed pixels, not three."""
+        first = self.write("head.png", self.rgb, [2] * self.HEIGHT)
+        self.assertEqual(compare_tool.changed(first, first), (0, self.WIDTH * self.HEIGHT))
+        moved = bytearray(self.rgb)
+        moved[0] ^= 0xFF
+        moved[1] ^= 0xFF
+        moved[14] ^= 0xFF
+        second = self.write("base.png", bytes(moved), [4] * self.HEIGHT)
+        self.assertEqual(compare_tool.changed(first, second), (2, self.WIDTH * self.HEIGHT))
