@@ -6,7 +6,7 @@
   extraction, name folding, and the dedup pair. Coordinates sit near Freiburg on
   a tidy grid; only tags + relative distances matter.
 
-  Expected result (any config — POI extraction is config-free), 5 POIs kept,
+  Expected result (any config — POI extraction is config-free), 12 POIs kept,
   2 dedup-dropped, verified by ingest::tests::poi_fixture_end_to_end:
     N1 (501) -> water/drinking_water, "Marktbrunnen", node        KEPT
     N2 (502) -> resupply/supermarket, "Edeka Mueller" (folded ü)  KEPT (node
@@ -20,7 +20,24 @@
                  (47.9901, 7.8601) inside the N2 pair             DROPPED (dedup)
     W2 (602) -> campsite/camp_site closed way, unnamed,
                  centroid (48.0002, 7.8702)                       KEPT
-  Way nodes 511-514 / 521-524 are untagged geometry only.
+
+  Settlements (subtypes 21-24, category 9). The name keeps its UTF-8 spelling
+  and the population is stored as hundreds of people:
+    N7 (530) -> settlement/city, "Testville", population 250000   KEPT, pop 2500
+    N8 (531) -> settlement/town, "Kleinstadt", no population      KEPT, unknown
+    N9 (532) -> settlement/village, "Grüßau"                      KEPT, the font
+                 holds these characters, so nothing folds
+    N10 (533) -> settlement/hamlet, a 33-byte name                KEPT, cut to
+                 "A very long settlement n" on a character boundary
+    N11 (534) -> place=village, "Мирный", no name:en              (no candidate:
+                 the fold gives nothing and there is no fall-back)
+    N12 (535) -> settlement/village, "東京" + name:en=Tokyo       KEPT as "Tokyo"
+    N13 (536) -> place=village with no name                       (no candidate)
+    N14 (537) -> resupply/bakery, "Baeckerdorf" (folded ä)        KEPT: the
+                 service tag wins over the place tag
+    W3 (603) -> settlement/village, "Ringdorf" closed way,
+                 centroid (47.9502, 7.9002)                       KEPT
+  Way nodes 511-514 / 521-524 / 541-544 are untagged geometry only.
 -->
 <osm version="0.6" generator="hand-authored-obcm-poi-fixture">
   <!-- N1: named water node, isolated -->
@@ -61,6 +78,54 @@
   <node id="523" version="1" lat="48.0004" lon="7.8704"/>
   <node id="524" version="1" lat="48.0004" lon="7.8700"/>
 
+  <!-- N7: city with a population -->
+  <node id="530" version="1" lat="47.9600" lon="7.9000">
+    <tag k="place" v="city"/>
+    <tag k="name" v="Testville"/>
+    <tag k="population" v="250000"/>
+  </node>
+  <!-- N8: town without a population -->
+  <node id="531" version="1" lat="47.9590" lon="7.9000">
+    <tag k="place" v="town"/>
+    <tag k="name" v="Kleinstadt"/>
+  </node>
+  <!-- N9: diacritics the device font holds -->
+  <node id="532" version="1" lat="47.9580" lon="7.9000">
+    <tag k="place" v="village"/>
+    <tag k="name" v="Grüßau"/>
+  </node>
+  <!-- N10: 33 bytes of name -> cut to 24 -->
+  <node id="533" version="1" lat="47.9570" lon="7.9000">
+    <tag k="place" v="hamlet"/>
+    <tag k="name" v="A very long settlement name indeed"/>
+  </node>
+  <!-- N11: Cyrillic with no fall-back -> dropped -->
+  <node id="534" version="1" lat="47.9560" lon="7.9000">
+    <tag k="place" v="village"/>
+    <tag k="name" v="Мирный"/>
+  </node>
+  <!-- N12: CJK with an English name -> the fall-back -->
+  <node id="535" version="1" lat="47.9550" lon="7.9000">
+    <tag k="place" v="village"/>
+    <tag k="name" v="東京"/>
+    <tag k="name:en" v="Tokyo"/>
+  </node>
+  <!-- N13: no name -> dropped -->
+  <node id="536" version="1" lat="47.9540" lon="7.9000">
+    <tag k="place" v="village"/>
+  </node>
+  <!-- N14: a service tag beside a place tag -> the service tag wins -->
+  <node id="537" version="1" lat="47.9530" lon="7.9000">
+    <tag k="place" v="village"/>
+    <tag k="shop" v="bakery"/>
+    <tag k="name" v="Bäckerdorf"/>
+  </node>
+  <!-- W3 ring: village mapped as an area around (47.9502, 7.9002) -->
+  <node id="541" version="1" lat="47.9500" lon="7.9000"/>
+  <node id="542" version="1" lat="47.9500" lon="7.9004"/>
+  <node id="543" version="1" lat="47.9504" lon="7.9004"/>
+  <node id="544" version="1" lat="47.9504" lon="7.9000"/>
+
   <!-- W1: closed supermarket way, same tags as N2 (OSM double-mapping) -->
   <way id="601" version="1">
     <nd ref="511"/><nd ref="512"/><nd ref="513"/><nd ref="514"/><nd ref="511"/>
@@ -71,5 +136,11 @@
   <way id="602" version="1">
     <nd ref="521"/><nd ref="522"/><nd ref="523"/><nd ref="524"/><nd ref="521"/>
     <tag k="tourism" v="camp_site"/>
+  </way>
+  <!-- W3: closed village way -> centroid POI, like any settlement mapped as an area -->
+  <way id="603" version="1">
+    <nd ref="541"/><nd ref="542"/><nd ref="543"/><nd ref="544"/><nd ref="541"/>
+    <tag k="place" v="village"/>
+    <tag k="name" v="Ringdorf"/>
   </way>
 </osm>

@@ -189,6 +189,7 @@ fn poi(subtype: u8, lat: i64, lon: i64, name: &str) -> Poi {
         from_node: true,
         hours: None,
         elevation_m: None,
+        population: None,
     }
 }
 

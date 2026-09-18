@@ -13,7 +13,11 @@
 
 use std::collections::HashMap;
 
-use obc_formats::obcm::{poi_directory_category_of, poi_label_of, POI_NAME_LEN, SUMMIT_SUBTYPE_ID};
+use obc_formats::obcm::{
+    poi_directory_category_of, poi_label_of, settlement_class_of, POI_NAME_LEN, SETTLEMENT_POPULATION_MAX,
+    SETTLEMENT_POPULATION_UNKNOWN, SETTLEMENT_SUBTYPE_CITY, SETTLEMENT_SUBTYPE_HAMLET, SETTLEMENT_SUBTYPE_TOWN,
+    SETTLEMENT_SUBTYPE_VILLAGE, SUMMIT_SUBTYPE_ID,
+};
 
 use crate::hours::Schedule;
 
@@ -53,7 +57,7 @@ const fn kind(subtype: u8, key: &'static str, value: &'static str) -> PoiKind {
 /// append-only, never renumber). The subtype→category/label half of the table lives
 /// in `obc-formats` (spec §7.4); this half is the OSM tag mapping the
 /// packer owns. First match in table order wins (see [`classify`]).
-pub const POI_TABLE: [PoiKind; 20] = [
+pub const POI_TABLE: [PoiKind; 24] = [
     kind(1, "amenity", "drinking_water"),
     kind(2, "natural", "spring"),
     kind(3, "man_made", "water_tap"),
@@ -74,11 +78,27 @@ pub const POI_TABLE: [PoiKind; 20] = [
     kind(18, "shop", "bicycle"),
     kind(SUMMIT_SUBTYPE_ID, "natural", "peak"),
     kind(20, "railway", "station"),
+    // Settlements come last: a node can carry both `place=village` and a service tag, and the
+    // service tag is the one the rider looks for.
+    kind(SETTLEMENT_SUBTYPE_CITY, "place", "city"),
+    kind(SETTLEMENT_SUBTYPE_TOWN, "place", "town"),
+    kind(SETTLEMENT_SUBTYPE_VILLAGE, "place", "village"),
+    kind(SETTLEMENT_SUBTYPE_HAMLET, "place", "hamlet"),
 ];
 
 /// Category display names for the pack log, indexed by category id (0 unused).
-pub const CATEGORY_NAMES: [&str; 9] =
-    ["", "water", "campsite", "accommodation", "resupply", "pharmacy", "bike shop", "summit", "train station"];
+pub const CATEGORY_NAMES: [&str; 10] = [
+    "",
+    "water",
+    "campsite",
+    "accommodation",
+    "resupply",
+    "pharmacy",
+    "bike shop",
+    "summit",
+    "train station",
+    "settlement",
+];
 
 /// A classified POI candidate. Coordinates are µdeg (`round(deg * 1e6)`), the
 /// same grid the serializer's chunk coords live on.
@@ -102,6 +122,8 @@ pub struct Poi {
     pub hours: Option<Schedule>,
     /// Summit height in metres, from OSM `ele` or the shared DEM when the tag is absent.
     pub elevation_m: Option<i16>,
+    /// Settlement population in whole people, when the source gives a usable value.
+    pub population: Option<u32>,
 }
 
 /// Explicit source links for offline landmark preparation, including entities with no service category.
@@ -137,6 +159,7 @@ pub(crate) fn classify_linked<'a>(
             name: tags.iter().find(|(key, _)| *key == "name").and_then(|(_, value)| normalize_name(value)),
             raw_hours: tags.iter().find(|(key, _)| *key == "opening_hours").map(|(_, value)| *value),
             elevation_m: None,
+            population: None,
         })
     })
 }
@@ -153,6 +176,7 @@ pub struct Classification<'a> {
     pub name: Option<String>,
     pub raw_hours: Option<&'a str>,
     pub elevation_m: Option<i16>,
+    pub population: Option<u32>,
 }
 
 /// Classify a tag set against [`POI_TABLE`] — first match in **table order**
@@ -167,11 +191,27 @@ where
 {
     let mut best: Option<usize> = None;
     let mut raw_name: Option<&str> = None;
+    let mut name_en: Option<&str> = None;
+    let mut int_name: Option<&str> = None;
     let mut raw_hours: Option<&str> = None;
     let mut elevation_m = None;
+    let mut population = None;
     for (k, v) in tags {
         if k == "name" {
             raw_name = Some(v);
+            continue;
+        }
+        if k == "name:en" {
+            name_en = Some(v);
+            continue;
+        }
+        if k == "int_name" {
+            int_name = Some(v);
+            continue;
+        }
+        if k == "population" {
+            // Free text in OSM: keep it only when the whole value is a number.
+            population = v.split_whitespace().collect::<String>().parse::<u32>().ok();
             continue;
         }
         if k == "opening_hours" {
@@ -196,20 +236,58 @@ where
     }
     let subtype = POI_TABLE[best?].subtype;
     if subtype == SUMMIT_SUBTYPE_ID {
-        let name = raw_name?.trim();
-        let mut end = name.len().min(POI_NAME_LEN);
-        while !name.is_char_boundary(end) {
-            end -= 1;
-        }
-        let name = &name[..end];
-        return (!name.is_empty() && !name.chars().any(char::is_control)).then(|| Classification {
-            subtype,
-            name: Some(name.into()),
-            raw_hours: None,
-            elevation_m,
-        });
+        let name = utf8_record_name(raw_name?)?;
+        return Some(Classification { subtype, name: Some(name), raw_hours: None, elevation_m, population: None });
     }
-    Some(Classification { subtype, name: raw_name.and_then(normalize_name), raw_hours, elevation_m: None })
+    if settlement_class_of(subtype).is_some() {
+        let name = utf8_record_name(&pick_settlement_name(raw_name?, name_en, int_name)?)?;
+        return Some(Classification { subtype, name: Some(name), raw_hours: None, elevation_m: None, population });
+    }
+    Some(Classification {
+        subtype,
+        name: raw_name.and_then(normalize_name),
+        raw_hours,
+        elevation_m: None,
+        population: None,
+    })
+}
+
+/// The §7 record payload of a settlement: the population in hundreds of people, saturating, or
+/// [`SETTLEMENT_POPULATION_UNKNOWN`] when the source gave no usable value. The clamp happens before
+/// the cast, so a nonsense tag lands on the maximum instead of wrapping.
+pub fn settlement_payload(population: Option<u32>) -> u16 {
+    population.map_or(SETTLEMENT_POPULATION_UNKNOWN, |n| (n / 100).min(SETTLEMENT_POPULATION_MAX as u32) as u16)
+}
+
+/// Cut a UTF-8 name to the record's fixed `Name` field on a character boundary. Summits and
+/// settlements keep their own spelling, so this is the whole treatment they get. `None` when the
+/// name is empty or holds a control character.
+fn utf8_record_name(raw: &str) -> Option<String> {
+    let name = raw.trim();
+    let mut end = name.len().min(POI_NAME_LEN);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    let name = &name[..end];
+    (!name.is_empty() && !name.chars().any(char::is_control)).then(|| name.into())
+}
+
+/// The three ranges the device font holds. A character outside them is drawn as a question mark.
+fn device_can_show(c: char) -> bool {
+    matches!(c as u32, 0x20..=0x7F | 0xA0..=0xFF | 0x100..=0x17F)
+}
+
+/// Choose the settlement name the device can draw: the local `name`, else its ASCII fold, else
+/// `name:en`, else `int_name`. `None` drops the settlement, because a row of question marks is
+/// worse than no label. The fold turns Cyrillic, Greek and CJK into word breaks, so it gives an
+/// empty result for them and the language fall-backs run.
+fn pick_settlement_name(local: &str, name_en: Option<&str>, int_name: Option<&str>) -> Option<String> {
+    if local.chars().all(device_can_show) {
+        return Some(local.into());
+    }
+    normalize_name(local).or_else(|| {
+        [name_en, int_name].into_iter().flatten().find(|n| n.chars().all(device_can_show)).map(Into::into)
+    })
 }
 
 /// Fill missing summit heights from the shared geographic terrain lattice.
@@ -434,13 +512,14 @@ pub fn dump(pois: &[Poi]) {
     for p in pois {
         let row = table_row(p.subtype);
         println!(
-            "poi: {}/{} ({}) at {:.6},{:.6} name={:?} src={}",
+            "poi: {}/{} ({}) at {:.6},{:.6} name={:?}{} src={}",
             CATEGORY_NAMES[row.category() as usize],
             row.value,
             row.label(),
             p.lat_udeg as f64 / 1e6,
             p.lon_udeg as f64 / 1e6,
             p.name.as_deref().unwrap_or("-"),
+            p.population.map_or(String::new(), |n| format!(" pop={n}")),
             if p.from_node { "node" } else { "way" },
         );
     }
@@ -471,7 +550,7 @@ mod tests {
     fn table_is_pinned() {
         // (subtype, key, value, expected category id, expected fallback label). The category + label
         // columns are what `obc-formats` must return for this subtype — the cross-crate guard.
-        let expect: [(u8, &str, &str, u8, &str); 19] = [
+        let expect: [(u8, &str, &str, u8, &str); 24] = [
             (1, "amenity", "drinking_water", 1, "Drinking water"),
             (2, "natural", "spring", 1, "Spring"),
             (3, "man_made", "water_tap", 1, "Water tap"),
@@ -491,6 +570,11 @@ mod tests {
             (17, "amenity", "pharmacy", 5, "Pharmacy"),
             (18, "shop", "bicycle", 6, "Bike shop"),
             (19, "natural", "peak", 7, "Summit"),
+            (20, "railway", "station", 8, "Train station"),
+            (21, "place", "city", 9, "City"),
+            (22, "place", "town", 9, "Town"),
+            (23, "place", "village", 9, "Village"),
+            (24, "place", "hamlet", 9, "Hamlet"),
         ];
         for (row, &(sub, k, v, cat, label)) in POI_TABLE.iter().zip(expect.iter()) {
             assert_eq!((row.subtype, row.key, row.value), (sub, k, v), "packer classification pinned");
@@ -518,7 +602,7 @@ mod tests {
 
     #[test]
     fn summit_names_heights_and_close_twins_are_preserved() {
-        let Classification { subtype, name, raw_hours: hours, elevation_m: height } =
+        let Classification { subtype, name, raw_hours: hours, elevation_m: height, .. } =
             classify([("natural", "peak"), ("name", "Mönch"), ("ele", "4107.4 m"), ("opening_hours", "24/7")]).unwrap();
         assert_eq!((subtype, name.as_deref(), hours, height), (19, Some("Mönch"), None, Some(4107)));
         assert!(classify([("natural", "peak")]).is_none());
@@ -631,6 +715,7 @@ mod tests {
             from_node,
             hours: None,
             elevation_m: None,
+            population: None,
         }
     }
 
@@ -674,7 +759,75 @@ mod tests {
         ];
         assert_eq!(
             format_counts(&pois, 3),
-            "pois: water 2, campsite 1, accommodation 0, resupply 1, pharmacy 0, bike shop 0, summit 0, train station 0 (dedup dropped 3)"
+            "pois: water 2, campsite 1, accommodation 0, resupply 1, pharmacy 0, bike shop 0, summit 0, \
+             train station 0, settlement 0 (dedup dropped 3)"
         );
+    }
+
+    /// One settlement tag set: the `place` value plus whatever else the case needs.
+    fn place<'a>(value: &'a str, tags: &[(&'a str, &'a str)]) -> Option<Classification<'a>> {
+        let mut all = vec![("place", value)];
+        all.extend_from_slice(tags);
+        classify(all)
+    }
+
+    #[test]
+    fn place_tags_classify_to_settlement_subtypes() {
+        for (value, subtype) in [("city", 21), ("town", 22), ("village", 23), ("hamlet", 24)] {
+            let c = place(value, &[("name", "Ort")]).expect("a named place classifies");
+            assert_eq!((c.subtype, c.name.as_deref()), (subtype, Some("Ort")));
+        }
+        assert_eq!(place("suburb", &[("name", "Ort")]), None, "only the four captured classes");
+    }
+
+    #[test]
+    fn a_service_tag_wins_over_a_place_tag() {
+        let c = place("village", &[("shop", "bakery"), ("name", "Baeckerdorf")]).expect("classifies");
+        assert_eq!(c.subtype, 15, "the settlement rows sit last in table order");
+    }
+
+    #[test]
+    fn a_settlement_keeps_its_diacritics() {
+        let c = place("village", &[("name", "Grüßau")]).expect("classifies");
+        assert_eq!(c.name.as_deref(), Some("Grüßau"), "the device font holds these, so nothing folds");
+    }
+
+    #[test]
+    fn an_unshowable_name_folds_then_falls_back_to_english() {
+        assert_eq!(place("village", &[("name", "Мирный")]), None, "no fold and no English name");
+        let c = place("village", &[("name", "東京"), ("name:en", "Tokyo")]).expect("classifies");
+        assert_eq!(c.name.as_deref(), Some("Tokyo"));
+        let c = place("village", &[("name", "東京"), ("int_name", "Tokyo")]).expect("classifies");
+        assert_eq!(c.name.as_deref(), Some("Tokyo"), "int_name is the last fall-back");
+        // A name the fold can spell never reaches the language fall-backs.
+        let c = place("village", &[("name", "Ost—Dorf"), ("name:en", "East")]).expect("classifies");
+        assert_eq!(c.name.as_deref(), Some("Ost Dorf"), "the fold answers first");
+    }
+
+    #[test]
+    fn a_settlement_without_a_name_is_dropped() {
+        assert_eq!(place("village", &[]), None);
+        assert_eq!(place("village", &[("name", "  ")]), None);
+    }
+
+    #[test]
+    fn a_long_settlement_name_is_cut_on_a_character_boundary() {
+        let c = place("hamlet", &[("name", "A very long settlement name indeed")]).expect("classifies");
+        let name = c.name.expect("named");
+        assert_eq!((name.as_str(), name.len()), ("A very long settlement n", POI_NAME_LEN));
+        let c = place("hamlet", &[("name", "abcdefghijklmnopqrstuvwé")]).expect("classifies");
+        assert_eq!(c.name.as_deref(), Some("abcdefghijklmnopqrstuvw"), "a two-byte character does not split");
+    }
+
+    #[test]
+    fn a_population_becomes_hundreds_and_saturates() {
+        let payload = |tags: &[(&str, &str)]| {
+            settlement_payload(place("city", tags).expect("classifies").population)
+        };
+        assert_eq!(payload(&[("name", "Testville"), ("population", "250000")]), 2500);
+        assert_eq!(payload(&[("name", "Testville"), ("population", "900000000")]), SETTLEMENT_POPULATION_MAX);
+        assert_eq!(payload(&[("name", "Testville")]), SETTLEMENT_POPULATION_UNKNOWN);
+        assert_eq!(payload(&[("name", "Testville"), ("population", "about 900")]), SETTLEMENT_POPULATION_UNKNOWN);
+        assert_eq!(payload(&[("name", "Testville"), ("population", "12 500")]), 125, "spaces are removed");
     }
 }
