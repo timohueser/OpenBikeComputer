@@ -278,7 +278,7 @@ pub(super) fn header(
     page: Option<(u16, u16)>,
     marquee: Option<&super::vocab::marquee::MarqueeFrame>,
 ) {
-    cv.fill(rect(0, 0, 240, 40), PARCHMENT);
+    cv.fill(header_box(240), PARCHMENT);
     cv.round(rect(4, 4, 232, 34), 6, WOOD);
     let mut count = heapless::String::<12>::new();
     if let Some((current, total)) = page {
