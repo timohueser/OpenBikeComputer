@@ -444,15 +444,17 @@ trap 'rm -rf "$ROUTES" "$TRACKS" "$NAVDIR" "$JOURNEYDIR" "$TRIPDIR" "$PLAINROUTE
 # planner reads terrain through the retained map object, as it does for an assembled device map.
 # Only these three frames use the staged map; registered fixture bytes remain unchanged.
 ELEVMAP="$ELEVDIR/terrain.obcm"
-python3 - "$MAP" "$ELEVMAP" <<'PYTERRAIN'
+python3 - "$MAP" "$ELEVMAP" "$repo_root/firmware/obc-formats/src/obcm.rs" <<'PYTERRAIN'
 from pathlib import Path
+import re
 import struct
 import sys
 
-source, output = map(Path, sys.argv[1:])
+source, output, obcm_rs = map(Path, sys.argv[1:])
 map_bytes = bytearray(source.read_bytes())
-# OBCM §1.1/§1.3: v17 header, 16-byte units, terrain offset/length at bytes 41/45.
-assert len(map_bytes) >= 65 and map_bytes[:5] == b"OBCM\x11" and map_bytes[40] == 4
+version = int(re.search(r"pub const VERSION: u8 = (\d+);", obcm_rs.read_text())[1])
+# OBCM §1.1/§1.3: current header, 16-byte units, terrain offset/length at bytes 41/45.
+assert len(map_bytes) >= 65 and map_bytes[:5] == b"OBCM" + bytes([version]) and map_bytes[40] == 4
 terrain_offset, terrain_length = struct.unpack_from("<II", map_bytes, 41)
 assert bool(terrain_offset) == bool(terrain_length), "incomplete terrain region"
 if not terrain_offset:
