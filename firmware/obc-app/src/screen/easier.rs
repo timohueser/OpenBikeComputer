@@ -15,6 +15,8 @@ use obc_render::{
 };
 use obc_route::easier::{Costs, Goal};
 const NAMES: [Msg; 3] = [Msg::AssistantLessClimb, Msg::AssistantSmoother, Msg::AssistantShorter];
+/// Top row of the opaque bottom panel.
+const PANEL_TOP: i32 = 188;
 
 #[derive(Clone, Copy, PartialEq)]
 pub struct EasierScreen {
@@ -135,7 +137,7 @@ impl EasierScreen {
             fit(self.bounds, rx.w, rx.h)
         };
         let active = rx.route.take();
-        super::map::draw_map_scene(cv, rx, &vp, None, &[rect(0, 188, rx.w, rx.h - 188)]);
+        super::map::draw_map_scene(cv, rx, &vp, None, &[super::find_place::panel(rx.w, rx.h, PANEL_TOP)]);
         rx.route = active;
         let progress = self.progress_m;
         let proposed = rx.nav_preview;
@@ -165,7 +167,7 @@ impl EasierScreen {
             }
         }
         header(cv, rx.t(Msg::AssistantEasier), rx.w, self.ready.then_some((self.ordinal, self.count)));
-        cv.fill(rect(0, 188, rx.w, rx.h - 188), PARCHMENT);
+        cv.fill(super::find_place::panel(rx.w, rx.h, PANEL_TOP), PARCHMENT);
         if let Some(next) = self.next.filter(|_| self.ready) {
             benefit(cv, self.current, next, self.goal as usize, rect(8, 190, rx.w - 16, 86), true, rx);
             button(cv, rx.t(Msg::AssistantPreviewRoute));
