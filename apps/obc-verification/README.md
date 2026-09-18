@@ -423,7 +423,21 @@ missing tests or implementation in `gap`. When you know the test to build for a 
 sentence with a `level`. The level says how much of the product the test exercises: `unit` for one
 module, `integration` for several together, and `system` for the assembled product. It does not say
 who runs the test — automated evidence cites a catalogue case and manual evidence cites a procedure,
-so the plan already carries that.
+so the plan already carries that. Nor does it say *where* the test runs: a rig test and a CI-runner
+test at the same scope share a level, and the case ID's suite tells them apart.
+
+Each evidence entry takes the same `level`, for the test it cites. It is optional, because plans
+written before it existed do not carry one, but state it whenever you know it: it is what the pills
+on the requirement page show.
+
+A manual procedure also takes `manualReason`, which says which of the two manual buckets it is in:
+
+- `human` — a person is the permanent answer. A real phone against a real device, or a judgement no
+  rig can make. These are the checks a release runs by hand.
+- `until-automated` — a person runs it because the automated or rig test does not exist yet.
+
+The distinction is not decoration. The first list is the work a release has to schedule; the second
+is a backlog. Say which.
 
 Prefer an automated test. When no automated test can prove a criterion, propose a manual procedure
 instead: put it in `procedures` with its steps and expected result, and cite its `id` as `testId`
@@ -464,8 +478,8 @@ Read decisions and reviewer feedback with `GET /api/coverage-proposals`. Send
         "id": "projection",
         "statement": "Both orientations render correctly.",
         "evidence": [
-          { "caseId": "REAL_NORTH_UP_CATALOGUE_ID", "rationale": "Checks north-up projection." },
-          { "caseId": "REAL_HEADING_UP_CATALOGUE_ID", "rationale": "Checks course rotation." }
+          { "caseId": "REAL_NORTH_UP_CATALOGUE_ID", "rationale": "Checks north-up projection.", "level": "unit" },
+          { "caseId": "REAL_HEADING_UP_CATALOGUE_ID", "rationale": "Checks course rotation.", "level": "unit" }
         ],
         "gap": ""
       },
@@ -479,13 +493,13 @@ Read decisions and reviewer feedback with `GET /api/coverage-proposals`. Send
       {
         "id": "persistence",
         "statement": "The choice survives a restart.",
-        "evidence": [{ "testId": "ride-restart", "rationale": "Confirms the choice on the device after a power cycle." }],
+        "evidence": [{ "testId": "ride-restart", "rationale": "Confirms the choice on the device after a power cycle.", "level": "system" }],
         "gap": ""
       }
     ]
   },
   "procedures": [
-    { "id": "ride-restart", "title": "Ride check after restart", "steps": "1. Set heading-up.\n2. Power the device off and on.\n3. Start a ride.", "expected": "The map stays heading-up." }
+    { "id": "ride-restart", "title": "Ride check after restart", "manualReason": "human", "steps": "1. Set heading-up.\n2. Power the device off and on.\n3. Start a ride.", "expected": "The map stays heading-up." }
   ]
 }
 ```

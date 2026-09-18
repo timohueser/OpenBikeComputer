@@ -1,4 +1,4 @@
-import type { Attachment, Candidate, Readiness, Requirement, TestResult } from '../types.ts';
+import { MANUAL_REASONS, type Attachment, type Candidate, type ManualReason, type Readiness, type Requirement, type TestResult } from '../types.ts';
 import { citedTests, coverageIssues } from '../coverage.ts';
 
 export class Problem extends Error {
@@ -51,8 +51,12 @@ export function requirements(value: unknown, lookup: (id: string) => Attachment)
         const testId = identifier(t.id, 'Test ID');
         assert(!tests.has(testId), 'Test IDs must be unique within a requirement.'); tests.add(testId);
         assert(t.kind === 'manual' || t.kind === 'automated', 'Unknown test kind.');
+        assert(t.manualReason === undefined || (t.kind === 'manual' && MANUAL_REASONS.includes(t.manualReason as ManualReason)),
+          `A manual procedure is run by a person for one of these reasons: ${MANUAL_REASONS.join(', ')}.`);
         return { id: testId, kind: t.kind, title: text(t.title, 'Test title', 300), inputs: attachments(t.inputs, lookup),
-          ...(t.kind === 'manual' ? { steps: text(t.steps, 'Steps', 50000), expected: text(t.expected, 'Expected outcome', 50000) }
+          ...(t.kind === 'manual'
+            ? { steps: text(t.steps, 'Steps', 50000), expected: text(t.expected, 'Expected outcome', 50000),
+                ...(t.manualReason ? { manualReason: t.manualReason as ManualReason } : {}) }
             : { caseId: text(t.caseId, 'Automated case ID', 1000) }) };
       }) };
   });

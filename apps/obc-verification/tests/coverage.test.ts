@@ -120,6 +120,7 @@ test('invalid plans cannot claim complete coverage or reference unavailable evid
   // A covered criterion has nothing left to build, so a next test without a gap is refused: it is
   // how a manual procedure gets written up twice and leaves a covered criterion looking unfinished.
   p = plan(); p.criteria[0].next = { level: 'unit', summary: 'Assert the saved value.' }; invalid.push(p);
+  p = plan(); (p.criteria[0].evidence[0] as { level?: string }).level = 'smoke'; invalid.push(p);
   for (const value of invalid) assert.equal((await request('coverage-proposals', 'POST', { baseRevision: base.id, requirementId: 'REQ-1', sourceSha: sha, plan: value })).status, 400);
   // A renamed test is the common way evidence goes missing, and the two ways it can go missing have
   // different fixes — so each refusal names the ID it could not find and says where to look for it.
@@ -262,6 +263,18 @@ test('an older snapshot is judged by its plan, not by the tests it still carries
   assert.doesNotMatch(report(frozen), /Legacy smoke test|Legacy power cut|Legacy note/);
 });
 
+test('evidence keeps the level the plan states, and plans without one stay valid', async () => {
+  const base = setup();
+  const levelled = plan();
+  (levelled.criteria[0].evidence[0] as { level?: string }).level = 'integration';
+  const proposal = await propose(levelled); await decide(proposal.id);
+  const saved = store().latestRevision().requirements[0].coverage!;
+  assert.equal((saved.criteria[0].evidence[0] as { level?: string }).level, 'integration');
+  // The second criterion said nothing, and that is a legal plan rather than a default.
+  assert.equal((saved.criteria[1].evidence[0] as { level?: string }).level, undefined);
+  assert.equal(base.id > 0, true);
+});
+
 test('a plan may propose criteria before any evidence', async () => {
   setup();
   const outline = { rationale: '', criteria: [{ id: 'routes', statement: 'Routes remain intact.', evidence: [], gap: '' }, { id: 'settings', statement: 'Settings remain intact.', evidence: [], gap: 'Needs a settings test.' }] };
@@ -299,7 +312,9 @@ test('a snapshot with an unapproved plan from the earlier workflow does not pass
 
 test('a proposal may name the next test to build and bring a manual procedure that approval creates', async () => {
   setup();
-  const procedure = { id: 'ride-restart', title: 'Ride check after restart', steps: 'Restart, then ride.', expected: 'The choice holds.' };
+  // `manualReason` says which of the two manual buckets this is, and approval must carry it through
+  // to the requirement — a release lists the human checks from it.
+  const procedure = { id: 'ride-restart', title: 'Ride check after restart', steps: 'Restart, then ride.', expected: 'The choice holds.', manualReason: 'human' as const };
   const value = plan();
   value.criteria[1].evidence = [{ testId: 'ride-restart', rationale: 'Confirms the choice on the device.' }];
   value.criteria[1].gap = 'No automated check yet.';
@@ -321,6 +336,7 @@ test('a proposal may name the next test to build and bring a manual procedure th
   assert.equal((await decide((await again.json() as CoverageProposal).id)).status, 200);
   const approved = store().latestRevision().requirements[0];
   assert.deepEqual(approved.tests.filter(t => t.id === 'ride-restart'), [{ ...procedure, kind: 'manual', inputs: [] }]);
+  assert.equal((await post({ plan: value, procedures: [{ ...procedure, manualReason: 'someday' }] })).status, 400);
   assert.deepEqual(approved.coverage?.criteria[1].next, value.criteria[1].next);
   assert.deepEqual(coverageSummary(approved), { state: 'partial', label: 'Partial', covered: 1, total: 2 });
   const draft = structuredClone(store().latestRevision().requirements); delete draft[0].coverage!.criteria[1].next;

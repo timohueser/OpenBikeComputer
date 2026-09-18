@@ -12,13 +12,30 @@ export interface VerificationTest {
   steps?: string;
   expected?: string;
   inputs: Attachment[];
+  /** Manual tests only: whether a person is the permanent answer, or holds the place for a test
+   *  that should exist. Absent means it has not been said. */
+  manualReason?: ManualReason;
 }
-export interface CoverageEvidence { caseId?: string; testId?: string; rationale: string }
+/** One cited test, and what the plan says it proves. `level` is the auditor's judgement of the
+ *  test's scope; it is optional because plans written before it existed do not carry it. */
+export interface CoverageEvidence { caseId?: string; testId?: string; rationale: string; level?: TestLevel }
 /** How much of the product a test exercises: one module, several together, or the assembled product.
  *  It says nothing about who runs the test — automated evidence cites a catalogue case, and manual
  *  evidence cites a procedure, so the plan already carries that. */
 export type TestLevel = 'unit' | 'integration' | 'system';
 export const TEST_LEVELS: TestLevel[] = ['unit', 'integration', 'system'];
+/** Why a procedure is a person's job. Automated tests have none. */
+export type ManualReason = 'human' | 'until-automated';
+export const MANUAL_REASONS: ManualReason[] = ['human', 'until-automated'];
+/** One short sentence per kind, for the explainer any pill opens. Level and manual are different
+ *  questions: the level says how much of the product runs, and manual says who runs it. */
+export const TEST_KIND_NOTES: { key: string; title: string; note: string }[] = [
+  { key: 'unit', title: 'Unit', note: 'One module on its own, on a CI runner. It shows that a part behaves correctly by itself.' },
+  { key: 'integration', title: 'Integration', note: 'Several modules together, on a CI runner or on a hardware rig. It shows that the parts agree with each other.' },
+  { key: 'system', title: 'System', note: 'The assembled product, on real or simulated hardware. It shows that the whole thing does what a rider asks of it.' },
+  { key: 'human', title: 'Manual · human', note: 'A person is the permanent answer: a real phone against a real device, or a judgement no rig can make. These are the checks a release runs by hand.' },
+  { key: 'until-automated', title: 'Manual · until automated', note: 'A person runs it because the automated or rig test does not exist yet. It holds the place for one that should.' },
+];
 /** The test to build for a gap: one level, one sentence. A criterion with no gap has nothing to build. */
 export interface ProposedTest { level: TestLevel; summary: string }
 export interface AcceptanceCriterion { id: string; statement: string; evidence: CoverageEvidence[]; gap: string; next?: ProposedTest }

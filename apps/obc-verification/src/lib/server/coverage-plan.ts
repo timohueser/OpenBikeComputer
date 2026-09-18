@@ -1,4 +1,4 @@
-import { TEST_LEVELS, type AcceptanceCriterion, type Catalog, type CoveragePlan, type CoverageProposal, type Requirement, type Revision, type VerificationTest } from '../types.ts';
+import { MANUAL_REASONS, TEST_LEVELS, type AcceptanceCriterion, type Catalog, type CoveragePlan, type CoverageProposal, type ManualReason, type Requirement, type Revision, type TestLevel, type VerificationTest } from '../types.ts';
 import { evidenceKey, planProblem, verificationDefinition } from '../coverage.ts';
 import { assert, identifier, text } from './domain.ts';
 
@@ -30,7 +30,10 @@ export function coveragePlan(value: unknown, requirement: Requirement, catalog: 
           : `No manual procedure has the ID “${ref.testId}”. Cite a procedure this requirement already has, or send the new procedure with this proposal.`);
       const key = JSON.stringify(ref);
       assert(!seen.has(key), 'Duplicate evidence for a criterion.'); seen.add(key);
-      return { ...ref, rationale: text(e.rationale, 'Evidence rationale', 5000) };
+      // The level is the auditor's judgement of the cited test's scope. Optional, because every plan
+      // written before it existed has none and stays valid; it fills in as plans are revised.
+      assert(e.level === undefined || (TEST_LEVELS as string[]).includes(e.level), `Test level must be one of ${TEST_LEVELS.join(', ')}.`);
+      return { ...ref, rationale: text(e.rationale, 'Evidence rationale', 5000), ...(e.level ? { level: e.level as TestLevel } : {}) };
     });
     const next = entry.next === undefined || entry.next === null ? undefined : proposedTest(entry.next);
     const gap = entry.gap.trim();
@@ -62,7 +65,9 @@ export function proposalProcedures(value: unknown, requirement: Requirement): Ve
     const id = identifier(entry.id, 'Procedure ID');
     assert(!ids.has(id) && !requirement.tests.some(t => t.id === id), 'Procedure IDs must be new and unique.'); ids.add(id);
     assert(entry.kind === undefined || entry.kind === 'manual', 'A proposed procedure is a manual test.');
-    return { id, kind: 'manual' as const, title: text(entry.title, 'Procedure title', 300), steps: text(entry.steps, 'Steps', 50000), expected: text(entry.expected, 'Expected outcome', 50000), inputs: [] };
+    assert(entry.manualReason === undefined || MANUAL_REASONS.includes(entry.manualReason), `Say why a person runs it: ${MANUAL_REASONS.join(' or ')}.`);
+    return { id, kind: 'manual' as const, title: text(entry.title, 'Procedure title', 300), steps: text(entry.steps, 'Steps', 50000), expected: text(entry.expected, 'Expected outcome', 50000), inputs: [],
+      ...(entry.manualReason ? { manualReason: entry.manualReason as ManualReason } : {}) };
   });
 }
 export function commitSha(value: unknown): string {
