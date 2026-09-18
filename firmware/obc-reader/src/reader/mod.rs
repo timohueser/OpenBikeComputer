@@ -29,6 +29,7 @@ mod nav;
 pub mod places;
 mod poi;
 mod settlement;
+pub use map_points::MapPointQuery;
 mod summit;
 
 pub(crate) use cache::MAP_CHUNK_SLOTS;
@@ -37,7 +38,6 @@ use core::sync::atomic::{AtomicU32, Ordering};
 pub use errors::{CacheError, CapacityError, DecodeStatus, FeatureDecodeError, FeatureReadError, MapReadError};
 pub(crate) use geometry::parse_lod_table;
 pub use geometry::{FeatureRef, Interiors, Lod, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS};
-pub use map_points::MapPointQuery;
 use nav::{parse_nav_directory, parse_nav_profiles};
 pub use nav::{
     MapProfile, NavCacheStats, NavDirectory, NavEdgeCandidate, NavEdgeEndpoint, NavEdgePosition, NavEdgeSnap,
