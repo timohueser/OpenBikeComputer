@@ -346,6 +346,8 @@ fn run(
                                         | SemanticClass::Grass
                                         | SemanticClass::Forest
                                         | SemanticClass::Urban
+                                        | SemanticClass::Rock
+                                        | SemanticClass::Ice
                                         | SemanticClass::Water
                                 )
                             );

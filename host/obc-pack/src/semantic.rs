@@ -27,7 +27,7 @@ use crate::geom::{
 use crate::ingest::IngestFeature;
 use crate::progress::Progress;
 
-const CLASSES: usize = 5;
+const CLASSES: usize = 7;
 const SOURCE_SCALE: usize = 4;
 const CELL_PX: usize = 2;
 const SUBSAMPLES: usize = SOURCE_SCALE * CELL_PX;
@@ -48,7 +48,7 @@ const SMOOTH_PASSES: usize = 3;
 const FINAL_VW_PX: f64 = CELL_PX as f64;
 const RASTER_TILE_CELLS: usize = 128;
 
-/// The exact categorical order used by the prototype.  Later classes paint over earlier ones.
+/// Land-cover paint order. Water uses a separate mask after the categorical allocation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SemanticClass {
@@ -57,19 +57,21 @@ pub enum SemanticClass {
     Grass = 2,
     Forest = 3,
     Urban = 4,
-    Water = 5,
+    Rock = 5,
+    Ice = 6,
+    Water = 7,
 }
 
 /// Style classification and canonical output styles derived from the typed map config.
 #[derive(Clone)]
 pub struct SemanticScheme {
     by_style: [Option<SemanticClass>; 255],
-    output_style: [Option<u8>; 6],
+    output_style: [Option<u8>; CLASSES + 1],
 }
 
 impl SemanticScheme {
     pub(crate) fn new() -> Self {
-        Self { by_style: [None; 255], output_style: [None; 6] }
+        Self { by_style: [None; 255], output_style: [None; CLASSES + 1] }
     }
 
     pub(crate) fn insert(&mut self, style_id: u8, class: SemanticClass) {
@@ -334,6 +336,8 @@ pub fn build_semantic_lod(
             2 => SemanticClass::Grass,
             3 => SemanticClass::Forest,
             4 => SemanticClass::Urban,
+            5 => SemanticClass::Rock,
+            6 => SemanticClass::Ice,
             _ => continue,
         };
         if let Some(style_id) = scheme.style_for(class) {
@@ -422,7 +426,14 @@ fn raster_support(
             let tile_top = grid.top() - cell_y0 as f64 * grid.cell_m;
             let sub_m = grid.cell_m / SUBSAMPLES as f64;
             let tile_members = &members[ty * tile_cols + tx];
-            for class in [SemanticClass::Farmland, SemanticClass::Grass, SemanticClass::Forest, SemanticClass::Urban] {
+            for class in [
+                SemanticClass::Farmland,
+                SemanticClass::Grass,
+                SemanticClass::Forest,
+                SemanticClass::Urban,
+                SemanticClass::Rock,
+                SemanticClass::Ice,
+            ] {
                 for &index in tile_members {
                     let source = &sources[index];
                     if source.class == class {
@@ -1533,10 +1544,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn alpine_coverage_merges_rock_and_keeps_ice_and_water_distinct() {
+        let config =
+            crate::config::Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json"))
+                .unwrap();
+        let id = |value| config.feature_style("natural", value).unwrap().id;
+        let square = |value, x: f64| {
+            (
+                id(value),
+                Geom::Polygon {
+                    exterior: vec![(x, 0.0), (x + 0.01, 0.0), (x + 0.01, 0.01), (x, 0.01), (x, 0.0)],
+                    interiors: vec![],
+                },
+            )
+        };
+        let inputs =
+            vec![square("bare_rock", 0.0), square("scree", 0.01), square("glacier", 0.02), square("water", 0.03)];
+        let scheme = config.semantic_scheme();
+        let mut prior = None;
+        for mpp in [20.0, 80.0] {
+            let level =
+                build_semantic_lod(&inputs, &scheme, (0, 0, 40_000, 10_000), mpp, prior.as_ref(), &Progress::silent())
+                    .unwrap();
+            for value in ["bare_rock", "glacier", "water"] {
+                assert!(
+                    level.features.iter().any(|(style, geom)| *style == id(value) && !geom.is_empty()),
+                    "{value} at {mpp} m/px"
+                );
+            }
+            assert!(!level.features.iter().any(|(style, _)| *style == id("scree")), "rock shares one canonical style");
+            prior = Some(level.labels);
+        }
+    }
+
+    #[test]
     fn conservation_keeps_a_rare_supported_class() {
         let grid = Grid { left: 0.0, bottom: 0.0, cols: 10, rows: 10, cell_m: 2.0 };
-        let mut support = vec![Support([64, 0, 0, 0, 0]); 100];
-        support[grid.index(5, 5)] = Support([12, 0, 0, 52, 0]);
+        let mut support = vec![Support([64, 0, 0, 0, 0, 0, 0]); 100];
+        support[grid.index(5, 5)] = Support([12, 0, 0, 52, 0, 0, 0]);
         let labels = adaptive_labels(&support, &grid, None);
         assert!(labels.contains(&(SemanticClass::Forest as u8)));
     }
