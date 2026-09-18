@@ -844,7 +844,8 @@ fn build_poi_tree(points: Vec<PoiPoint>, bbox: (i64, i64, i64, i64), capacity: u
 /// (§7.5) at the tail. `pois` is the deduped classified list; each is bucketed by
 /// its subtype's category ([`crate::poi::table_row`]). Category ids are
 /// `1..=POI_CATEGORY_COUNT` and every one gets a directory entry, empty or not
-/// (§7.1). Named summits add category 7. A map with no POIs writes seven empty entries.
+/// (§7.1). Named summits add category 7 and settlements add category 9, each only when the map
+/// holds one. A map with no POIs writes seven empty entries.
 /// `section_offset` is the section's absolute byte offset in the file, needed so the
 /// directory's per-category `index_offset` fields and the `hours_pool_offset` are
 /// file-absolute.
