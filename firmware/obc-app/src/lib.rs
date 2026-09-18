@@ -50,6 +50,7 @@ pub mod input;
 pub mod input_plane;
 pub mod landmarks;
 pub mod map_catalog;
+mod map_icons;
 pub mod metadata;
 pub mod nav_profiles;
 pub mod navigator;

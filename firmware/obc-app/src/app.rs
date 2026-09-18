@@ -2814,6 +2814,14 @@ impl App {
         // runtime's; this method sequences the per-pass sweeps around it with the cross-component
         // facts they need.
         self.ui.advance_timers(clock.0, now, ms_to_next_minute, &self.settings, pan_active, tracking);
+        if matches!(self.top_screen(), Screen::Map(_)) {
+            if let Some(delay) = self.ui.map_icons.wake_in(clock.0) {
+                if delay == 0 {
+                    self.ui.map_dirty = true;
+                }
+                self.ui.next_wake_ms = Some(self.ui.next_wake_ms.map_or(delay, |wake| wake.min(delay)));
+            }
+        }
         if self.planning_banner().is_some() {
             let remaining = 1_000 - clock.0 % 1_000;
             self.ui.next_wake_ms = Some(self.ui.next_wake_ms.map_or(remaining, |wake| wake.min(remaining)));
@@ -2901,7 +2909,12 @@ impl App {
         {
             Some(self.ui.next_wake_ms.unwrap_or(1).min(1))
         } else {
-            self.ui.next_wake_ms
+            let icons =
+                matches!(self.top_screen(), Screen::Map(_)).then(|| self.ui.map_icons.wake_in(now_ms)).flatten();
+            match (self.ui.next_wake_ms, icons) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            }
         }
     }
 
@@ -3072,6 +3085,9 @@ impl App {
         if let Some(route) = route {
             self.state.sync_pan_route(route);
         }
+        if scratch.is_some() && self.ui.base_draws_map() && self.ui.render_clip.is_none() {
+            self.ui.map_icons.prepare(core_reader, &self.state.viewport(w, h), &self.settings, self.ui.now_ms);
+        }
         // Drain the one-shot region clip (see `set_render_clip`) — `None` on every normal frame.
         let render_clip = self.ui.render_clip.take();
 
@@ -3175,6 +3191,7 @@ impl App {
             visit_target,
             find: &ui.find,
             landmarks: &ui.landmarks,
+            map_icons: &ui.map_icons,
             ahead: &ui.ahead,
             peak_view,
             scratch,

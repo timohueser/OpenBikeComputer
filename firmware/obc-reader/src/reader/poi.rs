@@ -139,6 +139,15 @@ impl QuadIndex for PoiCatEntry {
     }
 }
 
+/// A map overlay mark. Names and opening hours are deliberately not loaded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MapPoint {
+    pub position: (i32, i32),
+    pub source: obc_formats::obcm::SourceId,
+    pub subtype: u8,
+    pub elevation_m: Option<i16>,
+}
+
 impl<'a> Reader<'a> {
     /// The parsed POI directory (spec §7): the shared chunk size, one entry per category, and the
     /// v7 hours-pool offset/count. Always present (seven categories, some possibly empty).
