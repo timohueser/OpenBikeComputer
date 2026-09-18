@@ -19,6 +19,7 @@
     "@sveltejs/adapter-node": "5.5.7",
     "@sveltejs/kit": "2.70.3",
     "dompurify": "^3.4.15",
+    "harper.js": "^2.10.0",
     "marked": "18.0.13",
     "sanitize-html": "2.17.7",
     "svelte": "5.57.0"

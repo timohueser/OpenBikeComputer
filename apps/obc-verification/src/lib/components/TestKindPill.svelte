@@ -5,58 +5,30 @@
   // does not open on hover: the list is long enough to read and to scroll, which a panel that
   // leaves with the pointer cannot be.
   //
-  // The panel is placed by [`place`] rather than by CSS, and it is moved to `document.body` by
-  // [`portal`] first. A pill can sit anywhere on a long page: a panel drawn below its pill by CSS
-  // alone falls off the bottom of the window, where nothing can scroll to it. The move to the body
-  // is what makes `position: fixed` mean the window — inside the criterion card it resolved against
-  // the card instead — and it also takes the panel out of any container that clips its overflow.
+  // `$lib/popover` places the panel against the window; see it for why CSS alone cannot.
   import { tick } from 'svelte';
+  import { portal, place, sizing, widthFor } from '$lib/popover';
   import { TEST_KIND_NOTES } from '$lib/types';
   /** `unit`, `integration`, `system`, `human`, `until-automated`, or `manual` when the type of a
    *  manual test is not set. */
   export let kind: string;
   $: text = kind === 'human' ? 'human check' : kind === 'until-automated' ? 'until automated' : kind;
 
-  /** Distance kept from every window edge, and between the panel and its pill. */
-  const EDGE = 8, OFFSET = 6, WIDTH = 330;
+  /** The panel is this wide unless the window is narrower. */
+  const WIDTH = 330;
   let holder: HTMLElement;
   let pop: HTMLElement;
   let open = false;
   let placed = false;
   let box = '';
 
-  function portal(node: HTMLElement) {
-    document.body.appendChild(node);
-    return { destroy: () => node.remove() };
-  }
-  /**
-   * Put the panel where it is wholly visible: below the pill when the room below holds it, above
-   * when it does not, and inside both side edges. `max-height` is the room it actually has, so a
-   * window too short for the whole list gives the panel its own scrollbar instead of a part that
-   * cannot be reached.
-   *
-   * The width is fixed before this runs and is not changed here. Measuring an unconstrained panel
-   * reports the height of text on fewer lines than it will actually wrap to, which put the panel
-   * about 40 px past the bottom of the window.
-   */
-  function place(width: number): void {
-    const pill = holder.getBoundingClientRect();
-    const below = window.innerHeight - pill.bottom - EDGE - OFFSET;
-    const above = pill.top - EDGE - OFFSET;
-    const room = Math.max(below, above, 0);
-    const height = Math.min(pop.scrollHeight, room);
-    const top = below >= height ? pill.bottom + OFFSET : Math.max(EDGE, pill.top - OFFSET - height);
-    const left = Math.min(Math.max(EDGE, pill.left), window.innerWidth - width - EDGE);
-    box = `top:${top}px;left:${left}px;width:${width}px;max-height:${room}px`;
-    placed = true;
-  }
   async function show(): Promise<void> {
     open = true; placed = false;
-    const width = Math.min(WIDTH, window.innerWidth - 2 * EDGE);
     // Lay the panel out at its final width first; `placed` keeps it hidden while it is measured.
-    box = `top:0;left:0;width:${width}px`;
+    const width = widthFor(WIDTH);
+    box = sizing(width);
     await tick();
-    place(width);
+    box = place(holder, pop, width); placed = true;
   }
   function hide(): void { open = false; placed = false; box = ''; }
   function toggle(): void { if (open) hide(); else void show(); }
