@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { ApprovedGitHubUser, Attachment, Candidate, Catalog, CoverageProposal, CoverageReview, Requirement, ReviewedCoverage, Revision } from '../types.ts';
 import { assert, Problem, refresh } from './domain.ts';
-import { coverageConflict, linkEvidence } from './coverage-plan.ts';
+import { coverageConflict } from './coverage-plan.ts';
 import { coverageDefinition } from '../coverage.ts';
 
 const referencedRevisions = `SELECT json_extract(body, '$.revision.id') FROM records
@@ -96,11 +96,28 @@ export class Store {
     });
   }
   reserveRequirementId(): string { return this.reserveRequirementIds(1)[0]; }
-  saveRevision(base: number, author: string, requirements: Requirement[]): Revision {
-    return this.atomic(() => this.writeRevision(base, author, requirements));
+  /**
+   * Saves the draft, and accepts the proposals the draft applied. An owner approves a proposal into
+   * the draft and saves once for the batch, so a review round is one revision rather than one per
+   * proposal.
+   */
+  saveRevision(base: number, author: string, requirements: Requirement[], accept: string[] = []): Revision {
+    return this.atomic(() => {
+      const decidedAt = new Date().toISOString();
+      const accepted = accept.map(id => {
+        const proposal = this.get<CoverageProposal>('coverage-proposal', id);
+        assert(proposal.status === 'pending', 'A proposal in this save is already decided. Reload before saving.', 409);
+        assert(requirements.some(r => r.id === proposal.requirementId), `This draft has no requirement ${proposal.requirementId}.`);
+        return proposal;
+      });
+      const revision = this.writeRevision(base, author, requirements,
+        accepted.map(p => ({ requirementId: p.requirementId, review: { author, createdAt: decidedAt, sourceSha: p.sourceSha, proposalId: p.id } })));
+      for (const proposal of accepted) this.put('coverage-proposal', proposal.id, { ...proposal, status: 'accepted', decidedBy: author, decidedAt });
+      return revision;
+    });
   }
-  /** Approval is never taken from the input. Saving is an owner's act: a plan whose statement, tests, or criteria changed is approved by the save. An accepted proposal carries its own review. */
-  private writeRevision(base: number, author: string, requirements: Requirement[], approved?: { requirementId: string; review: CoverageReview }): Revision {
+  /** Approval is never taken from the input. Saving is an owner's act: a plan whose statement, tests, or criteria changed is approved by the save. An accepted proposal carries the review that names it. */
+  private writeRevision(base: number, author: string, requirements: Requirement[], approved: { requirementId: string; review: CoverageReview }[] = []): Revision {
     const row = this.db.prepare('SELECT MAX(id) AS id FROM revisions').get();
     assert(Number(row?.id ?? 0) === base, 'Requirements changed. Reload before saving.', 409);
     const previous = new Map((base ? this.revision(base).requirements : []).map(r => [r.id, r]));
@@ -111,7 +128,8 @@ export class Store {
       if (!coverage) return definition;
       const plan: ReviewedCoverage = { rationale: coverage.rationale, criteria: structuredClone(coverage.criteria) };
       const before = previous.get(r.id);
-      if (approved?.requirementId === r.id) plan.review = approved.review;
+      const accepted = approved.find(a => a.requirementId === r.id);
+      if (accepted) plan.review = accepted.review;
       else if (before?.coverage?.review && coverageDefinition(before) === coverageDefinition(r)) plan.review = before.coverage.review;
       else plan.review = { author, createdAt, ...(sourceSha ? { sourceSha } : {}) };
       return { ...definition, coverage: plan };
@@ -159,28 +177,17 @@ export class Store {
   }
   file(id: string): Attachment { return this.get<Attachment>('file', id); }
   catalog(): Catalog { return this.maybe<Catalog>('catalog', 'current') ?? { sourceSha: '', updatedAt: '', cases: [] }; }
-  decideCoverageProposal(id: string, author: string, accept: boolean, feedback?: string): CoverageProposal {
-    return this.atomic(() => this.decideCoverage(this.get<CoverageProposal>('coverage-proposal', id), author, accept, feedback));
-  }
-  private decideCoverage(proposal: CoverageProposal, author: string, accept: boolean, feedback?: string): CoverageProposal {
-    const id = proposal.id;
-    assert(proposal.status === 'pending', 'Proposal is already decided.', 409);
-    if (accept) {
-      const revision = this.latestRevision();
-      const catalog = this.catalog();
-      const conflict = coverageConflict(proposal, revision, catalog);
-      assert(!conflict, conflict ?? '', 409);
-      const requirement = revision.requirements.find(r => r.id === proposal.requirementId)!;
-      linkEvidence(requirement, proposal.plan, catalog, () => this.id(), proposal.procedures ?? []);
-      requirement.coverage = { rationale: proposal.plan.rationale, criteria: proposal.plan.criteria };
-      this.writeRevision(revision.id, author, revision.requirements, { requirementId: requirement.id,
-        review: { author, createdAt: new Date().toISOString(), sourceSha: proposal.sourceSha, proposalId: id } });
-    }
-    proposal.status = accept ? 'accepted' : 'rejected';
-    proposal.decidedBy = author; proposal.decidedAt = new Date().toISOString();
-    if (feedback) proposal.feedback = feedback;
-    this.put('coverage-proposal', id, proposal);
-    return proposal;
+  /** Acceptance belongs to `saveRevision`, which records the plan the owner actually saved. */
+  rejectCoverageProposal(id: string, author: string, feedback?: string): CoverageProposal {
+    return this.atomic(() => {
+      const proposal = this.get<CoverageProposal>('coverage-proposal', id);
+      assert(proposal.status === 'pending', 'Proposal is already decided.', 409);
+      proposal.status = 'rejected';
+      proposal.decidedBy = author; proposal.decidedAt = new Date().toISOString();
+      if (feedback) proposal.feedback = feedback;
+      this.put('coverage-proposal', id, proposal);
+      return proposal;
+    });
   }
   githubUsers(): ApprovedGitHubUser[] {
     return this.db.prepare('SELECT id,login,admin FROM github_users ORDER BY login COLLATE NOCASE').all().map((row) => ({ id: String(row.id), login: String(row.login), admin: row.admin === 1 }));
