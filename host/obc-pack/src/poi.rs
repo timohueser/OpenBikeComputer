@@ -194,6 +194,7 @@ where
 {
     let mut best: Option<usize> = None;
     let mut raw_name: Option<&str> = None;
+    let mut short_name: Option<&str> = None;
     let mut name_en: Option<&str> = None;
     let mut int_name: Option<&str> = None;
     let mut raw_hours: Option<&str> = None;
@@ -202,6 +203,10 @@ where
     for (k, v) in tags {
         if k == "name" {
             raw_name = Some(v);
+            continue;
+        }
+        if k == "short_name" {
+            short_name = Some(v);
             continue;
         }
         if k == "name:en" {
@@ -244,7 +249,7 @@ where
         return Some(Classification { subtype, name: Some(name), raw_hours: None, elevation_m, population: None });
     }
     if settlement_class_of(subtype).is_some() {
-        let name = utf8_record_name(&pick_settlement_name(raw_name?, name_en, int_name)?)?;
+        let name = utf8_record_name(&pick_settlement_name(raw_name?, short_name, name_en, int_name)?)?;
         return Some(Classification { subtype, name: Some(name), raw_hours: None, elevation_m: None, population });
     }
     Some(Classification {
@@ -276,11 +281,23 @@ fn utf8_record_name(raw: &str) -> Option<String> {
     (!name.is_empty() && !name.chars().any(char::is_control)).then(|| name.into())
 }
 
-/// Choose the settlement name the device can draw: the local `name`, else its ASCII fold, else
+/// Choose the settlement name the device can draw: the local name, else its ASCII fold, else
 /// `name:en`, else `int_name`. `None` drops the settlement, because a row of question marks is
 /// worse than no label. The fold turns Cyrillic, Greek and CJK into word breaks, so it gives an
 /// empty result for them and the language fall-backs run.
-fn pick_settlement_name(local: &str, name_en: Option<&str>, int_name: Option<&str>) -> Option<String> {
+///
+/// The local name is `short_name` when the source gives a shorter one — the map shows 12
+/// characters, so "Freiburg" is the whole label where "Freiburg im Breisgau" is a cut.
+fn pick_settlement_name(
+    name: &str,
+    short_name: Option<&str>,
+    name_en: Option<&str>,
+    int_name: Option<&str>,
+) -> Option<String> {
+    let local = short_name
+        .map(str::trim)
+        .filter(|short| !short.is_empty() && short.chars().count() < name.trim().chars().count())
+        .unwrap_or(name);
     // `glyph_supported` reads the real font strip, so the repertoire cannot drift from it.
     let drawable = |name: &&str| name.chars().all(obc_render::glyph_supported);
     if drawable(&local) {
@@ -802,6 +819,20 @@ mod tests {
         // A name the fold can spell never reaches the language fall-backs.
         let c = place("village", &[("name", "Ost—Dorf"), ("name:en", "East")]).expect("classifies");
         assert_eq!(c.name.as_deref(), Some("Ost Dorf"), "the fold answers first");
+    }
+
+    #[test]
+    fn a_shorter_short_name_wins() {
+        let c = place("city", &[("name", "Freiburg im Breisgau"), ("short_name", "Freiburg")]).expect("classifies");
+        assert_eq!(c.name.as_deref(), Some("Freiburg"), "the map shows 12 characters");
+        // A short name that is not shorter, empty, or absent leaves the name alone.
+        for short in ["Freiburg im Breisgau i. Br.", "  ", "Freiburg im Breisgau"] {
+            let c = place("city", &[("name", "Freiburg im Breisgau"), ("short_name", short)]).expect("classifies");
+            assert_eq!(c.name.as_deref(), Some("Freiburg im Breisgau"));
+        }
+        // The choice happens first; the fall-backs and the byte cut run on its result.
+        let c = place("village", &[("name", "東京都"), ("short_name", "東京"), ("name:en", "Tokyo")]).expect("class");
+        assert_eq!(c.name.as_deref(), Some("Tokyo"));
     }
 
     #[test]

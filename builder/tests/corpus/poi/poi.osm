@@ -6,7 +6,7 @@
   extraction, name folding, and the dedup pair. Coordinates sit near Freiburg on
   a tidy grid; only tags + relative distances matter.
 
-  Expected result (any config — POI extraction is config-free), 12 POIs kept,
+  Expected result (any config — POI extraction is config-free), 13 POIs kept,
   2 dedup-dropped, verified by ingest::tests::poi_fixture_end_to_end:
     N1 (501) -> water/drinking_water, "Marktbrunnen", node        KEPT
     N2 (502) -> resupply/supermarket, "Edeka Mueller" (folded ü)  KEPT (node
@@ -35,6 +35,9 @@
     N13 (536) -> place=village with no name                       (no candidate)
     N14 (537) -> resupply/bakery, "Baeckerdorf" (folded ä)        KEPT: the
                  service tag wins over the place tag
+    N15 (538) -> settlement/city, name "Freiburg im Breisgau"
+                 with short_name "Freiburg"                       KEPT as
+                 "Freiburg": a shorter short_name is the stored name
     W3 (603) -> settlement/village, "Ringdorf" closed way,
                  centroid (47.9502, 7.9002)                       KEPT
   Way nodes 511-514 / 521-524 / 541-544 are untagged geometry only.
@@ -119,6 +122,13 @@
     <tag k="place" v="village"/>
     <tag k="shop" v="bakery"/>
     <tag k="name" v="Bäckerdorf"/>
+  </node>
+  <!-- N15: a short_name shorter than the name -> the short name is stored -->
+  <node id="538" version="1" lat="47.9520" lon="7.9000">
+    <tag k="place" v="city"/>
+    <tag k="name" v="Freiburg im Breisgau"/>
+    <tag k="short_name" v="Freiburg"/>
+    <tag k="population" v="220286"/>
   </node>
   <!-- W3 ring: village mapped as an area around (47.9502, 7.9002) -->
   <node id="541" version="1" lat="47.9500" lon="7.9000"/>
