@@ -397,6 +397,11 @@ FREIBURG="$fixture_root/sim-freiburg/freiburg.obcm"
 # past their bands and stay quiet, which is the whole point of the bands.
 "$SIM" "$FREIBURG" --clock "2025-06-29T14:40" --center 7850000,47995000 --zoom 1.49 \
     --expect-screen Map --png "$OUT/map-settlements.png"
+# The same camera with the `Clock on map` switch off — `C u p p` flips it, `b` closes the sheet. The
+# top of the panel reserves what the frame really inks, so with no digits Emmendingen takes the band
+# the clock holds it out of above.
+"$SIM" "$FREIBURG" --clock "2025-06-29T14:40" --center 7850000,47995000 --zoom 1.49 --script "C u p p b" \
+    --expect-screen Map --png "$OUT/map-settlements-clock-off.png"
 # 30 m/px, with the camera east of Emmendingen so the town sits ~40 px from the left edge. A name is
 # pinned to its place, so both it and Mundingen hang over the left edge and the panel clips them. At
 # the `Caption` face the town's box is narrow enough to leave Maleck — the village of 400 that the

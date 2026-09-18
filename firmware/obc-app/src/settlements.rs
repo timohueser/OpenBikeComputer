@@ -630,7 +630,7 @@ mod tests {
         .expect("the fixture camera yields a bar")
         .ink();
         let pill = crate::screen::map::chip_band_box(w, h);
-        let chrome = crate::screen::map::label_reserved(&vp, None, w, &[pill, bar]);
+        let chrome = crate::screen::map::label_reserved(&vp, None, &[pill, bar]);
         let mut place = PointPlacement::new(&chrome);
 
         // The city has to land beside that box, or the test pins nothing: a repack of the fixture
