@@ -110,7 +110,7 @@ mod latin {
         // Every umlaut/accent named in the issue draws a glyph distinct from the `?` fallback and
         // from its bare ASCII base — i.e. the diacritic is really there, in every text tier.
         let fallback = glyph("?", Font::Body);
-        for font in [Font::Label, Font::Body, Font::Display] {
+        for font in [Font::Caption, Font::Label, Font::Body, Font::Display] {
             for (accented, base) in [("ä", "a"), ("ö", "o"), ("ü", "u"), ("é", "e"), ("è", "e"), ("à", "a")] {
                 let g = glyph(accented, font);
                 assert!(!g.is_empty(), "{accented} in {font:?} drew nothing");
@@ -157,7 +157,7 @@ fn rgb565(r: u8, g: u8, b: u8) -> u16 {
 
 #[test]
 fn capital_and_digit_metrics_match_raster_ink_and_cell_top() {
-    for font in [Font::Label, Font::Body, Font::Display, Font::Huge] {
+    for font in [Font::Caption, Font::Label, Font::Body, Font::Display, Font::Huge] {
         for text in ["H", "0123456789"] {
             let mut buf = Buf::new(340, 80);
             let anchor = Point::new(3, 5);
@@ -173,7 +173,7 @@ fn capital_and_digit_metrics_match_raster_ink_and_cell_top() {
 #[test]
 fn vertically_centered_capitals_have_even_visible_padding() {
     use obc_render::{Canvas, Surface};
-    for font in [Font::Label, Font::Body, Font::Display, Font::Huge] {
+    for font in [Font::Caption, Font::Label, Font::Body, Font::Display, Font::Huge] {
         for height in [70, 71] {
             let mut buf = Buf::new(100, 90);
             Canvas::new(&mut buf, &|_| RED).text_vcentered("H0", 5, (7, height), font, TextAlign::Left, 0);
@@ -188,7 +188,7 @@ fn vertically_centered_capitals_have_even_visible_padding() {
 #[test]
 fn ink_bounds_include_accents_descenders_and_fallback_glyphs() {
     use obc_render::text::text_ink_bounds;
-    for font in [Font::Label, Font::Body, Font::Display] {
+    for font in [Font::Caption, Font::Label, Font::Body, Font::Display] {
         for text in ["Q", "FERMÉ", "Drücken", "Appuyer", "gjpqy", "🚲"] {
             let mut buf = Buf::new(180, 50);
             draw_text(&mut buf, text, Point::zero(), font, TextAlign::Left, RED);

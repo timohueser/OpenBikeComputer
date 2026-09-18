@@ -18,11 +18,14 @@ use embedded_graphics::{
 
 use crate::font_data;
 
-/// A text size — one of four Terminus tiers. The names describe intent
-/// (`Label` / `Body` / `Display` / `Huge`), not pixel sizes, so screen code reads the same
-/// regardless of which Terminus cut each maps to (see [`Font::mono`]).
+/// A text size — one of five Terminus tiers. The names describe intent
+/// (`Caption` / `Label` / `Body` / `Display` / `Huge`), not pixel sizes, so screen code reads the
+/// same regardless of which Terminus cut each maps to (see [`Font::mono`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Font {
+    /// Terminus 10×20 (cap ≈ 1.76 mm) — annotation over other content, where the text names a
+    /// thing the rider already sees: the settlement names on the map.
+    Caption,
     /// Terminus 12×24 (cap ≈ 2.0 mm) — dense labels, list captions, the HUD strip title.
     Label,
     /// Terminus 14×28 (cap ≈ 2.44 mm) — list / menu rows and body text.
@@ -39,6 +42,7 @@ impl Font {
     #[inline]
     pub(crate) fn mono(self) -> &'static MonoFont<'static> {
         match self {
+            Font::Caption => &font_data::TER_U20B,
             Font::Label => &font_data::TER_U24B,
             Font::Body => &font_data::TER_U28B,
             Font::Display => &font_data::TER_U32B,
@@ -62,6 +66,7 @@ impl Font {
     #[inline]
     pub const fn cap_height(self) -> u32 {
         match self {
+            Font::Caption => 13,
             Font::Label => 15,
             Font::Body => 18,
             Font::Display => 20,
@@ -140,7 +145,7 @@ pub fn text_ink_bounds(s: &str, font: Font) -> Option<core::ops::Range<i32>> {
 
 /// Whether the text tiers can render `c` as a real glyph rather than the silent `?` fallback.
 ///
-/// The `Label` / `Body` / `Display` tiers share the one `LATIN` glyph strip added in #489/#601
+/// The `Caption` / `Label` / `Body` / `Display` tiers share the one `LATIN` glyph strip
 /// (ASCII `0x20..=0x7f` + Latin-1 Supplement `0xa0..=0xff` + Latin Extended-A `0x100..=0x17f`);
 /// any other char maps to `?`'s slot and paints as `?`. This reads that mapping off the **actual
 /// font**, so callers (e.g. the i18n repertoire test) are pinned to the real coverage, not a
@@ -148,7 +153,7 @@ pub fn text_ink_bounds(s: &str, font: Font) -> Option<core::ops::Range<i32>> {
 /// consulted — it carries no user-facing copy.
 #[inline]
 pub fn glyph_supported(c: char) -> bool {
-    // Any text tier shares the `LATIN` mapping; the Body cut stands in for all three. An
+    // Any text tier shares the `LATIN` mapping; the Body cut stands in for all of them. An
     // unmapped char resolves to `?`'s fallback slot — so `c` is covered iff it lands on a
     // different slot, except `?` itself, which legitimately owns that slot. (`index` resolves
     // on the `&dyn GlyphMapping` field, so its trait needs no import here.)
@@ -171,7 +176,7 @@ where
 
 /// Draw a text run counter-clockwise from `bottom_left`, optionally downsampling the source bitmap
 /// by an integer `divisor`. Peak View uses the Label face at 2:1, yielding a compact 6x12 label
-/// without shipping a fourth font strip. Each output pixel is on when any source pixel in its
+/// without shipping another font strip. Each output pixel is on when any source pixel in its
 /// `divisor` square is on, so the thin Terminus strokes remain legible after reduction.
 pub fn draw_text_ccw<D>(target: &mut D, s: &str, bottom_left: Point, font: Font, divisor: u32, color: D::Color)
 where
