@@ -10,7 +10,7 @@ use crate::{
     Gesture, Msg,
 };
 use core::fmt::Write;
-use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
+use embedded_graphics::{draw_target::DrawTarget, prelude::Point, primitives::Rectangle};
 use obc_reader::PoiCategory;
 use obc_render::{
     rect,
@@ -112,8 +112,8 @@ impl FindPlaceScreen {
                 max = (max.0.max(p.lon), max.1.max(p.lat));
             }
         }
-        let vp = fit(min, max, rx.w, rx.h, 208);
-        let _ = super::map::draw_map_scene(cv, rx, &vp, None);
+        let vp = fit(min, max, rx.w, rx.h, RESULTS_PANEL_TOP);
+        let _ = super::map::draw_map_scene(cv, rx, &vp, None, &[panel(rx.w, rx.h, RESULTS_PANEL_TOP)]);
         for i in 0..rx.find.results.len() {
             if let Some(p) = rx.find.selected(i, rx.poi_scratch, rx.corridor) {
                 let (x, y) = vp.to_screen(p.lon, p.lat);
@@ -130,7 +130,7 @@ impl FindPlaceScreen {
             TextAlign::Left,
             PARCHMENT,
         );
-        cv.fill(rect(0, 208, rx.w, rx.h - 208), PARCHMENT);
+        cv.fill(panel(rx.w, rx.h, RESULTS_PANEL_TOP), PARCHMENT);
         cv.round(rect(10, 210, rx.w - 20, 104), 6, AMBER);
         let count = rx.find.results.len();
         if self.selected >= count.max(1) {
@@ -301,11 +301,26 @@ impl VisitReviewScreen {
                 min = (min.0.min(target.display.0), min.1.min(target.display.1));
                 max = (max.0.max(target.display.0), max.1.max(target.display.1));
             }
-            fit(min, max, rx.w, rx.h, if self.accepted || self.returning { 192 } else { 168 })
+            fit(min, max, rx.w, rx.h, if self.accepted || self.returning { REVIEW_PANEL_TOP } else { 168 })
         } else {
             rx.state.viewport(rx.w as f32, rx.h as f32)
         };
-        let marker_color = super::map::draw_map_scene(cv, rx, &vp, None);
+        // The opening-hours pill floats over the map above the panel, so its label is resolved
+        // before the names place and the one box is both reserved and drawn.
+        let hours = opening_hours(rx.poi_scratch.detail_schedule.as_ref(), rx.place_local);
+        let hours_label = (!self.accepted && !self.returning).then(|| {
+            let closed = rx
+                .poi_scratch
+                .detail_schedule
+                .is_some_and(|s| s.status(rx.place_local) == obc_reader::hours::OpeningStatus::Closed);
+            hours.as_ref().map_or_else(
+                || rx.t(if closed { Msg::AssistantClosed } else { Msg::PoiDetailHoursNotListed }),
+                |hours| hours.as_str(),
+            )
+        });
+        let chrome: heapless::Vec<Rectangle, 2> =
+            [Some(panel(rx.w, rx.h, REVIEW_PANEL_TOP)), hours_label.map(hours_pill)].into_iter().flatten().collect();
+        let marker_color = super::map::draw_map_scene(cv, rx, &vp, None, &chrome);
         if visible {
             if let Some(scratch) = rx.scratch.as_deref_mut() {
                 let (target, color) = cv.split();
@@ -330,24 +345,16 @@ impl VisitReviewScreen {
                 let (target, colors) = cv.split();
                 scratch.draw_marker(target, &vp, fix.lon, fix.lat, fix.course, colors(color));
             }
-            if !self.accepted && !self.returning {
-                let hours = opening_hours(rx.poi_scratch.detail_schedule.as_ref(), rx.place_local);
-                let closed = rx
-                    .poi_scratch
-                    .detail_schedule
-                    .is_some_and(|s| s.status(rx.place_local) == obc_reader::hours::OpeningStatus::Closed);
-                let missing = rx.t(if closed { Msg::AssistantClosed } else { Msg::PoiDetailHoursNotListed });
-                let label = hours.as_ref().map_or(missing, |hours| hours.as_str());
-                let width = label.chars().count() as i32 * Font::Label.char_width() as i32 + 12;
-                cv.round(rect(8, 164, width, 26), 4, PARCHMENT);
-                cv.text(label, Point::new(14, 164), Font::Label, TextAlign::Left, INK);
+            if let Some(label) = hours_label {
+                cv.round(hours_pill(label), 4, PARCHMENT);
+                cv.text(label, Point::new(14, HOURS_PILL_TOP), Font::Label, TextAlign::Left, INK);
             }
         }
         cv.fill(rect(0, 0, rx.w, 40), PARCHMENT);
         cv.round(rect(4, 4, rx.w - 8, 34), 6, WOOD);
         let title = rx.marquee.fit(&self.name, 18, Some(rect(4, 4, rx.w - 8, 34)));
         cv.text(&title, Point::new(14, 8), Font::Label, TextAlign::Left, PARCHMENT);
-        cv.fill(rect(0, 192, rx.w, rx.h - 192), PARCHMENT);
+        cv.fill(panel(rx.w, rx.h, REVIEW_PANEL_TOP), PARCHMENT);
         if let Some(Costs { arrival_m, arrival_ascent_m, added_m, added_ascent_m }) = rx.find.review_costs {
             figures(cv, arrival_m, arrival_ascent_m, 196, false, rx.settings.units);
             cv.text(
@@ -432,6 +439,24 @@ fn dotted_connector(cv: &mut impl Surface, start: Point, end: Point) {
 
 fn letter(i: usize) -> &'static str {
     ["A", "B", "C", "D", "E", "F"][i.min(5)]
+}
+
+/// Top row of the results list's opaque bottom panel.
+pub(super) const RESULTS_PANEL_TOP: i32 = 208;
+/// Top row of the visit review's opaque bottom panel.
+const REVIEW_PANEL_TOP: i32 = 192;
+/// Row the review's opening-hours pill sits on, over the map above the panel.
+const HOURS_PILL_TOP: i32 = 164;
+
+/// The opaque panel a map-over-list screen fills from `top` to the bottom edge. Both the box it
+/// reserves from the settlement names and the box it fills come from here, so they cannot drift.
+pub(super) fn panel(w: i32, h: i32, top: i32) -> Rectangle {
+    rect(0, top, w, h - top)
+}
+
+/// The review's opening-hours pill, sized to its label.
+fn hours_pill(label: &str) -> Rectangle {
+    rect(8, HOURS_PILL_TOP, label.chars().count() as i32 * Font::Label.char_width() as i32 + 12, 26)
 }
 pub(super) fn fit(min: (i32, i32), max: (i32, i32), w: i32, h: i32, bottom: i32) -> Viewport {
     let lat = min.1 + (max.1 - min.1) / 2;
