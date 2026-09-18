@@ -328,7 +328,7 @@ Back from Map display closes the sheet. A replacement sheet arrives without an e
 animation.
 
 Map icons stay upright at their source coordinates. Peaks include unnamed summits. A
-small white backing keeps each glyph visible over terrain. Peaks appear at 50 metres per
+white backing keeps each 22-pixel glyph visible over terrain. Peaks appear at 50 metres per
 pixel or closer, landmarks at 20, and service POIs at 10. A stable overlap rule gives water
 and campsites priority, then peaks, landmarks and other services. The rider, waypoints,
 clock and bottom map controls have reserved space. Route lines draw above icons.
@@ -336,10 +336,12 @@ clock and bottom map controls have reserved space. Route lines draw above icons.
 The shared application retains at most 64 candidates and draws at most 24 icons, with
 lower limits at wider scales. A padded viewport cache avoids storage reads during small
 camera movements. Each preparation advances at most eight POI index or 512-byte record
-steps and eight landmark query steps. Work continues on a timer and stops when complete.
-Map, visibility or coverage changes invalidate the selection. Visible candidates take
-priority over points in the padding. A transient read failure gets two delayed retries;
-a persistent failure stops until the view or map changes.
+steps and eight landmark query steps. Pending work resumes on the next available frame
+and stops when complete. During a viewport refill, valid cached icons stay visible at
+their new screen positions. Disabled categories and points outside the new coverage are
+removed at once. A replacement map clears all cached icons. Visible candidates take
+priority over points in the padding. A transient read failure keeps valid cached icons
+and gets two delayed retries; a persistent failure stops until the view or map changes.
 
 A row can also hold a **value** in place of a screen. Such a row slides the sheet to a nested
 editor: `Up` and `Down` change the staged choice, `Select` writes it and returns to the row table,
