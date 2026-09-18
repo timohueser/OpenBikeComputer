@@ -329,8 +329,10 @@ animation.
 
 Map icons stay upright at their source coordinates. Peaks include unnamed summits and
 use a small black triangle without a backing. Other icons use 22-pixel glyphs on white
-discs with a thin gray border. Peaks appear at 50 metres per pixel or closer, landmarks
-at 20, and service POIs at 10. The rider, waypoints, clock and bottom map controls have
+discs with a thin gray border. Peaks appear only with contours enabled and at 10 metres
+per pixel or closer, where the shipped map shows the full contour set. The wider,
+index-only contour views do not show peaks. Landmarks appear at 20 metres per pixel
+or closer, and service POIs at 10. The rider, waypoints, clock and bottom map controls have
 reserved space. Route lines draw above icons.
 
 The shared application retains at most 64 candidates and draws at most 24 icons, with
