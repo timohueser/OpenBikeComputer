@@ -785,10 +785,11 @@ trick; it now rests on the flat store's commit, which is the atomicity the trick
 > shards, no roles, no manifest and no set. Nothing in this section is normative any more, and
 > nothing in it may be extended. **The producers are gone**: `obcm-assemble`'s shard emitter and
 > the builder's `parseSetManifest` and set upload flows were deleted in FS7.5b2, so nothing in this
-> tree writes a manifest or a shard any more. What is kept until the board cutover (FS7.5c) is the
-> *reading* half, and only because cards written before the cut still carry it:
-> `obc-formats/src/obcs.rs` (the codec and its three wire vectors), the board's set mount, and the
-> `mapShard` / `mapSet` / `terrainShard` object types of the wire contract.
+> tree writes a manifest or a shard any more. **The readers are gone too**: FS7.5c deleted
+> `obc-formats/src/obcs.rs` and the board's set mount, and the board now refuses a card that is not
+> a flat store. Only two names stay — the `MapShard` and `MapSetManifest` object kinds of the flat
+> wire contract (`firmware/obc-storage/src/flat/wire.rs`), which the flat store catalog counts as
+> maps.
 >
 > **What replaced each part.** The two 4 GiB ceilings §5 opens with are both gone: OBCM v14's scaled
 > offsets (`OBCM_Spec.md` §1.1) address 64 GiB of interior, and the flat store
