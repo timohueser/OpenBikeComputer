@@ -39,6 +39,8 @@ use obc_ports::Fix;
 use super::vocab::marquee::fit;
 use super::{Ctx, RenderFrame, Screen, ScreenTick, StatisticsScreen, Transition};
 
+pub(crate) mod placement;
+
 /// Fallback backdrop when a map carries no backdrop style.
 const DEFAULT_BG_RGB565: u16 = 0x2104;
 
@@ -637,6 +639,28 @@ fn draw_waypoint_chip(cv: &mut impl Surface, w: i32, h: i32, name: &str, dist: &
     cv.text(dist, Point::new(px + pw - WPT_CHIP_PAD_X, ty), font, TextAlign::Right, INK);
 }
 
+// ---- Haloed map text ------------------------------------------------------
+
+/// Draw `s` with a one-pixel halo, so it stays readable over any map fill: the string four times
+/// at ±1 px in `halo`, then once at `at` in `ink`. Returns the ink draw's end point.
+///
+/// The map chrome halos in [`palette::PARCHMENT`](super::palette::PARCHMENT) over
+/// [`palette::INK`](super::palette::INK), which reads over every fill the map draws.
+pub(crate) fn halo_text(
+    cv: &mut impl Surface,
+    s: &str,
+    at: Point,
+    font: Font,
+    align: TextAlign,
+    ink: u16,
+    halo: u16,
+) -> Point {
+    for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+        cv.text(s, Point::new(at.x + dx, at.y + dy), font, align, halo);
+    }
+    cv.text(s, at, font, align, ink)
+}
+
 // ---- Clock (top-centre) ---------------------------------------------------
 
 /// Top inset of the floating `HH:MM` digits.
@@ -661,10 +685,7 @@ pub fn clock_region(w: i32) -> Rectangle {
 fn draw_clock(cv: &mut impl Surface, w: i32, now: DateTime) {
     use super::palette::*;
     let s = super::vocab::fmt::clock_hm(now.hour, now.minute);
-    for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-        cv.text(&s, Point::new(w / 2 + dx, CLOCK_TOP + dy), Font::Body, TextAlign::Center, PARCHMENT);
-    }
-    cv.text(&s, Point::new(w / 2, CLOCK_TOP), Font::Body, TextAlign::Center, INK);
+    halo_text(cv, &s, Point::new(w / 2, CLOCK_TOP), Font::Body, TextAlign::Center, INK, PARCHMENT);
 }
 
 // ---- Low-battery cue (top-left corner) -----------------------------------
@@ -735,10 +756,7 @@ fn draw_scale_bar(cv: &mut impl Surface, h: i32, chip_band: i32, mpp: f32, units
     cv.line(Point::new(x1, y - SCALE_TICK_H), Point::new(x1, y), INK);
     // The label sits just above the bar, left-aligned to its start. Halo it too, so it reads on terrain.
     let ly = y - SCALE_TICK_H - Font::Label.line_height() as i32 - 1;
-    for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-        cv.text(&label, Point::new(x0 + dx, ly + dy), Font::Label, TextAlign::Left, PARCHMENT);
-    }
-    cv.text(&label, Point::new(x0, ly), Font::Label, TextAlign::Left, INK);
+    halo_text(cv, &label, Point::new(x0, ly), Font::Label, TextAlign::Left, INK, PARCHMENT);
 }
 
 /// The nice 1/2/5 mantissa steps a scale bar chooses from, largest-first — the classic map-scale
@@ -1413,5 +1431,40 @@ mod tests {
         let name_budget = (w - 2 * WPT_CHIP_INSET_X) - fixed_w;
         let chars = (name_budget / font.char_width() as i32) as usize;
         assert_eq!(fit("Pass Summit", chars).as_str(), "Pass Summit", "the full name fits, no ellipsis");
+    }
+
+    /// The shared halo helper: the ink glyph is the last writer at the anchor, and every pixel one
+    /// step off it holds halo or ink — never the bare background.
+    #[test]
+    fn halo_text_writes_the_halo_under_the_ink() {
+        use crate::harness::support::Buf;
+        use crate::screen::palette::{INK, PARCHMENT};
+        use embedded_graphics::pixelcolor::Rgb888;
+        use obc_render::Canvas;
+        let color = |c| {
+            let (r, g, b) = obc_reader::rgb565_to_rgb888(c);
+            Rgb888::new(r, g, b)
+        };
+        let at = Point::new(20, 8);
+        // The bare glyph, for the set of pixels the ink pass owns.
+        let mut plain = Buf::new(80, 48);
+        Canvas::new(&mut plain, &color).text("12km", at, Font::Label, TextAlign::Left, INK);
+        let ink_px: std::vec::Vec<_> = (0..48)
+            .flat_map(|y| (0..80).map(move |x| (x, y)))
+            .filter(|&(x, y)| plain.get(x, y) == color(INK))
+            .collect();
+        assert!(!ink_px.is_empty(), "the glyphs draw ink");
+
+        let mut haloed = Buf::new(80, 48);
+        halo_text(&mut Canvas::new(&mut haloed, &color), "12km", at, Font::Label, TextAlign::Left, INK, PARCHMENT);
+        for &(x, y) in &ink_px {
+            assert_eq!(haloed.get(x, y), color(INK), "ink is the last writer at ({x}, {y})");
+            for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                let c = haloed.get(x + dx, y + dy);
+                assert!(c == color(INK) || c == color(PARCHMENT), "({}, {}) is covered", x + dx, y + dy);
+            }
+        }
+        assert!(haloed.count(color(PARCHMENT)) > 0, "the halo is visible around the glyphs");
+        assert_eq!(haloed.count(color(INK)), ink_px.len(), "the ink pass paints no more than the bare glyph");
     }
 }
