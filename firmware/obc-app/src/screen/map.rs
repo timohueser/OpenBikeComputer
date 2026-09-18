@@ -363,6 +363,8 @@ where
     // the terrain layer in the collect pass, so nothing is decoded, let alone drawn.
     let cfg = obc_render::RenderConfig { terrain_layer: rx.settings.map_contours };
     let mut stats = scratch.render_timed(target, scene, vp, bg, cfg, color_fn, rx.clock);
+    rx.map_icons.draw(cv, vp, rx.state.user_fix.map(|fix| (fix.lon, fix.lat)), rx.waypoints.as_slice());
+    let (target, color_fn) = cv.split();
     let arrows_at = (skip.is_none() && vp.meters_per_pixel() <= CHEVRON_MAX_MPP).then_some(rx.navigation.progress_m);
 
     if let Some(route) = rx.route {

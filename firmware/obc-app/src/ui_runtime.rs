@@ -131,6 +131,7 @@ pub(crate) struct UiRuntime {
     pub(crate) poi_scratch: screen::PoiScratch,
     pub(crate) find: crate::find_place::FindState,
     pub(crate) landmarks: crate::landmarks::Landmarks,
+    pub(crate) map_icons: crate::map_icons::MapIcons,
     pub(crate) ahead: crate::whats_next::AheadState,
     /// The single route-corridor snapshot buffer (epic #946, U2) — the map POIs near the route
     /// ahead, frozen on take. Held once here for the same reason as
@@ -188,6 +189,7 @@ impl UiRuntime {
             poi_scratch: PoiScratch::new(),
             find: crate::find_place::FindState::new(),
             landmarks: crate::landmarks::Landmarks::new(),
+            map_icons: crate::map_icons::MapIcons::new(),
             ahead: crate::whats_next::AheadState::new(),
             corridor_scratch: CorridorScratch::new(),
             next_ahead: NextAhead::new(),
@@ -756,6 +758,7 @@ impl UiRuntime {
             poi_scratch,
             find,
             landmarks,
+            map_icons,
             ahead,
             corridor_scratch,
             next_ahead,
@@ -764,6 +767,7 @@ impl UiRuntime {
             sensor_scan_hits,
         } = self;
         assert!(ahead.window.is_none());
+        assert!(map_icons.is_empty());
         assert_eq!(stack.len(), 1, "Home is the only screen");
         assert!(matches!(stack[0], Screen::Home(_)), "Home is the stack root");
         assert!(!input.overlay_active() && input.last_gesture().is_none(), "no gesture in flight");
