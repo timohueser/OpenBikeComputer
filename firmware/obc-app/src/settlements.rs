@@ -35,10 +35,17 @@ use crate::screen::vocab::marquee::{fit, Fitted};
 const MAX_CANDIDATES: usize = 16;
 /// Labels drawn in one frame. One constant for every scale.
 const MAX_LABELS: usize = 6;
-/// Clear space around a label, in pixels. One constant for every scale.
-const LABEL_MARGIN_PX: i32 = 12;
-/// Characters shown. 12 at the 12 by 24 face is 144 pixels, 60 percent of the panel.
-const MAX_LABEL_CHARS: usize = 12;
+/// The face the names are drawn in. A name annotates a place the rider already sees on the map, so
+/// it is set one tier below the chrome it sits among; every metric below follows from this.
+const LABEL_FONT: Font = Font::Caption;
+/// Clear space around a label, in pixels: one glyph cell of [`LABEL_FONT`]. One constant for every
+/// scale.
+const LABEL_MARGIN_PX: i32 = 10;
+/// Characters shown, cut with `..`. A pinned name is never refused for width, so this does not
+/// decide whether a name is drawn; it decides how much of a long name reads, and how much space the
+/// box takes from its neighbours. 14 at the 10 by 20 face is 140 pixels, so two names still cannot
+/// sit side by side on the 240 px panel, while the names a rider meets here read whole.
+const MAX_LABEL_CHARS: usize = 14;
 /// Slack around the panel, so a small pan needs no new query.
 const CANDIDATE_PAD_PX: f32 = 48.0;
 /// The scale band, in metres per pixel, in which each class shows a name: the class, then `min`,
@@ -193,7 +200,7 @@ fn label_of(c: &Candidate) -> Fitted {
 /// through the shared halo, and never rotated: a name reads upright at every heading.
 pub(crate) fn draw_labels(cv: &mut impl Surface, vp: &Viewport, cache: &SettlementCache, place: &mut PointPlacement) {
     for (at, i) in placements(vp, cache, place) {
-        halo_text(cv, &label_of(&cache.items[usize::from(i)]), at, Font::Label, TextAlign::Center, INK, PARCHMENT);
+        halo_text(cv, &label_of(&cache.items[usize::from(i)]), at, LABEL_FONT, TextAlign::Center, INK, PARCHMENT);
     }
 }
 
@@ -231,8 +238,8 @@ fn placements(vp: &Viewport, cache: &SettlementCache, place: &mut PointPlacement
         if !(0..w).contains(&x) || !(0..h).contains(&y) {
             continue;
         }
-        let tw = text_width(&label_of(c), Font::Label) as i32;
-        let th = Font::Label.line_height() as i32;
+        let tw = text_width(&label_of(c), LABEL_FONT) as i32;
+        let th = LABEL_FONT.line_height() as i32;
         let top = y - th / 2;
         if place.try_place(rect(x - tw / 2, top, tw, th), LABEL_MARGIN_PX) {
             // `halo_text` centres on x and takes y as the top of the line.
@@ -554,28 +561,36 @@ mod tests {
         let drawn = drawn_at(&vp, &cache, &mut open_panel());
         let names: StdVec<_> = drawn.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, ["Westedge"], "a place off the panel has no label");
-        let tw = text_width("Westedge", Font::Label) as i32;
+        let tw = text_width("Westedge", LABEL_FONT) as i32;
         assert_eq!(drawn[0].1.x, 6, "the name stays centred on its place");
         assert!(6 - tw / 2 < 0, "and the name is wide enough that the panel really clips it");
     }
 
+    /// The exact boundary, derived from the constants so it holds whatever face the labels use: two
+    /// names on the same column are centred `separation` px apart, so their boxes leave
+    /// `separation - LABEL_FONT.line_height()` of clear space and [`LABEL_MARGIN_PX`] alone decides.
     #[test]
     fn the_margin_suppresses_a_lower_priority_neighbour() {
         // 30 m/px, where the town band and the village band overlap.
         let vp = vp_at(CAM, 30.0);
-        let close = cache_of(&[
-            at_screen(&vp, 120.0, 150.0, SettlementClass::Town, "Emmendingen", 28_000),
-            at_screen(&vp, 120.0, 158.0, SettlementClass::Village, "Maleck", 400),
-        ]);
-        assert_eq!(drawn(&vp, &close, &mut open_panel()), ["Emmendingen"], "8 px apart is inside the 12 px margin");
+        let pair = |separation: f32| {
+            cache_of(&[
+                at_screen(&vp, 120.0, 150.0, SettlementClass::Town, "Emmendingen", 28_000),
+                at_screen(&vp, 120.0, 150.0 + separation, SettlementClass::Village, "Maleck", 400),
+            ])
+        };
+        let limit = (LABEL_FONT.line_height() as i32 + LABEL_MARGIN_PX) as f32;
 
-        // The same pair with the panel rows the margin asks for: the label is 24 px tall, so the
-        // second name clears at 36 px.
-        let clear = cache_of(&[
-            at_screen(&vp, 120.0, 150.0, SettlementClass::Town, "Emmendingen", 28_000),
-            at_screen(&vp, 120.0, 186.0, SettlementClass::Village, "Maleck", 400),
-        ]);
-        assert_eq!(drawn(&vp, &clear, &mut open_panel()), ["Emmendingen", "Maleck"]);
+        assert_eq!(
+            drawn(&vp, &pair(limit - 1.0), &mut open_panel()),
+            ["Emmendingen"],
+            "one pixel short of the margin, the lower-priority name is refused"
+        );
+        assert_eq!(
+            drawn(&vp, &pair(limit), &mut open_panel()),
+            ["Emmendingen", "Maleck"],
+            "a line height plus the margin apart, both names are drawn"
+        );
     }
 
     #[test]
@@ -633,7 +648,7 @@ mod tests {
     fn a_long_name_is_cut_with_two_dots() {
         let vp = vp_at(CAM, 30.0);
         let cache = cache_of(&[at_screen(&vp, 120.0, 160.0, SettlementClass::Town, "Sankt Peter im Tal", 5_000)]);
-        assert_eq!(drawn(&vp, &cache, &mut open_panel()), ["Sankt Pete.."]);
+        assert_eq!(drawn(&vp, &cache, &mut open_panel()), ["Sankt Peter.."]);
     }
 
     #[test]
@@ -654,23 +669,24 @@ mod tests {
         assert_eq!(drawn(&vp, &cache, &mut open_panel()).len(), MAX_LABELS);
     }
 
-    /// The owner's case, with the real places. East of Emmendingen at 30 m/px the town sits 40 px
-    /// from the left edge, where its 11-character name is 132 px wide. The edge-drop rule refused
-    /// it and drew Maleck, a village of 400, in the middle of the panel.
+    /// The owner's case, with the real places. East of Emmendingen at 30 m/px the town sits nearer
+    /// the left edge than half its name is wide, which the edge-drop rule refused outright. The name
+    /// is now pinned to the place and the panel clips it. At this face its box is also narrow enough
+    /// to leave Maleck, a village of 400 in the middle of the panel, its own name.
     #[test]
-    fn a_wide_town_name_at_the_edge_beats_a_small_village_in_the_middle() {
+    fn a_wide_town_name_at_the_edge_is_drawn_and_pinned() {
         let vp = vp_at((7_881_900, 48_121_100), 30.0);
         let cache = cache_of(&[
             candidate(SettlementClass::Village, "Maleck", 400, 48_123_600, 7_889_400),
             candidate(SettlementClass::Town, "Emmendingen", 28_000, 48_121_100, 7_849_700),
         ]);
         let (x, _) = vp.to_screen(7_849_700, 48_121_100);
-        let tw = text_width("Emmendingen", Font::Label) as i32;
+        let tw = text_width("Emmendingen", LABEL_FONT) as i32;
         assert!(x < tw / 2, "the place is nearer the left edge than half the name is wide");
 
         let drawn = drawn_at(&vp, &cache, &mut open_panel());
         let names: StdVec<_> = drawn.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, ["Emmendingen"], "the town is drawn, and it takes the village's space");
+        assert_eq!(names, ["Emmendingen", "Maleck"], "the town at the edge is drawn, best first");
         assert_eq!(drawn[0].1.x, x, "the name stays pinned to its place and the panel clips it");
     }
 
