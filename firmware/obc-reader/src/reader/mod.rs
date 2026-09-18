@@ -24,9 +24,11 @@
 mod cache;
 mod errors;
 mod geometry;
+mod map_points;
 mod nav;
 pub mod places;
 mod poi;
+pub use map_points::MapPointQuery;
 mod summit;
 
 pub(crate) use cache::MAP_CHUNK_SLOTS;
@@ -41,7 +43,7 @@ pub use nav::{
     NavNeighbor, NavNodeRef, NavTileCache, NAV_MAX_CHUNK_BYTES,
 };
 use poi::parse_poi_directory;
-pub use poi::{Poi, PoiCatEntry, PoiDirectory, MAX_POI_RESULTS, POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES};
+pub use poi::{MapPoint, Poi, PoiCatEntry, PoiDirectory, MAX_POI_RESULTS, POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES};
 pub use summit::{Summit, MAX_SUMMIT_RADIUS_M};
 
 use heapless::Vec;
