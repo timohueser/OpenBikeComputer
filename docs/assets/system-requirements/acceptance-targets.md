@@ -188,3 +188,53 @@ REQ-324 makes external export required. “Support as many services as possible�
 | SYNC-05 — Local deletion and reset | Respect the scope of each device, phone, and service action | Device reset does not erase phone archives or remote activities. Disconnection does not erase remote activities. |
 
 Strava documents asynchronous activity uploads in its [upload API](https://developers.strava.com/docs/uploads/). Intervals.icu documents a public API with activity support and OAuth2/API-key authentication on its [integrations page](https://www.intervals.icu/features/app-integrations/). These support investigating direct integrations; they do not establish application approval or a working OpenBikeComputer integration.
+
+## Device route-coverage notices
+
+REQ-359–361 apply to received routes and saved routes selected for riding. These are device-only information notices; they do not add a transfer-protocol requirement or block route use.
+
+| Criterion | Required behavior | Conditions and open details |
+| --- | --- | --- |
+| COV-01 | Check the route path against installed detailed map coverage | Include sections between route points, gaps inside the coverage, and routes with both endpoints inside coverage but an intervening section outside it. A coverage boundary alone must not hide internal gaps. Geographic coverage does not establish routing access or source completeness. |
+| COV-02 | Notify on receipt and again on route start | Use the route-received popup after storage. On selection for riding, check against the current map and briefly show limitations without an additional acceptance. Notice duration and coverage-check response bound: TODO. Preview browsing alone does not trigger the start notice. |
+| COV-03 | Distinguish unavailable or unverified coverage | Include no map, unreadable map, and an incomplete check. Do not describe these as confirmed coverage. The information must not prevent storage, selection, navigation, or recording. |
+
+## Routing-profile policies
+
+REQ-362–364 apply to every device-calculated route, including visits and their continuations, detours, easier routes, Back on route, and Route to start. Imported route geometry is not a calculated-route suitability guarantee. Profile choices below remain TODO; the requirement to define and enforce them is accepted.
+
+| Criterion | Policy to define for Road, Gravel, MTB, and Touring | Required distinction |
+| --- | --- | --- |
+| ROUTE-01 | Permitted and excluded connections; preferences between permitted choices | Exclusions are mandatory. Preferences must not override an exclusion when no permitted route is found. Per-profile choices: TODO. |
+| ROUTE-02 | Mapped bicycle access, travel direction, barriers, and conditional restrictions | Define applicable restrictions and the treatment of unknown access or unresolved conditions. Per-profile eligibility rules: TODO. |
+| ROUTE-03 | Surface and trail difficulty | Define permitted classes and preferences separately, including how unknown surface or difficulty affects eligibility. Per-profile choices: TODO. |
+| ROUTE-04 | Steps, pushing, and carrying a bicycle | Define permitted and excluded cases for each profile. Disclose known required pushing/carrying and steps before route acceptance. Per-profile choices: TODO. |
+| ROUTE-05 | Ferries | Define eligibility and disclose ferry sections before acceptance. Mapped existence does not establish current operation or a departure time. Per-profile choices: TODO. |
+| ROUTE-06 | Suitability information before acceptance | Identify known affected sections and restricted or uncertain access. Do not treat missing surface/difficulty data as confirmation of suitability. Presentation and section grouping: TODO. |
+
+These policies use available source data. They do not guarantee that mapped access or conditions match the physical route on the day of travel.
+
+## Operation after failures
+
+REQ-239 and REQ-365–367 require the minimum behavior below. Dependencies named in each row must remain available; the table does not require a function to operate without its inputs. Existing accepted-data preservation and recovery limits still apply.
+
+| Criterion | Failure condition | Minimum available behavior |
+| --- | --- | --- |
+| FAIL-01 | GNSS unavailable | Map browsing, saved-route inspection, and ride controls remain accessible when storage and display work. Live position is unavailable; no fabricated movement or current emergency position. |
+| FAIL-02 | Barometer or compass unavailable | GNSS navigation and position recording continue when their inputs remain valid. Dependent values are unavailable or use the already specified fallback; unknown heading follows REQ-280. |
+| FAIL-03 | Recording writes fail, including full storage | The unresolved recording failure remains indicated. Navigation, map viewing, and emergency location continue when their data remain available. Any navigation change requiring a failed write must retain its existing failure behavior. |
+| FAIL-04 | Map or storage unreadable | Emergency coordinates remain available with working GNSS. Physical controls and a path to the applicable map/storage replacement or recovery operation remain accessible. Do not imply that unreadable map or route data remain usable. |
+| FAIL-05 | Application unresponsive | Physical restart remains possible without external equipment. Existing recording and navigation recovery rules apply afterward. Control action, hold duration, and restart response bound: TODO. |
+| FAIL-06 | Repeated application startup failures | Provide access to a recovery state without indefinite restart. Do not erase rider data without explicit confirmation. Failure count/window, successful-start definition, and recovery entry conditions: TODO. Firmware recovery remains subject to REQ-354. |
+
+## Independent local tools
+
+REQ-369–372 require an alternative to project-operated services and graphical applications. They do not promise automatic compatibility with every future operating system. Reproducible setup, documented interfaces, and small dependencies must allow the tools to be maintained or ported independently.
+
+| Criterion | Required capability | Conditions and open details |
+| --- | --- | --- |
+| LOCAL-01 | Rehost map production and the map builder | Publish project source, deployment instructions, and external data dependencies. Do not depend on a private project-only service. Supported setup and resource needs: TODO. |
+| LOCAL-02 | Build an installable map locally | Build from documented obtainable source data or locally available building blocks without project-operated services. Include required map-associated data under REQ-008. Input preparation, supported systems, and resource needs: TODO. |
+| LOCAL-03 | Transfer maps, routes, and rides through local USB tools | Install a map, upload a route, download a saved route, and download a recorded ride without a graphical application or browser runtime. Preserve applicable transfer validation, interlocks, and data protection. Supported systems and input/output formats: TODO. |
+
+Optional external ride services can require their own provider authorization under REQ-325. They must not become a prerequisite for device functionality or local import/export. Lost-device replacement and library restoration are not added to scope.
