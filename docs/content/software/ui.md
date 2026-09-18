@@ -358,22 +358,28 @@ map clears all cached icons. A transient read failure keeps valid cached icons a
 two delayed retries; a persistent failure stops until the view or map changes.
 
 The map also shows **settlement names**. There is no switch: the names are always drawn.
-A class shows its names only at or below its scale limit: cities at 600 metres per pixel,
-towns at 180, villages at 50 and hamlets at 16. No name shows below 2 metres per pixel,
-where the rider is inside the settlement and a name only covers the roads. A name is the
-stored name cut to 12 characters with two dots, in the label face, with a light halo so it
-reads over every map fill. Names stay upright when the map rotates.
+Each class shows its names inside one scale band, in metres per pixel: cities from 40 to 600,
+towns from 12 to 180, villages from 4 to 50 and hamlets from 2 to 16. A name appears when the
+place roughly fits the screen and goes when the place is one dot among too many; under the
+band the rider is inside the place and a name only covers the roads. A name is the stored name
+cut to 12 characters with two dots, in the label face, with a light halo so it reads over every
+map fill. Names stay upright when the map rotates.
 
 The application holds at most 16 candidates over a padded viewport and draws at most 6 names
 in one frame. Candidates refill outside the draw path, when the map changes, when the scale
-crosses a class limit, or when the view leaves the padded region. The priority order is the
-class, then the larger population, then the shorter name, then the position. That order holds
-no camera value, so a name that is drawn stays drawn while the rider pans, turns or zooms
-inside one scale band. It goes only when it leaves the panel, when its class goes below its
-scale limit, or when a higher-priority settlement takes its space. Names keep 12 pixels of
-clear space from each other and from the rider mark, the clock band, the bottom chip band and
-the scale bar. A name that crosses the panel edge is dropped, never moved. Names draw above
-the terrain and the route and below the waypoints and the rider.
+leaves a class band, or when the view leaves the padded region. The priority order is the
+class, then the larger population, then the shorter name, then the position. Every frame gives
+the names away in that order from the beginning, so a small place never holds the space a
+larger one needs. The order holds no camera value, so a name that is drawn stays drawn while
+the rider pans, turns or zooms inside one scale band. It goes only when it leaves the panel,
+when its class leaves its band, or when a higher-priority settlement takes its space.
+
+A name is centred on its place, across and down. A name near a side of the screen leans back
+inside it, which moves it by at most half its width, so a long name beside the screen edge is
+still shown. A name is dropped when its place is off the screen, when the name is wider than
+the screen, or when there is no clear space for it. Names keep 12 pixels of clear space from
+each other and from the rider mark, the clock band, the bottom chip band and the scale bar.
+Names draw above the terrain and the route and below the waypoints and the rider.
 
 A row can also hold a **value** in place of a screen. Such a row slides the sheet to a nested
 editor: `Up` and `Down` change the staged choice, `Select` writes it and returns to the row table,
