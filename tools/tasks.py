@@ -4,13 +4,15 @@
 `obc` shows every group but `agent`, so the everyday list stays short. Nothing becomes
 unreachable: `obc --agent` shows the agent tasks and `obc --all` shows all of them.
 A task belongs to `agent` when an automation is its main user.
+
+The justfile is read as text, not through `just`. The CI runners have no `just`, and the
+listing needs three line shapes: a comment, an attribute and a recipe header.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
-import subprocess
+import re
 import sys
 from pathlib import Path
 
@@ -18,24 +20,38 @@ AGENT = "agent"
 # Groups print in this order; a group not named here prints after them, sorted.
 ORDER = ("run", "device", "ios", "maps", "build", "test", "docs", AGENT)
 
+# A recipe header at column 0: a name, optional parameters and dependencies, then a colon.
+# `x := y` and `set shell := [...]` do not match, because `=` is not whitespace or a comment.
+RECIPE = re.compile(r"^([a-z][a-z0-9-]*)(?:[ \t]+[^:=\n]*?)?:[ \t]*(?:#.*)?$")
+ATTRIBUTE = re.compile(r"^\[(.+)\][ \t]*$")
+GROUP = re.compile(r"""group\([ \t]*['"]([^'"]+)['"][ \t]*\)""")
+
 
 def load(justfile: Path) -> dict[str, tuple[str, str]]:
-    """Map each public task name to its (group, doc)."""
-    dump = subprocess.run(
-        ["just", "--justfile", str(justfile), "--dump", "--dump-format", "json"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    tasks = {}
-    for name, recipe in json.loads(dump)["recipes"].items():
-        if recipe["private"]:
+    """Map each public task name to its (group, doc).
+
+    `just` documents a recipe with the comment line directly above it, and the last line of a
+    block of comments wins. An empty line or any other statement breaks that association.
+    """
+    tasks: dict[str, tuple[str, str]] = {}
+    doc, attributes = "", ""
+    for line in justfile.read_text(encoding="utf-8").splitlines():
+        recipe = RECIPE.match(line)
+        if recipe:
+            if "private" not in attributes:
+                group = GROUP.search(attributes)
+                tasks[recipe.group(1)] = (group.group(1) if group else "", doc)
+            doc, attributes = "", ""
             continue
-        group = ""
-        for attribute in recipe["attributes"]:
-            if isinstance(attribute, dict) and "group" in attribute:
-                group = attribute["group"]
-        tasks[name] = (group, recipe["doc"] or "")
+        attribute = ATTRIBUTE.match(line)
+        if attribute:
+            attributes += attribute.group(1) + " "
+        elif line.startswith("#"):
+            doc = line.lstrip("#").strip()
+        elif not line[:1].isspace() or not line.strip():
+            doc, attributes = "", ""
+    if not tasks:
+        raise SystemExit(f"obc: no task found in {justfile}")
     return tasks
 
 
@@ -54,8 +70,7 @@ def render(tasks, keep, pointer: str = "") -> str:
     for group, names in grouped(tasks, keep):
         lines.append(f"\n{group or 'other'}")
         for name in names:
-            doc = tasks[name][1]
-            lines.append(f"  {name.ljust(width)}  {doc}".rstrip())
+            lines.append(f"  {name.ljust(width)}  {tasks[name][1]}".rstrip())
     if pointer:
         lines.append(f"\n{pointer}")
     return "\n".join(lines).lstrip("\n")

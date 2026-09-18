@@ -26,7 +26,7 @@ _obc_reply() { COMPREPLY=(); local _l; while IFS= read -r _l; do COMPREPLY+=("$_
 # because completion is a person's tool; OBC_COMPLETE_ALL=1 offers it too.
 _obc_tasks() {
   local t; t="$(_obc_toolsdir)"
-  if [[ -n "$t" ]] && command -v just >/dev/null 2>&1; then
+  if [[ -n "$t" ]]; then
     local scope=(); [[ "${OBC_COMPLETE_ALL:-}" == 1 ]] && scope=(--all)
     python3 "$t/tasks.py" --justfile "$t/justfile" --names "${scope[@]}" 2>/dev/null && return
   fi
