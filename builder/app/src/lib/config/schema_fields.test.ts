@@ -22,14 +22,14 @@ function generatedProfileField(name: string): JsonSchema {
 }
 
 describe("generic schema field resolution", () => {
-    it("renders the generated nullable line_style ref as the solid/dashed enum", () => {
+    it("renders the generated nullable line_style ref as the solid/dashed/ticked enum", () => {
         const raw = generatedStyleField("line_style");
         expect(raw.anyOf).toBeDefined(); // discriminates from the former inline-enum mock
 
         const resolved = resolveSchemaField(generated, raw);
         const options = stringEnumOptions(resolved.schema);
         expect(resolved.nullable).toBe(true);
-        expect(options).toEqual(["solid", "dashed"]);
+        expect(options).toEqual(["solid", "dashed", "ticked"]);
         expect(enumDisplayValue("dashed", resolved.schema, options!)).toBe("dashed");
         expect(enumDisplayValue(null, resolved.schema, options!)).toBe("solid");
         expect(enumDisplayValue("invalid", resolved.schema, options!)).toBe("solid");

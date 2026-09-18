@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::config::LineStyle;
 use crate::grid::{GRID_ORIGIN, WORLD_SIDE};
 
 use super::boundary;
@@ -268,7 +269,8 @@ pub struct SkinStyle {
     pub z_index: i8,
     /// 1..=4.
     pub priority: u8,
-    pub dashed: bool,
+    /// How the line is stroked: `solid`, `dashed` or `ticked`. Polygons ignore it.
+    pub line_style: LineStyle,
     /// Style-record flag bit 4 (#1095): the weight is used verbatim on screen, off the zoom width
     /// ramp. Defaulted so a catalog written before the bit existed still parses.
     #[serde(default)]

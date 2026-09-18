@@ -2,6 +2,7 @@
 //! matching the closed geometry that reaches `pack_feature`.
 
 use obc_elevation::NullElevation;
+use obc_pack::config::LineStyle;
 use obc_pack::{
     pack_chunk, pack_feature, pack_style_dict, serialize_lods, serialize_tree, Feature, Kind, LodLayer, Node, Style,
 };
@@ -18,7 +19,7 @@ fn pack_style_dict_one_style() {
         color: 0xF9A6,
         weight: 4,
         priority: 2,
-        dashed: false,
+        line_style: LineStyle::Solid,
         color2: None,
         fixed_width: false,
         terrain_layer: false,
@@ -43,7 +44,7 @@ fn pack_style_dict_line_style_and_color2() {
         color: 0x001F,
         weight: 2,
         priority: 3,
-        dashed: true,
+        line_style: LineStyle::Dashed,
         color2: Some(0x8410),
         fixed_width: false,
         terrain_layer: false,
@@ -59,7 +60,7 @@ fn pack_style_dict_line_style_and_color2() {
         color: 0x001F,
         weight: 1,
         priority: 1,
-        dashed: false,
+        line_style: LineStyle::Solid,
         color2: Some(0x0000),
         fixed_width: false,
         terrain_layer: false,
@@ -79,7 +80,7 @@ fn pack_style_dict_fixed_width_and_terrain_layer_bits() {
         color: 0xAD55,
         weight: 1,
         priority: 4,
-        dashed: true,
+        line_style: LineStyle::Dashed,
         color2: None,
         fixed_width,
         terrain_layer,
@@ -667,7 +668,7 @@ fn a_leaf_wider_than_the_u16_anchor_round_trips_through_both_forms() {
         color: 0x1234,
         weight: 1,
         priority: 1,
-        dashed: false,
+        line_style: LineStyle::Solid,
         color2: None,
         fixed_width: false,
         terrain_layer: false,

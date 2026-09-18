@@ -201,7 +201,7 @@ impl CellTreeReport {
     }
 }
 
-/// Verify a published cell tree against its own `schema_version 2` catalog.
+/// Verify a published cell tree against its own `schema_version 3` catalog.
 ///
 /// The catalog is the thing a consumer trusts, so it is the thing this checks
 /// *against* — every claim in it, back to the bytes:

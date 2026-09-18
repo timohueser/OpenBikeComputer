@@ -33,7 +33,7 @@ use obc_host_core::flat_store::HostStore;
 use obc_host_core::frame::{self, Scene};
 use obc_host_core::test_support::CountedSource;
 use obc_host_core::RgbaFrame;
-use obc_pack::config::Config;
+use obc_pack::config::{Config, LineStyle as PackLineStyle};
 use obc_pack::cut::{cut_ingested, CutOptions, CutSummary, SourceExtent};
 use obc_pack::geom::Geom;
 use obc_pack::grid::BandTable;
@@ -47,7 +47,7 @@ use obc_reader::{MapCache, MapTables, NavTileCache, Reader};
 use obc_render::{zoom_for_mpp, RenderConfig, RenderScratch, Viewport};
 use obc_route::nav::{plan_route, NavScratch};
 use obcm_assemble::grid::{assembly_box, CellId};
-use obcm_assemble::schema::{Schema, Skin, SkinStyle};
+use obcm_assemble::schema::{LineStyle, Schema, Skin, SkinStyle};
 use obcm_assemble::{assemble, CellInput, MemorySource, MemoryStore, NoClock, Options};
 
 #[path = "support/landmarks.rs"]
@@ -427,7 +427,12 @@ fn skin(cfg: &Config) -> Skin {
             weight: s.weight,
             z_index: s.z_index,
             priority: s.priority,
-            dashed: s.dashed,
+            // The packer's config enum and the engine's own mirror of it are different types.
+            line_style: match s.line_style {
+                PackLineStyle::Solid => LineStyle::Solid,
+                PackLineStyle::Dashed => LineStyle::Dashed,
+                PackLineStyle::Ticked => LineStyle::Ticked,
+            },
             fixed_width: s.fixed_width,
             terrain_layer: s.terrain_layer,
             color2: s.color2,

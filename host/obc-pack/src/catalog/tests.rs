@@ -1,4 +1,4 @@
-//! Tests for the `schema_version 2` producer.
+//! Tests for the `schema_version 3` producer.
 //!
 //! The synthetic tree in [`example_tree`] is the source of the four checked-in
 //! worked examples, so it is deliberately small and deliberately covers the shapes a
@@ -6,6 +6,7 @@
 //! cell, a co-baked border cell with two sources, a nested region, a skin with a
 //! preview, and a terrain artifact class on its own revision track.
 
+use crate::config::LineStyle;
 use std::collections::BTreeSet;
 use std::fs;
 
@@ -724,7 +725,7 @@ fn a_skin_is_the_schema_recolored() {
         g.root.schema.styles.iter().map(|s| s.feature_type.as_str()).collect::<Vec<_>>()
     );
     let track = default.styles.iter().find(|s| s.feature_type == "highway.track").expect("track");
-    assert!(track.dashed, "the dash bit is skin data");
+    assert_eq!(track.line_style, LineStyle::Dashed, "the line style is skin data");
     assert_eq!(track.color2, None);
     let contrast = g.root.skins.iter().find(|s| s.id == "contrast").expect("contrast skin");
     assert_eq!(contrast.marker_color, 0x001F);
@@ -1583,7 +1584,11 @@ fn the_catalog_schema_pins_the_envelope_version_and_the_field_patterns() {
     // Both satellites are in the one checked-in file, so a consumer validates all
     // three documents against a single resource.
     for doc in ["CellIndexDocument", "RegionCellsDocument"] {
-        assert_eq!(s["$defs"][doc]["properties"]["schema_version"]["const"].as_u64(), Some(2), "{doc}");
+        assert_eq!(
+            s["$defs"][doc]["properties"]["schema_version"]["const"].as_u64(),
+            Some(u64::from(CATALOG_SCHEMA_VERSION)),
+            "{doc}"
+        );
     }
     // `parent` is optional.
     let region_required = s["$defs"]["RegionEntry"]["required"].as_array().expect("region required");
@@ -1786,7 +1791,7 @@ fn the_shipped_schema_and_skin_generate_the_current_catalog() {
     assert_eq!(skin.id, "default");
     assert_eq!(skin.styles.len(), g.root.schema.styles.len());
     assert!(skin.styles.len() > 30, "the shipped schema carries a real style table: {}", skin.styles.len());
-    assert!(skin.styles.iter().any(|s| s.dashed), "and at least one dashed style");
+    assert!(skin.styles.iter().any(|s| s.line_style == LineStyle::Dashed), "and at least one dashed style");
 
     // The shipped skin is the schema's *own* look, restated. Nothing else in the tree
     // enforces that — a skin is free to differ, which is the entire point of skins —
@@ -1878,8 +1883,8 @@ fn the_shipped_dusk_skin_is_a_presentation_only_night_restyle() {
         // flag bits are in the tuple for that reason — a dusk contour that lost `fixed_width`
         // would be a different *drawing*, not a different colour.
         assert_eq!(
-            (d.weight, d.z_index, d.priority, d.dashed, d.fixed_width, d.terrain_layer),
-            (s.weight, s.z_index, s.priority, s.dashed, s.fixed_width, s.terrain_layer),
+            (d.weight, d.z_index, d.priority, d.line_style, d.fixed_width, d.terrain_layer),
+            (s.weight, s.z_index, s.priority, s.line_style, s.fixed_width, s.terrain_layer),
             "{}",
             d.feature_type
         );
@@ -1888,7 +1893,7 @@ fn the_shipped_dusk_skin_is_a_presentation_only_night_restyle() {
     // (2) — uniform within every group the schema's own look merges.
     let mut groups: BTreeMap<_, Vec<&SkinStyle>> = BTreeMap::new();
     for s in &default.styles {
-        groups.entry((s.z_index, s.color, s.weight, s.priority, s.dashed, s.color2)).or_default().push(s);
+        groups.entry((s.z_index, s.color, s.weight, s.priority, s.line_style, s.color2)).or_default().push(s);
     }
     let dusk_by_type: BTreeMap<&str, &SkinStyle> = dusk.styles.iter().map(|s| (s.feature_type.as_str(), s)).collect();
     let mut merged_groups = 0;
@@ -1898,8 +1903,8 @@ fn the_shipped_dusk_skin_is_a_presentation_only_night_restyle() {
         for member in &members[1..] {
             let d = dusk_by_type[member.feature_type.as_str()];
             assert_eq!(
-                (d.color, d.color2, d.weight, d.z_index, d.priority, d.dashed),
-                (first.color, first.color2, first.weight, first.z_index, first.priority, first.dashed),
+                (d.color, d.color2, d.weight, d.z_index, d.priority, d.line_style),
+                (first.color, first.color2, first.weight, first.z_index, first.priority, first.line_style),
                 "`{}` and `{}` render identically in the schema, so the bake may have merged their geometry under \
                  one style id — a skin must restate them identically or the distinction is a lie",
                 members[0].feature_type,
