@@ -23,6 +23,7 @@ mod palette;
 mod panel_power;
 mod peak_view;
 mod present;
+mod relief;
 mod rides;
 mod routes;
 mod sim_compass;
@@ -1730,10 +1731,12 @@ fn main() {
         peak_runtime.finish(&mut app);
         let panorama = peak_runtime.panorama();
         let t0 = std::time::Instant::now();
+        let mut relief_target =
+            relief::Target::new(&mut fb, device_rgb888, app.state.viewport(args.width as f32, args.height as f32));
         let mut stats = map_file::render_frame(
             &mut app,
             &mut scratch,
-            &mut fb,
+            &mut relief_target,
             scene,
             panorama,
             (args.width as f32, args.height as f32),
