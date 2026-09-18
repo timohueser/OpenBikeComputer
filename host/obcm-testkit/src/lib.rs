@@ -470,9 +470,11 @@ pub fn pack_nav_edge_record(length_m: u32, way_kind: u8, polyline: &[(i32, i32)]
 }
 
 /// Pack one 36-byte v7 POI record (spec §7.3): absolute `int32 lat, int32 lon`, `u8 subtype`, `u8
-/// name_len`, a 24-byte `0xFF`-padded name, and a `u16 hours_ref` (0-based hours-pool index, `0xFFFF`
-/// = none). `name` is stored as-is (the caller pre-folds it to ≤ 24 ASCII bytes, as the packer does).
-pub fn pack_poi_record(lat: i32, lon: i32, subtype: u8, name: &str, hours_ref: u16) -> [u8; POI_RECORD_LEN] {
+/// name_len`, a 24-byte `0xFF`-padded name, and the `u16 payload` at offset 34 — an hours-pool index
+/// for a service place (`0xFFFF` = none), a signed elevation for a summit, a population in hundreds
+/// for a settlement. `name` is stored as-is (the caller pre-folds it to ≤ 24 bytes, as the packer
+/// does).
+pub fn pack_poi_record(lat: i32, lon: i32, subtype: u8, name: &str, payload: u16) -> [u8; POI_RECORD_LEN] {
     let mut rec = [0xFFu8; POI_RECORD_LEN];
     rec[0..4].copy_from_slice(&lat.to_le_bytes());
     rec[4..8].copy_from_slice(&lon.to_le_bytes());
@@ -481,8 +483,8 @@ pub fn pack_poi_record(lat: i32, lon: i32, subtype: u8, name: &str, hours_ref: u
     let len = bytes.len().min(POI_NAME_LEN);
     rec[9] = len as u8;
     rec[10..10 + len].copy_from_slice(&bytes[..len]);
-    // rec[10 + len .. 34] stays 0xFF (name pad); hours_ref goes at [34..36].
-    rec[34..36].copy_from_slice(&hours_ref.to_le_bytes());
+    // rec[10 + len .. 34] stays 0xFF (name pad); the payload goes at [34..36].
+    rec[34..36].copy_from_slice(&payload.to_le_bytes());
     let identity = ((lat as u32 as u64) << 24 ^ lon as u32 as u64 ^ subtype as u64) & ((1 << 62) - 1);
     rec[36..64].copy_from_slice(
         &obc_formats::obcm::PoiMetadata {
@@ -506,15 +508,15 @@ pub fn pack_poi_chunk(records: &[[u8; POI_RECORD_LEN]], chunk_size: usize) -> Ve
 }
 
 /// One POI to place in a [`build_poi_map`] category: absolute `(lat, lon)` µdeg, its subtype id, its
-/// (already-folded, ≤ 24-byte) name, and its `hours_ref` (0-based hours-pool index, `0xFFFF` = none).
-/// Mirrors a serializer `PoiPoint`.
+/// (already-folded, ≤ 24-byte) name, and its [`pack_poi_record`] `payload`. Mirrors a serializer
+/// `PoiPoint`.
 #[derive(Clone)]
 pub struct PoiSpec {
     pub lat: i32,
     pub lon: i32,
     pub subtype: u8,
     pub name: String,
-    pub hours_ref: u16,
+    pub payload: u16,
 }
 
 /// Serialize one category's POIs into a per-category quadtree over `bbox` — the flat `u32` index +
@@ -589,7 +591,7 @@ fn serialize_poi_category(
             PoiNode::Leaf(pts) => {
                 index.push(chunk_count);
                 let recs: Vec<[u8; POI_RECORD_LEN]> =
-                    pts.iter().map(|p| pack_poi_record(p.lat, p.lon, p.subtype, &p.name, p.hours_ref)).collect();
+                    pts.iter().map(|p| pack_poi_record(p.lat, p.lon, p.subtype, &p.name, p.payload)).collect();
                 chunks.extend_from_slice(&pack_poi_chunk(&recs, chunk_size));
                 chunk_count += 1;
             }
@@ -604,10 +606,10 @@ fn serialize_poi_category(
 
 /// Build a full v8 `.obcm` with a **populated POI section** — the query-test analogue of
 /// [`build_file`]. `bbox` is `(min_lon, min_lat, max_lon, max_lat)`; a minimal one-line geometry LOD
-/// keeps the map valid; `pois_by_cat` maps a category id (1..=6) to the POIs to place there (each a
+/// keeps the map valid; `pois_by_cat` maps a category id to the POIs to place there (each a
 /// full per-category quadtree over `bbox`, `chunk_size`-byte chunks). Categories absent from the map
 /// are written empty. An **empty hours pool** (`count 0`) follows at the tail — the query tests don't
-/// exercise hours, and each `PoiSpec` carries its own `hours_ref` into its record. Use
+/// exercise hours, and each `PoiSpec` carries its own `payload` into its record. Use
 /// [`build_poi_map_with_hours`] to bake a real pool (the detail-screen tests). The section is
 /// assembled at its file-absolute offset so the reader's `walk_leaves`/`chunk_range` math resolves.
 pub fn build_poi_map(bbox: (i32, i32, i32, i32), chunk_size: usize, pois_by_cat: &[(u8, Vec<PoiSpec>)]) -> Vec<u8> {
@@ -616,7 +618,7 @@ pub fn build_poi_map(bbox: (i32, i32, i32, i32), chunk_size: usize, pois_by_cat:
 
 /// Like [`build_poi_map`] but bakes a real **hours pool** of `hours_blobs` (spec §7.5) at the file
 /// tail, with the directory's `hours_pool_offset`/`hours_pool_count` pointing at it. Each
-/// [`PoiSpec`]'s `hours_ref` indexes into `hours_blobs` (`0xFFFF` = no hours). Used by the POI
+/// [`PoiSpec`]'s `payload` indexes into `hours_blobs` (`0xFFFF` = no hours). Used by the POI
 /// detail-screen tests to exercise the reader's `poi_hours` lookup end to end through the app.
 pub fn build_poi_map_with_hours(
     bbox: (i32, i32, i32, i32),
@@ -638,8 +640,8 @@ pub fn build_poi_map_with_hours(
     );
     let poi_off = resolve_offset(&base, 32);
 
-    // Lay out: [directory][filler][cat index][filler][chunks]*[hours pool] — categories in id order
-    // 1..=6. Every `Index Offset` is scaled, so each index starts on a unit boundary, and a
+    // Lay out: [directory][filler][cat index][filler][chunks]*[hours pool] — categories in id order.
+    // Every `Index Offset` is scaled, so each index starts on a unit boundary, and a
     // category's chunks begin at `align_up(Index Offset * U + Index Node Count * 4, U)` — §7.1's
     // one rounding step. 512 is a multiple of `U`, so whole chunks leave the cursor aligned.
     let mut ids: Vec<_> = obc_formats::obcm::PoiCategory::ALL.into_iter().map(|c| c.id()).collect();

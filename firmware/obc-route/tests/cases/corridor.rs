@@ -55,7 +55,7 @@ fn query(map: &[u8], obcr: &[u8], cats: PoiCategorySet, progress_m: u32) -> Vec<
 
 /// A named Water POI (subtype 1) at `(lon, lat)` in µdeg.
 fn water(name: &str, lon: i32, lat: i32) -> PoiSpec {
-    PoiSpec { lat, lon, subtype: 1, name: name.into(), hours_ref: 0xFFFF }
+    PoiSpec { lat, lon, subtype: 1, name: name.into(), payload: 0xFFFF }
 }
 
 /// The seam reports the resident chunk index: chunk count, non-decreasing starts, and the last

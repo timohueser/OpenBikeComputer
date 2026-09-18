@@ -53,11 +53,11 @@ fn route_bytes() -> Vec<u8> {
 /// filter change genuinely changes the answer.
 fn map_bytes() -> Vec<u8> {
     let water = vec![
-        PoiSpec { lat: 48_001_000, lon: 7_810_000, subtype: 1, name: "W1".into(), hours_ref: 0xFFFF },
-        PoiSpec { lat: 47_999_000, lon: 7_830_000, subtype: 1, name: "W2".into(), hours_ref: 0xFFFF },
-        PoiSpec { lat: 48_000_500, lon: 7_850_000, subtype: 1, name: "W3".into(), hours_ref: 0xFFFF },
+        PoiSpec { lat: 48_001_000, lon: 7_810_000, subtype: 1, name: "W1".into(), payload: 0xFFFF },
+        PoiSpec { lat: 47_999_000, lon: 7_830_000, subtype: 1, name: "W2".into(), payload: 0xFFFF },
+        PoiSpec { lat: 48_000_500, lon: 7_850_000, subtype: 1, name: "W3".into(), payload: 0xFFFF },
     ];
-    let shops = vec![PoiSpec { lat: 48_000_500, lon: 7_820_000, subtype: 18, name: "S1".into(), hours_ref: 0xFFFF }];
+    let shops = vec![PoiSpec { lat: 48_000_500, lon: 7_820_000, subtype: 18, name: "S1".into(), payload: 0xFFFF }];
     build_poi_map(BBOX, CS, &[(1, water), (6, shops)])
 }
 
