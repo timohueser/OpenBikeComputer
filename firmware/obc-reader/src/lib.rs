@@ -62,8 +62,8 @@ pub use reader::{
     CacheError, CacheStats, CapacityError, DecodeStatus, FeatureDecodeError, FeatureReadError, FeatureRef, Lod,
     MapCache, MapProfile, MapReadError, MapTables, NavCacheStats, NavDirectory, NavEdgeCandidate, NavEdgeEndpoint,
     NavEdgePosition, NavEdgeSnap, NavNeighbor, NavNodeRef, NavTileCache, Poi, PoiCatEntry, PoiDirectory, Reader,
-    Summit, TerrainRegion, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS, MAX_POI_RESULTS, MAX_SUMMIT_RADIUS_M,
-    NAV_MAX_CHUNK_BYTES, POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES,
+    Settlement, Summit, TerrainRegion, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS, MAX_POI_RESULTS,
+    MAX_SUMMIT_RADIUS_M, NAV_MAX_CHUNK_BYTES, POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
