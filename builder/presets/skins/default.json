@@ -95,8 +95,8 @@
             "2": {"color": "0xAAB5", "z_index": 100, "weight": 2, "priority": 3, "line_style": "dashed"}
         },
         "contour": {
-            "major": {"color": "0xAD4A", "z_index": 8, "weight": 1, "priority": 4, "line_style": "dashed", "fixed_width": true, "terrain_layer": true},
-            "index": {"color": "0xAD4A", "z_index": 9, "weight": 1, "priority": 4, "line_style": "dashed", "fixed_width": true, "terrain_layer": true}
+            "major": {"color": "0x02AA", "z_index": 8, "weight": 1, "priority": 4, "line_style": "dashed", "fixed_width": true, "terrain_layer": true},
+            "index": {"color": "0x02AA", "z_index": 9, "weight": 1, "priority": 4, "line_style": "dashed", "fixed_width": true, "terrain_layer": true}
         },
         "aerialway": {
             "cable_car": {"z_index": 27, "color": "0x52AA", "weight": 1, "priority": 3, "line_style": "dashed", "fixed_width": true},
