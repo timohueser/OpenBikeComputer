@@ -798,6 +798,19 @@ clean *args:
 
 # ── Meta ─────────────────────────────────────────────────────────────────────
 
+# Run the gates this change selects, then print a pull-request skeleton. The plan gives one line
+# and one reason for each gate, the skipped ones included, so the run stays proportional to the
+# change. `obc test affected` executes the declared suites, so a gate it covers is skipped there.
+#   obc ready --dry-run          obc ready --base origin/develop
+# Run the gates this change selects, then print a PR skeleton. Args: [--base REF] [--dry-run]
+[group('agent')]
+ready *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init; ensure_geos
+    cd "$OBC_ROOT"
+    _run python3 "$OBC_TOOLS/ready.py" "$@"
+
 # Read and write the verification console: `obc req SYS-003` prints one requirement with its
 # criteria numbered. Also `list`, `proposal ID`, `tests QUERY`, `changed --since rN`, and
 # `propose plan.json` (check it with --check first). Needs the agent token file; see tools/req.py.
