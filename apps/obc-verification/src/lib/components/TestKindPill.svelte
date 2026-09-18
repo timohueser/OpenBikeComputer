@@ -1,21 +1,16 @@
 <script lang="ts">
-  // One small pill per test kind, and the explainer every pill opens.
-  //
-  // Two questions are being answered at once, and the explainer exists because they look alike on
-  // the page: the level says how much of the product a test exercises, and manual says who runs it.
-  // Every pill opens the same list, so whichever one a reader lands on tells them the whole scheme.
+  // One pill per test kind. Every pill opens the same panel, which lists all the kinds, because a
+  // level pill and a manual pill look alike and answer different questions.
   import { TEST_KIND_NOTES } from '$lib/types';
-  /** `unit` | `integration` | `system` | `human` | `until-automated`, or `manual` for a procedure
-   *  whose reason nobody has stated yet — that one gets the plain pill, which is the honest look for
-   *  "not said". */
+  /** `unit`, `integration`, `system`, `human`, `until-automated`, or `manual` when the type of a
+   *  manual test is not set. */
   export let kind: string;
-  $: entry = TEST_KIND_NOTES.find(n => n.key === kind);
-  $: text = kind === 'human' ? 'manual · human' : kind === 'until-automated' ? 'manual · for now' : kind;
+  $: text = kind === 'human' ? 'human check' : kind === 'until-automated' ? 'until automated' : kind;
 </script>
 <span class="holder">
-  <button type="button" class="pill k-{kind}" aria-label={`${entry?.title ?? kind} — what the test kinds mean`}>{text}</button>
+  <button type="button" class="pill k-{kind}" aria-label="Test kinds">{text}</button>
   <span class="pop" role="tooltip">
-    <span class="pop-head">Level is how much of the product runs. Manual is who runs it.</span>
+    <span class="pop-head">The level is how much of the product the test runs. A manual test is run by a person.</span>
     {#each TEST_KIND_NOTES as note (note.key)}
       <span class="kind" class:here={note.key === kind}><span class="pill k-{note.key} static">{note.title}</span><span class="note">{note.note}</span></span>
     {/each}
@@ -29,7 +24,7 @@
     border: 1px solid var(--line); background: var(--soft); color: var(--muted); min-height: 0;
   }
   .pill.static { cursor: default; flex-shrink: 0; }
-  /* Low-chroma tints from the same family as the existing badges: told apart at a glance, never loud. */
+  /* Low-chroma tints, in the same family as the existing badges. */
   .k-unit { background: #e7eee3; border-color: #cbdac2; color: #3d5a41; }
   .k-integration { background: #e2eceb; border-color: #c4d9d6; color: #2f5a55; }
   .k-system { background: #f4ecda; border-color: #e0d3b3; color: #6f5622; }

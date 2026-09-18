@@ -12,29 +12,28 @@ export interface VerificationTest {
   steps?: string;
   expected?: string;
   inputs: Attachment[];
-  /** Manual tests only: whether a person is the permanent answer, or holds the place for a test
-   *  that should exist. Absent means it has not been said. */
+  /** Manual tests only: `human` for a test a person must always run, `until-automated` for one that
+   *  waits for an automated test. Absent when it is not set. */
   manualReason?: ManualReason;
 }
-/** One cited test, and what the plan says it proves. `level` is the auditor's judgement of the
- *  test's scope; it is optional because plans written before it existed do not carry it. */
+/** One cited test, and what the plan says it proves. `level` is the scope of that test. It is
+ *  optional, because plans written before it existed do not have one. */
 export interface CoverageEvidence { caseId?: string; testId?: string; rationale: string; level?: TestLevel }
 /** How much of the product a test exercises: one module, several together, or the assembled product.
  *  It says nothing about who runs the test — automated evidence cites a catalogue case, and manual
  *  evidence cites a procedure, so the plan already carries that. */
 export type TestLevel = 'unit' | 'integration' | 'system';
 export const TEST_LEVELS: TestLevel[] = ['unit', 'integration', 'system'];
-/** Why a procedure is a person's job. Automated tests have none. */
+/** The type of a manual test. Automated tests have none. */
 export type ManualReason = 'human' | 'until-automated';
 export const MANUAL_REASONS: ManualReason[] = ['human', 'until-automated'];
-/** One short sentence per kind, for the explainer any pill opens. Level and manual are different
- *  questions: the level says how much of the product runs, and manual says who runs it. */
+/** One short description per kind, for the panel that any pill opens. */
 export const TEST_KIND_NOTES: { key: string; title: string; note: string }[] = [
-  { key: 'unit', title: 'Unit', note: 'One module on its own, on a CI runner. It shows that a part behaves correctly by itself.' },
-  { key: 'integration', title: 'Integration', note: 'Several modules together, on a CI runner or on a hardware rig. It shows that the parts agree with each other.' },
-  { key: 'system', title: 'System', note: 'The assembled product, on real or simulated hardware. It shows that the whole thing does what a rider asks of it.' },
-  { key: 'human', title: 'Manual · human', note: 'A person is the permanent answer: a real phone against a real device, or a judgement no rig can make. These are the checks a release runs by hand.' },
-  { key: 'until-automated', title: 'Manual · until automated', note: 'A person runs it because the automated or rig test does not exist yet. It holds the place for one that should.' },
+  { key: 'unit', title: 'Unit', note: 'One module, on a CI runner. It shows that the module is correct on its own.' },
+  { key: 'integration', title: 'Integration', note: 'Two or more modules together, on a CI runner or a hardware rig. It shows that the modules work correctly together.' },
+  { key: 'system', title: 'System', note: 'The complete product, on real or simulated hardware. It shows that the product does what the requirement states.' },
+  { key: 'human', title: 'Human check', note: 'A person must run this test. For example, a real phone with a real device, or a check that needs human judgement. A release runs these tests by hand.' },
+  { key: 'until-automated', title: 'Until automated', note: 'A person runs this test because no automated test exists yet. Replace it when one is written.' },
 ];
 /** The test to build for a gap: one level, one sentence. A criterion with no gap has nothing to build. */
 export interface ProposedTest { level: TestLevel; summary: string }

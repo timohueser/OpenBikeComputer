@@ -18,7 +18,7 @@
   <a class="brand" href="https://openbikecomputer.com"><span class="brand-icon">↗</span>OpenBikeComputer</a>
   <section class="login-card">
     <div class="eyebrow">Maintainer workspace</div><h1>Verification & releases</h1>
-    <p class="muted">A clear view of what must work, and the evidence behind every release.</p>
+    <p class="muted">Requirements, their tests, and the evidence for each release.</p>
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     {#if oauth === null}<p class="muted" role="status">Loading sign-in options…</p>
     {:else if oauth}

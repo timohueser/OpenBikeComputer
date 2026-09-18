@@ -108,7 +108,7 @@
     }).filter(g => g.shown.length);
   })();
 </script>
-<div class="page-heading row"><div><div class="eyebrow">From candidate to release</div><h1>Releases</h1><p class="muted">One build. Its checks. A preserved record.</p></div><button class="primary" disabled={exceptionBusy} on:click={() => { if (back()) { preparing = true; error = ''; } }}>Prepare release</button></div>
+<div class="page-heading row"><div><div class="eyebrow">From candidate to release</div><h1>Releases</h1><p class="muted">Each release keeps the build it was made from, its checks, and its evidence.</p></div><button class="primary" disabled={exceptionBusy} on:click={() => { if (back()) { preparing = true; error = ''; } }}>Prepare release</button></div>
 {#if error}<div class="alert error" role="alert">{error}</div>{/if}
 <div class="workbench"><aside><div class="eyebrow sidebar-caption">Release candidates</div>{#each candidates as c}<button class="entry" disabled={exceptionBusy} class:selected={!preparing && candidate?.id === c.id} on:click={() => load(c.id)}><strong>{c.version}</strong><span class="small muted">{c.status} · {c.sourceSha.slice(0,8)}</span><span class="small muted">{date(c.createdAt)}</span></button>{:else}<p class="muted small">Prepared candidates will appear here, including failed attempts.</p>{/each}</aside><section class="detail">
 {#if preparing}
