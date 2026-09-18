@@ -111,10 +111,14 @@ class ValidationTest(unittest.TestCase):
     def test_levels_and_summaries_are_bounded(self):
         bad = self.entry(criteria=[{"id": "a", "statement": "x", "evidence": [], "gap": "g",
                                     "next": {"level": "smoke", "summary": "y"}}])
-        self.assertIn("use one of unit, integration, system, ride", " ".join(self.check(bad)))
+        self.assertIn("use one of unit, integration, system", " ".join(self.check(bad)))
         long = self.entry(criteria=[{"id": "a", "statement": "x", "evidence": [], "gap": "g",
                                      "next": {"level": "unit", "summary": "y" * 301}}])
         self.assertIn("keep it to one sentence", " ".join(self.check(long)))
+        # The server refuses a next test with nothing to build, so --check has to refuse it too.
+        gapless = self.entry(criteria=[{"id": "a", "statement": "x", "evidence": [], "gap": "",
+                                        "next": {"level": "unit", "summary": "y"}}])
+        self.assertIn("records no gap", " ".join(self.check(gapless)))
 
     def test_evidence_must_resolve_and_name_exactly_one_test(self):
         unknown = self.entry(criteria=[{"id": "a", "statement": "x", "evidence": [{"caseId": "nope", "rationale": "r"}], "gap": ""}])
