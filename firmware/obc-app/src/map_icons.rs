@@ -43,11 +43,11 @@ impl Kind {
             PoiCategory::Train => Self::Train,
         }
     }
-    fn quota(self) -> usize {
-        match self {
-            Self::Peak => 12,
-            Self::Landmark => 8,
-            _ => 6,
+    fn radius(self) -> i32 {
+        if self == Self::Peak {
+            8
+        } else {
+            HALO_RADIUS
         }
     }
 }
@@ -58,19 +58,6 @@ struct Mark {
     position: (i32, i32),
     elevation: i16,
     kind: Kind,
-}
-
-impl Mark {
-    // Stable source order avoids replacing marks as the camera moves inside the cache.
-    fn rank(self) -> (u8, i32, u64) {
-        let priority = match self.kind {
-            Kind::Water | Kind::Campsite => 0,
-            Kind::Peak => 1,
-            Kind::Landmark => 2,
-            _ => 3,
-        };
-        (priority, if self.kind == Kind::Peak { -i32::from(self.elevation) } else { 0 }, self.id)
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -197,7 +184,6 @@ impl MapIcons {
             self.failed(now);
             return;
         }
-        self.marks.sort_unstable_by_key(|mark| mark.rank());
         self.next_at = (self.query.is_some() || self.landmarks.is_some()).then_some(now.wrapping_add(1));
     }
 
@@ -255,26 +241,33 @@ impl MapIcons {
         }
         if let Some(mut load) = self.landmarks.take() {
             let source = map_section(reader.source())?.ok_or(obc_reader::Error::BadOffset)?;
+            let mut done = false;
             for _ in 0..8 {
                 match load.query.step(&source, load.directory, self.generation, &mut load.hits) {
                     QueryProgress::Pending => {}
                     QueryProgress::Ready { .. } => {
-                        for hit in &load.hits {
-                            let record = load.directory.record(&source, hit.index)?;
-                            self.retain(Mark {
-                                id: record.osm.map_or(record.qid, |osm| osm.source.0),
-                                position: hit.position,
-                                elevation: 0,
-                                kind: Kind::Landmark,
-                            });
-                        }
-                        return Ok(());
+                        done = true;
+                        break;
                     }
                     QueryProgress::Failed(error) => return Err(error),
                     QueryProgress::Cancelled => return Err(obc_reader::Error::BadOffset),
                 }
             }
-            self.landmarks = Some(load);
+            // Each step produces at most one hit. Consume this batch so the shared cache,
+            // rather than a separate landmark page limit, chooses what stays visible.
+            for hit in &load.hits {
+                let record = load.directory.record(&source, hit.index)?;
+                self.retain(Mark {
+                    id: record.osm.map_or(record.qid, |osm| osm.source.0),
+                    position: hit.position,
+                    elevation: 0,
+                    kind: Kind::Landmark,
+                });
+            }
+            load.hits.clear();
+            if !done {
+                self.landmarks = Some(load);
+            }
         }
         Ok(())
     }
@@ -295,22 +288,35 @@ impl MapIcons {
         {
             return;
         }
-        let mut count = 0;
-        let mut worst = None;
-        for (i, old) in self.marks.iter().enumerate().filter(|(_, old)| old.kind == mark.kind) {
-            count += 1;
-            if worst.is_none_or(|j: usize| self.retention_rank(*old) > self.retention_rank(self.marks[j])) {
-                worst = Some(i);
-            }
-        }
-        if count == mark.kind.quota() {
-            if let Some(i) = worst {
-                if self.retention_rank(mark) < self.retention_rank(self.marks[i]) {
-                    self.marks[i] = mark;
-                }
-            }
-        } else {
+        if !self.marks.is_full() {
             let _ = self.marks.push(mark);
+            return;
+        }
+        let mut counts = [0u8; 9];
+        for old in &self.marks {
+            counts[old.kind as usize] += 1;
+        }
+        let largest = *counts.iter().max().unwrap();
+        let own_count = counts[mark.kind as usize];
+        let worst = self
+            .marks
+            .iter()
+            .enumerate()
+            .filter(
+                |(_, old)| {
+                    if own_count < largest {
+                        counts[old.kind as usize] == largest
+                    } else {
+                        old.kind == mark.kind
+                    }
+                },
+            )
+            .max_by_key(|(_, old)| self.retention_rank(**old))
+            .map(|(i, _)| i);
+        if let Some(i) = worst {
+            if own_count < largest || self.retention_rank(mark) < self.retention_rank(self.marks[i]) {
+                self.marks[i] = mark;
+            }
         }
     }
 
@@ -340,32 +346,57 @@ impl MapIcons {
         } else {
             DRAW_LIMIT
         };
-        let spacing = if mpp > 20.0 { 40 } else { 30 };
+        // Sort only small indices, leaving the persistent geographic cache untouched.
+        let mut order: Vec<u8, CAPACITY> = (0..self.marks.len() as u8).collect();
+        order.sort_unstable_by_key(|&i| {
+            let mark = self.marks[i as usize];
+            let (x, y) = vp.to_screen(mark.position.0, mark.position.1);
+            let dx = i64::from(x) - vp.w as i64 / 2;
+            let dy = i64::from(y) - vp.h as i64 / 2;
+            (dx * dx + dy * dy, mark.id, mark.kind as u8, mark.position)
+        });
         let mut placed = Vec::<(Point, Kind), DRAW_LIMIT>::new();
+        let mut counts = [0u8; 9];
+        let mut rejected = 0u64;
         let rider = rider.map(|(lon, lat)| vp.to_screen(lon, lat));
-        for mark in &self.marks {
-            if placed.len() == limit {
+        for round in 0..limit as u8 {
+            let before = placed.len();
+            for &i in &order {
+                if placed.len() == limit {
+                    return placed;
+                }
+                let mark = self.marks[i as usize];
+                if rejected & (1u64 << i) != 0 || counts[mark.kind as usize] != round {
+                    continue;
+                }
+                rejected |= 1u64 << i;
+                let (x, y) = vp.to_screen(mark.position.0, mark.position.1);
+                let radius = mark.kind.radius();
+                // Keep the clock, battery, scale, warning chip and pan controls free.
+                if x < radius + 2 || x > vp.w as i32 - radius - 2 || y < radius + 31 || y > vp.h as i32 - radius - 51 {
+                    continue;
+                }
+                if rider.is_some_and(|(rx, ry)| near(x, y, rx, ry, radius + 17)) {
+                    continue;
+                }
+                if waypoints.iter().any(|wp| {
+                    let (wx, wy) = vp.to_screen(wp.lon, wp.lat);
+                    near(x, y, wx, wy, radius + 9)
+                }) {
+                    continue;
+                }
+                if placed
+                    .iter()
+                    .any(|(p, kind)| near(x, y, p.x, p.y, radius + kind.radius() + if mpp > 20.0 { 12 } else { 2 }))
+                {
+                    continue;
+                }
+                let _ = placed.push((Point::new(x, y), mark.kind));
+                counts[mark.kind as usize] += 1;
+            }
+            if placed.len() == before {
                 break;
             }
-            let (x, y) = vp.to_screen(mark.position.0, mark.position.1);
-            // Keep the clock, battery, scale, warning chip and pan controls free.
-            if x < HALO_RADIUS + 2 || x > vp.w as i32 - HALO_RADIUS - 2 || y < 45 || y > vp.h as i32 - 65 {
-                continue;
-            }
-            if rider.is_some_and(|(rx, ry)| near(x, y, rx, ry, 31)) {
-                continue;
-            }
-            if waypoints.iter().any(|wp| {
-                let (wx, wy) = vp.to_screen(wp.lon, wp.lat);
-                near(x, y, wx, wy, 23)
-            }) {
-                continue;
-            }
-            if placed.iter().any(|(p, _)| near(x, y, p.x, p.y, spacing)) {
-                continue;
-            }
-            let p = Point::new(x, y);
-            let _ = placed.push((p, mark.kind));
         }
         placed
     }
@@ -385,7 +416,8 @@ fn near(x: i32, y: i32, a: i32, b: i32, r: i32) -> bool {
 fn draw_glyph(cv: &mut impl Surface, p: Point, kind: Kind) {
     let rows: [u16; 11] = match kind {
         Kind::Peak => {
-            [0, 0, 0b00000100000, 0b00001110000, 0b00011111000, 0b00111111100, 0b01111111110, 0b11111111111, 0, 0, 0]
+            cv.triangle(p + Point::new(0, -4), p + Point::new(-7, 3), p + Point::new(7, 3), 0x0000);
+            return;
         }
         Kind::Landmark => [
             0,
@@ -492,7 +524,8 @@ fn draw_glyph(cv: &mut impl Surface, p: Point, kind: Kind) {
             0,
         ],
     };
-    cv.disc(p, HALO_RADIUS as u32, 0xffff);
+    cv.disc(p, HALO_RADIUS as u32, 0x8410);
+    cv.disc(p, (HALO_RADIUS - 1) as u32, 0xffff);
     let ink = if kind == Kind::Water { 0x0015 } else { 0x2104 };
     for (y, bits) in rows.into_iter().enumerate() {
         for x in 0..11 {
@@ -633,16 +666,16 @@ mod tests {
                 icons.retain(Mark { id: i + 1 + (kind as u64) * 100, position, elevation: 1000, kind });
             }
         }
-        assert_eq!(icons.marks.len(), 62);
-        icons.marks.sort_unstable_by_key(|m| m.rank());
+        assert_eq!(icons.marks.len(), CAPACITY);
         let rider = (vp.cam_lon, vp.cam_lat);
         let placed = icons.placements(&vp, Some(rider), &[]);
         assert!(!placed.is_empty() && placed.len() <= DRAW_LIMIT);
         assert_eq!(placed, icons.placements(&vp, Some(rider), &[]));
-        for (i, (p, _)) in placed.iter().enumerate() {
-            assert!(p.y >= 45 && p.y <= 255);
-            assert!(!near(p.x, p.y, 120, 160, 31));
-            assert!(!placed[..i].iter().any(|(q, _)| near(p.x, p.y, q.x, q.y, 30)));
+        for (i, (p, kind)) in placed.iter().enumerate() {
+            let radius = kind.radius();
+            assert!(p.y >= radius + 31 && p.y <= 320 - radius - 51);
+            assert!(!near(p.x, p.y, 120, 160, radius + 17));
+            assert!(!placed[..i].iter().any(|(q, other)| near(p.x, p.y, q.x, q.y, radius + other.radius() + 2)));
         }
         let mut settings = Settings::default();
         assert!(Selection::for_view(&settings, 10.01).categories.is_empty());
@@ -651,11 +684,75 @@ mod tests {
         assert!(!Selection::for_view(&settings, 1.0).peaks);
     }
     #[test]
+    fn crowded_views_offer_nearest_from_each_category_before_seconds() {
+        let vp = view();
+        let kinds = [
+            Kind::Peak,
+            Kind::Landmark,
+            Kind::Water,
+            Kind::Campsite,
+            Kind::Accommodation,
+            Kind::Resupply,
+            Kind::Pharmacy,
+            Kind::BikeShop,
+            Kind::Train,
+        ];
+        let mut icons = MapIcons::new();
+        for i in 0..27 {
+            icons.retain(Mark {
+                id: i as u64 + 1,
+                position: vp.to_map(20.0 + (i % 5) as f32 * 45.0, 47.0 + (i / 5) as f32 * 40.0),
+                elevation: 1000,
+                kind: kinds[i % kinds.len()],
+            });
+        }
+        let placed = icons.placements(&vp, None, &[]);
+        assert_eq!(placed.len(), DRAW_LIMIT);
+        for round in placed[..18].as_chunks::<9>().0 {
+            for kind in kinds {
+                assert_eq!(round.iter().filter(|(_, k)| *k == kind).count(), 1);
+            }
+        }
+        for kind in kinds {
+            let nearest = icons
+                .marks
+                .iter()
+                .filter(|mark| mark.kind == kind)
+                .map(|mark| {
+                    let (x, y) = vp.to_screen(mark.position.0, mark.position.1);
+                    ((x - 120).pow(2) + (y - 160).pow(2), Point::new(x, y))
+                })
+                .min_by_key(|(distance, _)| *distance)
+                .unwrap()
+                .1;
+            assert_eq!(placed.iter().find(|(_, k)| *k == kind).unwrap().0, nearest);
+        }
+        icons.marks.reverse();
+        assert_eq!(placed, icons.placements(&vp, None, &[]), "source order does not change selection");
+        for mark in &mut icons.marks {
+            mark.kind = Kind::Water;
+        }
+        assert_eq!(icons.placements(&vp, None, &[]).len(), DRAW_LIMIT, "one category may fill all free slots");
+    }
+
+    #[test]
+    fn full_cache_reserves_space_for_sparse_categories() {
+        let mut icons = MapIcons::new();
+        for i in 0..CAPACITY {
+            icons.retain(Mark { id: i as u64 + 1, position: (i as i32, 0), elevation: 0, kind: Kind::Water });
+        }
+        icons.retain(Mark { id: 100, position: (1000, 0), elevation: 0, kind: Kind::Campsite });
+        assert_eq!(icons.marks.len(), CAPACITY);
+        assert!(icons.marks.iter().any(|m| m.kind == Kind::Campsite));
+        assert!(!icons.marks.iter().any(|m| m.id == 64), "farthest item from the crowded category yields its slot");
+    }
+
+    #[test]
     fn visible_candidates_beat_padding_and_empty_pans_refill_with_bounded_reads() {
         let vp = view();
         let mut pois = std::vec::Vec::new();
-        for i in 0..10 {
-            let position = vp.to_map(if i < 6 { 60.0 + i as f32 } else { 300.0 + i as f32 }, 160.0);
+        for i in 0..68 {
+            let position = vp.to_map(if i < 64 { 60.0 + i as f32 * 0.1 } else { 300.0 + (i - 64) as f32 }, 160.0);
             pois.push(PoiSpec { lon: position.0, lat: position.1, subtype: 1, name: "".into(), hours_ref: 0xffff });
         }
         let bytes = build_poi_map((7_900_000, 45_900_000, 8_100_000, 46_100_000), 512, &[(1, pois)]);
@@ -667,7 +764,7 @@ mod tests {
             Settings { map_peaks: false, map_landmarks: false, map_poi_categories: 1, ..Settings::default() };
         let mut icons = MapIcons::new();
         settle(&mut icons, Some(&reader), &vp, &settings);
-        assert_eq!(icons.marks.len(), 6);
+        assert_eq!(icons.marks.len(), CAPACITY);
         assert!(icons.marks.iter().all(|m| in_bounds(vp.visible_bbox(), m.position)));
         let (lon, lat) = vp.to_map(239.0, 160.0);
         let panned = Viewport::new(240.0, 320.0, lon, lat, vp.zoom);
@@ -777,7 +874,7 @@ mod tests {
             }
         }
         assert!(frames > 1);
-        assert_eq!(icons.marks.len(), 8);
+        assert_eq!(icons.marks.len(), CAPACITY, "landmarks use the shared budget, not an eight-item page limit");
         assert!(icons.marks.iter().all(|mark| mark.kind == Kind::Landmark));
         let off = Settings { map_landmarks: false, ..settings };
         icons.prepare(Some(&reader), &view(), &off, 6000);
