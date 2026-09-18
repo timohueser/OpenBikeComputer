@@ -402,8 +402,8 @@ FREIBURG="$fixture_root/sim-freiburg/freiburg.obcm"
 # 400 under the name's box, named in the frame below — loses the space to it.
 "$SIM" "$FREIBURG" --clock "2025-06-29T14:40" --center 7881900,48121100 --zoom 4.9668 \
     --expect-screen Map --png "$OUT/map-settlements-dense.png"
-# 15 m/px over Maleck: village and hamlet names, no city name anywhere, and the 12-character cut
-# ("Vordere Za..").
+# 15 m/px over Maleck: village and hamlet names, no city name anywhere, and the 14-character cut
+# ("Vordere Zais..").
 "$SIM" "$FREIBURG" --clock "2025-06-29T14:40" --center 7889400,48123600 --zoom 9.9336 \
     --expect-screen Map --png "$OUT/map-settlements-village.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p b" --gpx "$GPX" --at 30 --expect-screen Statistics --png "$OUT/statistics.png"
