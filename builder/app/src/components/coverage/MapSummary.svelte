@@ -2,12 +2,10 @@
     // The Map summary ledger (#1038, §8 U4): the always-visible card that keeps
     // score — total bytes, cells, and every warning the selection has earned.
     //
-    // Three disciplines from the ledger module, honoured rather than restated:
+    // Two disciplines from the ledger module, honoured rather than restated:
     // the total is summed real cell bytes and is only *printed* once `isFinal`
-    // (a pending region prices as 0 B with a straight face otherwise); the
-    // refuse/warn verdict arrives with both figures and the navigation graph
-    // named, and is shown verbatim; and partial cells in the coarse context
-    // band never appear here at all.
+    // (a pending region prices as 0 B with a straight face otherwise), and
+    // partial cells in the coarse context band never appear here at all.
     //
     // The fits-on-card meter (§9/D4: SD free space, no user-visible file-size
     // limit) needs a number only a connected card can give, and connecting is
@@ -53,12 +51,6 @@
             </p>
         {:else}
             <p class="mono total faint">pricing…</p>
-        {/if}
-
-        {#if ledger.verdict.kind === "refuse"}
-            <p class="small verdict refuse">{ledger.verdict.message}</p>
-        {:else if ledger.verdict.kind === "warn"}
-            <p class="small verdict warn">{ledger.verdict.message}</p>
         {/if}
 
         {#if holeCount > 0}
@@ -160,23 +152,6 @@
         text-decoration: underline;
         padding: 0;
         font-size: inherit;
-    }
-
-    .verdict {
-        border-radius: 8px;
-        padding: 7px 10px;
-        line-height: 1.45;
-    }
-
-    .verdict.warn {
-        background: rgba(227, 173, 51, 0.18);
-        border: 1px solid var(--amber);
-    }
-
-    .verdict.refuse {
-        background: rgba(207, 106, 42, 0.12);
-        border: 1px solid var(--coral);
-        color: var(--coral);
     }
 
     .warnline {

@@ -1,19 +1,15 @@
-// The size ledger: real bytes, the core's ceiling, and what deserves a warning.
+// The size ledger: real bytes, and what deserves a warning.
 //
-// Three findings are pinned here because losing any of them costs a user
-// something concrete: a price that overstates a selection by half (PR #1025's
-// area-times-density trap), a map that cannot legally be written (OBCA §5.7's
-// core ceiling), and a coverage warning that hatches an entire country because
-// its coarse cells are — normally, unavoidably — partial.
+// Two findings are pinned here because losing either costs a user something
+// concrete: a price that overstates a selection by half (PR #1025's
+// area-times-density trap), and a coverage warning that hatches an entire
+// country because its coarse cells are — normally, unavoidably — partial.
 
 import { describe, expect, it } from "vitest";
-import { gib, ledgerFor, ledgerForRegion, MAX_FILE_BYTES, OVERHEAD_BUDGET } from "./ledger";
-import type { RegionEntry } from "./manifest";
+import { ledgerFor, ledgerForRegion } from "./ledger";
 import { resolveSelection, type BoxPart, type RegionPart, type SelectionContext } from "./selection";
 import { cellSquare, parseCellId } from "./grid";
 import { exampleCatalog, fixtureIndices } from "./testdata";
-
-const GIB = 1024 ** 3;
 
 const indices = fixtureIndices(exampleCatalog, {
     // Partial coarse cells are the normal state at country scale (#1025): a
@@ -58,7 +54,7 @@ describe("ledgerFor", () => {
         expect(ledger.bands.find((b) => b.band === "fine")!.bytes).toBe(552 + 424);
     });
 
-    it("splits the total by band, and names the core file's line", () => {
+    it("splits the total by band, and names the core band's line", () => {
         const ledger = ledgerOf(overA);
         expect(Object.fromEntries(ledger.bands.map((b) => [b.band, b.bytes]))).toEqual({
             coarse: 2088,
@@ -67,9 +63,6 @@ describe("ledgerFor", () => {
             network: 296,
         });
         expect(ledger.core.band).toBe("network");
-        // The core is the one file a volume set cannot split by bbox.
-        expect(ledger.core.splittable).toBe(false);
-        expect(ledger.bands.filter((b) => b.splittable).map((b) => b.band)).toEqual(["coarse", "mid", "fine"]);
         expect(ledger.bands.find((b) => b.contextOnly)!.band).toBe("coarse");
     });
 
@@ -164,30 +157,9 @@ describe("ledgerFor", () => {
         // something rather than being permanently lit.
         expect(ledgerOf(overA).isFinal).toBe(true);
     });
-
-    it("passes a small selection", () => {
-        expect(ledgerOf(overAB).verdict).toEqual({ kind: "ok" });
-    });
 });
 
-function regionEntry(coreBytes: number): RegionEntry {
-    return {
-        id: "europe/dach",
-        name: "DACH",
-        parent: null,
-        boundary: { tolerance_udeg: 2000, rings: [] },
-        terrain: null,
-        bytes: coreBytes,
-        bytes_by_band: { coarse: 0, mid: 0, fine: 0, network: coreBytes },
-        cell_count: { network: 1 },
-        partial_cell_count_by_band: { coarse: 0, mid: 0, fine: 0, network: 0 },
-        cells_url: "/cells.json",
-        cells_bytes: 0,
-        cells_sha256: "0".repeat(64),
-    };
-}
-
-describe("the core file's ceiling (OBCA §5.7)", () => {
+describe("pricing a region from the root (OBCC §6)", () => {
     it("prices a named region from the root alone — no satellite fetch", () => {
         const entry = exampleCatalog.regions[0];
         const ledger = ledgerForRegion(exampleCatalog, entry);
@@ -198,7 +170,6 @@ describe("the core file's ceiling (OBCA §5.7)", () => {
         expect(ledger.totalBytes).toBe(entry.bytes + entry.terrain!.bytes);
         expect(Object.values(entry.bytes_by_band).reduce((a, b) => a + b, 0)).toBe(entry.bytes);
         expect(ledger.core.bytes).toBe(entry.bytes_by_band.network);
-        expect(ledger.verdict.kind).toBe("ok");
     });
 
     it("shows the catalog's attribution and never a hard-coded one (§13.5)", () => {
@@ -212,7 +183,6 @@ describe("the core file's ceiling (OBCA §5.7)", () => {
         const ledger = ledgerForRegion(plain, plain.regions[0]);
         expect(ledger.terrain).toBeNull();
         expect(ledger.totalBytes).toBe(plain.regions[0].bytes);
-        expect(ledger.verdict.kind).toBe("ok");
     });
 
     it("applies the coarse-context rule to the root's per-band partial counts (#1032)", () => {
@@ -227,72 +197,5 @@ describe("the core file's ceiling (OBCA §5.7)", () => {
         // The root has counts, not ids: warn in the summary now, hatch only
         // once the pinned cell list and indexes identify the cells.
         expect(ledger.coverage.partialDetailByBand.size).toBe(0);
-    });
-
-    it("refuses a core whose projected file passes 4 GiB − 1, naming the navigation graph", () => {
-        // 3.8 GiB of cells: under the ceiling as bytes, over it as the file
-        // §5.7 makes us project (+15 %, 4.37 GiB).
-        const verdict = ledgerForRegion(exampleCatalog, regionEntry(Math.round(3.8 * GIB))).verdict;
-        expect(verdict.kind).toBe("refuse");
-        if (verdict.kind !== "refuse") throw new Error("unreachable");
-        expect(verdict.band).toBe("network");
-        expect(verdict.limit).toBe(MAX_FILE_BYTES);
-        // §5.7: the refusal MUST name the nav graph as the reason and the
-        // coverage as the thing to reduce. After §5.1 nothing else is true.
-        expect(verdict.message).toMatch(/navigation graph/);
-        expect(verdict.message).toMatch(/coverage/);
-    });
-
-    it("warns when the projected file passes ≈ 3.5 GiB, still naming the navigation graph", () => {
-        // 3.2 GiB of cells → 3.68 GiB projected, over the warn line and well
-        // under the ceiling.
-        const verdict = ledgerForRegion(exampleCatalog, regionEntry(Math.round(3.2 * GIB))).verdict;
-        expect(verdict.kind).toBe("warn");
-        if (verdict.kind !== "warn") throw new Error("unreachable");
-        expect(verdict.message).toMatch(/navigation graph/);
-    });
-
-    it("quotes the figure it judged, so no meter can sit under a line it is refusing", () => {
-        // The failure this pins: judging the projected size and quoting the
-        // nominal one. Every refusal from 3.48 to 4.0 GiB of cells then said
-        // "about 3.x GiB … past the 4 GiB", and the payload's own bytes were
-        // under the limit it had just cited — a meter drawn from it would sit
-        // comfortably below the wall while the dialog refused to build.
-        for (const nominalGiB of [3.0, 3.05, 3.2, 3.48, 3.6, 3.9, 4.0, 5.0]) {
-            const nominal = Math.round(nominalGiB * GIB);
-            const projected = Math.ceil(nominal * (1 + OVERHEAD_BUDGET));
-            const verdict = ledgerForRegion(exampleCatalog, regionEntry(nominal)).verdict;
-            if (verdict.kind === "ok") {
-                expect(projected).toBeLessThanOrEqual(3.5 * GIB);
-                continue;
-            }
-            // The payload: the judged figure, past the limit it was judged on.
-            expect(verdict.nominalBytes).toBe(nominal);
-            expect(verdict.projectedBytes).toBe(projected);
-            expect(verdict.projectedBytes).toBeGreaterThan(verdict.limit);
-            // The sentence: the same two numbers, in that order, spelled the
-            // same way. A drift between the message and the payload fails here.
-            const quoted = [...verdict.message.matchAll(/([\d.]+) GiB/g)].map((m) => m[1]);
-            expect(quoted.slice(0, 2)).toEqual([gib(nominal), gib(projected)]);
-            expect(verdict.message).toContain("once assembled");
-        }
-    });
-
-    it("judges on the pessimistic side of the comparison", () => {
-        // 3.1 GiB of real cell bytes is under the 3.5 GiB warn line — but §5.7
-        // requires the projection to be an upper bound, and +15 % puts it over.
-        const nominal = Math.round(3.1 * GIB);
-        expect(nominal).toBeLessThan(3.5 * GIB);
-        expect(nominal * (1 + OVERHEAD_BUDGET)).toBeGreaterThan(3.5 * GIB);
-        expect(ledgerForRegion(exampleCatalog, regionEntry(nominal)).verdict.kind).toBe("warn");
-    });
-
-    it("clears DACH's re-pinned core, barely — the number this design lives on", () => {
-        // #1025's re-pin: the DACH core is 3.03 GiB nominal, 3.49 GiB carrying
-        // §1.5's +15 %. That lands just under the warn line and well under the
-        // ceiling, which is the whole reason the coarse/core band boundary sits
-        // where it does.
-        expect(ledgerForRegion(exampleCatalog, regionEntry(Math.round(3.03 * GIB))).verdict.kind).toBe("ok");
-        expect(ledgerForRegion(exampleCatalog, regionEntry(Math.round(3.05 * GIB))).verdict.kind).toBe("warn");
     });
 });

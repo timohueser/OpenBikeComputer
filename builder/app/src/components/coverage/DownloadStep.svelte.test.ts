@@ -287,7 +287,6 @@ describe("direct assembler delivery", () => {
             core: { bytes: 4 },
             terrain: null,
             isFinal: true,
-            verdict: { kind: "ok" },
         };
         const store = {
             ledger,
@@ -856,7 +855,6 @@ const ledger = {
     core: { bytes: 4 },
     terrain: null,
     isFinal: true,
-    verdict: { kind: "ok" },
 };
 const store = {
     ledger,
