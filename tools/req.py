@@ -39,7 +39,7 @@ from pathlib import Path
 
 DEFAULT_URL = "https://releases.openbikecomputer.com"
 DEFAULT_TOKEN = Path.home() / ".config/openbikecomputer/verification-agent.token"
-LEVELS = ("unit", "integration", "system", "ride")
+LEVELS = ("unit", "integration", "system")
 """Requirement fields the console treats as part of the requirement itself, for `changed`."""
 TRACKED = ("title", "statement", "group", "todo", "implementationNeeded", "active")
 
@@ -355,7 +355,7 @@ def plan_problems(entry: dict, requirement: dict, baseline: dict | None,
         if gap and not nxt:
             note(f"{rid}: criterion {cid} has a gap and names no test to build")
         if nxt and not gap:
-            note(f"{rid}: criterion {cid} names a test to build but records no gap")
+            say(f"{rid}: criterion {cid} names a test to build but records no gap; the server refuses it")
         if nxt and nxt.get("level") not in LEVELS:
             say(f"{rid}: criterion {cid} has level {nxt.get('level')!r}; use one of {', '.join(LEVELS)}")
         if nxt and not as_text(nxt.get("summary")).strip():
