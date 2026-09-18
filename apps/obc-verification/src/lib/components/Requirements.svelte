@@ -5,6 +5,8 @@
   import { parseRequirements, formatRequirements } from './markdown-requirements';
   import Markdown from './Markdown.svelte';
   import MarkdownField from './MarkdownField.svelte';
+  import GroupPicker from './GroupPicker.svelte';
+  import ProseCheck from './ProseCheck.svelte';
   import RequirementGroups from './RequirementGroups.svelte';
   import RequirementLabels from './RequirementLabels.svelte';
   import CoveragePlan from './CoveragePlan.svelte';
@@ -35,6 +37,7 @@
   let rejecting = false;
   let deleting = false;
   let deleted: { requirement: Requirement; index: number }[] = [];
+  let titleField: HTMLInputElement;
   $: dirty = procedureOpen || JSON.stringify(requirements) !== JSON.stringify(revision.requirements);
   $: requirement = requirements.find(r => r.id === selected);
   $: groups = groupOrder(requirements).filter(Boolean).map(name => ({ name, count: requirements.filter(r => groupName(r) === name).length }));
@@ -79,6 +82,7 @@
     query = term;
   }
   function setGroup(value: string) { if (!busy && requirement) update({ ...requirement, group: value }); }
+  function setTitle(value: string) { if (!busy && requirement) update({ ...requirement, title: value }); }
   function renameGroup(name: string, replacement: string) {
     if (busy) return;
     requirements = requirements.map(r => groupName(r) === name ? { ...r, group: replacement } : r);
@@ -273,7 +277,7 @@
 <section class="detail">
 {#if requirement}
   <div class="row"><span class="eyebrow">{requirement.id} · {groupName(requirement) || 'Ungrouped'}</span><div class="actions"><RequirementLabels {requirement} />{#if !edit}<button disabled={busy} on:click={() => { deleting = false; edit = true; }}>Edit requirement</button>{/if}</div></div>
-  {#if edit}<div class="section"><label>Title<input id="requirement-title" bind:value={requirement.title} on:input={() => requirements = [...requirements]} placeholder="A clear product promise" /></label><label>Group <span class="small muted">· Optional</span><input disabled={busy} list="requirement-group-names" maxlength={80} value={requirement.group || ''} on:input={(event) => setGroup(event.currentTarget.value)} placeholder="Choose an existing group or type a new name" /><datalist id="requirement-group-names">{#each groups as group}<option value={group.name}></option>{/each}</datalist></label><MarkdownField label="Requirement" bind:value={requirement.statement} on:input={() => requirements = [...requirements]} /><div class="section"><h3>Labels</h3><RequirementLabels {requirement} editable disabled={busy} onchange={update} /><p class="small muted">Click a label to apply or remove it. An incomplete definition blocks publication and cannot be excepted. Implementation needed blocks publication unless an administrator accepts a candidate exception. Excluded requirements stay visible outside release verification. Existing candidates never change.</p></div><div class="row"><div class="actions"><button on:click={() => edit = false}>Done editing</button><button class="primary" disabled={busy} title="Ctrl+Enter or ⌘+Enter" on:click={create}>Done, add next</button></div><div class="actions"><span class="small muted">Position in group</span><button class="text-button" disabled={busy} on:click={() => move(-1)}>↑ Move up</button><button class="text-button" disabled={busy} on:click={() => move(1)}>↓ Move down</button><button class="text-button danger" disabled={busy} on:click={() => deleting = !deleting}>Delete requirement</button></div></div>
+  {#if edit}<div class="section"><label>Title<input id="requirement-title" bind:this={titleField} bind:value={requirement.title} on:input={() => requirements = [...requirements]} placeholder="A clear product promise" /></label><ProseCheck text={requirement.title} language="plaintext" field={titleField} onfix={setTitle} /><GroupPicker label="Group" hint="Optional" value={requirement.group || ''} {groups} disabled={busy} onchange={setGroup} /><MarkdownField label="Requirement" bind:value={requirement.statement} on:input={() => requirements = [...requirements]} /><div class="section"><h3>Labels</h3><RequirementLabels {requirement} editable disabled={busy} onchange={update} /><p class="small muted">Click a label to apply or remove it. An incomplete definition blocks publication and cannot be excepted. Implementation needed blocks publication unless an administrator accepts a candidate exception. Excluded requirements stay visible outside release verification. Existing candidates never change.</p></div><div class="row"><div class="actions"><button on:click={() => edit = false}>Done editing</button><button class="primary" disabled={busy} title="Ctrl+Enter or ⌘+Enter" on:click={create}>Done, add next</button></div><div class="actions"><span class="small muted">Position in group</span><button class="text-button" disabled={busy} on:click={() => move(-1)}>↑ Move up</button><button class="text-button" disabled={busy} on:click={() => move(1)}>↓ Move down</button><button class="text-button danger" disabled={busy} on:click={() => deleting = !deleting}>Delete requirement</button></div></div>
     {#if deleting}<div class="alert warning"><strong>Delete {requirement.id} · {requirement.title || 'Untitled requirement'}?</strong><p>This removes the requirement and its {requirement.tests.length} tests from the draft. Save revision to apply. Existing revisions and release candidates stay unchanged.</p><div class="actions"><button class="danger" disabled={busy} on:click={removeRequirement}>Delete from draft</button><button on:click={() => deleting = false}>Keep requirement</button></div></div>{/if}
   </div>
   {:else}<h2 class="requirement-title">{requirement.title || 'Untitled requirement'}</h2><div class="requirement-statement"><Markdown text={requirement.statement} /></div>{/if}
