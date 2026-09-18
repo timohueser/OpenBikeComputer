@@ -32,10 +32,10 @@ tracked_sources = { "tracks/monaco-upahead.gpx" = "sources/sim-monaco/tracks/mon
 
 [packages.sim-freiburg]
 summary = "Freiburg to Emmendingen simulator map with a typical settlement density"
-archive = "packages/f50867047d003d4e838b949b9eb6bd2009d8e29194b355920150c27a04fb8162.tar.gz"
-sha256 = "f50867047d003d4e838b949b9eb6bd2009d8e29194b355920150c27a04fb8162"
-bytes = 4034978
-provenance = "OBCM v18, packed from the Geofabrik europe/germany/baden-wuerttemberg/freiburg-regbez snapshot 2026-08-03 on the canonical box 7.81,47.99,7.89,48.13 (Freiburg north to Emmendingen). 17 settlement records: one city, three towns, nine villages and four hamlets, three of them from closed ways. No terrain, route or track. Exact source and output identities: sources/ride-assistant/freiburg-v18.json."
+archive = "packages/a0f68e8ac27f6ab88e612761e09a5e4da7f6e107233977c2a793779ee5961d0a.tar.gz"
+sha256 = "a0f68e8ac27f6ab88e612761e09a5e4da7f6e107233977c2a793779ee5961d0a"
+bytes = 8135648
+provenance = "OBCM v18, packed from the Geofabrik europe/germany/baden-wuerttemberg/freiburg-regbez snapshot 2026-08-03 on the canonical box 7.77,47.97,7.93,48.14 (the city of Freiburg north to Emmendingen). 44 settlement records: one city, three towns, 26 villages and 14 hamlets, four of them from closed ways, and 16 with a population. No terrain, route or track. Exact source and output identities: sources/ride-assistant/freiburg-v18.json."
 license = "ODbL-1.0 (map)"
 
 [scenarios.grimsel]

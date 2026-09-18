@@ -2,8 +2,8 @@
   "schema": 3,
   "package": "sim-freiburg",
   "archive": {
-    "bytes": 4034978,
-    "sha256": "f50867047d003d4e838b949b9eb6bd2009d8e29194b355920150c27a04fb8162"
+    "bytes": 8135648,
+    "sha256": "a0f68e8ac27f6ab88e612761e09a5e4da7f6e107233977c2a793779ee5961d0a"
   },
   "producer": {
     "source_commit": "e5209f0dae0cf425d861daccd70820382ca41019",
@@ -15,10 +15,10 @@
     }
   },
   "bounds_lon_lat": [
-    7.81,
-    47.99,
-    7.89,
-    48.13
+    7.77,
+    47.97,
+    7.93,
+    48.14
   ],
   "source_packages": {},
   "source_pbf": {
@@ -30,15 +30,15 @@
     "sha256": "1f1928036dbed787f42b3176d5bca8f4d213c64a936fa86d242d3dc993300707"
   },
   "map": {
-    "bytes": 5924352,
-    "sha256": "346d60b7aaae3baf8d78748fd218b6145ee2d866316e5adc7a8201b8d29a68c7",
+    "bytes": 11746304,
+    "sha256": "5500d295706c21b5aef8a44724cd6c6e2f7204ed56d5696943feded7c8b95efe",
     "obcm_version": 18,
-    "settlement_records": 17,
+    "settlement_records": 44,
     "settlement_classes": {
       "city": 1,
       "town": 3,
-      "village": 9,
-      "hamlet": 4
+      "village": 26,
+      "hamlet": 14
     },
     "landmark_records": 0,
     "landmark_article_variants": 0,

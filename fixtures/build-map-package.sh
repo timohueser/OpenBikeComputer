@@ -63,7 +63,7 @@ MONACO_BBOX="7.39,43.71,7.47,43.77" # Monaco principality, tight
 # north to Emmendingen — one city, its towns, and the villages and hamlets
 # between them. Canonical + hand-picked, like every box above.
 FREIBURG_SOURCE_URL="https://download.geofabrik.de/europe/germany/baden-wuerttemberg/freiburg-regbez-latest.osm.pbf"
-FREIBURG_BBOX="7.81,47.99,7.89,48.13" # Freiburg to Emmendingen (lon,lat,lon,lat)
+FREIBURG_BBOX="7.77,47.97,7.93,48.14" # Freiburg to Emmendingen (lon,lat,lon,lat)
 # -----------------------------------------------------------------------------
 
 WORK="$(mktemp -d)"
