@@ -88,7 +88,7 @@ impl LandmarksScreen {
             max = (max.0.max(row.position.0), max.1.max(row.position.1));
         }
         let vp = super::find_place::fit(min, max, rx.w, rx.h, 208);
-        let _ = super::map::draw_map_scene(cv, rx, &vp, None, None);
+        let _ = super::map::draw_map_scene(cv, rx, &vp, None, &[rect(0, 208, rx.w, rx.h - 208)]);
         for (i, row) in rx.landmarks.rows.iter().enumerate() {
             let (x, y) = vp.to_screen(row.position.0, row.position.1);
             cv.round(rect(x - 11, y - 12, 23, 24), 4, if i == rx.landmarks.selected { AMBER } else { PARCHMENT });

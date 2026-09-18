@@ -257,8 +257,14 @@ impl MapScreen {
             None
         };
 
-        let reserved = scale_bar.as_ref().map(ScaleBar::ink);
-        let Some(marker565) = draw_map_scene(cv, rx, &vp, None, reserved) else { return };
+        // What this frame inks below the map: the pill band when a pill is up, and the scale bar.
+        // With no pill the bottom is bare map, and a name is welcome to it.
+        let chrome: heapless::Vec<Rectangle, 2> =
+            [(chip_band > 0).then(|| chip_band_box(rx.w, rx.h)), scale_bar.as_ref().map(ScaleBar::ink)]
+                .into_iter()
+                .flatten()
+                .collect();
+        let Some(marker565) = draw_map_scene(cv, rx, &vp, None, &chrome) else { return };
 
         // The remaining chrome draws in the palette vocabulary, back through the canvas.
         //
@@ -349,14 +355,15 @@ pub(crate) struct DetourMapOverlay<'a> {
 /// breadcrumb, waypoints, rider and candidate). Map chrome stays in [`MapScreen::draw`]; the
 /// Detour chooser/preview add their own floating HUD after this returns.
 ///
-/// `scale_bar` is the box the caller's scale bar will ink ([`scale_bar_ink`]), so a settlement
-/// name keeps off it. A screen that draws no scale bar passes `None`.
+/// `chrome` is what this screen will ink over the map below it — its bottom panel or pill, and the
+/// scale bar ([`ScaleBar::ink`]) — so a settlement name keeps off it. A screen that draws nothing
+/// down there passes an empty slice and the names get the whole panel.
 pub(crate) fn draw_map_scene<D, F, S>(
     cv: &mut Canvas<D, F>,
     rx: &mut RenderFrame<'_, S>,
     vp: &Viewport,
     skip: Option<DetourMapOverlay<'_>>,
-    scale_bar: Option<Rectangle>,
+    chrome: &[Rectangle],
 ) -> Option<u16>
 where
     D: DrawTarget,
@@ -425,8 +432,8 @@ where
     rx.stats = stats;
 
     // Settlement names: over the terrain and the route ink, under the waypoints and the rider.
-    let reserved = label_reserved(vp, rx.state.user_fix, rx.w, rx.h, scale_bar);
-    let mut place = PointPlacement::new(rect(0, 0, rx.w, rx.h), &reserved);
+    let reserved = label_reserved(vp, rx.state.user_fix, rx.w, chrome);
+    let mut place = PointPlacement::new(&reserved);
     crate::settlements::draw_labels(cv, vp, rx.settlements, &mut place);
 
     draw_waypoint_diamonds(cv, vp, rx.waypoints.as_slice(), rx.w, rx.h);
@@ -451,31 +458,23 @@ where
 const RIDER_BOX_PX: i32 = 24;
 
 /// The boxes the map chrome owns, so a settlement name never covers one. A name may sit flush
-/// against a box, so each one has to hold the ink it protects at every state of that chrome.
+/// against a box, so each one has to hold the ink it protects.
 ///
-/// The scale bar and the rider mark are exact: both come in measured for this frame. The two bands
-/// are constant bounds instead, and carry a few pixels of slack — the top band down to the clock's
-/// halo, the bottom one down to the tallest pill any translation can wrap to. Constant is the right
-/// trade there: the pills and the top marks are small, and six screens share these boxes while
-/// drawing their own chrome inside them. The chrome draws after the names, so the slack only costs
-/// a name the last pixels of the corner it could have had.
+/// Only the top band is constant — the clock, the low-battery cue and the pan compass all sit
+/// inside it on every screen, and it is one text line tall. Everything the caller draws below the
+/// map comes in through `chrome`, measured for this frame: nothing there means nothing reserved.
+/// The rider mark is the one box this function measures itself.
 pub(crate) fn label_reserved(
     vp: &Viewport,
     fix: Option<Fix>,
     w: i32,
-    h: i32,
-    scale_bar: Option<Rectangle>,
+    chrome: &[Rectangle],
 ) -> heapless::Vec<Rectangle, 4> {
     let mut boxes = heapless::Vec::new();
     // Top: the clock digits, the low-battery cue and the pan HUD's compass rose.
     let _ = boxes.push(rect(0, 0, w, CLOCK_TOP + Font::Body.line_height() as i32 + 2));
-    // Bottom, full width: the status, waypoint and hint pills. The two-line hint is the tallest,
-    // and its height is the wrapped text's own ink, so the bound takes a first line inked from the
-    // top of its cell and a second inked to the bottom of the next — taller than any real pair.
-    let chips = HINT_LINE_PITCH + Font::Label.line_height() as i32 + 2 * HINT_PAD_Y + CHIP_MARGIN;
-    let _ = boxes.push(rect(0, h - chips, w, chips));
-    if let Some(bar) = scale_bar {
-        let _ = boxes.push(bar);
+    for r in chrome {
+        let _ = boxes.push(*r);
     }
     if let Some(fix) = fix {
         let (x, y) = vp.to_screen(fix.lon, fix.lat);
@@ -621,6 +620,15 @@ fn wrap2(s: &str) -> (&str, &str) {
 /// where the pan bottom chevron would draw — the two never coexist; the chip is pan-suppressed).
 pub(crate) const CHIP_H: i32 = 36;
 const CHIP_MARGIN: i32 = 10;
+
+/// The full-width band a bottom pill owns, for the frames where one is up. One box for all three
+/// pills, at the tallest any of them reaches: the hint's height is its wrapped text's own ink, so
+/// the bound takes a first line inked from the top of its cell and a second inked to the bottom of
+/// the next — taller than any real pair, in any language.
+pub(crate) fn chip_band_box(w: i32, h: i32) -> Rectangle {
+    let band = HINT_LINE_PITCH + Font::Label.line_height() as i32 + 2 * HINT_PAD_Y + CHIP_MARGIN;
+    rect(0, h - band, w, band)
+}
 
 // ---- Waypoint chip (bottom-centre) ----------------------------------------
 
