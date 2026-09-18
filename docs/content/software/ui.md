@@ -327,21 +327,31 @@ category menu returns to the icon menu; Back from the icon menu returns to Map d
 Back from Map display closes the sheet. A replacement sheet arrives without an entrance
 animation.
 
-Map icons stay upright at their source coordinates. Peaks include unnamed summits. A
-white backing keeps each 22-pixel glyph visible over terrain. Peaks appear at 50 metres per
-pixel or closer, landmarks at 20, and service POIs at 10. A stable overlap rule gives water
-and campsites priority, then peaks, landmarks and other services. The rider, waypoints,
-clock and bottom map controls have reserved space. Route lines draw above icons.
+Map icons stay upright at their source coordinates. Peaks include unnamed summits and
+use a small black triangle without a backing. Other icons use 22-pixel glyphs on white
+discs with a thin gray border. Peaks appear at 50 metres per pixel or closer, landmarks
+at 20, and service POIs at 10. The rider, waypoints, clock and bottom map controls have
+reserved space. Route lines draw above icons.
 
 The shared application retains at most 64 candidates and draws at most 24 icons, with
-lower limits at wider scales. A padded viewport cache avoids storage reads during small
+limits of 16 above 5 metres per pixel and 8 above 20. Placement first chooses the nearest
+unobstructed icon from each enabled group: peaks, landmarks and each service category.
+It then chooses a second from each group, and repeats until the display limit is reached
+or no more icons fit. Distance is measured from the map center. Source identity breaks
+ties. The overlap rule can prevent a group from appearing when no candidate fits.
+
+The candidate cache has no fixed per-category quota. When full, a less-represented group
+can replace a distant candidate from the most-represented group. Otherwise, a closer
+candidate can replace a farther candidate in its own group. Visible candidates take
+priority over points in the padding. A padded viewport avoids storage reads during small
 camera movements. Each preparation advances at most eight POI index or 512-byte record
-steps and eight landmark query steps. Pending work resumes on the next available frame
-and stops when complete. During a viewport refill, valid cached icons stay visible at
-their new screen positions. Disabled categories and points outside the new coverage are
-removed at once. A replacement map clears all cached icons. Visible candidates take
-priority over points in the padding. A transient read failure keeps valid cached icons
-and gets two delayed retries; a persistent failure stops until the view or map changes.
+steps and eight landmark query steps, then reads at most eight landmark identities.
+Pending work resumes on the next available frame and stops when complete.
+
+During a viewport refill, valid cached icons stay visible at their new screen positions.
+Disabled categories and points outside the new coverage are removed at once. A replacement
+map clears all cached icons. A transient read failure keeps valid cached icons and gets
+two delayed retries; a persistent failure stops until the view or map changes.
 
 A row can also hold a **value** in place of a screen. Such a row slides the sheet to a nested
 editor: `Up` and `Down` change the staged choice, `Select` writes it and returns to the row table,
