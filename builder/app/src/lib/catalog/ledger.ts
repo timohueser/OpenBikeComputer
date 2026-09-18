@@ -1,55 +1,15 @@
 // Exact selection pricing and coverage warnings. Totals sum published cell
-// bytes; only the unsplittable core band is judged against the per-file ceiling.
-// Missing cells are holes, while partial coarse cells are tracked as normal
-// context rather than warning-hatched detail.
+// bytes. Missing cells are holes, while partial coarse cells are tracked as
+// normal context rather than warning-hatched detail.
+//
+// Nothing here judges a size. A map is one object whose interior scales to
+// 64 GiB (`OBCM_Spec.md` §1.1), so the only size question left is whether it
+// fits the rider's card — which the device answers when the bytes arrive
+// (`lib/device/write.ts`), not the catalog beforehand.
 
 import type { BandRole, Catalog, RegionEntry } from "./manifest";
 import type { CellIndexDocument } from "./satellites";
 import type { SelectionResolution } from "./selection";
-
-/**
- * The per-file ceiling this consumer refuses above — deliberately **not** the engine's.
- *
- * It was justified by two limits that landed on one number: FAT32's largest file, and the largest
- * offset an OBCM `uint32` could name. Both are retired (OBCM v14's scaled offsets, and the flat
- * store), and the assembler's own wall is now `emit::FILE_CEILING` at 64 GiB.
- *
- * **The gate stays at `4 GiB − 1` because the thing a rider actually puts a map on has not been cut
- * over yet.** The device still mounts a FAT32 card, where a file cannot exceed this whatever the
- * format can express — so for every device in existence today it is a live limit, not a historical
- * one, and a builder that let a rider download 6 GiB it could not then write would be lying about
- * the only number that matters to them. It lifts with the board cutover (FS7.5c), which is what
- * replaces the card's filesystem; until then this is the honest ceiling for a *consumer* even
- * though it is no longer the producer's.
- *
- * (A second thing waits for the same slice: this ledger judges the **core band** against the
- * ceiling, which was the volume set's model — the core could not split and the geometry could. One
- * file has no such split, so what should be judged is the whole assembly. Changing that means
- * changing what the projection is *of*, and it is only meaningful once the card can hold more than
- * this constant anyway.)
- */
-export const MAX_FILE_BYTES = 4 * 1024 ** 3 - 1;
-
-/** Where the warning starts: seven eighths of {@link MAX_FILE_BYTES}, the proportion §5.7 has always
- *  used for "you are close". */
-export const CORE_WARN_BYTES = 3.5 * 1024 ** 3;
-
-/**
- * The pessimistic budget §5.7 requires on the comparison side: +15 %, from
- * `OBCA_Spec.md` §1.5's per-cell overhead allowance.
- *
- * §1.5 is explicit that this is **measured headroom rather than an expected
- * cost** — a real scoped bake came in 0–4 % *smaller* than the whole-extract
- * figures — and equally explicit that it stays, because §5.7 requires the
- * pre-download projection to be an upper bound and a budget that is never
- * exceeded is doing its job. It is the right headroom for this consumer too:
- * what a projection has to bound is the *assembled* file, and assembly adds
- * what the cells do not carry — fresh upper index nodes, offset tables,
- * directories, and the merged POI/hours and nav sections (§5.7's "fixed
- * overheads"). Sizing those exactly is the assembler's job (P3); refusing a
- * selection that would need them to be tiny is this one's.
- */
-export const OVERHEAD_BUDGET = 0.15;
 
 /** One band's line of the ledger. */
 export interface BandLedger {
@@ -58,13 +18,6 @@ export interface BandLedger {
     cellCount: number;
     /** Summed real cell bytes — what the download costs for this band. */
     bytes: number;
-    /** The same, carrying §5.7's pessimistic budget: what the *assembled* file
-     *  is projected to come to, and therefore the number every ceiling is
-     *  compared against. Never the number to show as "the download size". */
-    projectedBytes: number;
-    /** False only for the core, the one file of a set that cannot be split by
-     *  bbox — which is why it is the only one with a ceiling it can hit. */
-    splittable: boolean;
     /** True for the coarse band: context around the selection rather than
      *  content in it, and silent in the UI by §8's coarse-band decision. */
     contextOnly: boolean;
@@ -74,33 +27,6 @@ export interface BandLedger {
     /** Ground in this band with no published cell at all. */
     missingCells: string[];
 }
-/**
- * What was compared with what, and the sentence that says so.
- *
- * Both numbers, deliberately. §5.7 judges the **projected** size — the cells
- * plus §1.5's budget for what assembly adds — and that is the only number whose
- * relation to `limit` is meaningful: `projectedBytes > limit` holds in every
- * `warn` and every `refuse`, so a meter drawn from this payload sits past the
- * line exactly when the verdict says it does. `nominalBytes` is the summed cell
- * bytes, the honest answer to "how big is the download", and it is here so a UI
- * can show what it costs beside why it was refused rather than choosing one and
- * contradicting the other. Quoting only the nominal figure is how a refusal
- * ends up saying "about 3.6 GiB, past the 4 GiB limit".
- */
-export interface LedgerJudgement {
-    band: string;
-    /** Summed real cell bytes for the core band. */
-    nominalBytes: number;
-    /** The same carrying §5.7's budget — the figure compared with `limit`. */
-    projectedBytes: number;
-    limit: number;
-    message: string;
-}
-
-export type LedgerVerdict =
-    | { kind: "ok" }
-    | ({ kind: "warn" } & LedgerJudgement)
-    | ({ kind: "refuse" } & LedgerJudgement);
 
 /** The coverage story, split so a UI can hatch exactly what deserves hatching. */
 export interface CoverageReport {
@@ -123,11 +49,9 @@ export interface CoverageReport {
  * The elevation line (EL4, `OBCC_Spec.md` §13.3).
  *
  * Kept beside the bands rather than as one of them, because terrain is a second
- * artifact class with its own revision track — it is not in `bytes_by_band`, it
- * has no per-file ceiling to test (it is always its own file, `OBCA_Spec.md`
- * §5.5), and it never feeds the core's nav-graph verdict. What it does share is
- * §5.7's discipline: every byte here is a published `bytes` the catalog states,
- * summed before anything is fetched.
+ * artifact class with its own revision track — it is not in `bytes_by_band`.
+ * What it does share is §5.7's discipline: every byte here is a published
+ * `bytes` the catalog states, summed before anything is fetched.
  */
 export interface TerrainLedger {
     /** Downloadable squares. */
@@ -154,10 +78,10 @@ export interface Ledger {
     /** The raster's own line, or `null` when the catalog publishes no terrain —
      *  a complete map whose profiles are flat (§13). */
     terrain: TerrainLedger | null;
-    /** The core file's line — the nav graph and the POIs. */
+    /** The core band's line — the nav graph and the POIs. The disk-need
+     *  projection prices it apart from the geometry (`DownloadStep`). */
     core: BandLedger;
     coverage: CoverageReport;
-    verdict: LedgerVerdict;
     /** Bands with no loaded index: their bytes are missing from the total, so a
      *  UI must not present it as final. Empty in normal operation. */
     unresolvedBands: string[];
@@ -212,54 +136,6 @@ function coverageReport(
 }
 
 /**
- * §5.7's judgement, in the words §5.7 requires: the refusal and the warning both
- * name the **navigation graph** as the reason and the coverage as the thing to
- * reduce. That is not decoration — after §5.1 put geometry in splittable shards,
- * the core is nav plus POIs and nothing else, so no other explanation would be
- * true, and "your map is too big" would send a rider to the wrong fix.
- */
-function judge(core: BandLedger): LedgerVerdict {
-    const judged: Omit<LedgerJudgement, "limit" | "message"> = {
-        band: core.band,
-        nominalBytes: core.bytes,
-        projectedBytes: core.projectedBytes,
-    };
-    // Both figures in the sentence, in the order a rider reads them: what the
-    // download is, and what it becomes. The second is the one being judged, and
-    // a sentence that named only the first would spend the whole refuse band
-    // (3.48–4.0 GiB of cells) quoting a number below the limit it is citing.
-    const cells = `about ${gib(core.bytes)} GiB of cells, about ${gib(core.projectedBytes)} GiB once assembled`;
-    if (core.projectedBytes > MAX_FILE_BYTES) {
-        return {
-            kind: "refuse",
-            ...judged,
-            limit: MAX_FILE_BYTES,
-            message:
-                `This selection's navigation graph alone comes to ${cells} — past the 4 GiB a file on the ` +
-                "device's card can hold. Reduce the coverage — fewer regions, a narrower corridor — and the " +
-                "rest of the map will follow.",
-        };
-    }
-    if (core.projectedBytes > CORE_WARN_BYTES) {
-        return {
-            kind: "warn",
-            ...judged,
-            limit: CORE_WARN_BYTES,
-            message:
-                `This selection's navigation graph is ${cells}, close to the 4 GiB a file on the device's ` +
-                "card can hold. A little less coverage would leave more room.",
-        };
-    }
-    return { kind: "ok" };
-}
-
-/** GiB to two decimals — the spelling the messages and the tests share, so the
- *  sentence and the payload cannot drift apart. */
-export function gib(bytes: number): string {
-    return (bytes / 1024 ** 3).toFixed(2);
-}
-
-/**
  * Price a resolved selection.
  *
  * Every byte here came from a `CellEntry.bytes` the bakery published; nothing is
@@ -286,8 +162,6 @@ export function ledgerFor(
             role: band.role,
             cellCount: ids.length,
             bytes,
-            projectedBytes: Math.ceil(bytes * (1 + OVERHEAD_BUDGET)),
-            splittable: band.role !== "core",
             contextOnly: band.role === "coarse",
             partialCells,
             missingCells: resolution.missingByBand.get(band.id) ?? [],
@@ -311,7 +185,6 @@ export function ledgerFor(
         cellCount: bands.reduce((sum, b) => sum + b.cellCount, 0),
         core,
         coverage: coverageReport(resolution.missingByBand, bands),
-        verdict: judge(core),
         unresolvedBands: resolution.unresolvedBands,
         unresolvedParts: resolution.unresolvedParts,
         isFinal: resolution.unresolvedBands.length === 0 && resolution.unresolvedParts.length === 0,
@@ -324,8 +197,7 @@ export function ledgerFor(
  * This is `OBCC_Spec.md` §6's whole reason for putting `bytes`,
  * `bytes_by_band` and `cell_count` in the root: a builder must be able to price
  * a region the moment a rider hovers it, and pricing must not cost a round trip.
- * The result is the same shape as {@link ledgerFor} and the same verdict
- * arithmetic runs on it.
+ * The result is the same shape as {@link ledgerFor}.
  *
  * Per-band partial counts apply the same coarse-context rule before the
  * satellite fetch.
@@ -342,8 +214,6 @@ export function ledgerForRegion(catalog: Catalog, entry: RegionEntry): Ledger {
             role: band.role,
             cellCount: numberAt(entry.cell_count, band.id),
             bytes,
-            projectedBytes: Math.ceil(bytes * (1 + OVERHEAD_BUDGET)),
-            splittable: band.role !== "core",
             contextOnly: band.role === "coarse",
             partialCells: [],
             missingCells: [],
@@ -369,7 +239,6 @@ export function ledgerForRegion(catalog: Catalog, entry: RegionEntry): Ledger {
         cellCount: bands.reduce((sum, b) => sum + b.cellCount, 0),
         core,
         coverage: coverageReport(new Map(), bands, entry.partial_cell_count_by_band),
-        verdict: judge(core),
         unresolvedBands: [],
         unresolvedParts: [],
         // The root prices a region completely — that is §6's whole point —

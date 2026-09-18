@@ -323,10 +323,10 @@ export interface AssembleSummary {
  * Projected peak wasm memory for a selection — the answer to "can this be assembled in a tab at
  * all", available **before** the download.
  *
- * This complements the OBCA §5.7 file-size ledger rather than repeating it: §5.7 prices the output
- * against the format's 4 GiB per-file ceiling; this prices the *run* against wasm32's 4 GiB address
- * space. A selection can pass one and fail the other. The model and its measured constants are
- * documented in `apps/obc-web-assemble/src/estimate.rs`.
+ * This is the only size verdict a selection gets before the download. The format's own wall is
+ * 64 GiB (`obcm_assemble::FILE_CEILING`) and the card's free space is answered by the device when
+ * the bytes arrive, so what binds in a tab is the *run*, against wasm32's 4 GiB address space. The
+ * model and its measured constants are documented in `apps/obc-web-assemble/src/estimate.rs`.
  *
  * **How much to trust these numbers.** The engine term is a **linear fit through two measured
  * runs** — epic #1116's phase-resolved allocation harness on freiburg-regbez (90 MB of nav) and

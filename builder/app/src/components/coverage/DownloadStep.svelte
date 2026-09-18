@@ -425,9 +425,10 @@
             output.result = await sendMapBlob(output.client, blob, name, output.ctx);
         } else if (downloadOutput) {
             // A picked directory (or the desktop's native folder) takes the map
-            // where the rider wants it — the card itself, when that is what they
-            // picked. The session streams a Blob without buffering it; only a host
-            // that needs contiguous bytes converts, on its side.
+            // where the rider wants it, to be sent on to the device later — the
+            // card itself carries a flat store, not a filesystem a host can write.
+            // The session streams a Blob without buffering it; only a host that
+            // needs contiguous bytes converts, on its side.
             const path = await downloadOutput.write(name, bytes ?? blob);
             savedFile = { name, byteLength, path };
         } else {
@@ -668,8 +669,8 @@
      * crosses its seam is a digest and a length — so the name is chosen here, where
      * the selection is known.
      *
-     * `.obcm` because that is what the device scans a card for, and what its own
-     * file picker accepts. What an OS forbids in a name becomes a dash.
+     * `.obcm` because that is what a map is, and what this app's own file picker
+     * accepts. What an OS forbids in a name becomes a dash.
      */
     function mapFileName(): string {
         const stem = mapName().replace(/[\\/:*?"<>|]/g, "-").trim();
@@ -1168,7 +1169,6 @@
     const refusal = $derived.by(() => {
         const l = ledger;
         if (!l || l.cellCount === 0) return null;
-        if (l.verdict.kind === "refuse") return l.verdict.message;
         return memoryRefusal;
     });
     const ready = $derived.by(() => {
