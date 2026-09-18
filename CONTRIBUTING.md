@@ -39,6 +39,18 @@ The normal development loop is **scoped verification**, not the complete reposit
 developer and coding agent should inspect the files it changed, exercise the smallest command that
 covers those files, and report exactly what it ran. CI remains the cross-repository backstop.
 
+Before a push, `obc ready` assembles that list for you. It reads the changed paths, prints one line
+and one reason for each gate — the skipped gates included — runs the gates it selects, and ends
+with a pull-request skeleton. `obc ready --dry-run` prints the plan and stops. A gate whose work is
+a declared suite is skipped and names the suite, because `obc test affected` already runs it. The
+format gate writes: if it rewrites a file, the command names the file and stops, because the tree
+is no longer the tree you were about to push. Commit the file and run `obc ready` again.
+
+```sh
+obc ready --dry-run
+obc ready --base origin/develop
+```
+
 ### 1. Focused checks — the default
 
 Run the directly affected tests while iterating and the affected package before handoff:
