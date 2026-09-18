@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import type { Revision, Requirement, Catalog, CoverageProposalReview } from '$lib/types';
-  import { api, clone, date, message } from './api';
+  import type { Revision, Requirement, Catalog, CoverageProposalReview, ProblemAt } from '$lib/types';
+  import { ApiError, api, clone, date, message } from './api';
   import { parseRequirements, formatRequirements } from './markdown-requirements';
   import Markdown from './Markdown.svelte';
   import MarkdownField from './MarkdownField.svelte';
@@ -38,6 +38,9 @@
   let deleting = false;
   let deleted: { requirement: Requirement; index: number }[] = [];
   let titleField: HTMLInputElement;
+  /** Where the server says the last failure is, and the criterion to mark once the editor is open. */
+  let errorAt: ProblemAt | undefined;
+  let flagged = '';
   $: dirty = procedureOpen || JSON.stringify(requirements) !== JSON.stringify(revision.requirements);
   $: requirement = requirements.find(r => r.id === selected);
   $: groups = groupOrder(requirements).filter(Boolean).map(name => ({ name, count: requirements.filter(r => groupName(r) === name).length }));
@@ -61,6 +64,17 @@
     const id = reviewQueue.find(value => order.indexOf(value) > at) ?? reviewQueue[0];
     if (query && !matches(requirements.find(r => r.id === id)!, query)) query = '';
     select(id);
+  }
+  function fail(e: unknown) { error = message(e); errorAt = e instanceof ApiError ? e.at : undefined; }
+  $: if (!error) errorAt = undefined;
+  /** Opens the requirement the failure names, and its plan when the failure is in one. */
+  function showProblem() {
+    const at = errorAt;
+    const target = at?.requirementId ? requirements.find(r => r.id === at.requirementId) : undefined;
+    if (!at || !target) return;
+    if (query && !matches(target, query)) query = '';
+    select(target.id);
+    if (at.criterionId && target.coverage) { flagged = at.criterionId; editCoverage(); }
   }
   function groupName(r: Requirement | undefined) { return r?.group?.trim() || ''; }
   /** Groups in the order they first appear in the draft; ungrouped last. */
@@ -109,7 +123,7 @@
       const at = requirement ? requirements.indexOf(requirement) + 1 : requirements.length;
       requirements = [...requirements.slice(0, at), r, ...requirements.slice(at)]; selected = r.id; query = ''; edit = true; reveal(r.id);
       await tick(); document.getElementById('requirement-title')?.focus();
-    } catch (e) { error = message(e); } finally { busy = false; }
+    } catch (e) { fail(e); } finally { busy = false; }
   }
   /** Ctrl/Cmd+Enter in the editor finishes this requirement and starts the next one in the same group. */
   function editorKeys(event: KeyboardEvent) { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); create(); } }
@@ -144,7 +158,7 @@
   /** An untouched plan is dropped so the requirement stays "not assessed". */
   function closeCoverage() {
     if (coverageEditing && requirement?.coverage && planBlank(requirement.coverage)) delete requirement.coverage;
-    coverageEditing = false; requirements = [...requirements];
+    coverageEditing = false; flagged = ''; requirements = [...requirements];
   }
   async function importMarkdown(event: Event) {
     const input = event.currentTarget as HTMLInputElement;
@@ -165,7 +179,7 @@
       if (added.length && !requirement) selected = added[0].id;
       notice = `Imported ${parsed.length} requirements from ${file.name}: ${updated} updated by matching ID, ${added.length} new with fresh IDs. Tests and labels are kept. Save revision to keep the import.`;
       if (selected) reveal(selected);
-    } catch (e) { error = message(e); } finally { busy = false; }
+    } catch (e) { fail(e); } finally { busy = false; }
   }
   /** Compare a revision with the one saved before it. */
   function diff(target: Revision, all: Revision[]) {
@@ -198,19 +212,19 @@
       const saved = await api<Revision>('/api/requirements', 'PUT', { baseRevision: revision.id, requirements });
       revision = saved; requirements = clone(saved.requirements); deleted = []; deleting = false; edit = false; onsaved(saved); notice = `Revision r${saved.id} saved. Existing candidates keep their original revision.`;
       await loadProposals();
-    } catch (e) { error = message(e); } finally { busy = false; }
+    } catch (e) { fail(e); } finally { busy = false; }
   }
   async function refresh() {
     if (dirty && !confirm('Discard this draft and load the latest saved revision?')) return;
     busy = true; error = '';
     try { const versions = await api<Revision[]>('/api/revisions'); const latest = versions.sort((a,b) => b.id - a.id)[0]; if (latest) { revision = latest; requirements = clone(latest.requirements); query = ''; if (!requirements.some(r => r.id === selected)) selected = requirements[0]?.id || ''; coverageEditing = false; edit = false; deleted = []; deleting = false; onsaved(latest); reveal(selected); } await loadProposals(); }
-    catch (e) { error = message(e); } finally { busy = false; }
+    catch (e) { fail(e); } finally { busy = false; }
   }
   async function refreshCatalog() {
     busy = true; error = '';
-    try { catalog = await api<Catalog>('/api/catalog'); oncatalog(catalog); } catch (e) { error = message(e); } finally { busy = false; }
+    try { catalog = await api<Catalog>('/api/catalog'); oncatalog(catalog); } catch (e) { fail(e); } finally { busy = false; }
   }
-  async function showHistory() { error = ''; try { history = await api<Revision[]>('/api/revisions'); } catch (e) { error = message(e); } }
+  async function showHistory() { error = ''; try { history = await api<Revision[]>('/api/revisions'); } catch (e) { fail(e); } }
   async function loadProposals() {
     coverageProposals = await api<CoverageProposalReview[]>('/api/coverage-proposals');
   }
@@ -245,7 +259,7 @@
 </script>
 <svelte:window on:keydown={(event) => { if (edit) editorKeys(event); else reviewKeys(event); }} />
 <div class="page-heading row"><div><div class="eyebrow">Product verification</div><h1>Requirements</h1><p class="muted">What the product must do, and the tests that show it does.</p></div><div class="actions"><details class="menu"><summary class="button">More ▾</summary><div class="menu-list"><label class="menu-item">Import Markdown…<input class="visually-hidden" type="file" accept=".md,.markdown,text/markdown,text/plain" disabled={busy} on:change={importMarkdown} /></label><button class="menu-item" on:click={exportMarkdown}>Export Markdown</button><button class="menu-item" on:click={() => manageGroups = !manageGroups}>Manage groups</button><button class="menu-item" on:click={showHistory}>Revision history</button></div></details>{#if reviewQueue.length}<button class="review-queue" disabled={busy} title="Go to the next requirement with a proposal to review" on:click={nextReview}><span class="review-count">{reviewQueue.length}</span>{reviewQueue.length === 1 ? 'proposal to review' : 'proposals to review'}</button>{/if}<button class="primary" disabled={busy} on:click={create}>+ Requirement</button></div></div>
-{#if error}<div class="alert error" role="alert">{error}<button class="text-button" disabled={busy} on:click={refresh}>Reload saved revision</button></div>{/if}
+{#if error}<div class="alert error" role="alert"><span class="grow">{error}</span>{#if errorAt?.requirementId && requirements.some(r => r.id === errorAt?.requirementId)}<button class="text-button" disabled={busy} on:click={showProblem}>Show {errorAt.requirementId}{errorAt.criterion ? ` · criterion ${errorAt.criterion}` : ''}</button>{/if}<button class="text-button" disabled={busy} on:click={refresh}>Reload saved revision</button></div>{/if}
 {#if notice}<div class="alert success" role="status">{notice}</div>{/if}
 {#if deleted.length}<div class="alert warning" role="status">Deleted {deleted[deleted.length - 1].requirement.id} from this draft. Save revision to apply. <button class="text-button" disabled={busy} on:click={restoreRequirement}>Undo deletion</button></div>{/if}
 {#if manageGroups}<RequirementGroups {groups} disabled={busy} onrename={renameGroup} onremove={removeGroup} onclose={() => manageGroups = false} />{/if}
@@ -287,7 +301,7 @@
   {@const decided = coverageProposals.filter(p => p.requirementId === requirement.id && p.status !== 'pending' && p.status !== 'superseded')}
   <section class="section coverage-section" aria-label="Requirement coverage">
     <div class="row"><div class="row coverage-head"><h2>Coverage</h2><CoverageBadge {requirement} /></div>{#if !coverageEditing}<button disabled={busy} on:click={editCoverage}>{requirement.coverage ? 'Edit coverage' : 'Define coverage'}</button>{/if}</div>
-    {#if coverageEditing}<CoverageEditor {requirement} {catalog} {busy} bind:editing={procedureOpen} onchange={() => requirements = [...requirements]} ondone={closeCoverage} onrefresh={refreshCatalog} />
+    {#if coverageEditing}<CoverageEditor {requirement} {catalog} {busy} flag={flagged} bind:editing={procedureOpen} onchange={() => requirements = [...requirements]} ondone={closeCoverage} onrefresh={refreshCatalog} />
     {:else}
       {#each plans as p (p.id)}<CoverageProposal proposal={p} {requirement} {catalog} {busy} {dirty} bind:rejecting ondecide={decide} />{/each}
       {#if requirement.coverage}
@@ -302,3 +316,4 @@
 {:else}<div class="empty"><h2>{requirements.length ? 'No matching requirements' : 'Make the important promises explicit.'}</h2><p class="muted">{requirements.length ? 'Clear your search or choose another group.' : 'Write a measurable requirement, then define the checks that provide evidence. You can also import a Markdown draft.'}</p><button class="primary" disabled={busy} on:click={create}>Create requirement</button></div>{/if}
 </section></div>
 {#if dirty}<div class="savebar row"><span class="small">{dirty ? 'You have unsaved changes' : `Saved revision r${revision.id}`} <span class="muted">· Candidates use saved revisions only.</span></span><div class="actions">{#if dirty}<button disabled={busy} on:click={refresh}>Discard draft</button>{/if}<button class="primary" disabled={busy || !dirty || procedureOpen} on:click={save}>{busy ? 'Saving…' : 'Save revision'}</button></div></div>{/if}
+<style>.alert .grow { flex: 1; min-width: 200px; }</style>
