@@ -25,6 +25,13 @@ Neither changes a saved revision until you select **Save revision**.
 **Revision history** shows each revision as a difference against the one before it: added,
 removed, and changed requirements, with the previous and new statement side by side.
 
+Each prose field is checked for spelling and grammar as you type. The notes below the field give
+the problem text, what is wrong with it, and the corrections. Select a correction to apply it, or
+select the problem text to find it in the field. The checker is
+[Harper](https://writewithharper.com). It runs in your own browser: no text is sent to a server,
+and no account is necessary. Its language data is large, so the first check in a browser takes a
+few seconds to start. The browser then keeps the data for the next time.
+
 ## Coverage workflow
 
 Each requirement has a **Coverage** section: its acceptance criteria, the tests that are evidence
@@ -130,9 +137,13 @@ to use another local port.
 ## Requirement groups
 
 Each requirement can have one optional group, such as Navigation or Bluetooth. Groups are flat.
-In the requirement editor, choose an existing group or type a new name. Leave the field blank for
-an ungrouped requirement. The sidebar lists groups in the order they first appear, folded until
-you open them; search also matches group names. The release candidate view groups its evidence the
+In the requirement editor, the **Group** field lists the groups that exist, with the number of
+requirements in each. Type to filter the list, or type a new name and select **New group** to make
+one. **No group** makes the requirement ungrouped. The name applies when you select it from the
+list, or when you leave the field.
+
+The sidebar lists groups in the order they first appear, folded until you open them; search also
+matches group names. The release candidate view groups its evidence the
 same way and can show only outstanding requirements. **Manage groups** renames a group or moves its requirements to Ungrouped. These changes remain in
 the draft until you select **Save revision**. Empty groups are not stored.
 
