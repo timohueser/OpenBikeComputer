@@ -39,7 +39,7 @@ from pathlib import Path
 
 DEFAULT_URL = "https://releases.openbikecomputer.com"
 DEFAULT_TOKEN = Path.home() / ".config/openbikecomputer/verification-agent.token"
-LEVELS = ("unit", "integration", "system", "ride")
+LEVELS = ("unit", "integration", "system")
 """Requirement fields the console treats as part of the requirement itself, for `changed`."""
 TRACKED = ("title", "statement", "group", "todo", "implementationNeeded", "active")
 
