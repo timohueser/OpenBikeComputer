@@ -179,10 +179,10 @@ triggers = [
   "docs/Trunk.toml",
 ]
 
-# The sweep script and its manifest are inputs to this suite, not just its subjects:
-# `test_ui_snapshot_manifest.py` reads both, and it is the only thing that catches an
-# `--expect-screen` stripped off an existing command — the frames are unchanged, so
-# `ci.ui-snapshots` still passes.
+# The frame table and its manifest are inputs to this suite, not just its subjects:
+# `test_ui_frames.py` reads both, and it is the only thing that catches a frame deleted together
+# with its digest row — the frames a sweep renders are unchanged, so `ci.ui-snapshots` still
+# passes.
 [[suite]]
 id = "python.firmware-tools"
 route = "ordinary"
@@ -192,7 +192,7 @@ triggers = [
   "tools/requirements-test.txt",
   "firmware/tools/*.py",
   "firmware/tools/**/*.py",
-  "firmware/ui-snapshots.sh",
+  "firmware/ui-frames.toml",
   "firmware/ui-snapshots.sha256",
 ]
 
@@ -305,13 +305,13 @@ triggers = [
 [[suite]]
 id = "ci.ui-snapshots"
 route = "ordinary"
-command = "firmware/ui-snapshots.sh OUT && python3 firmware/tools/ui_snapshot_manifest.py check firmware/ui-snapshots.sha256 OUT"
+command = "obc shot --check"
 jobs = ["ui-snapshots"]
 fixtures = ["sim"]
 triggers = [
-  "firmware/ui-snapshots.sh",
+  "firmware/ui-frames.toml",
   "firmware/ui-snapshots.sha256",
-  "firmware/tools/ui_snapshot_manifest.py",
+  "firmware/tools/ui_frames/**",
   "firmware/obc-app/src/**",
   "firmware/obc-render/src/**",
   "apps/obc-sim/src/**",
