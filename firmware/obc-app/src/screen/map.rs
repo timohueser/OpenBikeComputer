@@ -228,11 +228,39 @@ impl MapScreen {
         S: obc_map_scene::MapScene,
     {
         let vp = rx.state.viewport(rx.w as f32, rx.h as f32);
-        let Some(marker565) = draw_map_scene(cv, rx, &vp, None) else { return };
-
-        // The remaining chrome draws in the palette vocabulary, back through the canvas.
         let panning = rx.state.pan.is_some();
 
+        // Which bottom chip is up, and therefore where the scale bar sits, is decided before the
+        // scene draws: the settlement names inside it reserve the bar's live box, not every box it
+        // could take. The pills themselves still draw below, over the map.
+        let warning_up = !panning && (rx.no_fix || rx.navigation.off_route);
+        let wpt_chip = waypoint_chip(
+            rx.settings.waypoint_mode,
+            panning,
+            rx.no_fix,
+            rx.navigation.off_route,
+            rx.navigation.next_waypoint,
+            rx.waypoints.as_slice(),
+            rx.navigation.progress_m,
+        );
+        let hint_up = !rx.recording && !panning && !warning_up && wpt_chip.is_none() && self.hint.chip_up();
+        let chip_band = if warning_up || wpt_chip.is_some() {
+            CHIP_H
+        } else if hint_up {
+            hint_chip_height(rx.t(Msg::MapPressToStart))
+        } else {
+            0
+        };
+        let scale_bar = rx
+            .settings
+            .map_scale_bar
+            .then(|| scale_bar_ink(rx.h, chip_band, vp.meters_per_pixel(), rx.settings.units))
+            .flatten();
+
+        let Some(marker565) = draw_map_scene(cv, rx, &vp, None, scale_bar) else { return };
+
+        // The remaining chrome draws in the palette vocabulary, back through the canvas.
+        //
         // Low-battery cue (top-left corner): a small warning-red battery glyph only when the charge
         // has dropped below LOW_BATTERY_PCT — nothing above it, so there's no permanent map battery
         // indicator. Shown in pan mode too (the top-right corner belongs to the pan compass rose).
@@ -253,7 +281,6 @@ impl MapScreen {
         // distance is meaningless. Suppressed while panning — the pan HUD's bottom chevron owns the
         // bottom-centre slot (they'd collide), and panning is deliberate map inspection anyway; the
         // chip returns the moment pan exits.
-        let warning_up = !panning && (rx.no_fix || rx.navigation.off_route);
         if warning_up {
             if rx.no_fix {
                 draw_status_chip(cv, rx.w, rx.h, rx.t(Msg::MapNoGpsFix));
@@ -275,15 +302,6 @@ impl MapScreen {
         // along-route distance to the next named waypoint, governed by the `WaypointMode` setting.
         // The warning chip keeps slot priority — the pure helper below only reports a chip when the
         // warning chip is down (and not panning), so the two never collide.
-        let wpt_chip = waypoint_chip(
-            rx.settings.waypoint_mode,
-            panning,
-            rx.no_fix,
-            rx.navigation.off_route,
-            rx.navigation.next_waypoint,
-            rx.waypoints.as_slice(),
-            rx.navigation.progress_m,
-        );
         if let Some((k, dist_to_go)) = wpt_chip {
             let dist = super::vocab::fmt::distance_short(dist_to_go, rx.settings.units);
             draw_waypoint_chip(cv, rx.w, rx.h, rx.waypoints.as_slice()[k].name.as_str(), &dist);
@@ -293,8 +311,9 @@ impl MapScreen {
         // on the route-less browse map, shown on entry and auto-hidden after 4 s (the `hint` timer).
         // Never while tracking or panning, and dropped whenever a warning / waypoint chip wants the
         // slot (so it never collides). Its own timer drives the auto-hide; this only reads its state.
-        let hint_up = !rx.recording && !panning && !warning_up && wpt_chip.is_none() && self.hint.chip_up();
-        let hint_band = if hint_up { draw_hint_chip(cv, rx.w, rx.h, rx.t(Msg::MapPressToStart)) } else { 0 };
+        if hint_up {
+            draw_hint_chip(cv, rx.w, rx.h, rx.t(Msg::MapPressToStart));
+        }
 
         // Scale bar (bottom-left): the largest round distance that fits the target on-screen width
         // at the current zoom, in the units setting's system. Right in the corner — except while a
@@ -302,16 +321,7 @@ impl MapScreen {
         // a wide chip ("off route 153km", "◆ Pass Summit  0.4km") never runs under it. Visible in
         // pan mode too (where it's most useful) — the pan HUD's bottom chevron is centred, well
         // clear of the corner.
-        // …stepped above whichever bottom chip is up. The hint's band is taller (two lines), so pass
-        // its band height rather than a bare bool, so a wide scale bar never runs under it.
-        let chip_band = if warning_up || wpt_chip.is_some() {
-            CHIP_H
-        } else if hint_up {
-            hint_band
-        } else {
-            0
-        };
-        if rx.settings.map_scale_bar {
+        if scale_bar.is_some() {
             draw_scale_bar(cv, rx.h, chip_band, vp.meters_per_pixel(), rx.settings.units);
         }
 
@@ -337,11 +347,15 @@ pub(crate) struct DetourMapOverlay<'a> {
 /// Draw the reusable map scene (base map, full route, optional skipped-range + detour ink,
 /// breadcrumb, waypoints, rider and candidate). Map chrome stays in [`MapScreen::draw`]; the
 /// Detour chooser/preview add their own floating HUD after this returns.
+///
+/// `scale_bar` is the box the caller's scale bar will ink ([`scale_bar_ink`]), so a settlement
+/// name keeps off it. A screen that draws no scale bar passes `None`.
 pub(crate) fn draw_map_scene<D, F, S>(
     cv: &mut Canvas<D, F>,
     rx: &mut RenderFrame<'_, S>,
     vp: &Viewport,
     skip: Option<DetourMapOverlay<'_>>,
+    scale_bar: Option<Rectangle>,
 ) -> Option<u16>
 where
     D: DrawTarget,
@@ -410,7 +424,8 @@ where
     rx.stats = stats;
 
     // Settlement names: over the terrain and the route ink, under the waypoints and the rider.
-    let mut place = PointPlacement::new(rect(0, 0, rx.w, rx.h), &label_reserved(vp, rx.state.user_fix, rx.w, rx.h));
+    let reserved = label_reserved(vp, rx.state.user_fix, rx.w, rx.h, scale_bar);
+    let mut place = PointPlacement::new(rect(0, 0, rx.w, rx.h), &reserved);
     crate::settlements::draw_labels(cv, vp, rx.settlements, &mut place);
 
     draw_waypoint_diamonds(cv, vp, rx.waypoints.as_slice(), rx.w, rx.h);
@@ -434,21 +449,27 @@ where
 /// Side (px) of the box the rider mark owns — the chevron reaches 12 px ahead and 8 px out.
 const RIDER_BOX_PX: i32 = 24;
 
-/// The boxes the map chrome owns, so a settlement name never covers one.
+/// The boxes the map chrome owns, so a settlement name never covers one. Each box is the ink it
+/// protects and no more: a name may sit flush against one.
 ///
-/// The three bands are constant rather than the live chip state: every bottom pill and both
-/// scale-bar positions are inside them, so the label pass needs no second copy of the chip rules.
-/// The rider mark is the one box that moves.
-fn label_reserved(vp: &Viewport, fix: Option<Fix>, w: i32, h: i32) -> heapless::Vec<Rectangle, 4> {
+/// The two bands are constant, because every bottom pill is inside the bottom band and every top
+/// mark is inside the top one. The scale bar and the rider mark move, so both come in measured.
+pub(crate) fn label_reserved(
+    vp: &Viewport,
+    fix: Option<Fix>,
+    w: i32,
+    h: i32,
+    scale_bar: Option<Rectangle>,
+) -> heapless::Vec<Rectangle, 4> {
     let mut boxes = heapless::Vec::new();
     // Top: the clock digits, the low-battery cue and the pan HUD's compass rose.
     let _ = boxes.push(rect(0, 0, w, CLOCK_TOP + Font::Body.line_height() as i32 + 2));
     // Bottom, full width: the status, waypoint and hint pills. The two-line hint is the tallest.
     let chips = 2 * HINT_LINE_PITCH + 2 * HINT_PAD_Y + CHIP_MARGIN;
     let _ = boxes.push(rect(0, h - chips, w, chips));
-    // Bottom left: the scale bar in the corner and stepped above a chip band, label included.
-    let scale = chips + SCALE_CHIP_GAP + SCALE_TICK_H + Font::Label.line_height() as i32 + 1;
-    let _ = boxes.push(rect(0, h - scale, SCALE_MARGIN_X + SCALE_TARGET_MAX_PX as i32, scale));
+    if let Some(bar) = scale_bar {
+        let _ = boxes.push(bar);
+    }
     if let Some(fix) = fix {
         let (x, y) = vp.to_screen(fix.lon, fix.lat);
         let r = RIDER_BOX_PX / 2;
@@ -530,16 +551,12 @@ const HINT_PAD_Y: i32 = 8;
 /// smallest font). The pill height derives from the wrapped line count and the text block centres
 /// in it, including accents and descenders (see [`HINT_PAD_Y`]). The pill is taller than
 /// [`draw_status_chip`] but uses the same rounded shape. Lowest chip priority; the caller only reaches here when no warning / waypoint chip is up.
-fn draw_hint_chip(cv: &mut impl Surface, w: i32, h: i32, s: &str) -> i32 {
+fn draw_hint_chip(cv: &mut impl Surface, w: i32, h: i32, s: &str) {
     use super::palette::*;
     let font = Font::Label;
     let (l1, l2) = wrap2(s);
-    let mut ink = obc_render::text::text_ink_bounds(l1, font).unwrap_or(0..0);
-    if let Some(second) = obc_render::text::text_ink_bounds(l2, font) {
-        ink.start = ink.start.min(second.start + HINT_LINE_PITCH);
-        ink.end = ink.end.max(second.end + HINT_LINE_PITCH);
-    }
-    let ph = ink.end - ink.start + 2 * HINT_PAD_Y;
+    let ink = hint_chip_ink(s);
+    let ph = hint_chip_height(s);
     let tw = (text_width(l1, font) as i32).max(text_width(l2, font) as i32);
     let pw = tw + 16;
     let px = (w - pw) / 2;
@@ -551,7 +568,25 @@ fn draw_hint_chip(cv: &mut impl Surface, w: i32, h: i32, s: &str) -> i32 {
     if !l2.is_empty() {
         cv.text(l2, Point::new(w / 2, ty + HINT_LINE_PITCH), font, TextAlign::Center, INK);
     }
-    ph
+}
+
+/// The ink rows the hint pill's two wrapped lines cover, relative to the first line's cell top.
+fn hint_chip_ink(s: &str) -> core::ops::Range<i32> {
+    let font = Font::Label;
+    let (l1, l2) = wrap2(s);
+    let mut ink = obc_render::text::text_ink_bounds(l1, font).unwrap_or(0..0);
+    if let Some(second) = obc_render::text::text_ink_bounds(l2, font) {
+        ink.start = ink.start.min(second.start + HINT_LINE_PITCH);
+        ink.end = ink.end.max(second.end + HINT_LINE_PITCH);
+    }
+    ink
+}
+
+/// The hint pill's height — its wrapped ink plus the padding. Pure, so the scale bar knows the band
+/// it steps above before the pill draws.
+fn hint_chip_height(s: &str) -> i32 {
+    let ink = hint_chip_ink(s);
+    ink.end - ink.start + 2 * HINT_PAD_Y
 }
 
 /// Split `s` into two balanced centred lines for the hint pill: pick the word break (space) whose
@@ -577,7 +612,7 @@ fn wrap2(s: &str) -> (&str, &str) {
 
 /// The status chip's band height and its inset from the bottom edge (above the panel frame, below
 /// where the pan bottom chevron would draw — the two never coexist; the chip is pan-suppressed).
-const CHIP_H: i32 = 36;
+pub(crate) const CHIP_H: i32 = 36;
 const CHIP_MARGIN: i32 = 10;
 
 // ---- Waypoint chip (bottom-centre) ----------------------------------------
@@ -760,6 +795,27 @@ const SCALE_MARGIN_Y: i32 = 12;
 const SCALE_CHIP_GAP: i32 = 12;
 const SCALE_TICK_H: i32 = 5;
 
+/// The bar's baseline row: in the corner normally; stepped above the bottom chip band (its height +
+/// inset + a gap) when a chip is up (`chip_band > 0`) — a taller band (the two-line hint) steps the
+/// bar proportionally.
+fn scale_bar_baseline(h: i32, chip_band: i32) -> i32 {
+    h - if chip_band > 0 { chip_band + CHIP_MARGIN + SCALE_CHIP_GAP } else { SCALE_MARGIN_Y }
+}
+
+/// The box [`draw_scale_bar`] inks at this camera, parchment halo included: the label row, the end
+/// ticks and the baseline, from the label's left edge to the wider of the bar and the label.
+/// `None` at a degenerate zoom, where no bar draws either.
+///
+/// This is what a settlement name must keep off. It is a small box in the corner, not the corner:
+/// the bar is about 33 px tall and 40–90 px wide, wherever the chip band puts it.
+pub(crate) fn scale_bar_ink(h: i32, chip_band: i32, mpp: f32, units: Units) -> Option<Rectangle> {
+    let (bar_px, label) = scale_bar_choice(mpp, units)?;
+    let y = scale_bar_baseline(h, chip_band);
+    let top = y - SCALE_TICK_H - Font::Label.line_height() as i32 - 2;
+    let width = bar_px.max(text_width(&label, Font::Label) as i32) + 2;
+    Some(rect(SCALE_MARGIN_X - 1, top, width, y + 2 - top))
+}
+
 /// Draw the scale bar at the bottom-left: a horizontal ink line with end ticks and a length label,
 /// haloed in parchment so it reads over terrain. The distance is the largest 1/2/5 × 10ⁿ that fits
 /// [`SCALE_TARGET_MIN_PX`]..[`SCALE_TARGET_MAX_PX`] at the current `mpp` (metres per pixel), in the
@@ -771,9 +827,7 @@ fn draw_scale_bar(cv: &mut impl Surface, h: i32, chip_band: i32, mpp: f32, units
     };
     let x0 = SCALE_MARGIN_X;
     let x1 = x0 + bar_px;
-    // In the corner normally; stepped above the bottom chip band (its height + inset + a gap) when a
-    // chip is up (`chip_band > 0`) — a taller band (the two-line hint) steps the bar proportionally.
-    let y = h - if chip_band > 0 { chip_band + CHIP_MARGIN + SCALE_CHIP_GAP } else { SCALE_MARGIN_Y };
+    let y = scale_bar_baseline(h, chip_band);
     // Parchment halo: the same strokes one pixel thicker/offset, drawn first.
     for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
         cv.line(Point::new(x0 + dx, y + dy), Point::new(x1 + dx, y + dy), PARCHMENT);
@@ -1212,7 +1266,8 @@ mod tests {
         for language in Language::ALL {
             let text = crate::i18n::t(Msg::MapPressToStart, language);
             let mut buf = Buf::new(240, 320);
-            let height = draw_hint_chip(&mut Canvas::new(&mut buf, &color), 240, 320, text);
+            draw_hint_chip(&mut Canvas::new(&mut buf, &color), 240, 320, text);
+            let height = hint_chip_height(text);
             let top = 320 - CHIP_MARGIN - height;
             let (first, second) = wrap2(text);
             let width = text_width(first, Font::Label).max(text_width(second, Font::Label)) as i32 + 16;

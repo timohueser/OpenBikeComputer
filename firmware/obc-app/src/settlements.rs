@@ -593,6 +593,32 @@ mod tests {
         assert_eq!(drawn(&vp, &cache, &mut place), ["Clear"]);
     }
 
+    /// The owner's case, on the real `sim-freiburg` map at the camera the simulator opens with:
+    /// the city projects into the bottom-left corner, beside the scale bar. The bar inks a box
+    /// about 33 px tall above the status chip — the corner is not the bar, so the name is drawn.
+    #[test]
+    fn a_city_beside_the_scale_bar_is_placed() {
+        // `initial_camera` on the fixture: the bbox centre, and the zoom that fits its longitude
+        // span across the 240 px panel.
+        let vp = Viewport::new(PANEL.0, PANEL.1, 7_885_982, 48_053_537, PANEL.0 / 321_244.0);
+        let cache = cache_of(&[candidate(SettlementClass::City, "Freiburg", 220_200, 47_996_090, 7_849_401)]);
+        let (x, y) = vp.to_screen(7_849_401, 47_996_090);
+        assert!(x < PANEL.0 as i32 / 2 && y > PANEL.1 as i32 / 2, "the place is in the bottom-left quadrant");
+
+        // The chrome this frame really owns: no fix, so the `No GPS Fix` chip is up and the scale
+        // bar steps above its band.
+        let h = PANEL.1 as i32;
+        let bar = crate::screen::map::scale_bar_ink(
+            h,
+            crate::screen::map::CHIP_H,
+            vp.meters_per_pixel(),
+            crate::Units::Metric,
+        );
+        let chrome = crate::screen::map::label_reserved(&vp, None, PANEL.0 as i32, h, bar);
+        let mut place = PointPlacement::new(rect(0, 0, PANEL.0 as i32, h), &chrome);
+        assert_eq!(drawn(&vp, &cache, &mut place), ["Freiburg"]);
+    }
+
     #[test]
     fn a_long_name_is_cut_with_two_dots() {
         let vp = vp_at(CAM, 30.0);

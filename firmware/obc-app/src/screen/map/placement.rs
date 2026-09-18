@@ -1,12 +1,14 @@
 //! Screen-space occupancy for map point marks.
 //!
 //! The panel bounds and the reserved chrome go in first. A mark is then accepted only when its box
-//! lies fully inside the bounds and, grown by the caller's margin, is clear of everything already
-//! placed. A mark that does not fit is dropped, never moved. There are no leader lines, no
-//! alternative positions around an anchor and no second pass.
+//! lies fully inside the bounds, clears the chrome, and — grown by the caller's margin — clears
+//! every mark already placed. A mark that does not fit is dropped, never moved. There are no leader
+//! lines, no alternative positions around an anchor and no second pass.
 //!
 //! The stored box is the raw one, not the grown one. The clear space a mark keeps is the margin of
-//! its own call, so two marks that use different margins are held apart by the later one.
+//! its own call, so two marks that use different margins are held apart by the later one. The
+//! margin holds marks apart from each other only: reserved chrome is the ink it protects, so a mark
+//! may sit flush against it.
 //!
 //! The result depends only on the order of the calls, so the caller offers its marks best first and
 //! the same camera always gives the same frame. The arithmetic is integer only, with the edges
@@ -25,6 +27,8 @@ type Edges = (i64, i64, i64, i64);
 /// The boxes one frame has given away.
 pub(crate) struct PointPlacement {
     bounds: Edges,
+    /// How many leading `occupied` boxes are reserved chrome, which takes no margin.
+    reserved: usize,
     occupied: heapless::Vec<Rectangle, MAX_PLACED>,
 }
 
@@ -38,14 +42,15 @@ impl PointPlacement {
                 break;
             }
         }
-        Self { bounds: edges(bounds), occupied }
+        Self { bounds: edges(bounds), reserved: occupied.len(), occupied }
     }
 
     /// Accept `r` and keep it, or refuse it.
     ///
     /// A box that crosses the bounds, an empty box, and every box once the list is full are
-    /// refused. The overlap test grows `r` by `margin` pixels on every side; a negative margin
-    /// counts as zero.
+    /// refused. Against another mark the test grows `r` by `margin` pixels on every side (a
+    /// negative margin counts as zero); against reserved chrome it uses `r` itself, because the
+    /// margin is there to keep marks legible beside each other, not to push them off the chrome.
     pub(crate) fn try_place(&mut self, r: Rectangle, margin: i32) -> bool {
         if self.occupied.is_full() || r.size.width == 0 || r.size.height == 0 {
             return false;
@@ -56,7 +61,11 @@ impl PointPlacement {
         }
         let m = i64::from(margin.max(0));
         let probe = (l - m, t - m, right + m, bottom + m);
-        if self.occupied.iter().any(|o| overlaps(probe, edges(*o))) {
+        let hits = self.occupied.iter().enumerate().any(|(i, o)| {
+            let test = if i < self.reserved { (l, t, right, bottom) } else { probe };
+            overlaps(test, edges(*o))
+        });
+        if hits {
             return false;
         }
         self.occupied.push(r).is_ok()
@@ -129,6 +138,15 @@ mod tests {
         let mut p = PointPlacement::new(open(), &[clock]);
         assert!(!p.try_place(r(100, 10, 20, 20), 0), "a mark inside the clock box is refused");
         assert!(p.try_place(r(100, 60, 20, 20), 0), "a mark below it is free");
+    }
+
+    #[test]
+    fn a_mark_sits_flush_against_reserved_chrome() {
+        let chrome = r(0, 100, 240, 100);
+        let mut p = PointPlacement::new(open(), &[chrome]);
+        // The margin keeps marks legible beside each other; the chrome box is already its own ink.
+        assert!(p.try_place(r(0, 76, 40, 24), 12), "a box ending where the chrome starts is placed");
+        assert!(!p.try_place(r(100, 99, 40, 24), 12), "one pixel inside the chrome is still refused");
     }
 
     #[test]
