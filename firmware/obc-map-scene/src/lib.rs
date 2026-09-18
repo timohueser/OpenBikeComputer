@@ -30,6 +30,15 @@ impl BBox {
             || self.max_lat < other.min_lat
             || self.min_lat > other.max_lat)
     }
+
+    /// Whether `other` lies wholly inside this box. Edges count as inside.
+    #[inline]
+    pub fn contains(&self, other: &BBox) -> bool {
+        self.min_lon <= other.min_lon
+            && self.max_lon >= other.max_lon
+            && self.min_lat <= other.min_lat
+            && self.max_lat >= other.max_lat
+    }
 }
 
 /// Geometry class required by the renderer.
