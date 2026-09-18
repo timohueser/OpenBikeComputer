@@ -213,7 +213,8 @@ where
             continue;
         }
         if k == "population" {
-            // Free text in OSM: keep it only when the whole value is a number.
+            // Free text in OSM: keep it only when the whole value is a number once the spaces are
+            // removed. A separator or a qualifier, such as `12,000` or `~500`, gives unknown.
             population = v.split_whitespace().collect::<String>().parse::<u32>().ok();
             continue;
         }
@@ -275,21 +276,17 @@ fn utf8_record_name(raw: &str) -> Option<String> {
     (!name.is_empty() && !name.chars().any(char::is_control)).then(|| name.into())
 }
 
-/// The three ranges the device font holds. A character outside them is drawn as a question mark.
-fn device_can_show(c: char) -> bool {
-    matches!(c as u32, 0x20..=0x7F | 0xA0..=0xFF | 0x100..=0x17F)
-}
-
 /// Choose the settlement name the device can draw: the local `name`, else its ASCII fold, else
 /// `name:en`, else `int_name`. `None` drops the settlement, because a row of question marks is
 /// worse than no label. The fold turns Cyrillic, Greek and CJK into word breaks, so it gives an
 /// empty result for them and the language fall-backs run.
 fn pick_settlement_name(local: &str, name_en: Option<&str>, int_name: Option<&str>) -> Option<String> {
-    if local.chars().all(device_can_show) {
+    // `glyph_supported` reads the real font strip, so the repertoire cannot drift from it.
+    let drawable = |name: &&str| name.chars().all(obc_render::glyph_supported);
+    if drawable(&local) {
         return Some(local.into());
     }
-    normalize_name(local)
-        .or_else(|| [name_en, int_name].into_iter().flatten().find(|n| n.chars().all(device_can_show)).map(Into::into))
+    normalize_name(local).or_else(|| [name_en, int_name].into_iter().flatten().find(drawable).map(Into::into))
 }
 
 /// Fill missing summit heights from the shared geographic terrain lattice.
@@ -578,6 +575,7 @@ mod tests {
             (23, "place", "village", 9, "Village"),
             (24, "place", "hamlet", 9, "Hamlet"),
         ];
+        assert_eq!(POI_TABLE.len(), expect.len(), "the pin covers every row; `zip` would skip the tail");
         for (row, &(sub, k, v, cat, label)) in POI_TABLE.iter().zip(expect.iter()) {
             assert_eq!((row.subtype, row.key, row.value), (sub, k, v), "packer classification pinned");
             // The derived shared category + label match the pinned expectation → no drift.

@@ -35,7 +35,7 @@ summary = "Freiburg to Emmendingen simulator map with a typical settlement densi
 archive = "packages/f50867047d003d4e838b949b9eb6bd2009d8e29194b355920150c27a04fb8162.tar.gz"
 sha256 = "f50867047d003d4e838b949b9eb6bd2009d8e29194b355920150c27a04fb8162"
 bytes = 4034978
-provenance = "OBCM v18, packed from the Geofabrik europe/germany/baden-wuerttemberg/freiburg-regbez snapshot 2026-08-03 on the canonical box 7.81,47.99,7.89,48.13 (Freiburg north to Emmendingen). 17 settlement records: one city, three towns, nine villages and four hamlets, four of them from closed ways. No terrain, route or track. Exact source and output identities: sources/ride-assistant/freiburg-v18.json."
+provenance = "OBCM v18, packed from the Geofabrik europe/germany/baden-wuerttemberg/freiburg-regbez snapshot 2026-08-03 on the canonical box 7.81,47.99,7.89,48.13 (Freiburg north to Emmendingen). 17 settlement records: one city, three towns, nine villages and four hamlets, three of them from closed ways. No terrain, route or track. Exact source and output identities: sources/ride-assistant/freiburg-v18.json."
 license = "ODbL-1.0 (map)"
 
 [scenarios.grimsel]

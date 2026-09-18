@@ -61,13 +61,13 @@ python3 fixtures/build-assistant-package.py west-cork \
   --provenance fixtures/sources/ride-assistant/west-cork-v18.json
 ```
 
-The Cork map is 4,749,504 bytes, SHA-256
-`073117c7e5cbce4cc20a08b72133122b3fcc4c13535a7ad153e4c0f72dd658f4`.
+The Cork map is 4,783,296 bytes, SHA-256
+`61ad73d12a06ae6224c2594659edd9b9d30e4d8948e4e7a759e836b875fa6105`.
 [The build record](west-cork-v18.json) pins the source, producer and output identities.
 The map retains its landmark content and byte-identical native terrain.
 
-The Swiss map is 44,881,840 bytes, SHA-256
-`f878cf176c3416397a45920b19301d29822aaac1064cdea1ac87d95597fab36a`.
+The Swiss map is 48,740,272 bytes, SHA-256
+`5ea6d75f9277fc925a6001c4df3bc60e4e0086704bf3e6bb7d2c80fa7718368d`.
 [Its build record](meiringen-v18.json) pins the full PBF, crop, compiled content, producer
 executables, land polygons and output. Packaged `build.json` records each shipping command
 and selected cell. The map contains 65 landmarks,
