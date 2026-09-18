@@ -447,7 +447,7 @@ fn label_reserved(vp: &Viewport, fix: Option<Fix>, w: i32, h: i32) -> heapless::
     let chips = 2 * HINT_LINE_PITCH + 2 * HINT_PAD_Y + CHIP_MARGIN;
     let _ = boxes.push(rect(0, h - chips, w, chips));
     // Bottom left: the scale bar in the corner and stepped above a chip band, label included.
-    let scale = CHIP_H + 2 * CHIP_MARGIN + SCALE_CHIP_GAP + SCALE_TICK_H + Font::Label.line_height() as i32 + 1;
+    let scale = chips + SCALE_CHIP_GAP + SCALE_TICK_H + Font::Label.line_height() as i32 + 1;
     let _ = boxes.push(rect(0, h - scale, SCALE_MARGIN_X + SCALE_TARGET_MAX_PX as i32, scale));
     if let Some(fix) = fix {
         let (x, y) = vp.to_screen(fix.lon, fix.lat);

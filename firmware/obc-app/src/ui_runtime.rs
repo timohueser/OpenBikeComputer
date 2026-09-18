@@ -132,7 +132,7 @@ pub(crate) struct UiRuntime {
     pub(crate) find: crate::find_place::FindState,
     pub(crate) landmarks: crate::landmarks::Landmarks,
     pub(crate) map_icons: crate::map_icons::MapIcons,
-    /// The settlement-name candidates the map overlay draws (#1900). App-owned for the same reason
+    /// The settlement-name candidates the map overlay draws. App-owned for the same reason
     /// as [`map_icons`](Self::map_icons): a `Screen` variant is a slot in a `.bss` union.
     pub(crate) settlements: crate::settlements::SettlementCache,
     pub(crate) ahead: crate::whats_next::AheadState,

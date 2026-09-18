@@ -94,7 +94,7 @@ impl From<Settlement> for Candidate {
 /// then the position. It holds no camera value, so it does not change while the rider moves, and
 /// the position tail makes the same map give the same order every time.
 fn rank(c: &Candidate) -> (u8, Reverse<u32>, u8, i32, i32) {
-    (c.class as u8, Reverse(c.population), c.name.len() as u8, c.lat, c.lon)
+    (c.class as u8, Reverse(c.population), c.name.chars().count() as u8, c.lat, c.lon)
 }
 
 /// What a held candidate set is *for*. A set taken for the same map and the same scale band is the
@@ -203,7 +203,11 @@ pub(crate) fn draw_labels(cv: &mut impl Surface, vp: &Viewport, cache: &Settleme
 ///
 /// A name that does not fit is dropped, never moved: `place` refuses a box that crosses the panel
 /// bounds, sits on reserved chrome, or comes within [`LABEL_MARGIN_PX`] of a name already placed.
+/// A class past its scale limit for *this* camera is skipped, whatever the cache holds.
 fn placements(vp: &Viewport, cache: &SettlementCache, place: &mut PointPlacement) -> Vec<(Point, u8), MAX_LABELS> {
+    // The scale limits answer to the camera that draws, which is not always the one the cache was
+    // filled for: the browse screens fit a whole route into the panel at a much coarser scale.
+    let mask = class_mask(vp.meters_per_pixel());
     // Sort small indices, so the held set keeps the order the query gave it.
     let mut order: Vec<u8, MAX_CANDIDATES> = (0..cache.items.len() as u8).collect();
     order.sort_unstable_by_key(|&i| rank(&cache.items[usize::from(i)]));
@@ -214,6 +218,9 @@ fn placements(vp: &Viewport, cache: &SettlementCache, place: &mut PointPlacement
             break;
         }
         let c = &cache.items[usize::from(i)];
+        if mask & (1 << c.class as u8) == 0 {
+            continue;
+        }
         let (x, y) = vp.to_screen(c.lon, c.lat);
         let at = Point::new(x, y + LABEL_ANCHOR_DY);
         let tw = text_width(&label_of(c), Font::Label) as i32;
@@ -304,6 +311,17 @@ mod tests {
         assert_eq!(class_mask(SETTLEMENT_MIN_MPP), 0b1111, "the riding end of the band still shows every class");
         assert_eq!(class_mask(1.0), 0, "inside a settlement the names only cover the roads");
         assert_eq!(class_mask(700.0), 0, "past the city limit nothing is named");
+
+        // The locked edges themselves: a changed constant has to fail here.
+        for (limit, at_limit, above) in [
+            (CITY_MAX_MPP, 0b0001, 0b0000),
+            (TOWN_MAX_MPP, 0b0011, 0b0001),
+            (VILLAGE_MAX_MPP, 0b0111, 0b0011),
+            (HAMLET_MAX_MPP, 0b1111, 0b0111),
+        ] {
+            assert_eq!(class_mask(limit), at_limit, "the class still shows a name at {limit} m/px");
+            assert_eq!(class_mask(limit * 1.01), above, "just past {limit} m/px it is gone");
+        }
         for degenerate in [f32::NAN, f32::INFINITY, 0.0, -1.0] {
             assert_eq!(class_mask(degenerate), 0, "{degenerate} is not a scale");
         }
@@ -470,7 +488,43 @@ mod tests {
         assert_eq!(held, best, "the largest populations are kept, whatever order they arrive in");
     }
 
+    /// The padded region is taken from the four panel corners, so a turned camera is covered.
+    #[test]
+    fn the_padded_region_covers_a_rotated_view() {
+        let vp = Viewport::new_rotated(
+            PANEL.0,
+            PANEL.1,
+            CAM.0,
+            CAM.1,
+            obc_render::zoom_for_mpp(30.0),
+            core::f32::consts::FRAC_PI_4,
+        );
+        let region = padded_bbox(&vp);
+        let visible = vp.visible_bbox();
+        assert!(region.contains(&visible), "the padded region holds the whole rotated view");
+        assert!(region.min_lat < visible.min_lat && region.max_lat > visible.max_lat, "and it is larger");
+        assert!(region.min_lon < visible.min_lon && region.max_lon > visible.max_lon);
+    }
+
     // ---- the draw pass ----
+
+    /// The class limits answer to the camera that draws. The browse screens fit a route into the
+    /// panel at their own coarse scale, with a cache that was filled while riding.
+    #[test]
+    fn the_drawn_scale_decides_the_classes_whatever_the_cache_holds() {
+        let riding = vp_at(CAM, 10.0);
+        let cache = cache_of(&[
+            at_screen(&riding, 120.0, 100.0, SettlementClass::City, "Freiburg", 230_000),
+            at_screen(&riding, 120.0, 200.0, SettlementClass::Hamlet, "Hofsgrund", 300),
+        ]);
+        assert_eq!(drawn(&riding, &cache, &mut open_panel()), ["Freiburg", "Hofsgrund"], "both at 10 m/px");
+
+        let fitted = vp_at(CAM, 100.0);
+        assert_eq!(drawn(&fitted, &cache, &mut open_panel()), ["Freiburg"], "the hamlet is past its limit at 100 m/px");
+
+        let far = vp_at(CAM, 900.0);
+        assert!(drawn(&far, &cache, &mut open_panel()).is_empty(), "no class is named at 900 m/px");
+    }
 
     #[test]
     fn a_label_that_crosses_the_panel_edge_is_dropped() {
@@ -485,7 +539,8 @@ mod tests {
 
     #[test]
     fn the_margin_suppresses_a_lower_priority_neighbour() {
-        let vp = vp_at(CAM, 30.0);
+        // 10 m/px, where every class shows a name.
+        let vp = vp_at(CAM, 10.0);
         let close = cache_of(&[
             at_screen(&vp, 120.0, 150.0, SettlementClass::City, "Freiburg", 230_000),
             at_screen(&vp, 120.0, 158.0, SettlementClass::Hamlet, "Hofsgrund", 300),
