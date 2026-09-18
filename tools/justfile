@@ -78,6 +78,23 @@ sim *args:
     (( ${#_EXTRA[@]} )) && cmd+=("${_EXTRA[@]}")
     cd "$OBC_ROOT"; _run "${cmd[@]}"
 
+# Render a UI frame from firmware/ui-frames.toml through the headless simulator. A name or a
+# glob renders those frames; `--list [PATTERN]` answers which frames exist and what screen each
+# one reaches, so nobody has to open the table. `--vs REF` renders the frame here and at REF and
+# prints the changed share first, so an unchanged frame needs no picture at all.
+#   obc shot routemenu          obc shot 'statistics*'      obc shot --list map
+#   obc shot map --vs origin/develop
+#   obc shot --all [DIR]        obc shot --check [DIR]      obc shot --accept [NAMES]
+# Render one UI frame, a family, or the whole sweep. Args: [NAME|GLOB] [--list|--vs|--all|--check]
+[group('run')]
+shot *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init; ensure_geos
+    cd "$OBC_ROOT"
+    export PYTHONPATH="$OBC_ROOT/firmware/tools"
+    _run python3 -m ui_frames "$@"
+
 # ── Board firmware ───────────────────────────────────────────────────────────
 
 # Destructively initialize the card inside one USB-connected device as an empty flat store.

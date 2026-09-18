@@ -295,9 +295,12 @@ jq 'select(.event == "input_result" or .event == "pass_output" or .event == "exe
 
 - `-h` or `--help` prints the grouped command reference and exits successfully without a map.
 
-The committed snapshot sweep is [`firmware/ui-snapshots.sh`](../../firmware/ui-snapshots.sh). When
-changing command spelling or fixture ownership, compare the surviving `--png` outputs byte for
-byte; delete a scenario only when its capability was intentionally removed.
+The committed snapshot sweep is the frame table
+[`firmware/ui-frames.toml`](../../firmware/ui-frames.toml), which `obc shot` renders.
+`obc shot --list` names every frame and the screen it reaches, so you do not have to read the table
+to find a recipe. When changing command spelling or fixture ownership, compare the surviving frames
+byte for byte — `obc shot <name> --vs origin/develop` prints the changed share of one frame — and
+delete a frame only when its capability was intentionally removed.
 
 ### Ride Assistant validation
 

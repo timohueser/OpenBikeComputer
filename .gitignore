@@ -51,12 +51,10 @@ __pycache__/
 # The simulator's persisted-settings file (the device-RRAM stand-in) — a runtime artifact.
 /obc-settings.bin
 firmware/obc-settings.bin
-# ui-snapshots.sh output — before/after PNG sweeps are per-branch scratch, never committed.
-# The script's own default is ui-snapshots/; the `ci.ui-snapshots` suite passes `OUT`, and
-# suite commands run with the repo root as their working directory. Root-anchored so it only
-# matches that one sweep directory.
+# `obc shot` output — before/after PNG sweeps are per-branch scratch, never committed. Its own
+# default is ui-snapshots/ at the repo root. Root-anchored so it only matches that one sweep
+# directory.
 ui-snapshots/
-/OUT/
 # Per-branch working scratch (sweeps written elsewhere, logs, notes). Never committed.
 .scratch/
 .pytest_cache/
