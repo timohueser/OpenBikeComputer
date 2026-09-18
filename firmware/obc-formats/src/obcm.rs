@@ -6,7 +6,7 @@ pub mod landmarks;
 pub mod peaks;
 
 pub const MAGIC: [u8; 4] = *b"OBCM";
-pub const VERSION: u8 = 17;
+pub const VERSION: u8 = 18;
 /// Fixed header, including optional terrain and landmark region pointers.
 pub const HEADER_LEN: usize = 65;
 /// Header offset of the v14 `Offset Scale` byte (§1.1).
@@ -405,6 +405,15 @@ pub const SUMMIT_SUBTYPE_ID: u8 = 19;
 pub const TRAIN_CATEGORY_ID: u8 = 8;
 pub const TRAIN_SUBTYPE_ID: u8 = 20;
 pub const SUMMIT_ELEVATION_UNKNOWN: i16 = i16::MIN;
+/// Settlement names share the POI spatial index, outside the service categories.
+pub const SETTLEMENT_CATEGORY_ID: u8 = 9;
+pub const SETTLEMENT_SUBTYPE_CITY: u8 = 21;
+pub const SETTLEMENT_SUBTYPE_TOWN: u8 = 22;
+pub const SETTLEMENT_SUBTYPE_VILLAGE: u8 = 23;
+pub const SETTLEMENT_SUBTYPE_HAMLET: u8 = 24;
+/// The record payload when the source gives no population. Every other value is a population in
+/// hundreds of people, so `0xFFFE` is the largest the payload can hold.
+pub const SETTLEMENT_POPULATION_UNKNOWN: u16 = 0xFFFF;
 pub const POI_RECORD_LEN: usize = 64;
 /// OSM identity: top two bits are node=1, way=2, relation=3; lower 62 bits are the ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -621,6 +630,53 @@ impl PoiCategory {
     }
 }
 
+/// A settlement class, ordered from the largest to the smallest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
+pub enum SettlementClass {
+    City = 0,
+    Town = 1,
+    Village = 2,
+    Hamlet = 3,
+}
+
+impl SettlementClass {
+    pub const ALL: [SettlementClass; 4] =
+        [SettlementClass::City, SettlementClass::Town, SettlementClass::Village, SettlementClass::Hamlet];
+
+    #[inline]
+    pub const fn subtype_id(self) -> u8 {
+        match self {
+            SettlementClass::City => SETTLEMENT_SUBTYPE_CITY,
+            SettlementClass::Town => SETTLEMENT_SUBTYPE_TOWN,
+            SettlementClass::Village => SETTLEMENT_SUBTYPE_VILLAGE,
+            SettlementClass::Hamlet => SETTLEMENT_SUBTYPE_HAMLET,
+        }
+    }
+
+    #[inline]
+    pub const fn name(self) -> &'static str {
+        match self {
+            SettlementClass::City => "City",
+            SettlementClass::Town => "Town",
+            SettlementClass::Village => "Village",
+            SettlementClass::Hamlet => "Hamlet",
+        }
+    }
+}
+
+/// The settlement class of a subtype id, or `None` when the subtype is not a settlement.
+#[inline]
+pub const fn settlement_class_of(subtype_id: u8) -> Option<SettlementClass> {
+    Some(match subtype_id {
+        SETTLEMENT_SUBTYPE_CITY => SettlementClass::City,
+        SETTLEMENT_SUBTYPE_TOWN => SettlementClass::Town,
+        SETTLEMENT_SUBTYPE_VILLAGE => SettlementClass::Village,
+        SETTLEMENT_SUBTYPE_HAMLET => SettlementClass::Hamlet,
+        _ => return None,
+    })
+}
+
 /// One append-only OBCM spec §7.4 subtype row.
 #[derive(Debug, Clone, Copy)]
 pub struct PoiSubtype {
@@ -672,11 +728,13 @@ pub fn poi_category_of(subtype_id: u8) -> Option<PoiCategory> {
     poi_subtype_row(subtype_id).map(|row| row.category)
 }
 
-/// Directory category for a service or geographic landmark record.
+/// Directory category for a service, geographic landmark or settlement record.
 #[inline]
 pub fn poi_directory_category_of(subtype_id: u8) -> Option<u8> {
     if subtype_id == SUMMIT_SUBTYPE_ID {
         Some(SUMMIT_CATEGORY_ID)
+    } else if settlement_class_of(subtype_id).is_some() {
+        Some(SETTLEMENT_CATEGORY_ID)
     } else {
         poi_category_of(subtype_id).map(PoiCategory::id)
     }
@@ -686,6 +744,8 @@ pub fn poi_directory_category_of(subtype_id: u8) -> Option<u8> {
 pub fn poi_label_of(subtype_id: u8) -> Option<&'static str> {
     if subtype_id == SUMMIT_SUBTYPE_ID {
         Some("Summit")
+    } else if let Some(class) = settlement_class_of(subtype_id) {
+        Some(class.name())
     } else {
         poi_subtype_row(subtype_id).map(|row| row.label)
     }
@@ -695,6 +755,8 @@ pub fn validate_header_prefix(bytes: &[u8]) -> Result<(), DecodeError> {
     validate_prefix(bytes, &MAGIC, VERSION, VERSION).map(|_| ())
 }
 
+const _: () = assert!(SETTLEMENT_CATEGORY_ID > TRAIN_CATEGORY_ID);
+const _: () = assert!(SETTLEMENT_SUBTYPE_CITY > TRAIN_SUBTYPE_ID);
 const _: () = assert!(EMPTY_LEAF == !BRANCH_BIT);
 const _: () = assert!(NAV_NODE_FIXED_LEN + NAV_MAX_DEGREE * NAV_NEIGHBOR_LEN <= NAV_CHUNK_SIZE);
 const _: () = assert!(POI_HOURS_BLOB_LEN == 1 + POI_HOURS_DAYS * POI_HOURS_SLOTS_PER_DAY * 2);
@@ -723,7 +785,7 @@ mod tests {
         fixture[21..25].copy_from_slice(&style.units().to_le_bytes());
         fixture[HEADER_OFFSET_SCALE_OFF] = OFFSET_SCALE_DEFAULT;
         validate_header_prefix(&fixture).unwrap();
-        assert_eq!(fixture[4], 0x11, "the version byte is the hard cut, and it cuts in both directions");
+        assert_eq!(fixture[4], 0x12, "the version byte is the hard cut, and it cuts in both directions");
         assert_eq!(style.units(), 5);
         assert_eq!(style.bytes(), 80);
     }
@@ -1092,5 +1154,36 @@ mod tests {
         assert_eq!(poi_label_of(SUMMIT_SUBTYPE_ID), Some("Summit"));
         assert_eq!(poi_directory_category_of(20), Some(TRAIN_CATEGORY_ID));
         assert_eq!(poi_label_of(20), Some("Train station"));
+    }
+
+    #[test]
+    fn settlement_subtypes_map_to_the_settlement_category() {
+        for class in SettlementClass::ALL {
+            assert_eq!(poi_directory_category_of(class.subtype_id()), Some(SETTLEMENT_CATEGORY_ID));
+            assert_eq!(poi_category_of(class.subtype_id()), None);
+        }
+    }
+
+    #[test]
+    fn settlement_class_round_trips_its_subtype() {
+        for class in SettlementClass::ALL {
+            assert_eq!(settlement_class_of(class.subtype_id()), Some(class));
+        }
+        assert_eq!(SettlementClass::ALL.map(SettlementClass::subtype_id), [21, 22, 23, 24]);
+    }
+
+    #[test]
+    fn a_non_settlement_subtype_has_no_settlement_class() {
+        for subtype_id in [0, 1, 19, 20, 25, CHUNK_END] {
+            assert_eq!(settlement_class_of(subtype_id), None);
+        }
+    }
+
+    #[test]
+    fn settlement_labels_name_their_class() {
+        assert_eq!(poi_label_of(SETTLEMENT_SUBTYPE_CITY), Some("City"));
+        assert_eq!(poi_label_of(SETTLEMENT_SUBTYPE_TOWN), Some("Town"));
+        assert_eq!(poi_label_of(SETTLEMENT_SUBTYPE_VILLAGE), Some("Village"));
+        assert_eq!(poi_label_of(SETTLEMENT_SUBTYPE_HAMLET), Some("Hamlet"));
     }
 }

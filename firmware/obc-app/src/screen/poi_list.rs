@@ -541,7 +541,7 @@ mod tests {
                 lon: 7_500_000,
                 subtype: 1,
                 name: std::format!("P{i}"),
-                hours_ref: 0xffff,
+                payload: 0xffff,
             })
             .collect();
         let bytes = build_poi_map((7_000_000, 43_000_000, 8_000_000, 44_000_000), 512, &[(1, records)]);

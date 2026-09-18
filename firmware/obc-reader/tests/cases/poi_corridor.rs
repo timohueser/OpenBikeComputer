@@ -126,7 +126,7 @@ fn names(got: &[CorridorPoi]) -> Vec<&str> {
 
 /// A named Water POI (subtype 1) at `(lon, lat)`.
 fn water(name: &str, lon: i32, lat: i32) -> PoiSpec {
-    PoiSpec { lat, lon, subtype: 1, name: name.into(), hours_ref: 0xFFFF }
+    PoiSpec { lat, lon, subtype: 1, name: name.into(), payload: 0xFFFF }
 }
 
 // ============================== tests ==============================
@@ -274,8 +274,8 @@ fn later_closer_encounter_preserves_the_earlier_encounter() {
 fn the_category_filter_scopes_the_result() {
     let water_pois = vec![water("W1", 7_110_000, LAT + 500), water("W2", 7_170_000, LAT + 500)];
     let shops = vec![
-        PoiSpec { lat: LAT - 500, lon: 7_140_000, subtype: 18, name: "S1".into(), hours_ref: 0xFFFF },
-        PoiSpec { lat: LAT - 500, lon: 7_190_000, subtype: 18, name: "S2".into(), hours_ref: 0xFFFF },
+        PoiSpec { lat: LAT - 500, lon: 7_140_000, subtype: 18, name: "S1".into(), payload: 0xFFFF },
+        PoiSpec { lat: LAT - 500, lon: 7_190_000, subtype: 18, name: "S2".into(), payload: 0xFFFF },
     ];
     let bytes = build_poi_map(BBOX, CS, &[(1, water_pois), (6, shops)]);
     let path = FixturePath::straight(7_100_000, 10_000, 10, 4);
