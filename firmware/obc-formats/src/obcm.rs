@@ -44,10 +44,14 @@ pub const STYLE_FIXED_WIDTH_BIT: u8 = 0x10;
 /// Style-record flag bit 5 (§2, #1095): the style belongs to the suppressible **terrain layer**.
 /// Written by the packer; the consumer is the device Settings toggle (#1096).
 pub const STYLE_TERRAIN_LAYER_BIT: u8 = 0x20;
-/// Style-record flag bits 6-7 (§2): still reserved, written `0`. Unlike a *feature*'s flags
+/// Style-record flag bit 6 (§2): **ticked** line — a solid stroke carrying regular perpendicular
+/// ticks, the cableway and lift mark. Written with [`STYLE_DASHED_BIT`] clear; a record that sets
+/// both is malformed, and a reader draws it ticked.
+pub const STYLE_TICKED_BIT: u8 = 0x40;
+/// Style-record flag bit 7 (§2): still reserved, written `0`. Unlike a *feature*'s flags
 /// (§5.2, [`FEATURE_FLAG_WIDE`] & friends), a reader MUST **ignore** style bits it does not
 /// define rather than reject the record — that is what lets a bit be defined in place.
-pub const STYLE_RESERVED_MASK: u8 = 0xC0;
+pub const STYLE_RESERVED_MASK: u8 = 0x80;
 
 pub const BRANCH_BIT: u32 = 0x8000_0000;
 pub const EMPTY_LEAF: u32 = 0x7FFF_FFFF;

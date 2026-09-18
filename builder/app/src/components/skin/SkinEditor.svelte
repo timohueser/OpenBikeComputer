@@ -1,6 +1,7 @@
 <script lang="ts">
     import { untrack } from "svelte";
-    import type { SkinEntry, SkinStyle } from "../../lib/catalog/manifest";
+    import { LINE_STYLES } from "../../lib/catalog/manifest";
+    import type { LineStyle, SkinEntry, SkinStyle } from "../../lib/catalog/manifest";
     import type { CoverageStore } from "../../lib/coverage/store.svelte";
     import { cloneSkin, isCustomSkinId } from "../../lib/skin/custom";
     import OptionalSkinColor from "./OptionalSkinColor.svelte";
@@ -151,13 +152,18 @@
                                     oninput={(event) =>
                                         (draft.styles[row.index].z_index = integer(event.currentTarget.value, -128, 127))}
                                 />
-                                <input
+                                <select
                                     class="check"
-                                    type="checkbox"
-                                    checked={row.style.dashed}
-                                    aria-label={`${row.style.feature_type} dashed`}
-                                    onchange={(event) => (draft.styles[row.index].dashed = event.currentTarget.checked)}
-                                />
+                                    value={row.style.line_style}
+                                    aria-label={`${row.style.feature_type} line style`}
+                                    onchange={(event) =>
+                                        (draft.styles[row.index].line_style = event.currentTarget
+                                            .value as LineStyle)}
+                                >
+                                    {#each LINE_STYLES as style (style)}
+                                        <option value={style}>{style}</option>
+                                    {/each}
+                                </select>
                             </div>
                         {/each}
                     </section>

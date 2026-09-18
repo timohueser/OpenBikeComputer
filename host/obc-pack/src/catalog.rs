@@ -47,7 +47,7 @@ pub mod boundary;
 
 /// This module's envelope version. A consumer MUST reject a `schema_version` it
 /// does not implement (`OBCC_Spec.md` §1).
-pub const CATALOG_SCHEMA_VERSION: u32 = 2;
+pub const CATALOG_SCHEMA_VERSION: u32 = 3;
 pub const DEFAULT_MANIFEST_NAME: &str = "catalog.json";
 
 mod cells;

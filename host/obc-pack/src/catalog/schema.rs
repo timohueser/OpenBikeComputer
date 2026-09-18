@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 
 use obc_formats::obct;
 
-use crate::config::{Config, LineStyle};
+use crate::config::Config;
 use crate::grid::{MAX_CELL_LOG2, MIN_CELL_LOG2};
 
 use super::model::{
@@ -805,7 +805,7 @@ pub(super) fn skin_styles(config: &Config, schema: &SchemaDoc, path: &Path) -> R
             weight: s.weight,
             z_index: s.z_index,
             priority: s.priority,
-            dashed: s.line_style == LineStyle::Dashed,
+            line_style: s.line_style,
             fixed_width: s.fixed_width,
             terrain_layer: s.terrain_layer,
             color2: s.color2,

@@ -10,7 +10,7 @@ const styles = Object.entries(preset.features).flatMap(([tag, values]) =>
         weight: 1,
         z_index: style.z_index,
         priority: 2,
-        dashed: false,
+        line_style: "solid",
         fixed_width: tag === "contour",
         terrain_layer: tag === "contour",
         color2: null,

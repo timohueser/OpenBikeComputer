@@ -276,7 +276,7 @@ pub struct SkinStyle {
     #[serde(default = "default_priority")]
     pub priority: u8,
     #[serde(default)]
-    pub dashed: bool,
+    pub line_style: LineStyle,
     /// OBCM §2 flag bit 4 (#1095): `weight` is device pixels, off the renderer's zoom width ramp.
     #[serde(default)]
     pub fixed_width: bool,
@@ -321,7 +321,7 @@ impl Skin {
             color: v.color,
             weight: v.weight,
             priority: v.priority.clamp(1, 4),
-            dashed: v.dashed,
+            line_style: v.line_style,
             color2: v.color2,
             fixed_width: v.fixed_width,
             terrain_layer: v.terrain_layer,
@@ -386,6 +386,18 @@ impl Skin {
     }
 }
 
+/// How a line is stroked (`OBCM_Spec.md` §2, flag bits 2 and 6). Mirrored here rather than shared
+/// with `obc-pack`, exactly as [`StyleRecord`] and [`SkinStyle`] are: the packer is a dev-dependency
+/// only, so the engine's build graph never sees it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LineStyle {
+    #[default]
+    Solid,
+    Dashed,
+    Ticked,
+}
+
 /// One resolved 8-byte style-table record (`OBCM_Spec.md` §2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StyleRecord {
@@ -394,7 +406,7 @@ pub struct StyleRecord {
     pub color: u16,
     pub weight: u8,
     pub priority: u8,
-    pub dashed: bool,
+    pub line_style: LineStyle,
     pub color2: Option<u16>,
     /// Flag bit 4 (#1095): the weight is used verbatim on screen, off the zoom width ramp.
     pub fixed_width: bool,
@@ -515,7 +527,7 @@ mod tests {
             weight: 2,
             z_index: 3,
             priority: 1,
-            dashed: false,
+            line_style: LineStyle::Solid,
             fixed_width: false,
             terrain_layer: false,
             color2: None,

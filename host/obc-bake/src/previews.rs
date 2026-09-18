@@ -311,7 +311,7 @@ mod tests {
                         "weight": style.weight,
                         "z_index": style.z_index,
                         "priority": style.priority,
-                        "dashed": style.line_style == obc_pack::config::LineStyle::Dashed,
+                        "line_style": style.line_style,
                         "fixed_width": style.fixed_width,
                         "terrain_layer": style.terrain_layer,
                         "color2": style.color2,

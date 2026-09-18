@@ -115,16 +115,16 @@
             "index": {"z_index": 9, "color": "0x02AA", "weight": 1, "min_lod": 7, "priority": 4, "line_style": "dashed", "fixed_width": true, "terrain_layer": true}
         },
         "aerialway": {
-            "cable_car": {"z_index": 27, "color": "0xA815", "weight": 1, "priority": 3, "line_style": "dashed", "fixed_width": true, "min_lod": 8},
-            "gondola": {"z_index": 27, "color": "0xA815", "weight": 1, "priority": 3, "line_style": "dashed", "fixed_width": true, "min_lod": 8},
-            "chair_lift": {"z_index": 27, "color": "0xA815", "weight": 1, "priority": 3, "line_style": "dashed", "fixed_width": true, "min_lod": 8},
-            "mixed_lift": {"z_index": 27, "color": "0xA815", "weight": 1, "priority": 3, "line_style": "dashed", "fixed_width": true, "min_lod": 8},
-            "drag_lift": {"z_index": 27, "color": "0xA815", "weight": 1, "priority": 3, "line_style": "dashed", "fixed_width": true, "min_lod": 8},
-            "t-bar": {"z_index": 27, "color": "0xA815", "weight": 1, "priority": 3, "line_style": "dashed", "fixed_width": true, "min_lod": 8},
-            "j-bar": {"z_index": 27, "color": "0xA815", "weight": 1, "priority": 3, "line_style": "dashed", "fixed_width": true, "min_lod": 8},
-            "platter": {"z_index": 27, "color": "0xA815", "weight": 1, "priority": 3, "line_style": "dashed", "fixed_width": true, "min_lod": 8},
-            "rope_tow": {"z_index": 27, "color": "0xA815", "weight": 1, "priority": 3, "line_style": "dashed", "fixed_width": true, "min_lod": 8},
-            "magic_carpet": {"z_index": 27, "color": "0xA815", "weight": 1, "priority": 3, "line_style": "dashed", "fixed_width": true, "min_lod": 8}
+            "cable_car": {"z_index": 27, "color": "0xA815", "weight": 1, "priority": 3, "line_style": "ticked", "fixed_width": true, "min_lod": 8},
+            "gondola": {"z_index": 27, "color": "0xA815", "weight": 1, "priority": 3, "line_style": "ticked", "fixed_width": true, "min_lod": 8},
+            "chair_lift": {"z_index": 27, "color": "0xA815", "weight": 1, "priority": 3, "line_style": "ticked", "fixed_width": true, "min_lod": 8},
+            "mixed_lift": {"z_index": 27, "color": "0xA815", "weight": 1, "priority": 3, "line_style": "ticked", "fixed_width": true, "min_lod": 8},
+            "drag_lift": {"z_index": 27, "color": "0xA815", "weight": 1, "priority": 3, "line_style": "ticked", "fixed_width": true, "min_lod": 8},
+            "t-bar": {"z_index": 27, "color": "0xA815", "weight": 1, "priority": 3, "line_style": "ticked", "fixed_width": true, "min_lod": 8},
+            "j-bar": {"z_index": 27, "color": "0xA815", "weight": 1, "priority": 3, "line_style": "ticked", "fixed_width": true, "min_lod": 8},
+            "platter": {"z_index": 27, "color": "0xA815", "weight": 1, "priority": 3, "line_style": "ticked", "fixed_width": true, "min_lod": 8},
+            "rope_tow": {"z_index": 27, "color": "0xA815", "weight": 1, "priority": 3, "line_style": "ticked", "fixed_width": true, "min_lod": 8},
+            "magic_carpet": {"z_index": 27, "color": "0xA815", "weight": 1, "priority": 3, "line_style": "ticked", "fixed_width": true, "min_lod": 8}
         }
     },
     "marker": {"color": "0xF800"},

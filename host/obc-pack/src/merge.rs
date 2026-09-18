@@ -39,6 +39,7 @@ use std::collections::HashMap;
 
 use rayon::prelude::*;
 
+use crate::config::LineStyle;
 use crate::geom::{merge_lines_geos, union_polygons, Geom};
 use crate::progress::Progress;
 use crate::serialize::Style;
@@ -78,7 +79,7 @@ pub fn merge_classes(styles: &[Style]) -> HashMap<u8, (ClassKey, u8)> {
 /// stroke consults **every** rendered attribute — `weight` sets its width, `dashed`
 /// its pattern, `color2` its casing — so all are in the key: two lines stitch only
 /// if the merged polyline strokes pixel-for-pixel like the two fragments did.
-pub type LineClassKey = (i8, u16, u8, u8, bool, Option<u16>);
+pub type LineClassKey = (i8, u16, u8, u8, LineStyle, Option<u16>);
 
 /// `style_id → (line_class_key, canonical_style_id)` for **every** style — a line
 /// carries no `color2` exclusion (a merged casing is continuous, not a lost wall).
@@ -90,7 +91,7 @@ pub type LineClassKey = (i8, u16, u8, u8, bool, Option<u16>);
 pub fn merge_line_classes(styles: &[Style]) -> HashMap<u8, (LineClassKey, u8)> {
     let mut by_key: HashMap<LineClassKey, Vec<u8>> = HashMap::new();
     for s in styles {
-        by_key.entry((s.z_index, s.color, s.weight, s.priority, s.dashed, s.color2)).or_default().push(s.id);
+        by_key.entry((s.z_index, s.color, s.weight, s.priority, s.line_style, s.color2)).or_default().push(s.id);
     }
     let mut out = HashMap::with_capacity(styles.len());
     for (key, ids) in by_key {
@@ -353,7 +354,8 @@ fn merge_lines_mode(
                 return (canonical, None);
             }
             let refs: Vec<&Geom> = m.iter().map(|(_, g)| g).collect();
-            let solid_uncased = classes.get(&canonical).is_some_and(|(key, _)| !key.4 && key.5.is_none());
+            let solid_uncased =
+                classes.get(&canonical).is_some_and(|(key, _)| key.4 == LineStyle::Solid && key.5.is_none());
             let merged = if through_junctions && solid_uncased {
                 merge_edge_covering_trails(&refs)
             } else {
@@ -557,7 +559,7 @@ mod tests {
             color,
             weight: 7,
             priority,
-            dashed: true,
+            line_style: LineStyle::Dashed,
             color2: None,
             fixed_width: false,
             terrain_layer: false,
@@ -786,7 +788,8 @@ mod tests {
         dashed: bool,
         color2: Option<u16>,
     ) -> Style {
-        Style { id, z_index, color, weight, priority, dashed, color2, fixed_width: false, terrain_layer: false }
+        let line_style = if dashed { LineStyle::Dashed } else { LineStyle::Solid };
+        Style { id, z_index, color, weight, priority, line_style, color2, fixed_width: false, terrain_layer: false }
     }
 
     fn line(pts: &[(f64, f64)]) -> Geom {

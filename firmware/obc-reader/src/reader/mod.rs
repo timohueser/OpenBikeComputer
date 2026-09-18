@@ -58,10 +58,10 @@ use obc_formats::obcm::{
 };
 use obc_formats::obcm::{
     BRANCH_BIT, EMPTY_LEAF, STYLE_DASHED_BIT, STYLE_FIXED_WIDTH_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK,
-    STYLE_TERRAIN_LAYER_BIT,
+    STYLE_TERRAIN_LAYER_BIT, STYLE_TICKED_BIT,
 };
 use obc_formats::obcm::{MAGIC, STYLE_RECORD_LEN, VERSION};
-use obc_map_scene::{BBox, Style, StyleFlags};
+use obc_map_scene::{BBox, LineStyle, Style, StyleFlags};
 
 /// Hard cap on quadtree recursion depth in [`Reader::walk_leaves`]. A well-formed tree is far
 /// shallower (the node bbox halves each level, bottoming out at the coordinate bit-width ≤32), so
@@ -630,15 +630,20 @@ fn parse_styles(
         // The two color2 bytes are always present; the flag bit — not a `0x0000` sentinel — decides
         // whether they carry a color (black `0x0000` is a legal secondary color).
         let color2 = if flags & STYLE_HAS_COLOR2_BIT != 0 { Some(rd_u16(&buf, o + 6)) } else { None };
-        // #1095: bit 4 takes the style off the width ramp, bit 5 files it under the terrain layer.
-        // Bits 6-7 stay reserved and are **ignored**, not rejected (§2) — that reader tolerance is
-        // exactly what let these two be defined without a format bump. The wire byte is re-packed
-        // into the seam's own [`StyleFlags`] rather than carried through: the table is resident.
-        let style_flags = StyleFlags::new(
-            flags & STYLE_DASHED_BIT != 0,
-            flags & STYLE_FIXED_WIDTH_BIT != 0,
-            flags & STYLE_TERRAIN_LAYER_BIT != 0,
-        );
+        // #1095: bit 4 takes the style off the width ramp, bit 5 files it under the terrain layer,
+        // and bit 6 makes the line ticked. Bit 7 stays reserved and is **ignored**, not rejected
+        // (§2) — that reader tolerance is exactly what let each of these be defined without a
+        // format bump. Ticked wins over dashed, so a record setting both still draws one way. The
+        // wire byte is re-packed into the seam's own [`StyleFlags`]: the table is resident.
+        let line = if flags & STYLE_TICKED_BIT != 0 {
+            LineStyle::Ticked
+        } else if flags & STYLE_DASHED_BIT != 0 {
+            LineStyle::Dashed
+        } else {
+            LineStyle::Solid
+        };
+        let style_flags =
+            StyleFlags::new(line, flags & STYLE_FIXED_WIDTH_BIT != 0, flags & STYLE_TERRAIN_LAYER_BIT != 0);
         styles[id as usize] = Some(Style { id, z_index, color, weight, priority, flags: style_flags, color2 });
         o += STYLE_RECORD_LEN;
     }
