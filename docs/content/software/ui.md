@@ -315,11 +315,31 @@ recessed and does nothing — the Detour row without a route, without map routin
 route. A row that can act replaces the sheet with its screen, so one Back returns the rider to the
 riding view they squeezed from.
 
-The Map adds a fifth row, **Map display**, because it is the only one of the four with something to
-apply it to. That row replaces the sheet with a shorter sheet holding three switches: the clock, the
-scale bar and the contour layer. The new sheet arrives with no animation, because a sheet that is
-already on the screen does not come in again. Back closes it onto the Map, like every other row's
-destination.
+The Map also offers **Map display**. It contains switches for the clock, scale bar and
+contour layer, plus **Map icons**. The icon menu has independent switches for peaks,
+landmarks and POIs. Its category menu controls water, campsites, lodging, resupply,
+pharmacies, bike shops and train stations. The category row shows the selected count.
+Turning POIs off keeps the category selection. These preferences persist through restart
+and do not change Find a Place or routing filters. All icon groups start enabled.
+
+Category menus show at most five rows and scroll within the same sheet. Back from the
+category menu returns to the icon menu; Back from the icon menu returns to Map display.
+Back from Map display closes the sheet. A replacement sheet arrives without an entrance
+animation.
+
+Map icons stay upright at their source coordinates. Peaks include unnamed summits. A
+small white backing keeps each glyph visible over terrain. Peaks appear at 50 metres per
+pixel or closer, landmarks at 20, and service POIs at 10. A stable overlap rule gives water
+and campsites priority, then peaks, landmarks and other services. The rider, waypoints,
+clock and bottom map controls have reserved space. Route lines draw above icons.
+
+The shared application retains at most 64 candidates and draws at most 24 icons, with
+lower limits at wider scales. A padded viewport cache avoids storage reads during small
+camera movements. Each preparation advances at most eight POI index or 512-byte record
+steps and eight landmark query steps. Work continues on a timer and stops when complete.
+Map, visibility or coverage changes invalidate the selection. Visible candidates take
+priority over points in the padding. A transient read failure gets two delayed retries;
+a persistent failure stops until the view or map changes.
 
 A row can also hold a **value** in place of a screen. Such a row slides the sheet to a nested
 editor: `Up` and `Down` change the staged choice, `Select` writes it and returns to the row table,
@@ -336,12 +356,9 @@ card because that card is where the choice is used: the next press asks for a pl
 overview shows the profile a route was planned with. It does not let the rider change it, because
 a change would make the page say something untrue about the route it shows.
 
-A row can also be a **switch**. Such a row shows its own state and flips it in place: the sheet stays
-open and only that row changes. The three rows of the map display sheet are switches. What they
-change is not visible until the sheet closes, because the screen below a sheet is held still — so the
-rider sets all three in one visit and the flips themselves cost no map render. The map is drawn once
-when the shorter display sheet replaces the taller sheet, and once more, with all three answers,
-when the sheet goes away.
+A row can also be a **switch**. It shows its state and flips in place. The sheet stays
+open while the rider changes a group of preferences. The covered map stays still; the
+changes appear when the map is exposed again.
 
 The drawer is the only home for a setting that belongs to one screen. A control that moves into a
 drawer is removed from the central settings tree in the same change. A check in the build fails if
