@@ -1,4 +1,4 @@
-import { TEST_LEVELS, type AcceptanceCriterion, type Catalog, type CoveragePlan, type CoverageProposal, type Requirement, type Revision, type VerificationTest } from '../types.ts';
+import { MANUAL_REASONS, TEST_LEVELS, type AcceptanceCriterion, type Catalog, type CoveragePlan, type CoverageProposal, type ManualReason, type Requirement, type Revision, type TestLevel, type VerificationTest } from '../types.ts';
 import { evidenceKey, planProblem, verificationDefinition } from '../coverage.ts';
 import { assert, identifier, text } from './domain.ts';
 
@@ -20,8 +20,8 @@ export function coveragePlan(value: unknown, requirement: Requirement, catalog: 
     const evidence = entry.evidence.map((e: any) => {
       assert(e && typeof e === 'object' && (typeof e.caseId === 'string') !== (typeof e.testId === 'string'), 'Evidence must identify either a catalogue case or an existing manual test.');
       const ref = e.caseId !== undefined ? { caseId: text(e.caseId, 'Case ID', 1000) } : { testId: identifier(e.testId, 'Manual test ID') };
-      // A case ID carries the test's own describe/it names, so a rename or a move retires the old ID
-      // while the test itself keeps running. Say which ID is unknown, and where to find the new one.
+      // A case ID contains the test's own describe and it names, so a rename or a move replaces the
+      // old ID while the test continues to run. Name the unknown ID and where to find the new one.
       assert(ref.caseId
         ? caseIds.has(ref.caseId) || requirement.tests.some(t => t.caseId === ref.caseId)
         : requirement.tests.some(t => t.id === ref.testId && t.kind === 'manual') || procedures.some(p => p.id === ref.testId),
@@ -30,14 +30,17 @@ export function coveragePlan(value: unknown, requirement: Requirement, catalog: 
           : `No manual procedure has the ID “${ref.testId}”. Cite a procedure this requirement already has, or send the new procedure with this proposal.`);
       const key = JSON.stringify(ref);
       assert(!seen.has(key), 'Duplicate evidence for a criterion.'); seen.add(key);
-      return { ...ref, rationale: text(e.rationale, 'Evidence rationale', 5000) };
+      // The scope of the cited test. Optional, because plans written before it existed have none and
+      // stay valid.
+      assert(e.level === undefined || (TEST_LEVELS as string[]).includes(e.level), `Test level must be one of ${TEST_LEVELS.join(', ')}.`);
+      return { ...ref, rationale: text(e.rationale, 'Evidence rationale', 5000), ...(e.level ? { level: e.level as TestLevel } : {}) };
     });
     const next = entry.next === undefined || entry.next === null ? undefined : proposedTest(entry.next);
     const gap = entry.gap.trim();
-    // A criterion with evidence and no gap is covered, so there is nothing left to build. The common
-    // way this goes wrong is a manual procedure written up twice — once as evidence, once as the
-    // next test — which leaves a covered criterion looking unfinished.
-    assert(!next || gap, 'A next test belongs to a gap. Describe what is missing, or remove the next test.');
+    // A criterion with evidence and no gap is covered, so there is nothing left to build. Plans
+    // frequently record the same manual procedure twice, as evidence and again as the next test,
+    // which makes a covered criterion look unfinished.
+    assert(!next || gap, 'A next test needs a gap. Describe what is missing, or remove the next test.');
     return { id, statement: text(entry.statement, 'Acceptance criterion', 5000), evidence, gap, ...(next ? { next } : {}) };
   });
   const result: CoveragePlan = { rationale: plan.rationale.trim(), criteria };
@@ -62,7 +65,9 @@ export function proposalProcedures(value: unknown, requirement: Requirement): Ve
     const id = identifier(entry.id, 'Procedure ID');
     assert(!ids.has(id) && !requirement.tests.some(t => t.id === id), 'Procedure IDs must be new and unique.'); ids.add(id);
     assert(entry.kind === undefined || entry.kind === 'manual', 'A proposed procedure is a manual test.');
-    return { id, kind: 'manual' as const, title: text(entry.title, 'Procedure title', 300), steps: text(entry.steps, 'Steps', 50000), expected: text(entry.expected, 'Expected outcome', 50000), inputs: [] };
+    assert(entry.manualReason === undefined || MANUAL_REASONS.includes(entry.manualReason), `The manual test type must be one of: ${MANUAL_REASONS.join(', ')}.`);
+    return { id, kind: 'manual' as const, title: text(entry.title, 'Procedure title', 300), steps: text(entry.steps, 'Steps', 50000), expected: text(entry.expected, 'Expected outcome', 50000), inputs: [],
+      ...(entry.manualReason ? { manualReason: entry.manualReason as ManualReason } : {}) };
   });
 }
 export function commitSha(value: unknown): string {

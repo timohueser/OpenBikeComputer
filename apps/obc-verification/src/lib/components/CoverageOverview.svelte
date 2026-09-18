@@ -26,7 +26,7 @@
   $: step = (key: 'covered' | 'assessed') => history.map((h, i) => i ? `H${x(h.at).toFixed(1)} V${y(h[key]).toFixed(1)}` : `M${x(h.at).toFixed(1)} ${y(h[key]).toFixed(1)}`).join(' ') + ` H${W - R}`;
   $: ticks = [...new Set([0, Math.round(top / 2), top])];
 </script>
-<div class="page-heading"><div class="eyebrow">Product verification</div><h1>Coverage</h1><p class="muted">How much of what we promise is proven, and how that changes over time.</p></div>
+<div class="page-heading"><div class="eyebrow">Product verification</div><h1>Coverage</h1><p class="muted">How many requirements have evidence, and how that changes between revisions.</p></div>
 {#if error}<div class="alert error" role="alert">{error}</div>{/if}
 <div class="tiles">
   <section class="tile" aria-label="Requirements">

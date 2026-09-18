@@ -423,21 +423,33 @@ missing tests or implementation in `gap`. When you know the test to build for a 
 sentence with a `level`. The level says how much of the product the test exercises: `unit` for one
 module, `integration` for several together, and `system` for the assembled product. It does not say
 who runs the test — automated evidence cites a catalogue case and manual evidence cites a procedure,
-so the plan already carries that.
+so the plan already carries that. It also does not say where the test runs: a rig test and a CI
+test of the same scope have the same level, and the suite in the case ID identifies the rig.
+
+Each evidence entry takes the same `level`, for the test it cites. It is optional, because plans
+written before it existed do not have one. Set it when you know it. The requirement page shows it.
+
+A manual test also takes `manualReason`:
+
+- `human` — a person must always run this test. For example, a real phone with a real device, or a
+  check that needs human judgement. A release runs these tests by hand.
+- `until-automated` — a person runs this test because no automated test exists yet.
+
+Set it. A release must schedule the `human` tests; the `until-automated` tests are a backlog.
 
 Prefer an automated test. When no automated test can prove a criterion, propose a manual procedure
 instead: put it in `procedures` with its steps and expected result, and cite its `id` as `testId`
 evidence; approval creates it on the requirement. Do not change the requirement title or statement.
 
-**A manual procedure is complete evidence.** A criterion it covers gets a checkmark like any other,
-so leave `gap` empty. Do not use `gap` to explain why the evidence is manual, and never repeat the
-procedure as the next test to build: both make a covered criterion look unfinished. The release gate
-asks separately for a manual pass on the candidate, which is where the procedure is run.
+**A manual procedure is complete evidence.** A criterion it covers gets a checkmark, like a
+criterion with an automated test. Leave `gap` empty. Do not use `gap` to record that the evidence is
+manual, and do not repeat the procedure as the next test to build. Both make a covered criterion
+look unfinished. The release gate asks separately for a manual pass on the candidate, which is when
+the procedure is run.
 
-`gap` is for what is missing. A manual procedure that you intend to replace with an automated test
-is one such thing — write that gap plainly, and let `next` name the automated test. A manual
-procedure that is the right answer, because only real hardware or a real rider can prove the
-criterion, is not a gap at all.
+Use `gap` only for something that is missing. A manual test that an automated test must replace is
+missing something: record that gap, and let `next` name the automated test. A manual test that only
+a person can run is not a gap.
 
 Keep `rationale` to two or three sentences: the scope of the audit and the conclusion. The
 criteria carry the detail. A plan is covered when every criterion has evidence and no gap;
@@ -445,9 +457,8 @@ otherwise it is partial.
 Proposing a plan never approves it.
 
 A case ID contains the test's own describe and it names. If you rename or move a test that a plan
-cites as evidence, the old case ID stops existing and the pending proposals that cite it can no
-longer be approved. Search the catalogue for the test, and send the plan again with the ID it has
-now.
+cites as evidence, the old case ID no longer exists, and the pending proposals that cite it cannot
+be approved. Find the test in the catalogue, and send the plan again with its current ID.
 
 Read decisions and reviewer feedback with `GET /api/coverage-proposals`. Send
 `POST /api/coverage-proposals` with:
@@ -464,8 +475,8 @@ Read decisions and reviewer feedback with `GET /api/coverage-proposals`. Send
         "id": "projection",
         "statement": "Both orientations render correctly.",
         "evidence": [
-          { "caseId": "REAL_NORTH_UP_CATALOGUE_ID", "rationale": "Checks north-up projection." },
-          { "caseId": "REAL_HEADING_UP_CATALOGUE_ID", "rationale": "Checks course rotation." }
+          { "caseId": "REAL_NORTH_UP_CATALOGUE_ID", "rationale": "Checks north-up projection.", "level": "unit" },
+          { "caseId": "REAL_HEADING_UP_CATALOGUE_ID", "rationale": "Checks course rotation.", "level": "unit" }
         ],
         "gap": ""
       },
@@ -479,13 +490,13 @@ Read decisions and reviewer feedback with `GET /api/coverage-proposals`. Send
       {
         "id": "persistence",
         "statement": "The choice survives a restart.",
-        "evidence": [{ "testId": "ride-restart", "rationale": "Confirms the choice on the device after a power cycle." }],
+        "evidence": [{ "testId": "ride-restart", "rationale": "Confirms the choice on the device after a power cycle.", "level": "system" }],
         "gap": ""
       }
     ]
   },
   "procedures": [
-    { "id": "ride-restart", "title": "Ride check after restart", "steps": "1. Set heading-up.\n2. Power the device off and on.\n3. Start a ride.", "expected": "The map stays heading-up." }
+    { "id": "ride-restart", "title": "Ride check after restart", "manualReason": "human", "steps": "1. Set heading-up.\n2. Power the device off and on.\n3. Start a ride.", "expected": "The map stays heading-up." }
   ]
 }
 ```
