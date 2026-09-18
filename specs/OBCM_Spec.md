@@ -173,6 +173,14 @@ check `Version` before it reads any later field and MUST refuse every value othe
 than `0x12`. The header version applies to the whole file.
 
 
+**Within v18** the style record's flag bit 6 gained a meaning — **ticked**, a solid
+stroke carrying regular perpendicular ticks, which is how a cableway or a ski lift is
+told apart from the other thin dashed lines by *shape* rather than by colour alone
+(§2). On the panel's 64 colours a one-pixel dashed line has only its hue to separate
+it from another, and hue alone ran out. This is not a version bump, for the same
+reason bits 4 and 5 were not: the record's length, layout and offsets do not move, and
+a reader that does not know bit 6 draws a solid line where a ticked one was meant.
+
 **Within v12** (issue #1095, same elevation epic) two of the style record's reserved
 flag bits gained meanings — bit 4 **fixed width** and bit 5 **terrain layer** (§2).
 This is deliberately *not* a version bump: nothing about the record's length, layout
@@ -468,7 +476,7 @@ across every LOD. Packed as `Count`, then `Count` records.
 | 1 | Z-Index | 1 | `int8` | Painter's-order layer (lower drawn first) |
 | 2 | Color | 2 | `uint16` | RGB565 (the primary color) |
 | 4 | Weight | 1 | `uint8` | Stroke width in pixels (lines) |
-| 5 | Flags | 1 | `uint8` | Bits 0-1: priority level (1=highest/render first, 4=lowest/render last). **Bit 2 (v10): dashed** line (else solid; ignored for polygons). **Bit 3 (v10): color2 present.** **Bit 4: fixed width.** **Bit 5: terrain layer.** Bits 6-7 reserved, written 0 — a reader MUST **ignore** them, not reject the record (see below) |
+| 5 | Flags | 1 | `uint8` | Bits 0-1: priority level (1=highest/render first, 4=lowest/render last). **Bit 2 (v10): dashed** line (ignored for polygons). **Bit 3 (v10): color2 present.** **Bit 4: fixed width.** **Bit 5: terrain layer.** **Bit 6: ticked** line — a solid stroke with regular perpendicular ticks, the cableway mark; a writer MUST leave bit 2 clear with it, and a reader that meets both MUST draw the line ticked. A line with neither bit 2 nor bit 6 is solid. Bit 7 reserved, written 0 — a reader MUST **ignore** it, not reject the record (see below) |
 | 6 | Color2 | 2 | `uint16` | RGB565 **secondary color** (v10). Written `0x0000` when flag bit 3 is clear; readers MUST ignore it then (`0x0000` is a legit color — black — not a "no color2" sentinel) |
 
 The **secondary color** and **line style** drive the finest-LOD line/polygon

@@ -21,6 +21,7 @@
 use obc_elevation::NullElevation;
 use obc_formats::obcm::{CHUNK_END, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN};
 use obc_pack::config::default_profiles;
+use obc_pack::config::LineStyle as PackLineStyle;
 use obc_pack::geom::Geom;
 use obc_pack::nav::DEFAULT_MIN_COMPONENT_EDGES;
 use obc_pack::nav::{build_graph_with, RoutableWay};
@@ -104,7 +105,7 @@ fn map() -> Vec<u8> {
         color: 0xF800,
         weight: 2,
         priority: 1,
-        dashed: false,
+        line_style: PackLineStyle::Solid,
         color2: None,
         fixed_width: false,
         terrain_layer: false,

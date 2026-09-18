@@ -22,7 +22,7 @@ function mutated(edit: (doc: LooseDoc) => void): string {
 describe("parseRoot", () => {
     it("accepts the root obc-pack actually writes", () => {
         const catalog = parseRoot(EXAMPLE_ROOT);
-        expect(catalog.schema_version).toBe(2);
+        expect(catalog.schema_version).toBe(3);
         expect(catalog.schema.id).toBe("bikepacking");
         expect(catalog.schema.revision).toBe(7);
         // The generated example is self-sourced from `obc_formats::obcm::VERSION`, so this pin is
@@ -103,7 +103,7 @@ describe("parseRoot", () => {
     });
 
     it.each<[string, (d: LooseDoc) => void]>([
-        ["an envelope version it does not implement", (d) => (d.schema_version = 3)],
+        ["an envelope version it does not implement", (d) => (d.schema_version = 4)],
         ["a missing schema_version", (d) => delete d.schema_version],
         ["a missing schema", (d) => delete d.schema],
         ["a timestamp in another spelling", (d) => (d.generated_at = "2026-07-30T09:00:00.5Z")],

@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 
 use obc_formats::obct;
 
-use crate::config::{Config, LineStyle};
+use crate::config::Config;
 use crate::grid::{MAX_CELL_LOG2, MIN_CELL_LOG2};
 
 use super::model::{
@@ -67,7 +67,7 @@ pub(super) const ID_PATTERN: &str = "^[a-z0-9]+(-[a-z0-9]+)*$";
 const REGION_ID_PATTERN: &str = "^[a-z0-9]+(-[a-z0-9]+)*(/[a-z0-9]+(-[a-z0-9]+)*)*$";
 
 const CATALOG_DESCRIPTION: &str =
-    "The schema_version 2 map catalog: one schema, a set of skins, named cell-set regions with drawable \
+    "The schema_version 3 map catalog: one schema, a set of skins, named cell-set regions with drawable \
      boundaries, and digest-pinned per-band cell indices. A consumer prices a selection from this document \
      alone — total bytes and bytes per band, which is the per-file projection a volume set needs — and \
      verifies each satellite against the `bytes` + `sha256` pinned here. The satellite documents are \
@@ -101,7 +101,7 @@ pub fn catalog_schema() -> Value {
     let mut schema = serde_json::to_value(schemars::schema_for!(Catalog)).expect("catalog schema serializes");
     let root = schema.as_object_mut().expect("root schema is an object");
     root.insert("$schema".into(), Value::String("https://json-schema.org/draft/2020-12/schema".into()));
-    root.insert("title".into(), Value::String("OpenBikeComputer map catalog (schema_version 2)".into()));
+    root.insert("title".into(), Value::String("OpenBikeComputer map catalog (schema_version 3)".into()));
     root.insert("description".into(), Value::String(CATALOG_DESCRIPTION.into()));
     // The satellites are separate documents, so their models are not reachable from
     // `Catalog`; generate each and merge, which also brings `CellEntry`/`CellSource`
@@ -805,7 +805,7 @@ pub(super) fn skin_styles(config: &Config, schema: &SchemaDoc, path: &Path) -> R
             weight: s.weight,
             z_index: s.z_index,
             priority: s.priority,
-            dashed: s.line_style == LineStyle::Dashed,
+            line_style: s.line_style,
             fixed_width: s.fixed_width,
             terrain_layer: s.terrain_layer,
             color2: s.color2,

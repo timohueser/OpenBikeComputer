@@ -6,6 +6,7 @@
 // An old skin is therefore ignored after a schema revision instead of silently
 // restyling the wrong ids.
 
+import { isLineStyle } from "../catalog/manifest";
 import type { SchemaEntry, SkinEntry, SkinStyle } from "../catalog/manifest";
 import { skinStyleError } from "./validation";
 
@@ -63,7 +64,7 @@ function integer(value: unknown, min: number, max: number): number | null {
 
 function styleFrom(raw: unknown, featureType: string): SkinStyle | null {
     const value = object(raw);
-    if (!value || value.feature_type !== featureType || typeof value.dashed !== "boolean") return null;
+    if (!value || value.feature_type !== featureType || !isLineStyle(value.line_style)) return null;
     const color = integer(value.color, 0, 0xffff);
     const weight = integer(value.weight, 0, 0xff);
     const zIndex = integer(value.z_index, -128, 127);
@@ -84,7 +85,7 @@ function styleFrom(raw: unknown, featureType: string): SkinStyle | null {
         weight,
         z_index: zIndex,
         priority,
-        dashed: value.dashed,
+        line_style: value.line_style,
         // #1095: structural flag bits the editor does not offer but must not silently drop — a
         // custom skin that lost them would put the contours back on the road width ramp.
         fixed_width: value.fixed_width === true,

@@ -19,7 +19,7 @@ use std::io::{self, Seek, SeekFrom, Write};
 use obc_formats::obcm::{
     BRANCH_BIT, CHUNK_END, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, FEATURE_FLAG_WIDE,
     FEATURE_HEADER_COMPACT_LEN, MAGIC, STYLE_DASHED_BIT, STYLE_FIXED_WIDTH_BIT, STYLE_HAS_COLOR2_BIT,
-    STYLE_PRIORITY_MASK, STYLE_RECORD_LEN, STYLE_TERRAIN_LAYER_BIT,
+    STYLE_PRIORITY_MASK, STYLE_RECORD_LEN, STYLE_TERRAIN_LAYER_BIT, STYLE_TICKED_BIT,
 };
 
 // The OBCM constants the serializer lays out are owned by `obc-formats`; imported here (the
@@ -96,6 +96,7 @@ fn place<T>(at: usize, walk: impl FnOnce(&mut UnitWriter<'_, Infallible>) -> Res
     }
 }
 
+use crate::config::LineStyle;
 use crate::nav::{polyline_len_m, NavGraph};
 use crate::poi::{table_row, Poi};
 use obc_elevation::ElevationSource;
@@ -215,8 +216,8 @@ pub struct Style {
     pub weight: u8,
     /// Priority 1..=4; clamped to that range on pack.
     pub priority: u8,
-    /// v10: dashed line style (flag bit 2). Ignored for polygons by the renderer.
-    pub dashed: bool,
+    /// Line stroke style: solid, dashed (flag bit 2) or ticked (flag bit 6). Polygons ignore it.
+    pub line_style: LineStyle,
     /// v10: optional RGB565 secondary color (flag bit 3 + the trailing u16). `None` ⇒ bit clear and
     /// `0x0000` on the wire (which the reader ignores — black is a legit color, not a sentinel).
     pub color2: Option<u16>,
@@ -352,10 +353,11 @@ fn push_deltas(data: &mut Vec<u8>, deltas: &[i64], is16: bool) {
 
 /// Pack the style table (OBCM §2): `Count(u8)` then, sorted by id, `<BbHBBH>` per style — `id,
 /// z_index, color, weight, flags, color2`. `flags = (priority-1) & STYLE_PRIORITY_MASK`, plus
-/// `STYLE_DASHED_BIT` when `dashed`, `STYLE_HAS_COLOR2_BIT` when `color2` is `Some`,
+/// `STYLE_DASHED_BIT` or `STYLE_TICKED_BIT` for the line style, `STYLE_HAS_COLOR2_BIT` when
+/// `color2` is `Some`,
 /// `STYLE_FIXED_WIDTH_BIT` when `fixed_width` and `STYLE_TERRAIN_LAYER_BIT` when `terrain_layer`
 /// (#1095). `color2` writes its RGB565 value when present, else `0x0000` (which the reader ignores,
-/// bit 3 being clear). Bits 6-7 stay reserved and written `0`.
+/// bit 3 being clear). Bit 7 stays reserved and written `0`.
 pub fn pack_style_dict(styles: &[Style]) -> Vec<u8> {
     let mut styles = styles.to_vec();
     styles.sort_by_key(|s| s.id);
@@ -364,8 +366,10 @@ pub fn pack_style_dict(styles: &[Style]) -> Vec<u8> {
     for s in &styles {
         let priority = (s.priority as i32).clamp(1, 4);
         let mut flags = (priority - 1) as u8 & STYLE_PRIORITY_MASK;
-        if s.dashed {
-            flags |= STYLE_DASHED_BIT;
+        match s.line_style {
+            LineStyle::Solid => {}
+            LineStyle::Dashed => flags |= STYLE_DASHED_BIT,
+            LineStyle::Ticked => flags |= STYLE_TICKED_BIT,
         }
         if s.color2.is_some() {
             flags |= STYLE_HAS_COLOR2_BIT;
@@ -2251,7 +2255,7 @@ mod tests {
             color: 0x1234,
             weight: 2,
             priority: 1,
-            dashed: false,
+            line_style: LineStyle::Solid,
             color2: None,
             fixed_width: false,
             terrain_layer: false,

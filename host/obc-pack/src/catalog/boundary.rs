@@ -1,4 +1,4 @@
-//! Region **outlines** for the `schema_version 2` catalog: an Osmosis/Geofabrik
+//! Region **outlines** for the `schema_version 3` catalog: an Osmosis/Geofabrik
 //! `.poly` file in, a handful of simplified microdegree rings out
 //! ([`OBCC_Spec.md` §7](../../../../specs/OBCC_Spec.md)).
 //!

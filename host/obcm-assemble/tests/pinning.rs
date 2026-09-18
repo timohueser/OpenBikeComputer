@@ -17,6 +17,7 @@
 
 use obc_elevation::NullElevation;
 use obc_formats::obcm::{HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE, POI_CHUNK_SIZE, STYLE_RECORD_LEN};
+use obc_pack::config::LineStyle as PackLineStyle;
 use obc_pack::geom::Geom;
 use obc_pack::nav::NavGraph;
 use obc_pack::progress::Progress;
@@ -25,7 +26,7 @@ use obc_pack::serialize::{pack_style_dict, NavProfile, Style};
 use obc_pack::{serialize_lods, LodLayer};
 use obcm_assemble::emit;
 use obcm_assemble::grid::AlignedBox;
-use obcm_assemble::schema::StyleRecord;
+use obcm_assemble::schema::{LineStyle, StyleRecord};
 
 /// A grid-aligned power-of-two box, because the engine's header writer takes one (§2.1) — the
 /// worked example's `2^19` square, so the values are the ones OBCA §7 already prints.
@@ -57,7 +58,7 @@ fn styles() -> (Vec<Style>, Vec<StyleRecord>) {
             color,
             weight,
             priority,
-            dashed,
+            line_style: if dashed { PackLineStyle::Dashed } else { PackLineStyle::Solid },
             color2,
             fixed_width,
             terrain_layer,
@@ -71,7 +72,7 @@ fn styles() -> (Vec<Style>, Vec<StyleRecord>) {
             color,
             weight,
             priority,
-            dashed,
+            line_style: if dashed { LineStyle::Dashed } else { LineStyle::Solid },
             color2,
             fixed_width,
             terrain_layer,
@@ -208,8 +209,10 @@ fn a_restamp_writes_the_style_table_and_the_marker_and_nothing_else() {
     let at = at as usize;
 
     // A real restyle: the same ids (a skin may not renumber), different presentation values.
-    let restyled: Vec<StyleRecord> =
-        engine_styles.iter().map(|s| StyleRecord { color: !s.color, weight: 7, dashed: !s.dashed, ..*s }).collect();
+    let restyled: Vec<StyleRecord> = engine_styles
+        .iter()
+        .map(|s| StyleRecord { color: !s.color, weight: 7, line_style: LineStyle::Ticked, ..*s })
+        .collect();
     let mut map = bytes.clone();
     emit::restamp_style_table(&mut map, &restyled, 0x1234).expect("the packer's own map restamps");
 

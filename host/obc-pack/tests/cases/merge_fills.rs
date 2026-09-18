@@ -5,6 +5,7 @@
 //! no-candidate run is byte-identical to packing without the transform at all.
 
 use obc_elevation::NullElevation;
+use obc_pack::config::LineStyle;
 use obc_pack::geom::Geom;
 use obc_pack::merge::{merge_classes, merge_fills};
 use obc_pack::quadtree::build_lod;
@@ -23,7 +24,7 @@ fn fill(id: u8, color: u16) -> Style {
         color,
         weight: 1,
         priority: 3,
-        dashed: false,
+        line_style: LineStyle::Solid,
         color2: None,
         fixed_width: false,
         terrain_layer: false,

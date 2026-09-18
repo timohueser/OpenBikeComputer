@@ -23,7 +23,7 @@
 use obc_formats::obcm::{
     OffsetScale, UnitWriter, HEADER_LANDMARK_LENGTH_OFF, HEADER_LANDMARK_OFFSET_OFF, HEADER_LEN, LOD_ENTRY_LEN, MAGIC,
     STYLE_DASHED_BIT, STYLE_FIXED_WIDTH_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK, STYLE_RECORD_LEN,
-    STYLE_TERRAIN_LAYER_BIT, VERSION,
+    STYLE_TERRAIN_LAYER_BIT, STYLE_TICKED_BIT, VERSION,
 };
 use sha2::{Digest, Sha256};
 
@@ -32,7 +32,7 @@ use crate::grid::AlignedBox;
 use crate::input::Cell;
 use crate::nav::MergedNav;
 use crate::poi::PoiSection;
-use crate::schema::StyleRecord;
+use crate::schema::{LineStyle, StyleRecord};
 use crate::scratch::ScratchStore;
 use crate::{Error, Result};
 
@@ -686,8 +686,10 @@ pub fn pack_style_table(styles: &[StyleRecord]) -> Vec<u8> {
     out.push(styles.len() as u8);
     for s in styles {
         let mut flags = (s.priority.clamp(1, 4) - 1) & STYLE_PRIORITY_MASK;
-        if s.dashed {
-            flags |= STYLE_DASHED_BIT;
+        match s.line_style {
+            LineStyle::Solid => {}
+            LineStyle::Dashed => flags |= STYLE_DASHED_BIT,
+            LineStyle::Ticked => flags |= STYLE_TICKED_BIT,
         }
         if s.color2.is_some() {
             flags |= STYLE_HAS_COLOR2_BIT;
@@ -860,7 +862,7 @@ mod tests {
             color: 0x1234,
             weight: 5,
             priority: 2,
-            dashed: true,
+            line_style: LineStyle::Dashed,
             color2: Some(0xBEEF),
             fixed_width: false,
             terrain_layer: false,

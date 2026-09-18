@@ -21,8 +21,8 @@ use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::RgbColor;
 use heapless::Vec;
 use obc_map_scene::{
-    BBox, Candidate, CandidateReport, DecodeReport, Feature, FeatureToken, Kind, MapScene, SelectedFeatures, Style,
-    StyleFlags,
+    BBox, Candidate, CandidateReport, DecodeReport, Feature, FeatureToken, Kind, LineStyle, MapScene, SelectedFeatures,
+    Style, StyleFlags,
 };
 use obc_render::{RenderConfig, RenderScratch, Viewport};
 
@@ -48,7 +48,7 @@ const CONTOUR: Style = Style {
     color: 0x001F,
     weight: 1,
     priority: 2,
-    flags: StyleFlags::new(false, true, true),
+    flags: StyleFlags::new(LineStyle::Solid, true, true),
     color2: None,
 };
 

@@ -20,6 +20,7 @@ import { GRID_ORIGIN, MAX_CELL_LOG2, MIN_CELL_LOG2, WORLD_SIDE } from "./grid";
 import {
     arr,
     bool,
+    oneOf,
     CatalogFormatError,
     fail,
     instant,
@@ -38,7 +39,7 @@ import {
 export { CatalogFormatError };
 
 /** The envelope version this client implements. Checked before any other field. */
-export const CATALOG_SCHEMA_VERSION = 2;
+export const CATALOG_SCHEMA_VERSION = 3;
 
 /** Which physical file of a volume set a band's content assembles into
  *  (`OBCA_Spec.md` §5.1). */
@@ -92,13 +93,21 @@ export interface SchemaEntry {
     chunk_size: number;
 }
 
+export const LINE_STYLES = ["solid", "dashed", "ticked"] as const;
+export type LineStyle = (typeof LINE_STYLES)[number];
+export function isLineStyle(value: unknown): value is LineStyle {
+    return LINE_STYLES.includes(value as LineStyle);
+}
+
 export interface SkinStyle {
     feature_type: string;
     color: number;
     weight: number;
     z_index: number;
     priority: number;
-    dashed: boolean;
+    /** How the line is stroked. `ticked` is the cableway mark: a solid stroke with regular
+     *  perpendicular ticks, told apart by shape rather than by colour alone. */
+    line_style: LineStyle;
     /** OBCM style-record flag bit 4 (#1095): the weight is the on-screen stroke in device
      *  pixels, off the renderer's zoom width ramp. */
     fixed_width: boolean;
@@ -440,7 +449,7 @@ function parseSkins(v: unknown, where: string, schema: SchemaEntry): SkinEntry[]
                 weight: int(e, "weight", sat, 0, U8),
                 z_index: int(e, "z_index", sat, -128, 127),
                 priority: int(e, "priority", sat, 1, 4),
-                dashed: bool(e, "dashed", sat),
+                line_style: oneOf(e, "line_style", sat, LINE_STYLES),
                 // #1095's two flag bits. Absent in a catalog published before they existed, and
                 // absent means clear — an older tree's skins simply carry neither.
                 fixed_width: e.fixed_width === undefined ? false : bool(e, "fixed_width", sat),

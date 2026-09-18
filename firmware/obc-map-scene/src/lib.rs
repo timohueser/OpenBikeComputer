@@ -48,6 +48,17 @@ pub enum Kind {
     Polygon,
 }
 
+/// How a line is stroked. Polygons ignore it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LineStyle {
+    #[default]
+    Solid,
+    Dashed,
+    /// A solid stroke with regular perpendicular ticks: the cableway and lift mark. Distinct in
+    /// *shape*, not only colour, which is what tells it apart from the other thin dashed lines.
+    Ticked,
+}
+
 /// A style's boolean draw properties, **packed into one byte**.
 ///
 /// Packed rather than a field each because a source keeps the whole table resident — the OBCM
@@ -61,16 +72,18 @@ impl StyleFlags {
     const DASHED: u8 = 1 << 0;
     const FIXED_WIDTH: u8 = 1 << 1;
     const TERRAIN_LAYER: u8 = 1 << 2;
+    const TICKED: u8 = 1 << 3;
 
     /// No property set: a solid, ramped, non-terrain style.
     pub const NONE: Self = Self(0);
 
     #[inline]
-    pub const fn new(dashed: bool, fixed_width: bool, terrain_layer: bool) -> Self {
-        let mut bits = 0;
-        if dashed {
-            bits |= Self::DASHED;
-        }
+    pub const fn new(line: LineStyle, fixed_width: bool, terrain_layer: bool) -> Self {
+        let mut bits = match line {
+            LineStyle::Solid => 0,
+            LineStyle::Dashed => Self::DASHED,
+            LineStyle::Ticked => Self::TICKED,
+        };
         if fixed_width {
             bits |= Self::FIXED_WIDTH;
         }
@@ -80,10 +93,16 @@ impl StyleFlags {
         Self(bits)
     }
 
-    /// Stroke this line dashed instead of solid. Ignored for polygons.
+    /// How this line is stroked. Ignored for polygons.
     #[inline]
-    pub const fn dashed(self) -> bool {
-        self.0 & Self::DASHED != 0
+    pub const fn line_style(self) -> LineStyle {
+        if self.0 & Self::TICKED != 0 {
+            LineStyle::Ticked
+        } else if self.0 & Self::DASHED != 0 {
+            LineStyle::Dashed
+        } else {
+            LineStyle::Solid
+        }
     }
 
     /// Use `weight` as the on-screen stroke in **device pixels**, verbatim: the renderer's

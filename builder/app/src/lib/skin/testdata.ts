@@ -1,16 +1,16 @@
 // Canonical assignment inputs for skin admission tests; expected validation decisions stay in the tests.
 import preset from "../../../../presets/schema.json";
-import type { SchemaEntry, SkinEntry } from "../catalog/manifest";
+import type { SchemaEntry, SkinEntry, SkinStyle } from "../catalog/manifest";
 import { exampleCatalog } from "../catalog/testdata";
 
-const styles = Object.entries(preset.features).flatMap(([tag, values]) =>
+const styles: SkinStyle[] = Object.entries(preset.features).flatMap(([tag, values]) =>
     Object.entries(values).map(([value, style]) => ({
         feature_type: `${tag}.${value}`,
         color: 0xffff,
         weight: 1,
         z_index: style.z_index,
         priority: 2,
-        dashed: false,
+        line_style: "solid",
         fixed_width: tag === "contour",
         terrain_layer: tag === "contour",
         color2: null,

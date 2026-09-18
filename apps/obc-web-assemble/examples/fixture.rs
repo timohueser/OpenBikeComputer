@@ -323,7 +323,7 @@ fn skin_json(cfg: &Config) -> String {
                 "weight": s.weight,
                 "z_index": s.z_index,
                 "priority": s.priority,
-                "dashed": s.dashed,
+                "dashed": s.line_style,
                 "fixed_width": s.fixed_width,
                 "terrain_layer": s.terrain_layer,
                 "color2": s.color2,
