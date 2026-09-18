@@ -459,13 +459,12 @@ where
 const RIDER_BOX_PX: i32 = 24;
 
 /// The most chrome boxes one screen hands to [`label_reserved`]. A **panning** Map frame is the
-/// widest, at nine: the pan HUD's seven ([`pan_hud_boxes`] — the Inspect frame's four edges, two
-/// Up/Down cues and the back-to-you marker), the low-battery cue and the scale bar. It cannot hold
-/// more, because pan mode suppresses the clock and every bottom pill. An **attached** frame comes
-/// to four: the clock digits, the low-battery cue, a bottom pill's band and the scale bar — and it
-/// draws no HUD. No other screen asks for more: the Detour hands one box, the browse screens two,
-/// and the visit review three.
-pub(crate) const MAX_CHROME: usize = 9;
+/// widest, at five: the pan HUD's three ([`pan_hud_boxes`] — two Up/Down cues and the back-to-you
+/// marker), the low-battery cue and the scale bar. It cannot hold more, because pan mode suppresses
+/// the clock and every bottom pill. An **attached** frame comes to four: the clock digits, the
+/// low-battery cue, a bottom pill's band and the scale bar — and it draws no HUD. No other screen
+/// asks for more: the Detour hands one box, the browse screens two, and the visit review three.
+pub(crate) const MAX_CHROME: usize = 5;
 
 /// A screen's own chrome boxes, as [`label_reserved`] takes them.
 pub(crate) type Chrome = heapless::Vec<Rectangle, MAX_CHROME>;
@@ -664,23 +663,6 @@ fn pan_cue_boxes(w: i32, h: i32, pan: Pan) -> heapless::Vec<Rectangle, 2> {
     boxes
 }
 
-/// The four edges the Inspect frame inks while panning — two amber strokes and an ink keyline,
-/// [`hud::FRAME_AMBER_W`] + [`hud::FRAME_INK_W`] deep. The strokes follow the panel's rounded mask,
-/// so each box is a superset at its corners. Empty on a panel too small for the frame, which is the
-/// case [`draw_inspect_frame`] refuses to draw.
-fn inspect_frame_boxes(w: i32, h: i32) -> heapless::Vec<Rectangle, 4> {
-    use hud::*;
-    let d = FRAME_AMBER_W + FRAME_INK_W;
-    let mut boxes = heapless::Vec::new();
-    if w <= 2 * d || h <= 2 * d {
-        return boxes;
-    }
-    for r in [rect(0, 0, w, d), rect(0, h - d, w, d), rect(0, 0, d, h), rect(w - d, 0, d, h)] {
-        let _ = boxes.push(r);
-    }
-    boxes
-}
-
 /// The box the back-to-you marker inks, or `None` while the rider is on the panel and no marker
 /// draws. It is the bounds of the outlined arrow's own three vertices, so it turns with the
 /// rider's bearing instead of assuming a square around the centre.
@@ -693,22 +675,25 @@ fn back_to_you_box(w: f32, h: f32, vp: &Viewport, fix: Fix) -> Option<Rectangle>
     Some(rect(left, top, right - left + 1, bottom - top + 1))
 }
 
-/// Everything the pan HUD inks over the map, read from the same values [`draw_pan_hud`] draws from:
-/// the Inspect frame's four edges, the Up/Down cues of the active tool, and the back-to-you marker
-/// once the rider leaves the panel. Empty with the camera attached, because then no HUD draws.
-/// Seven boxes is the exact bound, and the HUD is what makes a panning frame the widest one.
+/// Everything the pan HUD inks over the map that a settlement name must keep off, read from the
+/// same values [`draw_pan_hud`] draws from: the Up/Down cues of the active tool, and the back-to-you
+/// marker once the rider leaves the panel. Empty with the camera attached, because then no HUD
+/// draws. Three boxes is the exact bound.
+///
+/// The Inspect frame is deliberately not here. It traces the panel's own edge, three pixels deep,
+/// where a name is already clipped by the panel at the very pixels the frame inks. Reserving it
+/// would refuse the whole name to save those three columns, and at the label face that deletes
+/// every edge-anchored name the moment the rider enters pan mode — which is when they are reading
+/// the map for place names.
 pub(crate) fn pan_hud_boxes(
     w: i32,
     h: i32,
     pan: Option<Pan>,
     vp: &Viewport,
     fix: Option<Fix>,
-) -> heapless::Vec<Rectangle, 7> {
+) -> heapless::Vec<Rectangle, 3> {
     let mut boxes = heapless::Vec::new();
     let Some(pan) = pan else { return boxes };
-    for r in inspect_frame_boxes(w, h) {
-        let _ = boxes.push(r);
-    }
     for r in pan_cue_boxes(w, h, pan) {
         let _ = boxes.push(r);
     }
@@ -1629,7 +1614,7 @@ mod tests {
         // Free horizontal moves the pair to the sides, and the bottom centre comes back.
         assert_eq!(pan_cue_boxes(240, 320, horizontal).len(), 2, "one cue box for each side");
         let mut place = placer(Some(horizontal));
-        assert!(!place.try_place(rect(4, 148, 60, 24), 0), "a name under the left cue is refused");
+        assert!(!place.try_place(rect(0, 148, 60, 24), 0), "a name under the left cue is refused");
         assert!(place.try_place(under_cue, 0), "and the bottom centre is free");
     }
 
@@ -1784,8 +1769,10 @@ mod tests {
         let zoom = pan_states().into_iter().find(|(name, _)| *name == "zoom").expect("a zoom state").1;
         let away = fix_at_screen(&vp, 66.0, -400.0);
         let hud = pan_hud_boxes(240, 320, Some(zoom), &vp, Some(away));
-        assert_eq!(hud.len(), 7, "four frame edges, two Up/Down cues and the marker");
-        assert_eq!(map_chrome(240, 320, 0, Some(&bar), &hud, false, true).len(), MAX_CHROME);
+        assert_eq!(hud.len(), 3, "two Up/Down cues and the marker");
+        // Literals, so raising the constant does not make the claim true by itself.
+        assert_eq!(map_chrome(240, 320, 0, Some(&bar), &hud, false, true).len(), 5);
+        assert_eq!(MAX_CHROME, 5);
     }
 
     /// A degenerate camera (non-finite or non-positive mpp) yields no bar, never a bogus one.
