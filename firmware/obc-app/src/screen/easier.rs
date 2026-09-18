@@ -135,7 +135,7 @@ impl EasierScreen {
             fit(self.bounds, rx.w, rx.h)
         };
         let active = rx.route.take();
-        super::map::draw_map_scene(cv, rx, &vp, None);
+        super::map::draw_map_scene(cv, rx, &vp, None, None);
         rx.route = active;
         let progress = self.progress_m;
         let proposed = rx.nav_preview;

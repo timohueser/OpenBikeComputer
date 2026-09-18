@@ -270,7 +270,7 @@ impl DetourScreen {
             candidate: p.candidate,
             detour: &[],
         });
-        let _ = draw_map_scene(cv, rx, &vp, overlay);
+        let _ = draw_map_scene(cv, rx, &vp, overlay, None);
         self.draw_hud(cv, rx);
     }
 
@@ -456,7 +456,7 @@ impl DetourPreviewScreen {
             candidate: p.candidate,
             detour: rx.detour_preview,
         });
-        let _ = draw_map_scene(cv, rx, &vp, overlay);
+        let _ = draw_map_scene(cv, rx, &vp, overlay, None);
         self.draw_hud(cv, rx);
     }
 
