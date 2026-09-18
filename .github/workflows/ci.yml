@@ -356,8 +356,8 @@ jobs:
   # compare the frames to the committed digest manifest. The bench golden gate in `test` covers
   # the map renderer's scenes; this covers the screens drawn over them, which is what a screen
   # refactor moves. It is its own job so the sweep is off the `test` job's serial path. The debug
-  # binary is deliberate: its output is byte-identical to release. `update` is a developer command
-  # and never runs here — a self-regenerating manifest records nothing.
+  # binary is deliberate: its output is byte-identical to release. `--accept` is a developer
+  # command and never runs here — a self-regenerating manifest records nothing.
   #
   # The job starts for every suite that routes to it, which includes each package it compiles.
   # The sweep itself still runs only for `ci.ui-snapshots`, the suite that owns the rendering
@@ -388,10 +388,13 @@ jobs:
       - name: ui-snapshots manifest check
         id: ui-snapshots
         if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ci.ui-snapshots')
+        env:
+          PYTHONPATH: firmware/tools
         run: |
           cargo build -p obc-sim --locked
-          SIM="$PWD/target/debug/obc-sim" firmware/ui-snapshots.sh "$RUNNER_TEMP/ui-snapshots"
-          python3 firmware/tools/ui_snapshot_manifest.py check firmware/ui-snapshots.sha256 "$RUNNER_TEMP/ui-snapshots"
+          export SIM="$PWD/target/debug/obc-sim"
+          python3 -m ui_frames --all "$RUNNER_TEMP/ui-snapshots"
+          python3 -m ui_frames --check "$RUNNER_TEMP/ui-snapshots"
       - name: Upload UI review frames
         if: ${{ !cancelled() && (steps.ui-snapshots.outcome == 'success' || steps.ui-snapshots.outcome == 'failure') }}
         uses: actions/upload-artifact@v4

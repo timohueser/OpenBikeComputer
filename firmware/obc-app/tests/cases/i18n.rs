@@ -1,6 +1,6 @@
 //! i18n catalog guards (epic #602, L5).
 //!
-//! `ui-snapshots.sh` renders every screen in de/fr/es to eyeball translations, but it is a manual
+//! `obc shot` renders every screen in de/fr/es to eyeball translations, but it is a manual
 //! dev tool — not wired into CI. This binary is the CI-green net for the one failure mode a PNG
 //! can't assert cheaply: a translation carrying a char **outside the device font's repertoire**,
 //! which the text path renders as a silent `?` (no panic, no error — see `obc-render::text`).

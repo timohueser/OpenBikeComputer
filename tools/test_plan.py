@@ -832,7 +832,27 @@ def validate(root: Path, graph: CargoGraph, document: Mapping[str, Any], units: 
         if not (job.unconditional or job.roots or job.packages or name in routed):
             errors.append(f"job {name} runs no declared suite")
     errors.extend(_coverage_errors(root))
+    errors.extend(_ui_frame_errors(root))
     return errors
+
+def _ui_frame_errors(root: Path) -> list[str]:
+    """Every UI frame has a digest row, and every digest row has a frame.
+
+    A frame is only in the net once `ui-snapshots.sha256` names it, and the sweep itself cannot say
+    so: it compares the manifest against the frames it just rendered, so a frame added without its
+    row, or a row left behind, both look clean there.
+    """
+    sys.path.insert(0, str(root / "firmware/tools"))
+    try:
+        from ui_frames import manifest, table
+    finally:
+        sys.path.pop(0)
+    try:
+        frames = table.load(root / "firmware/ui-frames.toml")
+        problems = manifest.stale([frame.name for frame in frames], root / "firmware/ui-snapshots.sha256")
+    except (table.TableError, manifest.ManifestError) as exc:
+        problems = [str(exc)]
+    return [f"ui frames: {problem}" for problem in problems]
 
 def validate_workflow(root: Path) -> list[str]:
     """One parsed-YAML structural check over the workflow's routing."""
