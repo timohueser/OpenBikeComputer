@@ -142,7 +142,11 @@ pub fn run(
     // so the body has room around the framebuffer.
     let dev = housing::HousingStyle::default().window_size_px(egui::vec2(args.width as f32, args.height as f32));
     let win = [dev.x * args.scale as f32, dev.y * args.scale as f32];
-    let title = "OBC Simulator";
+    let title = if std::env::var_os("OBC_SIM_RELIEF").is_some() {
+        "OBC Simulator — Relief F prototype"
+    } else {
+        "OBC Simulator"
+    };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_title(title).with_inner_size(win),
         ..Default::default()
@@ -311,7 +315,13 @@ impl SimGui {
     ) -> Self {
         // The map's style table + LOD pyramid, parsed once — the tables every reader borrows.
         let map_tables = map.tables();
-        let (cx, cy, zoom) = crate::initial_camera(&map.reader(), args.width);
+        let (mut cx, mut cy, mut zoom) = crate::initial_camera(&map.reader(), args.width);
+        if std::env::var_os("OBC_SIM_RELIEF").is_some() {
+            if let Some(center) = args.center {
+                (cx, cy) = center;
+            }
+            zoom *= args.zoom_mul;
+        }
         let mut state = AppState::new(cx, cy, zoom);
         let peak_view = crate::peak_view::Runtime::new(&map, args.peak_view);
         state.peak_view_profile = peak_view.profile();
@@ -367,7 +377,8 @@ impl SimGui {
 
         // Boot at the device's real power-on state (Home / Idle, no route); the headless
         // `--png` path opens straight on the map instead (see `--boot`).
-        let mut app = App::new_idle(state);
+        let relief = std::env::var_os("OBC_SIM_RELIEF").is_some();
+        let mut app = if relief { App::new(state) } else { App::new_idle(state) };
         if app.state.user_fix.is_some() {
             let mut loc = crate::sim_location::SimLocationSource::new(app.state.user_fix);
             app.tick(obc_ports::RideClock(0), obc_ports::Sensors::new(&mut loc), None);
@@ -378,6 +389,9 @@ impl SimGui {
         let mut settings_store = FileSettingsStore::open(args.settings_path());
         let boot_settings = settings_store.load().unwrap_or_default();
         app.set_settings(boot_settings);
+        if relief {
+            app.state.zoom = zoom;
+        }
         args.stamp_initial_clock(&mut app);
         // Mirror the map's §8.6 routing-profile names into the app for the bike-type editor +
         // created-route overview label (N5). The map is loaded once in the sim, so this is a one-shot
@@ -644,6 +658,11 @@ impl SimGui {
         let t0 = std::time::Instant::now();
         let (dev_w, dev_h) = (self.dev_w, self.dev_h);
         let mut fbdev = FbDevice64::new(&mut self.fb, dev_w, dev_h);
+        let mut fbdev = crate::relief::Target::new(
+            &mut fbdev,
+            |c| Rgb565::from(RawU16::new(c)),
+            self.app.state.viewport(dev_w as f32, dev_h as f32),
+        );
         let scene = frame::Scene { reader: &reader, route: route.as_ref() };
         // The frame renders the very snapshot this pass decided over — sampled before it, not after
         // — so the card, the step count and the raster are one decision.
