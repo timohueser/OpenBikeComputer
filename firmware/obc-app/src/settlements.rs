@@ -602,20 +602,29 @@ mod tests {
         // span across the 240 px panel.
         let vp = Viewport::new(PANEL.0, PANEL.1, 7_885_982, 48_053_537, PANEL.0 / 321_244.0);
         let cache = cache_of(&[candidate(SettlementClass::City, "Freiburg", 220_200, 47_996_090, 7_849_401)]);
-        let (x, y) = vp.to_screen(7_849_401, 47_996_090);
-        assert!(x < PANEL.0 as i32 / 2 && y > PANEL.1 as i32 / 2, "the place is in the bottom-left quadrant");
 
         // The chrome this frame really owns: no fix, so the `No GPS Fix` chip is up and the scale
         // bar steps above its band.
         let h = PANEL.1 as i32;
-        let bar = crate::screen::map::scale_bar_ink(
+        let bar = crate::screen::map::ScaleBar::new(
             h,
             crate::screen::map::CHIP_H,
             vp.meters_per_pixel(),
             crate::Units::Metric,
-        );
-        let chrome = crate::screen::map::label_reserved(&vp, None, PANEL.0 as i32, h, bar);
+        )
+        .expect("the fixture camera yields a bar")
+        .ink();
+        let chrome = crate::screen::map::label_reserved(&vp, None, PANEL.0 as i32, h, Some(bar));
         let mut place = PointPlacement::new(rect(0, 0, PANEL.0 as i32, h), &chrome);
+
+        // The city has to land beside that box, or the test pins nothing: a repack of the fixture
+        // that moved it up the panel would leave a name with no chrome anywhere near it.
+        let (x, y) = vp.to_screen(7_849_401, 47_996_090);
+        let tw = text_width("Freiburg", Font::Label) as i32;
+        let (left, bottom) = (x - tw / 2, y + Font::Label.line_height() as i32 / 2);
+        assert!(left < bar.top_left.x + bar.size.width as i32, "the name overhangs the bar's columns");
+        assert!((0..24).contains(&(bar.top_left.y - bottom)), "the name ends within 24 px above the bar");
+
         assert_eq!(drawn(&vp, &cache, &mut place), ["Freiburg"]);
     }
 

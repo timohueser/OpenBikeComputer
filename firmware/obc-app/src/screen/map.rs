@@ -251,13 +251,14 @@ impl MapScreen {
         } else {
             0
         };
-        let scale_bar = rx
-            .settings
-            .map_scale_bar
-            .then(|| scale_bar_ink(rx.h, chip_band, vp.meters_per_pixel(), rx.settings.units))
-            .flatten();
+        let scale_bar = if rx.settings.map_scale_bar {
+            ScaleBar::new(rx.h, chip_band, vp.meters_per_pixel(), rx.settings.units)
+        } else {
+            None
+        };
 
-        let Some(marker565) = draw_map_scene(cv, rx, &vp, None, scale_bar) else { return };
+        let reserved = scale_bar.as_ref().map(ScaleBar::ink);
+        let Some(marker565) = draw_map_scene(cv, rx, &vp, None, reserved) else { return };
 
         // The remaining chrome draws in the palette vocabulary, back through the canvas.
         //
@@ -321,8 +322,8 @@ impl MapScreen {
         // a wide chip ("off route 153km", "◆ Pass Summit  0.4km") never runs under it. Visible in
         // pan mode too (where it's most useful) — the pan HUD's bottom chevron is centred, well
         // clear of the corner.
-        if scale_bar.is_some() {
-            draw_scale_bar(cv, rx.h, chip_band, vp.meters_per_pixel(), rx.settings.units);
+        if let Some(bar) = &scale_bar {
+            draw_scale_bar(cv, bar);
         }
 
         // Pan-mode HUD. Drawn last so it sits over the map + marker, and only while panning.
@@ -449,11 +450,15 @@ where
 /// Side (px) of the box the rider mark owns — the chevron reaches 12 px ahead and 8 px out.
 const RIDER_BOX_PX: i32 = 24;
 
-/// The boxes the map chrome owns, so a settlement name never covers one. Each box is the ink it
-/// protects and no more: a name may sit flush against one.
+/// The boxes the map chrome owns, so a settlement name never covers one. A name may sit flush
+/// against a box, so each one has to hold the ink it protects at every state of that chrome.
 ///
-/// The two bands are constant, because every bottom pill is inside the bottom band and every top
-/// mark is inside the top one. The scale bar and the rider mark move, so both come in measured.
+/// The scale bar and the rider mark are exact: both come in measured for this frame. The two bands
+/// are constant bounds instead, and carry a few pixels of slack — the top band down to the clock's
+/// halo, the bottom one down to the tallest pill any translation can wrap to. Constant is the right
+/// trade there: the pills and the top marks are small, and six screens share these boxes while
+/// drawing their own chrome inside them. The chrome draws after the names, so the slack only costs
+/// a name the last pixels of the corner it could have had.
 pub(crate) fn label_reserved(
     vp: &Viewport,
     fix: Option<Fix>,
@@ -464,8 +469,10 @@ pub(crate) fn label_reserved(
     let mut boxes = heapless::Vec::new();
     // Top: the clock digits, the low-battery cue and the pan HUD's compass rose.
     let _ = boxes.push(rect(0, 0, w, CLOCK_TOP + Font::Body.line_height() as i32 + 2));
-    // Bottom, full width: the status, waypoint and hint pills. The two-line hint is the tallest.
-    let chips = 2 * HINT_LINE_PITCH + 2 * HINT_PAD_Y + CHIP_MARGIN;
+    // Bottom, full width: the status, waypoint and hint pills. The two-line hint is the tallest,
+    // and its height is the wrapped text's own ink, so the bound takes a first line inked from the
+    // top of its cell and a second inked to the bottom of the next — taller than any real pair.
+    let chips = HINT_LINE_PITCH + Font::Label.line_height() as i32 + 2 * HINT_PAD_Y + CHIP_MARGIN;
     let _ = boxes.push(rect(0, h - chips, w, chips));
     if let Some(bar) = scale_bar {
         let _ = boxes.push(bar);
@@ -556,7 +563,7 @@ fn draw_hint_chip(cv: &mut impl Surface, w: i32, h: i32, s: &str) {
     let font = Font::Label;
     let (l1, l2) = wrap2(s);
     let ink = hint_chip_ink(s);
-    let ph = hint_chip_height(s);
+    let ph = ink.end - ink.start + 2 * HINT_PAD_Y;
     let tw = (text_width(l1, font) as i32).max(text_width(l2, font) as i32);
     let pw = tw + 16;
     let px = (w - pw) / 2;
@@ -795,39 +802,48 @@ const SCALE_MARGIN_Y: i32 = 12;
 const SCALE_CHIP_GAP: i32 = 12;
 const SCALE_TICK_H: i32 = 5;
 
-/// The bar's baseline row: in the corner normally; stepped above the bottom chip band (its height +
-/// inset + a gap) when a chip is up (`chip_band > 0`) — a taller band (the two-line hint) steps the
-/// bar proportionally.
-fn scale_bar_baseline(h: i32, chip_band: i32) -> i32 {
-    h - if chip_band > 0 { chip_band + CHIP_MARGIN + SCALE_CHIP_GAP } else { SCALE_MARGIN_Y }
+/// The scale bar one frame draws: its chosen length, its label and the row it sits on. One value
+/// answers both [`ink`](ScaleBar::ink) — the box a settlement name keeps off — and
+/// [`draw_scale_bar`], so the box that is reserved and the pixels that are drawn cannot drift.
+pub(crate) struct ScaleBar {
+    bar_px: i32,
+    label: heapless::String<8>,
+    /// The baseline row: in the corner normally; stepped above the bottom chip band (its height +
+    /// inset + a gap) when a chip is up — a taller band (the two-line hint) steps it proportionally.
+    y: i32,
 }
 
-/// The box [`draw_scale_bar`] inks at this camera, parchment halo included: the label row, the end
-/// ticks and the baseline, from the label's left edge to the wider of the bar and the label.
-/// `None` at a degenerate zoom, where no bar draws either.
-///
-/// This is what a settlement name must keep off. It is a small box in the corner, not the corner:
-/// the bar is about 33 px tall and 40–90 px wide, wherever the chip band puts it.
-pub(crate) fn scale_bar_ink(h: i32, chip_band: i32, mpp: f32, units: Units) -> Option<Rectangle> {
-    let (bar_px, label) = scale_bar_choice(mpp, units)?;
-    let y = scale_bar_baseline(h, chip_band);
-    let top = y - SCALE_TICK_H - Font::Label.line_height() as i32 - 2;
-    let width = bar_px.max(text_width(&label, Font::Label) as i32) + 2;
-    Some(rect(SCALE_MARGIN_X - 1, top, width, y + 2 - top))
+impl ScaleBar {
+    /// The bar for this camera, or `None` at a degenerate zoom, where nothing draws.
+    pub(crate) fn new(h: i32, chip_band: i32, mpp: f32, units: Units) -> Option<Self> {
+        let (bar_px, label) = scale_bar_choice(mpp, units)?;
+        let step = if chip_band > 0 { chip_band + CHIP_MARGIN + SCALE_CHIP_GAP } else { SCALE_MARGIN_Y };
+        Some(ScaleBar { bar_px, label, y: h - step })
+    }
+
+    /// The pixels the bar inks, parchment halo included: the label row above the end ticks and the
+    /// baseline, from the halo's left column to the wider of the haloed bar and the haloed label.
+    ///
+    /// This is what a settlement name must keep off. It is a small box in the corner, not the
+    /// corner: 33 px tall and 40–90 px wide, wherever the chip band puts it.
+    pub(crate) fn ink(&self) -> Rectangle {
+        let top = self.y - SCALE_TICK_H - Font::Label.line_height() as i32 - 2;
+        // The bar's right halo column is one past its end tick; the label's is one past its last
+        // glyph column, which `halo_text` does not count in the text width.
+        let width = (self.bar_px + 1).max(text_width(&self.label, Font::Label) as i32) + 2;
+        rect(SCALE_MARGIN_X - 1, top, width, self.y + 2 - top)
+    }
 }
 
 /// Draw the scale bar at the bottom-left: a horizontal ink line with end ticks and a length label,
-/// haloed in parchment so it reads over terrain. The distance is the largest 1/2/5 × 10ⁿ that fits
-/// [`SCALE_TARGET_MIN_PX`]..[`SCALE_TARGET_MAX_PX`] at the current `mpp` (metres per pixel), in the
-/// `units` system.
-fn draw_scale_bar(cv: &mut impl Surface, h: i32, chip_band: i32, mpp: f32, units: Units) {
+/// haloed in parchment so it reads over terrain. [`ScaleBar::new`] chose the distance: the largest
+/// 1/2/5 × 10ⁿ that fits [`SCALE_TARGET_MIN_PX`]..[`SCALE_TARGET_MAX_PX`] at the current metres per
+/// pixel, in the units setting's system.
+fn draw_scale_bar(cv: &mut impl Surface, bar: &ScaleBar) {
     use super::palette::*;
-    let Some((bar_px, label)) = scale_bar_choice(mpp, units) else {
-        return; // a degenerate zoom (non-finite mpp) — draw nothing rather than a bogus bar
-    };
+    let (bar_px, label, y) = (bar.bar_px, &bar.label, bar.y);
     let x0 = SCALE_MARGIN_X;
     let x1 = x0 + bar_px;
-    let y = scale_bar_baseline(h, chip_band);
     // Parchment halo: the same strokes one pixel thicker/offset, drawn first.
     for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
         cv.line(Point::new(x0 + dx, y + dy), Point::new(x1 + dx, y + dy), PARCHMENT);
@@ -840,7 +856,7 @@ fn draw_scale_bar(cv: &mut impl Surface, h: i32, chip_band: i32, mpp: f32, units
     cv.line(Point::new(x1, y - SCALE_TICK_H), Point::new(x1, y), INK);
     // The label sits just above the bar, left-aligned to its start. Halo it too, so it reads on terrain.
     let ly = y - SCALE_TICK_H - Font::Label.line_height() as i32 - 1;
-    halo_text(cv, &label, Point::new(x0, ly), Font::Label, TextAlign::Left, INK, PARCHMENT);
+    halo_text(cv, label, Point::new(x0, ly), Font::Label, TextAlign::Left, INK, PARCHMENT);
 }
 
 /// The nice 1/2/5 mantissa steps a scale bar chooses from, largest-first — the classic map-scale
@@ -1351,6 +1367,54 @@ mod tests {
         assert_eq!(scale_bar_choice(10.0, Units::Imperial).unwrap().1.as_str(), "2000ft");
         assert_eq!(scale_bar_choice(50.0, Units::Imperial).unwrap().1.as_str(), "2mi");
         assert_eq!(scale_bar_choice(200.0, Units::Imperial).unwrap().1.as_str(), "10mi");
+    }
+
+    /// The reserved box holds every pixel the bar draws, halo columns included, whether the bar or
+    /// its label is the wider of the two. A settlement name may sit flush against this box and the
+    /// bar draws after the names, so a column left out of it is a column the bar's parchment halo
+    /// erases from a glyph stroke.
+    #[test]
+    fn the_scale_bar_ink_box_holds_every_pixel_the_bar_draws() {
+        use crate::harness::support::Buf;
+        use embedded_graphics::pixelcolor::Rgb888;
+        use obc_render::Canvas;
+        let color = |c| {
+            let (r, g, b) = obc_reader::rgb565_to_rgb888(c);
+            Rgb888::new(r, g, b)
+        };
+        // `500m` over 50 px is a bar wider than its label; `2000ft` over 60 px is the other way
+        // round. The chip band only moves the bar up the panel, so one case takes each position.
+        for (mpp, units, chip_band, bar_is_wider) in
+            [(10.0f32, Units::Metric, 0, true), (10.0, Units::Imperial, CHIP_H, false)]
+        {
+            let bar = ScaleBar::new(320, chip_band, mpp, units).expect("a real zoom yields a bar");
+            let label_px = text_width(&bar.label, Font::Label) as i32;
+            let case = (bar.label.as_str(), bar.bar_px, label_px);
+            assert_eq!(bar.bar_px + 1 > label_px, bar_is_wider, "{case:?}: the case under test");
+
+            let mut buf = Buf::new(240, 320);
+            draw_scale_bar(&mut Canvas::new(&mut buf, &color), &bar);
+            let black = Rgb888::new(0, 0, 0);
+            let mut drawn: Option<(i32, i32, i32, i32)> = None;
+            for y in 0..320 {
+                for x in 0..240 {
+                    if buf.get(x, y) != black {
+                        let e = drawn.get_or_insert((x, y, x + 1, y + 1));
+                        *e = (e.0.min(x), e.1.min(y), e.2.max(x + 1), e.3.max(y + 1));
+                    }
+                }
+            }
+            let (l, t, r, b) = drawn.expect("the bar draws something");
+            let (bx, by) = (bar.ink().top_left.x, bar.ink().top_left.y);
+            let (bw, bh) = (bar.ink().size.width as i32, bar.ink().size.height as i32);
+            assert!(
+                l >= bx && t >= by && r <= bx + bw && b <= by + bh,
+                "{case:?}: drawn ({l},{t})-({r},{b}) is outside the reserved ({bx},{by})-({bx}+{bw},{by}+{bh})",
+            );
+            // The baseline and its halo run the bar's whole width, so the three edges they set are
+            // exact. Only the top edge is loose, by the label's top bearing.
+            assert_eq!((l, r, b), (bx, if bar_is_wider { bx + bw } else { r }, by + bh), "{case:?}: the tight edges");
+        }
     }
 
     /// A degenerate camera (non-finite or non-positive mpp) yields no bar, never a bogus one.
