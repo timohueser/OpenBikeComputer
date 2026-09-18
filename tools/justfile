@@ -13,8 +13,9 @@ export OBC_TOOLS := justfile_directory()                     # this tools/ dir
 lib := justfile_directory() / "obc-dev.sh"
 
 # List the available tasks.
-default:
-    @just --justfile '{{justfile()}}' --list --unsorted
+[private]
+default *args:
+    @python3 '{{OBC_TOOLS}}/tasks.py' --justfile '{{justfile()}}' "$@"
 
 # ── Deployed services ────────────────────────────────────────────────────────
 
@@ -25,6 +26,7 @@ default:
 # List, inspect, download, verify and prune the content-addressed fixture registry.
 # Common forms: `obc fixtures list`, `obc fixtures show grimsel`,
 # `obc fixtures sync sim`, `obc fixtures verify test`.
+[group('maps')]
 fixtures *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -39,6 +41,7 @@ fixtures *args:
 # to $OBC_GPX. Named scenarios are the reproducible path. Pass `none` as the
 # explicit track to run without GPS.
 # Run the simulator on a map + GPX, always at physical size. Args: [MAP] [TRACK.gpx] [-- sim flags]
+[group('run')]
 sim *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -80,6 +83,7 @@ sim *args:
 # Destructively initialize the card inside one USB-connected device as an empty flat store.
 # Requires typing FORMAT unless --yes is passed. Use --serial when more than one device is attached.
 # Args: [--serial DEVICE_SERIAL] [--yes].
+[group('device')]
 format-card *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -92,6 +96,7 @@ format-card *args:
 # e.g.  obc flash            (real sensors)   obc flash debug-uart
 #       obc flash build      (compile only, no flash)
 # Build & flash the board. Opts: debug-uart synth build (e.g. obc flash debug-uart)
+[group('device')]
 flash *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -120,6 +125,7 @@ flash *args:
 # (compile only). Needs no RISC-V toolchain: the bootloader keeps the COM wave alive in software,
 # not on the FLPR.
 # Build & flash the bootloader — once. Opts: rtt (defmt logging) build (compile only)
+[group('device')]
 flash-boot *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -146,6 +152,7 @@ flash-boot *args:
 # fixed-location panel can stream an entered or searched coordinate instead.
 # Args: [TRACK.gpx] [-- --port TTY | --baud N | --list].
 # Open the debug-uart GPS feeder. Args: [TRACK.gpx] [-- --port TTY | --list]
+[group('device')]
 uart *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -166,6 +173,7 @@ uart *args:
 # no RTT), then runs the feeder TUI in the foreground. Want defmt logs too? Run
 # `obc rtt` in a second terminal.
 # One step: flash debug-uart firmware, then open the GPS feeder. Args: [TRACK.gpx]
+[group('device')]
 debug *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -182,6 +190,7 @@ debug *args:
 
 # Board diagnostics or a direct operation on an exact ELF. Uses the shared Cargo runner.
 # Args: doctor | run ELF | download ELF | attach ELF | reset [--probe VID:PID:SERIAL]
+[group('device')]
 board *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -190,6 +199,7 @@ board *args:
 
 # Attach without rebuilding or flashing. Pass the matching ELF when using another build.
 # Args: [ELF] [--probe VID:PID:SERIAL] [--log FILE]
+[group('device')]
 rtt *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -206,6 +216,7 @@ rtt *args:
 # the one shipped schema; the output defaults to <region>.obcm in the repo root (so
 # `obc sim` picks it up next).
 # Pack an OSM extract to a .obcm map. Args: <region.osm.pbf> [preset.json] [out.obcm]
+[group('maps')]
 pack *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -241,6 +252,7 @@ pack *args:
 # environment. The clean command verifies the configured bucket by reading the
 # live catalog at OBC_R2_PREFIX, then deletes every object in that bucket.
 # Bake, verify, publish, or replace R2 objects using $OBC_BAKE_TREE
+[group('maps')]
 bake *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -353,6 +365,7 @@ bake *args:
 # Run the web map builder at http://localhost:8000 (bootstraps the venv, obc-pack,
 # and the frontend on first run). Extra args pass through (e.g. --no-browser).
 # Run the web map builder on :8000 (bootstraps venv/frontend on first run)
+[group('run')]
 web *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -393,6 +406,7 @@ web *args:
 # `dev` drops `custom-protocol`, the feature that embeds the frontend, so the window
 # follows Vite instead.
 # Build & run the desktop app. Opts: dev (live-reload) build (compile only)
+[group('run')]
 desktop *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -428,6 +442,7 @@ desktop *args:
     fi
 
 # Pack the iOS host as target/OBCHost.xcframework, in release. Args: [--sim-only] (simulator only)
+[group('ios')]
 ios-host *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -437,6 +452,7 @@ ios-host *args:
 
 # Build the OBCDevice app (the firmware on a phone) and install and launch it on a paired iPhone.
 # Args: [DEVICE] — a `devicectl` name or identifier; defaults to the only paired phone.
+[group('ios')]
 ios-device *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -451,6 +467,7 @@ ios-device *args:
 
 # Build the companion app in Release (real Bluetooth, no mock) and install and launch it on a
 # paired iPhone. Args: [DEVICE] — a `devicectl` name or identifier; defaults to the only paired phone.
+[group('ios')]
 ios-companion *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -460,6 +477,7 @@ ios-companion *args:
     ios_install OBCCompanion Release com.openbikecomputer.companion "$device"
 
 # Inspect documentation ownership or review source-related prose. Args: [status|check|review]
+[group('docs')]
 docs *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -481,6 +499,7 @@ docs *args:
 # VITE_SITE_BASE unset, so the Docs/Home links point at the published site instead of
 # at siblings that aren't here.
 # Build & serve the static hosted tier (no backend) on :4173. Args: [PORT]
+[group('run')]
 site *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -507,6 +526,7 @@ site *args:
 # 6,000-line storage budget: `--check-budget` exits 1 above the limit. It reads
 # one commit, never the working tree, so commit before you measure.
 # Flat-store line budget. Args: --storage-total [--head REF] [--check-budget]
+[group('agent')]
 loc-ledger *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -514,6 +534,7 @@ loc-ledger *args:
     cd "$OBC_ROOT"; _run python3 "$OBC_TOOLS/loc_ledger.py" "$@"
 
 # Build the host workspace (simulator + shared crates + packer).
+[group('build')]
 build:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -530,6 +551,7 @@ build:
 # `obc test fixtures -p <crate>` keeps its scoped meaning (sync + external-fixtures) and
 # needs neither the plan nor Git. `full` stays the exceptional cross-cutting gate.
 # See docs/testing.md for the routes.
+[group('test')]
 test *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -606,6 +628,7 @@ test *args:
 # The workspace excludes three crates, and rustfmt walks up from each file to find its
 # own manifest — so this is a FOUR-step and the fmt CI guard fails if a leg is skipped.
 # Format everything: the workspace + board crate + bootloader + desktop app (four-step).
+[group('build')]
 fmt:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -617,6 +640,7 @@ fmt:
     _run cargo fmt --manifest-path apps/obc-desktop/Cargo.toml
 
 # Regenerate THIRD-PARTY.md (the licence texts shipped binaries owe). Args: (none) | --check.
+[group('build')]
 licenses *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -624,6 +648,7 @@ licenses *args:
     _run "$OBC_TOOLS/licenses/gen-third-party.sh" "$@"
 
 # Render benchmark + pixel-hash / read-counter golden gate. Args: (none) | check | write.
+[group('test')]
 bench *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -636,6 +661,7 @@ bench *args:
     esac
 
 # Confirm the shared stack still compiles for the device target (no board crate).
+[group('device')]
 check-device:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -648,6 +674,7 @@ check-device:
 #   obc check fmt         obc check test         obc check board docs
 #   obc check full        # cross-cutting changes only
 # The routes live in docs/testing.md.
+[group('build')]
 check *args:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -745,6 +772,7 @@ check *args:
 # Inventory and safely remove stale worktrees, build outputs, and OBC test scratch.
 # Dry-run by default. Common forms: `obc clean`, `obc clean --apply`,
 # `obc clean --include-builds --days 14 --apply`.
+[group('build')]
 clean *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -756,6 +784,7 @@ clean *args:
 # Read and write the verification console: `obc req SYS-003` prints one requirement with its
 # criteria numbered. Also `list`, `proposal ID`, `tests QUERY`, `changed --since rN`, and
 # `propose plan.json` (check it with --check first). Needs the agent token file; see tools/req.py.
+[group('agent')]
 req *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -765,6 +794,7 @@ req *args:
 # Inspect the test selection plan from any directory.
 # The routes and the granularity policy live in docs/testing.md.
 # Args: check | select --base REF | run | gates | cargo-filter --tier TIER | validate-filters
+[group('agent')]
 suites *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -773,6 +803,7 @@ suites *args:
 
 # Check your toolchain and report what's missing. Add --install to fix what it can
 # (rustup targets, just, probe-rs, the venv, replication client, and GEOS / RISC-V gcc via scripts/).
+[group('build')]
 doctor *args:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -821,6 +852,7 @@ doctor *args:
     printf '\n'; _say "done — re-run 'obc doctor' to confirm"
 
 # One-time: link `obc` into ~/.local/bin and enable bash completion.
+[group('build')]
 setup:
     #!/usr/bin/env bash
     set -euo pipefail
