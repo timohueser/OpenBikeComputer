@@ -90,11 +90,13 @@ The style table can contain at most 254 entries.
 
 The shipped style uses fixed one-pixel strokes for tracks, paths, footways, steps, and
 bridleways. Tracks are light brown; paths and bridleways are darker solid lines. Footways and
-steps use dark dashes. Via ferratas and ladders use purple dashes. These marks use the OSM way
+steps use dark dashes. Via ferratas and ladders use indigo dashes. These marks use the OSM way
 type. They do not indicate hiking or mountain bike difficulty. These minor ways and cycleways
 appear at up to 5 m per pixel, together with service roads. Residential roads remain visible
-through 10 m per pixel. Passenger cableways and ski lifts
-use thin grey dashes, with no new line format. Gardens, golf courses, recreation grounds, and heath share the green vegetation fill.
+through 10 m per pixel. Passenger cableways and ski lifts use thin purple dashes, with no new line format.
+Their colour is their own. They are transport, not a way the rider travels on.
+Grey dashes at the same width were too near the dashed footways and the contours.
+Gardens, golf courses, recreation grounds, and heath share the green vegetation fill.
 Rock, scree, and shingle share a grey fill. Glaciers have a separate pale cyan
 fill. Cliffs use thin dark edge lines, including closed cliff rims; the lines do not indicate
 which side is lower.
