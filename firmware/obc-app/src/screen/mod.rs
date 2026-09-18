@@ -351,6 +351,7 @@ pub struct Render<'a> {
     pub visit_target: Option<obc_route::visit::VisitTarget>,
     pub find: &'a crate::find_place::FindState,
     pub landmarks: &'a crate::landmarks::Landmarks,
+    pub(crate) map_icons: &'a crate::map_icons::MapIcons,
     pub ahead: &'a crate::whats_next::AheadState,
     pub peak_view: Option<&'a crate::peak_view::Panorama>,
     /// The frame's borrowed render scratch — the host owns it and lends it for this call (#1146).
