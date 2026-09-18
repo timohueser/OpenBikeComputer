@@ -4,12 +4,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { RequestEvent } from '@sveltejs/kit';
-import type { Actor, Candidate, CoveragePlan, CoverageProposal, CoverageProposalReview } from '../src/lib/types.ts';
+import type { Actor, Candidate, CoveragePlan, CoverageProposal, CoverageProposalReview, Revision } from '../src/lib/types.ts';
 import { api } from '../src/lib/server/api.ts';
 import { Store, store } from '../src/lib/server/store.ts';
 import { Problem, readiness, requirements } from '../src/lib/server/domain.ts';
 import { draftCoverage } from '../src/lib/server/coverage-plan.ts';
-import { coverageSummary, coverageChanges, coverageProgress } from '../src/lib/coverage.ts';
+import { coverageSummary, coverageChanges, coverageProgress, linkEvidence } from '../src/lib/coverage.ts';
 import { report } from '../src/lib/server/report.ts';
 
 const directory = mkdtempSync(join(tmpdir(), 'obc-coverage-'));
@@ -45,7 +45,19 @@ async function propose(value = plan(), requirementId = 'REQ-1', actor = agent) {
   assert.equal(response.status, 201, await response.clone().text());
   return await response.json() as CoverageProposal;
 }
-const decide = (id: string, accept = true, feedback = '') => request(`coverage-proposals/${id}`, 'POST', { accept, feedback }, owner);
+/** What the console does to approve: apply the plan to the draft, then save the revision with it. */
+async function decide(id: string, accept = true, feedback = '') {
+  if (!accept) return request(`coverage-proposals/${id}`, 'POST', { accept, feedback }, owner);
+  const proposal = store().get<CoverageProposal>('coverage-proposal', id);
+  const revision = store().latestRevision();
+  const requirements = structuredClone(revision.requirements);
+  const requirement = requirements.find(r => r.id === proposal.requirementId);
+  if (requirement) {
+    linkEvidence(requirement, proposal.plan, store().catalog(), () => store().id(), proposal.procedures ?? []);
+    requirement.coverage = structuredClone(proposal.plan);
+  }
+  return request('requirements', 'PUT', { baseRevision: revision.id, requirements, accept: [id] }, owner);
+}
 
 test('coverage approval is separate from passing tests and preserves candidate snapshots', async () => {
   setup();
@@ -177,13 +189,18 @@ test('a save approves the plans it changes and keeps the reviews it leaves untou
 test('coverage decisions recheck catalogue availability and roll back links and review together', async () => {
   setup(); const proposal = await propose(); const before = store().latestRevision();
   const catalog = store().catalog(); store().put('catalog', 'current', { ...catalog, cases: [] });
-  assert.equal((await decide(proposal.id)).status, 409);
+  // The plan cites cases the catalogue no longer has, so saving the draft that applies it is refused.
+  assert.equal((await decide(proposal.id)).status, 400);
   store().put('catalog', 'current', catalog);
   store().db.exec(`CREATE TEMP TRIGGER reject_coverage BEFORE INSERT ON records
     WHEN NEW.kind='coverage-proposal' AND json_extract(NEW.body,'$.status')='accepted'
     BEGIN SELECT RAISE(ABORT,'decision failed'); END;`);
-  try { assert.throws(() => store().decideCoverageProposal(proposal.id, owner.name, true), /decision failed/); }
-  finally { store().db.exec('DROP TRIGGER reject_coverage'); }
+  try {
+    const draft = structuredClone(before.requirements);
+    draft[0].coverage = structuredClone(proposal.plan);
+    linkEvidence(draft[0], proposal.plan, store().catalog(), () => store().id());
+    assert.throws(() => store().saveRevision(before.id, owner.name, draft, [proposal.id]), /decision failed/);
+  } finally { store().db.exec('DROP TRIGGER reject_coverage'); }
   assert.deepEqual(store().latestRevision(), before);
   assert.equal(store().get<CoverageProposal>('coverage-proposal', proposal.id).status, 'pending');
   assert.equal((await decide(proposal.id)).status, 200);
@@ -282,7 +299,8 @@ test('a plan may propose criteria before any evidence', async () => {
   const proposal = await propose(outline);
   assert.equal((await decide(proposal.id)).status, 200);
   const saved = store().latestRevision().requirements[0];
-  assert.deepEqual(coverageSummary(saved), { state: 'partial', label: 'Partial', covered: 0, total: 2 });
+  // Criteria without evidence are not coverage: the requirement is no better off than one with no plan.
+  assert.deepEqual(coverageSummary(saved), { state: 'uncovered', label: 'Not covered', covered: 0, total: 2 });
   assert.equal(saved.tests.length, 0);
   assert.match(readiness({ ...candidate(), revision: { ...store().latestRevision(), requirements: [saved] } }).missing.join(' '), /Routes remain intact.*: no evidence mapped/);
 });
@@ -298,7 +316,7 @@ test('startup lifts the assessed commit out of plans stored before the format ch
   assert.deepEqual(reopened.get<CoverageProposal>('coverage-proposal', proposal.id), { ...proposal, sourceSha: sha });
   const lifted = reopened.latestRevision().requirements[0].coverage!;
   assert.deepEqual(lifted, { ...plan(), review: { author: 'owner', createdAt: '', proposalId: 'old', sourceSha: sha } });
-  assert.equal(coverageSummary(reopened.latestRevision().requirements[0]).state, 'partial');
+  assert.equal(coverageSummary(reopened.latestRevision().requirements[0]).state, 'uncovered');
   reopened.db.close();
   assert.equal((await decide(proposal.id)).status, 200);
 });
@@ -349,7 +367,7 @@ test('coverage progress counts active requirements, their criteria, and the cata
   setup(); const proposal = await propose(); await decide(proposal.id);
   const revision = store().latestRevision();
   const catalog = store().catalog();
-  assert.deepEqual(coverageProgress(revision.requirements, catalog), { states: { unassessed: 1, 'needs-review': 0, partial: 0, covered: 1 }, active: 2, criteria: { covered: 2, total: 2 }, tests: { cited: 2, catalog: 3, manual: 0 } });
+  assert.deepEqual(coverageProgress(revision.requirements, catalog), { states: { unassessed: 1, 'needs-review': 0, uncovered: 0, partial: 0, covered: 1 }, active: 2, criteria: { covered: 2, total: 2 }, tests: { cited: 2, catalog: 3, manual: 0 } });
   const excluded = structuredClone(revision.requirements); excluded[1].active = false;
   assert.equal(coverageProgress(excluded, catalog).active, 1);
 });
@@ -370,4 +388,34 @@ test('a rejected save names the requirement and the criterion it failed in', () 
   catch (error) { failure = error as Problem; }
   assert.equal(failure?.message, 'SYS-019 · Transfer speed — criterion 1 — Test level must be one of unit, integration, system.');
   assert.deepEqual(failure?.at, { requirementId: 'SYS-019', criterionId: 'usb-rate', criterion: 1 });
+});
+
+test('a round of approvals is one revision, and a discarded draft leaves them pending', async () => {
+  setup();
+  const first = await propose(plan(), 'REQ-1');
+  const second = await propose(plan(), 'REQ-2');
+  const before = store().latestRevision();
+  // The console applies both plans to one draft and saves once.
+  const draft = structuredClone(before.requirements);
+  for (const proposal of [first, second]) {
+    const requirement = draft.find(r => r.id === proposal.requirementId)!;
+    linkEvidence(requirement, proposal.plan, store().catalog(), () => store().id());
+    requirement.coverage = structuredClone(proposal.plan);
+  }
+  const response = await request('requirements', 'PUT', { baseRevision: before.id, requirements: draft, accept: [first.id, second.id] }, owner);
+  assert.equal(response.status, 200, await response.clone().text());
+  const saved = await response.json() as Revision;
+  assert.equal(saved.id, before.id + 1);
+  for (const [proposal, requirement] of [[first, saved.requirements[0]], [second, saved.requirements[1]]] as const) {
+    assert.equal(store().get<CoverageProposal>('coverage-proposal', proposal.id).status, 'accepted');
+    assert.equal(requirement.coverage?.review?.proposalId, proposal.id);
+    assert.equal(requirement.coverage?.review?.sourceSha, proposal.sourceSha);
+  }
+  // A proposal that no save applied stays pending, and a decided one cannot be saved again.
+  const third = await propose(plan(), 'REQ-1');
+  const untouched = store().latestRevision();
+  assert.equal(store().get<CoverageProposal>('coverage-proposal', third.id).status, 'pending');
+  const again = await request('requirements', 'PUT', { baseRevision: untouched.id, requirements: untouched.requirements, accept: [first.id] }, owner);
+  assert.equal(again.status, 409);
+  assert.equal(store().latestRevision().id, untouched.id);
 });

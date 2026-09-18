@@ -1,5 +1,5 @@
 import { MANUAL_REASONS, TEST_LEVELS, type AcceptanceCriterion, type Catalog, type CoveragePlan, type CoverageProposal, type ManualReason, type Requirement, type Revision, type TestLevel, type VerificationTest } from '../types.ts';
-import { evidenceKey, planProblem, verificationDefinition } from '../coverage.ts';
+import { evidenceKey, linkEvidence, planProblem, verificationDefinition } from '../coverage.ts';
 import { assert, identifier, text, within } from './domain.ts';
 
 /** Validates a plan for a requirement. Automated evidence may name any catalogue case; manual evidence names a procedure the requirement has or the proposal brings. Both are linked when the plan is saved. */
@@ -77,20 +77,6 @@ export function commitSha(value: unknown): string {
   assert(typeof value === 'string' && /^[a-f0-9]{40}$/.test(value), 'Use the exact 40-character source commit that you assessed.');
   return value;
 }
-/** Makes the requirement's tests exactly the tests its plan cites: links new catalogue cases, adds the proposal's procedures, and drops the rest. */
-export function linkEvidence(requirement: Requirement, plan: CoveragePlan, catalog: Catalog, id: () => string, procedures: VerificationTest[] = []): void {
-  const cited = new Set(plan.criteria.flatMap(c => c.evidence.map(evidenceKey)));
-  for (const evidence of plan.criteria.flatMap(c => c.evidence)) {
-    if (evidence.caseId && !requirement.tests.some(t => t.caseId === evidence.caseId)) {
-      const found = catalog.cases.find(c => c.id === evidence.caseId)!;
-      requirement.tests.push({ id: id(), title: found.name.slice(0, 300), kind: 'automated', caseId: found.id, inputs: [] });
-    }
-    const procedure = evidence.testId && !requirement.tests.some(t => t.id === evidence.testId) ? procedures.find(p => p.id === evidence.testId) : undefined;
-    if (procedure) requirement.tests.push(structuredClone(procedure));
-  }
-  requirement.tests = requirement.tests.filter(t => cited.has(t.kind === 'automated' ? t.caseId! : t.id));
-}
-
 /** Why a proposal cannot be approved: its requirement is gone or its evidence is no longer available. */
 export function coverageConflict(proposal: CoverageProposal, current: Revision, catalog: Catalog): string | undefined {
   const now = current.requirements.find(r => r.id === proposal.requirementId);
