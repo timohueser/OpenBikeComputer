@@ -27,6 +27,7 @@ mod geometry;
 mod nav;
 pub mod places;
 mod poi;
+mod settlement;
 mod summit;
 
 pub(crate) use cache::MAP_CHUNK_SLOTS;
@@ -42,6 +43,7 @@ pub use nav::{
 };
 use poi::parse_poi_directory;
 pub use poi::{Poi, PoiCatEntry, PoiDirectory, MAX_POI_RESULTS, POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES};
+pub use settlement::Settlement;
 pub use summit::{Summit, MAX_SUMMIT_RADIUS_M};
 
 use heapless::Vec;
