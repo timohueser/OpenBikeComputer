@@ -1347,8 +1347,8 @@ mod tests {
             Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json")).expect("config");
         let ing = ingest_osm(&sources(&[POI_PBF]), &cfg, None, &quiet()).expect("ingest");
 
-        // 14 candidates (11 nodes + 3 way-centroids), 2 dedup-dropped ⇒ 12 kept.
-        assert_eq!(ing.pois.len(), 14, "distinct OSM identities survive");
+        // 15 candidates (12 nodes + 3 way-centroids), 2 dedup-dropped ⇒ 13 kept.
+        assert_eq!(ing.pois.len(), 15, "distinct OSM identities survive");
 
         let find = |name: Option<&str>, subtype: u8| {
             ing.pois
@@ -1383,10 +1383,11 @@ mod tests {
         find(Some("A very long settlement n"), 24);
         find(Some("Tokyo"), 23);
         find(Some("Baeckerdorf"), 15);
+        assert_eq!(find(Some("Freiburg"), 21).population, Some(220_286), "a shorter short_name is stored");
         let ring = find(Some("Ringdorf"), 23);
         assert_eq!((ring.lat_udeg, ring.lon_udeg, ring.from_node), (47_950_200, 7_900_200, false));
         assert!(!ing.pois.iter().any(|p| p.name.as_deref() == Some("Мирный")), "no fall-back ⇒ no record");
-        assert_eq!(crate::poi::format_counts(&ing.pois, 0).matches("settlement 6").count(), 1);
+        assert_eq!(crate::poi::format_counts(&ing.pois, 0).matches("settlement 7").count(), 1);
     }
 
     /// The `--bbox` contract is user-facing, so the parser is as strict as
