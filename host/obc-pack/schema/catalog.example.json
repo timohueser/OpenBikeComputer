@@ -12,7 +12,7 @@
     "revision": 7,
     "name": "Bikepacking",
     "description": "Three LOD rungs over four bands — the shape of the shipped bikepacking ladder at example scale.",
-    "obcm_version": 17,
+    "obcm_version": 18,
     "grid": {
       "origin_udeg": -268435456,
       "world_side_udeg": 536870912

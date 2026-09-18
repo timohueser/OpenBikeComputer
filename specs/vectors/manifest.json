@@ -400,7 +400,7 @@
       "byte_len": 7,
       "version": 2,
       "store_epoch": "0xA1B2C3D4",
-      "obcm_version": 17
+      "obcm_version": 18
     },
     "version-read-noobcm.bin": {
       "format": "protocolVersion read (spec 1), pre-#911 — version u16 · store_epoch u32",
