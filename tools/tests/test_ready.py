@@ -5,9 +5,11 @@ The gates themselves are never executed here, and nothing in this file needs `ju
 
 from __future__ import annotations
 
+import io
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -113,6 +115,26 @@ class ReadyPlanTests(unittest.TestCase):
         self.assertIn(
             "obc shot --check", self.running("firmware/obc-app/i18n/de.toml", suites={"rust.obc-app"})
         )
+
+    def test_only_the_format_gate_writes(self):
+        writing = [gate.command for gate in self.plan("firmware/obc-app/src/app.rs") if gate.writes]
+        self.assertEqual(writing, ["cargo fmt --all"])
+
+    def test_a_rewritten_file_is_reported_instead_of_the_skeleton(self):
+        # Two status readings: the tree before the format gate, and the tree it left behind.
+        readings = iter(({"src/b.rs": " M"}, {"src/a.rs": " M", "src/b.rs": " M"}))
+        gates = [ready.Gate("true", "demo", True, writes=True), ready.Gate("true", "demo", True)]
+
+        with redirect_stdout(io.StringIO()):
+            code, formatted = ready.run_gates(gates, Path("."), status=lambda _root: next(readings))
+
+        self.assertEqual((code, formatted), (0, ["src/a.rs"]))
+
+    def test_an_unchanged_tree_reports_nothing(self):
+        gates = [ready.Gate("true", "demo", True, writes=True)]
+        with redirect_stdout(io.StringIO()):
+            code, formatted = ready.run_gates(gates, Path("."), status=lambda _root: {"src/b.rs": " M"})
+        self.assertEqual((code, formatted), (0, []))
 
     def test_a_human_page_that_cites_a_changed_source_is_reported(self):
         with tempfile.TemporaryDirectory() as scratch:

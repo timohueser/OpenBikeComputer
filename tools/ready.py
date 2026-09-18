@@ -9,6 +9,9 @@ a pre-flight that runs everything is not a pre-flight.
 one of those suites is therefore skipped, and the line names the suite that does it. Nothing runs
 twice — the snapshot sweep least of all.
 
+The format gate writes. When it rewrites a file, the tree is no longer the tree that was about to
+be pushed, so the command names the files and stops instead of printing the skeleton.
+
 The gates run in the order below: the static checks first, the compiling and rendering gates last.
 """
 
@@ -58,6 +61,8 @@ class Gate:
     run: bool
     #: The declared suite whose command does this same work, if there is one.
     covered_by: str = ""
+    #: The gate rewrites files, so the tree is compared before and after it.
+    writes: bool = False
 
 
 def cargo_root(path: str) -> str:
@@ -88,7 +93,7 @@ def _format_gates(changed: Sequence[str]) -> list[Gate]:
             if root == test_plan.ROOT_WORKSPACE
             else f"cargo fmt --manifest-path {root}/Cargo.toml"
         )
-        gates.append(Gate(command, f"Rust changed in {root}: {first}", True))
+        gates.append(Gate(command, f"Rust changed in {root}: {first}", True, writes=True))
     return gates
 
 
@@ -170,6 +175,8 @@ def plan(
             bool(content),
         )
     )
+    # The licence script is called directly, not through `obc licenses --check`: the task adds
+    # no setup, and this is the command `ci.licenses` declares.
     gates.append(
         Gate(
             "tools/licenses/gen-third-party.sh --check",
@@ -218,8 +225,26 @@ def render(gates: Sequence[Gate], changed: Sequence[str], base: str) -> str:
     return "\n".join(lines)
 
 
-def run_gates(gates: Sequence[Gate], root: Path) -> int:
-    for gate in gates:
+def git_status(root: Path) -> dict[str, str]:
+    """Each path Git reports as changed, mapped to its status code."""
+
+    result = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=root, check=True, capture_output=True, text=True
+    )
+    return {line[3:]: line[:2] for line in result.stdout.splitlines() if line[3:]}
+
+
+def rewritten(before: Mapping[str, str], after: Mapping[str, str]) -> list[str]:
+    return sorted(path for path, state in after.items() if before.get(path) != state)
+
+
+def run_gates(gates: Sequence[Gate], root: Path, status=git_status) -> tuple[int, list[str]]:
+    """Run the selected gates, and report the files the writing gates rewrote."""
+
+    writing = [index for index, gate in enumerate(gates) if gate.run and gate.writes]
+    before = status(root) if writing else {}
+    changed: list[str] = []
+    for index, gate in enumerate(gates):
         if not gate.run:
             continue
         print(f"\nrunning  {gate.command}", flush=True)
@@ -227,8 +252,10 @@ def run_gates(gates: Sequence[Gate], root: Path) -> int:
             print(f"\nfailed   {gate.command}", file=sys.stderr)
             print("repeat it alone with:", file=sys.stderr)
             print(f"  {gate.command}", file=sys.stderr)
-            return 1
-    return 0
+            return 1, []
+        if writing and index == writing[-1]:
+            changed = rewritten(before, status(root))
+    return 0, changed
 
 
 def surfaces(changed: Iterable[str]) -> list[str]:
@@ -299,8 +326,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.dry_run:
         print("\ndry run: nothing was executed")
         return 0
-    if code := run_gates(gates, root):
+    code, formatted = run_gates(gates, root)
+    if code:
         return code
+    if formatted:
+        # The gates passed, but the tree is no longer the tree that was about to be pushed.
+        print("\nthe format gate rewrote:", file=sys.stderr)
+        for path in formatted:
+            print(f"  {path}", file=sys.stderr)
+        print("commit these files, then run obc ready again.", file=sys.stderr)
+        return 1
     print(skeleton(root, changed))
     return 0
 
