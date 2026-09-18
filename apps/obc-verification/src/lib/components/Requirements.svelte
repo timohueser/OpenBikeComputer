@@ -13,7 +13,7 @@
   import CoverageEditor from './CoverageEditor.svelte';
   import CoverageBadge from './CoverageBadge.svelte';
   import CoverageProposal from './CoverageProposal.svelte';
-  import { coverageDefinition, coverageSummary, planBlank, planProblem } from '$lib/coverage';
+  import { coverageDefinition, coverageSummary, linkEvidence, planBlank, planProblem } from '$lib/coverage';
   export let revision: Revision;
   export let catalog: Catalog;
   export let dirty = false;
@@ -38,6 +38,8 @@
   let deleting = false;
   let deleted: { requirement: Requirement; index: number }[] = [];
   let titleField: HTMLInputElement;
+  /** Proposals approved into this draft. The save records them; discarding leaves them pending. */
+  let accepted: string[] = [];
   /** Where the server says the last failure is, and the criterion to mark once the editor is open. */
   let errorAt: ProblemAt | undefined;
   let flagged = '';
@@ -53,7 +55,7 @@
     const inGate = list.filter(r => r.active);
     return { name, requirements: list, active: inGate.length, covered: inGate.filter(r => coverageSummary(r).state === 'covered').length, expanded: !!query || !!open[name] };
   });
-  $: pendingPlans = coverageProposals.filter(p => p.status === 'pending');
+  $: pendingPlans = coverageProposals.filter(p => p.status === 'pending' && !accepted.includes(p.id));
   /** Requirements with a proposal to approve, in sidebar order. */
   $: reviewQueue = requirements.filter(r => pendingPlans.some(p => p.requirementId === r.id)).map(r => r.id);
   $: reviewable = !coverageEditing && requirement ? pendingPlans.find(p => p.requirementId === requirement.id) : undefined;
@@ -209,15 +211,17 @@
     if (invalid) { error = `${invalid.id} coverage: ${planProblem(invalid.coverage!)}`; select(invalid.id); editCoverage(); return; }
     busy = true;
     try {
-      const saved = await api<Revision>('/api/requirements', 'PUT', { baseRevision: revision.id, requirements });
-      revision = saved; requirements = clone(saved.requirements); deleted = []; deleting = false; edit = false; onsaved(saved); notice = `Revision r${saved.id} saved. Existing candidates keep their original revision.`;
+      const saved = await api<Revision>('/api/requirements', 'PUT', { baseRevision: revision.id, requirements, ...(accepted.length ? { accept: accepted } : {}) });
+      const approvals = accepted.length;
+      revision = saved; requirements = clone(saved.requirements); accepted = []; deleted = []; deleting = false; edit = false; onsaved(saved);
+      notice = `Revision r${saved.id} saved${approvals ? ` with ${approvals} ${approvals === 1 ? 'approval' : 'approvals'}` : ''}. Existing candidates keep their original revision.`;
       await loadProposals();
     } catch (e) { fail(e); } finally { busy = false; }
   }
   async function refresh() {
-    if (dirty && !confirm('Discard this draft and load the latest saved revision?')) return;
+    if (dirty && !confirm(accepted.length ? `Discard this draft? ${accepted.length} approved ${accepted.length === 1 ? 'proposal stays' : 'proposals stay'} pending.` : 'Discard this draft and load the latest saved revision?')) return;
     busy = true; error = '';
-    try { const versions = await api<Revision[]>('/api/revisions'); const latest = versions.sort((a,b) => b.id - a.id)[0]; if (latest) { revision = latest; requirements = clone(latest.requirements); query = ''; if (!requirements.some(r => r.id === selected)) selected = requirements[0]?.id || ''; coverageEditing = false; edit = false; deleted = []; deleting = false; onsaved(latest); reveal(selected); } await loadProposals(); }
+    try { const versions = await api<Revision[]>('/api/revisions'); const latest = versions.sort((a,b) => b.id - a.id)[0]; if (latest) { revision = latest; requirements = clone(latest.requirements); query = ''; if (!requirements.some(r => r.id === selected)) selected = requirements[0]?.id || ''; coverageEditing = false; edit = false; accepted = []; deleted = []; deleting = false; onsaved(latest); reveal(selected); } await loadProposals(); }
     catch (e) { fail(e); } finally { busy = false; }
   }
   async function refreshCatalog() {
@@ -229,22 +233,31 @@
     coverageProposals = await api<CoverageProposalReview[]>('/api/coverage-proposals');
   }
   onMount(() => { loadProposals().catch(e => { error = message(e); }); });
-  async function decide(id: string, accept: boolean, feedback = '') {
+  /**
+   * Approving applies the proposal's plan and procedures to the draft. Nothing is recorded until the
+   * revision is saved, so a round of reviews is one revision instead of one per proposal.
+   */
+  function approve(proposal: CoverageProposalReview) {
+    if (busy || accepted.includes(proposal.id)) return;
+    const target = requirements.find(r => r.id === proposal.requirementId);
+    if (!target) { error = `This draft has no requirement ${proposal.requirementId}.`; return; }
+    error = '';
+    const next: Requirement = { ...target, tests: clone(target.tests), coverage: clone(proposal.plan) };
+    linkEvidence(next, next.coverage!, catalog, () => crypto.randomUUID(), clone(proposal.procedures ?? []));
+    update(next);
+    accepted = [...accepted, proposal.id];
+    notice = `${proposal.requirementId} approved into your draft. Save the revision to record it.`;
+  }
+  async function reject(id: string, feedback = '') {
     if (busy) return;
-    if (accept && dirty) { error = 'Save or discard your draft before approving a proposal.'; return; }
     busy = true; error = '';
     try {
-      const decided = await api<{ revision: Revision }>(`/api/coverage-proposals/${id}`, 'POST', { accept, feedback });
-      if (accept) {
-        revision = decided.revision; requirements = clone(revision.requirements); onsaved(revision);
-        if (!requirements.some(r => r.id === selected)) selected = requirements[0]?.id || '';
-        deleted = []; edit = false; deleting = false;
-      }
+      await api(`/api/coverage-proposals/${id}`, 'POST', { accept: false, feedback });
       rejecting = false;
       await loadProposals();
-      notice = accept ? 'Coverage approved. Existing candidates keep their original coverage review.' : 'Proposal rejected. The agent can read your feedback.';
+      notice = 'Proposal rejected. The agent can read your feedback.';
     } catch (e) {
-      error = message(e);
+      fail(e);
       try { await loadProposals(); } catch { /* Keep the original decision error. */ }
     } finally { busy = false; }
   }
@@ -253,8 +266,8 @@
     if (event.key === 'Escape' && rejecting) { rejecting = false; return; }
     if (rejecting || event.key !== 'Enter' || !(event.metaKey || event.ctrlKey)) return;
     if ((event.target as HTMLElement | null)?.closest('input, textarea')) return;
-    if (!reviewable || busy || dirty || reviewable.conflict) return;
-    event.preventDefault(); decide(reviewable.id, true);
+    if (!reviewable || busy || reviewable.conflict) return;
+    event.preventDefault(); approve(reviewable);
   }
 </script>
 <svelte:window on:keydown={(event) => { if (edit) editorKeys(event); else reviewKeys(event); }} />
@@ -303,7 +316,7 @@
     <div class="row"><div class="row coverage-head"><h2>Coverage</h2><CoverageBadge {requirement} /></div>{#if !coverageEditing}<button disabled={busy} on:click={editCoverage}>{requirement.coverage ? 'Edit coverage' : 'Define coverage'}</button>{/if}</div>
     {#if coverageEditing}<CoverageEditor {requirement} {catalog} {busy} flag={flagged} bind:editing={procedureOpen} onchange={() => requirements = [...requirements]} ondone={closeCoverage} onrefresh={refreshCatalog} />
     {:else}
-      {#each plans as p (p.id)}<CoverageProposal proposal={p} {requirement} {catalog} {busy} {dirty} bind:rejecting ondecide={decide} />{/each}
+      {#each plans as p (p.id)}<CoverageProposal proposal={p} {requirement} {catalog} {busy} bind:rejecting onapprove={approve} onreject={reject} />{/each}
       {#if requirement.coverage}
         {#if plans.length}<p class="eyebrow current-plan">Current plan</p>{/if}
         {#if changed}<p class="small muted">Approved when you save the revision.</p>
@@ -315,5 +328,5 @@
   </section>
 {:else}<div class="empty"><h2>{requirements.length ? 'No matching requirements' : 'Make the important promises explicit.'}</h2><p class="muted">{requirements.length ? 'Clear your search or choose another group.' : 'Write a measurable requirement, then define the checks that provide evidence. You can also import a Markdown draft.'}</p><button class="primary" disabled={busy} on:click={create}>Create requirement</button></div>{/if}
 </section></div>
-{#if dirty}<div class="savebar row"><span class="small">{dirty ? 'You have unsaved changes' : `Saved revision r${revision.id}`} <span class="muted">· Candidates use saved revisions only.</span></span><div class="actions">{#if dirty}<button disabled={busy} on:click={refresh}>Discard draft</button>{/if}<button class="primary" disabled={busy || !dirty || procedureOpen} on:click={save}>{busy ? 'Saving…' : 'Save revision'}</button></div></div>{/if}
+{#if dirty}<div class="savebar row"><span class="small">{dirty ? 'You have unsaved changes' : `Saved revision r${revision.id}`}{#if accepted.length}<strong> · {accepted.length} approved {accepted.length === 1 ? 'proposal' : 'proposals'}</strong>{/if} <span class="muted">· Candidates use saved revisions only.</span></span><div class="actions">{#if dirty}<button disabled={busy} on:click={refresh}>Discard draft</button>{/if}<button class="primary" disabled={busy || !dirty || procedureOpen} on:click={save}>{busy ? 'Saving…' : 'Save revision'}</button></div></div>{/if}
 <style>.alert .grow { flex: 1; min-width: 200px; }</style>

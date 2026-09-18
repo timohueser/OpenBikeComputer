@@ -7,8 +7,8 @@
   export let requirement: Requirement;
   export let catalog: Catalog;
   export let busy: boolean;
-  export let dirty: boolean;
-  export let ondecide: (id: string, accept: boolean, feedback: string) => void;
+  export let onapprove: (proposal: CoverageProposalReview) => void;
+  export let onreject: (id: string, feedback: string) => void;
   /** Bound by the parent so that Escape can close the reject box. */
   export let rejecting = false;
   let feedback = '';
@@ -29,9 +29,9 @@
   {#if deleted.length}<p class="small deletes">Approval deletes {deleted.length} manual {deleted.length === 1 ? 'procedure' : 'procedures'}, with {deleted.length === 1 ? 'its' : 'their'} steps and input files: {deleted.map(t => t.title).join(', ')}.</p>{/if}
   {#if rejecting}
     <label>Feedback for the agent<textarea rows={2} maxlength={5000} bind:value={feedback} placeholder="What should change?"></textarea></label>
-    <div class="actions"><button class="danger-button" disabled={busy} on:click={() => ondecide(proposal.id, false, feedback)}>Reject proposal</button><button disabled={busy} on:click={() => rejecting = false}>Keep reviewing</button></div>
+    <div class="actions"><button class="danger-button" disabled={busy} on:click={() => onreject(proposal.id, feedback)}>Reject proposal</button><button disabled={busy} on:click={() => rejecting = false}>Keep reviewing</button></div>
   {:else}
-    <div class="actions"><button class="primary" disabled={busy || dirty || !!proposal.conflict} on:click={() => ondecide(proposal.id, true, '')}>Approve</button><button disabled={busy} on:click={() => rejecting = true}>Reject…</button><span class="small muted">{dirty ? 'Save or discard your draft before approving.' : procedures.length ? `Approval applies the evidence, creates the new ${procedures.length === 1 ? 'procedure' : 'procedures'}, and records your review.` : 'Approval records your review and applies the evidence above.'}</span></div>
+    <div class="actions"><button class="primary" disabled={busy || !!proposal.conflict} on:click={() => onapprove(proposal)}>Approve</button><button disabled={busy} on:click={() => rejecting = true}>Reject…</button><span class="small muted">Approval applies the evidence{procedures.length ? ` and the new ${procedures.length === 1 ? 'procedure' : 'procedures'}` : ''} to your draft. Save the revision to record your review; approve others first to save them together.</span></div>
   {/if}
 </article>
 <style>
