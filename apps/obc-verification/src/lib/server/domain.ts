@@ -52,7 +52,7 @@ export function requirements(value: unknown, lookup: (id: string) => Attachment)
         assert(!tests.has(testId), 'Test IDs must be unique within a requirement.'); tests.add(testId);
         assert(t.kind === 'manual' || t.kind === 'automated', 'Unknown test kind.');
         assert(t.manualReason === undefined || (t.kind === 'manual' && MANUAL_REASONS.includes(t.manualReason as ManualReason)),
-          `A manual procedure is run by a person for one of these reasons: ${MANUAL_REASONS.join(', ')}.`);
+          `Only a manual test has a type, and it must be one of: ${MANUAL_REASONS.join(', ')}.`);
         return { id: testId, kind: t.kind, title: text(t.title, 'Test title', 300), inputs: attachments(t.inputs, lookup),
           ...(t.kind === 'manual'
             ? { steps: text(t.steps, 'Steps', 50000), expected: text(t.expected, 'Expected outcome', 50000),
