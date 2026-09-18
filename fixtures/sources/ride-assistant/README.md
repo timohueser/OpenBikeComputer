@@ -2,7 +2,7 @@
 
 These files describe the initial real inputs for Ride Assistant. Scenario inputs live in the
 immutable fixture store. Country-scale raw landmark captures stay in a local map-baker source
-cache; see [acquisition and recount commands](CAPTURE.md). The West Cork and Swiss regional simulator outputs use OBCM v17 with compiled landmark content.
+cache; see [acquisition and recount commands](CAPTURE.md). The West Cork and Swiss regional simulator outputs use OBCM v18 with compiled landmark content.
 It does not prove that an Assistant feature or a hardware test passed.
 
 ## Acquire and verify
@@ -58,17 +58,17 @@ To package completed work without a rebake:
 ```sh
 python3 fixtures/build-assistant-package.py west-cork \
   --assembled-map PATH/west-cork.obcm \
-  --provenance fixtures/sources/ride-assistant/west-cork-v17.json
+  --provenance fixtures/sources/ride-assistant/west-cork-v18.json
 ```
 
 The Cork map is 4,749,504 bytes, SHA-256
 `073117c7e5cbce4cc20a08b72133122b3fcc4c13535a7ad153e4c0f72dd658f4`.
-[The build record](west-cork-v17.json) pins the source, producer and output identities.
+[The build record](west-cork-v18.json) pins the source, producer and output identities.
 The map retains its landmark content and byte-identical native terrain.
 
 The Swiss map is 44,881,840 bytes, SHA-256
 `f878cf176c3416397a45920b19301d29822aaac1064cdea1ac87d95597fab36a`.
-[Its build record](meiringen-v17.json) pins the full PBF, crop, compiled content, producer
+[Its build record](meiringen-v18.json) pins the full PBF, crop, compiled content, producer
 executables, land polygons and output. Packaged `build.json` records each shipping command
 and selected cell. The map contains 65 landmarks,
 123 landmark article variants and 48 landmark photos.
@@ -196,7 +196,7 @@ The second command reopens saved routes and recordings without importing the fix
 See the [simulator README](../../../apps/obc-sim/README.md) for imports and recording recovery.
 The card is user state; fixture sync does not replace it. Create a new card to test a new package.
 
-The three Swiss scenarios use the same v17 crop and the +02:00 local clock offset:
+The three Swiss scenarios use the same v18 crop and the +02:00 local clock offset:
 
 ```sh
 tools/obc sim assistant-out-and-back

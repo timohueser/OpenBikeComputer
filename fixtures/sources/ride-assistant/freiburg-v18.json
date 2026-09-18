@@ -1,0 +1,86 @@
+{
+  "schema": 3,
+  "package": "sim-freiburg",
+  "archive": {
+    "bytes": 4034978,
+    "sha256": "f50867047d003d4e838b949b9eb6bd2009d8e29194b355920150c27a04fb8162"
+  },
+  "producer": {
+    "source_commit": "e5209f0dae0cf425d861daccd70820382ca41019",
+    "executables_sha256": {
+      "obc-pack": "65afa24bf309b58587acc3fc81b3f799b618ac4b29041d883638cf9bd318c3de",
+      "obc-bake": "749af102d879077492fd72de1089700d4acfb553ddc5b2927dfaf13f60c7c69f",
+      "obc-dem": "2f69a941c0de98529e12f31bc28e0f1cd9fc5ac87618593d07b54d31fe3f91dc",
+      "obcm-assemble": "7cdd8f52acce5d99ed3c20599a78a464bf1c7cd51618bc9194ffd83a4aadd222"
+    }
+  },
+  "bounds_lon_lat": [
+    7.81,
+    47.99,
+    7.89,
+    48.13
+  ],
+  "source_packages": {},
+  "source_pbf": {
+    "path": "europe/germany/baden-wuerttemberg/freiburg-regbez-latest.osm.pbf",
+    "url": "https://download.geofabrik.de/europe/germany/baden-wuerttemberg/freiburg-regbez-latest.osm.pbf",
+    "snapshot": "2026-08-03",
+    "last_modified": "Tue, 04 Aug 2026 03:56:44 GMT",
+    "bytes": 158362659,
+    "sha256": "1f1928036dbed787f42b3176d5bca8f4d213c64a936fa86d242d3dc993300707"
+  },
+  "map": {
+    "bytes": 5924352,
+    "sha256": "346d60b7aaae3baf8d78748fd218b6145ee2d866316e5adc7a8201b8d29a68c7",
+    "obcm_version": 18,
+    "settlement_records": 17,
+    "settlement_classes": {
+      "city": 1,
+      "town": 3,
+      "village": 9,
+      "hamlet": 4
+    },
+    "landmark_records": 0,
+    "landmark_article_variants": 0,
+    "landmark_photos": 0,
+    "peak_associations": []
+  },
+  "land_source": {
+    "source": "https://osmdata.openstreetmap.de/download/land-polygons-split-3857.zip",
+    "cached_version": "Fri, 19 Jun 2026 03:38:23 GMT",
+    "files": [
+      {
+        "path": "README.txt",
+        "bytes": 890,
+        "sha256": "a63aa8d566fa34400252f02f30a4ad8573125ee697927d2155064eebc6700698"
+      },
+      {
+        "path": "land_polygons.cpg",
+        "bytes": 6,
+        "sha256": "146d6789ffe033a5297c1ad046e6a62ee35319b86b021444f05b6ea2aa8a1f4a"
+      },
+      {
+        "path": "land_polygons.dbf",
+        "bytes": 16002772,
+        "sha256": "568939e0f8622f78aca8dce33285a43b3cb5f795d5b6ca5ecab61319f6355881"
+      },
+      {
+        "path": "land_polygons.prj",
+        "bytes": 425,
+        "sha256": "f2e7fb14d55bdd8d6a3bc2c272a48729d8f9d0ad72936e20eae6a9a81c2fccd0"
+      },
+      {
+        "path": "land_polygons.shp",
+        "bytes": 1307422196,
+        "sha256": "363c37eb5941813c4c2f709a899b97017ecf1b5f456325a0337483ad018c131d"
+      },
+      {
+        "path": "land_polygons.shx",
+        "bytes": 6738068,
+        "sha256": "8618b46714146db21e9143ea3a4ecf38f2f185d724bb35bcd1d98be085eb264c"
+      }
+    ]
+  },
+  "network": "No download during production: the pinned source packages, the Geofabrik extract and the land polygons were all read from the local caches.",
+  "recipe": "fixtures/build-map-package.sh freiburg CACHED/freiburg-regbez-latest.osm.pbf"
+}

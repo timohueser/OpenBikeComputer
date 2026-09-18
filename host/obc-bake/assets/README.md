@@ -135,7 +135,7 @@ fortnight of OSM edits moved content the other way. A repack that produced a
 *byte-identical* file would be the surprising outcome; an equally-sized one is
 not, and the version byte (`0x0D` → `0x0E`) is what to check.
 
-## Current OBCM v17 source
+## Repacked at OBCM v17
 
 The preview was packed on 2026-09-18 with Bikepacking v10, the canonical bbox
 above, `--no-land`, and no terrain. This refresh includes the current style ID
@@ -150,3 +150,16 @@ The output is 477184 bytes, with an OBCM v17 header and an empty peak section.
 Its SHA-256 is `4dcdc11168aa1d5076ef0dea3a78607230ca3e29a954a1fb32893537a8f206a4`.
 The tests check distinct, deterministic skin renders and residential coverage;
 they do not use a fixed golden PNG.
+
+## Current OBCM v18 source
+
+The preview was packed again on 2026-09-18 for the settlement category, with the same
+canonical bbox, `--no-land`, no terrain, and the same cached Geofabrik source (SHA-256
+`1f1928036dbed787f42b3176d5bca8f4d213c64a936fa86d242d3dc993300707`, 158362659 bytes,
+replication timestamp `2026-08-03T20:21:36Z`). The repack used the cached source without a
+download.
+
+The output is 477696 bytes, 512 bytes more than the v17 one. Its SHA-256 is
+`a451a907e083e7cfd0b0c3d363bfdaa545f52563eee7735af97badf00782ad6e`. The crop holds two
+settlements, the villages Teningen and Köndringen, which is one 512-byte POI chunk with its
+index. The rendered geometry is unchanged, and the terrain companion did not move.
