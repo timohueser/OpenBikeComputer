@@ -270,11 +270,11 @@ class AssistantPackageTests(unittest.TestCase):
             with self.assertRaisesRegex(FixtureError, "source hash mismatch"):
                 recipe.assembly_inputs(tree, "sample", native, out)
             candidate = root / "map.obcm"
-            candidate.write_bytes(b"OBCM\x11authored")
+            candidate.write_bytes(b"OBCM" + bytes([recipe.OBCM_VERSION]) + b"authored")
             with self.assertRaisesRegex(FixtureError, "retained provenance"):
                 recipe.package("west-cork", root / "package", candidate, {"map": {"sha256": "0" * 64, "bytes": candidate.stat().st_size}}, None, None)
             candidate.write_bytes(b"OBCM")
-            with self.assertRaisesRegex(FixtureError, "OBCM v17"):
+            with self.assertRaisesRegex(FixtureError, f"OBCM v{recipe.OBCM_VERSION}"):
                 recipe.package("west-cork", root / "package", candidate, {}, None, None)
 
 

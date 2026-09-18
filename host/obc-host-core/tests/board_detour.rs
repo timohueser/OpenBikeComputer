@@ -123,6 +123,7 @@ fn map_with_hours(hours: Option<obc_pack::hours::Schedule>) -> Vec<u8> {
             from_node: true,
             hours,
             elevation_m: None,
+            population: None,
         }],
         &NavGraph { nodes, edges },
         &profiles,

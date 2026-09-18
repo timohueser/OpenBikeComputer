@@ -20,6 +20,7 @@ for (const key of ['GITHUB_TOKEN', 'GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET', '
 const { store } = await import('../src/lib/server/store.ts');
 const { api } = await import('../src/lib/server/api.ts');
 const { authenticate, createAgentToken } = await import('../src/lib/server/auth.ts');
+const { linkEvidence } = await import('../src/lib/coverage.ts');
 const db = store();
 const sourceSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 const owner = { name: 'demo', role: 'owner' as const, provider: 'local' as const, userId: 'local', admin: true };
@@ -60,7 +61,14 @@ async function propose(index: number, procedures: VerificationTest[] = []) {
   return await response.json();
 }
 db.saveRevision(db.latestRevision().id, 'Local demo setup', requirements);
-for (let i = 0; i < plans.length; i++) db.decideCoverageProposal((await propose(i)).id, 'Simulated owner review', true);
+for (let i = 0; i < plans.length; i++) {
+  const proposal = await propose(i);
+  const current = db.latestRevision();
+  const requirement = current.requirements.find(r => r.id === requirements[i].id)!;
+  linkEvidence(requirement, proposal.plan, db.catalog(), () => db.id());
+  requirement.coverage = proposal.plan;
+  db.saveRevision(current.id, 'Simulated owner review', current.requirements, [proposal.id]);
+}
 const candidate: Candidate = { id: 'coverage-demo', version: 'v0.0.0-coverage-demo', sourceRef: 'Local demonstration — simulated results', sourceSha, revision: db.latestRevision(), createdAt: new Date().toISOString(), status: 'running', ciStatus: 'success',
   results: cases.map(c => ({ caseId: c.id, status: 'pass', detail: 'Simulated result for the local coverage demonstration. This is not release evidence.' })), manualRuns: [], assets: [] };
 db.put('candidate', candidate.id, candidate);
