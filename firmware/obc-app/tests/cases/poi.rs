@@ -29,13 +29,12 @@ const POS: (i32, i32) = (7_500_000, 43_500_000);
 /// label shows).
 fn fixture() -> Vec<u8> {
     let water = vec![
-        PoiSpec { lat: 43_500_500, lon: 7_500_000, subtype: 1, name: "Fountain North".into(), hours_ref: 0xFFFF }, // due north, nearest
-        PoiSpec { lat: 43_500_000, lon: 7_501_000, subtype: 2, name: "Spring East".into(), hours_ref: 0xFFFF }, // due east
-        PoiSpec { lat: 43_490_000, lon: 7_500_000, subtype: 1, name: "Well South".into(), hours_ref: 0xFFFF }, // due south, farther
+        PoiSpec { lat: 43_500_500, lon: 7_500_000, subtype: 1, name: "Fountain North".into(), payload: 0xFFFF }, // due north, nearest
+        PoiSpec { lat: 43_500_000, lon: 7_501_000, subtype: 2, name: "Spring East".into(), payload: 0xFFFF }, // due east
+        PoiSpec { lat: 43_490_000, lon: 7_500_000, subtype: 1, name: "Well South".into(), payload: 0xFFFF }, // due south, farther
     ];
     // Unnamed campsite (subtype 5 → "Campsite" fallback label).
-    let campsite =
-        vec![PoiSpec { lat: 43_501_000, lon: 7_500_000, subtype: 5, name: String::new(), hours_ref: 0xFFFF }];
+    let campsite = vec![PoiSpec { lat: 43_501_000, lon: 7_500_000, subtype: 5, name: String::new(), payload: 0xFFFF }];
     build_poi_map(BBOX, 512, &[(1, water), (2, campsite)])
 }
 
@@ -173,8 +172,8 @@ fn hours_fixture() -> Vec<u8> {
     // Blob 0: open every day 08:00-18:00 (quarter-hours 32..72).
     let all_week = blob(0, [[(32, 72), (0, 0)]; 7]);
     let water = vec![
-        PoiSpec { lat: 43_500_500, lon: 7_500_000, subtype: 1, name: "Shop North".into(), hours_ref: 0 }, // nearest, has hours
-        PoiSpec { lat: 43_490_000, lon: 7_500_000, subtype: 2, name: "Well South".into(), hours_ref: 0xFFFF }, // farther, no hours
+        PoiSpec { lat: 43_500_500, lon: 7_500_000, subtype: 1, name: "Shop North".into(), payload: 0 }, // nearest, has hours
+        PoiSpec { lat: 43_490_000, lon: 7_500_000, subtype: 2, name: "Well South".into(), payload: 0xFFFF }, // farther, no hours
     ];
     build_poi_map_with_hours(BBOX, 512, &[(1, water)], &[all_week])
 }

@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "artifact": "apps/obc-sim/assets/grimsel-demo.obcm",
+  "obcm_version": 18,
+  "map": {
+    "bytes": 10093056,
+    "sha256": "6a59043ab2d4de002c6e9fd5e7dcc88259ef6f7e9548f0c1ba91a8ae183de47f"
+  },
+  "producer_commit": "3d835f672",
+  "obc_pack_sha256": "94593bc035466f33eff445914bced6d87acf658c0b58262dac01add7dd5dc01d",
+  "source_packages": {
+    "assistant-osm": "c63f8846fd6a3bfadd7a315a647e288c5d6cf22caefa43ff339cc3950966c224",
+    "assistant-switzerland-content": "42a2f4986a77641753c99a91df8a3b419dd20cbf4ac1e35512a608a936434ebd",
+    "peak-content": "ff8d68fc279387b76a44d7924b9270f05abb7a842587e194a212db12d70aea22"
+  },
+  "bounds_lon_lat": [
+    8.26,
+    46.54,
+    8.37,
+    46.67
+  ],
+  "terrain": {
+    "bytes": 7807488,
+    "sha256": "2c46061b61a444df3b24350089551a38451a01a9729de062520458f0749ad9ab",
+    "policy": "Existing embedded OBCT3 surface reused byte for byte for contours, ascent and final embedding."
+  },
+  "landmarks": [
+    {
+      "qid": 666668,
+      "variants": 3,
+      "photo": false
+    },
+    {
+      "qid": 114357029,
+      "variants": 1,
+      "photo": false
+    }
+  ],
+  "peak_associations": [
+    {
+      "osm_node_id": 1372219824,
+      "name": "M\u00f6nch",
+      "variants": 4,
+      "photo": true
+    }
+  ],
+  "settlement_records": 3,
+  "command": "target/release/obc-pack PINNED/switzerland.osm.pbf builder/presets/schema.json OUTPUT.obcm --bbox 8.26,46.54,8.37,46.67 --terrain EXISTING-SURFACE.obcd --landmarks LANDMARKS/content.json --peaks PEAKS/peaks.json",
+  "embedding": "Terrain embedding uses the alignment and header writer from fixtures/build-map-package.sh grimsel-demo.",
+  "network": "No download during production: the pinned source packages, the Geofabrik extract and the land polygons were all read from the local caches."
+}

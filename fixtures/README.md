@@ -65,19 +65,60 @@ Generated design-review screenshots belong in PRs or project documentation, not 
 
 ## Package provenance
 
-- `sim-grimsel`: an **OBCM v17** file packed from the pinned `assistant-osm`
+- `sim-grimsel`: an **OBCM v18** file packed from the pinned `assistant-osm`
   Switzerland snapshot dated 2026-09-13, on the canonical fixture bbox; its OBCT terrain is derived from Copernicus GLO-30 tile
   `N46_00_E008_00` and is unchanged (OBCT is a separate format and did not move).
   The GPX/OBCR/OBT inputs are project-authored and byte-identical to their
   `tracked_sources` originals. The Grimsel route uses OBCR v4 with route facts. The map contains selected text, compressed photos, and credits from the pinned
   `assistant-switzerland-content` schema 2 package. It uses the optional landmark section.
-  [The build record](sources/ride-assistant/grimsel-v17.json) pins source and output hashes.
+  [The build record](sources/ride-assistant/grimsel-v18.json) pins source and output hashes.
   Set `OBC_GRIMSEL_LANDMARKS` to its `content.json` and `OBC_GRIMSEL_PEAKS` to the
   pinned `peak-content/peaks.json` when you run the fixture baker.
-- `sim-monaco`: an **OBCM v17** file from the pinned `assistant-osm` Monaco
+- `sim-monaco`: an **OBCM v18** file from the pinned `assistant-osm` Monaco
   snapshot dated 2026-09-13, on the canonical fixture bbox, plus the unchanged
-  project-authored up-ahead GPX. [The build record](sources/ride-assistant/monaco-v17.json)
+  project-authored up-ahead GPX. [The build record](sources/ride-assistant/monaco-v18.json)
   pins its source and output identities.
+- `sim-freiburg`: an **OBCM v18** file packed from the Geofabrik
+  `europe/germany/baden-wuerttemberg/freiburg-regbez` snapshot dated 2026-08-03, on the
+  canonical box `7.77,47.97,7.93,48.14`. It is 12 by 19 km of the Rhine plain, from the city of
+  Freiburg north to Emmendingen, with the settlement density of a typical ride: one city, three
+  towns, 26 villages and 14 hamlets, 16 of them with a population. It holds no terrain, no route
+  and no track, because it exists for the settlement labels.
+  [The build record](sources/ride-assistant/freiburg-v18.json) pins its source and output
+  identities.
+
+### Revision log: repacked at OBCM v18 (settlements, #1899)
+
+Every registered map moved to a new immutable revision, because a v18 reader refuses a v17
+file outright. All of them were packed again through the sanctioned path,
+`fixtures/build-map-package.sh`, on the unchanged canonical boxes, from the same pinned
+sources as the v17 revision. No box was self-sourced from a header.
+
+| package | v17 archive | v18 archive | map file | v17 | v18 |
+| --- | ---: | ---: | --- | ---: | ---: |
+| `sim-grimsel` | 3 478 964 B | 4 137 061 B | `grimsel.obcm` | 3 971 792 B | 4 774 608 B |
+| `sim-monaco` | 443 213 B | 456 152 B | `monaco.obcm` | 724 480 B | 742 400 B |
+| `sim-assistant-meiringen` | 30 400 331 B | 33 484 275 B | `meiringen.obcm` | 44 881 840 B | 48 740 272 B |
+| `sim-assistant-west-cork` | 2 426 077 B | 2 435 914 B | `west-cork.obcm` | 4 749 504 B | 4 783 296 B |
+| `sim-freiburg` | — | 8 135 640 B | `freiburg.obcm` | — | 11 746 304 B |
+
+**Settlements are the small part of that growth.** Grimsel packed from the same source with
+the settlement rows removed gives 4 772 560 B, so its 19 settlements cost 2 048 B — four
+512-byte chunks with their index. The other 800 768 B come from pull request #1893, which
+changed `builder/presets/schema.json` and the packer's path and contour handling. These
+fixtures were last packed before it, so the format bump is the first time that work reaches
+them.
+
+A settlement stores its OSM `short_name` when that name is shorter, because the map shows 12
+characters: the Freiburg record reads `Freiburg`, and Meiringen's seven `Hasliberg …` and
+`… bei Interlaken` records read their short names. Nine records over all the packages changed
+name for this rule; every other settlement is unchanged.
+
+Grimsel's OBCT sidecar is byte-identical again (786 560 B), and the shipped demo map keeps
+the surface terrain it already carried, both verified by digest. The routing pin also holds:
+all four stock profiles' frozen Innertkirchen→Grimsel digests
+(`obc-route`'s `the_registered_grimsel_fixture_routes_byte_identically_on_every_profile`)
+are unchanged across the format bump, the settlement capture and #1893's preset.
 
 ### Revision log: repacked at OBCM v14 (FS7.5b, #1420)
 
@@ -119,7 +160,7 @@ revisions, licenses, offline build commands, review identities, and remaining si
 The Swiss OSM input is country-wide. The separate compiled Swiss content package contains
 1,478 sites, 2,391 article variants and 1,109 photos. The retained capture has English, German
 and French output, with no Spanish article or locale entity capture. The four-site Wiki input
-is only a review sample. Both West Cork and the Swiss regional simulator maps use OBCM v17 with native terrain and compiled landmark
+is only a review sample. Both West Cork and the Swiss regional simulator maps use OBCM v18 with native terrain and compiled landmark
 content. The Swiss map is a crop, not a full-country map. See the source recipes for exact
 coverage, scenario clocks and the persistent-card option.
 
@@ -134,7 +175,7 @@ Starlex nodes share one article and photo outcome. Pointe Kurz and Tourbillon us
 tags. Gross Wendenstock has no link. The Piz Starlex photo is rejected because its attribution is
 too long; its text remains available.
 
-The compiled catalogue feeds the normal OBCM v17 map paths. Grimsel and the shipped demo
+The compiled catalogue feeds the normal OBCM v18 map paths. Grimsel and the shipped demo
 include Mönch. The Meiringen regional map includes Titlis, Eiger and Mönch. The baker joins
 articles to emitted summit records by original OSM node ID. Gross Wendenstock remains a
 summit without an article. Peak articles use a separate section from landmarks; original

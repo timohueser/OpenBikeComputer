@@ -6,8 +6,8 @@
     {
       "id": "18/1204/1052",
       "bytes": 577,
-      "sha256": "fa827ce13d3ceab595d873917a7a79e56feacc92ac382d16e5d4061292d2e4f1",
-      "url": "https://maps.example.org/catalog/cells/fine/1204/1052.fa827ce13d3ceab595d873917a7a79e56feacc92ac382d16e5d4061292d2e4f1.obcm",
+      "sha256": "6fdbfd4c7e8dd25b31abe71550b7385f2543d1351102f598d0299bf5332d871f",
+      "url": "https://maps.example.org/catalog/cells/fine/1204/1052.6fdbfd4c7e8dd25b31abe71550b7385f2543d1351102f598d0299bf5332d871f.obcm",
       "built_at": "2026-07-30T02:12:55Z",
       "sources": [
         {
@@ -20,8 +20,8 @@
     {
       "id": "18/1204/1053",
       "bytes": 449,
-      "sha256": "60ad2983a4f18f147def88fa83136929e3504df60f4608c66fd97d1f772e9da5",
-      "url": "https://maps.example.org/catalog/cells/fine/1204/1053.60ad2983a4f18f147def88fa83136929e3504df60f4608c66fd97d1f772e9da5.obcm",
+      "sha256": "2318a4bda6ff2a034299d3f5079361a83b25b81bcb928893814434673440f90c",
+      "url": "https://maps.example.org/catalog/cells/fine/1204/1053.2318a4bda6ff2a034299d3f5079361a83b25b81bcb928893814434673440f90c.obcm",
       "built_at": "2026-07-30T02:13:07Z",
       "sources": [
         {

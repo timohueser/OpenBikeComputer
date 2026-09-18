@@ -495,7 +495,7 @@ fn corridor_map(per_cat: usize, span_udeg: i32) -> Vec<u8> {
                 lon,
                 subtype,
                 name: format!("in{i}{j}"),
-                hours_ref: 0xFFFF,
+                payload: 0xFFFF,
             });
             // …and one well outside it, in the same quadtree leaves.
             specs.push(obcm_testkit::PoiSpec {
@@ -503,7 +503,7 @@ fn corridor_map(per_cat: usize, span_udeg: i32) -> Vec<u8> {
                 lon,
                 subtype,
                 name: format!("out{i}{j}"),
-                hours_ref: 0xFFFF,
+                payload: 0xFFFF,
             });
         }
         cats.push((i as u8 + 1, specs));

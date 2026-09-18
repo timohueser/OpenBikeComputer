@@ -86,6 +86,7 @@ fn run_find(scenario: Scenario) {
                 from_node: true,
                 hours: obc_pack::hours::parse("Mo-Su 09:00-11:00"),
                 elevation_m: None,
+                population: None,
             }
         })
         .collect();

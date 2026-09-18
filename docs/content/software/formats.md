@@ -18,7 +18,7 @@ Reader and writer crates own parsing, caching, and conversion policy.
 
 | Format | Current version | Use | Main consumer |
 | --- | ---: | --- | --- |
-| OBCM | 17 | Map, POIs, navigation, terrain, and separate article collections | Device |
+| OBCM | 18 | Map, POIs, navigation, terrain, and separate article collections | Device |
 | OBCR | 4 | Route geometry, statistics, and waypoints | Device |
 | Ride object | 3 | Recorded samples and summary | Device and companion |
 | OBCT | 1 | Terrain height raster | Device and map tools |
@@ -78,7 +78,7 @@ Readers use checked arithmetic and reject unsupported versions.
 
 ## OBCM — the map
 
-OBCM v17 is the only supported map version.
+OBCM v18 is the only supported map version.
 One OBCM object contains all map data.
 Its global offsets are 32-bit values in scaled units.
 Current writers use 16-byte units.
@@ -302,7 +302,7 @@ The core header fields are:
 | Bytes | Field |
 | ---: | --- |
 | 0–3 | Magic `OBCM` |
-| 4 | Version `17` |
+| 4 | Version `18` |
 | 5–20 | Latitude/longitude bounding box |
 | 21–24 | Style-table offset |
 | 25 | LOD count |
@@ -637,6 +637,10 @@ A POI record is 64 bytes.
 Service records contain coordinates, subtype, a 24-byte printable-ASCII name, and `HoursRef`.
 Category 7 stores optional named summits for Peak View. Summit records use a UTF-8 name
 and a signed elevation in place of `HoursRef`. Subtype 19 identifies these records.
+Category 9 stores optional settlement names for the map overlay. Settlement records use a
+UTF-8 name and a population in hundreds of people in place of `HoursRef`. Subtypes 21 to 24
+identify these records and give the settlement class. The service POI browser does not read
+this category.
 See [OBCM section 7](src:specs/OBCM_Spec.md) for the shared layout and category rules.
 The same indexes support nearest-item and route-corridor queries.
 
@@ -1365,7 +1369,7 @@ It does not change geometry.
 
 ### One map, one file
 
-OBCM v17 uses scaled offsets, stores terrain in the map, preserves place identities and mapped approaches, and stores separate optional landmark and peak article collections.
+OBCM v18 uses scaled offsets, stores terrain in the map, preserves place identities and mapped approaches, and stores separate optional landmark and peak article collections.
 The assembler produces one OBCM object.
 It does not produce map shards or a set manifest.
 

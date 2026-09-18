@@ -4992,8 +4992,8 @@ mod tests {
             &[(
                 1,
                 std::vec![
-                    PoiSpec { lat: 48_001_000, lon: 7_823_000, subtype: 1, name: "Brunnen".into(), hours_ref: 0xFFFF },
-                    PoiSpec { lat: 47_999_000, lon: 7_847_000, subtype: 1, name: "Spring".into(), hours_ref: 0xFFFF },
+                    PoiSpec { lat: 48_001_000, lon: 7_823_000, subtype: 1, name: "Brunnen".into(), payload: 0xFFFF },
+                    PoiSpec { lat: 47_999_000, lon: 7_847_000, subtype: 1, name: "Spring".into(), payload: 0xFFFF },
                 ],
             )],
         );

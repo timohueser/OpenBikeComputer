@@ -25,12 +25,12 @@ use obc_formats::obcm::{
 // The OBCM constants the serializer lays out are owned by `obc-formats`; imported here (the
 // `VERSION as OBCM_VERSION` rename is a module-local readability alias). Not re-exported.
 use obc_formats::obcm::{
-    nav_edge_id, nav_index_padding, OffsetScale, UnitWriter, FILLER, HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE,
-    NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_EDGE_MAX_CHUNKS, NAV_EDGE_MAX_RECORDS_PER_CHUNK, NAV_MAX_DEGREE,
-    NAV_MAX_PROFILES, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN,
+    nav_edge_id, nav_index_padding, settlement_class_of, OffsetScale, UnitWriter, FILLER, HEADER_LEN, LOD_ENTRY_LEN,
+    NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_EDGE_MAX_CHUNKS, NAV_EDGE_MAX_RECORDS_PER_CHUNK,
+    NAV_MAX_DEGREE, NAV_MAX_PROFILES, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN,
     NAV_PROFILE_RESERVED_LEN, NAV_SNAP_ANCHOR_GAP_M, NAV_SNAP_EDGE_MIN_M, NAV_SNAP_RECORD_LEN, POI_CAT_ENTRY_LEN,
-    POI_CHUNK_SIZE, POI_HOURS_BLOB_LEN, POI_HOURS_REF_NONE, POI_NAME_LEN, POI_RECORD_LEN, SUMMIT_CATEGORY_ID,
-    SUMMIT_ELEVATION_UNKNOWN, SUMMIT_SUBTYPE_ID, VERSION as OBCM_VERSION,
+    POI_CHUNK_SIZE, POI_HOURS_BLOB_LEN, POI_HOURS_REF_NONE, POI_NAME_LEN, POI_RECORD_LEN, SETTLEMENT_CATEGORY_ID,
+    SUMMIT_CATEGORY_ID, SUMMIT_ELEVATION_UNKNOWN, SUMMIT_SUBTYPE_ID, VERSION as OBCM_VERSION,
 };
 
 /// The `Offset Scale` every `.obcm` this packer writes carries (§1.1): `U = 16`, a 64 GiB
@@ -844,7 +844,8 @@ fn build_poi_tree(points: Vec<PoiPoint>, bbox: (i64, i64, i64, i64), capacity: u
 /// (§7.5) at the tail. `pois` is the deduped classified list; each is bucketed by
 /// its subtype's category ([`crate::poi::table_row`]). Category ids are
 /// `1..=POI_CATEGORY_COUNT` and every one gets a directory entry, empty or not
-/// (§7.1). Named summits add category 7. A map with no POIs writes seven empty entries.
+/// (§7.1). Named summits add category 7 and settlements add category 9, each only when the map
+/// holds one. A map with no POIs writes seven empty entries.
 /// `section_offset` is the section's absolute byte offset in the file, needed so the
 /// directory's per-category `index_offset` fields and the `hours_pool_offset` are
 /// file-absolute.
@@ -862,10 +863,15 @@ pub fn serialize_poi_section(
 ) -> io::Result<Vec<u8>> {
     // Dedup the weekly schedules into a pool once over the whole list; `refs[k]` is
     // POI k's 0-based pool index (or `None` ⇒ no hours). Aligned to `pois`.
-    let (pool, refs) = crate::hours::build_hours_pool(pois, |p| {
-        (p.subtype != SUMMIT_SUBTYPE_ID).then_some(p.hours.as_ref()).flatten()
-    });
+    let (pool, refs) =
+        crate::hours::build_hours_pool(pois, |p| has_hours(p.subtype).then_some(p.hours.as_ref()).flatten());
     serialize_poi_pool(pois, global_bbox, section_offset, &pool, &refs)
+}
+
+/// Only a service place carries an hours reference in its payload. A summit holds an elevation
+/// there and a settlement holds a population, so neither joins the pool.
+fn has_hours(subtype: u8) -> bool {
+    subtype != SUMMIT_SUBTYPE_ID && settlement_class_of(subtype).is_none()
 }
 
 fn serialize_poi_pool(
@@ -882,9 +888,12 @@ fn serialize_poi_pool(
     if pois.iter().any(|p| p.subtype == SUMMIT_SUBTYPE_ID) {
         category_ids.push(SUMMIT_CATEGORY_ID);
     }
+    if pois.iter().any(|p| settlement_class_of(p.subtype).is_some()) {
+        category_ids.push(SETTLEMENT_CATEGORY_ID);
+    }
     category_ids.sort_unstable();
     let category_count = category_ids.len();
-    let mut by_cat: Vec<Vec<PoiPoint>> = (0..=obc_formats::obcm::TRAIN_CATEGORY_ID).map(|_| Vec::new()).collect();
+    let mut by_cat: Vec<Vec<PoiPoint>> = (0..=SETTLEMENT_CATEGORY_ID).map(|_| Vec::new()).collect();
     for (p, hours_ref) in pois.iter().zip(refs.iter()) {
         let cat = table_row(p.subtype).category() as usize;
         by_cat[cat].push(PoiPoint {
@@ -893,10 +902,10 @@ fn serialize_poi_pool(
             lat_udeg: p.lat_udeg,
             subtype: p.subtype,
             name: p.name.clone(),
-            payload: if p.subtype == SUMMIT_SUBTYPE_ID {
-                p.elevation_m.unwrap_or(SUMMIT_ELEVATION_UNKNOWN) as u16
-            } else {
-                hours_ref.unwrap_or(POI_HOURS_REF_NONE)
+            payload: match p.subtype {
+                SUMMIT_SUBTYPE_ID => p.elevation_m.unwrap_or(SUMMIT_ELEVATION_UNKNOWN) as u16,
+                s if settlement_class_of(s).is_some() => crate::poi::settlement_payload(p.population),
+                _ => hours_ref.unwrap_or(POI_HOURS_REF_NONE),
             },
         });
     }
@@ -1985,7 +1994,7 @@ where
     let mut dropped = 0usize;
     let schedules: Vec<_> = pois
         .iter()
-        .map(|p| (p.subtype != SUMMIT_SUBTYPE_ID).then_some(p.hours.as_ref()).flatten())
+        .map(|p| has_hours(p.subtype).then_some(p.hours.as_ref()).flatten())
         .chain(landmarks.iter().map(|p| p.hours.as_ref()))
         .collect();
     let (pool, refs) = crate::hours::build_hours_pool(&schedules, |schedule| *schedule);
@@ -2288,6 +2297,7 @@ mod tests {
             from_node: true,
             hours: hours.and_then(crate::hours::parse),
             elevation_m: None,
+            population: None,
         };
         let pois = vec![
             poi(1, 100_000, 100_000, Some("Brunnen"), None),

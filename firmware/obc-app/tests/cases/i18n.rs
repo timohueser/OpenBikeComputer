@@ -282,8 +282,7 @@ fn the_route_plan_sheet_is_localized_and_every_state_renders() {
 
     const BBOX: (i32, i32, i32, i32) = (7_000_000, 43_000_000, 8_000_000, 44_000_000);
     const POS: (i32, i32) = (7_500_000, 43_500_000);
-    let water =
-        vec![PoiSpec { lat: 43_500_500, lon: 7_500_000, subtype: 1, name: "Fontaine".into(), hours_ref: 0xFFFF }];
+    let water = vec![PoiSpec { lat: 43_500_500, lon: 7_500_000, subtype: 1, name: "Fontaine".into(), payload: 0xFFFF }];
     let bytes = build_poi_map(BBOX, 512, &[(1, water)]);
 
     // The profile names a host mirrors on map load — Road / Gravel / MTB / Touring, the set both

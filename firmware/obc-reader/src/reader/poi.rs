@@ -11,11 +11,11 @@ use obc_formats::obcm::{
 };
 use obc_map_scene::{cos_lat, ground_dist_m_cl, BBox};
 
-/// POI directory categories (spec §7.1): services 1..6 and optional summit landmarks 7.
-/// The parsed `MapTables::pois`
+/// POI directory categories (spec §7.1): services 1..6 and 8, plus the optional summit landmarks 7
+/// and settlements 9. The parsed `MapTables::pois`
 /// bounds its `heapless::Vec` at this so a corrupt `category_count` can't request an unbounded
 /// allocation; a directory declaring more categories than this is rejected.
-pub const POI_MAX_CATEGORIES: usize = 8;
+pub const POI_MAX_CATEGORIES: usize = 9;
 
 /// Upper bound on the POI `chunk_size` the reader accepts (spec §7.1). POI records are a fixed 32
 /// bytes and the packer writes 512-byte chunks (16 records); this caps the on-wire `u16` well below
@@ -42,7 +42,7 @@ const POI_SCAN_WINDOW: usize = 512;
 /// reuses the same convention.
 #[derive(Debug, Clone, Copy)]
 pub struct PoiCatEntry {
-    /// Canonical category id (services 1..6, summit landmarks 7; spec §7.4).
+    /// Canonical category id (services 1..6 and 8, summit landmarks 7, settlements 9; spec §7.4).
     pub category_id: u8,
     /// Byte offset to this category's quadtree index.
     pub index_offset: u64,

@@ -12,8 +12,9 @@
 use std::collections::BTreeMap;
 
 use obc_formats::obcm::{
-    poi_directory_category_of, CHUNK_END, POI_CATEGORY_COUNT, POI_CAT_ENTRY_LEN, POI_CHUNK_SIZE, POI_HOURS_BLOB_LEN,
-    POI_HOURS_REF_NONE, POI_RECORD_LEN, SUMMIT_CATEGORY_ID, SUMMIT_SUBTYPE_ID,
+    poi_directory_category_of, settlement_class_of, CHUNK_END, POI_CATEGORY_COUNT, POI_CAT_ENTRY_LEN, POI_CHUNK_SIZE,
+    POI_HOURS_BLOB_LEN, POI_HOURS_REF_NONE, POI_RECORD_LEN, SETTLEMENT_CATEGORY_ID, SUMMIT_CATEGORY_ID,
+    SUMMIT_SUBTYPE_ID,
 };
 
 use crate::emit::{place, scaled, MapWriter};
@@ -74,7 +75,7 @@ impl MergedPois {
             return Err(Error::Capacity("shared hours pool exceeds the format limit".into()));
         }
         for poi in &mut self.pois {
-            if poi.subtype != SUMMIT_SUBTYPE_ID && poi.payload != POI_HOURS_REF_NONE {
+            if has_hours(poi.subtype) && poi.payload != POI_HOURS_REF_NONE {
                 poi.payload =
                     pool.binary_search(&self.pool[poi.payload as usize]).expect("existing service schedule") as u16;
             }
@@ -82,6 +83,12 @@ impl MergedPois {
         self.pool = pool;
         Ok(())
     }
+}
+
+/// Only a service place references the hours pool. A summit's payload holds an elevation and a
+/// settlement's holds a population, so neither is remapped.
+fn has_hours(subtype: u8) -> bool {
+    subtype != SUMMIT_SUBTYPE_ID && settlement_class_of(subtype).is_none()
 }
 
 /// Collect every POI record from `cells`, deduplicate by `(lat, lon, subtype)`, and rebuild the
@@ -123,7 +130,7 @@ pub fn merge(cells: &[&Cell<'_>]) -> Result<MergedPois> {
                     let lat = i32::from_le_bytes(rec[0..4].try_into().expect("4 bytes"));
                     let lon = i32::from_le_bytes(rec[4..8].try_into().expect("4 bytes"));
                     let hours_ref = u16::from_le_bytes(rec[34..36].try_into().expect("2 bytes"));
-                    let blob = if subtype == SUMMIT_SUBTYPE_ID || hours_ref == POI_HOURS_REF_NONE {
+                    let blob = if !has_hours(subtype) || hours_ref == POI_HOURS_REF_NONE {
                         None
                     } else {
                         Some(*pool.get(hours_ref as usize).ok_or_else(|| {
@@ -169,10 +176,11 @@ pub fn merge(cells: &[&Cell<'_>]) -> Result<MergedPois> {
             lon,
             subtype,
             name,
-            payload: if subtype == SUMMIT_SUBTYPE_ID {
-                raw_payload
-            } else {
+            payload: if has_hours(subtype) {
                 blob.map_or(POI_HOURS_REF_NONE, |b| pool_index[&b])
+            } else {
+                // A summit's elevation and a settlement's population travel unchanged.
+                raw_payload
             },
         })
         .collect();
@@ -239,9 +247,12 @@ pub fn layout(merged: &MergedPois, global_bbox: UBox) -> Result<PoiSection> {
     if merged.pois.iter().any(|p| p.subtype == SUMMIT_SUBTYPE_ID) {
         category_ids.push(SUMMIT_CATEGORY_ID);
     }
+    if merged.pois.iter().any(|p| settlement_class_of(p.subtype).is_some()) {
+        category_ids.push(SETTLEMENT_CATEGORY_ID);
+    }
     category_ids.sort_unstable();
     let category_count = category_ids.len();
-    let mut by_cat: Vec<Vec<&MergedPoi>> = (0..=obc_formats::obcm::TRAIN_CATEGORY_ID).map(|_| Vec::new()).collect();
+    let mut by_cat: Vec<Vec<&MergedPoi>> = (0..=SETTLEMENT_CATEGORY_ID).map(|_| Vec::new()).collect();
     for p in &merged.pois {
         // Validated at merge time, so the category is known.
         let cat = poi_directory_category_of(p.subtype).expect("subtype validated at merge") as usize;
