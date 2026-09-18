@@ -132,6 +132,9 @@ pub(crate) struct UiRuntime {
     pub(crate) find: crate::find_place::FindState,
     pub(crate) landmarks: crate::landmarks::Landmarks,
     pub(crate) map_icons: crate::map_icons::MapIcons,
+    /// The settlement-name candidates the map overlay draws (#1900). App-owned for the same reason
+    /// as [`map_icons`](Self::map_icons): a `Screen` variant is a slot in a `.bss` union.
+    pub(crate) settlements: crate::settlements::SettlementCache,
     pub(crate) ahead: crate::whats_next::AheadState,
     /// The single route-corridor snapshot buffer (epic #946, U2) — the map POIs near the route
     /// ahead, frozen on take. Held once here for the same reason as
@@ -190,6 +193,7 @@ impl UiRuntime {
             find: crate::find_place::FindState::new(),
             landmarks: crate::landmarks::Landmarks::new(),
             map_icons: crate::map_icons::MapIcons::new(),
+            settlements: crate::settlements::SettlementCache::new(),
             ahead: crate::whats_next::AheadState::new(),
             corridor_scratch: CorridorScratch::new(),
             next_ahead: NextAhead::new(),
@@ -759,6 +763,7 @@ impl UiRuntime {
             find,
             landmarks,
             map_icons,
+            settlements,
             ahead,
             corridor_scratch,
             next_ahead,
@@ -768,6 +773,7 @@ impl UiRuntime {
         } = self;
         assert!(ahead.window.is_none());
         assert!(map_icons.is_empty());
+        assert!(settlements.is_empty(), "no settlement candidates are held");
         assert_eq!(stack.len(), 1, "Home is the only screen");
         assert!(matches!(stack[0], Screen::Home(_)), "Home is the stack root");
         assert!(!input.overlay_active() && input.last_gesture().is_none(), "no gesture in flight");

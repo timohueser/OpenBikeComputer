@@ -3087,6 +3087,8 @@ impl App {
         }
         if scratch.is_some() && self.ui.base_draws_map() && self.ui.render_clip.is_none() {
             self.ui.map_icons.prepare(core_reader, &self.state.viewport(w, h), &self.settings, self.ui.now_ms);
+            // The overlay has no rider switch yet; `true` is the input a switch would drive.
+            self.ui.settlements.prepare(core_reader, &self.state.viewport(w, h), true);
         }
         // Drain the one-shot region clip (see `set_render_clip`) — `None` on every normal frame.
         let render_clip = self.ui.render_clip.take();
@@ -3192,6 +3194,7 @@ impl App {
             find: &ui.find,
             landmarks: &ui.landmarks,
             map_icons: &ui.map_icons,
+            settlements: &ui.settlements,
             ahead: &ui.ahead,
             peak_view,
             scratch,

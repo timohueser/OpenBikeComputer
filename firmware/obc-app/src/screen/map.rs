@@ -41,6 +41,8 @@ use super::{Ctx, RenderFrame, Screen, ScreenTick, StatisticsScreen, Transition};
 
 pub(crate) mod placement;
 
+use placement::PointPlacement;
+
 /// Fallback backdrop when a map carries no backdrop style.
 const DEFAULT_BG_RGB565: u16 = 0x2104;
 
@@ -407,6 +409,10 @@ where
     }
     rx.stats = stats;
 
+    // Settlement names: over the terrain and the route ink, under the waypoints and the rider.
+    let mut place = PointPlacement::new(rect(0, 0, rx.w, rx.h), &label_reserved(vp, rx.state.user_fix, rx.w, rx.h));
+    crate::settlements::draw_labels(cv, vp, rx.settlements, &mut place);
+
     draw_waypoint_diamonds(cv, vp, rx.waypoints.as_slice(), rx.w, rx.h);
     let marker565 = if rx.navigation.off_route { super::palette::WARNING } else { scene.marker_color() };
     if let Some(fix) = rx.state.user_fix {
@@ -421,6 +427,34 @@ where
         cv.disc(c, 3, super::palette::INK);
     }
     Some(marker565)
+}
+
+// ---- Reserved chrome (for the settlement labels) --------------------------
+
+/// Side (px) of the box the rider mark owns — the chevron reaches 12 px ahead and 8 px out.
+const RIDER_BOX_PX: i32 = 24;
+
+/// The boxes the map chrome owns, so a settlement name never covers one.
+///
+/// The three bands are constant rather than the live chip state: every bottom pill and both
+/// scale-bar positions are inside them, so the label pass needs no second copy of the chip rules.
+/// The rider mark is the one box that moves.
+fn label_reserved(vp: &Viewport, fix: Option<Fix>, w: i32, h: i32) -> heapless::Vec<Rectangle, 4> {
+    let mut boxes = heapless::Vec::new();
+    // Top: the clock digits, the low-battery cue and the pan HUD's compass rose.
+    let _ = boxes.push(rect(0, 0, w, CLOCK_TOP + Font::Body.line_height() as i32 + 2));
+    // Bottom, full width: the status, waypoint and hint pills. The two-line hint is the tallest.
+    let chips = 2 * HINT_LINE_PITCH + 2 * HINT_PAD_Y + CHIP_MARGIN;
+    let _ = boxes.push(rect(0, h - chips, w, chips));
+    // Bottom left: the scale bar in the corner and stepped above a chip band, label included.
+    let scale = CHIP_H + 2 * CHIP_MARGIN + SCALE_CHIP_GAP + SCALE_TICK_H + Font::Label.line_height() as i32 + 1;
+    let _ = boxes.push(rect(0, h - scale, SCALE_MARGIN_X + SCALE_TARGET_MAX_PX as i32, scale));
+    if let Some(fix) = fix {
+        let (x, y) = vp.to_screen(fix.lon, fix.lat);
+        let r = RIDER_BOX_PX / 2;
+        let _ = boxes.push(rect(x - r, y - r, RIDER_BOX_PX, RIDER_BOX_PX));
+    }
+    boxes
 }
 
 // ---- Waypoint diamonds (on the route line) --------------------------------
@@ -722,6 +756,8 @@ const SCALE_MARGIN_X: i32 = 12;
 /// Baseline inset from the bottom edge — right in the corner normally, stepped up past the chip
 /// band (its height + inset + a gap) while a bottom chip is up.
 const SCALE_MARGIN_Y: i32 = 12;
+/// Gap between a bottom chip band and the scale bar stepped above it.
+const SCALE_CHIP_GAP: i32 = 12;
 const SCALE_TICK_H: i32 = 5;
 
 /// Draw the scale bar at the bottom-left: a horizontal ink line with end ticks and a length label,
@@ -737,7 +773,7 @@ fn draw_scale_bar(cv: &mut impl Surface, h: i32, chip_band: i32, mpp: f32, units
     let x1 = x0 + bar_px;
     // In the corner normally; stepped above the bottom chip band (its height + inset + a gap) when a
     // chip is up (`chip_band > 0`) — a taller band (the two-line hint) steps the bar proportionally.
-    let y = h - if chip_band > 0 { chip_band + CHIP_MARGIN + 12 } else { SCALE_MARGIN_Y };
+    let y = h - if chip_band > 0 { chip_band + CHIP_MARGIN + SCALE_CHIP_GAP } else { SCALE_MARGIN_Y };
     // Parchment halo: the same strokes one pixel thicker/offset, drawn first.
     for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
         cv.line(Point::new(x0 + dx, y + dy), Point::new(x1 + dx, y + dy), PARCHMENT);
