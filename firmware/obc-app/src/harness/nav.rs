@@ -22,9 +22,8 @@ const POI: (i32, i32) = (7_500_000, 43_500_500);
 /// A v7+ map with one named Water POI due north of [`POS`] and one unnamed Campsite (subtype 5 →
 /// the "Campsite" fallback label), for the name-fallback path.
 fn fixture() -> Vec<u8> {
-    let water = vec![PoiSpec { lat: POI.1, lon: POI.0, subtype: 1, name: "Fountain North".into(), hours_ref: 0xFFFF }];
-    let campsite =
-        vec![PoiSpec { lat: 43_501_000, lon: 7_500_000, subtype: 5, name: String::new(), hours_ref: 0xFFFF }];
+    let water = vec![PoiSpec { lat: POI.1, lon: POI.0, subtype: 1, name: "Fountain North".into(), payload: 0xFFFF }];
+    let campsite = vec![PoiSpec { lat: 43_501_000, lon: 7_500_000, subtype: 5, name: String::new(), payload: 0xFFFF }];
     build_poi_map(BBOX, 512, &[(1, water), (2, campsite)])
 }
 
