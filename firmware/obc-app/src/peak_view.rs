@@ -346,10 +346,10 @@ mod tests {
                 lon: 0,
                 subtype: 19,
                 name: std::format!("Peak {i}"),
-                hours_ref: 3200,
+                payload: 3200,
             })
             .collect();
-        records.push(PoiSpec { lat: 500000, lon: 0, subtype: 19, name: "Landmark".into(), hours_ref: 4634 });
+        records.push(PoiSpec { lat: 500000, lon: 0, subtype: 19, name: "Landmark".into(), payload: 4634 });
         let bytes = build_poi_map((-100000, -100000, 100000, 600000), 4096, &[(7, records)]);
         let source = SliceSource(&bytes);
         let tables = obc_reader::MapTables::parse(&source).unwrap();

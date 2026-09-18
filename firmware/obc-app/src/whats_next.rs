@@ -631,10 +631,10 @@ mod tests {
                 lon: i * 3_000 + 1000,
                 subtype: 1,
                 name: format!("Water {i}"),
-                hours_ref: u16::MAX,
+                payload: u16::MAX,
             })
             .collect();
-        let train = vec![PoiSpec { lat: 100, lon: 65_000, subtype: 20, name: "Station".into(), hours_ref: u16::MAX }];
+        let train = vec![PoiSpec { lat: 100, lon: 65_000, subtype: 20, name: "Station".into(), payload: u16::MAX }];
         let map = build_poi_map((-1000, -1000, 150_000, 1000), 512, &[(1, pois), (8, train)]);
         let source = obc_reader::SliceSource(&map);
         let tables = MapTables::parse(&source).unwrap();
@@ -800,7 +800,7 @@ mod tests {
                 lon: i * 3000,
                 subtype: 1,
                 name: format!("Water {i}"),
-                hours_ref: if i == 3 { u16::MAX } else { 0 },
+                payload: if i == 3 { u16::MAX } else { 0 },
             })
             .collect();
         let bytes =

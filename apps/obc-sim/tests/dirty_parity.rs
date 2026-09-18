@@ -524,11 +524,11 @@ fn riding_device(camera: AppState) -> App {
 fn poi_map_bytes() -> Vec<u8> {
     use obcm_testkit::{build_poi_map, PoiSpec};
     let water = vec![
-        PoiSpec { lat: 48_000_800, lon: 7_806_000, subtype: 1, name: "Fontaine".into(), hours_ref: 0xFFFF },
-        PoiSpec { lat: 47_999_200, lon: 7_818_000, subtype: 1, name: "Brunnen".into(), hours_ref: 0xFFFF },
-        PoiSpec { lat: 48_000_400, lon: 7_836_000, subtype: 1, name: "Quelle".into(), hours_ref: 0xFFFF },
+        PoiSpec { lat: 48_000_800, lon: 7_806_000, subtype: 1, name: "Fontaine".into(), payload: 0xFFFF },
+        PoiSpec { lat: 47_999_200, lon: 7_818_000, subtype: 1, name: "Brunnen".into(), payload: 0xFFFF },
+        PoiSpec { lat: 48_000_400, lon: 7_836_000, subtype: 1, name: "Quelle".into(), payload: 0xFFFF },
     ];
-    let shops = vec![PoiSpec { lat: 48_000_500, lon: 7_842_000, subtype: 18, name: "Velo".into(), hours_ref: 0xFFFF }];
+    let shops = vec![PoiSpec { lat: 48_000_500, lon: 7_842_000, subtype: 18, name: "Velo".into(), payload: 0xFFFF }];
     build_poi_map((7_000_000, 47_000_000, 9_000_000, 49_000_000), 512, &[(1, water), (6, shops)])
 }
 

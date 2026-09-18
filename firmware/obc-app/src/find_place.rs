@@ -1229,7 +1229,7 @@ mod tests {
                     lon: 50_000,
                     subtype: 1,
                     name: "Water".into(),
-                    hours_ref: 0,
+                    payload: 0,
                 }],
             )],
             &[schedule],
@@ -1414,7 +1414,7 @@ mod tests {
                         lon: 50_000 + i * 100,
                         subtype: 1,
                         name: format!("Water {i}"),
-                        hours_ref: i as u16,
+                        payload: i as u16,
                     })
                     .collect(),
             )],

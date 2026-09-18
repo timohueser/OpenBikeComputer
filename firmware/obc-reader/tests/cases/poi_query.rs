@@ -104,9 +104,9 @@ fn grid_nearest_matches_brute_force() {
             let lon = 7_100_000 + j * 9_000;
             let name = format!("P{i}{j}");
             if (i + j) % 2 == 0 {
-                water.push(PoiSpec { lat, lon, subtype: 1, name, hours_ref: 0xFFFF });
+                water.push(PoiSpec { lat, lon, subtype: 1, name, payload: 0xFFFF });
             } else {
-                bikes.push(PoiSpec { lat, lon, subtype: 18, name, hours_ref: 0xFFFF });
+                bikes.push(PoiSpec { lat, lon, subtype: 18, name, payload: 0xFFFF });
             }
         }
     }
@@ -135,7 +135,7 @@ fn clusters_across_multiple_chunks() {
                 lon: clon + (k / 5) * 300,
                 subtype: 1,
                 name: format!("C{ci}-{k}"),
-                hours_ref: 0xFFFF,
+                payload: 0xFFFF,
             });
         }
     }
@@ -158,7 +158,7 @@ fn all_in_one_chunk() {
             lon: 7_500_000 + k * 150,
             subtype: 5,
             name: String::new(),
-            hours_ref: 0xFFFF,
+            payload: 0xFFFF,
         });
     }
     let bytes = build_poi_map(BBOX, CS, &[(2, pois.clone())]);
@@ -185,7 +185,7 @@ fn dense_category_exhaustive_pass_drops_no_leaf() {
                 lon: 7_300_000 + j * 35_000,
                 subtype: 1,
                 name: format!("G{n}"),
-                hours_ref: 0xFFFF,
+                payload: 0xFFFF,
             });
             n += 1;
         }
@@ -210,7 +210,7 @@ fn more_than_16_in_first_ring() {
             lon: 7_500_000 + (k / 6) * 800 - 2000,
             subtype: 17,
             name: format!("Ph{k}"),
-            hours_ref: 0xFFFF,
+            payload: 0xFFFF,
         });
     }
     let bytes = build_poi_map(BBOX, CS, &[(5, pois.clone())]);
@@ -234,12 +234,12 @@ fn ring_expansion_finds_the_16th_just_outside() {
             lon: 7_500_000 + (k / 4) * 600 - 900,
             subtype: 7,
             name: format!("H{k}"),
-            hours_ref: 0xFFFF,
+            payload: 0xFFFF,
         });
     }
     // The 16th: ~3 km north — outside the initial 2 km half-extent, so the first ring finds only 15
     // and can't prove completeness (d[14] is fine but the set isn't full). Must expand and find it.
-    let far = PoiSpec { lat: 43_500_000 + 27_000, lon: 7_500_000, subtype: 7, name: "Far".into(), hours_ref: 0xFFFF };
+    let far = PoiSpec { lat: 43_500_000 + 27_000, lon: 7_500_000, subtype: 7, name: "Far".into(), payload: 0xFFFF };
     pois.push(far.clone());
     let bytes = build_poi_map(BBOX, CS, &[(3, pois.clone())]);
     let got = query(&bytes, PoiCategory::Accommodation, pos);
@@ -263,7 +263,7 @@ fn straddling_ring_boundary_no_duplicates() {
             lon: 7_500_000 + (r as f32 * ang.sin() * 1.4) as i32,
             subtype: 13,
             name: format!("S{k}"),
-            hours_ref: 0xFFFF,
+            payload: 0xFFFF,
         });
     }
     let bytes = build_poi_map(BBOX, CS, &[(4, pois.clone())]);
@@ -281,7 +281,7 @@ fn straddling_ring_boundary_no_duplicates() {
 #[test]
 fn empty_category_returns_empty_ok() {
     // Only Water populated; query Campsite (empty).
-    let water = vec![PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "W".into(), hours_ref: 0xFFFF }];
+    let water = vec![PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "W".into(), payload: 0xFFFF }];
     let bytes = build_poi_map(BBOX, CS, &[(1, water)]);
     let got = query(&bytes, PoiCategory::Campsite, (7_500_000, 43_500_000));
     assert!(got.is_empty(), "an empty category returns no POIs");
@@ -291,8 +291,8 @@ fn empty_category_returns_empty_ok() {
 #[test]
 fn names_and_fields_round_trip() {
     let pois = vec![
-        PoiSpec { lat: 43_500_100, lon: 7_500_200, subtype: 15, name: "Backerei Mueller".into(), hours_ref: 0xFFFF },
-        PoiSpec { lat: 43_500_300, lon: 7_500_400, subtype: 13, name: String::new(), hours_ref: 0xFFFF },
+        PoiSpec { lat: 43_500_100, lon: 7_500_200, subtype: 15, name: "Backerei Mueller".into(), payload: 0xFFFF },
+        PoiSpec { lat: 43_500_300, lon: 7_500_400, subtype: 13, name: String::new(), payload: 0xFFFF },
     ];
     let bytes = build_poi_map(BBOX, CS, &[(4, pois)]);
     let got = query(&bytes, PoiCategory::Resupply, (7_500_000, 43_500_000));
@@ -310,7 +310,7 @@ fn names_and_fields_round_trip() {
 /// reports the unwalkable section as an error.
 #[test]
 fn corrupt_zero_chunk_size_is_safe() {
-    let pois = vec![PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "W".into(), hours_ref: 0xFFFF }];
+    let pois = vec![PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "W".into(), payload: 0xFFFF }];
     let mut bytes = build_poi_map(BBOX, CS, &[(1, pois)]);
     let poi_off = resolve_offset(&bytes, 32);
     // Forge the shared chunk_size (u16 at poi_off+1) to 0. `MapTables::parse` accepts a 0 chunk_size
@@ -330,8 +330,8 @@ fn corrupt_zero_chunk_size_is_safe() {
 fn corrupt_service_subtypes_fail_without_partial_results() {
     use obc_reader::reader::places::{PlaceQuery, PlaceWindow, QueryProgress, PLACE_PAGE_SIZE};
     let pois = vec![
-        PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "Good".into(), hours_ref: 0xFFFF },
-        PoiSpec { lat: 43_500_100, lon: 7_500_100, subtype: 1, name: "Bad".into(), hours_ref: 0xFFFF },
+        PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "Good".into(), payload: 0xFFFF },
+        PoiSpec { lat: 43_500_100, lon: 7_500_100, subtype: 1, name: "Bad".into(), payload: 0xFFFF },
     ];
     let base = build_poi_map(BBOX, CS, &[(1, pois)]);
     let entry = resolve_offset(&base, 32) + 3;
@@ -365,7 +365,7 @@ fn corrupt_missing_sentinel_stops_at_chunk_end() {
     // One POI ⇒ one record, then a 0xFF sentinel, then padding. Overwrite the sentinel's subtype
     // byte with 1 (a valid subtype) — the record loop must still stop at records_per_chunk, and the
     // forged record has invalid metadata and is reported as an error, never a panic.
-    let pois = vec![PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "One".into(), hours_ref: 0xFFFF }];
+    let pois = vec![PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "One".into(), payload: 0xFFFF }];
     let mut bytes = build_poi_map(BBOX, CS, &[(1, pois)]);
     let poi_off = resolve_offset(&bytes, 32);
     let e1 = poi_off + 3;
@@ -395,12 +395,12 @@ fn summit_spatial_query_preserves_metadata_and_clamps_the_search_radius() {
             lon: pos.0 + (i / 8 - 5) * 140_000,
             subtype: 19,
             name: format!("Mönch {i}"),
-            hours_ref: if i % 3 == 0 { i16::MIN as u16 } else { (i as i16 - 25) as u16 },
+            payload: if i % 3 == 0 { i16::MIN as u16 } else { (i as i16 - 25) as u16 },
         })
         .collect();
     let mut records = peaks.clone();
-    records.push(PoiSpec { lat: pos.1, lon: pos.0, subtype: 19, name: String::new(), hours_ref: 10 });
-    records.push(PoiSpec { lat: pos.1, lon: pos.0, subtype: 1, name: "Wrong category".into(), hours_ref: 0xFFFF });
+    records.push(PoiSpec { lat: pos.1, lon: pos.0, subtype: 19, name: String::new(), payload: 10 });
+    records.push(PoiSpec { lat: pos.1, lon: pos.0, subtype: 1, name: "Wrong category".into(), payload: 0xFFFF });
     let bytes = build_poi_map((6_000_000, 42_000_000, 9_000_000, 45_000_000), CS, &[(7, records)]);
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).unwrap();
@@ -412,7 +412,7 @@ fn summit_spatial_query_preserves_metadata_and_clamps_the_search_radius() {
         let mut expected: Vec<_> = peaks
             .iter()
             .filter(|p| dist_m(pos, p.lat, p.lon) <= radius.min(100_000) as f32)
-            .map(|p| (p.lat, p.lon, p.name.clone(), (p.hours_ref != i16::MIN as u16).then_some(p.hours_ref as i16)))
+            .map(|p| (p.lat, p.lon, p.name.clone(), (p.payload != i16::MIN as u16).then_some(p.payload as i16)))
             .collect();
         let mut actual: Vec<_> = found.iter().map(|p| (p.lat, p.lon, p.name.to_string(), p.elevation_m)).collect();
         actual.sort();
@@ -440,7 +440,7 @@ fn complete_pages_filter_hours_before_capacity_and_cancel_old_generations() {
             lon: 7_500_000,
             subtype: 1,
             name: format!("P{i:02}"),
-            hours_ref: if i < 20 { 0 } else { 1 },
+            payload: if i < 20 { 0 } else { 1 },
         })
         .collect();
     let closed = [0; 29];
@@ -514,10 +514,7 @@ fn coverage_and_train_are_explicit() {
     let bytes = build_poi_map(
         BBOX,
         CS,
-        &[(
-            8,
-            vec![PoiSpec { lat: 43_000_001, lon: 7_000_001, subtype: 20, name: "Station".into(), hours_ref: 0xffff }],
-        )],
+        &[(8, vec![PoiSpec { lat: 43_000_001, lon: 7_000_001, subtype: 20, name: "Station".into(), payload: 0xffff }])],
     );
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).unwrap();
