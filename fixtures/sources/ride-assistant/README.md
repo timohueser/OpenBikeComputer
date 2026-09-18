@@ -67,7 +67,7 @@ The Cork map is 4,783,296 bytes, SHA-256
 The map retains its landmark content and byte-identical native terrain.
 
 The Swiss map is 48,740,272 bytes, SHA-256
-`5ea6d75f9277fc925a6001c4df3bc60e4e0086704bf3e6bb7d2c80fa7718368d`.
+`232d44072991da3470ea29e48bf44a30fbd81de8d80d56465dcf9e10cee01e48`.
 [Its build record](meiringen-v18.json) pins the full PBF, crop, compiled content, producer
 executables, land polygons and output. Packaged `build.json` records each shipping command
 and selected cell. The map contains 65 landmarks,

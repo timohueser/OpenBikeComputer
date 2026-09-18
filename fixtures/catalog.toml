@@ -5,9 +5,9 @@ base_url = "https://fixtures.openbikecomputer.com/v1/"
 # pin one immutable revision; changing bytes means changing all three values.
 [packages.sim-grimsel]
 summary = "Full Grimsel simulator map, terrain, routes, and tracks"
-archive = "packages/e1f6eaded78068ab99db9158f06a2df5a731a990abea61103e377858ccc69585.tar.gz"
-sha256 = "e1f6eaded78068ab99db9158f06a2df5a731a990abea61103e377858ccc69585"
-bytes = 4137072
+archive = "packages/b3b284ab09f9a2b72856cc9c26fd92a7d23ce6fdd7297a5882b1717dc063abb6.tar.gz"
+sha256 = "b3b284ab09f9a2b72856cc9c26fd92a7d23ce6fdd7297a5882b1717dc063abb6"
+bytes = 4137061
 provenance = "OBCM v18, packed from pinned assistant-osm Switzerland snapshot 2026-09-13; unchanged Copernicus GLO-30 terrain and authored OBCR v4 route. Schema 2 multilingual Swiss landmarks and separate bounded peak articles with original Sources. Canonical fixture bbox, and 19 settlement records. Exact source, producer and output identities: sources/ride-assistant/grimsel-v18.json."
 license = "ODbL-1.0 (map); Copernicus data terms (terrain); GPL-3.0-only (authored routes/tracks); CC-BY-SA and source-specific media licenses (landmarks, embedded credits)"
 tracked_sources = { "tracks/grimsel-climb.gpx" = "sources/sim-grimsel/tracks/grimsel-climb.gpx", "routes/grimsel-climb.obcr" = "sources/sim-grimsel/routes/grimsel-climb.obcr", "routes/TP1.OBT" = "sources/sim-grimsel/routes/TP1.OBT" }
@@ -32,9 +32,9 @@ tracked_sources = { "tracks/monaco-upahead.gpx" = "sources/sim-monaco/tracks/mon
 
 [packages.sim-freiburg]
 summary = "Freiburg to Emmendingen simulator map with a typical settlement density"
-archive = "packages/a0f68e8ac27f6ab88e612761e09a5e4da7f6e107233977c2a793779ee5961d0a.tar.gz"
-sha256 = "a0f68e8ac27f6ab88e612761e09a5e4da7f6e107233977c2a793779ee5961d0a"
-bytes = 8135648
+archive = "packages/d9af1c06a811dc9e773d90a8823e739ab6d81c9c3afa41bbfa340da1292eb52d.tar.gz"
+sha256 = "d9af1c06a811dc9e773d90a8823e739ab6d81c9c3afa41bbfa340da1292eb52d"
+bytes = 8135640
 provenance = "OBCM v18, packed from the Geofabrik europe/germany/baden-wuerttemberg/freiburg-regbez snapshot 2026-08-03 on the canonical box 7.77,47.97,7.93,48.14 (the city of Freiburg north to Emmendingen). 44 settlement records: one city, three towns, 26 villages and 14 hamlets, four of them from closed ways, and 16 with a population. No terrain, route or track. Exact source and output identities: sources/ride-assistant/freiburg-v18.json."
 license = "ODbL-1.0 (map)"
 
@@ -111,18 +111,18 @@ packages = ["assistant-osm", "assistant-terrain", "assistant-wiki", "assistant-r
 
 [packages.sim-assistant-meiringen]
 summary = "Swiss v18 regional map, terrain, landmark content, and authored Meiringen motion"
-archive = "packages/93c1c77b85a3b83c0c12ca6227d8d7bcddc27d78ea67561ac168bf811f549c93.tar.gz"
-sha256 = "93c1c77b85a3b83c0c12ca6227d8d7bcddc27d78ea67561ac168bf811f549c93"
-bytes = 33484269
+archive = "packages/0ec2fbcb97baec35ba738fceede4726d8f305df047b2f9416b539cbe354c05e3.tar.gz"
+sha256 = "0ec2fbcb97baec35ba738fceede4726d8f305df047b2f9416b539cbe354c05e3"
+bytes = 33484275
 provenance = "OBCM v18 Swiss regional crop selected by 8.1..8.4 E, 46.5..46.8 N from the full pinned 2026-09-13 Switzerland PBF. Shipping bake/cut/assemble with schema 2 multilingual country landmarks, separate bounded peak articles, settlement names and four unchanged native Copernicus terrain cells. Not a full-country map. Exact hashes and attribution: sources/ride-assistant/meiringen-v18.json and packaged build.json."
 license = "ODbL-1.0 (map); Copernicus DEM Licence (terrain); GPL-3.0-only (authored motion); CC-BY-SA and source-specific media licenses (landmarks, embedded credits)"
 tracked_sources = { "replays/meiringen-out-and-back.gpx" = "sources/ride-assistant/replays/meiringen-out-and-back.gpx", "replays/meiringen-loop-crossing.gpx" = "sources/ride-assistant/replays/meiringen-loop-crossing.gpx", "replays/meiringen-forward-rejoin.gpx" = "sources/ride-assistant/replays/meiringen-forward-rejoin.gpx" }
 
 [packages.sim-assistant-west-cork]
 summary = "West Cork v18 regional map, terrain, landmark content, and authored motion"
-archive = "packages/a3ff05bf6ca4be792a36fd13367315ecef2af109e139ebe7f5307ef5e6fe1ef0.tar.gz"
-sha256 = "a3ff05bf6ca4be792a36fd13367315ecef2af109e139ebe7f5307ef5e6fe1ef0"
-bytes = 2435919
+archive = "packages/26f60e2ac8cebd152043b489b82400795182c318dadd8292f9aeec15ae58cde9.tar.gz"
+sha256 = "26f60e2ac8cebd152043b489b82400795182c318dadd8292f9aeec15ae58cde9"
+bytes = 2435914
 provenance = "OBCM v18 from the pinned 2026-09-13 West Cork OSM crop, Copernicus GLO-30, and four-site assistant-wiki compiler input through shipping bake/cut/assemble. Landmark section v1 retains supported captured languages with shared photos and Sources. Settlement names are new; the native raster is unchanged. Exact hashes and producer attribution: sources/ride-assistant/west-cork-v18.json and packaged build.json."
 license = "ODbL-1.0 (map); Copernicus DEM Licence (terrain); GPL-3.0-only (authored motion); CC-BY-SA and source-specific media licenses (landmarks, embedded credits)"
 tracked_sources = { "replays/dunlough-access.gpx" = "sources/ride-assistant/replays/dunlough-access.gpx" }

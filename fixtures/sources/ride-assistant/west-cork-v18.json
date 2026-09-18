@@ -2,14 +2,14 @@
   "schema": 3,
   "package": "sim-assistant-west-cork",
   "archive": {
-    "bytes": 2435919,
-    "sha256": "a3ff05bf6ca4be792a36fd13367315ecef2af109e139ebe7f5307ef5e6fe1ef0"
+    "bytes": 2435914,
+    "sha256": "26f60e2ac8cebd152043b489b82400795182c318dadd8292f9aeec15ae58cde9"
   },
   "producer": {
-    "source_commit": "e5209f0dae0cf425d861daccd70820382ca41019",
+    "source_commit": "3d835f672",
     "executables_sha256": {
-      "obc-pack": "65afa24bf309b58587acc3fc81b3f799b618ac4b29041d883638cf9bd318c3de",
-      "obc-bake": "749af102d879077492fd72de1089700d4acfb553ddc5b2927dfaf13f60c7c69f",
+      "obc-pack": "94593bc035466f33eff445914bced6d87acf658c0b58262dac01add7dd5dc01d",
+      "obc-bake": "d54eaf480cfb47b95818891cda3fb770f863f68b58cb6ce00c94c5728ce570bf",
       "obc-dem": "2f69a941c0de98529e12f31bc28e0f1cd9fc5ac87618593d07b54d31fe3f91dc",
       "obcm-assemble": "7cdd8f52acce5d99ed3c20599a78a464bf1c7cd51618bc9194ffd83a4aadd222"
     }
