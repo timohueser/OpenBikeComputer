@@ -25,4 +25,10 @@ if ! command -v just >/dev/null 2>&1; then
   exit 127
 fi
 
+# `obc` lists every group but `agent`; these two reach the rest. They are wrapper flags, not
+# just flags, so they are routed to the listing recipe by hand.
+case "${1:-}" in
+  --agent|--all) exec just --justfile "$root/justfile" --working-directory "$PWD" default "$1" ;;
+esac
+
 exec just --justfile "$root/justfile" --working-directory "$PWD" "$@"

@@ -22,11 +22,13 @@ _obc_root() {
 # which is what compgen emits.
 _obc_reply() { COMPREPLY=(); local _l; while IFS= read -r _l; do COMPREPLY+=("$_l"); done; }
 
-# Task names, from the justfile (falls back to a static list).
+# Task names, from the justfile (falls back to a static list). The `agent` group stays out,
+# because completion is a person's tool; OBC_COMPLETE_ALL=1 offers it too.
 _obc_tasks() {
   local t; t="$(_obc_toolsdir)"
-  if [[ -n "$t" ]] && command -v just >/dev/null 2>&1; then
-    just --justfile "$t/justfile" --summary 2>/dev/null && return
+  if [[ -n "$t" ]]; then
+    local scope=(); [[ "${OBC_COMPLETE_ALL:-}" == 1 ]] && scope=(--all)
+    python3 "$t/tasks.py" --justfile "$t/justfile" --names "${scope[@]}" 2>/dev/null && return
   fi
   echo "fixtures sim board flash flash-boot uart debug rtt pack bake web site desktop docs build test fmt licenses bench check check-device clean doctor setup"
 }
