@@ -428,6 +428,11 @@ criteria carry the detail. A plan is covered when every criterion has evidence a
 otherwise it is partial.
 Proposing a plan never approves it.
 
+A case ID contains the test's own describe and it names. If you rename or move a test that a plan
+cites as evidence, the old case ID stops existing and the pending proposals that cite it can no
+longer be approved. Search the catalogue for the test, and send the plan again with the ID it has
+now.
+
 Read decisions and reviewer feedback with `GET /api/coverage-proposals`. Send
 `POST /api/coverage-proposals` with:
 
