@@ -146,7 +146,7 @@ mod tests {
         let mut p = PointPlacement::new(open(), &[chrome]);
         // The margin keeps marks legible beside each other; the chrome box is already its own ink.
         assert!(p.try_place(r(0, 76, 40, 24), 12), "a box ending where the chrome starts is placed");
-        assert!(!p.try_place(r(100, 99, 40, 24), 12), "one pixel inside the chrome is still refused");
+        assert!(!p.try_place(r(100, 99, 40, 24), 12), "a box reaching into the chrome is still refused");
     }
 
     #[test]
