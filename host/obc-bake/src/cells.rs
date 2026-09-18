@@ -1,5 +1,5 @@
 //! The **cell** bake: named regions in, an [`OBCA`](../../../specs/OBCA_Spec.md) cell
-//! store plus an [`OBCC`](../../../specs/OBCC_Spec.md) `schema_version 2` catalog out.
+//! store plus an [`OBCC`](../../../specs/OBCC_Spec.md) `schema_version 3` catalog out.
 //!
 //! `regions.toml` stays the curation surface — a region is still one reviewable line —
 //! but it no longer names an artifact. It names a **selection**: the set of grid cells

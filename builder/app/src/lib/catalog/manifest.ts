@@ -39,7 +39,7 @@ import {
 export { CatalogFormatError };
 
 /** The envelope version this client implements. Checked before any other field. */
-export const CATALOG_SCHEMA_VERSION = 2;
+export const CATALOG_SCHEMA_VERSION = 3;
 
 /** Which physical file of a volume set a band's content assembles into
  *  (`OBCA_Spec.md` §5.1). */

@@ -1316,7 +1316,7 @@ router. Nothing else in the design needs to move: geometry already scales horizo
 
 ## 6. Catalog, schema, and skins
 
-The catalog contract is [`OBCC_Spec.md`](OBCC_Spec.md); `schema_version 2` there carries cells,
+The catalog contract is [`OBCC_Spec.md`](OBCC_Spec.md); `schema_version 3` there carries cells,
 bands, schemas, skins, and region cell-sets. This section states only the parts that are OBCA's to
 define.
 
