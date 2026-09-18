@@ -23,7 +23,7 @@
 //! `ascent - 1` (eg convention); the UI draws `Baseline::Top`, so it only positions the unused
 //! underline/strikethrough decorations.
 //!
-//! Regenerate (from the Terminus BDFs): for each text cut,
+//! Regenerate (from the Terminus 4.49.1 BDFs): for each text cut,
 //! `python3 fonts/convert_bdf.py ter-uNNb.bdf fonts/terminus/ter_uNNb.raw --charset latin --deslash-zero`;
 //! then `python3 fonts/double_strip.py fonts/terminus/ter_u32b.raw fonts/terminus/ter_u64b.raw 16 32`
 //! (doubles just the ASCII rows for the clock).
