@@ -14,21 +14,20 @@
 
 use embedded_graphics::primitives::Rectangle;
 
-/// How many boxes one frame can hold: about 4 for the chrome, 6 for the labels, the rest for the
-/// icons. The list is 384 bytes of transient stack inside the draw pass.
+/// How many boxes one frame can hold: 4 for the chrome and 6 for the labels, with room to spare.
+/// The point icons keep their own occupancy today, so they take no slot here. The list is 384 bytes
+/// of transient stack inside the draw pass.
 const MAX_PLACED: usize = 24;
 
 /// `(left, top, right, bottom)` of a box, in `i64`.
 type Edges = (i64, i64, i64, i64);
 
 /// The boxes one frame has given away.
-#[allow(dead_code)] // The point icon and settlement label overlays are the callers.
 pub(crate) struct PointPlacement {
     bounds: Edges,
     occupied: heapless::Vec<Rectangle, MAX_PLACED>,
 }
 
-#[allow(dead_code)] // The point icon and settlement label overlays are the callers.
 impl PointPlacement {
     /// Start with the panel `bounds` and the boxes that the map chrome owns. A reserved box past
     /// the capacity is dropped, because a full list already refuses every mark.
