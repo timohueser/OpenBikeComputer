@@ -373,7 +373,7 @@
         "weight": 3,
         "z_index": 60,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -384,7 +384,7 @@
         "weight": 2,
         "z_index": 58,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -395,7 +395,7 @@
         "weight": 3,
         "z_index": 55,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -406,7 +406,7 @@
         "weight": 2,
         "z_index": 53,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -417,7 +417,7 @@
         "weight": 3,
         "z_index": 50,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -428,7 +428,7 @@
         "weight": 2,
         "z_index": 48,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -439,7 +439,7 @@
         "weight": 2,
         "z_index": 44,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -450,7 +450,7 @@
         "weight": 1,
         "z_index": 43,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -461,7 +461,7 @@
         "weight": 2,
         "z_index": 34,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -472,7 +472,7 @@
         "weight": 1,
         "z_index": 33,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -483,7 +483,7 @@
         "weight": 1,
         "z_index": 30,
         "priority": 3,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": 21162
@@ -494,7 +494,7 @@
         "weight": 1,
         "z_index": 30,
         "priority": 3,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": 21162
@@ -505,7 +505,7 @@
         "weight": 1,
         "z_index": 29,
         "priority": 3,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": 21162
@@ -516,7 +516,7 @@
         "weight": 1,
         "z_index": 28,
         "priority": 3,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": 21162
@@ -527,7 +527,7 @@
         "weight": 1,
         "z_index": 28,
         "priority": 3,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": 21162
@@ -538,7 +538,7 @@
         "weight": 1,
         "z_index": 24,
         "priority": 3,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -549,7 +549,7 @@
         "weight": 1,
         "z_index": 24,
         "priority": 3,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -560,7 +560,7 @@
         "weight": 1,
         "z_index": 24,
         "priority": 3,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -571,7 +571,7 @@
         "weight": 2,
         "z_index": 26,
         "priority": 3,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -582,7 +582,7 @@
         "weight": 2,
         "z_index": 40,
         "priority": 2,
-        "dashed": true,
+        "line_style": "dashed",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": 44373
@@ -593,7 +593,7 @@
         "weight": 1,
         "z_index": 36,
         "priority": 3,
-        "dashed": true,
+        "line_style": "dashed",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": 44373
@@ -604,7 +604,7 @@
         "weight": 1,
         "z_index": 35,
         "priority": 3,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -615,7 +615,7 @@
         "weight": 1,
         "z_index": 31,
         "priority": 3,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -626,7 +626,7 @@
         "weight": 2,
         "z_index": 16,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -637,7 +637,7 @@
         "weight": 2,
         "z_index": 16,
         "priority": 3,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -648,7 +648,7 @@
         "weight": 1,
         "z_index": 15,
         "priority": 3,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -659,7 +659,7 @@
         "weight": 1,
         "z_index": 12,
         "priority": 3,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -670,7 +670,7 @@
         "weight": 1,
         "z_index": 12,
         "priority": 3,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -681,7 +681,7 @@
         "weight": 1,
         "z_index": 10,
         "priority": 4,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -692,7 +692,7 @@
         "weight": 1,
         "z_index": 1,
         "priority": 1,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -703,7 +703,7 @@
         "weight": 1,
         "z_index": 0,
         "priority": 1,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -714,7 +714,7 @@
         "weight": 1,
         "z_index": 14,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -725,7 +725,7 @@
         "weight": 1,
         "z_index": 4,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -736,7 +736,7 @@
         "weight": 1,
         "z_index": 6,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -747,7 +747,7 @@
         "weight": 1,
         "z_index": 6,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -758,7 +758,7 @@
         "weight": 1,
         "z_index": 2,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -769,7 +769,7 @@
         "weight": 1,
         "z_index": 2,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -780,7 +780,7 @@
         "weight": 1,
         "z_index": 2,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -791,7 +791,7 @@
         "weight": 1,
         "z_index": 2,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -802,7 +802,7 @@
         "weight": 1,
         "z_index": 4,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -813,7 +813,7 @@
         "weight": 1,
         "z_index": 6,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -824,7 +824,7 @@
         "weight": 1,
         "z_index": 6,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -835,7 +835,7 @@
         "weight": 1,
         "z_index": 6,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -846,7 +846,7 @@
         "weight": 1,
         "z_index": 6,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -857,7 +857,7 @@
         "weight": 1,
         "z_index": 6,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -868,7 +868,7 @@
         "weight": 1,
         "z_index": 6,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -879,7 +879,7 @@
         "weight": 1,
         "z_index": 6,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -890,7 +890,7 @@
         "weight": 1,
         "z_index": 6,
         "priority": 2,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -901,7 +901,7 @@
         "weight": 1,
         "z_index": 6,
         "priority": 4,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -912,7 +912,7 @@
         "weight": 2,
         "z_index": 100,
         "priority": 3,
-        "dashed": true,
+        "line_style": "dashed",
         "fixed_width": false,
         "terrain_layer": false,
         "color2": null
@@ -923,7 +923,7 @@
         "weight": 1,
         "z_index": 8,
         "priority": 4,
-        "dashed": true,
+        "line_style": "dashed",
         "fixed_width": true,
         "terrain_layer": true,
         "color2": null
@@ -934,7 +934,7 @@
         "weight": 1,
         "z_index": 9,
         "priority": 4,
-        "dashed": false,
+        "line_style": "solid",
         "fixed_width": true,
         "terrain_layer": true,
         "color2": null

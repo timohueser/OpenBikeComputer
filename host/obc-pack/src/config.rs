@@ -542,16 +542,17 @@ impl JsonSchema for MultiplierValue {
     }
 }
 
-/// A line's stroke style (OBCM §2 style-record flag bit 2). The config value is `"solid"` (the
-/// default) or `"dashed"`; the renderer draws dashes for `Dashed` lines and ignores it for polygons
-/// (#557 only carries the bit end to end — later sub-issues render it).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
+/// A line's stroke style (OBCM §2 style-record flag bits 2 and 6). The config value is `"solid"`
+/// (the default), `"dashed"`, or `"ticked"` — a solid stroke with regular perpendicular ticks, the
+/// cableway and lift mark. Polygons ignore it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 #[schemars(rename = "line_style", rename_all = "lowercase")]
 pub enum LineStyle {
     #[default]
     Solid,
     Dashed,
+    Ticked,
 }
 
 /// The Style Table fields plus the `min_lod` gate (filtered on, not serialized).
@@ -586,7 +587,7 @@ impl FeatureStyle {
             color: self.color,
             weight: self.weight,
             priority: self.priority,
-            dashed: self.line_style == LineStyle::Dashed,
+            line_style: self.line_style,
             color2: self.color2,
             fixed_width: self.fixed_width,
             terrain_layer: self.terrain_layer,
@@ -1465,9 +1466,9 @@ mod tests {
             let style = cfg.get_style(&plain).unwrap().to_style();
             assert_eq!(style.id, cfg.get_style(&tagged).unwrap().id);
             assert!(style.fixed_width);
-            strokes.push((style.weight, style.dashed));
+            strokes.push((style.weight, style.line_style));
         }
-        assert_eq!(strokes, [(1, false), (1, false), (1, true)]);
+        assert_eq!(strokes, [(1, LineStyle::Solid), (1, LineStyle::Solid), (1, LineStyle::Dashed)]);
         let service_lod = cfg.feature_style("highway", "service").unwrap().min_lod;
         for highway in ["track", "path", "footway", "cycleway", "steps", "bridleway", "via_ferrata", "ladder"] {
             let min_lod = cfg.feature_style("highway", highway).unwrap().min_lod;
@@ -1927,32 +1928,35 @@ mod tests {
         [(x.0, y.0), (x.1, y.1), (x.2, y.2)].iter().map(|(p, q)| p.abs_diff(*q) as u32 / 85).sum()
     }
 
-    /// Two strokes of the same width and dash are told apart by colour alone, so a one-step
-    /// neighbour reads as the same line. Contours and lifts were exactly that pair: both one pixel,
-    /// both dashed, and one step apart. The warm road ladder is deliberately one step per class,
-    /// but those are solid and of differing widths, so this holds only over the dashed thin group.
+    /// Two strokes of the same width and the same stroke shape are told apart by colour alone, so a
+    /// one-step neighbour reads as the same line. Contours and lifts were exactly that pair: both
+    /// one pixel, both dashed, one step apart. Lifts are ticked now, which separates them by shape,
+    /// but the rule still binds each shape group. The warm road ladder is deliberately one step per
+    /// class; those are solid and of differing widths, so the solid group is not held to this.
     #[test]
     fn no_two_thin_dashed_lines_share_a_colour_neighbourhood() {
         let cfg = corpus_config();
-        let mut thin: Vec<(String, u16)> = Vec::new();
-        for (key, values) in &cfg.features {
-            for (value, style) in values {
-                if style.weight == 1 && style.line_style == LineStyle::Dashed {
-                    thin.push((format!("{key}/{value}"), style.color));
+        for shape in [LineStyle::Dashed, LineStyle::Ticked] {
+            let mut thin: Vec<(String, u16)> = Vec::new();
+            for (key, values) in &cfg.features {
+                for (value, style) in values {
+                    if style.weight == 1 && style.line_style == shape {
+                        thin.push((format!("{key}/{value}"), style.color));
+                    }
                 }
             }
-        }
-        thin.sort();
-        assert!(thin.len() > 10, "the shipped schema carries a real thin dashed group: {}", thin.len());
-        for (i, (a, ca)) in thin.iter().enumerate() {
-            for (b, cb) in &thin[i + 1..] {
-                if ca == cb {
-                    continue; // One look deliberately shared, such as every lift kind.
+            thin.sort();
+            assert!(!thin.is_empty(), "the shipped schema uses {shape:?}");
+            for (i, (a, ca)) in thin.iter().enumerate() {
+                for (b, cb) in &thin[i + 1..] {
+                    if ca == cb {
+                        continue; // One look deliberately shared, such as every lift kind.
+                    }
+                    assert!(
+                        steps_apart(*ca, *cb) >= 2,
+                        "{shape:?}: {a} {ca:#06X} and {b} {cb:#06X} are one step apart and cannot be told apart"
+                    );
                 }
-                assert!(
-                    steps_apart(*ca, *cb) >= 2,
-                    "{a} {ca:#06X} and {b} {cb:#06X} are one step apart and cannot be told apart"
-                );
             }
         }
     }

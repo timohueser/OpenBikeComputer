@@ -25,7 +25,7 @@ use heapless::Vec;
 
 use embedded_graphics::prelude::*;
 
-use obc_map_scene::{Diagnostics, Kind, MapScene, ReadError};
+use obc_map_scene::{Diagnostics, Kind, LineStyle, MapScene, ReadError};
 
 pub mod canvas;
 mod collect;
@@ -603,7 +603,7 @@ impl RenderScratch {
                 if s.color2.is_some() {
                     let (word, bit) = ((id >> 5) as usize, 1u32 << (id & 31));
                     outlined_mask[word] |= bit;
-                    if !s.flags.dashed() {
+                    if s.flags.line_style() == LineStyle::Solid {
                         cased_mask[word] |= bit;
                     }
                 }
@@ -653,7 +653,7 @@ impl RenderScratch {
                     pts,
                     casing_color,
                     line_px(span.weight, wscale, fixed_width) + 2 * Self::CASING_PX,
-                    false,
+                    LineStyle::Solid,
                     None,
                     draw.points.screen(),
                 );
@@ -775,12 +775,13 @@ impl RenderScratch {
                 fill_polygon_edges(target, pts, ring_lens, color, (vp.w as i32, vp.h as i32), points.edges(), xs);
             }
             Kind::Line => {
-                // Lines use only the exterior ring. Re-resolve the style for `dashed`/`color2`;
+                // Lines use only the exterior ring. Re-resolve the style for its line kind and
+                // `color2`;
                 // `color2` quantizes through `color_fn` exactly like the primary. A missing
                 // style (never collected) falls back to today's solid stroke.
                 let n = ring_lens.first().copied().unwrap_or(0) as usize;
                 let style = scene.style(span.style_id);
-                let dashed = style.is_some_and(|s| s.flags.dashed());
+                let line = style.map_or(LineStyle::Solid, |s| s.flags.line_style());
                 let color2 = style.and_then(|s| s.color2).map(color_fn);
                 // #1095: a fixed-width style strokes its authored `weight` verbatim (`line_px`); a
                 // missing style falls back to the ramp, exactly as it falls back to a solid stroke.
@@ -791,7 +792,7 @@ impl RenderScratch {
                     &pts[..n],
                     color,
                     line_px(span.weight, wscale, fixed_width),
-                    dashed,
+                    line,
                     color2,
                     points.screen(),
                 );

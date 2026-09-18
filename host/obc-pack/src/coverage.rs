@@ -1354,6 +1354,7 @@ fn dissolve_class(faces: &[Geom]) -> Option<Vec<Geom>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::LineStyle;
     use crate::merge::merge_classes;
     use crate::serialize::Style;
 
@@ -1365,7 +1366,7 @@ mod tests {
             color,
             weight: 1,
             priority: 3,
-            dashed: false,
+            line_style: LineStyle::Solid,
             color2: None,
             fixed_width: false,
             terrain_layer: false,

@@ -20,6 +20,7 @@
 use obc_elevation::NullElevation;
 use obc_map_scene::M_PER_DEG;
 use obc_pack::config::Config;
+use obc_pack::config::LineStyle;
 use obc_pack::coverage::{coverage_simplify_fills, Eliminate};
 use obc_pack::geom::{
     coverage_is_valid, coverage_simplify_vw, footprint_below, strip_small_holes, topology_preserve_simplify, Geom,
@@ -49,7 +50,7 @@ fn fill(id: u8, color: u16) -> Style {
         color,
         weight: 1,
         priority: 3,
-        dashed: false,
+        line_style: LineStyle::Solid,
         color2: None,
         fixed_width: false,
         terrain_layer: false,

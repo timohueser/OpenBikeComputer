@@ -125,13 +125,13 @@ fn dump(r: &Reader, path: &str) {
     for id in 0u16..=255 {
         if let Some(s) = r.style(id as u8) {
             println!(
-                "style id={} z={} color={:#06x} weight={} prio={} dashed={} fixed_width={} terrain={} color2={}",
+                "style id={} z={} color={:#06x} weight={} prio={} line={:?} fixed_width={} terrain={} color2={}",
                 s.id,
                 s.z_index,
                 s.color,
                 s.weight,
                 s.priority,
-                s.flags.dashed() as u8,
+                s.flags.line_style(),
                 s.flags.fixed_width() as u8,
                 s.flags.terrain_layer() as u8,
                 s.color2.map_or("-".into(), |c| format!("{c:#06x}"))

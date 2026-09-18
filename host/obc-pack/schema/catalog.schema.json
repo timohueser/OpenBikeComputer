@@ -9,7 +9,7 @@
       "type": "integer",
       "format": "uint32",
       "minimum": 0,
-      "const": 2
+      "const": 3
     },
     "generated_at": {
       "description": "When this root was generated, RFC 3339 UTC — the only wall clock on the generation path (`OBCC_Spec.md` §3).",
@@ -461,8 +461,9 @@
           "minimum": 1,
           "maximum": 4
         },
-        "dashed": {
-          "type": "boolean"
+        "line_style": {
+          "description": "How the line is stroked: `solid`, `dashed` or `ticked`. Polygons ignore it.",
+          "$ref": "#/$defs/line_style"
         },
         "fixed_width": {
           "description": "Style-record flag bit 4 (#1095): the weight is used verbatim on screen, off the zoom width ramp. Defaulted so a catalog written before the bit existed still parses.",
@@ -491,7 +492,16 @@
         "weight",
         "z_index",
         "priority",
-        "dashed"
+        "line_style"
+      ]
+    },
+    "line_style": {
+      "description": "A line's stroke style (OBCM §2 style-record flag bits 2 and 6). The config value is `\"solid\"` (the default), `\"dashed\"`, or `\"ticked\"` — a solid stroke with regular perpendicular ticks, the cableway and lift mark. Polygons ignore it.",
+      "type": "string",
+      "enum": [
+        "solid",
+        "dashed",
+        "ticked"
       ]
     },
     "SkinPreview": {
@@ -941,7 +951,7 @@
           "type": "integer",
           "format": "uint32",
           "minimum": 0,
-          "const": 2
+          "const": 3
         },
         "schema_revision": {
           "description": "The revision every cell in this document was baked at.",
@@ -989,7 +999,7 @@
           "type": "integer",
           "format": "uint32",
           "minimum": 0,
-          "const": 2
+          "const": 3
         },
         "schema_revision": {
           "type": "integer",
@@ -1090,7 +1100,7 @@
           "type": "integer",
           "format": "uint32",
           "minimum": 0,
-          "const": 2
+          "const": 3
         },
         "terrain_revision": {
           "type": "integer",

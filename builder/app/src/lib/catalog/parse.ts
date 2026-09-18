@@ -48,6 +48,14 @@ export function int(o: Obj, key: string, where: string, min = 0, max = Number.MA
     return v as number;
 }
 
+export function oneOf<T extends string>(o: Obj, key: string, where: string, allowed: readonly T[]): T {
+    const v = o[key];
+    if (typeof v !== "string" || !allowed.includes(v as T)) {
+        fail(`${where}: ${key} must be one of ${allowed.join(", ")}`);
+    }
+    return v as T;
+}
+
 export function bool(o: Obj, key: string, where: string): boolean {
     const v = o[key];
     if (typeof v !== "boolean") fail(`${where}: ${key} must be a boolean`);

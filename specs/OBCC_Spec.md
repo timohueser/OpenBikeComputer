@@ -5,7 +5,7 @@ bakery and map-building consumers. The website and desktop app read the same
 catalog, select the same [OBCA](OBCA_Spec.md) cells, and feed them to the same
 assembler. The device does not read OBCC.
 
-The current envelope has `"schema_version": 2`. Consumers MUST reject any other
+The current envelope has `"schema_version": 3`. Consumers MUST reject any other
 value before interpreting the rest of the document. Version 1 never shipped and
 is not supported; this document describes only the current cell-catalog envelope.
 
@@ -92,7 +92,7 @@ references, unsafe URLs, or invalid ordering MUST reject the containing document
 
 ```jsonc
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "generated_at": "2026-07-30T09:00:00Z",
   "source": { /* SourceEntry, §3.1 */ },
   "schema": { /* SchemaEntry */ },
@@ -106,7 +106,7 @@ references, unsafe URLs, or invalid ordering MUST reject the containing document
 
 | Field | Type | Meaning |
 | :-- | :-- | :-- |
-| `schema_version` | integer | MUST equal `2`. |
+| `schema_version` | integer | MUST equal `3`. |
 | `generated_at` | string | RFC 3339 UTC, exactly `YYYY-MM-DDTHH:MM:SSZ`. |
 | `source` | object | The cell store's data provenance and licence (§3.1). |
 | `schema` | object | The catalog's single `SchemaEntry`. |
@@ -205,7 +205,8 @@ number does not change.
 | `preview` | object | Optional digest-pinned canonical rendering (§5.1). |
 
 A style record contains `feature_type`, `color`, `weight`, `z_index`,
-`priority`, `dashed`, and nullable `color2`. A skin MUST cover every
+`priority`, `line_style`, and nullable `color2`. `line_style` is `"solid"`,
+`"dashed"` or `"ticked"`. A skin MUST cover every
 `schema.styles[].feature_type` exactly once and MUST name no other feature type.
 
 A skin MUST NOT carry feature selection, LOD thresholds, simplification,
@@ -253,7 +254,7 @@ The pinned satellite has this shape:
 
 ```jsonc
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "schema_revision": 7,
   "region_id": "europe/switzerland",
   "cells": {
@@ -315,7 +316,7 @@ The pinned cell index has this shape:
 
 ```jsonc
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "schema_revision": 7,
   "band": "fine",
   "cells": [
@@ -522,7 +523,7 @@ The pinned index:
 
 ```jsonc
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "terrain_revision": 4,
   "dataset_id": "copernicus-glo-30",
   "dataset_version": "2021-1",

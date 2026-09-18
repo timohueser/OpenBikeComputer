@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "generated_at": "2026-07-30T09:00:00Z",
   "source": {
     "dataset_id": "openstreetmap",
@@ -114,7 +114,7 @@
           "weight": 3,
           "z_index": 60,
           "priority": 2,
-          "dashed": false,
+          "line_style": "solid",
           "fixed_width": false,
           "terrain_layer": false,
           "color2": null
@@ -125,7 +125,7 @@
           "weight": 1,
           "z_index": 30,
           "priority": 3,
-          "dashed": true,
+          "line_style": "dashed",
           "fixed_width": false,
           "terrain_layer": false,
           "color2": null
@@ -136,7 +136,7 @@
           "weight": 1,
           "z_index": 10,
           "priority": 3,
-          "dashed": false,
+          "line_style": "solid",
           "fixed_width": false,
           "terrain_layer": false,
           "color2": null
@@ -147,7 +147,7 @@
           "weight": 1,
           "z_index": 5,
           "priority": 4,
-          "dashed": false,
+          "line_style": "solid",
           "fixed_width": false,
           "terrain_layer": false,
           "color2": null
@@ -167,7 +167,7 @@
           "weight": 3,
           "z_index": 60,
           "priority": 2,
-          "dashed": false,
+          "line_style": "solid",
           "fixed_width": false,
           "terrain_layer": false,
           "color2": null
@@ -178,7 +178,7 @@
           "weight": 1,
           "z_index": 30,
           "priority": 3,
-          "dashed": true,
+          "line_style": "dashed",
           "fixed_width": false,
           "terrain_layer": false,
           "color2": null
@@ -189,7 +189,7 @@
           "weight": 1,
           "z_index": 10,
           "priority": 3,
-          "dashed": false,
+          "line_style": "solid",
           "fixed_width": false,
           "terrain_layer": false,
           "color2": null
@@ -200,7 +200,7 @@
           "weight": 1,
           "z_index": 5,
           "priority": 4,
-          "dashed": false,
+          "line_style": "solid",
           "fixed_width": false,
           "terrain_layer": false,
           "color2": null
@@ -268,9 +268,9 @@
         "known_empty_count": 1,
         "bytes": 1096
       },
-      "cells_url": "https://maps.example.org/catalog/regions/europe/switzerland/cells.5a5d56b7ef65865bf54ceb37e2dc9e504f002eeae1712226fce2d8b1bf402bdc.json",
+      "cells_url": "https://maps.example.org/catalog/regions/europe/switzerland/cells.69b51a5d5ce1afa6ba15a2de643d01c787a321a4a3b2990799a99d9c1fc42231.json",
       "cells_bytes": 427,
-      "cells_sha256": "5a5d56b7ef65865bf54ceb37e2dc9e504f002eeae1712226fce2d8b1bf402bdc"
+      "cells_sha256": "69b51a5d5ce1afa6ba15a2de643d01c787a321a4a3b2990799a99d9c1fc42231"
     },
     {
       "id": "europe/switzerland/basel-stadt",
@@ -327,9 +327,9 @@
         "known_empty_count": 0,
         "bytes": 548
       },
-      "cells_url": "https://maps.example.org/catalog/regions/europe/switzerland/basel-stadt/cells.193008a2ba404971d2303c7c35b706542ef528487dc3ab426446caa3fc3391c7.json",
+      "cells_url": "https://maps.example.org/catalog/regions/europe/switzerland/basel-stadt/cells.2b00d7d213dfd7d2ecf36e4389aebf9fa1b86dea2423eb06fd952c1d9125657f.json",
       "cells_bytes": 329,
-      "cells_sha256": "193008a2ba404971d2303c7c35b706542ef528487dc3ab426446caa3fc3391c7"
+      "cells_sha256": "2b00d7d213dfd7d2ecf36e4389aebf9fa1b86dea2423eb06fd952c1d9125657f"
     }
   ],
   "cell_index": [
@@ -339,8 +339,8 @@
       "cell_count": 1,
       "known_empty_count": 0,
       "bytes": 590,
-      "sha256": "be0a41631b6d1ea99fb1e927f2ae0469a4dfabe8555d07b8e83974aeb4f2c141",
-      "url": "https://maps.example.org/catalog/cells/coarse/index.be0a41631b6d1ea99fb1e927f2ae0469a4dfabe8555d07b8e83974aeb4f2c141.json"
+      "sha256": "cb78e2ae9a4dfbed04fc2c84d28cb5581f65d747fa03aee324cc5598beb5dc5f",
+      "url": "https://maps.example.org/catalog/cells/coarse/index.cb78e2ae9a4dfbed04fc2c84d28cb5581f65d747fa03aee324cc5598beb5dc5f.json"
     },
     {
       "band": "mid",
@@ -348,8 +348,8 @@
       "cell_count": 1,
       "known_empty_count": 0,
       "bytes": 584,
-      "sha256": "4f58d4edd7314584fd00b8c052274ed12907b6f689225daa9c82014b5bf7ad9f",
-      "url": "https://maps.example.org/catalog/cells/mid/index.4f58d4edd7314584fd00b8c052274ed12907b6f689225daa9c82014b5bf7ad9f.json"
+      "sha256": "84777ea89b50dd877591a1e8069e5f496110c35028e36a192c994317935fa74f",
+      "url": "https://maps.example.org/catalog/cells/mid/index.84777ea89b50dd877591a1e8069e5f496110c35028e36a192c994317935fa74f.json"
     },
     {
       "band": "fine",
@@ -357,8 +357,8 @@
       "cell_count": 2,
       "known_empty_count": 1,
       "bytes": 1414,
-      "sha256": "8712a34c58297acd7b888c2a1ec752890db3dc2714c7a19f58f965168af3a454",
-      "url": "https://maps.example.org/catalog/cells/fine/index.8712a34c58297acd7b888c2a1ec752890db3dc2714c7a19f58f965168af3a454.json"
+      "sha256": "f2e9d961da05aaf71da735cdb2466ae5d4649d21ccaefead76ddf872ab2009cc",
+      "url": "https://maps.example.org/catalog/cells/fine/index.f2e9d961da05aaf71da735cdb2466ae5d4649d21ccaefead76ddf872ab2009cc.json"
     },
     {
       "band": "network",
@@ -366,8 +366,8 @@
       "cell_count": 2,
       "known_empty_count": 0,
       "bytes": 1072,
-      "sha256": "fe35750bb79659042727e7ce46d7e31537b5aa319e99acef26e617bf78e3c98c",
-      "url": "https://maps.example.org/catalog/cells/network/index.fe35750bb79659042727e7ce46d7e31537b5aa319e99acef26e617bf78e3c98c.json"
+      "sha256": "dfa34ded636ed0f916b22e20521785a65490e46eea5a0297e8b547997f567f26",
+      "url": "https://maps.example.org/catalog/cells/network/index.dfa34ded636ed0f916b22e20521785a65490e46eea5a0297e8b547997f567f26.json"
     }
   ],
   "terrain": {
@@ -381,8 +381,8 @@
       "cell_count": 2,
       "known_empty_count": 1,
       "bytes": 983,
-      "sha256": "ee33bfae60baa62b2312f308ec812c5f3af4b7a0e2cb93a9c7b4754561fe48ff",
-      "url": "https://maps.example.org/catalog/cells/terrain/index.ee33bfae60baa62b2312f308ec812c5f3af4b7a0e2cb93a9c7b4754561fe48ff.json"
+      "sha256": "68947f233e505e6c7573acb814a560899eed5fdf78d4e38b13cfa1ecaffd53b2",
+      "url": "https://maps.example.org/catalog/cells/terrain/index.68947f233e505e6c7573acb814a560899eed5fdf78d4e38b13cfa1ecaffd53b2.json"
     }
   },
   "network_terrain_revision": 3

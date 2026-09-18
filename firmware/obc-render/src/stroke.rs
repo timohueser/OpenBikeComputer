@@ -11,6 +11,7 @@ use crate::collect::ScreenPoint;
 use crate::fill::fill_convex_quad;
 use crate::viewport::{round_pt, Viewport};
 use crate::MAX_SCREEN_POINTS;
+use obc_map_scene::LineStyle;
 
 /// Cohen–Sutherland outcode: bit 1 = left, 2 = right, 4 = above the top, 8 = below the bottom.
 #[inline]
@@ -160,9 +161,9 @@ pub(crate) struct Stroker<'a, D: DrawTarget> {
     color: D::Color,
     /// Stroke width in px, already `.max(1)`-clamped by [`Stroker::new`].
     weight: u32,
-    /// When set ([`Stroker::stroke_dashed`]), each flushed run rasterises as screen-space dashes
-    /// instead of a solid stroke. Off by default, so [`Stroker::stroke`] is byte-for-byte unchanged.
-    dashed: bool,
+    /// How each flushed run rasterises. [`LineStyle::Solid`] by default, so [`Stroker::stroke`] is
+    /// byte-for-byte unchanged; [`Stroker::stroke_dashed`] and [`Stroker::stroke_ticked`] set it.
+    line: LineStyle,
     /// View rectangle grown by the stroke width ([`Stroker::new`]), as `(xmin, ymin, xmax, ymax)`.
     clip: (f32, f32, f32, f32),
     w: i32,
@@ -185,7 +186,7 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
         let m = weight as f32 + 2.0; // clip margin ≥ half-width, so edge strokes still paint in
         let clip = (-m, -m, w as f32 + m, h as f32 + m);
         run.clear();
-        Self { target, run, color, weight, dashed: false, clip, w, h }
+        Self { target, run, color, weight, line: LineStyle::Solid, clip, w, h }
     }
 
     /// Clip a projected overlay polyline to the view and stroke the on-screen runs
@@ -226,7 +227,19 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
     where
         I: IntoIterator<Item = Point>,
     {
-        self.dashed = true;
+        self.line = LineStyle::Dashed;
+        self.stroke(points)
+    }
+
+    /// Like [`Stroker::stroke`] but rasterises each run as a solid stroke carrying regular
+    /// perpendicular **ticks** ([`walk_ticks`]) — the cableway and lift mark. It reuses the same
+    /// simplify → clip → run pipeline, so off-screen ticks cost nothing, and the tick phase resets
+    /// at each run exactly as the dash phase does.
+    pub(crate) fn stroke_ticked<I>(&mut self, points: I) -> usize
+    where
+        I: IntoIterator<Item = Point>,
+    {
+        self.line = LineStyle::Ticked;
         self.stroke(points)
     }
 
@@ -272,9 +285,22 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
     /// `Circle` path measured ~10× a span stroke even at 2 px, so the split sits at 1 px, not 2.
     fn flush_run(&mut self) {
         if self.run.len() >= 2 {
-            if self.dashed {
+            if self.line == LineStyle::Dashed {
                 self.flush_run_dashed();
-            } else if self.weight <= 1 {
+            } else if self.line == LineStyle::Ticked {
+                self.flush_run_ticked();
+            } else {
+                self.flush_run_solid();
+            }
+        }
+        self.run.clear();
+    }
+
+    /// The solid body of a run: a Bresenham polyline at 1 px, spans plus joint discs above it.
+    /// Leaves `run` intact — the ticked path draws the body and then walks the same run again.
+    fn flush_run_solid(&mut self) {
+        if self.run.len() >= 2 {
+            if self.weight <= 1 {
                 let _ = Polyline::new(self.run)
                     .into_styled(PrimitiveStyle::with_stroke(self.color, self.weight))
                     .draw(self.target);
@@ -298,7 +324,6 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
                 self.fill_disc(self.run[n - 1].x, self.run[n - 1].y, r);
             }
         }
-        self.run.clear();
     }
 
     /// Rasterise the accumulated run as **screen-space dashes** in `self.color` ([`walk_dashes`],
@@ -325,6 +350,34 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
                 let _ = Polyline::new(&[a, b]).into_styled(PrimitiveStyle::with_stroke(color, weight)).draw(target);
             } else {
                 fill_butt_quad(target, a, b, hw, color, w, h);
+            }
+        });
+    }
+
+    /// Rasterise the accumulated run as a solid stroke plus regular perpendicular **ticks** — the
+    /// cableway mark. The body goes through [`Stroker::flush_run_solid`] unchanged, then
+    /// [`walk_ticks`] walks the same run and each tick is stroked across the line's own normal.
+    /// Shape, not colour, is what separates this from the other thin dashed lines, so it stays
+    /// legible next to a contour of any hue. Called only from [`Stroker::flush_run`].
+    fn flush_run_ticked(&mut self) {
+        self.flush_run_solid();
+        let (spacing, arm) = tick_geometry(self.weight);
+        let weight = self.weight;
+        let target = &mut *self.target;
+        let color = self.color;
+        let (w, h) = (self.w, self.h);
+        walk_ticks(self.run, spacing, |c, (ux, uy)| {
+            // The tick is the segment normal, swept ±`arm` about the centre point.
+            let (nx, ny) = (-uy * arm, ux * arm);
+            let a = round_pt(c.0 - nx, c.1 - ny);
+            let b = round_pt(c.0 + nx, c.1 + ny);
+            if a == b {
+                return;
+            }
+            if weight <= 1 {
+                let _ = Polyline::new(&[a, b]).into_styled(PrimitiveStyle::with_stroke(color, 1)).draw(target);
+            } else {
+                fill_butt_quad(target, a, b, (weight / 2) as f32, color, w, h);
             }
         });
     }
@@ -404,6 +457,44 @@ fn dash_len(weight: u32) -> f32 {
     (3 * weight).clamp(4, 12) as f32
 }
 
+/// Tick spacing and arm half-length in screen px for a `weight`-px ticked stroke. Screen-space and
+/// with no per-style knob, exactly like [`dash_len`], so the rhythm tracks the stroke's own rendered
+/// width. The arm is short and the spacing four times it, which is what reads as a cableway rather
+/// than as a fat dash. The arm clamps so a thick stroke does not grow whiskers; the spacing follows
+/// it and needs no clamp of its own. The numbers are a by-eye call; tune here.
+fn tick_geometry(weight: u32) -> (f32, f32) {
+    let arm = (weight + 1).clamp(2, 4) as f32;
+    (4.0 * arm, arm)
+}
+
+/// Walk an already-clipped, screen-space polyline `run` and emit one **tick** every `spacing` px of
+/// arc length as a `(centre, unit direction)` pair. Phase accumulates across the run's segments, so
+/// the ticks stay evenly spaced through a bend, and starts at `spacing / 2` so a short run still
+/// gets one. The direction is the segment's own, which the caller turns into the normal; the pure
+/// arc-length math lives here so it can be unit-tested apart from any draw target.
+fn walk_ticks<F>(run: &[Point], spacing: f32, mut emit: F)
+where
+    F: FnMut((f32, f32), (f32, f32)),
+{
+    let mut phase = spacing * 0.5; // distance still to run before the next tick
+    for seg in run.windows(2) {
+        let (a, b) = (seg[0], seg[1]);
+        let (ax, ay) = (a.x as f32, a.y as f32);
+        let (dx, dy) = ((b.x - a.x) as f32, (b.y - a.y) as f32);
+        let len = libm::sqrtf(dx * dx + dy * dy);
+        if len < 1e-3 {
+            continue; // degenerate segment; phase untouched
+        }
+        let (ux, uy) = (dx / len, dy / len);
+        let mut t = phase;
+        while t < len {
+            emit((ax + ux * t, ay + uy * t), (ux, uy));
+            t += spacing;
+        }
+        phase = t - len; // carry the remainder into the next segment
+    }
+}
+
 /// Walk an already-clipped, screen-space polyline `run` and emit each **"on" dash interval** as a
 /// `(start, end)` point pair to `emit`, using `on == off == dash` px of **arc length**. The phase
 /// accumulates across the run's segments (so dashes read continuously through a bend) and starts at
@@ -466,31 +557,38 @@ pub(crate) fn draw_line<D>(
     pts: &[ScreenPoint],
     color: D::Color,
     weight: u32,
-    dashed: bool,
+    line: LineStyle,
     color2: Option<D::Color>,
     screen: &mut Vec<Point, MAX_SCREEN_POINTS>,
 ) where
     D: DrawTarget,
 {
     let (w, h) = (vp.w as i32, vp.h as i32);
-    match (dashed, color2) {
+    match (line, color2) {
         // Solid (with or without color2 — casing is #559's job, not draw_line's). Unchanged path.
-        (false, _) => {
+        (LineStyle::Solid, _) => {
             Stroker::new(target, screen, color, weight, w, h).stroke(pts.iter().map(|p| p.point()));
         }
-        (true, None) => {
+        (LineStyle::Dashed, None) => {
             Stroker::new(target, screen, color, weight, w, h).stroke_dashed(pts.iter().map(|p| p.point()));
         }
-        (true, Some(c2)) => {
+        (LineStyle::Dashed, Some(c2)) => {
             Stroker::new(target, screen, c2, weight, w, h).stroke(pts.iter().map(|p| p.point()));
             Stroker::new(target, screen, color, weight, w, h).stroke_dashed(pts.iter().map(|p| p.point()));
+        }
+        // Ticked draws its own solid body, so `color2` has nothing left to case and is ignored.
+        (LineStyle::Ticked, _) => {
+            Stroker::new(target, screen, color, weight, w, h).stroke_ticked(pts.iter().map(|p| p.point()));
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{butt_quad, dash_len, joint_disc_cos2, simplify, turn_is_sharp, walk_dashes, within_eps};
+    use super::{
+        butt_quad, dash_len, joint_disc_cos2, simplify, tick_geometry, turn_is_sharp, walk_dashes, walk_ticks,
+        within_eps,
+    };
     use crate::fill::{fill_convex_quad, fill_polygon};
     use crate::MAX_CROSSINGS;
     use embedded_graphics::{pixelcolor::BinaryColor, prelude::*, primitives::Rectangle};
@@ -567,6 +665,34 @@ mod tests {
         assert_eq!(dash_len(2), 6.0, "rail weight: 3×2");
         assert_eq!(dash_len(4), 12.0, "hits the ceiling exactly");
         assert_eq!(dash_len(9), 12.0, "clamps down to the 12 px ceiling");
+    }
+
+    /// The tick rhythm is what makes a cableway read as one: evenly spaced marks that keep their
+    /// spacing through a bend, and a mark on even the shortest run.
+    #[test]
+    fn walk_ticks_spaces_evenly_and_carries_its_phase_through_a_bend() {
+        let (spacing, arm) = tick_geometry(1);
+        assert_eq!((spacing, arm), (8.0, 2.0), "a one-pixel lift: a 2 px arm every 8 px");
+        assert_eq!(tick_geometry(9), (16.0, 4.0), "the arm clamps, and the spacing follows it");
+
+        // A 20 px horizontal run then 20 px vertical: one continuous 40 px arc.
+        let run = [Point::new(0, 0), Point::new(20, 0), Point::new(20, 20)];
+        let mut at: Vec<(i32, i32), 8> = Vec::new();
+        let mut dirs: Vec<(f32, f32), 8> = Vec::new();
+        walk_ticks(&run, spacing, |c, d| {
+            at.push((c.0 as i32, c.1 as i32)).expect("the run holds few enough ticks");
+            dirs.push(d).expect("the run holds few enough ticks");
+        });
+        // Marks fall at arc 4, 12, 20, 28, 36 — the first at half a spacing, then every 8 px, and
+        // the phase carries across the vertex rather than restarting.
+        assert_eq!(at.as_slice(), [(4, 0), (12, 0), (20, 0), (20, 8), (20, 16)]);
+        assert_eq!(dirs[0], (1.0, 0.0), "along the first segment");
+        assert_eq!(dirs[4], (0.0, 1.0), "and along the second");
+
+        // A run shorter than one spacing still carries a mark, so a clipped lift never vanishes.
+        let mut short = 0;
+        walk_ticks(&[Point::new(0, 0), Point::new(5, 0)], spacing, |_, _| short += 1);
+        assert_eq!(short, 1);
     }
 
     #[test]

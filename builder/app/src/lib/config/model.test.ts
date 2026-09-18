@@ -36,7 +36,7 @@ const mockSchema: SchemaEnvelope = {
                     weight: {},
                     priority: {},
                     min_lod: {},
-                    line_style: { enum: ["solid", "dashed"], default: "solid" },
+                    line_style: { enum: ["solid", "dashed", "ticked"], default: "solid" },
                     color2: { $ref: "#/$defs/color" },
                 },
             },

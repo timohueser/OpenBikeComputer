@@ -396,11 +396,12 @@
       ]
     },
     "line_style": {
-      "description": "A line's stroke style (OBCM §2 style-record flag bit 2). The config value is `\"solid\"` (the\ndefault) or `\"dashed\"`; the renderer draws dashes for `Dashed` lines and ignores it for polygons\n(#557 only carries the bit end to end — later sub-issues render it).",
+      "description": "A line's stroke style (OBCM §2 style-record flag bits 2 and 6). The config value is `\"solid\"`\n(the default), `\"dashed\"`, or `\"ticked\"` — a solid stroke with regular perpendicular ticks, the\ncableway and lift mark. Polygons ignore it.",
       "type": "string",
       "enum": [
         "solid",
-        "dashed"
+        "dashed",
+        "ticked"
       ]
     },
     "lod": {
