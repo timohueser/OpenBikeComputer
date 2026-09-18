@@ -387,6 +387,25 @@ DFU_PRE="B u p d d d d p d d d p p"
 # (corner normally, stepped above the chip band while a chip is up), and — priority order unchanged —
 # the bottom-centre one-slot warning chip.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --script "p p p p"   --gpx "$GPX" --at 30 --expect-screen Map --png "$OUT/map.png"
+# Settlement names (#1900). The Grimsel map is high alpine and holds almost no place records, so
+# these three use the Freiburg package: 44 settlements over 20 km, one city, three towns, 26
+# villages and 14 hamlets. `--zoom` multiplies the bbox-fit zoom of *that* package, and the three
+# multipliers below put the camera at about 100, 30 and 15 metres per pixel; repacking the package
+# moves them, which the digest catches.
+FREIBURG="$fixture_root/sim-freiburg/freiburg.obcm"
+# 100 m/px over Freiburg: the city and the town of Denzlingen. The villages and the hamlets are
+# past their bands and stay quiet, which is the whole point of the bands.
+"$SIM" "$FREIBURG" --clock "2025-06-29T14:40" --center 7850000,47995000 --zoom 1.49 \
+    --expect-screen Map --png "$OUT/map-settlements.png"
+# 30 m/px, with the camera east of Emmendingen so the town sits ~40 px from the left edge: its
+# 11-character name leans back inside the panel instead of being dropped, and Maleck — a village of
+# 400 under the name's box, named in the frame below — loses the space to it.
+"$SIM" "$FREIBURG" --clock "2025-06-29T14:40" --center 7881900,48121100 --zoom 4.9668 \
+    --expect-screen Map --png "$OUT/map-settlements-dense.png"
+# 15 m/px over Maleck: village and hamlet names, no city name anywhere, and the 12-character cut
+# ("Vordere Za..").
+"$SIM" "$FREIBURG" --clock "2025-06-29T14:40" --center 7889400,48123600 --zoom 9.9336 \
+    --expect-screen Map --png "$OUT/map-settlements-village.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p b" --gpx "$GPX" --at 30 --expect-screen Statistics --png "$OUT/statistics.png"
 # Elevation-profile Inspect mirrors the Map: hold enters Pan, Select tap toggles Zoom, and another
 # Select tap returns to Pan without discarding the magnification. `w` clears the entry hold bulge.
