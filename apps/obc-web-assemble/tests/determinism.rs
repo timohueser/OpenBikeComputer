@@ -327,7 +327,7 @@ fn assert_section_gaps(map: &[u8]) -> (usize, usize) {
     };
 
     // §1: the 65-byte header, then the run to the style table's boundary.
-    assert_eq!(map[4], 17, "the version byte this walk is written against");
+    assert_eq!(map[4], obc_formats::obcm::VERSION, "the version byte this walk is written against");
     assert_eq!(map[40], 4, "`Offset Scale`, so U = 16");
     let style_at = offset(map, 21);
     assert_eq!(style_at, 80, "the style table starts at align_up(65)");

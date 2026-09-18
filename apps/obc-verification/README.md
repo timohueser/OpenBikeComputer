@@ -25,6 +25,14 @@ Neither changes a saved revision until you select **Save revision**.
 **Revision history** shows each revision as a difference against the one before it: added,
 removed, and changed requirements, with the previous and new statement side by side.
 
+In a Markdown field, Enter carries a list on: `- item` starts the next bullet, `3. item` starts
+`4. `, and a task item starts an empty box. Enter on an item with no text ends the list.
+
+A save validates the whole draft, so a rejected save names the place: `SYS-019 · Transfer speed —
+criterion 1 — …`. The message carries a button that opens that requirement and marks the criterion.
+A value that is no longer valid, such as a test level that was removed after the plan was written,
+shows itself in the field as `ride — not a level`: choose a current value and save again.
+
 Each prose field is checked for spelling and grammar as you type. The notes below the field give
 the problem text, what is wrong with it, and the corrections. Select a correction to apply it, or
 select the problem text to find it in the field. The checker is
@@ -44,7 +52,8 @@ requirement, with the count of covered criteria:
 | --- | --- |
 | Not assessed | No plan has been saved. |
 | Needs review | A plan saved under the earlier workflow and not yet approved. The next save approves it. |
-| Partial | Approved, but gaps remain. |
+| Not covered | Approved, but no criterion has its evidence yet. Writing the criteria down is not coverage. |
+| Partial | Approved, and at least one criterion has its evidence. Gaps remain. |
 | Covered | Approved, and every criterion has evidence. Only this state satisfies the release gate. |
 
 Coverage and test results are separate. An active requirement needs covered, approved coverage and
@@ -82,12 +91,16 @@ review** button in the heading jumps to the next one. A proposal shows new, chan
 criteria, with new evidence marked and removed evidence struck through. A manual procedure the
 proposal brings is marked **new procedure**, with its steps collapsed. If approval deletes a
 manual procedure that the plan cites nowhere, a sentence above **Approve** names each one.
-**Approve** saves the plan, applies the links, creates the new procedures, and records your
-approval for the commit the agent assessed, in one action. **Reject** asks for feedback, which the agent can read before submitting a revision. Agents
-cannot approve coverage.
+**Approve** applies the plan, its links, and its new procedures to your draft; the proposal is
+recorded when you save the revision, with your approval for the commit the agent assessed. Approve
+a whole round of proposals, then save once: a review round is one revision, not one revision for
+each proposal. The save bar counts the approvals it will record. **Discard draft** drops them, and
+those proposals stay pending. **Reject** asks for feedback, which the agent can read before
+submitting a revision. Agents cannot approve coverage.
 
-Save or discard requirement drafts before approving. A proposal cannot be approved once its
-requirement is deleted or its evidence has left the catalogue. If the statement, the tests, or the
+You can approve while other edits are in the draft; they are saved together. A proposal cannot be
+approved once its requirement is deleted, and the save is refused if its evidence has left the
+catalogue. If the statement, the tests, or the
 plan changed after the agent assessed them, a warning names what changed; approval stays possible,
 so a typo fix or a removed obligation does not force a new proposal. Changes to other requirements
 do not affect a proposal. After a decision, the view stays on the requirement; the **proposals to
@@ -463,9 +476,10 @@ missing something: record that gap, and let `next` name the automated test. A ma
 a person can run is not a gap.
 
 Keep `rationale` to two or three sentences: the scope of the audit and the conclusion. The
-criteria carry the detail. A plan is covered when every criterion has evidence and no gap;
-otherwise it is partial.
-Proposing a plan never approves it.
+criteria carry the detail. A plan is covered when every criterion has evidence and no gap. It
+is partial while some criteria have theirs, and not covered while none do.
+Proposing a plan never approves it. An owner accepts it by saving the revision that applies it, so
+`POST /api/coverage-proposals/<id>` records a rejection only.
 
 A case ID contains the test's own describe and it names. If you rename or move a test that a plan
 cites as evidence, the old case ID no longer exists, and the pending proposals that cite it cannot
@@ -518,8 +532,9 @@ must be cited. Each evidence entry must identify exactly one test and explain it
 criterion may have no evidence yet: an agent can propose the criteria first and evidence later,
 with or without a `gap` note.
 The requirement's tests become exactly the tests the plan cites. A plan that omits a test therefore
-unlinks it, and a manual procedure that no criterion cites is deleted with its steps. Approval
-applies the criteria, the test links, and the coverage review in one transaction. The top-level
+unlinks it, and a manual procedure that no criterion cites is deleted with its steps. The save that
+accepts a proposal applies the criteria, the test links, and the coverage review in one
+transaction. The top-level
 source SHA identifies the commit the agent assessed; it is not a claim that tests have run, and
 approval records it.
 
@@ -530,8 +545,10 @@ proposal against the latest requirement revision. An agent cannot accept or reje
 edit the plan as part of the requirement draft: `PUT /api/requirements` accepts a `coverage` plan
 on each requirement, validates it the same way, makes the requirement's tests the tests that plan
 cites, and never accepts an approval from the client: the save itself records the owner's review
-on each plan it changes. It requires an owner session and exact browser origin. Owner review of
-an agent proposal uses `POST /api/coverage-proposals/ID` with `{ "accept": true, "feedback": "" }`.
+on each plan it changes. It requires an owner session and exact browser origin. The same call takes
+`accept`, a list of proposal IDs the draft applied: it saves them as accepted with the revision, so
+a round of approvals is one revision. `POST /api/coverage-proposals/ID` with
+`{ "accept": false, "feedback": "…" }` rejects a proposal; it cannot accept one.
 
 Approval rechecks the requirement, its tests, the current coverage plan, and the catalogue.
 Changes to that requirement require a refreshed proposal; other requirements can be approved

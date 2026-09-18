@@ -124,7 +124,8 @@ test('agent tokens submit attributed proposals but cannot exercise owner, admini
   ]) assert.equal((await request(path, method, method === 'POST' ? { accept: true } : undefined, token)).status, 403, path);
   await request(`admin/agent-tokens/${access.id}`, 'DELETE');
   assert.equal(store().get<CoverageProposal>('coverage-proposal', proposal.id).status, 'pending');
-  assert.equal((await request(`coverage-proposals/${proposal.id}`, 'POST', { accept: true })).status, 200);
+  // An owner session decides it. Acceptance belongs to the revision save, so this is the rejection.
+  assert.equal((await request(`coverage-proposals/${proposal.id}`, 'POST', { accept: false })).status, 200);
   assert.deepEqual(store().get<CoverageProposal>('coverage-proposal', proposal.id).agentToken, proposal.agentToken);
 });
 

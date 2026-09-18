@@ -217,6 +217,7 @@ fn fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
             from_node: true,
             hours: None,
             elevation_m: None,
+            population: None,
         })
         .collect();
     (
