@@ -18,7 +18,8 @@
         let controller: HostController
         @State private var query = ""
         @State private var results: [PretendPlace] = []
-        @State private var isSearching = false
+        @State private var search: Task<Void, Never>?
+        @State private var message: String?
         @State private var latitude = ""
         @State private var longitude = ""
 
@@ -36,9 +37,10 @@
                     TextField("Place name", text: $query)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
-                        .onSubmit(search)
-                    if isSearching { ProgressView() }
+                        .onSubmit(startSearch)
+                    if search != nil { ProgressView() }
                 }
+                if let message { Text(message).foregroundStyle(.secondary) }
                 ForEach(results.indices, id: \.self) { index in
                     Button { apply(results[index]) } label: {
                         VStack(alignment: .leading) {
@@ -66,25 +68,38 @@
             return PretendPlace(name: "Typed", coordinate: coordinate)
         }
 
-        /// The whole world, not the region around the phone: the point is to go far away.
-        private func search() {
+        /// The whole world, not the region around the phone: the point is to go far away. A
+        /// failure says so, or a throttled search would read as "no such place".
+        private func startSearch() {
             let request = MKLocalSearch.Request()
             request.naturalLanguageQuery = query
             request.region = MKCoordinateRegion(.world)
+            let query = query
+            search?.cancel()
             results = []
-            isSearching = true
-            Task {
-                let response = try? await MKLocalSearch(request: request).start()
-                results = (response?.mapItems ?? []).map {
-                    PretendPlace(name: $0.name ?? query, coordinate: $0.placemark.coordinate)
+            message = nil
+            search = Task {
+                do {
+                    let found = try await MKLocalSearch(request: request).start().mapItems
+                    guard !Task.isCancelled else { return }
+                    results = found.map {
+                        PretendPlace(name: $0.name ?? query, coordinate: $0.placemark.coordinate)
+                    }
+                    message = found.isEmpty ? "Nothing by that name" : nil
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    message = error.localizedDescription
                 }
-                isSearching = false
+                search = nil
             }
         }
 
         private func apply(_ place: PretendPlace) {
+            search?.cancel()
+            search = nil
             controller.pretend(place)
             results = []
+            message = nil
         }
     }
 

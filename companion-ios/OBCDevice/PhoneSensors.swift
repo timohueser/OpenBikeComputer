@@ -51,6 +51,10 @@ final class PhoneSensors: NSObject, CLLocationManagerDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(pushBattery),
             name: UIDevice.batteryLevelDidChangeNotification, object: nil)
+
+        #if DEBUG
+            restartPretendTimer()
+        #endif
     }
 
     /// Stop every sensor. The host pointer goes first: nothing must reach a closed host.
@@ -63,6 +67,11 @@ final class PhoneSensors: NSObject, CLLocationManagerDelegate {
         UIDevice.current.isBatteryMonitoringEnabled = false
         NotificationCenter.default.removeObserver(
             self, name: UIDevice.batteryLevelDidChangeNotification, object: nil)
+        #if DEBUG
+            // The place itself stays set: `attach(to:)` starts the timer again on a reopen.
+            pretendTimer?.invalidate()
+            pretendTimer = nil
+        #endif
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
@@ -108,18 +117,25 @@ final class PhoneSensors: NSObject, CLLocationManagerDelegate {
         ///
         /// The compass, the barometer and the battery stay real, and nothing here is saved.
         var pretend: CLLocationCoordinate2D? {
-            didSet {
-                pretendTimer?.invalidate()
-                pretendTimer = nil
-                guard let pretend else { return }
-                push(pretend)
-                pretendTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.push(pretend) }
-                }
-            }
+            didSet { restartPretendTimer() }
         }
 
         private var pretendTimer: Timer?
+
+        /// Push the place now and once a second from here. Common mode, as the display link uses:
+        /// a `.default` timer stops while a list scrolls, and five seconds of that is the app's
+        /// "No GPS Fix".
+        private func restartPretendTimer() {
+            pretendTimer?.invalidate()
+            pretendTimer = nil
+            guard let pretend else { return }
+            push(pretend)
+            let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.push(pretend) }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            pretendTimer = timer
+        }
 
         /// A rider who stands still: no course, a speed of zero, and the stamp of this second, so
         /// the wall clock stays right and the fix is never stale.
