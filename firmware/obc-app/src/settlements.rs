@@ -38,12 +38,10 @@ const MAX_LABELS: usize = 6;
 /// The face the names are drawn in. A name annotates a place the rider already sees on the map, so
 /// it is set one tier below the chrome it sits among; every metric below follows from this.
 const LABEL_FONT: Font = Font::Caption;
-/// Clear space around a label, in pixels. One constant for every scale. It holds the same share of
-/// a glyph cell as the 12 px margin held at the `Label` face.
+/// Clear space around a label, in pixels: one glyph cell of [`LABEL_FONT`]. One constant for every
+/// scale.
 const LABEL_MARGIN_PX: i32 = 10;
-/// Characters shown. 14 at the 10 by 20 face is 140 pixels, under 60 percent of the panel: the
-/// share 12 characters took at the `Label` face, so no label is wider than before, but a name of up
-/// to 14 characters now reads whole.
+/// Characters shown. 14 at the 10 by 20 face is 140 pixels, 58 percent of the panel.
 const MAX_LABEL_CHARS: usize = 14;
 /// Slack around the panel, so a small pan needs no new query.
 const CANDIDATE_PAD_PX: f32 = 48.0;
@@ -566,23 +564,31 @@ mod tests {
         assert_eq!(drawn[0].1.x, tw / 2, "the box leans in against the left edge instead of being dropped");
     }
 
+    /// The exact boundary, derived from the constants so it holds whatever face the labels use: two
+    /// names on the same column are centred `separation` px apart, so their boxes leave
+    /// `separation - LABEL_FONT.line_height()` of clear space and [`LABEL_MARGIN_PX`] alone decides.
     #[test]
     fn the_margin_suppresses_a_lower_priority_neighbour() {
         // 30 m/px, where the town band and the village band overlap.
         let vp = vp_at(CAM, 30.0);
-        let close = cache_of(&[
-            at_screen(&vp, 120.0, 150.0, SettlementClass::Town, "Emmendingen", 28_000),
-            at_screen(&vp, 120.0, 158.0, SettlementClass::Village, "Maleck", 400),
-        ]);
-        assert_eq!(drawn(&vp, &close, &mut open_panel()), ["Emmendingen"], "8 px apart is inside the 12 px margin");
+        let pair = |separation: f32| {
+            cache_of(&[
+                at_screen(&vp, 120.0, 150.0, SettlementClass::Town, "Emmendingen", 28_000),
+                at_screen(&vp, 120.0, 150.0 + separation, SettlementClass::Village, "Maleck", 400),
+            ])
+        };
+        let limit = (LABEL_FONT.line_height() as i32 + LABEL_MARGIN_PX) as f32;
 
-        // The same pair with the panel rows the margin asks for: the label is 24 px tall, so the
-        // second name clears at 36 px.
-        let clear = cache_of(&[
-            at_screen(&vp, 120.0, 150.0, SettlementClass::Town, "Emmendingen", 28_000),
-            at_screen(&vp, 120.0, 186.0, SettlementClass::Village, "Maleck", 400),
-        ]);
-        assert_eq!(drawn(&vp, &clear, &mut open_panel()), ["Emmendingen", "Maleck"]);
+        assert_eq!(
+            drawn(&vp, &pair(limit - 1.0), &mut open_panel()),
+            ["Emmendingen"],
+            "one pixel short of the margin, the lower-priority name is refused"
+        );
+        assert_eq!(
+            drawn(&vp, &pair(limit), &mut open_panel()),
+            ["Emmendingen", "Maleck"],
+            "a line height plus the margin apart, both names are drawn"
+        );
     }
 
     #[test]
