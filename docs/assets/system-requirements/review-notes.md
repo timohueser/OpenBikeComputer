@@ -2,13 +2,13 @@
 
 This file accompanies [requirements-draft.md](requirements-draft.md) and [acceptance-targets.md](acceptance-targets.md). Keep decisions, rationale, and source observations separate from the requirement text entered into the console.
 
-The revised draft contains 357 active requirements in 27 groups. IDs run through REQ-358; REQ-321 is retired after tunnel warnings were removed from scope, and its ID is not reused. The owner's feedback resolves scope decisions, but it is not verification evidence. Some requirements describe current behavior and others describe required future work. No entry is assigned a passing status.
+The revised draft contains 371 active requirements in 27 groups. IDs run through REQ-372; REQ-321 is retired after tunnel warnings were removed from scope, and its ID is not reused. The owner's feedback resolves scope decisions, but it is not verification evidence. Some requirements describe current behavior and others describe required future work. No entry is assigned a passing status.
 
 ## Scope
 
 Include the physical device, firmware, companion, map builder, desktop application, public website, and map and firmware delivery. Include the current Assistant features, Peak View articles/photos, and the additional features required below. Exclude weather. Keep phone Recently Deleted separate from device storage: phone trash lasts 30 days; device rides are deleted only by an explicit rider action, including confirmed factory reset.
 
-The nRF54LM20 is a design constraint. Development-kit peripherals are not automatically final product requirements. Release-console, CI, fixture, simulator, and developer-tool requirements belong in their own specifications.
+The nRF54LM20 is a design constraint. Development-kit peripherals are not automatically final product requirements. The independent local map and USB tools under D26 are part of the product scope. Release-console, CI, fixture, simulator, and other developer-tool requirements belong in their own specifications.
 
 ## Decisions and deferred acceptance details
 
@@ -192,6 +192,26 @@ A planned-route tunnel warning would not necessarily require a complete live roa
 
 For blazes, supported symbols and overlapping marked routes remain TODO; no broader hiking mode is implied.
 
+### D24 — Device route-coverage information
+
+**Accepted:** Check the route against installed detailed map coverage on the device. Show an information notice in the route-received popup when coverage is incomplete or cannot be verified, then briefly alert again when the rider selects that route for riding. Check the current map at that point. The notices do not prevent route storage, selection, navigation, or recording and do not add another start confirmation. No coverage exchange or check is required in the phone or computer applications. See REQ-359–361 and COV-01–03.
+
+**Boundary:** This is geographic coverage information, not a claim that a route is rideable or that all source content exists. Merely browsing a preview does not trigger the start notice. Notice duration and check response limits remain TODO.
+
+### D25 — Routing suitability and failure recovery
+
+**Accepted:** Define per-profile access and suitability policies, enforce exclusions across all device-calculated routes, and disclose known pushing/carrying, steps, ferries, and restricted or uncertain access before acceptance. See REQ-362–364 and ROUTE-01–06. Exact per-profile choices remain TODO; no specific suitability policy is inferred from current implementation.
+
+**Accepted:** Strengthen REQ-239 with minimum functions for named failures. Keep a recording write failure visible without stopping navigation whose inputs remain available. Provide physical restart when the application is unresponsive and recovery from repeated failed starts without automatic rider-data erasure. See REQ-365–367 and FAIL-01–06. Existing recovery and data-loss limits continue to apply; unreadable map or route data are not promised to remain usable.
+
+### D26 — Lifetime independence
+
+**Accepted:** No mandatory OpenBikeComputer account or subscription for any device functionality, including future additions; no subscription feature tiers. Publish all project software needed to rehost map production and the map builder. Provide local map-building tools and basic USB tools for map installation, route upload, and route/ride download. These tools need open source, documented interfaces, reproducible setup, and only necessary dependencies without a graphical application framework or browser runtime. See revised REQ-262, REQ-368–372, and LOCAL-01–03.
+
+**Boundary:** The commitment enables independent maintenance and porting. It does not guarantee compatibility with every future operating system. Optional external services retain their own consent and authorization rules. Replacement of lost devices and restoration of personal libraries remain undefined and are not added.
+
+**Deferred:** Riding usability, glanceability, and action-count promises need a separate owner discussion. Battery targets remain TODO pending final hardware decisions and power measurements.
+
 ## Review additions (16 September)
 
 A review of the draft against the product envelope added entries REQ-336–358 and regrouped the draft into 27 groups. None of these is an owner decision yet.
@@ -276,7 +296,7 @@ Rationale belongs in a rationale field. Exact screen layout, button bindings, an
 
 The acceptance tables provide measurable bounds and scope once their TODOs are filled. They do not prescribe the algorithm or reproduce every implementation constant.
 
-## Draft checks
+## Draft checks (16 September)
 
 Document checks cover the requirement IDs, shall statements, decision and table IDs, local links, Markdown table structure, and whitespace/newlines. A final review checked the accepted scope, retired tunnel warning, encoding limits, recovery policy, and remaining TODO criteria. No code or public documentation page was changed.
 
@@ -287,3 +307,9 @@ Checks completed for this revision:
 - `git diff --cached --check` verified the staged handoff files without whitespace diagnostics.
 
 Earlier per-file `git diff --no-index --check` checks also found no whitespace diagnostics. Firmware builds, application tests, formatting, resource measurements, UI snapshots, and the public-site build are deliberately omitted: no application code or public documentation page changed, and those checks cannot verify proposed requirements or resolve product choices.
+
+## Checks for the 18 September additions
+
+The document check covers requirement ID continuity and shall statements, requirement and decision references, acceptance criterion IDs, local links, table column counts, and whitespace. `git diff --check` covers the changes. These checks do not establish implementation or acceptance evidence.
+
+Application tests, firmware builds, Rust formatting, resource measurements, UI snapshots, and the public-site build are deliberately omitted. Only the draft files under `docs/assets/system-requirements/` changed; no application code, test policy, or public documentation page changed.

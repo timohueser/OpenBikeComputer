@@ -4,11 +4,13 @@ Prepared 16 September 2026. Product source reviewed: `5ae466a96c6f32e68a2dd78670
 
 This working draft incorporates the owner's scope decisions and is ready for manual review and entry into the requirements system. It does not claim implementation or passing test results. Explicit TODO acceptance values remain to be set. The IDs identify entries independently of their category.
 
-The system includes the bike computer, iOS companion, desktop application, browser map builder, and map and firmware delivery services. Requirements name a particular component where support differs. The simulator, development tools, and requirements console are not rider-facing parts of this system.
+The system includes the bike computer, iOS companion, desktop application, browser map builder, map and firmware delivery services, and the independent local map and USB tools required below. Requirements name a particular component where support differs. The simulator, other development tools, and requirements console are not rider-facing parts of this system.
 
 The draft includes the owner's scope decisions from 16 September 2026 and excludes weather. Decisions and remaining questions are in [review-notes.md](review-notes.md). Numerical targets, support matrices, and test conditions are in [acceptance-targets.md](acceptance-targets.md). **TODO** means an unresolved value or policy, not an accepted default. **PROPOSED** identifies a suggested value awaiting owner review. A requirement with either marker in its acceptance criteria is not a complete release gate. New entries retain new IDs within the relevant group. REQ-321 is retired after tunnel warnings were removed from scope; its ID is not reused.
 
 Entries REQ-336 to REQ-358 come from the 16 September review of this draft: REQ-336–340 split multi-clause entries whose clauses need different tests, and REQ-341–358 are proposed additions that await owner decision. **PROPOSED** additions are ones the reviewer would not add without an explicit decision. The 27 groups follow surface boundaries so each group can carry one minimum evidence level.
+
+The 18 September owner review accepts REQ-359–372 and the revised REQ-239 and REQ-262. These define device coverage notices, routing suitability, operation after failures, and lifetime independence. They do not approve the separate 16 September proposals or establish implementation evidence.
 
 ## Map builder and map service
 
@@ -78,6 +80,9 @@ Map management has one active installed map, replaced through USB. Multiple sele
 - **REQ-047 — Transfer outcome.** A route shall be reported as on the device only after the device confirms storage. A failed or cancelled replacement shall preserve the previous stored route.
 - **REQ-048 — Received route.** A successfully received route shall appear in the device route list without restarting the device.
 - **REQ-049 — No unsolicited ride change.** Receiving a route shall not start, end, or replace a ride without the rider's choice. Dismissing a received-route prompt shall keep the route available in the list.
+- **REQ-359 — Received-route coverage notice.** After a route is stored, the device shall check its geographic path against the installed detailed map coverage. If any part is outside coverage, the route-received popup shall state this. No installed map, an unreadable map, or an incomplete check shall produce an unavailable or unverified coverage notice rather than confirmed coverage. The notice shall not prevent route storage, selection, or use.
+- **REQ-360 — Route-start coverage notice.** When the rider selects a saved route to start riding it, the device shall check coverage against the currently installed map and briefly show any coverage limitation or unverified result. The notice shall not require an additional acceptance or prevent navigation or recording from starting. Merely browsing a route preview shall not trigger this start notice.
+- **REQ-361 — Device-only coverage information.** The device shall perform and present these coverage checks without requiring a phone or computer application to check coverage or exchange coverage status over Bluetooth or USB. Coverage information shall distinguish geographic map coverage from the suitability or availability of a rideable connection.
 - **REQ-050 — Route overview.** The device shall show a route's name, shape, distance, available elevation profile, ascent, descent, and available time estimate before the rider starts it.
 - **REQ-051 — Leave preview.** Leaving a route preview without starting it shall restore the previous navigation selection and shall not start recording.
 - **REQ-052 — Trip organization.** The companion shall let the rider create and rename a trip, add or remove route stages, and change their order. Removing a stage from a trip shall not delete the route from the phone library.
@@ -106,6 +111,9 @@ Route reversal is an application function. An on-device reversal function and a 
 - **REQ-064 — Route replacement during a ride.** When the rider selects another route during a ride, the device shall offer to change navigation while keeping the recording, finish the current recording and start a new ride, or cancel.
 - **REQ-065 — Recording independence.** Changing the active route shall not reset recorded distance, time, ascent, or sensor totals when the rider chooses to keep the current recording.
 - **REQ-066 — Routing profile.** Standard maps shall provide Road, Gravel, MTB, and Touring profiles. The rider shall be able to select an available profile. Planning shall use its access rules and preferences, and the device shall show the effective profile.
+- **REQ-362 — Routing-profile definition.** Each routing profile shall define permitted and excluded connections, routing preferences, and the treatment of unknown data. The definition shall cover mapped access restrictions, travel direction, surface, trail difficulty, steps, bicycle pushing or carrying, and ferries, as specified in the routing-profile table in acceptance-targets.md.
+- **REQ-363 — Routing constraints.** Every device-calculated route shall obey the selected profile's exclusions and applicable mapped access restrictions. Failure to find a permitted connection shall produce a routing failure rather than silently relax those constraints.
+- **REQ-364 — Route suitability disclosure.** Before acceptance, a calculated route shall identify known sections that require pushing or carrying the bicycle, use steps or ferries, or have restricted or uncertain access. Missing surface or difficulty data shall not be presented as confirmed suitability.
 - **REQ-067 — Real connections.** A calculated route shall use supported mapped connections. An unmatched origin or destination shall not be replaced by an unlabelled straight-line riding connection.
 - **REQ-068 — Detour selection.** The rider shall be able to select a point ahead on the active route and request a detour around the intervening section.
 - **REQ-069 — Detour preview.** Before acceptance, the device shall show the calculated detour, the section it replaces, the rejoin point, and the distance difference.
@@ -372,10 +380,13 @@ Battery runtime, standby drain, charging duration, and critical-energy values ar
 - **REQ-236 — Unrelated data.** A failed create, replace, or delete operation shall not corrupt unrelated stored objects.
 - **REQ-237 — Uncertain writes.** If the system cannot determine whether a write completed, it shall reconcile the stored result before retrying a conflicting change or reporting success.
 - **REQ-238 — Malformed content.** Unsupported or malformed map, route, trip, article, photo, or update content shall produce a bounded failure rather than an uncontrolled restart or an unrelated-data change.
-- **REQ-239 — Missing hardware.** Failure of GNSS, barometer, compass, or storage shall be reported for the affected function. Functions that do not require that component shall remain accessible where the device can continue operating.
+- **REQ-239 — Independent operation after failure.** Failure of a component or operation shall be reported for the affected function and shall not disable functions whose required inputs and resources remain available. The device shall retain the minimum functions for each failure condition in the Operation after failures table in acceptance-targets.md.
 - **REQ-341 — Card removal.** Removal of the storage card during operation shall produce a visible storage failure for the affected functions and shall not restart the device. After reinsertion, the device shall restore access to the card or state the restart it needs.
 - **REQ-342 — Storage status.** The rider shall be able to see used and free storage on the device and in the applications. The device shall warn before the remaining space is too small for continued recording.
 - **REQ-343 — Diagnostics.** After an uncontrolled restart, the device shall record the fault reason. The applications shall let the rider export a diagnostic log that contains no ride, route, or location data.
+- **REQ-365 — Recording failure independence.** A recording write failure shall produce a persistent recording-status indication while unresolved. It shall not by itself stop navigation, map viewing, or emergency-location access when their required data remain available.
+- **REQ-366 — Physical restart.** The rider shall be able to force a device restart through physical controls without a phone, computer, or internet connection, including when the application no longer responds. Restart shall use the existing recording and navigation recovery rules and shall not initiate formatting or factory reset.
+- **REQ-367 — Failed-startup recovery.** Repeated application startup failures shall provide access to a recovery state rather than restart indefinitely. Recovery shall not erase rider data without explicit confirmation. The failure threshold and recovery entry conditions are TODO in acceptance-targets.md.
 
 ## Firmware updates
 
@@ -416,13 +427,18 @@ Normal field updates require a retained rollback image and device confirmation. 
 
 The processor is an existing project constraint. Environmental, mechanical, lifetime, and service acceptance targets are explicitly **TODO** in acceptance-targets.md. No protection rating or certification is claimed.
 
-## User ownership and privacy
+## User ownership, independence, and privacy
 
-- **REQ-262 — No mandatory account.** Using the device's rider functions, importing routes, building public-data maps, and exporting rides shall not require an OpenBikeComputer account or subscription.
+- **REQ-262 — No mandatory account or subscription.** All OpenBikeComputer device functionality, route import, public-data map building, and ride export shall remain usable without an OpenBikeComputer account or subscription. This commitment shall apply to current functionality and functionality added in later project releases.
 - **REQ-263 — Local ride ownership.** Ride recordings and imported routes shall remain available to the rider without a vendor-hosted personal library.
 - **REQ-264 — No silent sharing.** The system shall not upload private routes, rides, or live location to a remote service without an explicit rider action or an enabled feature that states what it sends.
 - **REQ-265 — Data removal.** The rider shall be able to delete locally held routes, rides, and pairing information through the relevant device or application controls.
 - **REQ-266 — Published source.** Each public product release shall identify the corresponding software source, hardware revision where applicable, and build instructions under the project's declared open-source licenses.
+- **REQ-368 — No subscription feature restrictions.** The project shall not reserve device functionality for subscription tiers or require a subscription to retain access to previously available device functionality.
+- **REQ-369 — Rehostable map service.** The project shall publish under open-source licenses all project software required to operate the map builder and its supporting map-production services, with deployment instructions and documented external data dependencies.
+- **REQ-370 — Local map production.** The project shall provide documented local tools that can produce a device-installable map for a selected region or set of map building blocks without using project-operated services. The tools shall document how to obtain the required source data.
+- **REQ-371 — Independent USB tools.** The project shall provide documented local tools to install maps, upload routes, and download saved routes and recorded rides over USB without the companion application, desktop graphical application, website, account, or project-operated service.
+- **REQ-372 — Maintainable tools and interfaces.** These local tools shall include source code under the project's declared open-source licenses, documented file and device interfaces, and reproducible setup instructions. Their dependencies shall be limited to those required for their functions and shall not require a graphical application framework or browser runtime.
 - **REQ-357 — Card readability.** **PROPOSED.** Rides and routes stored on the card shall be readable on a computer without the device, so the rider can recover data from a failed device. If the storage format is not directly readable, the desktop application shall provide a documented recovery path from a removed card.
 
 ## Supported platforms and services
