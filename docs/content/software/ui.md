@@ -346,7 +346,9 @@ The candidate cache has no fixed per-category quota. When full, a less-represent
 can replace a distant candidate from the most-represented group. Otherwise, a closer
 candidate can replace a farther candidate in its own group. Visible candidates take
 priority over points in the padding. A padded viewport avoids storage reads during small
-camera movements. Each preparation advances at most eight POI index or 512-byte record
+camera movements. A full cache is queried again after a quarter-viewport shift, because
+it can have discarded points in the padding. An in-coverage query finishes before a new
+one starts, and existing icons remain visible during the refill. Each preparation advances at most eight POI index or 512-byte record
 steps and eight landmark query steps, then reads at most eight landmark identities.
 Pending work resumes on the next available frame and stops when complete.
 
