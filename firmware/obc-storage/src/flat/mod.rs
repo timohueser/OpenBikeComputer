@@ -47,6 +47,8 @@ pub use seam::{
 };
 pub use source::{SealedSource, StoreSource};
 pub use store::{FlatStore, Handle, Mode, RideRecovery, SealedAllocation};
+/// The four bytes at block 0 of a formatted card (§4): what names a card image.
+pub use superblock::MAGIC as SUPERBLOCK_MAGIC;
 
 /// The format version this store implements. A card whose layout differs is a different version,
 /// which the version field of every record already names.
