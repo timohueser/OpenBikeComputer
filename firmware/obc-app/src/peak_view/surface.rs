@@ -1015,6 +1015,8 @@ mod tests {
                 peak.project(0, 0);
                 let peaks = [peak];
                 let profile = PeakViewProfile {
+                    // Straddle the horizon, so only the scale under test varies.
+                    vertical_centre_q4: 0,
                     vertical_span_q4: (178 * 320 / vertical_scale_q8),
                     peaks: &peaks,
                     ..PeakViewProfile::at(0, 0, 2)
