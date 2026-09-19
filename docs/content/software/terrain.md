@@ -164,10 +164,8 @@ segments. Missing terrain at the observer or a storage read failure makes the
 view unavailable. Absent geographic cells are skipped without traversing their individual samples.
 
 At the standard posting and cell size, an indexed cell occupies 3,149,824 bytes instead of
-2,097,152 bytes. The assembler enforces a 10% limit on growth of the **complete map**, including
-summit data and alignment. It rejects a map that exceeds this limit before writing it. Terrain
-itself grows about 50.2%, so terrain-heavy sparse selections can exceed the complete-map budget.
-The limit does not guarantee that every selection can include the surface index.
+2,097,152 bytes. Terrain itself grows about 50.2%, so a terrain-heavy selection makes the
+complete map measurably larger.
 
 The normal map bakery writes indexed terrain and named summit records directly. Re-bake all
 published terrain and geometry cells before publication. Catalog generation rejects mixed native
