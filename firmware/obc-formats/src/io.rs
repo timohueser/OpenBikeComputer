@@ -110,6 +110,11 @@ impl<'a> WindowSource<'a> {
         let end = offset.checked_add(len)?;
         (end <= inner.len()).then_some(WindowSource { inner, offset, len })
     }
+
+    /// Where the window starts in the source it is a window onto.
+    pub fn offset(&self) -> u64 {
+        self.offset
+    }
 }
 
 impl ByteSource for WindowSource<'_> {

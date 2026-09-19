@@ -53,6 +53,15 @@ triggers = ["specs/FLAT_Store_Protocol.md", "specs/vectors/flat-store-v4/**"]
 name = "obc-fixtures"
 triggers = ["fixtures/catalog.toml"]
 
+# The inspector reads the committed artefacts to prove it names them; no Cargo edge carries that.
+[[package]]
+name = "obc-inspect"
+triggers = [
+  "specs/vectors/**",
+  "apps/obc-sim/assets/grimsel-demo.obcm",
+  "fixtures/sources/sim-grimsel/routes/**",
+]
+
 [[package]]
 name = "obc-sim"
 triggers = ["fixtures/catalog.toml"]
