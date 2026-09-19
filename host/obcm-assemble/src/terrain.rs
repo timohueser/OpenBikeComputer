@@ -384,16 +384,6 @@ impl<'a> TerrainRegion<'a> {
         self.prefix[obc_formats::obct::HDR_FLAGS] & SURFACE_FLAG != 0
     }
 
-    /// Check the complete map against native heights without added summit metadata.
-    pub fn check_map_budget(&self, map_bytes: u64, extra_prefix: u64) -> Result<()> {
-        let native_map = map_bytes
-            .checked_sub(crate::emit::align_up(self.bytes))
-            .and_then(|geometry| geometry.checked_sub(extra_prefix))
-            .and_then(|geometry| geometry.checked_add(crate::emit::align_up(self.native_bytes())))
-            .ok_or_else(|| Error::Capacity("terrain size exceeds the map layout".into()))?;
-        check_surface_budget(native_map, map_bytes)
-    }
-
     /// Squares with a block. The rest of the rectangle is directory `0`.
     pub fn cells(&self) -> usize {
         self.slots.iter().filter(|s| s.is_some()).count()
@@ -501,15 +491,6 @@ impl<'a> TerrainRegion<'a> {
     }
 }
 
-fn check_surface_budget(native_map: u64, surface_map: u64) -> Result<()> {
-    if surface_map.saturating_sub(native_map) > native_map / 10 {
-        return Err(Error::Capacity(format!(
-            "Peak View would grow the map from {native_map} to {surface_map} bytes, above the 10% map-size limit"
-        )));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
@@ -518,14 +499,6 @@ mod tests {
     use obc_formats::io::SliceSource;
 
     use super::*;
-
-    #[test]
-    fn surface_budget_counts_the_whole_map_and_checks_the_exact_boundary() {
-        assert!(check_surface_budget(850_824_480, 935_906_928).is_ok());
-        assert!(check_surface_budget(850_824_480, 935_906_929).is_err());
-        assert!(check_surface_budget(109, 119).is_ok());
-        assert!(check_surface_budget(109, 120).is_err());
-    }
 
     #[test]
     fn surface_cells_are_placed_with_all_levels_and_verified() {
@@ -539,8 +512,6 @@ mod tests {
         let mut assembled = region.prefix.clone();
         assembled.extend_from_slice(&converted.get_ref()[region.input_offsets[0] as usize..]);
         region.verify(&SliceSource(&assembled)).unwrap();
-        assert!(region.check_map_budget(region.bytes() * 20, 0).is_ok());
-        assert!(region.check_map_budget(region.bytes(), 0).is_err());
         let index = obc_formats::obct::CellIndexLayout::new(plan().rect.rows, plan().rect.cols, 32).unwrap();
         assembled[index.offset as usize] ^= 1;
         let error = region.verify(&SliceSource(&assembled)).unwrap_err();

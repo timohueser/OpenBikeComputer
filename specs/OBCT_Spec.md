@@ -655,20 +655,12 @@ every coarser level selects a subset of those vertices. Thus the native maximum 
 all coarser bilinear surfaces. An 8×8 cell rectangle needs 170 index bytes plus 342 padding
 bytes. The assembler builds this index once for the selected rectangle.
 
-### 8.4 Assembly and size limit
+### 8.4 Assembly
 
 The assembler MUST preserve each published cell's complete block. It MUST NOT combine native
 and indexed cells in one container. An embedded v3 terrain region MUST also start on a 512-byte
 boundary in the complete OBCM file. Bytes used to reach this outer boundary are OBCM filler;
 bytes inside the OBCT prefix and cell blocks are zero padding.
-
-The assembler MUST compare the final map size with the equivalent map containing only v1 native
-heights over the same coverage and without the Peak View summit POI category. Other geometry,
-service POIs, navigation, and native height values remain the same. Include the summit category's
-directory, spatial tree and chunk bytes, and both formats' region and outer alignment bytes. The new size MUST satisfy
-`new_bytes <= native_map_bytes + floor(native_map_bytes / 10)`. A map that exceeds this limit
-MUST be rejected before emission, with both sizes reported. This is a whole-map limit, not a
-percentage of the terrain region.
 
 ---
 
@@ -739,10 +731,6 @@ reasoning covers §8.3's cross-cell index.
 block does not change them. The lift is applied by the consumer on top of the level it reads,
 which is what keeps the native heights of every level byte-identical to a container without
 crest blocks.
-
-§8.4's size limit is stated against a map with no crest blocks. A producer MUST report crest
-bytes separately rather than fold them into that comparison; whether the limit should be
-widened to cover them is a bakery policy question this section does not settle.
 
 ### 9.4 What the format does not decide
 
