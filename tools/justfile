@@ -228,10 +228,13 @@ rtt *args:
 
 # ── Map packing & the web builder ────────────────────────────────────────────
 
-# Pack an OSM extract into a .obcm map. Args: <region.osm.pbf> [config.json] [out.obcm]
-# [-- --chunk-size N | --no-land]. The config defaults to builder/presets/schema.json —
-# the one shipped schema; the output defaults to <region>.obcm in the repo root (so
-# `obc sim` picks it up next).
+# Pack an OSM extract into a .obcm map, and print the preset and the path it wrote — so
+# `obc sim <that file>` opens it next. Args: <region.osm.pbf> [config.json] [out.obcm]
+# [-- --bbox W,S,E,N | --chunk-size N | --no-land]. The config defaults to
+# builder/presets/schema.json — the one shipped schema; the output defaults to
+# <region>.obcm in the repo root. Packer flags go after `--`; cut a big extract down
+# to one region with `-- --bbox W,S,E,N`. A region wider than 10,000 km² is refused
+# with the size it measured, because a look is not worth a half-hour pack.
 # Pack an OSM extract to a .obcm map. Args: <region.osm.pbf> [preset.json] [out.obcm]
 [group('maps')]
 pack *args:
@@ -243,10 +246,15 @@ pack *args:
     [[ -n "$pbf" ]] || { _err "usage: obc pack <region.osm.pbf> [preset.json] [out.obcm]"; exit 1; }
     pbf="$(_abspath "$pbf")"
     preset="${_POS[1]:-${OBC_PRESET:-$OBC_ROOT/builder/presets/schema.json}}"; preset="$(_abspath "$preset")"
+    [[ -f "$preset" ]] || {
+        _err "no preset at $preset — packer flags belong after --, as in: obc pack $pbf -- --bbox W,S,E,N"
+        exit 1
+    }
     out="${_POS[2]:-}"
     if [[ -n "$out" ]]; then out="$(_abspath "$out")"
     else base="$(basename "$pbf")"; base="${base%.osm.pbf}"; base="${base%.pbf}"; out="$OBC_ROOT/${base}.obcm"; fi
     ( cd "$OBC_ROOT" && _run cargo build --release -p obc-pack )
+    _say "preset $preset"
     cmd=("$OBC_ROOT/target/release/obc-pack" "$pbf" "$preset" "$out")
     (( ${#_EXTRA[@]} )) && cmd+=("${_EXTRA[@]}")
     _run "${cmd[@]}"
