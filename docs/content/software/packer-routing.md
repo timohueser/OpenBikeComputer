@@ -223,6 +223,16 @@ Complete objects can extend outside the requested box.
 Therefore, the map header bounding box can be larger than the requested box.
 Do not use the output bounding box as the next crop request.
 
+### A limit on the region
+
+One pack makes a map of a maximum of 10,000 km².
+The region is the `--bbox` box.
+If there is no box, the region is the area that the sources declare in their PBF headers.
+
+The packer refuses a larger region before it reads the data.
+The message gives the measured area and the limit.
+Use a smaller box, or `--allow-large` to pack the full region.
+
 ### Merging several regions
 
 The ingester can read multiple PBF files in the same passes.
