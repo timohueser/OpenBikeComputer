@@ -296,6 +296,12 @@ macro_rules! settings_table {
                 $($( $( $crate::settings_table::settings_table!(@sanitize $mk $(( $($arg)* ))?, self, $name); )+ )?)+
             }
 
+            /// Visit every declared field by name, in blob order. The table is the only place a
+            /// field's name and its value sit together, so a reader of a stored blob asks here.
+            pub fn for_each_field(&self, mut visit: impl FnMut(&'static str, &dyn core::fmt::Debug)) {
+                $( visit(stringify!($name), &self.$name); )+
+            }
+
             /// Table-driven coverage for every declared field (see the one settings-table test):
             /// `other` moves **every** row off `base`, and `adopted` — `base` after
             #[doc = concat!("[`", stringify!($adopt), "`](Self::", stringify!($adopt), ") of `other` — took the fields named in `ble_writable` and no others.")]

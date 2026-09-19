@@ -38,6 +38,7 @@
       "obc-fixtures",
       "obc-flat-device",
       "obc-host-core",
+      "obc-inspect",
       "obc-ios-host",
       "obc-mkimage",
       "obc-pack",

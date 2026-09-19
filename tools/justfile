@@ -252,6 +252,22 @@ pack *args:
     _run "${cmd[@]}"
     _say "wrote $out"
 
+# Name a binary artefact's format from its magic bytes and print a summary of what is inside:
+# a map's bounding box, section table and level-of-detail ladder, a route's points and
+# waypoints, a trip's stages, a terrain container's grid, a card image's store and objects,
+# or the persisted settings. `--json` prints the same facts for a machine. It reads only, and
+# a damaged file gives a report of the damage and a non-zero exit.
+#   obc inspect grimsel.obcm            obc inspect routes/tour.obcr --json
+#   obc inspect card.img                obc inspect obc-settings.bin
+# Name a binary artefact and summarise it. Args: <FILE> [--json]
+[group('maps')]
+inspect *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    ( cd "$OBC_ROOT" && _run cargo build --release --quiet -p obc-inspect )
+    _run "$OBC_ROOT/target/release/obc-inspect" "$@"
+
 # Bake the published cell catalog. `obc bake` processes every regions.toml entry;
 # positional ids narrow it (`obc bake europe/austria --force`). Output goes to
 # $OBC_BAKE_TREE (default ~/obc-bake). `verify` and `publish` use that same tree

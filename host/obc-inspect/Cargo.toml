@@ -1,0 +1,26 @@
+[package]
+name = "obc-inspect"
+version = "0.1.0"
+edition = "2021"
+publish = false # internal host tool — not published to crates.io
+description = "Reads a binary artefact through the crate that owns its format and prints a summary: maps, routes, trips, terrain containers, card images and the settings blob. Read-only, and never a second parser."
+
+[dependencies]
+# The magic bytes, the versions and the byte-I/O seam every reader below is built on.
+obc-formats = { path = "../../firmware/obc-formats" }
+# OBCM: header, style table, LOD ladder, POI directory, landmark and peak sections. `alloc` gives
+# `MapCache::new_boxed` — the ~277 KB cache belongs on the heap, not on this binary's stack.
+obc-reader = { path = "../../firmware/obc-reader", features = ["alloc"] }
+# OBCR routes and the trip object.
+obc-route = { path = "../../firmware/obc-route" }
+# OBCT terrain containers, both the embedded region and a standalone shard.
+obc-elevation = { path = "../../firmware/obc-elevation" }
+# The flat store a card image holds. `std` is the host mount.
+obc-storage = { path = "../../firmware/obc-storage", features = ["std"] }
+# The settings blob's one decoder, beside the table that declares the field names.
+obc-app = { path = "../../firmware/obc-app" }
+# `--json`. The text report and the JSON report render from one tree, so they cannot disagree.
+serde_json = "1"
+
+[dev-dependencies]
+obcm-testkit = { path = "../obcm-testkit" }
