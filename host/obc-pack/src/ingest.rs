@@ -216,6 +216,35 @@ impl Bbox {
     }
 }
 
+/// The area of a `W,S,E,N` degree box on the sphere, in km².
+///
+/// This is how big a region is, and the pack time follows it far more closely
+/// than the source file does: the Grimsel box out of the 512 MB Switzerland
+/// extract packs in seconds, because the box decides how much survives ingest.
+pub fn box_area_km2((w, s, e, n): (f64, f64, f64, f64)) -> f64 {
+    const EARTH_RADIUS_KM: f64 = 6371.0088;
+    let lon_span = (e - w).to_radians();
+    let lat_band = n.to_radians().sin() - s.to_radians().sin();
+    EARTH_RADIUS_KM * EARTH_RADIUS_KM * lon_span * lat_band
+}
+
+/// The `W,S,E,N` box a source declares in its PBF header, if it declares one.
+///
+/// Every extract tool writes it, and it is the first blob of the file, so the
+/// answer costs one read. A source without it is not an error; the caller then
+/// knows nothing about the region and says so.
+pub fn declared_bbox(path: &str) -> Result<Option<(f64, f64, f64, f64)>, String> {
+    let mut reader = BlobReader::from_path(path).map_err(|e| format!("open {path}: {e}"))?;
+    let Some(blob) = reader.next() else { return Ok(None) };
+    let blob = blob.map_err(|e| format!("read {path}: {e}"))?;
+    match blob.decode().map_err(|e| format!("read {path}: {e}"))? {
+        osmpbf::BlobDecode::OsmHeader(header) => {
+            Ok(header.bbox().map(|b| (b.left, b.bottom, b.right, b.top)).filter(|(w, s, e, n)| w < e && s < n))
+        }
+        _ => Ok(None),
+    }
+}
+
 /// What a blob scan should do after the element it was just handed.
 enum Scan {
     /// Keep going.
@@ -1421,6 +1450,28 @@ mod tests {
         // A wrapping box names the reason, not just "invalid".
         let msg = Bbox::parse("179,-1,-179,1").unwrap_err();
         assert!(msg.contains("antimeridian"), "wrap error should explain itself: {msg}");
+    }
+
+    /// The size gate measures a region from a box, so the box must measure right
+    /// where it matters: a degree of longitude carries less area the further it
+    /// sits from the equator.
+    #[test]
+    fn box_area_shrinks_with_latitude() {
+        let one_degree_at_equator = box_area_km2((0.0, 0.0, 1.0, 1.0));
+        assert!((one_degree_at_equator - 12_363.0).abs() < 10.0, "{one_degree_at_equator} km²");
+        let one_degree_at_sixty = box_area_km2((0.0, 59.5, 1.0, 60.5));
+        assert!((one_degree_at_sixty - 6_182.0).abs() < 10.0, "{one_degree_at_sixty} km²");
+
+        // The Grimsel fixture box: a region a look is meant to reach.
+        let grimsel = box_area_km2((8.15034, 46.48261, 8.46007, 46.72070));
+        assert!((600.0..700.0).contains(&grimsel), "{grimsel} km²");
+    }
+
+    /// A source that declares no box reads as "unknown", not as an error and not
+    /// as a box of zero: the gate then lets the pack go ahead.
+    #[test]
+    fn a_source_without_a_declared_box_reads_as_unknown() {
+        assert_eq!(declared_bbox(TINY_PBF), Ok(None));
     }
 
     /// The relation-complete crop, over the `tiny.osm` truth table. The box covers

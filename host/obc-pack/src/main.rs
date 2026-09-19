@@ -11,7 +11,9 @@
 //! container or a directory of them — to integrate the OBCM §8.3 per-direction
 //! ascent from; omit it and every adjacency entry gets `0`), `--dump-pois` (print
 //! the classified POI list for eyeballing), and `--dump-hours` (print each POI's
-//! parsed weekly schedule). It
+//! parsed weekly schedule). A run refuses a region wider than
+//! [`REGION_LIMIT_KM2`] and names the size it measured; `--allow-large` packs it
+//! anyway. It
 //! prints one stage string per phase ("Merging", "Pass 0/1/2", "Calculating BBox",
 //! "Generating land", "Building Quadtree", "Serializing", "Writing") so the web
 //! builder UI can show progress — it matches these prefixes, and their order here
@@ -25,7 +27,7 @@ use std::process::ExitCode;
 
 use obc_pack::config::Config;
 use obc_pack::cut::CutOptions;
-use obc_pack::ingest::Bbox;
+use obc_pack::ingest::{self, Bbox};
 use obc_pack::pipeline::{pack, PackOptions};
 use obc_pack::progress::{PackError, Progress};
 
@@ -34,11 +36,20 @@ struct Args {
     config: String,
     output: String,
     opts: PackOptions,
+    allow_large: bool,
 }
+
+/// The widest region one run packs without `--allow-large`, in km².
+///
+/// About 100 km by 100 km. A region of that size packs in a few minutes; a whole
+/// country takes tens of minutes, and waiting that long for a map nobody asked
+/// for is worse than a refusal that says how big the region is.
+const REGION_LIMIT_KM2: f64 = 10_000.0;
 
 fn parse_args() -> Result<Args, String> {
     let mut positional = Vec::new();
     let mut opts = PackOptions::default();
+    let mut allow_large = false;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -56,13 +67,15 @@ fn parse_args() -> Result<Args, String> {
             "--peaks" => opts.peaks.push(PathBuf::from(it.next().ok_or("--peaks needs peaks.json")?)),
             "--landmarks" => opts.landmarks = Some(PathBuf::from(it.next().ok_or("--landmarks needs content.json")?)),
             "--dump-hours" => opts.dump_hours = true,
+            "--allow-large" => allow_large = true,
             _ => positional.push(a),
         }
     }
     // `<pbf...> <config.json> <out.obcm>`: last two positionals are config + output.
     if positional.len() < 3 {
         return Err("usage: obc-pack <pbf...> <config.json> <out.obcm> [--bbox W,S,E,N] [--chunk-size N] [--no-land] \
-                    [--terrain <path>] [--landmarks <content.json>] [--peaks <peaks.json>] [--dump-pois] [--dump-hours]\n       \
+                    [--terrain <path>] [--landmarks <content.json>] [--peaks <peaks.json>] [--dump-pois] [--dump-hours] \
+                    [--allow-large]\n       \
                     obc-pack schema                                 (print the config JSON Schema envelope)\n       \
                     obc-pack catalog <bake-tree> --base-url <url>   (write a bake tree's catalog manifest)\n       \
                     obc-pack cells <pbf...> <config.json> <out-dir> (cut the extract into OBCA grid cells)"
@@ -70,11 +83,47 @@ fn parse_args() -> Result<Args, String> {
     }
     let output = positional.pop().unwrap();
     let config = positional.pop().unwrap();
-    Ok(Args { pbfs: positional, config, output, opts })
+    Ok(Args { pbfs: positional, config, output, opts, allow_large })
+}
+
+/// Refuse a region that a look would wait on.
+///
+/// The region is the `--bbox` crop when there is one, and what the sources
+/// declare in their PBF headers when there is not. A source that declares no box
+/// leaves the region unknown, so the run goes ahead and says the size was not
+/// measured.
+fn check_region(args: &Args) -> Result<(), String> {
+    if args.allow_large {
+        return Ok(());
+    }
+    let mut region = args.opts.bbox.map(Bbox::to_degrees);
+    if region.is_none() {
+        for pbf in &args.pbfs {
+            let Some((w2, s2, e2, n2)) = ingest::declared_bbox(pbf)? else { continue };
+            region = Some(match region {
+                Some((w, s, e, n)) => (w.min(w2), s.min(s2), e.max(e2), n.max(n2)),
+                None => (w2, s2, e2, n2),
+            });
+        }
+    }
+    let Some(region) = region else {
+        eprintln!("obc-pack: no source declares a bounding box, so the region size was not measured");
+        return Ok(());
+    };
+    let area = ingest::box_area_km2(region);
+    if area > REGION_LIMIT_KM2 {
+        let (w, s, e, n) = region;
+        return Err(format!(
+            "the region {w:.4},{s:.4},{e:.4},{n:.4} is {area:.0} km²; the limit for one pack is \
+             {REGION_LIMIT_KM2:.0} km² — cut it down with --bbox W,S,E,N, or pass --allow-large to pack all of it"
+        ));
+    }
+    Ok(())
 }
 
 fn run() -> Result<(), String> {
     let args = parse_args()?;
+    check_region(&args)?;
     let config = Config::load(&args.config)?;
     // `Progress::stdout()` carries no cancel token, so the CLI's only way out is
     // the one it always had: Ctrl-C, which takes the process with it.
