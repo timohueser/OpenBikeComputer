@@ -78,6 +78,18 @@ pub mod surface;
 pub mod terrain;
 pub use panorama::Panorama;
 
+/// The chart the screen draws is this many pixels wide; [`panorama::ROWS`] is its height.
+const CHART_WIDTH: i32 = 240;
+const ROWS: i32 = panorama::ROWS as i32;
+/// The bottom of every frame. Below about -12 degrees an eye 2 m up sees only its own wheel.
+const GROUND_Q4: i32 = -48;
+/// A 60-degree arc at the chart's aspect. Wider reads as a map; narrower magnifies the panorama.
+const BASE_SPAN_Q4: i32 = 60 * 4 * ROWS / CHART_WIDTH;
+/// Room above the highest summit for its label.
+const LABEL_HEADROOM_Q4: i32 = 24;
+/// A summit almost overhead still has to leave a drawable window.
+const MAX_TOP_Q4: i32 = 340;
+
 /// Observer configuration and summit projections for a panorama.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeakViewProfile<'a> {
@@ -100,9 +112,9 @@ impl PeakViewProfile<'_> {
             observer_lon: lon,
             observer_elevation_m: elevation_m,
             default_heading_q4: 0,
-            fov_q4: 360,
-            vertical_centre_q4: 30,
-            vertical_span_q4: 266,
+            fov_q4: (BASE_SPAN_Q4 * CHART_WIDTH / ROWS) as u16,
+            vertical_centre_q4: (GROUND_Q4 + BASE_SPAN_Q4 / 2) as i16,
+            vertical_span_q4: BASE_SPAN_Q4 as u16,
             peaks: &[],
         }
     }
@@ -113,9 +125,13 @@ impl PeakViewProfile<'_> {
     }
 
     /// Frame the observer's relief once; turning keeps the same scale and horizon position.
+    ///
+    /// The window is anchored at [`GROUND_Q4`] and grows upwards until the highest summit and its
+    /// label fit. The horizontal field follows the vertical span at the chart's own aspect, so a
+    /// degree is the same number of pixels on both axes and a summit keeps its shape.
     pub fn set_ground(&mut self, ground_m: f32) {
         self.observer_elevation_m = libm::roundf(ground_m + 2.0) as i16;
-        let (highest, relief) = self
+        let highest = self
             .peaks
             .iter()
             .filter_map(|peak| {
@@ -126,21 +142,12 @@ impl PeakViewProfile<'_> {
                         * 4.0
                 })
             })
-            .fold((0.0f32, None::<f32>), |(highest, relief), angle| {
-                (highest.max(angle), Some(relief.unwrap_or(0.0).max(angle.abs())))
-            });
-        // Boost shallow relief by at most 2.4×; steep views use the base 1.25× scale.
-        let boost = relief.map(|angle| (56.0 / angle.max(1.0)).clamp(1.0, 2.4)).unwrap_or(1.0);
-        let (fov, centre) = if highest > 96.0 {
-            let top = (libm::ceilf(highest) as i32 + 40).min(340);
-            ((((top + 60) * 50 + 71) / 72 * 72 / 37).max(360), (top - 60) / 2)
-        } else {
-            (360, 30)
-        };
-        self.fov_q4 = fov as u16;
-        self.vertical_centre_q4 = (centre as f32 / boost) as i16;
-        // 222 / 240 chart aspect, with the base 1.25× vertical scale.
-        self.vertical_span_q4 = (fov as f32 * 0.74 / boost).max(1.0) as u16;
+            .fold(0.0f32, f32::max);
+        let wanted = libm::ceilf(highest) as i32 + LABEL_HEADROOM_Q4 - GROUND_Q4;
+        let span = wanted.clamp(BASE_SPAN_Q4, MAX_TOP_Q4 - GROUND_Q4);
+        self.vertical_span_q4 = span as u16;
+        self.vertical_centre_q4 = (GROUND_Q4 + span / 2) as i16;
+        self.fov_q4 = ((span * CHART_WIDTH + ROWS / 2) / ROWS) as u16;
     }
 
     pub fn horizontal_fov_q4(&self) -> i32 {
@@ -307,33 +314,57 @@ mod tests {
         let mut profile = PeakViewProfile { peaks: &peaks, ..PeakViewProfile::at(46_000_000, 8_000_000, 0) };
         profile.set_ground(1000.0);
         let (bottom, top) = profile.vertical_bounds_q4();
-        assert!(bottom <= -56 && top >= 200, "nearby 45-degree terrain fits with headroom");
+        assert_eq!(bottom, GROUND_Q4);
+        assert!(top >= 204, "nearby 45-degree terrain fits with label headroom");
         assert_eq!(profile.observer_elevation_m, 1002);
         let mut flat = PeakViewProfile::at(46_000_000, 8_000_000, 0);
         flat.set_ground(1000.0);
-        assert_eq!(flat.horizontal_fov_q4(), 360, "the ordinary frame keeps its 90-degree window");
+        assert_eq!(flat.horizontal_fov_q4(), 240, "the ordinary frame keeps its 60-degree window");
         assert!(!moved((46_000_000, 8_000_000), (46_000_050, 8_000_000)));
         assert!(moved((46_000_000, 8_000_000), (46_000_200, 8_000_000)));
     }
 
+    /// A degree must be the same number of pixels on both axes, or every summit is drawn with the
+    /// wrong shape. The chart is `CHART_WIDTH` by `ROWS` pixels wide and tall.
+    fn square_pixels(profile: &PeakViewProfile) -> bool {
+        let (bottom, top) = profile.vertical_bounds_q4();
+        let horizontal = profile.horizontal_fov_q4() as f32 / CHART_WIDTH as f32;
+        let vertical = (top - bottom) as f32 / ROWS as f32;
+        (horizontal - vertical).abs() < 0.01
+    }
+
     #[test]
-    fn shallow_relief_gets_a_capped_boost_without_changing_horizontal_bearings() {
+    fn the_frame_sits_on_the_ground_angle_and_opens_upwards_for_a_high_summit() {
         let peaks = [PeakViewPeak { elevation_m: Some(1250), distance_m: 16_500, ..PeakViewPeak::EMPTY }];
         let mut profile = PeakViewProfile { peaks: &peaks, ..PeakViewProfile::at(0, 0, 0) };
         profile.set_ground(200.0);
-        assert_eq!(profile.vertical_span_q4, 110);
-        assert_eq!(profile.horizontal_fov_q4(), 360);
-        let bounds = profile.vertical_bounds_q4();
-        assert!(bounds.0 < 0 && bounds.1 >= 48, "retain ground below and label space above the horizon");
+        assert_eq!(
+            profile.vertical_bounds_q4(),
+            (GROUND_Q4, GROUND_Q4 + BASE_SPAN_Q4),
+            "distant relief keeps the base window"
+        );
+        assert_eq!(profile.horizontal_fov_q4(), 240);
+        assert!(square_pixels(&profile));
+        let base = profile.vertical_bounds_q4();
+
         profile.default_heading_q4 = 720;
         profile.peaks = &[];
-        assert_eq!(profile.detached().vertical_bounds_q4(), bounds, "heading and visibility do not rescale it");
+        assert_eq!(profile.detached().vertical_bounds_q4(), base, "heading and visibility do not rescale it");
         profile.set_ground(200.0);
-        assert_eq!(profile.vertical_span_q4, 266, "missing height metadata does not imply flat terrain");
-        let steep = [PeakViewPeak { elevation_m: Some(-500), distance_m: 1000, ..peaks[0] }];
-        profile.peaks = &steep;
+        assert_eq!(profile.vertical_bounds_q4(), base, "an empty catalogue is not a reason to zoom");
+
+        let below = [PeakViewPeak { elevation_m: Some(-500), distance_m: 1000, ..peaks[0] }];
+        profile.peaks = &below;
         profile.set_ground(200.0);
-        assert_eq!(profile.vertical_span_q4, 266, "steep terrain below the observer also needs vertical room");
+        assert_eq!(profile.vertical_bounds_q4(), base, "the bottom of the frame never follows a summit");
+
+        let overhead = [PeakViewPeak { elevation_m: Some(3000), distance_m: 1000, ..peaks[0] }];
+        profile.peaks = &overhead;
+        profile.set_ground(200.0);
+        let (bottom, top) = profile.vertical_bounds_q4();
+        assert_eq!(bottom, GROUND_Q4, "opening the frame keeps the same horizon position");
+        assert!(top >= 282 + LABEL_HEADROOM_Q4, "a 70-degree summit fits with its label");
+        assert!(square_pixels(&profile));
     }
 
     #[test]
