@@ -2812,6 +2812,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-inspect"
+version = "0.1.0"
+dependencies = [
+ "obc-app",
+ "obc-elevation",
+ "obc-formats",
+ "obc-reader",
+ "obc-route",
+ "obc-storage",
+ "obcm-testkit",
+ "serde_json",
+]
+
+[[package]]
 name = "obc-ios-host"
 version = "0.1.0"
 dependencies = [
