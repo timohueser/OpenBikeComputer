@@ -537,12 +537,6 @@ pub fn assemble_full(
         terrain_region.as_ref().is_some_and(|r| r.has_surface()),
         (style_len, poi_len, nav_projection, landmark_section.section_len(), peak_section.section_len()),
     )?;
-    if let Some(region) = &terrain_region {
-        region.check_map_budget(
-            plan.bytes,
-            emit::peak_view_prefix_bytes(&plan, style_len, poi_len, poi_section.summit_bytes(), nav_projection)?,
-        )?;
-    }
     let t_plan = clock.now_us();
 
     let nav_len = emit::projected_nav_bytes(&plan, style_len, poi_len, nav_projection)?;
