@@ -10,10 +10,10 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use obc_formats::io::{checked_rd_u16, checked_rd_u32, ByteSource, DecodeError, Error};
 use obc_formats::obct::{
     cell_block_len, cell_samples_log2, cell_tiles_log2, sample_offset_in_tile, tile_offset_in_cell,
-    validate_header_prefix, CellIndexLayout, SurfaceLayout, CELL_INDEX_FLAG, DIR_ABSENT, DIR_ENTRY_LEN, GRID_ORIGIN,
-    HDR_CELL_COLS, HDR_CELL_LOG2, HDR_CELL_MIN_I, HDR_CELL_MIN_J, HDR_CELL_ROWS, HDR_DIRECTORY_OFFSET, HDR_FLAGS,
-    HDR_POSTING_LOG2, HDR_RESERVED, HEADER_LEN, NODATA, SURFACE_FLAG, SURFACE_VERSION, TILE_BYTES, TILE_LOG2,
-    TILE_SAMPLES,
+    validate_header_prefix, CellIndexLayout, CrestDirectory, SurfaceLayout, CELL_INDEX_FLAG, CREST_FLAG, DIR_ABSENT,
+    DIR_ENTRY_LEN, GRID_ORIGIN, HDR_CELL_COLS, HDR_CELL_LOG2, HDR_CELL_MIN_I, HDR_CELL_MIN_J, HDR_CELL_ROWS,
+    HDR_DIRECTORY_OFFSET, HDR_FLAGS, HDR_POSTING_LOG2, HDR_RESERVED, HEADER_LEN, NODATA, SURFACE_FLAG, SURFACE_VERSION,
+    TILE_BYTES, TILE_LOG2, TILE_SAMPLES,
 };
 
 use crate::grid::{axis_cells, cell_base_sample, cell_of, lattice_coord, locate};
@@ -135,7 +135,10 @@ impl<'a> TerrainReader<'a> {
         })?;
 
         let flags = head[HDR_FLAGS];
-        if !((head[4] == 1 && flags == 0) || (head[4] == SURFACE_VERSION && flags & !CELL_INDEX_FLAG == SURFACE_FLAG)) {
+        // A v3 file may carry the cross-cell index (§8.3) and the crest planes (§9); both are
+        // additive, and a consumer that reads neither still reads the heights correctly.
+        let optional = CELL_INDEX_FLAG | CREST_FLAG;
+        if !((head[4] == 1 && flags == 0) || (head[4] == SURFACE_VERSION && flags & !optional == SURFACE_FLAG)) {
             return Err(Error::BadVersion);
         }
         let header = TerrainHeader {
@@ -186,13 +189,18 @@ impl<'a> TerrainReader<'a> {
         } else {
             cell_bytes
         };
-        let data_start = if flags & CELL_INDEX_FLAG != 0 {
+        let mut data_start = if flags & CELL_INDEX_FLAG != 0 {
             CellIndexLayout::new(header.cell_rows, header.cell_cols, header.directory_offset)
                 .ok_or(Error::BadOffset)?
                 .end() as u64
         } else {
             dir_end
         };
+        if flags & CREST_FLAG != 0 {
+            data_start = CrestDirectory::new(header.cell_rows, header.cell_cols, data_start as u32)
+                .ok_or(Error::BadOffset)?
+                .end() as u64;
+        }
         if data_start > total {
             return Err(Error::BadOffset);
         }
