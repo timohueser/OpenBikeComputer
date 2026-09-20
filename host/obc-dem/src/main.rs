@@ -92,6 +92,10 @@ fn surface(args: &[String]) -> Result<(), String> {
     obc_dem::surface::convert_with_reference(&bytes, std::io::BufWriter::new(file), mosaic.as_ref())?;
     let size = std::fs::metadata(&output).map_err(|e| e.to_string())?.len();
     println!("{output}: {size} bytes (source {} bytes)", bytes.len());
+    if reference.is_some() {
+        println!("\nThe reference DEM keeps its own attribution, which must travel with this container.");
+        println!("host/obc-dem/reference/README.md holds the wording for each source.");
+    }
     Ok(())
 }
 
