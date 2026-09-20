@@ -128,12 +128,16 @@ pub fn convert<W: Write + Seek>(bytes: &[u8], out: W) -> Result<(), String> {
 }
 
 /// As [`convert`], adding §9 crest planes wherever `reference` — a finer DEM in the same
-/// geographic frame — says the lattice loses a crest. Cells the reference does not cover come out
-/// byte-identical to [`convert`]'s, which is what lets national coverage stop at a border.
+/// geographic frame, sampled by degrees — says the lattice loses a crest. Cells the reference does
+/// not cover come out byte-identical to [`convert`]'s, which is what lets national coverage stop at
+/// a border.
+///
+/// The reference arrives as a closure, not as a decoder, because this module is on the assembler's
+/// `default-features = false` path and must not pull the GeoTIFF decoder into a wasm build.
 pub fn convert_with_reference<W: Write + Seek>(
     bytes: &[u8],
     out: W,
-    reference: Option<&crate::geotiff::DemMosaic>,
+    reference: Option<&dyn Fn(f64, f64) -> Option<f64>>,
 ) -> Result<(), String> {
     let source = SliceSource(bytes);
     let reader = TerrainReader::parse(&source).map_err(|e| format!("invalid source terrain: {e:?}"))?;
@@ -166,9 +170,7 @@ pub fn convert_with_reference<W: Write + Seek>(
         i16::from_le_bytes([bytes[at], bytes[at + 1]])
     };
     for (ci, cj) in rect.cells() {
-        let crest = reference.and_then(|dem| {
-            crate::crest::bake_cell(ci, cj, h.posting_log2, h.cell_log2, sample, |lat, lon| dem.height(lat, lon))
-        });
+        let crest = reference.and_then(|dem| crate::crest::bake_cell(ci, cj, h.posting_log2, h.cell_log2, sample, dem));
         let block = bake_cell_with_crest(ci, cj, h.posting_log2, h.cell_log2, sample, crest.as_ref())?;
         let planes = block.as_ref().and(crest.as_ref()).map(|c| c.bytes());
         writer.push_with_crest(block.as_deref(), planes)?;
