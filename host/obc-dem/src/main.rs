@@ -89,7 +89,9 @@ fn surface(args: &[String]) -> Result<(), String> {
     };
     let bytes = std::fs::read(&input).map_err(|e| format!("{input}: {e}"))?;
     let file = std::fs::File::create(&output).map_err(|e| format!("{output}: {e}"))?;
-    obc_dem::surface::convert_with_reference(&bytes, std::io::BufWriter::new(file), mosaic.as_ref())?;
+    let sampler = mosaic.as_ref().map(|dem| move |lat: f64, lon: f64| dem.height(lat, lon));
+    let sampler = sampler.as_ref().map(|f| f as &dyn Fn(f64, f64) -> Option<f64>);
+    obc_dem::surface::convert_with_reference(&bytes, std::io::BufWriter::new(file), sampler)?;
     let size = std::fs::metadata(&output).map_err(|e| e.to_string())?.len();
     println!("{output}: {size} bytes (source {} bytes)", bytes.len());
     if reference.is_some() {
