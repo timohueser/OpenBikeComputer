@@ -8,12 +8,16 @@ is the whole adapter for a source nobody can fetch unattended. The live probes a
 """
 
 import argparse
+import io
 import os
 import sys
 import unittest
+import urllib.error
 import zipfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Thread
 
 import numpy as np
 import rasterio
@@ -45,15 +49,15 @@ SIDE = 60           # pixels on a side; small, because what is held is the path,
 PLATEAU, TOWER = 800.4, 1234.6
 
 
-def heights():
+def heights(tower=TOWER):
     """A plateau with a one-pixel tower, which is what max-pooling has to keep."""
 
     values = np.full((SIDE, SIDE), PLATEAU, dtype="float32")
-    values[SIDE // 2, SIDE // 2] = TOWER
+    values[SIDE // 2, SIDE // 2] = tower
     return values
 
 
-def ascii_grid(path: Path, delivery) -> Path:
+def ascii_grid(path: Path, delivery, tower) -> Path:
     """One ESRI ASCII grid, with the header Trentino's own files carry and no CRS.
 
     The first pixel centre is half a cell in from the corner, which is what `XLLCENTER`
@@ -62,7 +66,8 @@ def ascii_grid(path: Path, delivery) -> Path:
 
     east, north = delivery["corner"]
     step = delivery["step"]
-    rows = "\n".join(" ".join(f"{value:.2f}" for value in row) for row in heights())
+    rows = "\n".join(" ".join(f"{value:.2f}" for value in row)
+                     for row in heights(tower))
     path.write_text(
         f"NCOLS {SIDE}\nNROWS {SIDE}\n"
         f"XLLCENTER {east + step / 2:.3f}\nYLLCENTER {north + step / 2:.3f}\n"
@@ -71,22 +76,22 @@ def ascii_grid(path: Path, delivery) -> Path:
     return path
 
 
-def geotiff(path: Path, delivery) -> Path:
+def geotiff(path: Path, delivery, tower) -> Path:
     east, north = delivery["corner"]
     step = delivery["step"]
     with rasterio.open(path, "w", driver="GTiff", width=SIDE, height=SIDE, count=1,
                        dtype=delivery["dtype"], crs=CRS.from_epsg(delivery["epsg"]),
                        nodata=delivery["nodata"],
                        transform=Affine(step, 0, east, 0, -step, north + SIDE * step)) as dst:
-        dst.write(heights(), 1)
+        dst.write(heights(tower), 1)
     return path
 
 
-def deliver(directory: Path, delivery) -> Path:
+def deliver(directory: Path, delivery, tower=TOWER) -> Path:
     """The portal's delivery on disk: a raster, a grid, or a zip holding one."""
 
     written = (ascii_grid if delivery.get("grid") else geotiff)(
-        directory / delivery["name"], delivery)
+        directory / delivery["name"], delivery, tower)
     if not delivery.get("zip"):
         return written
     bundle = directory / delivery["zip"]
@@ -102,6 +107,10 @@ def arguments(key, archive, bbox, inputs):
 
     return argparse.Namespace(source=key, archive=str(archive), bbox=bbox,
                               input=str(inputs) if inputs else None, work=None)
+
+
+def parse(bbox: str):
+    return tuple(float(part) for part in bbox.split(","))
 
 
 def box_of(delivery, pad=0.0002) -> str:
@@ -127,14 +136,17 @@ class Deliveries(unittest.TestCase):
         self.root = Path(self.work.name)
         self.addCleanup(self.work.cleanup)
 
-    def ingest(self, key, delivery):
-        inputs = self.root / key / "delivery"
-        inputs.mkdir(parents=True)
-        deliver(inputs, delivery)
-        archive = self.root / key / "archive"
+    def ingest(self, key, delivery, inputs=None, archive=None, work=None):
+        if inputs is None:
+            inputs = self.root / key / "delivery"
+            inputs.mkdir(parents=True)
+            deliver(inputs, delivery)
+        archive = archive or self.root / key / "archive"
+        datum = ingest.SOURCES[key].confirm_datum
         code = ingest.main(["ingest", key, "--bbox", box_of(delivery),
                             "--archive", str(archive), "--input", str(inputs),
-                            "--work", str(self.root / key / "work")])
+                            "--work", str(work or self.root / key / "work")]
+                           + (["--datum", datum] if datum else []))
         self.assertEqual(code, 0)
         return archive
 
@@ -151,8 +163,12 @@ class Deliveries(unittest.TestCase):
                 archive = self.ingest(key, delivery)
                 index = ingest.read_index(archive)
                 self.assertEqual(set(index["sources"]), {key})
-                self.assertEqual(index["sources"][key]["attribution"],
-                                 ingest.SOURCES[key].attribution)
+                # The index carries the credit a published map has to show, which for one
+                # agency names the month the data was fetched.
+                facts = index["sources"][key]
+                self.assertEqual(facts["attribution"],
+                                 ingest.SOURCES[key].credit(facts["fetched"]))
+                self.assertNotIn("{", facts["attribution"])
                 highest = None
                 for tile in index["tiles"]:
                     ti, tj = (int(part) for part in tile.split("/"))
@@ -163,19 +179,74 @@ class Deliveries(unittest.TestCase):
                         highest = max(highest or -32768, int(seen.max()))
                 self.assertEqual(highest, round(TOWER))
 
-    def test_an_ascii_grid_is_given_the_crs_its_format_cannot_carry(self):
-        """The adapter writes the `.prj`, so the tail sees an ordinary placed raster."""
+    def test_an_ascii_grid_gets_its_crs_in_the_work_dir_and_the_delivery_is_untouched(self):
+        """The CRS an ESRI ASCII grid arrives without is written where the tool may write.
+
+        A delivery directory is the owner's download, so nothing goes into it: the grid is
+        copied into the work directory and the `.prj` is written there.
+        """
 
         delivery = DELIVERIES["it-tn"]
         inputs = self.root / "tn"
         inputs.mkdir()
         grid = deliver(inputs, delivery)
+        before = sorted(path.name for path in inputs.iterdir())
+        work = self.root / "work"
+        kept = ingest.local_rasters(ingest.SOURCES["it-tn"], inputs,
+                                    parse(box_of(delivery)), work)
+
+        self.assertEqual(sorted(path.name for path in inputs.iterdir()), before)
         with rasterio.open(grid) as src:
             self.assertIsNone(src.crs)
-        ingest.local_rasters(ingest.SOURCES["it-tn"], inputs, (10.86, 46.15, 10.88, 46.17),
-                             self.root / "work")
-        with rasterio.open(grid) as src:
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0].parent, work)
+        with rasterio.open(kept[0]) as src:
             self.assertEqual(src.crs, CRS.from_epsg(25832))
+
+    def test_a_prj_the_portal_shipped_is_used_as_it_is(self):
+        """A delivery that states its own grid is believed, and nothing is written."""
+
+        delivery = DELIVERIES["it-tn"]
+        inputs = self.root / "with-prj"
+        inputs.mkdir()
+        grid = deliver(inputs, delivery)
+        grid.with_suffix(".prj").write_text(CRS.from_epsg(32632).to_wkt(), encoding="utf-8")
+        kept = ingest.local_rasters(ingest.SOURCES["it-tn"], inputs,
+                                    parse(box_of(delivery)), self.root / "work")
+        self.assertEqual(kept, [grid])
+        with rasterio.open(grid) as src:
+            self.assertEqual(src.crs, CRS.from_epsg(32632))
+
+    def test_a_re_issued_delivery_of_the_same_name_reaches_the_archive(self):
+        """A portal re-uses a file name freely, so the name cannot be the identity.
+
+        The second order holds a different tower. Keyed on the name alone, its members
+        would be skipped as already unpacked and the archive would keep the first one.
+        """
+
+        delivery = DELIVERIES["au"]
+        inputs = self.root / "orders"
+        inputs.mkdir()
+        archive = self.root / "twice" / "archive"
+        work = self.root / "twice" / "work"
+        higher = TOWER + 200.0
+
+        deliver(inputs, delivery)
+        self.ingest("au", delivery, inputs=inputs, archive=archive, work=work)
+        first = ingest.read_index(archive)["sha256"]
+
+        (inputs / delivery["zip"]).unlink()
+        deliver(inputs, delivery, tower=higher)
+        self.ingest("au", delivery, inputs=inputs, archive=archive, work=work)
+
+        second = ingest.read_index(archive)["sha256"]
+        self.assertEqual(set(first), set(second))
+        self.assertNotEqual(first, second)
+        for tile in second:
+            ti, tj = (int(part) for part in tile.split("/"))
+            with rasterio.open(ingest.tile_path(archive, ti, tj)) as src:
+                data = src.read(1)
+            self.assertEqual(int(data.max()), round(higher))
 
     def test_an_ascii_grid_of_a_row_that_states_no_grid_is_refused_by_name(self):
         """A `.prj` guessed wrong puts a mountain in the wrong country, so it is a
@@ -186,8 +257,8 @@ class Deliveries(unittest.TestCase):
         inputs.mkdir()
         deliver(inputs, delivery)
         with self.assertRaises(ingest.Refuse) as refusal:
-            ingest.local_rasters(ingest.SOURCES["au"], inputs, (10.86, 46.15, 10.88, 46.17),
-                                 self.root / "work")
+            ingest.local_rasters(ingest.SOURCES["au"], inputs,
+                                 parse(box_of(DELIVERIES["it-tn"])), self.root / "work")
         self.assertIn("names no CRS", str(refusal.exception))
 
     def test_a_directory_that_holds_nothing_the_portal_delivers_says_so(self):
@@ -244,13 +315,13 @@ class Credentials(unittest.TestCase):
         self.set("OBC_REFERENCE_SE_PASSWORD", "secret")
 
         denmark = ingest.SOURCES["dk"]
-        query = denmark.credential.query()
-        self.assertEqual(query, "&token=a+token%2Fwith%3Dsigns")
-        self.assertEqual(denmark.headers(), {})
+        self.assertEqual(denmark.credential.query(), "&token=a+token%2Fwith%3Dsigns")
+        self.assertEqual(denmark.headers_for("https://api.dataforsyningen.dk/x"), {})
 
         sweden = ingest.SOURCES["se"]
         self.assertEqual(sweden.credential.query(), "")
-        self.assertEqual(sweden.headers(), {"Authorization": "Basic Y29uc3VtZXI6c2VjcmV0"})
+        self.assertEqual(sweden.headers_for("https://dl1.lantmateriet.se/x"),
+                         {"Authorization": "Basic Y29uc3VtZXI6c2VjcmV0"})
 
     def test_a_keyed_service_sends_the_protocols_request_plus_the_token(self):
         """A credential must not change the request: it is one parameter more."""
@@ -266,39 +337,186 @@ class Credentials(unittest.TestCase):
         self.assertEqual(sent[0], finland.url(box) + "&api-key=uuid-shaped")
         self.assertIn("coverageId=korkeusmalli_2m", sent[0])
 
+    def answer_index(self, href):
+        """The STAC search answers with one item, whose asset is at `href`."""
+
+        seen = []
+        real = ingest.sources.stac.http_get
+        self.addCleanup(setattr, ingest.sources.stac, "http_get", real)
+
+        def get(url, headers=None, what=None):
+            seen.append((url, headers))
+            return (b'{"features": [{"id": "a", "assets": {"data": {"href": "'
+                    + href.encode() + b'"}}}]}')
+
+        ingest.sources.stac.http_get = get
+        return seen
+
+    def catch_downloads(self):
+        sent = []
+        real = ingest.sources.bulk.http_download
+        self.addCleanup(setattr, ingest.sources.bulk, "http_download", real)
+
+        def download(url, path, optional=False, headers=None, what=None):
+            sent.append((url, headers, what))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"II*\x00")
+            return path
+
+        ingest.sources.bulk.http_download = download
+        return sent
+
     def test_swedens_index_is_open_and_only_the_download_is_signed(self):
         """The one source whose index and whose data are on different sides of a login."""
 
         self.set("OBC_REFERENCE_SE_USER", "consumer")
         self.set("OBC_REFERENCE_SE_PASSWORD", "secret")
         sweden = ingest.SOURCES["se"]
-
-        index = []
-        real_get = ingest.sources.stac.http_get
-        self.addCleanup(setattr, ingest.sources.stac, "http_get", real_get)
-
-        def get(url, headers=None):
-            index.append((url, headers))
-            return b'{"features": [{"id": "a", "assets": {"data": {"href": "https://d/m1.tif"}}}]}'
-
-        ingest.sources.stac.http_get = get
-        self.assertEqual(sweden.files((18.4, 67.8, 18.5, 67.9)), [("m1.tif", "https://d/m1.tif")])
+        # The real index names this host for a download; the search itself is open.
+        index = self.answer_index("https://dl1.lantmateriet.se/hojd/data/grid/mhm/75_6/m1.tif")
+        self.assertEqual(sweden.files((18.4, 67.8, 18.5, 67.9)),
+                         [("m1.tif", "https://dl1.lantmateriet.se/hojd/data/grid/mhm/75_6/m1.tif")])
         self.assertIsNone(index[0][1])
 
-        downloads = []
-        real_download = ingest.sources.bulk.http_download
-        self.addCleanup(setattr, ingest.sources.bulk, "http_download", real_download)
-
-        def download(url, path, optional=False, headers=None):
-            downloads.append((url, headers))
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(b"II*\x00")
-            return path
-
-        ingest.sources.bulk.http_download = download
+        sent = self.catch_downloads()
         with TemporaryDirectory() as work:
             sweden.fetch((18.4, 67.8, 18.5, 67.9), Path(work))
-        self.assertEqual(downloads[0][1], {"Authorization": "Basic Y29uc3VtZXI6c2VjcmV0"})
+        self.assertEqual(sent[0][1], {"Authorization": "Basic Y29uc3VtZXI6c2VjcmV0"})
+        # The label a refusal would carry is the source and the file, never the URL.
+        self.assertEqual(sent[0][2], "se m1.tif")
+
+    def test_an_index_that_names_another_host_does_not_get_the_password(self):
+        """A STAC answer is data, not code. A `href` anywhere else is a refusal, and not
+        a download that quietly goes out unsigned."""
+
+        self.set("OBC_REFERENCE_SE_USER", "consumer")
+        self.set("OBC_REFERENCE_SE_PASSWORD", "secret")
+        sweden = ingest.SOURCES["se"]
+        self.answer_index("https://dl1.lantmateriet.se.attacker.example/m1.tif")
+        sent = self.catch_downloads()
+        with self.assertRaises(ingest.Refuse) as refusal:
+            with TemporaryDirectory() as work:
+                sweden.fetch((18.4, 67.8, 18.5, 67.9), Path(work))
+        message = str(refusal.exception)
+        self.assertIn("dl1.lantmateriet.se.attacker.example", message)
+        self.assertIn("lantmateriet.se", message)
+        self.assertEqual(sent, [])
+        self.assertNotIn("secret", message)
+
+    def test_a_row_whose_adapter_cannot_carry_its_credential_is_refused(self):
+        """A credential the fetch path never reads is a request that goes out unsigned."""
+
+        with self.assertRaises(ingest.Refuse) as refusal:
+            ingest.sources.bulk.BulkSource(
+                "xx", "Nowhere", "p", 1.0, "l", "a", "NAP", (0, 0, 1, 1),
+                credential=ingest.Credential("xx", "token"))
+        self.assertIn("cannot be carried by BulkSource", str(refusal.exception))
+
+        with self.assertRaises(ingest.Refuse) as refusal:
+            ingest.sources.bulk.BulkSource(
+                "xx", "Nowhere", "p", 1.0, "l", "a", "NAP", (0, 0, 1, 1),
+                credential=ingest.Credential("xx"))
+        self.assertIn("needs credential_hosts", str(refusal.exception))
+
+
+class Redaction(unittest.TestCase):
+    """A refusal quotes what came off the wire, so it must not quote the token."""
+
+    SECRET = "s3cret-token-value"
+
+    def setUp(self):
+        os.environ["OBC_REFERENCE_FI_TOKEN"] = self.SECRET
+        self.addCleanup(os.environ.pop, "OBC_REFERENCE_FI_TOKEN", None)
+        self.source = ingest.SOURCES["fi"]
+        self.box = (25.0, 68.0, 25.01, 68.005)
+
+    def failing(self, error):
+        real = ingest.sources.base.OPENER
+        self.addCleanup(setattr, ingest.sources.base, "OPENER", real)
+
+        class Opener:
+            def open(self, request, timeout=None):
+                raise error
+
+        ingest.sources.base.OPENER = Opener()
+
+    def refusal_for(self, error):
+        real = ingest.sources.base.RETRY_DELAYS
+        self.addCleanup(setattr, ingest.sources.base, "RETRY_DELAYS", real)
+        ingest.sources.base.RETRY_DELAYS = ()
+        self.failing(error)
+        with self.assertRaises(ingest.Refuse) as refusal:
+            self.source.request(self.box)
+        return str(refusal.exception)
+
+    def quoting_error(self, code):
+        """A service that answers by quoting the request it refused, token and all."""
+
+        body = io.BytesIO(f"refused: {self.source.url(self.box)}&api-key={self.SECRET}"
+                          .encode())
+        return urllib.error.HTTPError("http://x", code, "no", {}, body)
+
+    def test_a_4xx_that_quotes_the_request_does_not_quote_the_token(self):
+        message = self.refusal_for(self.quoting_error(403))
+        self.assertNotIn(self.SECRET, message)
+        self.assertIn("<redacted>", message)
+        self.assertIn("fi (25.0", message)
+
+    def test_a_5xx_after_the_retries_does_not_quote_the_token(self):
+        message = self.refusal_for(self.quoting_error(503))
+        self.assertNotIn(self.SECRET, message)
+        self.assertIn("after 0 retries", message)
+
+    def test_a_dropped_connection_names_the_source_and_not_the_url(self):
+        message = self.refusal_for(urllib.error.URLError(
+            f"cannot reach {self.source.url(self.box)}&api-key={self.SECRET}"))
+        self.assertNotIn(self.SECRET, message)
+        self.assertIn("fi (25.0", message)
+
+
+class RedirectHandler(BaseHTTPRequestHandler):
+    """`/start` sends the client to the same server under its other name."""
+
+    seen: list = []
+
+    def do_GET(self):  # noqa: N802 — the name is the base class's
+        self.seen.append((self.path, self.headers.get("Authorization")))
+        if self.path == "/start":
+            self.send_response(302)
+            self.send_header("Location", f"http://localhost:{self.server.server_port}/end")
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Length", "4")
+        self.end_headers()
+        self.wfile.write(b"II*\x00")
+
+    def log_message(self, *args):
+        pass
+
+
+class Redirects(unittest.TestCase):
+    """A credential goes to the host the row named, and follows a redirect nowhere."""
+
+    def setUp(self):
+        RedirectHandler.seen = []
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
+        Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.addCleanup(self.httpd.server_close)
+        self.addCleanup(self.httpd.shutdown)
+        self.port = self.httpd.server_address[1]
+
+    def test_a_redirect_to_another_host_drops_the_authorization(self):
+        """urllib copies a request's headers onto the redirect it follows, so a portal
+        that sent its download to a content network would hand it the password."""
+
+        body = ingest.sources.base.http_get(
+            f"http://127.0.0.1:{self.port}/start",
+            headers={"Authorization": "Basic Y29uc3VtZXI6c2VjcmV0"})
+        self.assertEqual(body, b"II*\x00")
+        self.assertEqual([path for path, _ in RedirectHandler.seen], ["/start", "/end"])
+        self.assertEqual(RedirectHandler.seen[0][1], "Basic Y29uc3VtZXI6c2VjcmV0")
+        self.assertIsNone(RedirectHandler.seen[1][1])
 
 
 class Wizard(unittest.TestCase):
@@ -308,7 +526,8 @@ class Wizard(unittest.TestCase):
         self.work = TemporaryDirectory()
         self.root = Path(self.work.name)
         self.addCleanup(self.work.cleanup)
-        for name in ("OBC_REFERENCE_AU_TOKEN", "OBC_REFERENCE_DK_TOKEN"):
+        for name in ("OBC_REFERENCE_DK_TOKEN", "OBC_REFERENCE_SE_USER",
+                     "OBC_REFERENCE_SE_PASSWORD"):
             if name in os.environ:
                 real = os.environ.pop(name)
                 self.addCleanup(os.environ.__setitem__, name, real)
@@ -327,16 +546,21 @@ class Wizard(unittest.TestCase):
         return code, asked
 
     def test_the_steps_are_walked_and_the_delivery_is_ingested(self):
-        """Australia is the source with no fetch at all, so the wizard is the whole path."""
+        """Australia is the source with no fetch at all, so the wizard is the whole path.
+
+        The answers are every step, the directory, `y` to ingest, and `y` to the datum
+        the order's metadata states.
+        """
 
         delivery = DELIVERIES["au"]
         inputs = self.root / "au" / "delivery"
         inputs.mkdir(parents=True)
         deliver(inputs, delivery)
         steps = len(ingest.SOURCES["au"].steps)
-        code, asked = self.run_wizard("au", [""] * steps + [str(inputs), "y"])
+        code, asked = self.run_wizard("au", [""] * steps + [str(inputs), "y", "y"])
         self.assertEqual(code, 0)
-        self.assertEqual(len(asked), steps + 2)
+        self.assertEqual(len(asked), steps + 3)
+        self.assertIn("AHD", asked[-1])
         said = "\n".join(self.said)
         self.assertIn("Step 1 of", said)
         self.assertIn(f"Step {steps} of {steps}", said)
@@ -344,6 +568,19 @@ class Wizard(unittest.TestCase):
         self.assertIn(ingest.SOURCES["au"].attribution, said)
         self.assertIn(delivery["zip"], said)
         self.assertTrue(ingest.read_index(self.root / "au" / "archive")["tiles"])
+
+    def test_a_delivery_the_owner_cannot_confirm_the_datum_of_is_not_ingested(self):
+        """An ellipsoidal order is tens of metres out, which is the size of a lift."""
+
+        delivery = DELIVERIES["au"]
+        inputs = self.root / "au" / "delivery"
+        inputs.mkdir(parents=True)
+        deliver(inputs, delivery)
+        steps = len(ingest.SOURCES["au"].steps)
+        code, _ = self.run_wizard("au", [""] * steps + [str(inputs), "y", "n"])
+        self.assertEqual(code, 1)
+        self.assertIn("ellipsoidal height stands tens of metres", "\n".join(self.said))
+        self.assertFalse((self.root / "au" / "archive").exists())
 
     def test_q_at_a_step_ingests_nothing(self):
         code, asked = self.run_wizard("au", ["", "q"])
@@ -358,15 +595,33 @@ class Wizard(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("is not a directory", "\n".join(self.said))
 
-    def test_a_credential_that_is_set_skips_the_download_by_hand(self):
-        """The wizard's last step is the ingest, and with a token that is a live fetch."""
+    def test_a_pasted_credential_goes_into_the_environment_and_not_into_argv(self):
+        """The wizard's own process runs the ingest, so the token needs no command line."""
 
-        os.environ["OBC_REFERENCE_DK_TOKEN"] = "a token"
-        self.addCleanup(os.environ.pop, "OBC_REFERENCE_DK_TOKEN", None)
+        said, asked = [], []
+
+        def ask(prompt):
+            asked.append(prompt)
+            return "pasted-token-value"
+
+        self.assertTrue(ingest.wizard.take_credential(ingest.SOURCES["dk"], ask, said.append))
+        self.assertEqual(asked, ["  OBC_REFERENCE_DK_TOKEN: "])
+        self.assertEqual(os.environ["OBC_REFERENCE_DK_TOKEN"], "pasted-token-value")
+        self.assertNotIn("pasted-token-value", "\n".join(said))
+
+    def test_an_empty_answer_falls_back_to_the_download_by_hand(self):
         said = []
-        where = ingest.wizard.input_directory(ingest.SOURCES["dk"], None, lambda _: "", said.append)
-        self.assertEqual(where, "")
-        self.assertIn("OBC_REFERENCE_DK_TOKEN is set", "\n".join(said))
+        self.assertFalse(ingest.wizard.take_credential(
+            ingest.SOURCES["se"], lambda _: "", said.append))
+        self.assertNotIn("OBC_REFERENCE_SE_USER", os.environ)
+        self.assertIn("the download by hand it is", "\n".join(said))
+
+    def test_a_credential_that_is_already_set_asks_nothing(self):
+        os.environ["OBC_REFERENCE_DK_TOKEN"] = "a token"
+        said = []
+        self.assertTrue(ingest.wizard.take_credential(
+            ingest.SOURCES["dk"], lambda _: self.fail("it asked"), said.append))
+        self.assertIn("OBC_REFERENCE_DK_TOKEN is already set", "\n".join(said))
 
     def test_a_source_that_needs_no_account_says_to_ingest_it_directly(self):
         with self.assertRaises(ingest.Refuse) as refusal:

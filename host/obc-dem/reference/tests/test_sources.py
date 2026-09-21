@@ -532,7 +532,7 @@ class FrenchBil(unittest.TestCase):
         self.addCleanup(lambda: setattr(fr_module, "http_get", real))
 
     def answer(self, body):
-        fr_module.http_get = lambda url: body
+        fr_module.http_get = lambda url, what=None: body
 
     def test_the_raw_float32_band_becomes_a_placed_geotiff(self):
         """The bytes carry no header, so the size and the box the request stated place them."""
@@ -664,7 +664,8 @@ class Registry(unittest.TestCase):
 
         real = ingest.sources.protocols.http_get
         self.addCleanup(lambda: setattr(ingest.sources.protocols, "http_get", real))
-        ingest.sources.protocols.http_get = lambda url: b"<ExceptionReport>no such coverage</ExceptionReport>"
+        ingest.sources.protocols.http_get = (
+            lambda url, what=None: b"<ExceptionReport>no such coverage</ExceptionReport>")
         with self.assertRaises(ingest.Refuse) as refusal:
             ingest.SOURCES["de-nw"].request(BOX)
         self.assertIn("no such coverage", str(refusal.exception))

@@ -99,9 +99,11 @@ def raster_bytes(url: str, what: str) -> bytes:
 
     Every service here answers an error as an XML document with a 200, so the only way to
     tell a raster from a service that has moved or is out of coverage is the TIFF magic.
+    `what` is the source and the box, and it is what a refusal names: a keyed service
+    reads its token out of the URL, so the URL is not something to put in a message.
     """
 
-    body = http_get(url)
+    body = http_get(url, what=what)
     if body[:4] not in (b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+"):
         text = body[:400].decode("utf-8", "replace").replace("\n", " ").strip()
         raise Refuse(f"{what}: the service did not answer with a TIFF but with: {text}")
@@ -110,6 +112,9 @@ def raster_bytes(url: str, what: str) -> bytes:
 
 class TiledService(Source):
     """A service that answers one box at a time, cached per request in the work directory."""
+
+    #: These services read a key out of the query, which `request` appends.
+    credential_style = "query"
 
     #: The grid a request is stated in, when it is not degrees. The split is measured
     #: there, so a request can never overrun the pixel cap and come back coarsened.

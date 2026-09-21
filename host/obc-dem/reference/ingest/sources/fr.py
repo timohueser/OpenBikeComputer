@@ -40,7 +40,7 @@ class BilWmsSource(TiledService):
 
     def request(self, box) -> bytes:
         px, py = output_size(box, self.resolution_m, f"{self.key} {box}")
-        raw = http_get(self.url(box))
+        raw = http_get(self.url(box), what=f"{self.key} {box}")
         if len(raw) != px * py * 4:
             text = raw[:400].decode("utf-8", "replace").replace("\n", " ").strip()
             raise Refuse(f"{self.key} {box}: asked for {px}x{py} float32 and got "
