@@ -295,9 +295,19 @@ triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
 id = "ci.dependencies"
 route = "ordinary"
 command = "obc check deny"
-jobs = ["deny", "test"]
+jobs = ["deny"]
 foundation = true
-triggers = ["firmware/tools/check_dependencies.py", "firmware/tools/dependency_rules.json", "deny.toml"]
+triggers = ["deny.toml"]
+
+# The other half of the dependency work, and a different job: the `test` job runs this script as
+# one step. It reads `cargo metadata` and compiles nothing, so a plan too large to run locally
+# still runs it. A new workspace crate must be classified here before CI accepts it.
+[[suite]]
+id = "ci.dependency-direction"
+route = "required"
+command = "python3 firmware/tools/check_dependencies.py"
+jobs = ["test"]
+triggers = ["firmware/tools/check_dependencies.py", "firmware/tools/dependency_rules.json"]
 
 [[suite]]
 id = "ci.resource-contracts"

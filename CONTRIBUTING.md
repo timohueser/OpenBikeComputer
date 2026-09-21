@@ -46,6 +46,12 @@ a declared suite is skipped and names the suite, because `obc test affected` alr
 format gate writes: if it rewrites a file, the command names the file and stops, because the tree
 is no longer the tree you were about to push. Commit the file and run `obc ready` again.
 
+A foundation input such as `Cargo.toml`, or a change to the test policy, selects the graph as a
+whole. That run is CI's, so `obc ready` does not start it. It keeps the selected suites that
+build nothing — the Python checks and guards — gives each one a line, and names every other suite
+as left to CI. A check that costs a fraction of a second then stays visible instead of hiding
+behind a run of the complete suite.
+
 ```sh
 obc ready --dry-run
 obc ready --base origin/develop
