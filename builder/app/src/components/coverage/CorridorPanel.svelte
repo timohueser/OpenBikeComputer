@@ -361,7 +361,7 @@
         </p>
     {/if}
 
-    <!-- The two sources are exclusive layouts (#1041 low sweep): the uploaded
+    <!-- The two sources are exclusive layouts: the uploaded
          rows, the width slider and the commit belong to the GPX side, and
          rendering them under the device stub conflated where the routes came
          from. Switching tabs keeps the rows — only the view changes. -->

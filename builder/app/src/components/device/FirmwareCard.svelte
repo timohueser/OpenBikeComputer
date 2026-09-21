@@ -146,9 +146,9 @@
     {:else if status === "ahead" && release}
         <p class="small muted">This device is newer than the published {release.version}.</p>
     {:else if status === "unknown" && running}
-        <!-- The third state, said out loud (#773's U4/U5 amendment): the version this device
-             reports is not a release version, so the check has nothing it can decide. The picker
-             below is how such a device gets back onto the release track. -->
+        <!-- The third state, said out loud: the version this device reports is not a release
+             version, so the check has nothing it can decide. The picker below is how such a
+             device gets back onto the release track. -->
         <p class="small muted">Development build — automatic updates are paused.</p>
     {:else if status === "unknown"}
         <p class="small muted">This device has not reported a firmware version yet.</p>

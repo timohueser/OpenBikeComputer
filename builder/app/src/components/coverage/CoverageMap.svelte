@@ -818,8 +818,7 @@
     }
 
     /* At phone widths the attribution line spans nearly the whole pane, so
-       the chip moves up a line instead of sitting on top of it (#1041 low
-       sweep, mobile). */
+       the chip moves up a line instead of sitting on top of it. */
     @media (max-width: 940px) {
         .bottom-left {
             bottom: 38px;
@@ -835,7 +834,7 @@
        this pane has the tool rail there instead. The offset tucks the control
        directly under the rail (4 × 32px buttons + gaps + padding + 12px top
        ≈ 160px) rather than parking it mid-pane — which is where a fixed
-       200px put it on a short phone pane (#1041 low sweep, mobile). */
+       200px put it on a short phone pane. */
     .map-wrap :global(.leaflet-top.leaflet-left) {
         top: 172px;
     }
