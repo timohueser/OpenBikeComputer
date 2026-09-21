@@ -1,19 +1,17 @@
-//! The two documents an assembly is driven by: the **schema** (what the cells were baked at) and
-//! the **skin** (what the output looks like) — [`OBCC_Spec.md`](../../../specs/OBCC_Spec.md) §4
-//! and §11.4, restated as the engine's input types.
+//! The two documents an assembly is driven by: the schema, which is what the cells were baked at,
+//! and the skin, which is what the output looks like.
 //!
-//! The split is the whole point of the epic and is byte-level, not editorial
-//! ([`OBCA_Spec.md`](../../../specs/OBCA_Spec.md) §6.2): the **schema owns the style ids**, because
-//! `obc-pack` numbers feature types 1-based in config order and every feature header in every chunk
-//! references those numbers. A skin may change only the other seven bytes of each 8-byte record plus
-//! the header's marker colour. That is why a restyle costs ~2 KB of output and no re-bake.
+//! The split is byte-level, not editorial. The schema owns the style ids, because `obc-pack`
+//! numbers feature types 1-based in config order and every feature header in every chunk references
+//! those numbers. A skin may change only the other seven bytes of each 8-byte record plus the
+//! header's marker colour, which is why a restyle costs about 2 KB of output and no re-bake.
 
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 
 use crate::grid::{MAX_CELL_LOG2, MIN_CELL_LOG2};
 
-/// Which physical file of a volume set a band's content is assembled into (OBCA §5.1).
+/// Which physical file of a volume set a band's content is assembled into.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BandRole {
@@ -35,14 +33,14 @@ impl BandRole {
     }
 }
 
-/// One band: a named class of cell content with one cell size (OBCA §1.2). The JSON shape is
-/// OBCC §4's `bands` entry verbatim, so a catalog's own schema can be handed straight in.
+/// One band: a named class of cell content with one cell size. The JSON shape is the catalog's
+/// `bands` entry verbatim, so a catalog's own schema can be handed straight in.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Band {
     pub id: String,
     /// Cell size, `log2(µdeg)`.
     pub cell_log2: u32,
-    /// Ladder LOD indices this band's cells carry; every other LOD is written empty (§3.1).
+    /// Ladder LOD indices this band's cells carry; every other LOD is written empty.
     #[serde(default)]
     pub lods: Vec<usize>,
     /// Non-geometry sections this band carries: `"nav"` and/or `"poi"`.
@@ -60,8 +58,8 @@ impl Band {
     }
 }
 
-/// One ladder level (OBCC §4): its index, its `Max Meters/Pixel` (`null` ⇒ the `+inf` coarsest
-/// level), and the band that carries it.
+/// One ladder level: its index, its `Max Meters/Pixel` (`null` for the coarsest level), and the
+/// band that carries it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LodEntry {
     pub index: usize,
@@ -72,15 +70,15 @@ pub struct LodEntry {
 }
 
 /// The canonical style-id assignment: which feature type owns which style id. Part of the schema
-/// because the ids are in the cells' chunk bytes (OBCA §6.2).
+/// because the ids are in the cells' chunk bytes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StyleId {
     pub id: u8,
     pub feature_type: String,
 }
 
-/// The schema's routing facts. `min_component_edges` is the island-prune threshold the **assembler**
-/// applies (OBCA §3.5/§4.6.4) — schema data, never skin data.
+/// The schema's routing facts. `min_component_edges` is the island-prune threshold the assembler
+/// applies — schema data, never skin data.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Routing {
     pub min_component_edges: usize,
@@ -94,8 +92,8 @@ impl Default for Routing {
     }
 }
 
-/// A schema revision: everything a producer must agree on for chunk bytes to mean the same thing in
-/// two files (OBCC §4).
+/// A schema revision: everything a producer must agree on for chunk bytes to mean the same thing
+/// in two files.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Schema {
     #[serde(default)]
@@ -119,7 +117,7 @@ fn default_obcm_version() -> u8 {
 }
 
 impl Schema {
-    /// Parse a schema document. Accepts either a bare `SchemaEntry` or an OBCC v2 root
+    /// Parse a schema document. Accepts either a bare `SchemaEntry` or a catalog root
     /// (`{"schema": {...}}`), because both are things a caller has in hand.
     pub fn parse(text: &str) -> Result<Schema, String> {
         #[derive(Deserialize)]
@@ -148,14 +146,14 @@ impl Schema {
     }
 
     /// `S_MAX` as `log2` — the largest cell size in the table, which is the assembly bbox's
-    /// alignment modulus (OBCA §2.1).
+    /// alignment modulus.
     pub fn s_max_log2(&self) -> u32 {
         self.bands.iter().map(|b| b.cell_log2).max().unwrap_or(MIN_CELL_LOG2)
     }
 
-    /// OBCA §1.2's partition rule and §5.1's role rules. A consumer MUST reject a violation: a LOD
-    /// in no band is a map blank at that zoom, a LOD in two bands is a map carrying it twice, and a
-    /// `core` band with geometry spends the one file a set cannot split.
+    /// The partition and role rules. A consumer must reject a violation: a LOD in no band is a map
+    /// blank at that zoom, a LOD in two bands is a map carrying it twice, and a `core` band with
+    /// geometry spends the one file a set cannot split.
     pub fn validate(&self) -> Result<(), String> {
         if self.bands.is_empty() {
             return Err("band table is empty".into());
@@ -168,7 +166,7 @@ impl Schema {
                 return Err(format!("ladder entry {i} declares index {}: levels must be listed in order", l.index));
             }
         }
-        // Strictly decreasing `Max Meters/Pixel` with `+inf` at the top (`OBCM_Spec.md` §3).
+        // Strictly decreasing `Max Meters/Pixel`, with the coarsest level at `+inf`.
         if self.lods[0].max_mpp.is_some() {
             return Err("ladder level 0 must be the +inf level (max_mpp null)".into());
         }
@@ -255,14 +253,13 @@ impl Schema {
     }
 }
 
-/// One feature type's presentation, as a skin states it (OBCC §5).
+/// One feature type's presentation, as a skin states it.
 ///
-/// Two spellings are accepted, because two callers exist. A hosted skin names the **feature type**
-/// and the schema's canonical assignment turns it into an id — that is the OBCC shape and the one
-/// that keeps the schema/skin split honest. A hand-written local skin may instead name the **id**
-/// directly, which is what a caller has when it is restyling a cell tree whose schema document does
-/// not travel with it; the engine then cross-checks the resulting id set against the cells' own
-/// style table, so a wrong id is a refusal rather than an invisible layer.
+/// Two spellings are accepted, because two callers exist. A hosted skin names the feature type and
+/// the schema's canonical assignment turns it into an id. A hand-written local skin may instead
+/// name the id directly, which is what a caller has when it is restyling a cell tree whose schema
+/// document does not travel with it; the engine then cross-checks the resulting id set against the
+/// cells' own style table, so a wrong id is a refusal rather than an invisible layer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkinStyle {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -277,10 +274,10 @@ pub struct SkinStyle {
     pub priority: u8,
     #[serde(default)]
     pub line_style: LineStyle,
-    /// OBCM §2 flag bit 4 (#1095): `weight` is device pixels, off the renderer's zoom width ramp.
+    /// `weight` is device pixels, off the renderer's zoom width ramp.
     #[serde(default)]
     pub fixed_width: bool,
-    /// OBCM §2 flag bit 5 (#1095): part of the suppressible terrain layer.
+    /// Part of the suppressible terrain layer.
     #[serde(default)]
     pub terrain_layer: bool,
     #[serde(default, deserialize_with = "de_color_opt")]
@@ -291,7 +288,7 @@ fn default_priority() -> u8 {
     1
 }
 
-/// A skin: the presentation half of a preset, stamped onto ~2 KB of an assembly (OBCA §4.7).
+/// A skin: the presentation half of a preset, stamped onto about 2 KB of an assembly.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Skin {
     #[serde(default)]
@@ -311,9 +308,9 @@ impl Skin {
     /// Resolve this skin against the schema's canonical id assignment: one 8-byte style record per
     /// schema style, in schema order.
     ///
-    /// An assembler MUST reject a skin that does not cover every id in the schema's table, and MUST
-    /// reject one naming a feature type the schema does not have — silently defaulting a missing
-    /// style would ship a map with an invisible layer (OBCA §4.7).
+    /// An assembler rejects a skin that does not cover every id in the schema's table, and one
+    /// naming a feature type the schema does not have: silently defaulting a missing style would
+    /// ship a map with an invisible layer.
     pub fn resolve(&self, schema: &Schema) -> Result<Vec<StyleRecord>, String> {
         let record = |id: u8, v: &SkinStyle| StyleRecord {
             id,
@@ -364,12 +361,11 @@ impl Skin {
                 }
             }
         }
-        // §4.7: "write the style table with the schema's ids **in the schema's order**", and "the
-        // skin MUST NOT introduce, remove, reorder, or renumber ids". Silently sorting would make
-        // this crate the thing that decides the order — and the id set is compared against the
-        // cells' own style table right after, so a skin listed out of order would resolve to a table
-        // that matches by luck. The order is the caller's to get right, and a violation is a
-        // refusal.
+        // The style table carries the schema's ids in the schema's order, and a skin may not
+        // introduce, remove, reorder or renumber them. Silently sorting would make this crate the
+        // thing that decides the order — and the id set is compared against the cells' own style
+        // table right after, so a skin listed out of order would resolve to a table that matches by
+        // luck.
         for w in out.windows(2) {
             if w[0].id == w[1].id {
                 return Err(format!("the resolved style table assigns id {} twice (OBCA §4.7)", w[0].id));
@@ -386,9 +382,9 @@ impl Skin {
     }
 }
 
-/// How a line is stroked (`OBCM_Spec.md` §2, flag bits 2 and 6). Mirrored here rather than shared
-/// with `obc-pack`, exactly as [`StyleRecord`] and [`SkinStyle`] are: the packer is a dev-dependency
-/// only, so the engine's build graph never sees it.
+/// How a line is stroked. Mirrored here rather than shared with `obc-pack`, exactly as
+/// [`StyleRecord`] and [`SkinStyle`] are: the packer is a dev-dependency only, so the engine's
+/// build graph never sees it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LineStyle {
@@ -398,7 +394,7 @@ pub enum LineStyle {
     Ticked,
 }
 
-/// One resolved 8-byte style-table record (`OBCM_Spec.md` §2).
+/// One resolved 8-byte style-table record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StyleRecord {
     pub id: u8,
@@ -408,14 +404,14 @@ pub struct StyleRecord {
     pub priority: u8,
     pub line_style: LineStyle,
     pub color2: Option<u16>,
-    /// Flag bit 4 (#1095): the weight is used verbatim on screen, off the zoom width ramp.
+    /// The weight is used verbatim on screen, off the zoom width ramp.
     pub fixed_width: bool,
-    /// Flag bit 5 (#1095): part of the suppressible terrain layer.
+    /// Part of the suppressible terrain layer.
     pub terrain_layer: bool,
 }
 
 /// RGB565 as either a JSON number or a `"0x…"` / decimal string — the two spellings that exist in
-/// the wild (OBCC writes numbers; `obc-pack` config files write `"0xF800"`).
+/// the wild. The catalog writes numbers; `obc-pack` config files write `"0xF800"`.
 fn de_color<'de, D: Deserializer<'de>>(d: D) -> Result<u16, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]
@@ -446,7 +442,7 @@ fn de_color_opt<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u16>, D::Error
 mod tests {
     use super::*;
 
-    /// The v1 band table of OBCA §1.5, over the shipped 9-LOD ladder.
+    /// The v1 band table, over the shipped 9-LOD ladder.
     pub(crate) fn v1_schema() -> Schema {
         let band = |id: &str, cell_log2: u32, lods: &[usize], sections: &[&str], role: BandRole| Band {
             id: id.into(),
@@ -561,8 +557,8 @@ mod tests {
         };
         let recs = by_id.resolve(&bare).expect("id-keyed skins resolve");
         assert_eq!(recs.iter().map(|r| (r.id, r.color)).collect::<Vec<_>>(), vec![(1, 0xFF00), (2, 0x00FF)]);
-        // …but the order is the caller's to state, not this crate's to invent: §4.7 forbids a skin
-        // from reordering ids, so a mis-ordered table is a refusal rather than a silent re-sort.
+        // …but the order is the caller's to state, not this crate's to invent: a skin may not
+        // reorder ids, so a mis-ordered table is a refusal rather than a silent re-sort.
         let shuffled = Skin { styles: by_id.styles.iter().rev().cloned().collect(), ..by_id.clone() };
         assert!(shuffled.resolve(&bare).unwrap_err().contains("ids must ascend"));
         let idless = Skin { styles: vec![style("natural.water", 1)], ..full };
