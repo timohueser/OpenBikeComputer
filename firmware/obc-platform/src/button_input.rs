@@ -1,7 +1,7 @@
 //! Board-agnostic pushbutton input into the shared gesture recognizer.
 //!
-//! It turns raw GPIO levels into [`InputEvent`]s and implements [`InputSource`], so a board drops
-//! it into the app's input handler. Nothing here decides what an edge means: the shared
+//! It turns raw GPIO levels into [`InputEvent`]s and implements [`InputSource`], so a board hands
+//! it straight to the shared recogniser it drives. Nothing here decides what an edge means: that
 //! recogniser turns UP/DOWN into steps with auto-repeat and SELECT/BACK into `Press`/`Hold` and
 //! `Back`/`BackHold`. This module owns exactly one timing, the contact-settle window.
 //!
@@ -9,8 +9,8 @@
 //! its internal pull-up, so pressed is [`InputPin::is_low`].
 //!
 //! Debounce needs a clock but [`InputSource::poll`] is clockless, so the board calls
-//! [`ButtonInput::update`] with the current wall-clock millis once per loop before
-//! `handle_input`. `update` samples the pins and queues events; `poll` drains the queue.
+//! [`ButtonInput::update`] with the current wall-clock millis once per loop, before it recognises.
+//! `update` samples the pins and queues events; `poll` drains the queue.
 
 use embedded_hal::digital::InputPin;
 use heapless::Deque;
