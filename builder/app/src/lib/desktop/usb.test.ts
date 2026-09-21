@@ -1,29 +1,22 @@
 /**
- * The native transport, driven end to end (D4, #909).
+ * The native transport, driven end to end.
  *
- * There is no device in CI and none on the machine that wrote this, so the substitution has to be
- * chosen carefully. It is made at exactly one place: the **Tauri command boundary**. Everything
- * above it — `NativePipe`, `NativeWatcher`, `FlatStoreClient`, §5.2's record framing, the codecs,
- * the CRC — is the shipping code, and the fake backend below stands in for
- * `apps/obc-desktop/src/usb/`, forwarding to C3's simulated device.
+ * There is no device in CI, so the substitution is made at exactly one place: the **Tauri command
+ * boundary**. Everything above it — `NativePipe`, `NativeWatcher`, `FlatStoreClient`, the record
+ * framing, the codecs, the CRC — is the shipping code, and the fake backend below stands in for
+ * `apps/obc-desktop/src/usb/`, forwarding to the simulated device.
  *
- * That means these tests are about the two things a fake *can* prove:
+ * That leaves two things a fake can prove: that a real fixture object round-trips through the real
+ * client over the native pipes byte for byte, with the device verifying the whole-object CRC, and
+ * that the transport properties hold — a read is not a record, a zero-length packet is a marker and
+ * not data, concurrent writes keep submission order, cancellation reaches the transport, and an
+ * unplug settles pending calls.
  *
- * 1. **The seam holds.** A real `specs/vectors/` object round-trips through the real client over
- *    the native pipes, byte for byte, with the device verifying the whole-object CRC — which is
- *    #909's first acceptance criterion and the entire claim that USB-over-Rust is a second
- *    transport rather than a second protocol.
- * 2. **The transport properties C3's contract names are honoured**: a read is not a record, a
- *    zero-length packet is a marker and not data, concurrent writes keep submission order,
- *    cancellation reaches the transport, and an unplug settles pending calls.
+ * A third is an absence: this host has no EP0 vendor request, which is asserted rather than worked
+ * around, because a connection that invented a firmware revision would feed "an update is
+ * available" a lie.
  *
- * There is a third thing, and it is an absence: this host has no EP0 vendor request, so §5.2.1's
- * device info is unreadable here. That is asserted rather than worked around — a connection that
- * invented a firmware revision would feed "an update is available" a lie.
- *
- * What this cannot prove is anything about `nusb`, the OS, or the descriptors — enumeration,
- * stalls, short-packet termination and the ZLP contract are hardware, and the PR body says how they
- * were checked on glass.
+ * Nothing here proves anything about `nusb`, the OS or the descriptors.
  */
 
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -39,8 +32,6 @@ import { loopbackLink, type LoopbackLink, type LoopbackOptions } from "../usb/lo
 import { PipeError, type BytePipe } from "../usb/pipe";
 import { MAX_HOST_STREAM_RECORD } from "../usb/records";
 import { HEAD_REVISION, ObjectKind } from "../usb/protocol";
-
-// --- the fake backend ----------------------------------------------------------
 
 /** One `invoke()` the fake backend saw, for the wire assertions. */
 interface Call {
@@ -78,10 +69,8 @@ let writeGates: Array<(() => Promise<void>) | undefined> = [];
 const inFlight = new Map<string, AbortController>();
 
 /**
- * The backend's plane name → the channel §5 gives it.
- *
- * `"bulk"` is `DeviceLink.stream` under the Rust side's older name for the endpoint pair; the
- * mismatch is deliberate and lives in `usb.ts`, because renaming it is a Rust change.
+ * The backend's plane name → the channel the protocol gives it. `"bulk"` is `DeviceLink.stream`
+ * under the Rust side's older name for the endpoint pair; renaming it is a Rust change.
  */
 function planeOf(name: string): BytePipe {
     const link = wire?.host;
@@ -178,8 +167,6 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 const { NativeWatcher, openNativeLink } = await import("./usb");
 
-// --- fixtures ------------------------------------------------------------------
-
 function repoRoot(): string {
     let dir = dirname(fileURLToPath(import.meta.url));
     for (let up = 0; up < 12; up++) {
@@ -231,25 +218,21 @@ beforeEach(() => {
     device = null;
 });
 
-// --- the seam ------------------------------------------------------------------
-
 describe("the native pipes under the flat-store client", () => {
     it("round-trips a specs/vectors object, byte for byte", async () => {
-        // 64-byte packets, so every record of any size spans several transfers in both directions.
-        // A client that treated one `usb_read` as one record would pass against a device that wrote
-        // whole records and fail here, which is the whole reason the loopback re-slices (§5.2). The
-        // record ceiling stays at §5.2's own number: it is the link's, in both directions, so
-        // shrinking it here would refuse the client's ordinary upload records rather than test them.
+        // 64-byte packets, so every record of any size spans several transfers in both directions. A
+        // client that treated one `usb_read` as one record would pass against a device that wrote
+        // whole records and fail here, which is the whole reason the loopback re-slices.
         const { watcher, ok } = await connected({ packetSize: 64 });
         expect(ok).toBe(true);
         const client = watcher.current.client!;
         expect(watcher.current.status).toBe("ready");
-        // The `LIST` every connection issues first (§3.3) is where the card's identity comes from.
+        // The `LIST` every connection issues first is where the card's identity comes from.
         expect(watcher.current.store).toEqual({ storeId: device!.storeId, commitSequence: device!.sequence });
 
-        // A `PUT` of a real OBCR fixture: the request over the control channel, the payload as §3.8
-        // stream records, and the device verifying the whole-object CRC at commit. The device is
-        // the one checking, so a mis-framed record fails here rather than being "uploaded".
+        // A `PUT` of a real OBCR fixture: the request over the control channel, the payload as
+        // stream records, and the device verifying the whole-object CRC at commit. The device is the
+        // one checking, so a mis-framed record fails here rather than being "uploaded".
         const obcr = vector("route-waypoints.obcr");
         const put = await client.put({ kind: ObjectKind.Route, displayName: "waypoints" }, obcr);
         expect(put.payloadLength).toBe(BigInt(obcr.length));
@@ -271,10 +254,9 @@ describe("the native pipes under the flat-store client", () => {
 
     it("keeps concurrent stream writes in submission order across the bridge", async () => {
         // The backend gives concurrent invokes no ordering guarantee — each lands in its own task
-        // racing for the endpoint lock. Delaying the first stream invoke a few ticks models the
-        // race: without the pipe's submission chain the second batch reaches the wire first and the
-        // object arrives with its middle swapped — right total length, wrong whole-object CRC, the
-        // on-glass desktop shard rejections of 2026-08-07. With the chain, the delay just delays.
+        // racing for the endpoint lock. Delaying the first stream invoke a few ticks models the race:
+        // without the pipe's submission chain the second batch reaches the wire first and the object
+        // arrives with its middle swapped — right total length, wrong whole-object CRC.
         const { watcher, ok } = await connected();
         expect(ok).toBe(true);
         const client = watcher.current.client!;
@@ -288,8 +270,6 @@ describe("the native pipes under the flat-store client", () => {
         await watcher.close();
     });
 });
-
-// --- the transport contract ----------------------------------------------------
 
 describe("the native pipe's transport contract", () => {
     it("puts the bytes in a raw body and the routing in headers", async () => {
@@ -305,11 +285,9 @@ describe("the native pipe's transport contract", () => {
     });
 
     it("sends a record that spans packets instead of refusing it", async () => {
-        // The rule this replaces: under the v1 envelope a frame was one transfer, so anything at or
-        // above the endpoint's packet size was refused before it left the page. §5.2 makes a record
-        // self-delimiting — `record_length u32`, frame bytes and alignment padding, across as many packets as
-        // it takes — so the ordinary 8,208-byte stream frame (§3.8's header plus one 8,192-byte
-        // write) has to go out, and so does a control record that lands on the 512-byte boundary.
+        // A record is self-delimiting — a `record_length u32`, frame bytes and alignment padding,
+        // across as many packets as it takes — so the ordinary 8,208-byte stream frame has to go out,
+        // and so does a control record that lands on the 512-byte boundary.
         wire = loopbackLink();
         attached = [DEVICE];
         const link = await openNativeLink(DEVICE.id);
@@ -328,9 +306,9 @@ describe("the native pipe's transport contract", () => {
         const link = await openNativeLink(DEVICE.id);
         const abort = new AbortController();
         const read = link.stream.read(abort.signal);
-        // Nothing is queued on the stream plane, so this read is genuinely parked — which is the
-        // case that wedges if a cancel only settles the promise: the backend would still hold the
-        // endpoint and the next read would queue behind an orphan that never completes.
+        // Nothing is queued on the stream plane, so this read is genuinely parked — the case that
+        // wedges if a cancel only settles the promise: the backend would still hold the endpoint and
+        // the next read would queue behind an orphan that never completes.
         await Promise.resolve();
         abort.abort();
         await expect(read).rejects.toMatchObject({ name: "PipeError", code: "aborted" });
@@ -348,11 +326,9 @@ describe("the native pipe's transport contract", () => {
         // trip, which is the difference between one error message and a stuck spinner.
         await expect(link.stream.read()).rejects.toMatchObject({ code: "closed" });
 
-        // The abandoned command settles *after* the caller was failed by the unplug — `dead()` won
-        // the race, so its rejection lands on nobody. It must stay harmless: no second error, no
-        // resurrected pipe, and a `close()` afterwards that still works on a link whose device is
-        // already gone. (`Promise.race` attaches to both arms, so the late rejection is handled by
-        // construction; this is the path that proves it rather than a comment claiming it.)
+        // The abandoned command settles *after* the caller was failed by the unplug, so its
+        // rejection lands on nobody. It must stay harmless: no second error, no resurrected pipe, and
+        // a `close()` afterwards that still works on a link whose device is already gone.
         await wire!.host.close();
         await new Promise((resolve) => setTimeout(resolve, 10));
         expect(link.stream.open).toBe(false);
