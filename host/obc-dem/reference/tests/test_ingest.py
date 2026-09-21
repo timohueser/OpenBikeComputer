@@ -7,6 +7,7 @@ maximum of the source pixels whose centres lie in it, which is what lets a 7 m a
 carry a one-pixel rock tower without spreading it over its neighbours.
 """
 
+import hashlib
 import json
 import os
 import sys
@@ -317,10 +318,40 @@ class Check(ArchiveCase):
         (self.archive / "index.json").write_text(json.dumps(index), encoding="utf-8")
         self.assertEqual(ingest.main(["check", "--archive", str(self.archive)]), 1)
 
-    def test_check_catches_a_tile_whose_bytes_moved(self):
+    def test_check_catches_a_tile_whose_pixels_moved(self):
         _, path = self.only_tile()
         with rasterio.open(path, "r+") as dst:
             dst.write(np.full((ingest.TILE_PX, ingest.TILE_PX), 42, dtype="int16"), 1)
+        self.assertEqual(ingest.main(["check", "--archive", str(self.archive)]), 1)
+
+    def test_check_holds_the_byte_layout_as_well(self):
+        """A tile with the right pixels but the wrong layout is still not a tile."""
+
+        tile, path = self.only_tile()
+        ti, tj = (int(part) for part in tile.split("/"))
+        with rasterio.open(path) as src:
+            pixels, profile = src.read(1), src.profile
+        with rasterio.open(path, "w", **{**profile, "compress": None, "tiled": False}) as dst:
+            dst.write(pixels, 1)  # the same heights, with none of the layout the contract asks for
+            dst.update_tags(AREA_OR_POINT="Point")
+        problems = ingest.tile_problems(path, ti, tj)
+        self.assertEqual(len(problems), 3, problems)
+        for wanted in ("deflate", "(256, 256)", "AREA_OR_POINT"):
+            self.assertTrue(any(wanted in problem for problem in problems), problems)
+        # The digest is over the pixels, so it did not move with the layout.
+        self.assertEqual(ingest.tile_digest(path), self.index()["sha256"][tile])
+
+    def test_the_digest_is_the_pixel_array(self):
+        tile, path = self.only_tile()
+        with rasterio.open(path) as src:
+            pixels = src.read(1)
+        wanted = hashlib.sha256(pixels.astype("<i2").tobytes()).hexdigest()
+        self.assertEqual(self.index()["sha256"][tile], wanted)
+
+    def test_check_names_a_file_that_is_not_a_tile_id(self):
+        stray = self.archive / "16" / "nine" / "0001.tif"
+        stray.parent.mkdir(parents=True)
+        stray.write_bytes(b"")
         self.assertEqual(ingest.main(["check", "--archive", str(self.archive)]), 1)
 
     def test_index_rebuilds_from_the_manifest(self):
