@@ -1,90 +1,55 @@
-//! Transport-agnostic fake-sensor debug protocol — the board-agnostic half.
+//! Transport-agnostic fake-sensor debug protocol, the board-agnostic half.
 //!
-//! A host streams a recorded ride over a debug link and this module turns it into the `obc-ports` HAL
-//! traits the app already polls — [`DebugLocation`], [`DebugAltimeter`], [`DebugCompass`] — so the
-//! app can't tell them from real drivers. The board crate owns only the concrete transport driver
-//! (a UART/VCOM link on the nRF54L, which has no USB peripheral); it feeds received bytes to
-//! [`feed_bytes`] and `await`s [`wait_telemetry`] to send the device→host status line.
+//! A host streams a recorded ride over a debug link and this module turns it into the `obc-ports`
+//! HAL traits the app already polls, so the app cannot tell them from real drivers. The board
+//! crate owns the concrete transport: it feeds received bytes to [`feed_bytes`] and awaits
+//! [`wait_telemetry`] to send the device-to-host status line.
 //!
-//! ## Wire format (ASCII, one message per `\n`-terminated line)
-//! Host → device:
-//! - `F <lat> <lon> [course|-] [speed|-]` — a GPS fix. `lat`/`lon` are integer **microdegrees**
-//!   (matching [`Fix`]); `course` (deg CW from north) and `speed` (m/s) are floats, or `-` for
-//!   "unknown" (a real receiver drops both at a standstill). Trailing fields may be omitted.
-//! - `A <meters>` — a barometric-altitude sample (float metres).
-//! - `C <deg>` — a compass heading (float degrees CW from north).
-//! - `H <bpm>` — a heart-rate sample (integer bpm, `u16`). Fake BLE sensor injection (epic #707
-//!   SE8): parsed and dispatched through the board's [`SampleInjector`](crate::sensor_hub::SampleInjector)
-//!   into the shared [`SensorHub`](crate::sensor_hub::SensorHub) mailboxes — the *same* ones the
-//!   board's BLE central manager (SE6) feeds — so the app wiring is identical whether a value comes
-//!   from an injected line or a real strap (last-writer-wins).
-//! - `P <watts>` — a power sample (integer watts, `u16`; a signed meter reading is clamped at `0`
-//!   host-side).
-//! - `R <rpm>` — a cadence sample (integer rpm, `u8`).
-//! - `K t <n>` / `K <u|d|s|b> <d|u>` — **input injection**: `n` directly injected signed selection
-//!   steps, or a down/up edge for one of the four buttons (`u` Up, `d` Down, `s` Select, `b` Back).
-//!   An edge is the same event a physical button produces, so a host can drive the UI over the
-//!   wire — taps, and, via a delayed up, holds and Up/Down auto-repeat — for hardware-in-the-loop
-//!   work without anyone pressing a button. `K t` skips the buttons and hands the recogniser a
-//!   finished step, which is how a script jumps several rows at once.
-//! - `Z <mpp>` — set the map camera to exactly `mpp` meters-per-pixel (float). A
-//!   debug/benchmark hook: it drives the zoom directly instead of stepping the selection (which
-//!   only moves in fixed 1.2× steps) and always forces one map redraw, so a host sweep can
-//!   pin an exact scale and read back one fresh render-stats line per setting.
-//! - `N <from_lon> <from_lat> <to_lon> <to_lat>` — **route-plan trigger** (issue #500 perf bench),
-//!   all integer **microdegrees**, **LON FIRST** (the OBCM `(lon, lat)` tuple order, unlike the
-//!   lat-first `F` line). Starts a plan from `from` to `to` exactly as the POI create-route confirm
-//!   would (records the request *and* shows the spinning-compass planning screen), so a host can
-//!   drive the resumable router repeatably and read the per-phase `nav route:` RTT line without
-//!   navigating the POI browser. `debug-uart` + `has_nav` builds only.
-//! - `ride-damage payload` / `ride-damage metadata` — **fabricate a damaged `RECORDING` object**
-//!   (#1591): open a ride object through the production seam and journal one checkpoint whose bytes
-//!   fail exactly one of the two logical recovery checks, so the next boot reaches the classified
-//!   recovery card. The operator issues the reset — a self-reset would race the confirmation line
-//!   off the wire. `debug-uart` builds only.
-//! - `ride-repair-fail` — arm a **one-shot** refusal of the next exact removal, answered as a media
-//!   failure would be and **without issuing the commit**, so the failure path's typed terminal latch
-//!   can be driven on a card that is not actually failing. `debug-uart` builds only.
-//! - `store-census` — print one line per catalog entry plus the entry count and free extents: the
-//!   before/after proof that a repair moved exactly one object. `debug-uart` builds only.
-//! - `dfu-install` — **firmware-update trigger** (epic #615 S4, #619): post the same install
-//!   request the S5 UI will post, so the on-glass DFU gate runs over the VCOM harness before any
-//!   screen exists. The ride loop drains it, runs the armer (scan `UPDATE.BIN` → rollback
-//!   snapshot → arm the boot-state page), streams its result back as `D …` status lines (below),
-//!   and reboots into the bootloader on success. `debug-uart` builds only.
+//! Wire format: ASCII, one message per `\n`-terminated line. Host to device:
+//! - `F <lat> <lon> [course|-] [speed|-]` — a GPS fix. `lat`/`lon` are integer microdegrees;
+//!   `course` (degrees clockwise from north) and `speed` (m/s) are floats, or `-` for unknown,
+//!   which is what a real receiver reports at a standstill. Trailing fields may be omitted.
+//! - `A <meters>` — a barometric-altitude sample.
+//! - `C <deg>` — a compass heading, degrees clockwise from north.
+//! - `H <bpm>` / `P <watts>` / `R <rpm>` — heart rate, power and cadence. They dispatch into the
+//!   same [`SensorHub`](crate::sensor_hub::SensorHub) mailboxes the board's BLE central manager
+//!   feeds, so the app wiring is identical for an injected line and a real strap.
+//! - `K t <n>` / `K <u|d|s|b> <d|u>` — input injection: `n` signed selection steps, or a down/up
+//!   edge for the Up, Down, Select or Back button. An edge is the same event a physical button
+//!   produces, so a host can drive the UI over the wire, holds and auto-repeat included.
+//! - `Z <mpp>` — set the map camera to exactly `mpp` metres per pixel and force one redraw, so a
+//!   host sweep can pin an exact scale and read back one fresh render-stats line per setting.
+//! - `N <from_lon> <from_lat> <to_lon> <to_lat>` — route-plan trigger, integer microdegrees and
+//!   LON FIRST, unlike the lat-first `F` line. Starts a plan exactly as the POI confirm would.
+//! - `ride-damage payload` / `ride-damage metadata` — fabricate a damaged `RECORDING` object
+//!   whose bytes fail one of the two logical recovery checks. The operator issues the reset,
+//!   because a self-reset would race the confirmation line off the wire.
+//! - `ride-repair-fail` — arm a one-shot refusal of the next exact removal, without issuing the
+//!   commit, so the failure path can be driven on a card that is not failing.
+//! - `store-census` — print one line per catalog entry plus the entry count and free extents.
+//! - `dfu-install` — post the same install request the UI posts, so the DFU gate runs over the
+//!   harness. Each armer phase streams back as a `D …` line.
 //!
-//! Device → host (see [`Telemetry`]): `T <frame_us> <lod> <feat_drawn> <feat_tried> <feat_dropped>
-//! <chunks> <cache_hits> <cache_misses> <sd_reads> <bytes_read> <collect_us> <read_us> <sort_us>
-//! <draw_us> <overlay_us> <mpp_milli>` — the last map frame's render stats (the same numbers as
-//! the RTT `map frame` log / the sim's Render Stats panel), at a low fixed rate so the link never
-//! floods. The trailing six are the render-benchmark fields: the per-stage wall-time breakdown
-//! and the frame's camera scale (see [`Telemetry`]).
+//! Device to host: `T …` carries the last map frame's render stats (see [`Telemetry`]) at a low
+//! fixed rate, so the link never floods, and `D <text>` is one free-form DFU status line.
 //!
-//! Additionally `D <text>` — one **DFU status line** per armer phase (scan result / rollback /
-//! armed / error), pushed by the ride loop's `dfu-install` drain via [`dfu_status`] and sent by
-//! the same TX task as telemetry. Free-form human-readable text after the `D ` tag.
-//!
-//! ## Fresh-fix contract — behind `debug-link`
-//! Each parsed *sensor* sample is handed to the app through an embassy `Signal`, whose `try_take`
-//! returns a value exactly **once** — so `DebugLocation::poll` yields `Some` only on the tick a new
-//! fix arrived and `None` between, the cadence a real ~1 Hz receiver follows. Returning the latest
-//! fix on *every* ~8 ms poll would re-trigger the teleport-rejection bug. Injected input events
-//! instead go through a small `Channel` (a queue, not a latch) so a burst of edges is delivered in
-//! order. This hand-off lives behind the `debug-link` feature; the pure codec above does not.
+//! Fresh-fix contract, behind `debug-link`: each parsed sensor sample reaches the app through an
+//! embassy `Signal`, whose `try_take` returns a value exactly once, so `DebugLocation::poll`
+//! yields `Some` only on the tick a new fix arrived, the cadence a real 1 Hz receiver follows.
+//! Returning the latest fix on every poll would re-trigger the teleport-rejection bug. Injected
+//! input goes through a `Channel` instead, so a burst of edges is delivered in order.
 
 use core::fmt::Write;
 
-// The pure protocol below (parser, encoders, `LineReader`, `Telemetry`) needs no embassy-sync, so
-// it is **always** compiled and the host feeder reuses one canonical codec. The `Signal`/`Channel`
-// plumbing pulls embassy-sync, so it stays behind `debug-link` at the bottom of the file.
+// The pure protocol below needs no embassy-sync, so it is always compiled and the host feeder
+// reuses one canonical codec. The `Signal` and `Channel` plumbing stays behind `debug-link`.
 use obc_ports::{Button, ButtonEvent, Fix, InputEvent};
 
 /// Longest line we accept. The widest message is an `F` with full i32 lat/lon and float
-/// course/speed (`F -2147483648 -2147483648 359.99 99.99`) ≈ 45 bytes; 64 leaves slack.
+/// course/speed, about 45 bytes; 64 leaves slack.
 const LINE_MAX: usize = 64;
 
-/// Byte cap of one device→host DFU status line (S4, #619) — a phase result with a version
-/// string and a couple of numbers fits comfortably; anything longer is truncated at push.
+/// Byte cap of one device-to-host DFU status line; anything longer is truncated at push.
 pub const DFU_STATUS_MAX: usize = 96;
 
 /// One decoded host→device message.
@@ -96,34 +61,33 @@ pub enum Msg {
     Alt(f32),
     /// A compass heading, degrees CW from north.
     Compass(f32),
-    /// A heart-rate sample in bpm (fake BLE sensor injection, epic #707 SE8).
     Hr(u16),
-    /// A power sample in watts (fake BLE sensor injection, epic #707 SE8).
     Power(u16),
-    /// A cadence sample in rpm (fake BLE sensor injection, epic #707 SE8).
     Cadence(u8),
     /// An injected raw input event (an Up/Down step or a button down/up edge).
     Input(InputEvent),
     /// A debug camera-scale command: set the map viewport to exactly this meters-per-pixel.
     Zoom(f32),
-    /// A debug route-plan trigger (#500 perf bench): plan from `from` to `to`, both `(lon, lat)`
-    /// microdegrees, exactly as the POI create-route confirm would — the repeatable stand-in for
-    /// driving the UI, so the `nav route:` RTT breakdown can be captured over VCOM.
-    Nav { from: (i32, i32), to: (i32, i32) },
-    /// A firmware-update install trigger (epic #615 S4, #619): post the same request the S5 UI
-    /// will post — scan `UPDATE.BIN`, snapshot the rollback, arm the boot-state page, reboot.
+    /// A debug route-plan trigger: plan from `from` to `to`, both `(lon, lat)` microdegrees,
+    /// exactly as the POI create-route confirm would.
+    Nav {
+        from: (i32, i32),
+        to: (i32, i32),
+    },
+    /// A firmware-update install trigger: scan `UPDATE.BIN`, snapshot the rollback, arm the
+    /// boot-state page, reboot.
     DfuInstall,
-    /// Fabricate a damaged `RECORDING` object of this kind (#1591 on-device acceptance).
+    /// Fabricate a damaged `RECORDING` object of this kind.
     RideDamage(RideDamageKind),
-    /// Arm the one-shot refusal of the next exact removal (#1591 on-device acceptance).
+    /// Arm the one-shot refusal of the next exact removal.
     RideRepairFail,
-    /// Print the catalog census (#1591 on-device acceptance).
+    /// Print the catalog census.
     StoreCensus,
 }
 
-/// Which of the two logical recovery refusals a `ride-damage` command fabricates. The third cause —
-/// a catalog that cannot be listed — is deliberately absent: it cannot be produced on a real card
-/// without risking it, and its whole behaviour is that no I/O happens at all.
+/// Which of the two logical recovery refusals a `ride-damage` command fabricates. The third
+/// cause, a catalog that cannot be listed, is absent on purpose: it cannot be produced on a real
+/// card without risking it, and its whole behaviour is that no I/O happens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RideDamageKind {
     /// Bytes that are not a ride-v3 sample/footer boundary.
@@ -147,14 +111,12 @@ pub fn parse_line(line: &str) -> Option<Msg> {
         }
         "A" => Some(Msg::Alt(it.next()?.parse::<f32>().ok()?)),
         "C" => Some(Msg::Compass(it.next()?.parse::<f32>().ok()?)),
-        // Fake BLE sensor injection (epic #707 SE8) — integer bpm / watts / rpm, parse-tolerant like
-        // the peers (a missing / malformed value drops the line rather than faulting).
+        // Integer bpm, watts and rpm, parse-tolerant: a malformed value drops the line.
         "H" => Some(Msg::Hr(it.next()?.parse::<u16>().ok()?)),
         "P" => Some(Msg::Power(it.next()?.parse::<u16>().ok()?)),
         "R" => Some(Msg::Cadence(it.next()?.parse::<u8>().ok()?)),
         "Z" => Some(Msg::Zoom(it.next()?.parse::<f32>().ok()?)),
-        // `N <from_lon> <from_lat> <to_lon> <to_lat>` — LON FIRST (the OBCM `(lon, lat)` tuple
-        // convention), unlike the lat-first `F` fix line.
+        // LON FIRST (the OBCM `(lon, lat)` order), unlike the lat-first `F` fix line.
         "N" => {
             let from_lon = it.next()?.parse::<i32>().ok()?;
             let from_lat = it.next()?.parse::<i32>().ok()?;
@@ -163,11 +125,8 @@ pub fn parse_line(line: &str) -> Option<Msg> {
             Some(Msg::Nav { from: (from_lon, from_lat), to: (to_lon, to_lat) })
         }
         "K" => parse_key(&mut it),
-        // The one word-tag command (its name is the on-glass DFU gate's whole interface, so it
-        // stays greppable over a cryptic letter). No arguments.
+        // Word tags, so the command name is greppable and is the harness's whole interface.
         "dfu-install" => Some(Msg::DfuInstall),
-        // The #1591 acceptance commands. Word tags for the same reason `dfu-install` is one: their
-        // names are the harness's whole interface.
         "ride-damage" => match it.next()? {
             "payload" => Some(Msg::RideDamage(RideDamageKind::Payload)),
             "metadata" => Some(Msg::RideDamage(RideDamageKind::Metadata)),
@@ -179,8 +138,7 @@ pub fn parse_line(line: &str) -> Option<Msg> {
     }
 }
 
-/// `None` for a missing token or the `-` "unknown" sentinel; otherwise the parsed float (or
-/// `None` if it doesn't parse). Used for the optional `course`/`speed` of an `F` line.
+/// `None` for a missing token or the `-` unknown sentinel; otherwise the parsed float.
 fn parse_opt_f32(tok: Option<&str>) -> Option<f32> {
     match tok {
         None | Some("-") => None,
@@ -211,13 +169,11 @@ fn edge(tok: &str, b: Button) -> Option<ButtonEvent> {
     }
 }
 
-/// Encode a [`Fix`] as an `F` line (the exact inverse of the `F` arm of [`parse_line`]): `F <lat>
-/// <lon> <course|-> <speed|->\n`, with `course` at `{:.1}` and `speed` at `{:.2}`, and the `-`
-/// sentinel for a missing (standstill) field. Cap sized to the worst case (two i32 + `360.0` +
-/// `99.99` ≈ 38 bytes; 48 leaves slack) so the `write!`s below cannot truncate.
+/// Encode a [`Fix`] as an `F` line, the exact inverse of the `F` arm of [`parse_line`]: `course`
+/// at `{:.1}`, `speed` at `{:.2}`, and `-` for a missing field. The cap covers the worst case, so
+/// the `write!`s below cannot truncate.
 pub fn format_fix(f: &Fix) -> heapless::String<48> {
-    /// Write an optional float at `prec` decimals, or the `-` sentinel. (Infallible for the cap
-    /// above; ignore the Result rather than panic on the MCU.)
+    /// Write an optional float at `prec` decimals, or the `-` sentinel.
     fn push_opt(s: &mut heapless::String<48>, v: Option<f32>, prec: usize) {
         match v {
             Some(v) => {
@@ -237,40 +193,36 @@ pub fn format_fix(f: &Fix) -> heapless::String<48> {
     s
 }
 
-/// Encode a heart-rate sample as an `H` line (the exact inverse of the `H` arm of [`parse_line`]):
-/// `H <bpm>\n`. Authored device-side next to [`format_fix`] so the USB feeder and the device share
-/// one canonical codec and the two halves can't drift. Cap sized to the worst case (`H 65535` = 8
-/// bytes; 16 leaves slack) so the `write!` cannot truncate.
+/// Encode a heart-rate sample as an `H` line, the exact inverse of the `H` arm of [`parse_line`].
+/// The device and the host feeder share one codec, so the two halves cannot drift. The cap covers
+/// the worst case, so the `write!` cannot truncate.
 pub fn format_hr(bpm: u16) -> heapless::String<16> {
     let mut s = heapless::String::new();
     let _ = writeln!(s, "H {bpm}");
     s
 }
 
-/// Encode a power sample as a `P` line (the inverse of the `P` arm of [`parse_line`]): `P <watts>\n`.
-/// See [`format_hr`] for the canonical-codec rationale.
+/// Encode a power sample as a `P` line, the inverse of the `P` arm of [`parse_line`].
 pub fn format_power(watts: u16) -> heapless::String<16> {
     let mut s = heapless::String::new();
     let _ = writeln!(s, "P {watts}");
     s
 }
 
-/// Encode a cadence sample as an `R` line (the inverse of the `R` arm of [`parse_line`]): `R <rpm>\n`.
-/// See [`format_hr`] for the canonical-codec rationale.
+/// Encode a cadence sample as an `R` line, the inverse of the `R` arm of [`parse_line`].
 pub fn format_cadence(rpm: u8) -> heapless::String<16> {
     let mut s = heapless::String::new();
     let _ = writeln!(s, "R {rpm}");
     s
 }
 
-/// Accumulates raw link bytes into lines, parsing each complete `\n`-terminated line. The transport
-/// delivers bytes in arbitrary chunks; over-long lines (no newline within [`LINE_MAX`]) are dropped
-/// to the next newline rather than split.
+/// Accumulates raw link bytes into lines and parses each complete `\n`-terminated line. The
+/// transport delivers bytes in arbitrary chunks; a line with no newline within [`LINE_MAX`] is
+/// dropped to the next newline rather than split.
 pub struct LineReader {
     buf: [u8; LINE_MAX],
     len: usize,
-    /// Set once the current line overran the buffer; the rest of the line is skipped until the
-    /// next newline re-arms a fresh line.
+    /// Set once the current line overran the buffer; the rest is skipped until the next newline.
     overflow: bool,
 }
 
@@ -286,7 +238,7 @@ impl LineReader {
     }
 
     /// Feed a chunk of received bytes; call `on_msg` for each complete line that parses. Generic
-    /// over the callback so it stays pure and unit-testable; the board passes [`dispatch`].
+    /// over the callback so it stays pure and testable.
     pub fn feed(&mut self, bytes: &[u8], mut on_msg: impl FnMut(Msg)) {
         for &b in bytes {
             if b == b'\n' || b == b'\r' {
@@ -311,10 +263,9 @@ impl LineReader {
     }
 }
 
-/// The last map frame's **render stats** (frame time, LOD, feature/chunk counts, map-cache + SD
-/// accounting) — the same numbers as the RTT `map frame` log and the sim's Render Stats panel.
-/// Snapshotted from [`RenderStats`](obc_render::RenderStats) after each map render. Integer fields
-/// only, so [`format_telemetry`] is float-free.
+/// The last map frame's render stats, snapshotted from
+/// [`RenderStats`](obc_render::RenderStats) after each map render. Integer fields only, so
+/// [`format_telemetry`] is float-free.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Telemetry {
     /// Last map-render wall time, microseconds.
@@ -333,27 +284,23 @@ pub struct Telemetry {
     /// Raw SD-source overhead this frame (reads + bytes).
     pub sd_reads: u32,
     pub bytes_read: u32,
-    /// Per-stage map-render wall time, microseconds — the render-benchmark breakdown (filled from
-    /// [`RenderStats`](obc_render::RenderStats) plus the board's read timer). `collect_us` is the
-    /// visible-feature collection (quadtree walk + decode + cull + span build, and **includes**
-    /// `read_us`); `read_us` is the SD/cache I/O within collect; `sort_us` the painter-order span
-    /// sort; `draw_us` the full-screen clear + rasterize; `overlay_us` the route + breadcrumb +
-    /// marker. `frame_us` is the whole map frame ≈ `collect_us + sort_us + draw_us + overlay_us`.
+    /// Per-stage map-render wall time, microseconds. `collect_us` is the visible-feature
+    /// collection and includes `read_us`, the SD and cache I/O inside it. `frame_us` is the whole
+    /// map frame, about `collect_us + sort_us + draw_us + overlay_us`.
     pub collect_us: u32,
     pub read_us: u32,
     pub sort_us: u32,
     pub draw_us: u32,
     pub overlay_us: u32,
-    /// Camera scale of the rendered frame, **milli-mpp** (meters-per-pixel × 1000) — lets the host
-    /// label each sample by zoom. Integer to keep the line float-free; e.g. `500` = 0.5 m/px.
+    /// Camera scale of the rendered frame, in milli-mpp, so the line stays float-free.
     pub mpp_milli: u32,
 }
 
-/// Format a telemetry line (`T … \n`) into a small heap-free string. Cap sized to the worst case
-/// (16 `u32::MAX` fields + separators = 178 bytes) so the `write!` below cannot truncate.
+/// Format a telemetry line into a small heap-free string. The cap covers 16 `u32::MAX` fields, so
+/// the `write!` below cannot truncate.
 pub fn format_telemetry(t: &Telemetry) -> heapless::String<192> {
     let mut s = heapless::String::new();
-    // Infallible for the field count + cap; ignore the Result rather than panic on the MCU.
+    // Infallible for the field count and cap; ignore the Result rather than panic on the MCU.
     let _ = writeln!(
         s,
         "T {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
@@ -377,9 +324,9 @@ pub fn format_telemetry(t: &Telemetry) -> heapless::String<192> {
     s
 }
 
-/// Parse a `T …` telemetry line back into a [`Telemetry`] — the exact inverse of
-/// [`format_telemetry`] — or `None` for a non-`T` line or one with a missing / malformed field (so
-/// other device chatter is ignored). `lod` is parsed as a `u8`.
+/// Parse a `T …` telemetry line back into a [`Telemetry`], the exact inverse of
+/// [`format_telemetry`]. `None` for a non-`T` line or a malformed field, so other device chatter
+/// is ignored.
 pub fn parse_telemetry(line: &str) -> Option<Telemetry> {
     let mut it = line.split_ascii_whitespace();
     if it.next()? != "T" {
@@ -405,8 +352,8 @@ pub fn parse_telemetry(line: &str) -> Option<Telemetry> {
     })
 }
 
-// The cross-task hand-off (parsed samples in, telemetry out). Pulls embassy-sync + the app's source
-// traits, so it is gated behind `debug-link`; the host feeder builds without it.
+// The cross-task hand-off. It pulls embassy-sync and the app's source traits, so it is gated
+// behind `debug-link`; the host feeder builds without it.
 #[cfg(feature = "debug-link")]
 mod handoff {
     use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -426,32 +373,27 @@ mod handoff {
     static COMPASS: Signal<CriticalSectionRawMutex, f32> = Signal::new();
     /// Latest device telemetry to send host-ward; the app sets it, the transport's TX task awaits it.
     static TELEMETRY: Signal<CriticalSectionRawMutex, Telemetry> = Signal::new();
-    /// Latest debug camera-scale command (meters-per-pixel), `try_take`-once like a sensor (the `Z`
-    /// wire command). Drained by the map loop each frame → `App::set_map_mpp`.
+    /// Latest debug camera-scale command, metres per pixel, `try_take`-once like a sensor.
+    /// Drained by the map loop each frame.
     static ZOOM: Signal<CriticalSectionRawMutex, f32> = Signal::new();
     /// A debug route-plan trigger's payload: `(from, to)`, both `(lon, lat)` µdeg.
     type NavTrigger = ((i32, i32), (i32, i32));
-    /// Latest debug route-plan trigger, `try_take`-once like the `Z` command. Drained by the ride
-    /// loop → `App::debug_start_nav` (#500 perf bench).
+    /// Latest debug route-plan trigger, `try_take`-once. Drained by the ride loop.
     static NAV: Signal<CriticalSectionRawMutex, NavTrigger> = Signal::new();
-    /// A pending `dfu-install` trigger (S4, #619), `try_take`-once like the `Z`/`N` commands.
-    /// Drained by the ride loop → `App::request_dfu_install` (the same request the S5 UI posts).
+    /// A pending `dfu-install` trigger, `try_take`-once. Drained by the ride loop.
     static DFU_INSTALL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
-    /// The #1591 acceptance commands, `try_take`-once like the rest. Drained by the ride loop into
-    /// the flat recorder / the store census.
+    /// The acceptance-harness commands, `try_take`-once. Drained by the ride loop.
     static RIDE_DAMAGE: Signal<CriticalSectionRawMutex, RideDamageKind> = Signal::new();
     static RIDE_REPAIR_FAIL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
     static STORE_CENSUS: Signal<CriticalSectionRawMutex, ()> = Signal::new();
-    /// DFU status lines device→host (`D <text>`), queued in order — a `Channel`, not a latch,
-    /// because one arm emits several phase lines back-to-back (scan / rollback / armed) and each
-    /// must reach the host. Sized for one full arm's line budget; an overflowing push is dropped
-    /// (the RTT log still carries everything).
+    /// DFU status lines device-to-host (`D <text>`), queued in order. A `Channel`, not a latch,
+    /// because one arm emits several phase lines back-to-back and each must reach the host. An
+    /// overflowing push is dropped; the RTT log still carries everything.
     static DFU_STATUS: Channel<CriticalSectionRawMutex, heapless::String<{ super::DFU_STATUS_MAX }>, 4> =
         Channel::new();
-    /// A single "a datapoint arrived" wake, the `debug-uart` twin of `sensor_link::EVENT`: pulsed
-    /// by [`dispatch`] on any host-streamed sensor sample so the event-driven loop's [`wait_event`]
-    /// wakes the render once. Injected *input* (`Msg::Input`) does **not** pulse it — that wakes the
-    /// loop via the gesture channel after the input plane recognises it, like a physical press.
+    /// A single "a datapoint arrived" wake, pulsed by [`dispatch`] on any host-streamed sensor
+    /// sample, so the event-driven loop wakes the render once. Injected input does not pulse it:
+    /// that wakes the loop through the gesture channel, like a physical press.
     static EVENT: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
     /// Injected input events (Up/Down steps / button edges), queued in order. A queue, not a latch:
@@ -459,10 +401,9 @@ mod handoff {
     const INPUT_QUEUE: usize = 16;
     static INPUT: Channel<CriticalSectionRawMutex, InputEvent, INPUT_QUEUE> = Channel::new();
 
-    /// Route a decoded [`Msg`] to its signal/queue — the bridge from the link RX task to the app
-    /// poll. Called for each parsed line by [`feed_bytes`]. HR/power/cadence route through the
-    /// caller-owned [`SampleInjector`] (behind `sensor-link`) so the debug-injected samples land in
-    /// the same hub the BLE manager feeds; everything else uses the debug link's own signals.
+    /// Route a decoded [`Msg`] to its signal or queue: the bridge from the link RX task to the
+    /// app poll. Heart rate, power and cadence route through the caller-owned [`SampleInjector`],
+    /// so injected samples land in the same hub the BLE manager feeds.
     pub fn dispatch(msg: Msg, #[cfg(feature = "sensor-link")] injector: SampleInjector) {
         match msg {
             Msg::Fix(f) => {
@@ -477,13 +418,8 @@ mod handoff {
                 COMPASS.signal(c);
                 EVENT.signal(());
             }
-            // Fake BLE sensor injection (epic #707 SE8): route through the caller-owned injector into
-            // the shared hub mailboxes — the same ones the board's BLE central manager (SE6) feeds —
-            // so the app's `Sensors` wiring is identical for injected and radio values
-            // (last-writer-wins). Pulse the debug-link `EVENT` too: a `debug-uart` ride loop selects
-            // on *this* wake, so an injected sample must pull it out of warm sleep exactly like a fix
-            // does. (The injector's dispatch additionally pulses the hub's own event, for the `ble`
-            // build whose loop selects on that instead.)
+            // Pulse the debug-link `EVENT` too: a `debug-uart` ride loop selects on this wake, so
+            // an injected sample must pull it out of warm sleep exactly like a fix does.
             Msg::Hr(bpm) => {
                 #[cfg(feature = "sensor-link")]
                 injector.dispatch_hr(bpm);
@@ -518,7 +454,6 @@ mod handoff {
                 DFU_INSTALL.signal(());
                 EVENT.signal(());
             }
-            // Same rule: a parked device must wake its ride loop to drain the request.
             Msg::RideDamage(kind) => {
                 RIDE_DAMAGE.signal(kind);
                 EVENT.signal(());
@@ -539,16 +474,14 @@ mod handoff {
         }
     }
 
-    /// Await the next host-streamed datapoint — the `debug-uart` twin of `sensor_link::wait_event`,
-    /// the single sensor wake the event-driven main loop selects on.
+    /// Await the next host-streamed datapoint: the single sensor wake the event-driven main loop
+    /// selects on.
     pub async fn wait_event() {
         EVENT.wait().await
     }
 
-    /// Accumulate `bytes` and dispatch every complete line to the sensor signals. `reader` persists
-    /// across reads (it holds the partial-line buffer). The caller passes its hub
-    /// [`SampleInjector`] (behind `sensor-link`) so injected HR/power/cadence lines land in the same
-    /// hub the BLE manager feeds.
+    /// Accumulate `bytes` and dispatch every complete line to the sensor signals. `reader`
+    /// persists across reads because it holds the partial-line buffer.
     pub fn feed_bytes(reader: &mut LineReader, bytes: &[u8], #[cfg(feature = "sensor-link")] injector: SampleInjector) {
         reader.feed(bytes, |msg| {
             dispatch(
@@ -567,8 +500,7 @@ mod handoff {
         }
     }
 
-    /// The barometric altimeter, streamed over the debug link. Hand `&mut DebugAltimeter` to
-    /// `Sensors::altimeter`.
+    /// The barometric altimeter, streamed over the debug link.
     pub struct DebugAltimeter;
     impl AltimeterSource for DebugAltimeter {
         fn poll(&mut self) -> Option<f32> {
@@ -584,8 +516,8 @@ mod handoff {
         }
     }
 
-    /// Injected input, drained by the input plane next to the physical buttons — so injected
-    /// steps/edges become gestures (taps and holds) identically to real presses.
+    /// Injected input, drained by the input plane next to the physical buttons, so injected steps
+    /// and edges become gestures identically to real presses.
     pub struct DebugInput;
     impl InputSource for DebugInput {
         fn poll(&mut self) -> Option<InputEvent> {
@@ -593,43 +525,39 @@ mod handoff {
         }
     }
 
-    /// Take a pending debug `Z` camera-scale command (meters-per-pixel) — `try_take`-once. The map
-    /// loop calls this each frame and applies any value via `App::set_map_mpp`.
+    /// Take a pending debug `Z` camera-scale command, `try_take`-once. The map loop applies any
+    /// value through `App::set_map_mpp`.
     pub fn take_zoom() -> Option<f32> {
         ZOOM.try_take()
     }
 
-    /// Take a pending debug route-plan trigger (`(from, to)`, both `(lon, lat)` µdeg) — `try_take`-once,
-    /// like [`take_zoom`]. The ride loop calls this each pass and hands any value to
-    /// `App::debug_start_nav` (#500 perf bench).
+    /// Take a pending route-plan trigger (`(from, to)`, both `(lon, lat)` µdeg), `try_take`-once.
     pub fn take_nav() -> Option<NavTrigger> {
         NAV.try_take()
     }
 
-    /// Take a pending `dfu-install` trigger (S4, #619) — `try_take`-once, like [`take_nav`]. The
-    /// ride loop calls this each pass and posts the app-level DFU request from it.
+    /// Take a pending `dfu-install` trigger, `try_take`-once.
     pub fn take_dfu_install() -> bool {
         DFU_INSTALL.try_take().is_some()
     }
 
-    /// Take a pending `ride-damage` fabrication request (#1591) — `try_take`-once.
+    /// Take a pending `ride-damage` fabrication request, `try_take`-once.
     pub fn take_ride_damage() -> Option<RideDamageKind> {
         RIDE_DAMAGE.try_take()
     }
 
-    /// Take a pending `ride-repair-fail` arming request (#1591) — `try_take`-once.
+    /// Take a pending `ride-repair-fail` arming request, `try_take`-once.
     pub fn take_ride_repair_fail() -> bool {
         RIDE_REPAIR_FAIL.try_take().is_some()
     }
 
-    /// Take a pending `store-census` request (#1591) — `try_take`-once.
+    /// Take a pending `store-census` request, `try_take`-once.
     pub fn take_store_census() -> bool {
         STORE_CENSUS.try_take().is_some()
     }
 
-    /// Queue one DFU status line for the host (sent as `D <text>`). Called by the ride loop's
-    /// armer drain at each phase boundary; a full queue drops the line (the RTT log is the
-    /// lossless record — this stream is the harness's convenience view).
+    /// Queue one DFU status line for the host, sent as `D <text>`. A full queue drops the line;
+    /// the RTT log is the lossless record.
     pub fn dfu_status(text: &str) {
         let mut line: heapless::String<{ super::DFU_STATUS_MAX }> = heapless::String::new();
         // Truncate rather than drop on an over-long message; the prefix carries the meaning.
@@ -642,27 +570,23 @@ mod handoff {
         let _ = DFU_STATUS.try_send(line);
     }
 
-    /// Await the next queued DFU status line (the transport's TX task) — the `D`-line twin of
-    /// [`wait_telemetry`].
+    /// Await the next queued DFU status line, for the transport's TX task.
     pub async fn wait_dfu_status() -> heapless::String<{ super::DFU_STATUS_MAX }> {
         DFU_STATUS.receive().await
     }
 
-    /// Publish the latest telemetry (called by the app loop, throttled). Overwrites any unsent
-    /// value, so the host always gets the freshest snapshot.
+    /// Publish the latest telemetry. It overwrites any unsent value, so the host always gets the
+    /// freshest snapshot.
     pub fn set_telemetry(t: Telemetry) {
         TELEMETRY.signal(t);
     }
 
-    /// Await the next published telemetry (the transport's TX task), so the send cadence is driven
-    /// by [`set_telemetry`] — no polling, no flooding.
+    /// Await the next published telemetry, so the send cadence is driven by [`set_telemetry`].
     pub async fn wait_telemetry() -> Telemetry {
         TELEMETRY.wait().await
     }
 }
 
-// Re-export the gated hand-off at the module root so the board crate's call sites
-// (`debug_link::DebugLocation`, `debug_link::feed_bytes`, …) are unchanged by the split.
 #[cfg(feature = "debug-link")]
 pub use handoff::{
     dfu_status, dispatch, feed_bytes, set_telemetry, take_dfu_install, take_nav, take_ride_damage,
@@ -707,7 +631,6 @@ mod tests {
 
     #[test]
     fn parses_sensor_lines() {
-        // Fake BLE sensor injection (SE8): integer bpm / watts / rpm.
         assert_eq!(parse_line("H 156"), Some(Msg::Hr(156)));
         assert_eq!(parse_line("P 240"), Some(Msg::Power(240)));
         assert_eq!(parse_line("R 92"), Some(Msg::Cadence(92)));
@@ -728,8 +651,8 @@ mod tests {
 
     #[test]
     fn format_sensor_lines_round_trip_through_parse() {
-        // Each `format_*` is the exact inverse of its `parse_line` arm — the USB feeder writes what
-        // the device reads back, one canonical codec so the halves can't drift.
+        // Each `format_*` is the exact inverse of its `parse_line` arm, so the two halves of the
+        // one codec cannot drift.
         assert_eq!(format_hr(156).as_str(), "H 156\n");
         assert_eq!(format_power(240).as_str(), "P 240\n");
         assert_eq!(format_cadence(92).as_str(), "R 92\n");
@@ -858,8 +781,8 @@ mod tests {
 
     #[test]
     fn telemetry_round_trips_through_format_and_parse() {
-        // `parse_telemetry` is the exact inverse of `format_telemetry` — the host reads back what
-        // the device wrote. A `\n`-terminated line is fine: `parse_telemetry` splits on whitespace.
+        // `parse_telemetry` is the exact inverse of `format_telemetry`. A `\n`-terminated line is
+        // fine: it splits on whitespace.
         let t = Telemetry {
             frame_us: 51234,
             lod: 4,
@@ -890,8 +813,8 @@ mod tests {
 
     #[test]
     fn format_fix_round_trips_through_parse_line() {
-        // `format_fix` is the exact inverse of the `F` arm of `parse_line`. Course/speed are
-        // re-read at the formatter's precision (`{:.1}` / `{:.2}`), so pick values that survive it.
+        // Course and speed are re-read at the formatter's precision (`{:.1}` and `{:.2}`), so
+        // pick values that survive it.
         let f = Fix { lat: 48_122_905, lon: 7_814_438, course: Some(90.5), speed_mps: Some(5.25) };
         assert_eq!(format_fix(&f).as_str(), "F 48122905 7814438 90.5 5.25\n");
         assert_eq!(parse_line(format_fix(&f).as_str().trim_end()), Some(Msg::Fix(f)));
@@ -899,16 +822,14 @@ mod tests {
 
     #[test]
     fn format_fix_uses_dash_for_a_standstill() {
-        // No course/speed → the `-` sentinel keeps each field positional, exactly as the host's
-        // old `fix_line` produced and `parse_line` accepts.
+        // No course or speed: the `-` sentinel keeps each field positional.
         let f = Fix::at(1, 2);
         assert_eq!(format_fix(&f).as_str(), "F 1 2 - -\n");
         assert_eq!(parse_line(format_fix(&f).as_str().trim_end()), Some(Msg::Fix(f)));
     }
 
-    /// `feed` treats `\r` and `\n` *both* as line terminators. A bare `\r`, a `\r\n`, and a lone
-    /// `\n` each dispatch exactly once (the `\n` after a `\r` lands on an already-reset buffer, so
-    /// no phantom blank line).
+    /// `feed` treats `\r` and `\n` both as line terminators. A bare `\r`, a `\r\n` and a lone
+    /// `\n` each dispatch exactly once, with no phantom blank line.
     #[test]
     fn line_reader_treats_cr_and_crlf_as_terminators() {
         let mut r = LineReader::new();
@@ -922,8 +843,8 @@ mod tests {
         );
     }
 
-    /// Empty lines from the wire (a stray `\n`, or a CRLF's `\n` after the `\r` flushed) are skipped
-    /// at the `LineReader` level (the `self.len > 0` guard), never reaching `parse_line`.
+    /// Empty lines from the wire are skipped at the `LineReader` level and never reach
+    /// `parse_line`.
     #[test]
     fn line_reader_skips_blank_lines() {
         let mut r = LineReader::new();
@@ -933,8 +854,8 @@ mod tests {
         assert_eq!(got.as_slice(), &[Msg::Alt(5.0), Msg::Compass(9.0)], "blank lines produce no Msg");
     }
 
-    /// `F -2147483648 2147483647` is the widest fix line (the worst case the 48-byte cap is sized
-    /// for): `format_fix` emits it un-truncated and `parse_line` reads the exact extremes back.
+    /// `F -2147483648 2147483647` is the widest fix line, the worst case the cap is sized for:
+    /// `format_fix` emits it whole and `parse_line` reads the exact extremes back.
     #[test]
     fn format_fix_round_trips_i32_extremes() {
         let f = Fix { lat: i32::MIN, lon: i32::MAX, course: None, speed_mps: None };
@@ -946,8 +867,8 @@ mod tests {
         );
     }
 
-    /// `lod` is parsed as `u8`, so a `lod` field above 255 fails the whole parse (`None`), not wrap
-    /// or truncate. Every other field is valid, isolating the overflow as the cause.
+    /// `lod` is parsed as `u8`, so a `lod` above 255 fails the whole parse rather than wrapping.
+    /// Every other field is valid, which isolates the overflow as the cause.
     #[test]
     fn parse_telemetry_rejects_lod_above_u8() {
         // Valid T line shape, but lod = 999 (> u8::MAX) — the u8 parse fails the line.
@@ -963,12 +884,12 @@ mod tests {
         );
     }
 
-    /// A line that *fills* the 64-byte buffer exactly (no newline yet) must NOT trip overflow — the
-    /// boundary is `< LINE_MAX` to accept a byte, overflow only on the 65th.
+    /// A line that fills the 64-byte buffer exactly, with no newline yet, must not trip overflow:
+    /// the boundary accepts a byte while `len < LINE_MAX` and overflows only on the 65th.
     #[test]
     fn line_reader_accepts_a_line_filling_the_buffer_exactly() {
-        // `Z 1` plus enough trailing spaces to total exactly LINE_MAX=64 bytes. Trailing
-        // whitespace is ignored by `split_ascii_whitespace`, so it parses as `Zoom(1.0)`.
+        // `Z 1` plus trailing spaces to exactly LINE_MAX bytes. Trailing whitespace is ignored by
+        // `split_ascii_whitespace`, so it parses as `Zoom(1.0)`.
         let mut line = heapless::String::<64>::new();
         line.push_str("Z 1").unwrap();
         while line.len() < LINE_MAX {
