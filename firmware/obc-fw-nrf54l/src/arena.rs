@@ -874,6 +874,7 @@ pub(crate) fn claim_peak(
     profile: &mut obc_app::PeakViewProfile<'_>,
     source: &'static dyn obc_formats::io::ByteSource,
     reader: &obc_reader::Reader<'_>,
+    measured_m: Option<f32>,
 ) -> Option<PeakGuard> {
     // SAFETY: the ride loop is the only owner-switcher.
     unsafe { gate() }.claim_peak_view().ok()?;
@@ -885,7 +886,7 @@ pub(crate) fn claim_peak(
         return None;
     }
     // SAFETY: the terrain field was initialized above; no Builder reference exists yet.
-    let ground = unsafe { (*arm).terrain.ground_height(profile.observer_lat, profile.observer_lon) };
+    let ground = unsafe { (*arm).terrain.eye_ground(profile.observer_lat, profile.observer_lon, measured_m) };
     let Some(ground) = ground else {
         release(ArenaOwner::PeakView);
         return None;
