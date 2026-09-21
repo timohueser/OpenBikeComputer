@@ -210,8 +210,15 @@ baker streams the squares of one cell at a time.
 Coverage can stop at any sample, so a national model that stops at a border is not a problem.
 A cell with no finer coverage is identical to a cell baked without one.
 
-Each finer model keeps its own attribution, which must travel with the map. A change of finer
-model changes the baked heights, so it is a new terrain revision.
+The bakery re-bakes only the cells an archive change reaches. Each terrain cell records the
+digests of the archive squares its own rule reads, so a new release of the Swiss model re-bakes
+the Swiss cells and leaves the other countries alone. A change of finer model changes baked
+heights, so it is a new terrain revision, and a new terrain revision also re-bakes the navigation
+graph, whose climbs are integrated from the same surface.
+
+Each finer model keeps its own attribution, which must travel with the map. Each terrain cell
+records which models its lifts came from, and the catalog lists each of those models once. See
+[Attribution](#attribution).
 
 ## One sampling truth
 
@@ -343,6 +350,13 @@ The source code stores this text in [`COPERNICUS_ATTRIBUTION`](src:host/obc-dem/
 The bakery copies it to the catalog terrain block.
 Consumers read the text from the catalog.
 A map with derived contour geometry also requires this attribution.
+
+A map with [crest lifts](#crest-lifts) also requires the attribution of each finer model it used.
+The catalog terrain block lists these models in `references`, one entry for each model, with its
+product name, its required credit and its licence. The bakery copies each entry from the reference
+archive, which is the only place the required wording is kept. The obligation is the same as for
+the Copernicus text: a consumer that shows one shows all of them, and hard-codes none of them. The
+map builder shows each entry on the map summary card.
 
 Map data remains © OpenStreetMap contributors.
 

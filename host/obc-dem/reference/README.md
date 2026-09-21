@@ -253,8 +253,10 @@ the step between a lifted and an unlifted node in contours and profiles.
 ## Attribution
 
 The attribution of every source a map's cells read must travel with that map, next to the
-Copernicus attribution the native heights already carry. `index.json` states it per source, and the
-catalog carries it into the published map.
+Copernicus attribution the native heights already carry. `index.json` states it per source; the
+terrain bakery records per cell which sources its lifts came from, and the catalog's terrain block
+lists each of them once in `references` (`OBCC_Spec.md` §13.1), which is where a consumer reads
+the wording from.
 
 ## Publishing and mirroring
 
@@ -292,8 +294,14 @@ A bakery run mirrors before it bakes:
 
 ```sh
 python3 host/obc-dem/reference/ingest.py mirror --archive ref/ --bbox 8.30,46.75,8.60,46.95
-obc-dem bake --reference ref/ …
+obc-dem bake --reference ref/ …          # one box, straight to containers
+obc-bake terrain --reference ref/ …      # the curated coverage, into a published tree
 ```
+
+Mirror the box the *cells* cover, not the box a rider rides: a published terrain cell overhangs a
+coverage polygon by up to its own side, and a tile the index names and the mirror lacks costs that
+cell its lifts. The bake says how many tiles were missing and the cell's skip key records that they
+were, so completing the mirror re-bakes exactly those cells and nothing else.
 
 `mirror` pulls `index.json` first, then the tiles of the box and its one-tile halo, and nothing else. A
 tile the archive does not hold is counted and named in the summary, not an error: a box that reaches
