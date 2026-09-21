@@ -490,7 +490,7 @@ export function parseTerrainIndex(body: string, catalog: Catalog, block: Terrain
 /**
  * Parse a region's cell list against the root's entry for that region.
  *
- * The list is **stored, not derived from the boundary** (§6): deriving one
+ * The list is **stored, not derived from the boundary**: deriving one
  * would let a simplification error drop an edge cell, and a dropped fine cell is
  * a silent hole in street detail. So this parser's job is to check the stored
  * answer is the one the root priced — same bands, same counts — and never to
@@ -562,8 +562,8 @@ export function parseRegionCells(body: string, catalog: Catalog, entry: RegionEn
         if (terrain[k] <= terrain[k - 1]) fail(`${terrainAt}: ids are not sorted, or one appears twice`);
     }
     // The root priced this selection; a list that disagrees is a price that is
-    // not the price of the download. Counted against the two halves §13.3 splits
-    // it into, so a downloadable square silently becoming void is caught too.
+    // not the price of the download. Counted against the two halves the terrain price
+    // splits into, so a downloadable square silently becoming void is caught too.
     if (entry.terrain) {
         const priced = entry.terrain.cell_count + entry.terrain.known_empty_count;
         if (terrain.length !== priced) {

@@ -260,7 +260,7 @@
         await dropJob.run(
             async (ctx) => {
                 // Sequential — the wire takes one transfer at a time. Each `PUT` creates an
-                // object and answers with the id the commit assigned (§3.6), which is what the
+                // object and answers with the id the commit assigned, which is what the
                 // trip's stage list is then built from.
                 const ids: bigint[] = [];
                 for (const route of routes) {
@@ -297,7 +297,7 @@
         });
     });
 
-    /** Rides the device will actually serve: §3.5 refuses a `GET` of one it is still recording. */
+    /** Rides the device will actually serve: a `GET` of one it is still recording is refused. */
     const pullable = $derived(recordedRides(dashboard.rides));
 
     /** Ride ids a durable copy of which is in the folder — inverse of the library's own list. */
@@ -378,7 +378,7 @@
         }
         const requests: ThumbRequest[] = [
             ...dashboard.routes.map((route) => thumbRequest(c, "route", route, undefined)),
-            // A ride still being recorded has no payload to draw yet (§3.5), so it is not asked for.
+            // A ride still being recorded has no payload to draw yet, so it is not asked for.
             ...pullable.map((ride) => thumbRequest(c, "ride", ride, heldTracks.get(ride.objectId))),
         ];
         const aborter = new AbortController();
@@ -435,7 +435,7 @@
         previewing = `route-${route.objectId}`;
         try {
             const obcr = (await dashboard.enqueue(() => c.get(refOf(route)))).bytes;
-            // Every figure below comes from the OBCR header (§1) of the bytes just downloaded. The
+            // Every figure below comes from the OBCR header of the bytes just downloaded. The
             // catalog carries none of them, and this is the download that makes them knowable.
             const header = decodeRouteHeader(obcr);
             preview = {
@@ -470,7 +470,7 @@
                 title: object.name || ride.displayName || `Ride ${ride.objectId}`,
                 points: object.points.map((p) => ({ lat: p.latMicrodegrees / 1e6, lon: p.lonMicrodegrees / 1e6, ele: p.elevationM })),
                 segments: null,
-                // The ride object's own summary fields (§7.2) — the device computed these at Finish.
+                // The ride object's own summary fields — the device computed these at Finish.
                 stats: [
                     { label: "Distance", value: rideDistance(object.distanceM) },
                     { label: "Moving time", value: rideDuration(object.movingTimeS) },

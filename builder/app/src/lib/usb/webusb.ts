@@ -6,7 +6,7 @@
  * button; after that `getDevices()` returns the granted devices with no prompt, which is why
  * {@link WebUsbWatcher} starts by adopting rather than by asking. Permission is per-origin and
  * per-device and survives reloads, but not the user clearing site data, so the button can never be
- * retired from the UI.
+ * taken off the page.
  *
  * WebUSB is Chromium-only and needs a secure context. Firefox and Safari get {@link PipeError}
  * `unsupported`, and the honest answer for them is the desktop app.

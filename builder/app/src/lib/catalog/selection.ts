@@ -445,8 +445,8 @@ interface CachedBand {
  */
 export class SelectionResolver {
     private readonly cache = new Map<string, CachedBand>();
-    /** The last index set a region's list was checked against, so §11.7's
-     *  cross-document check is not re-walked on every frame either. */
+    /** The last index set a region's list was checked against, so the cross-document
+     *  check is not re-walked on every frame either. */
     private readonly checked = new WeakMap<RegionCellsDocument, ReadonlyMap<string, CellIndexDocument>>();
     /** Cache hits and misses, for tests. Not load-bearing. */
     readonly stats = { computed: 0, reused: 0 };

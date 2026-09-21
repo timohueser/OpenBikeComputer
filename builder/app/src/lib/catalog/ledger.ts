@@ -18,7 +18,7 @@ export interface BandLedger {
     /** Summed real cell bytes — what the download costs for this band. */
     bytes: number;
     /** True for the coarse band: context around the selection rather than
-     *  content in it, and silent in the UI by §8's coarse-band decision. */
+     *  content in it, and silent in the UI by the coarse-band decision. */
     contextOnly: boolean;
     /** Published cells in this band whose sources do not cover their whole
      *  square. */

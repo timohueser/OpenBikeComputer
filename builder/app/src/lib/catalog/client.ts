@@ -104,7 +104,7 @@ export class CatalogClient {
         const body = await withRetry(async () => {
             const res = await doFetch(base, { signal: opts.signal });
             if (!res.ok) throw new HttpStatusError(base, res.status, res.statusText);
-            // §7 spelled out: the entire body, then one parse. Nothing here consumes
+            // The whole-document rule spelled out: the entire body, then one parse. Nothing here
             // the response incrementally.
             return res.text();
         }, opts);

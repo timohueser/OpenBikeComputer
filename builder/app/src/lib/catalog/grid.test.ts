@@ -339,7 +339,7 @@ describe("the properties the vectors above are examples of", () => {
             const spelling = formatCellId(cell);
             expect(parseCellId(spelling)).toEqual(cell);
             expect(formatCellId(parseCellId(spelling))).toBe(spelling);
-            // …and the spelling is the width §1.3 fixes for that size, which is
+            // …and the spelling is the width fixed for that size, which is
             // what makes a plain string sort the same as an (i, j) sort.
             expect(spelling.split("/")[1]).toHaveLength(idWidth(log2));
         }
