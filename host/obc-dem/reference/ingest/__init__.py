@@ -29,3 +29,17 @@ from .pool import (PLAUSIBLE_M, VOID, lattice_indices, open_raster, pool_onto_la
 from .publish import (ARCHIVE_PREFIX, Remote, merge_index, mirror_plan, publish_plan,
                       r2_remote, run_rclone)
 from .sources import SOURCES, Source
+
+# The package split is internal: `import ingest` is the tool, and this is its surface.
+__all__ = [
+    "ARCHIVE_PREFIX", "DEGREE", "GRID_ORIGIN", "NODATA", "PLAUSIBLE_M", "PRIORITY", "Refuse",
+    "Remote", "SNAP", "SOURCES", "STEP", "Source", "TILE", "TILE_PX", "VOID", "WGS84", "WORLD",
+    "Window", "best_contributor", "box_tiles", "check_world", "contributors",
+    "covering_window", "cut_tile", "ingest_raster", "lattice_indices", "load_manifests",
+    "local_rasters", "main", "manifest_dir", "merge_index", "merge_tiles", "mirror_plan",
+    "open_raster", "parse_bbox", "pixel_index", "pool_onto_lattice", "priority_rank",
+    "publish", "publish_plan", "r2_remote", "read_index", "read_source", "rebuild_index",
+    "run_rclone", "source_envelope", "source_facts", "source_xy", "tile_digest", "tile_id",
+    "tile_index", "tile_path", "tile_problems", "tile_window", "to_int16", "udeg_ceil",
+    "udeg_floor", "write_manifest", "write_tile"
+]
