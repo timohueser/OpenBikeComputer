@@ -35,11 +35,18 @@
     if (busy || done[suggestion.id]) return;
     if (await ondecide(suggestion.id, true)) done = { ...done, [suggestion.id]: true };
   }
+  /** Escape closes the feedback box of this panel, and nothing else on the page. */
+  function panelKeys(event: KeyboardEvent) {
+    if (event.key !== 'Escape' || !dismissing) return;
+    if (!(event.target as HTMLElement | null)?.closest('.suggestions')) return;
+    dismissing = ''; feedback = '';
+  }
   async function dismiss(id: string) {
     if (busy) return;
     if (await ondecide(id, false, feedback)) { dismissing = ''; feedback = ''; }
   }
 </script>
+<svelte:window on:keydown={panelKeys} />
 <section class="suggestions" aria-label="Suggestions">
   <div class="panel-head">
     <div class="row"><h2>Suggestions</h2><button class="text-button small" on:click={onclose}>Close</button></div>

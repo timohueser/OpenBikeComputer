@@ -171,6 +171,12 @@ export class Store {
   list<T>(kind: string): T[] {
     return this.db.prepare('SELECT body FROM records WHERE seq IN (SELECT MAX(seq) FROM records WHERE kind=? GROUP BY id) ORDER BY seq DESC').all(kind).map((r) => JSON.parse(String(r.body)) as T);
   }
+  /** The same records, newest first by their first write. A later write, such as a decision, does not move one. */
+  listCreated<T>(kind: string): T[] {
+    return this.db.prepare(`SELECT r.body FROM records r
+      JOIN (SELECT id, MIN(seq) AS first, MAX(seq) AS last FROM records WHERE kind=? GROUP BY id) g ON r.seq = g.last
+      ORDER BY g.first DESC`).all(kind).map((r) => JSON.parse(String(r.body)) as T);
+  }
   candidate(id: string): Candidate { return this.get<Candidate>('candidate', id); }
   updateCandidate(id: string, change: (candidate: Candidate) => void): Candidate {
     return this.atomic(() => { const candidate = this.candidate(id); change(candidate); refresh(candidate); this.put('candidate', id, candidate); return candidate; });

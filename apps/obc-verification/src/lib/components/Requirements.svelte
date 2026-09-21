@@ -284,7 +284,8 @@
   }
   /** Ctrl/⌘+Enter approves the proposal on screen; Escape closes an open reject box. */
   function reviewKeys(event: KeyboardEvent) {
-    if (event.key === 'Escape' && rejecting) { rejecting = false; return; }
+    // The panel closes its own feedback box, so Escape there leaves the coverage review alone.
+    if (event.key === 'Escape' && rejecting) { if (!inPanel(event)) rejecting = false; return; }
     if (rejecting || event.key !== 'Enter' || !(event.metaKey || event.ctrlKey)) return;
     if (inPanel(event) || (event.target as HTMLElement | null)?.closest('input, textarea')) return;
     if (!reviewable || busy || reviewable.conflict) return;

@@ -248,13 +248,11 @@ async function requirementSuggestions(event: RequestEvent, parts: string[]): Pro
     const revision = store().latestRevision();
     const revisions = new Map(store().revisions().map(r => [r.id, r]));
     // Newest first, by the moment the agent wrote it. A decision writes a new record, and the item must not move.
-    return json(store().list<RequirementSuggestion>('requirement-suggestion')
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .map(s => {
-        if (s.status !== 'open' || !s.requirementId) return s;
-        const stale = suggestionStale(s, revisions.get(s.baseRevision), revision);
-        return { ...s, ...(revision.requirements.some(r => r.id === s.requirementId) ? {} : { missing: true }), ...(stale ? { stale } : {}) };
-      }));
+    return json(store().listCreated<RequirementSuggestion>('requirement-suggestion').map(s => {
+      if (s.status !== 'open' || !s.requirementId) return s;
+      const stale = suggestionStale(s, revisions.get(s.baseRevision), revision);
+      return { ...s, ...(revision.requirements.some(r => r.id === s.requirementId) ? {} : { missing: true }), ...(stale ? { stale } : {}) };
+    }));
   }
   assert(event.request.method === 'POST', 'Method not allowed.', 405);
   const data = await body(event);
