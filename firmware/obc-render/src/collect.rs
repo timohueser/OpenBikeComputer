@@ -1,27 +1,20 @@
 //! Visible-feature collection: fills the frame buffers with every visible feature's geometry and
 //! its [`Span`], in strict global priority order.
 //!
-//! The device streams map chunks off SPI SD through a small cache, so collection must touch each
-//! visible chunk as few times as it can. Most frames have scratch for every candidate: those
-//! retain projected geometry directly during one source-native walk and never refetch a chunk.
+//! The device streams map chunks off SPI SD through a small cache, so collection touches each
+//! visible chunk as few times as it can. Most frames have scratch for every candidate, and those
+//! retain projected geometry during one source-native walk and never refetch a chunk.
 //!
-//! A direct walk cannot keep the priority-drop guarantee once any frame budget fills, because an
+//! A direct walk cannot keep the priority-drop guarantee once a frame budget fills, because an
 //! early chunk's low-priority features may have taken capacity a late chunk's high-priority
 //! feature needs. On the first overflow the attempt is abandoned and a two-phase collector runs
-//! from clean buffers:
+//! from clean buffers: pass A ([`FrameScratch::collect_stubs`]) records a fixed-size [`Stub`] per
+//! visible feature and evicts the lowest-priority one when the buffer fills; select
+//! ([`FrameScratch::select`]) sorts level-major and admits greedily against the exact budgets, so
+//! drops are lowest-priority-first globally; pass B ([`FrameScratch::decode_winners`]) re-decodes
+//! only the winners and rewrites each stub slot in place with its final [`Span`].
 //!
-//! - Pass A ([`FrameScratch::collect_stubs`]) walks chunk-major once, decodes every visible
-//!   feature for its bbox cull and records a fixed-size [`Stub`], keeping no geometry. When the
-//!   stub buffer fills, the lowest-priority stub is evicted.
-//! - Select ([`FrameScratch::select`]) is RAM only: stubs are sorted level-major and admitted
-//!   greedily against the exact point, ring and span budgets, so drops are lowest-priority-first
-//!   globally.
-//! - Pass B ([`FrameScratch::decode_winners`]) re-decodes only the winners and rewrites each stub
-//!   slot in place with its final [`Span`]. Only chunks that own a winner are refetched.
-//!
-//! An unsaturated frame costs `N` chunk fetches; a saturated one costs the failed attempt plus at
-//! most `2 × N`. The stubs share the `slots` buffer the spans end up in, so the split costs no
-//! extra frame RAM.
+//! The stubs share the `slots` buffer the spans end up in, so the split costs no extra frame RAM.
 
 use heapless::Vec;
 
@@ -35,12 +28,9 @@ use crate::{
     MAX_SPANS,
 };
 
-/// One retained frame vertex, already projected into integer screen space.
-///
-/// The panel is a few hundred pixels across and the collector has already rejected geometry that
-/// cannot affect it, so keeping the projection saves projecting again in the draw pass and halves
-/// the resident frame-point buffer. Conversion is checked: a vertex outside the signed-16-bit
-/// screen envelope is rejected as malformed rather than wrapping into an unrelated pixel.
+/// One retained frame vertex, already projected into integer screen space, which saves projecting
+/// again in the draw pass and halves the resident frame-point buffer. Conversion is checked: a
+/// vertex outside the signed-16-bit screen envelope is rejected as malformed rather than wrapping.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub(crate) struct ScreenPoint {
@@ -75,8 +65,7 @@ fn ray_toggle(a: (i32, i32), b: (i32, i32), point: (i32, i32)) -> bool {
 }
 
 /// Whether `b` lies on the closed screen-space segment `a..c`. Removing such a vertex is exactly
-/// raster-lossless: the two projected edges cover the same segment as their replacement chord.
-/// Widen before subtracting, so hostile off-panel coordinates cannot overflow the predicate.
+/// raster-lossless. Widen before subtracting, so hostile off-panel coordinates cannot overflow.
 #[inline]
 fn point_on_screen_segment(a: (i32, i32), b: (i32, i32), c: (i32, i32)) -> bool {
     let (ax, ay) = (i64::from(a.0), i64::from(a.1));
@@ -103,8 +92,7 @@ fn ring_affects_rect(viewport: &Viewport, ring: &[(i32, i32)], rect: (i32, i32, 
 
 /// Append a polygon after removing only corner vertices whose two old edges and replacement chord
 /// all stay wholly outside the panel. With no boundary segment entering that rectangle, winding
-/// parity is constant over it, so one interior probe makes the local replacement fill-equivalent
-/// for the whole panel. No intersection vertices, no topology rebuild, no extra scratch.
+/// parity is constant over it, so one interior probe makes the replacement fill-equivalent.
 fn append_visible_polygon(
     viewport: &Viewport,
     points: &[(i32, i32)],
@@ -154,8 +142,7 @@ fn append_visible_polygon(
 }
 
 /// Append line rings after removing vertices that project exactly onto the segment between their
-/// neighbours. Endpoints and every real projected corner remain, so solid strokes and dash length
-/// are unchanged while sub-pixel source detail costs no frame points.
+/// neighbours, so strokes and dash length are unchanged while sub-pixel detail costs no points.
 fn append_visible_line(
     viewport: &Viewport,
     points: &[(i32, i32)],
@@ -190,30 +177,26 @@ fn append_visible_line(
 /// accumulate every visible feature's geometry (and its [`Span`]). Cleared (not freed) each frame.
 #[derive(Default)]
 pub(crate) struct FrameScratch {
-    // Per-feature ring decode scratch for the scene source's two streamed passes. Point decode
-    // storage is phase-shared with the projected draw buffer by `DrawScratch`.
+    // Per-feature ring decode scratch. Point decode storage is phase-shared with the draw buffer.
     dec_ring_lens: Vec<usize, MAX_DECODE_RINGS>,
     // All drawn features' geometry, concatenated (filled in pass B).
     pub(crate) frame_points: Vec<ScreenPoint, MAX_FRAME_POINTS>,
-    // `u16` is lossless, because a decoded feature has at most `MAX_DECODE_POINTS` vertices, and
-    // it halves this buffer's MCU footprint against `usize`.
+    // `u16` is lossless, because a decoded feature has at most `MAX_DECODE_POINTS` vertices.
     pub(crate) frame_ring_lens: Vec<u16, MAX_FRAME_RINGS>,
-    // One record per candidate: a [`Stub`] during passes A / select, rewritten to the final [`Span`]
-    // in pass B. After `collect`, its first `spans_len` entries are all the `span` variant.
+    // One record per candidate: a [`Stub`] during passes A and select, rewritten to the final
+    // [`Span`] in pass B.
     slots: Vec<Slot, MAX_SPANS>,
     /// How many leading `slots` are live final [`Span`]s after `collect` (the admitted-winner count).
     spans_len: usize,
 }
 
 impl FrameScratch {
-    /// Fill the frame buffers with every visible feature, in strict global priority order,
-    /// through the one-pass collector or its stub-select fallback. On return,
-    /// [`FrameScratch::spans`] and [`FrameScratch::spans_mut`] expose the drawn features'
-    /// [`Span`]s, unordered: the caller sorts them into painter order.
+    /// Fill the frame buffers with every visible feature, in strict global priority order.
+    /// [`FrameScratch::spans`] then exposes the drawn features' [`Span`]s, unordered.
     ///
     /// `suppress_terrain` drops every style carrying
     /// [`StyleFlags::terrain_layer`](obc_map_scene::StyleFlags::terrain_layer) out of the visible
-    /// mask, so neither source walk asks the source to decode those features.
+    /// mask, so neither walk asks the source to decode those features.
     pub(crate) fn collect<S: MapScene>(
         &mut self,
         scene: &S,
@@ -229,10 +212,9 @@ impl FrameScratch {
         self.spans_len = 0;
 
         // A single "is this style drawn at all?" mask, built once. Terrain suppression is applied
-        // here and nowhere else, by clearing those styles' mask bits: the mask is what collection
-        // hands the source as its `should_decode` filter, so a suppressed contour is skipped
-        // before its geometry is decoded. It costs no span, point or ring, so hiding the layer
-        // also frees frame budget for everything else.
+        // here and nowhere else, by clearing those styles' bits: the mask is the source's
+        // `should_decode` filter, so a suppressed contour costs no span, point or ring and hiding
+        // the layer frees budget for everything else.
         let mut vis_mask = [0u32; 8];
         for id in 0..=255u8 {
             match scene.style(id) {
@@ -250,10 +232,9 @@ impl FrameScratch {
             return;
         }
 
-        // The direct attempt is deliberately all-or-nothing: discard its feature accounting and
-        // restore clean frame buffers before the priority-preserving fallback. Its leaf
-        // accounting is not discarded, because the abandoned walk really visited those leaves, so
-        // `chunks_visited` carries it forward and pass A accumulates on top.
+        // The direct attempt is all-or-nothing: discard its feature accounting and restore clean
+        // buffers before the fallback. Its leaf accounting stands, because the abandoned walk
+        // really visited those leaves.
         stats.chunks_visited = direct_stats.chunks_visited;
         self.frame_points.clear();
         self.frame_ring_lens.clear();
@@ -269,9 +250,8 @@ impl FrameScratch {
     fn finish_collect(&mut self, candidates: usize, winners: usize, drawn: usize, stats: &mut RenderStats) {
         self.spans_len = drawn;
         stats.features_drawn = drawn;
-        // Every candidate that passed the cull is either drawn or dropped. Culled features count
-        // in `features_tried`, not here, so `drawn + dropped == tried` holds when nothing is
-        // culled.
+        // Every candidate that passed the cull is drawn or dropped. Culled features count in
+        // `features_tried`, so `drawn + dropped == tried` holds when nothing is culled.
         stats.features_dropped = candidates - winners;
         stats.span_utilization = drawn as f32 / self.slots.capacity() as f32;
         stats.point_utilization = self.frame_points.len() as f32 / self.frame_points.capacity() as f32;
@@ -279,8 +259,8 @@ impl FrameScratch {
     }
 
     /// Retain every candidate's compacted geometry during the first source walk. Returns `None` as
-    /// soon as any frame buffer cannot hold the complete candidate; the caller then restarts with
-    /// stub-select so global priority dropping remains unchanged under saturation.
+    /// soon as a frame buffer cannot hold a complete candidate, and the caller then restarts with
+    /// stub-select, so priority dropping is unchanged under saturation.
     fn try_collect_direct<S: MapScene>(
         &mut self,
         scene: &S,
@@ -338,8 +318,8 @@ impl FrameScratch {
                     }
                 };
                 if appended.is_err() {
-                    // This is either a hostile feature or a frame-capacity failure. Falling back
-                    // handles both, and prevents publishing the partially appended geometry.
+                    // Either a hostile feature or a capacity failure. Falling back handles both,
+                    // and prevents publishing the partially appended geometry.
                     frame_points.truncate(pt_start);
                     frame_ring_lens.truncate(ring_start);
                     failed = true;
@@ -386,8 +366,8 @@ impl FrameScratch {
             return None;
         }
 
-        // Select order is stable `(priority, encounter)`. Slots are already in encounter order,
-        // so prefix counts plus one linear pass reproduce its exact seq assignment.
+        // Select order is stable `(priority, encounter)`, and slots are already in encounter
+        // order, so prefix counts plus one linear pass reproduce its seq assignment.
         let bases = [
             0u16,
             level_counts[0],
@@ -405,11 +385,9 @@ impl FrameScratch {
         Some(slots.len())
     }
 
-    /// Pass A. One source-native walk over the viewport, decoding every visible feature once (its
-    /// bbox comes free from the decode) and recording a [`Stub`], with no geometry kept. On
-    /// stub-buffer overflow the lowest-priority stub is evicted, so the buffer always holds the
-    /// best-by-priority candidates. Returns the number of candidates that passed the per-feature
-    /// cull, and leaves the surviving stubs in `self.slots`.
+    /// Pass A. One source-native walk, decoding every visible feature once for its bbox cull and
+    /// recording a [`Stub`] with no geometry. On overflow the lowest-priority stub is evicted.
+    /// Returns the number of candidates that passed the cull.
     fn collect_stubs<S: MapScene>(
         &mut self,
         scene: &S,
@@ -419,8 +397,7 @@ impl FrameScratch {
         vis_mask: &[u32; 8],
         stats: &mut RenderStats,
     ) -> usize {
-        // Split the borrow so the decode callback can push stubs while `for_each_feature_filtered`
-        // borrows the decode scratch.
+        // Split the borrow so the decode callback can push stubs while the walk holds the scratch.
         let view = viewport.visible_bbox();
         let FrameScratch { dec_ring_lens, frame_points, frame_ring_lens, slots, .. } = self;
         let mut candidates = 0usize;
@@ -440,9 +417,8 @@ impl FrameScratch {
                     return;
                 };
 
-                // Scene sources are outside the renderer's trust boundary. Reject malformed ring
-                // partitions and invalid priority levels before they can reserve a stub or index
-                // the four-level triage table.
+                // Scene sources are outside the renderer's trust boundary: reject malformed ring
+                // partitions and invalid priority levels before they reserve a stub.
                 if !f.has_valid_rings() || !(1..=4).contains(&style.priority) {
                     stats.malformed_features = stats.malformed_features.saturating_add(1);
                     return;
@@ -478,15 +454,12 @@ impl FrameScratch {
                 let stub = Stub::new(token, total_pts, ring_count, f.style_id, f.kind, level, arrival);
                 arrival = arrival.saturating_add(1);
 
-                // Streaming "keep the K lowest-keyed" selection, key = `(priority_level,
-                // arrival)`. `slots` is held as an in-place max-heap on that key, so the root is
-                // the worst retained candidate. While the buffer has room every stub is admitted;
-                // once full, a new stub replaces the root exactly when it out-ranks that worst
-                // resident. A new candidate's `arrival` is the largest seen so far, so
-                // `key < root_key` reduces to `level < root.priority`: it can only displace a
-                // strictly-higher-level stub, which is the same accept and the same victim the
-                // level-major linear scan made. See the tie note on `Stub::seq` for the one
-                // saturation edge outside that claim.
+                // Streaming "keep the K lowest-keyed" selection on `(priority_level, arrival)`.
+                // `slots` is an in-place max-heap, so the root is the worst retained candidate,
+                // and once full a new stub replaces it exactly when it out-ranks it. A new
+                // candidate's `arrival` is the largest seen, so the test reduces to
+                // `level < root.priority`: the same accept and the same victim the level-major
+                // linear scan made. See the tie note on `Stub::seq` for the saturation edge.
                 if heap_admit(slots, stub) {
                     stats.stub_evictions += 1;
                 }
@@ -502,15 +475,13 @@ impl FrameScratch {
         candidates
     }
 
-    /// Select. RAM only. Sort the surviving stubs level-major by `(priority_level, arrival)`,
-    /// then admit greedily while the exact point and ring budgets hold, so drops are strictly
-    /// lowest-priority-first. Admitted stubs are compacted to the front of `self.slots` with
-    /// `seq` set to the admission index; returns the admitted count.
+    /// Select. RAM only. Sort the surviving stubs level-major, then admit greedily while the exact
+    /// point and ring budgets hold, so drops are lowest-priority-first. Admitted stubs are
+    /// compacted to the front with `seq` set to the admission index.
     fn select(&mut self) -> usize {
         let slots = &mut self.slots;
-        // `(priority_level, arrival)` is level-major, and within a level it is the pass-A
-        // encounter order, which is the quadtree-walk order. Assigning `seq` from it fixes the
-        // paint order.
+        // Within a level this is the pass-A encounter order, which is the quadtree-walk order, so
+        // assigning `seq` from it fixes the paint order.
         slots.sort_unstable_by_key(|slot| {
             let s = slot.stub();
             (s.priority(), s.seq)
@@ -528,8 +499,7 @@ impl FrameScratch {
                 used_rings += rings;
                 // Reuse the arrival field as the final painter seq (admission index).
                 s.seq = m as u16;
-                // Compaction: `m <= i`, and `slots[i]` was already read into `s`, so writing
-                // `slots[m]` never clobbers an unread stub.
+                // Compaction: `slots[i]` was already read into `s`, so this clobbers no unread stub.
                 slots[m] = Slot::of_stub(s);
                 m += 1;
             }
@@ -538,9 +508,8 @@ impl FrameScratch {
         m
     }
 
-    /// Pass B. Ask the scene to stream the same view again and re-decode only the selected
-    /// tokens. The source keeps its natural cache and grouping order; this renderer sees no file
-    /// offsets or quadtree records and appends complete geometry into the frame buffers.
+    /// Pass B. Stream the same view again and re-decode only the selected tokens. The source keeps
+    /// its natural cache order; this renderer sees no file offsets or quadtree records.
     fn decode_winners<S: MapScene>(
         &mut self,
         scene: &S,
@@ -555,7 +524,7 @@ impl FrameScratch {
         }
         let FrameScratch { dec_ring_lens, frame_points, frame_ring_lens, slots, .. } = self;
         // A winner slot, once rewritten to its `Span`, must not be re-read as a stub by a later
-        // chunk's scan. `placed` marks the done slots so the scan skips them.
+        // chunk's scan, so `placed` marks the done slots.
         let mut placed = [0u32; MAX_SPANS.div_ceil(32)];
         let mut selected = DecodeSink {
             scene,
@@ -573,10 +542,9 @@ impl FrameScratch {
         record_read_failures(selected.stats, report.read_failures);
         let drawn = selected.drawn;
 
-        // The second index walk or a winner refetch may fail after only some slots were
-        // rewritten, so compact only successfully decoded spans. `placed` is the variant tag: an
-        // unset bit means the slot is still a Stub and must not be read through the union's Span
-        // arm, and a set bit means pass B wrote a Span, with `ring_count == 0` a failed refetch.
+        // A later walk or refetch may fail after only some slots were rewritten, so compact only
+        // successfully decoded spans. `placed` is the variant tag: unset means the slot is still a
+        // Stub, and a set bit with `ring_count == 0` is a failed refetch.
         let mut compacted = 0usize;
         for i in 0..winners {
             if placed[i >> 5] & (1 << (i & 31)) == 0 {
@@ -594,17 +562,16 @@ impl FrameScratch {
         compacted
     }
 
-    /// The drawn features' spans (unordered; the caller sorts them into painter order). Valid only
-    /// after [`FrameScratch::collect`], which leaves every live slot holding the `span` variant.
+    /// The drawn features' spans, unordered. Valid only after [`FrameScratch::collect`], which
+    /// leaves every live slot holding the `span` variant.
     #[inline]
     pub(crate) fn spans(&self) -> &[Span] {
-        // SAFETY: after `collect`, `slots[..spans_len]` are all the `span` variant; `Slot` and `Span`
-        // share layout (union; `size_of` asserted equal), so the reinterpret is sound and in bounds
-        // (`spans_len <= slots.len()`).
+        // SAFETY: after `collect`, `slots[..spans_len]` are all the `span` variant, and `Slot` and
+        // `Span` share a layout and size, so the reinterpret is sound and in bounds.
         unsafe { core::slice::from_raw_parts(self.slots.as_ptr() as *const Span, self.spans_len) }
     }
 
-    /// The drawn features' spans, mutable — for the painter's-order sort.
+    /// The drawn features' spans, mutable, for the painter's-order sort.
     #[inline]
     pub(crate) fn spans_mut(&mut self) -> &mut [Span] {
         // SAFETY: as [`FrameScratch::spans`].
@@ -690,8 +657,8 @@ impl<S: MapScene> SelectedFeatures for DecodeSink<'_, S> {
             || self.frame_points.len() - pt_start as usize != stub.total_pts() as usize
             || self.frame_ring_lens.len() - ring_start as usize != stub.ring_count() as usize
         {
-            // Pass A and B run the same deterministic compaction. A changed/corrupt refetch must
-            // not publish a partial feature into the shared frame buffers.
+            // Pass A and B run the same deterministic compaction: a changed or corrupt refetch
+            // must not publish a partial feature.
             self.frame_points.truncate(pt_start as usize);
             self.frame_ring_lens.truncate(ring_start as usize);
             self.finish_error(index, FeatureError::Malformed);
@@ -700,8 +667,7 @@ impl<S: MapScene> SelectedFeatures for DecodeSink<'_, S> {
         self.drawn += 1;
         self.stats.points_drawn += stub.total_pts() as usize;
         // The by-kind scratch split, counted where the geometry is published rather than by a
-        // second walk over the finished spans: which path, lines or polygons, eats the budget is
-        // what the sim's scratch panel shows. Every span that survives to `spans()` is published
+        // second walk over the finished spans. Every span that survives to `spans()` is published
         // exactly here, so counting here is free and identical.
         match feature.kind {
             Kind::Line => {
@@ -792,18 +758,16 @@ fn empty_span(stub: Stub, z: i8, weight: u8, pt_start: u16, ring_start: u16) -> 
     Span { kind: Kind::Line, z, weight, style_id: stub.style_id(), pt_start, ring_start, ring_count: 0, seq: stub.seq }
 }
 
-/// The max-heap ordering key of a stub slot: `(priority_level, arrival)`. Larger is worse, so
-/// closer to the root. Valid only during pass A, before select rewrites `seq`.
+/// The max-heap ordering key of a stub slot: `(priority_level, arrival)`, larger is worse. Valid
+/// only during pass A, before select rewrites `seq`.
 #[inline]
 fn stub_key(stub: &Stub) -> (u8, u16) {
     (stub.priority(), stub.seq)
 }
 
 /// Streaming bounded-max-heap admit: the whole pass-A insertion rule in one allocation-free step.
-/// While the buffer has room, `stub` is pushed and sifted up. Once full it replaces the root, the
-/// worst retained candidate, exactly when its key is strictly smaller, then sifts down. Returns
-/// `true` if it evicted a resident. Const-generic over the capacity, so the tests drive the
-/// identical logic at tiny K.
+/// Once full, `stub` replaces the root, the worst retained candidate, exactly when its key is
+/// smaller. Returns `true` if it evicted a resident. Const-generic, so tests drive it at tiny K.
 fn heap_admit<const N: usize>(slots: &mut Vec<Slot, N>, stub: Stub) -> bool {
     if !slots.is_full() {
         // `push` cannot fail here (checked not-full); index the fresh tail for sift-up.
@@ -819,8 +783,7 @@ fn heap_admit<const N: usize>(slots: &mut Vec<Slot, N>, stub: Stub) -> bool {
     }
 }
 
-/// Restore the max-heap property after `slots[i]` was inserted at a leaf: bubble it toward the
-/// root while it out-keys its parent.
+/// Bubble `slots[i]` toward the root while it out-keys its parent.
 fn sift_up<const N: usize>(slots: &mut Vec<Slot, N>, mut i: usize) {
     while i > 0 {
         let parent = (i - 1) / 2;
@@ -833,8 +796,7 @@ fn sift_up<const N: usize>(slots: &mut Vec<Slot, N>, mut i: usize) {
     }
 }
 
-/// Restore the max-heap property after `slots[i]` was replaced with a smaller-keyed stub: sink it
-/// toward the leaves, swapping with its larger-keyed child until it dominates both.
+/// Sink `slots[i]` toward the leaves, swapping with its larger-keyed child until it dominates.
 fn sift_down<const N: usize>(slots: &mut Vec<Slot, N>, mut i: usize) {
     let len = slots.len();
     loop {
@@ -856,24 +818,21 @@ fn sift_down<const N: usize>(slots: &mut Vec<Slot, N>, mut i: usize) {
 }
 
 /// A pass-A candidate: exactly what selection and the pass-B re-decode need, and never geometry.
-/// Sized to fit a [`Span`] slot (asserted below), so the whole candidate set lives in the same
-/// `slots` buffer pass B rewrites in place and the split costs no extra frame RAM. The six-byte
-/// source token stays opaque to the renderer.
+/// Sized to fit a [`Span`] slot, so the candidate set lives in the same `slots` buffer pass B
+/// rewrites in place. The six-byte source token stays opaque to the renderer.
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct Stub {
     /// All-rings point count (12 bits), ring count (6), priority (3), kind (1) and style id (8).
-    /// Packing them is what lets the candidate reservoir grow without making the render arm
-    /// larger.
+    /// Packing them is what lets the reservoir grow without making the render arm larger.
     meta: u32,
     token: FeatureToken,
-    /// Pass-A encounter index, overwritten with the admission `seq` during select, which pass B
-    /// reads for the painter's-order tie-break. It is the low half of the pass-A max-heap key and
-    /// is assigned with `saturating_add`, so the first 65,536 candidates get distinct keys and
-    /// the heap's survivor set is exactly the one the linear victim scan keeps. Past that, later
-    /// arrivals pin at `u16::MAX` and two worst-level residents can share a key: the
-    /// accept/reject decision stays identical, but which tied feature is evicted follows heap
-    /// order. That regime is far beyond `MAX_SPANS` and the OBCM source never reaches it.
+    /// Pass-A encounter index, overwritten with the admission `seq` during select. It is the low
+    /// half of the max-heap key and is assigned with `saturating_add`, so the first 65,536
+    /// candidates get distinct keys and the survivor set is exactly the linear scan's. Past that,
+    /// arrivals pin at `u16::MAX` and two worst-level residents can share a key: the accept and
+    /// reject decision is identical, but which tied feature is evicted follows heap order. That
+    /// regime is far beyond `MAX_SPANS`.
     seq: u16,
 }
 
@@ -933,7 +892,7 @@ impl Stub {
 
 /// One `slots` entry: a [`Stub`] during passes A and select, rewritten in place to the final
 /// [`Span`] in pass B. Both variants are `Copy` with no `Drop`, so the union is sound to
-/// overwrite, and the phase determines which variant is live.
+/// overwrite.
 union Slot {
     stub: Stub,
     span: Span,
@@ -948,34 +907,29 @@ impl Slot {
     fn of_span(span: Span) -> Slot {
         Slot { span }
     }
-    /// Read the `stub` variant. Valid only during passes A / select (before this slot is rewritten).
+    /// Read the `stub` variant. Valid only before this slot is rewritten.
     #[inline]
     fn stub(&self) -> Stub {
-        // SAFETY: the caller only reads `stub` in a phase that wrote a `Stub` into this slot; both
-        // variants are `Copy` plain-old-data, so the read is well-defined.
+        // SAFETY: the caller only reads `stub` in a phase that wrote one here, and both variants
+        // are plain-old-data.
         unsafe { self.stub }
     }
     /// Read the `span` variant after pass B marked this slot as placed.
     #[inline]
     fn span(&self) -> Span {
-        // SAFETY: the caller checks pass B's placed bit, which is set only after `of_span` was
-        // written. Both variants are `Copy` plain-old-data.
+        // SAFETY: the caller checks pass B's placed bit, set only after `of_span` was written.
         unsafe { self.span }
     }
 }
 
-// The union reuses the span buffer for stubs, so a stub must fit a span slot and the two must
-// share a size, or the `slots`-as-`[Span]` reinterpret in `spans()` and the `MCU_SCRATCH_BYTES`
-// accounting would be wrong.
+// The union reuses the span buffer for stubs, so a stub must fit a span slot and share its size,
+// or the `slots`-as-`[Span]` reinterpret and the `MCU_SCRATCH_BYTES` accounting would be wrong.
 const _: () = assert!(core::mem::size_of::<Stub>() <= core::mem::size_of::<Span>(), "Stub must fit a Span slot");
 const _: () = assert!(core::mem::size_of::<Slot>() == core::mem::size_of::<Span>(), "Slot must be Span-sized");
 
-/// One visible feature's draw metadata plus the ranges locating its geometry in the frame
-/// buffers. Cheap to sort for the painter's algorithm.
-///
-/// Offsets are `u16` and the draw path resolves the color from `style_id`, which keeps the struct
-/// to 12 bytes: thousands are buffered at coarse zoom. The frame buffers they index are asserted
-/// `<= u16::MAX` at the buffer constants.
+/// One visible feature's draw metadata plus the ranges locating its geometry in the frame buffers.
+/// Offsets are `u16` and the draw path resolves the colour from `style_id`, which keeps the struct
+/// to 12 bytes, because thousands are buffered at coarse zoom.
 #[derive(Clone, Copy)]
 pub(crate) struct Span {
     pub(crate) kind: Kind,
@@ -1105,14 +1059,11 @@ mod viewport_compaction_tests {
 
 #[cfg(test)]
 mod heap_tests {
-    //! Unit tests for the pass-A bounded max-heap victim selection ([`heap_admit`], [`sift_up`]
-    //! and [`sift_down`]). They drive the production insertion at tiny capacities and check the
-    //! survivor set, keys and identity tokens alike, plus the eviction count, against two
-    //! independent references: a spec selector (stable-sort by `(priority, arrival)`, truncate to
-    //! K) and a replica of the linear victim scan the heap replaces.
-    //!
-    //! Every test stream stays well under 65,536 candidates, so all keys are distinct and the
-    //! survivor identity is uniquely determined.
+    //! Unit tests for the pass-A bounded max-heap victim selection. They drive the production
+    //! insertion at tiny capacities and check the survivor set, keys and identity tokens, plus the
+    //! eviction count, against two references: a spec selector and a replica of the linear victim
+    //! scan the heap replaces. Every stream stays under 65,536 candidates, so all keys are
+    //! distinct.
 
     extern crate std;
     use std::vec::Vec;
@@ -1121,15 +1072,13 @@ mod heap_tests {
 
     use super::{heap_admit, stub_key, Slot, Stub};
 
-    /// A synthetic pass-A stub: `priority` is the key's high half, `arrival` its low half, and
-    /// `token` an independent bijection of `arrival` stashed in the opaque source token, so the
-    /// tests can confirm the heap moves identities and not just keys.
+    /// A synthetic pass-A stub, with `token` an independent bijection of `arrival` in the opaque
+    /// source token, so the tests can confirm the heap moves identities and not just keys.
     fn test_stub(priority: u8, arrival: u16, token: u16) -> Stub {
         Stub::new(FeatureToken::from_source_words([token, 0, 0]), 0, 0, 0, Kind::Line, priority, arrival)
     }
 
-    /// Token bijection, distinct from `arrival`, so a test that checks the token is checking the
-    /// carried identity rather than re-deriving the key.
+    /// Token bijection, distinct from `arrival`, so a token check is not re-deriving the key.
     fn token_of(arrival: u16) -> u16 {
         arrival.wrapping_mul(2654).wrapping_add(3)
     }
@@ -1137,8 +1086,8 @@ mod heap_tests {
     /// A survivor as `(priority, arrival, token)` — the full identity the render depends on.
     type Survivor = (u8, u16, u16);
 
-    /// Drive the production heap over a stream of priorities (arrival = stream index) at capacity `N`.
-    /// Returns the survivors sorted by `(priority, arrival)` and the eviction count.
+    /// Drive the production heap over a stream of priorities at capacity `N`, returning the
+    /// survivors sorted by key and the eviction count.
     fn run_heap<const N: usize>(priorities: &[u8]) -> (Vec<Survivor>, u32) {
         let mut slots: super::Vec<Slot, N> = super::Vec::new();
         let mut evictions = 0u32;
@@ -1167,8 +1116,8 @@ mod heap_tests {
         (1..slots.len()).all(|i| stub_key(&slots[i].stub()) <= stub_key(&slots[(i - 1) / 2].stub()))
     }
 
-    /// Spec reference: every candidate, stable-sorted by `(priority, arrival)`, truncated to K.
-    /// The stable sort keeps same-priority order in arrival order, matching the heap's tie rule.
+    /// Spec reference: every candidate, stable-sorted and truncated to K. The stable sort matches
+    /// the heap's earlier-arrival-wins tie rule.
     fn reference_select(priorities: &[u8], k: usize) -> Vec<Survivor> {
         let mut all: Vec<Survivor> =
             priorities.iter().enumerate().map(|(i, &p)| (p, i as u16, token_of(i as u16))).collect();
@@ -1177,8 +1126,7 @@ mod heap_tests {
         all
     }
 
-    /// Replica of the removed linear victim scan. Returns survivors sorted by `(priority,
-    /// arrival)` and the eviction count, so the heap can be checked against it.
+    /// Replica of the removed linear victim scan, so the heap can be checked against it.
     fn reference_linear(priorities: &[u8], k: usize) -> (Vec<Survivor>, u32) {
         let mut buf: Vec<Survivor> = Vec::new();
         let mut level_count = [0u32; 4];
