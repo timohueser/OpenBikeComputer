@@ -8,6 +8,8 @@ description = "Reads a binary artefact through the crate that owns its format an
 [dependencies]
 # The magic bytes, the versions and the byte-I/O seam every reader below is built on.
 obc-formats = { path = "../../firmware/obc-formats" }
+# The one file adapter onto that seam, shared with the packer, the bakery and the assembler.
+obc-file-source = { path = "../obc-file-source" }
 # OBCM: header, style table, LOD ladder, POI directory, landmark and peak sections. `alloc` gives
 # `MapCache::new_boxed` — the ~277 KB cache belongs on the heap, not on this binary's stack.
 obc-reader = { path = "../../firmware/obc-reader", features = ["alloc"] }

@@ -44,6 +44,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
+use obc_file_source::FileSource;
 use obc_formats::io::{ByteSource, Error as IoError};
 use obcm_assemble::grid::CellId;
 use obcm_assemble::schema::{Schema, Skin};
@@ -52,42 +53,38 @@ use obcm_assemble::{
     TerrainJob, TerrainParams,
 };
 
-/// A cell artifact read on demand. Cell regions are copied in 256 KB blocks, so the whole tree never
-/// has to be resident — which is what keeps a country assembly's memory about the nav graph rather
-/// than about the geometry.
-struct FileSource {
-    file: RefCell<File>,
-    len: u64,
+/// A file this driver reads on demand: an input cell, a terrain cell, or the sealed map the verify
+/// pass reads back. Cell regions are copied in 256 KB blocks, so the whole tree never has to be
+/// resident — which is what keeps a country assembly's memory about the nav graph rather than about
+/// the geometry.
+///
+/// The shared adapter does the reading; what this adds is the profiler's split between the reads
+/// that feed the assembly and the reads that verify the sealed map. Without `mem-profile` it is
+/// the adapter and nothing else.
+struct ProfiledSource {
+    src: FileSource,
     #[cfg(feature = "mem-profile")]
     verification: bool,
 }
 
-impl FileSource {
-    fn open(path: &Path) -> std::io::Result<FileSource> {
-        let file = File::open(path)?;
-        // No narrowing: the read seam is `u64`, so a file's length is simply its length. This used
-        // to refuse anything past 4 GiB − 1, because a `uint32` offset could not name the bytes and
-        // a truncating cast would have presented the low 32 bits as the whole file.
-        let len = file.metadata()?.len();
-        Ok(FileSource {
-            file: RefCell::new(file),
-            len,
+impl ProfiledSource {
+    fn open(path: &Path) -> std::io::Result<ProfiledSource> {
+        Ok(ProfiledSource {
+            src: FileSource::open(path)?,
             #[cfg(feature = "mem-profile")]
             verification: false,
         })
     }
 }
 
-impl ByteSource for FileSource {
+impl ByteSource for ProfiledSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::result::Result<(), IoError> {
         #[cfg(feature = "mem-profile")]
         mem_profile::io(if self.verification { 1 } else { 0 }, buf.len());
-        let mut f = self.file.borrow_mut();
-        f.seek(SeekFrom::Start(offset)).map_err(|_| IoError::Io)?;
-        f.read_exact(buf).map_err(|_| IoError::Io)
+        self.src.read_at(offset, buf)
     }
     fn len(&self) -> u64 {
-        self.len
+        self.src.len()
     }
 }
 
@@ -99,7 +96,7 @@ impl ByteSource for FileSource {
 struct FileStore {
     path: PathBuf,
     open: Option<std::io::BufWriter<File>>,
-    sealed: Option<FileSource>,
+    sealed: Option<ProfiledSource>,
 }
 
 impl FileStore {
@@ -127,7 +124,7 @@ impl MapStore for FileStore {
         let mut w = self.open.take().expect("the map is open");
         w.flush().map_err(|_| Error::Io(IoError::Io))?;
         drop(w);
-        self.sealed = Some(FileSource::open(&self.path).map_err(|_| Error::Io(IoError::Io))?);
+        self.sealed = Some(ProfiledSource::open(&self.path).map_err(|_| Error::Io(IoError::Io))?);
         #[cfg(feature = "mem-profile")]
         {
             self.sealed.as_mut().unwrap().verification = true;
@@ -647,10 +644,10 @@ fn run() -> std::result::Result<(), String> {
     if selected.is_empty() {
         return Err("the selection is empty".into());
     }
-    let mut sources: Vec<FileSource> = Vec::with_capacity(selected.len());
+    let mut sources: Vec<ProfiledSource> = Vec::with_capacity(selected.len());
     for c in &selected {
         let path = root.join(&c.path);
-        sources.push(FileSource::open(&path).map_err(|e| format!("open {}: {e}", path.display()))?);
+        sources.push(ProfiledSource::open(&path).map_err(|e| format!("open {}: {e}", path.display()))?);
     }
     let inputs: Vec<CellInput<'_>> = selected
         .iter()
@@ -667,11 +664,11 @@ fn run() -> std::result::Result<(), String> {
         }
     };
     let terrain_root = terrain_path.as_ref().and_then(|p| p.parent()).unwrap_or(Path::new(".")).to_path_buf();
-    let mut terrain_sources: Vec<FileSource> = Vec::new();
+    let mut terrain_sources: Vec<ProfiledSource> = Vec::new();
     if let Some(sidecar) = &terrain_sidecar {
         for (_, path, _) in &sidecar.cells {
             let path = terrain_root.join(path);
-            terrain_sources.push(FileSource::open(&path).map_err(|e| format!("open {}: {e}", path.display()))?);
+            terrain_sources.push(ProfiledSource::open(&path).map_err(|e| format!("open {}: {e}", path.display()))?);
         }
     }
 

@@ -17,12 +17,11 @@
 //! its rayon map, which is also where the bbox filter pays for itself: a cell only opens the
 //! containers its own square touches.
 
-use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use obc_elevation::{ElevationSource, TerrainReader, TileCache};
-use obc_formats::io::{ByteSource, Error};
+use obc_file_source::FileSource;
+use obc_formats::io::ByteSource;
 
 /// Resident tiles per open container while packing: 64 × 512 B = 32 KB.
 ///
@@ -74,7 +73,7 @@ impl TerrainSet {
 
         let mut files = Vec::with_capacity(paths.len());
         for path in paths {
-            let src = FileSource::open(&path)?;
+            let src = open_obct(&path)?;
             let (bbox, posting_log2) = {
                 // Parse once for validation and for the rectangle. The reader is rebuilt per sampler
                 // — it borrows the source, and a sampler is what owns the tile caches.
@@ -200,45 +199,22 @@ fn collect_obcd(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
     Ok(())
 }
 
-/// A [`ByteSource`] over a file on disk, read at absolute offsets.
+/// An OBCT container open for the packer.
 ///
-/// `Mutex<File>` rather than a `RefCell`: a [`TerrainSet`] is shared across the cutter's rayon
-/// workers and every one of their samplers borrows the *same* handle, so the seek/read pair has to
-/// be atomic. The lock is held for one ≤ 512-byte read and each sampler's 32 KB tile cache keeps
-/// those rare, so the contention is nothing next to the GEOS work the same threads are doing.
-pub(crate) struct FileSource {
-    file: Mutex<File>,
-    len: u64,
-}
-
-impl FileSource {
-    pub(crate) fn open(path: &Path) -> Result<FileSource, String> {
-        let file = File::open(path).map_err(|e| format!("--terrain {}: {e}", path.display()))?;
-        let len = file.metadata().map_err(|e| format!("--terrain {}: {e}", path.display()))?.len();
-        // **OBCT's own** wall, not the read seam's: the container's directory entries and cell
-        // offsets are `uint32`, so nothing past 4 GiB − 1 of an `.obcd` can be named from inside it
-        // however far a `read_at` could reach. The seam widened; this did not, and the refusal is
-        // the format's.
-        if len > u32::MAX as u64 {
-            return Err(format!("--terrain {}: {len} bytes exceeds the 4 GiB OBCT offset space", path.display()));
-        }
-        Ok(FileSource { file: Mutex::new(file), len })
+/// The shared adapter is `Sync` and locks around each read, which is what a [`TerrainSet`] shared
+/// across the cutter's rayon workers needs — every one of their samplers borrows the *same*
+/// handle, so the seek/read pair has to be atomic. The lock is held for one ≤ 512-byte read and
+/// each sampler's 32 KB tile cache keeps those rare, so the contention is nothing next to the GEOS
+/// work the same threads are doing.
+///
+/// The size refusal is **OBCT's own** wall, not the read seam's: the container's directory entries
+/// and cell offsets are `uint32`, so nothing past 4 GiB − 1 of an `.obcd` can be named from inside
+/// it however far a `read_at` could reach. The seam widened; this did not.
+pub(crate) fn open_obct(path: &Path) -> Result<FileSource, String> {
+    let src = FileSource::open(path).map_err(|e| format!("--terrain {}: {e}", path.display()))?;
+    let len = src.len();
+    if len > u32::MAX as u64 {
+        return Err(format!("--terrain {}: {len} bytes exceeds the 4 GiB OBCT offset space", path.display()));
     }
-}
-
-impl ByteSource for FileSource {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
-        use std::io::{Read, Seek, SeekFrom};
-        let end = offset.checked_add(buf.len() as u64).ok_or(Error::BadOffset)?;
-        if end > self.len {
-            return Err(Error::BadOffset);
-        }
-        let mut file = self.file.lock().map_err(|_| Error::BadOffset)?;
-        file.seek(SeekFrom::Start(offset)).map_err(|_| Error::BadOffset)?;
-        file.read_exact(buf).map_err(|_| Error::BadOffset)
-    }
-
-    fn len(&self) -> u64 {
-        self.len
-    }
+    Ok(src)
 }

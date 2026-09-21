@@ -1,0 +1,15 @@
+[package]
+name = "obc-file-source"
+version = "0.1.0"
+edition = "2021"
+publish = false # internal host crate — not published to crates.io
+description = "One std::fs adapter onto the ByteSource seam, for every host tool that reads an artefact from a path."
+
+[dependencies]
+# The seam this crate adapts a file to, and nothing else: a host tool takes this crate without
+# taking a reader, a packer or a renderer with it.
+obc-formats = { path = "../../firmware/obc-formats" }
+
+[dev-dependencies]
+# The shared throwaway-path helper, so this crate does not write the idiom a twelfth time.
+obcm-testkit = { path = "../obcm-testkit" }

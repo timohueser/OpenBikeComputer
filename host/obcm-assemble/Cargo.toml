@@ -10,7 +10,8 @@ description = "The OBCA cell assembly engine: baked grid cells → one .obcm or 
 # while `--no-default-features --lib` is the surface the wasm32 guard compiles (see CI's `wasm` job).
 [features]
 default = ["cli"]
-cli = []
+# The native driver, and with it the one `std::fs` dependency in this crate's graph.
+cli = ["dep:obc-file-source"]
 # The peak-allocation harness in `main.rs`: a counting global allocator plus a wrapped `Clock`, so
 # every phase boundary the engine ticks reports the heap high-water mark since the previous one.
 # **Off by default** — it is a measurement build (a global allocator is process-wide, and the CLI is
@@ -27,6 +28,9 @@ required-features = ["cli"]
 # Normative OBCM constants and the neutral byte-source/sink seam. The engine's I/O never touches a
 # filesystem: everything crosses `obc_formats::io`.
 obc-formats = { path = "../../firmware/obc-formats" }
+# The CLI's one file adapter onto that seam. Optional, because the engine has no filesystem and the
+# wasm `--no-default-features --lib` surface must not acquire one.
+obc-file-source = { path = "../obc-file-source", optional = true }
 # Resident quadtree BFS numbering shared with the packer and byte-fixture oracle.
 obc-tree-walk = { path = "../obc-tree-walk" }
 # The real reader — the same crate the firmware runs. Used to parse every input cell's directories

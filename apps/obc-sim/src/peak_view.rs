@@ -35,11 +35,9 @@ use obc_app::{
     peak_view::{surface::Builder, terrain::Terrain, Panorama},
     App,
 };
-use obc_formats::io::{ByteSource, Error};
+use obc_file_source::FileSource;
+use obc_formats::io::ByteSource;
 use std::{
-    cell::RefCell,
-    fs::File,
-    io::{Read, Seek, SeekFrom},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU16, Ordering},
@@ -47,22 +45,6 @@ use std::{
     },
     time::Instant,
 };
-
-struct FileSource {
-    file: RefCell<File>,
-    len: u64,
-}
-impl ByteSource for FileSource {
-    fn len(&self) -> u64 {
-        self.len
-    }
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
-        let mut file = self.file.borrow_mut();
-        file.seek(SeekFrom::Start(offset)).map_err(|_| Error::Io)?;
-        file.read_exact(buf).map_err(|_| Error::Io)?;
-        Ok(())
-    }
-}
 
 fn terrain_root() -> PathBuf {
     std::env::var_os("OBC_PEAK_TERRAIN_DIR")
@@ -118,10 +100,8 @@ fn generate(input: Input, position: (i32, i32), worker: &Worker) -> Result<Box<B
                 Preset::Grossglockner => "glockner",
             };
             let path = terrain_root().join(format!("{key}.obcd"));
-            let file = File::open(&path)
+            let source = FileSource::open(&path)
                 .map_err(|e| format!("{}: {e}. Run obc fixtures sync sim-peak-view first.", path.display()))?;
-            let len = file.metadata().map_err(|e| e.to_string())?.len();
-            let source = FileSource { file: RefCell::new(file), len };
             generate_surface(&source, None, *preset.profile(), position, worker)
         }
     }
