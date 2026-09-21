@@ -1,22 +1,18 @@
 /**
  * The WebUSB transport, driven under Node against a scripted `navigator.usb`.
  *
- * The fake is not a stub of the protocol — it is a fake of the *browser API*, with the real
- * {@link FlatDevice} behind it. So `WebUsbWatcher.start()`, `openWebUsbLink`, the endpoint
- * discovery, §5.2's record framing and the pipe's transfer translation all run for real, and what
- * the tests assert is the behaviour that only the browser layer can get wrong: the permission
- * model, the descriptor match that settles the USB-binding major, hot-plug, and settling promptly when the
- * cable comes out.
+ * The fake is a fake of the *browser API*, not of the protocol, with the real {@link FlatDevice}
+ * behind it. So `WebUsbWatcher.start()`, `openWebUsbLink`, the endpoint discovery, the record
+ * framing and the pipe's transfer translation all run for real, and what is asserted is what only
+ * the browser layer can get wrong: the permission model, the descriptor match that settles the
+ * USB-binding major, hot-plug, and settling promptly when the cable comes out.
  *
- * The transport-shaped half of `FLAT_Store_Protocol.md` §5.2 is what most of this file is about, and
- * it is the half a naive fake hides. A record may span USB packets; a transfer is therefore *not* a
- * frame, in either direction. The loopback under the fake device re-slices every write to its packet
- * size for exactly that reason, so a reader that assumed one transfer was one record fails here
- * rather than on glass.
+ * A record may span USB packets, so a transfer is *not* a frame in either direction. The loopback
+ * under the fake device re-slices every write to its packet size, so a reader that assumed one
+ * transfer was one record fails here rather than on glass.
  *
- * What this cannot cover is silicon. Enumeration, MS OS 2.0 descriptors for Windows' WinUSB
- * binding, real endpoint stalls and actual throughput are all unverified until #889 lands a device
- * that enumerates.
+ * Silicon is out of reach: enumeration, MS OS 2.0 descriptors, real endpoint stalls and throughput
+ * are unverified until a device that enumerates exists.
  */
 
 import { beforeAll, describe, expect, it, vi } from "vitest";
@@ -56,20 +52,16 @@ const VID = OBC_USB_FILTERS[0].vendorId;
 const PID = OBC_USB_FILTERS[0].productId!;
 
 /**
- * A vendor interface with the two endpoint pairs the layout rule expects.
- *
- * 512 bytes is the LM20's real number — its USBHS core is high-speed, and a high-speed bulk endpoint
- * is 512 bytes by USB rule. It matters here only as the length a `transferIn` asks for; §5.2 gives
- * packet boundaries no protocol meaning at all.
+ * A vendor interface with the two endpoint pairs the layout rule expects. 512 bytes is the LM20's
+ * real number, and it matters here only as the length a `transferIn` asks for.
  */
 function configuration(
     options: { packetSize?: number; interfaceProtocol?: number | null; interfaceNumber?: number } = {},
 ): UsbConfigurationLike {
     const packetSize = options.packetSize ?? 512;
-    // Defaults to **2**, not 0. §5.2.1 puts the claimed interface number in `wIndex`, and a rig that
-    // always used interface 0 made that assertion unfalsifiable — `index: 0` passes whether the code
-    // reads the number or hard-codes a zero. The device really does enumerate interface 0 today;
-    // the point of the rig is to be able to tell the difference.
+    // Defaults to **2**, not 0. The claimed interface number goes in `wIndex`, and a rig that always
+    // used interface 0 made that assertion unfalsifiable. The device really does enumerate interface
+    // 0 today; the point of the rig is to be able to tell the difference.
     const interfaceNumber = options.interfaceNumber ?? 2;
     const protocol = options.interfaceProtocol === undefined ? USB_BINDING_MAJOR : options.interfaceProtocol;
     return {
@@ -79,8 +71,7 @@ function configuration(
                 interfaceNumber,
                 alternate: {
                     interfaceClass: 0xff,
-                    // `null` models a descriptor that states nothing — the field is optional in the
-                    // WebUSB surface, and §5.2 does not require both statements.
+                    // `null` models a descriptor that states nothing — the field is optional.
                     ...(protocol === null ? {} : { interfaceProtocol: protocol }),
                     endpoints: [
                         { endpointNumber: 1, direction: "in", type: "bulk", packetSize },
@@ -107,8 +98,8 @@ interface FakeDeviceOptions {
 
 /**
  * A `USBDevice` whose endpoints are wired to a loopback link, with a {@link FlatDevice} on the far
- * side. Endpoint 1 is the control pair, endpoint 2 the stream pair — the layout `discoverLayout`
- * derives, and the one the firmware descriptors declare.
+ * side. Endpoint 1 is the control pair, endpoint 2 the stream pair — the layout the firmware
+ * descriptors declare.
  */
 class FakeUsbDevice implements UsbDeviceLike {
     readonly vendorId: number;
@@ -123,7 +114,7 @@ class FakeUsbDevice implements UsbDeviceLike {
     readonly halts: string[] = [];
     /** Every `transferIn` this device served, so a test can count packets rather than assume them. */
     reads = 0;
-    /** Every EP0 setup packet, so §5.2.1's request can be asserted rather than described. */
+    /** Every EP0 setup packet, so the request can be asserted rather than described. */
     readonly setups: Array<{ setup: UsbControlSetup; length: number }> = [];
     /** Overrides the EP0 answer, for the two shapes the loopback would never produce. */
     controlAnswer: ((setup: UsbControlSetup, length: number) => Promise<UsbControlInResult>) | null = null;
@@ -186,9 +177,8 @@ class FakeUsbDevice implements UsbDeviceLike {
     }
 
     /**
-     * §5.2.1's EP0 read, answered by the loopback's own `vendorIn` — so the payload a test decodes
-     * is the one `encodeDeviceInfo` produced, short transfer and all, rather than a shape invented
-     * here.
+     * The EP0 read, answered by the loopback's own `vendorIn`, so the payload a test decodes is the
+     * one `encodeDeviceInfo` produced rather than a shape invented here.
      */
     async controlTransferIn(setup: UsbControlSetup, length: number): Promise<UsbControlInResult> {
         this.setups.push({ setup, length });
@@ -263,8 +253,7 @@ beforeAll(loadFlatDevice);
 
 describe("browser support", () => {
     it("reports no WebUSB rather than pretending", () => {
-        // Firefox and Safari take this path. The answer is the desktop app, not a retry — so the
-        // state is its own thing, not an error, and the UI can say something true about it.
+        // Firefox and Safari take this path. The answer is the desktop app, not a retry.
         const watcher = new WebUsbWatcher({ usb: undefined });
         // No `navigator.usb` under Node, so the default lookup finds nothing.
         expect(webUsb()).toBeNull();
@@ -280,9 +269,8 @@ describe("browser support", () => {
 });
 describe("the permission model", () => {
     it("adopts an already-permitted device with no prompt at all", async () => {
-        // The whole auto-detect story: on every visit after the first, `getDevices()` returns what
-        // the user already granted, no gesture required. This is what makes "plug it in and the
-        // page lights up" possible, and why `start()` never calls the chooser.
+        // On every visit after the first, `getDevices()` returns what the user already granted, no
+        // gesture required. This is why `start()` never calls the chooser.
         const info: DeviceInfo = {
             firmwareRevision: "0.4.0+abc1234",
             hardwareRevision: "obc-lm20-r1",
@@ -294,10 +282,8 @@ describe("the permission model", () => {
         expect(await watcher.start()).toBe(true);
         expect(watcher.current.status).toBe("ready");
 
-        // The two reads every connection makes, and the two things a session publishes. §5.2.1's
-        // strings come off EP0 before a record moves; the store's identity comes out of the `LIST`
-        // §3 says every client issues first. Neither is a constant this file invented — they are the
-        // simulated device's own facts, read back over the wire.
+        // The two reads every connection makes. The identity strings come off EP0 before a record
+        // moves; the store's identity comes out of the `LIST` every client issues first.
         expect(watcher.current.info).toEqual(info);
         expect(watcher.current.store).toEqual({ storeId: device.storeId, commitSequence: device.sequence });
         expect(usb.filtersSeen, "adopting must never open the chooser").toEqual([]);
@@ -348,9 +334,8 @@ describe("the permission model", () => {
 
     it("releases the interface when the first exchange fails", async () => {
         // A device claimed but never listed still holds its interface, and USB grants it to one
-        // claimant. Leaking it here would leave the device unreachable to a retry or another tab
-        // until it is physically re-plugged. No device runs on this link, so the `LIST` that
-        // follows the EP0 read times out — a device that enumerates and then says nothing.
+        // claimant. Leaking it would leave the device unreachable until a physical re-plug. No device
+        // runs on this link, so the `LIST` that follows the EP0 read times out.
         const { usbDevice } = bareLink();
         const usb = new FakeUsb();
         usb.permitted = [usbDevice];
@@ -374,9 +359,8 @@ describe("the permission model", () => {
 });
 
 describe("the USB-binding major, settled by matching", () => {
-    // §5.2: the descriptors state the major and the host refuses a device that contradicts it,
-    // before a record moves. There is no version *read* on this link — putting one back would be
-    // the duplication the major bump removed.
+    // The descriptors state the major and the host refuses a device that contradicts it, before a
+    // record moves. There is no version *read* on this link.
 
     it("accepts a device that states 5 in both places", () => {
         const layout = discoverLayout(configuration());
@@ -392,8 +376,7 @@ describe("the USB-binding major, settled by matching", () => {
     it("tolerates a device that states neither", () => {
         // WebUSB exposes `deviceVersionMajor` everywhere but `interfaceProtocol` only on
         // `alternate`, and an older descriptor may carry neither. Saying nothing is not a
-        // contradiction: it is left to fail on the first exchange, where the failure names an actual
-        // message rather than a missing field.
+        // contradiction: it is left to fail on the first exchange, where the failure names a message.
         const config = configuration({ interfaceProtocol: null });
         expect(() => checkUsbBindingMajor({} as UsbDeviceLike, discoverLayout(config), config)).not.toThrow();
     });
@@ -420,8 +403,7 @@ describe("the USB-binding major, settled by matching", () => {
 
     it("never claims the interface of a device that contradicts it", async () => {
         // The check sits between `selectConfiguration` and `claimInterface` on purpose: a mismatched
-        // device is left entirely alone, so nothing has to be released and no other tab is locked
-        // out while the rider goes and updates their firmware.
+        // device is left entirely alone, so no other tab is locked out.
         const { usb, usbDevice } = rig({}, {}, { deviceVersionMajor: 3 });
         usb.permitted = [usbDevice];
         const watcher = new WebUsbWatcher({ usb });
@@ -463,9 +445,8 @@ describe("hot plug", () => {
     });
 
     it("fails a transfer in flight the moment the cable goes", async () => {
-        // #902's acceptance, precisely: unplugging must not leave a spinner. The pipes are failed
-        // from the event rather than left for a pending `transferIn` to notice, because a pending
-        // one may never settle at all.
+        // Unplugging must not leave a spinner. The pipes are failed from the event rather than left
+        // for a pending `transferIn` to notice, because a pending one may never settle at all.
         const { usb, usbDevice, device } = rig({ packetSize: 64 }, { streamCeiling: streamCeilingFor(256) });
         usb.permitted = [usbDevice];
         const watcher = new WebUsbWatcher({ usb });
@@ -493,9 +474,8 @@ describe("hot plug", () => {
 
 describe("the endpoint layout", () => {
     it("takes the lowest IN/OUT pair as control and the next as stream", () => {
-        // The channels are named after what §5 puts on them, not after the endpoint type: all four
-        // are bulk endpoints, and calling one pair "bulk" said nothing while hiding that the stream
-        // pair is the one carrying §3.8's 8,192-byte payloads.
+        // The channels are named after what the protocol puts on them, not after the endpoint type:
+        // all four are bulk endpoints, and calling one pair "bulk" hid which one carries payloads.
         expect(discoverLayout(configuration())).toEqual({
             interfaceNumber: 2,
             control: { in: 1, out: 1, packetSize: 512 },
@@ -534,19 +514,15 @@ describe("the pipe", () => {
     });
 
     it("sends a whole stream record, packet size be damned", async () => {
-        // The v1 rule this replaces refused any frame at or above the endpoint's packet size,
-        // because a frame *was* a transfer and one at exactly the packet size could not be told from
-        // one that had not ended. §5.2 makes the record self-delimiting instead, and the ordinary
-        // stream frame — §3.8's 16-byte header plus an 8,192-byte payload — spans sixteen
-        // 512-byte packets and a short one once the binding prefix is included. Refusing it would
-        // kill every upload.
+        // The ordinary stream frame — a 16-byte header plus an 8,192-byte payload — spans sixteen
+        // 512-byte packets and a short one once the binding prefix is included. A rule that refused
+        // any frame at or above the packet size would kill every upload.
         const { link, usbDevice } = bareLink();
         const webusb = await openWebUsbLink(usbDevice);
         const record = Uint8Array.from({ length: MAX_HOST_STREAM_RECORD }, (_, i) => (i * 13) & 0xff);
         await webusb.stream.write(record);
 
-        // …and it really went out: read the far end back until the whole record is accounted for,
-        // which is also the proof that it crossed packet boundaries rather than being truncated.
+        // …and it really went out, across packet boundaries rather than truncated.
         const seen: Uint8Array[] = [];
         let got = 0;
         while (got < record.length) {
@@ -567,11 +543,9 @@ describe("the pipe", () => {
     });
 
     it("reassembles a control record that arrives in pieces", async () => {
-        // §5.2's other half, in the reading direction: the length prefix is the only thing that says
-        // where a record ends, so a reader has to accumulate. Eight-byte packets are absurd for a
-        // high-speed endpoint and exactly the right size to make the arithmetic visible — a
-        // 104-byte padded record is thirteen transfers, and a reader that stopped at the first would hand
-        // the client eight bytes of a frame.
+        // In the reading direction the length prefix is the only thing that says where a record ends,
+        // so a reader has to accumulate. Eight-byte packets make the arithmetic visible: a 104-byte
+        // padded record is thirteen transfers.
         const { link, usbDevice } = bareLink({ packetSize: 8 });
         const webusb = await openWebUsbLink(usbDevice);
         const channel = new RecordChannel(webusb.control, MAX_HOST_CONTROL_RECORD);
@@ -617,10 +591,9 @@ describe("the pipe", () => {
     /**
      * A cancelled read, at the pipe seam.
      *
-     * The fake's `transferIn` parks a reader on the loopback channel, and the channel hands each
-     * new slice to the *longest-waiting* reader — which is exactly how a bulk endpoint serves
-     * queued transfers, and the only reason these three tests say anything about hardware. A
-     * transfer WebUSB will not let us cancel is a transfer that stays in that queue.
+     * The fake's `transferIn` parks a reader on the loopback channel, and the channel hands each new
+     * slice to the *longest-waiting* reader — which is how a bulk endpoint serves queued transfers,
+     * and the only reason these three tests say anything about hardware.
      */
     describe("after a cancelled read", () => {
         /** Park a stream read, cancel it, and reset — the client's failure path, one layer down. */
@@ -637,10 +610,9 @@ describe("the pipe", () => {
             const webusb = await openWebUsbLink(usbDevice);
             await cancelAParkedRead(webusb);
 
-            // The next bytes on the endpoint belong to the next transfer, because §3.8's cancel has
-            // the device drop the old one and answer it. Submitting a *second* `transferIn` would
-            // queue it behind the abandoned one, and the abandoned one would take this packet and
-            // bin it.
+            // The next bytes on the endpoint belong to the next transfer, because the cancel has the
+            // device drop the old one. Submitting a *second* `transferIn` would queue it behind the
+            // abandoned one, and the abandoned one would take this packet and bin it.
             void link.device.stream.write(new Uint8Array([1, 2, 3]));
             expect(await webusb.stream.read()).toEqual(new Uint8Array([1, 2, 3]));
             await webusb.close();
@@ -648,12 +620,10 @@ describe("the pipe", () => {
         });
 
         it("does not keep a transfer that already took the aborted transfer's last packet", async () => {
-            // The counterpart of the test above, and the half an earlier draft got wrong in the
-            // other direction. The device only stops when the cancel reaches it, so the transfer the
-            // caller walked away from may complete with one last packet of the transfer being
-            // abandoned. Keeping *that* would prepend a stale packet to the next one — the same
-            // desync as dropping one, arrived at from the opposite side. `reset` runs before the
-            // transfer slot is released, so anything settled by then is stale by construction.
+            // The device only stops when the cancel reaches it, so the transfer the caller walked
+            // away from may complete with one last packet of the transfer being abandoned. Keeping
+            // that would prepend a stale packet to the next one. `reset` runs before the transfer
+            // slot is released, so anything settled by then is stale by construction.
             const { link, usbDevice } = bareLink();
             const webusb = await openWebUsbLink(usbDevice);
             const controller = new AbortController();
@@ -662,7 +632,7 @@ describe("the pipe", () => {
             await expect(parked).rejects.toMatchObject({ code: "aborted" });
             void link.device.stream.write(new Uint8Array([0xde, 0xad]));
             // A macrotask boundary, so every microtask between the write and the transfer marking
-            // itself settled has run — the point of the test is what `reset` sees, not a race.
+            // itself settled has run.
             await new Promise((resolve) => setTimeout(resolve, 0));
             await webusb.stream.reset();
 
@@ -673,9 +643,8 @@ describe("the pipe", () => {
         });
 
         it("leaves the busy half's halt alone", async () => {
-            // `clearHalt` is `CLEAR_FEATURE(ENDPOINT_HALT)`: it resets the endpoint's data toggle,
-            // which must not happen under a live transfer — and the IN half cannot be halted anyway
-            // while one is outstanding, because a stall would have completed it.
+            // `clearHalt` resets the endpoint's data toggle, which must not happen under a live
+            // transfer — and the IN half cannot be halted while one is outstanding anyway.
             const { link, usbDevice } = bareLink();
             const webusb = await openWebUsbLink(usbDevice);
             await cancelAParkedRead(webusb);
@@ -685,10 +654,8 @@ describe("the pipe", () => {
         });
 
         it("does not cost the next object its first packet", async () => {
-            // The consequence, at the object layer: one whole `GET`, on a link a cancel has been
-            // through. Discarding the abandoned transfer instead would have eaten this ride's first
-            // packet — leaving the download short of the length the device announced and parked
-            // forever on a read the device had already satisfied.
+            // One whole `GET`, on a link a cancel has been through. Discarding the abandoned
+            // transfer would have eaten this ride's first packet.
             const { link, usbDevice, device } = rig({ packetSize: 64 }, { streamCeiling: streamCeilingFor(256) });
             const bytes = Uint8Array.from({ length: 4_096 }, (_, i) => (i * 7) & 0xff);
             const entry = device.seed({ kind: ObjectKind.Ride, displayName: "after the cancel", bytes });
@@ -704,8 +671,7 @@ describe("the pipe", () => {
     });
 
     it("absorbs a zero-length packet instead of handing back an empty read", async () => {
-        // A ZLP is a USB-level marker, not data. Returning it would be indistinguishable from a
-        // spurious wakeup for a caller counting bytes towards a record's announced length.
+        // A ZLP is a USB-level marker, not data, and returning it looks like a spurious wakeup.
         const { link, usbDevice } = bareLink();
         const real = usbDevice.transferIn.bind(usbDevice);
         let first = true;
@@ -727,23 +693,21 @@ describe("the pipe", () => {
 describe("the EP0 device-info read", () => {
     it("asks §5.2.1's exact question, on the interface it claimed", async () => {
         // Recipient **interface** rather than device, so the request cannot collide with the
-        // device-level MS OS 2.0 descriptor request the same device answers for Windows — which is
-        // why `wIndex` is the claimed interface number and not zero.
+        // device-level MS OS 2.0 descriptor request the same device answers for Windows.
         const { link, usbDevice } = rig();
         const webusb = await openWebUsbLink(usbDevice);
         const payload = await webusb.vendorIn!(GET_DEVICE_INFO, 0, DEVICE_INFO_MAX);
 
         expect(usbDevice.setups).toEqual([
             {
-                // `index` is the **claimed** interface number: the rig enumerates interface 2 so
-                // that a hard-coded zero would fail here rather than pass by coincidence.
+            // `index` is the **claimed** interface number: the rig enumerates 2, so a hard-coded
+            // zero would fail here rather than pass by coincidence.
                 setup: { requestType: "vendor", recipient: "interface", request: 0x20, value: 0, index: 2 },
                 length: DEVICE_INFO_MAX,
             },
         ]);
-        // A short transfer is what §5.2.1 says to expect — the three strings are nowhere near 192
-        // bytes — so a host that assumed it got `length` back would work on a padding device and
-        // fail on this one.
+        // A short transfer is what to expect — the three strings are nowhere near 192 bytes — so a
+        // host that assumed it got `length` back would fail on this device.
         expect(payload.length).toBeLessThan(DEVICE_INFO_MAX);
         expect(decodeDeviceInfo(payload).hardwareRevision).toBe("obc-lm20-r1");
         await webusb.close();
@@ -763,9 +727,8 @@ describe("the EP0 device-info read", () => {
     });
 
     it("treats an empty answer as a stall in all but name", async () => {
-        // §5.2.1 has the device return its three strings, so "ok with nothing" is not "a device with
-        // no strings" — it is a device that declined the request without saying so, and decoding
-        // zero bytes into a firmware version would be inventing one.
+        // The device returns its three strings, so "ok with nothing" is a device that declined the
+        // request without saying so, and decoding zero bytes into a firmware version invents one.
         const { link, usbDevice } = rig();
         usbDevice.controlAnswer = async () => ({ status: "ok", data: new DataView(new ArrayBuffer(0)) });
         const webusb = await openWebUsbLink(usbDevice);
