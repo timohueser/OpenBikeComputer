@@ -78,7 +78,8 @@ export default defineConfig(({ mode }) => {
         },
         test: {
             environment: "node",
-            include: ["src/**/*.test.ts"],
+            // `test-support/` holds what no tier's build has as an input; its suites run here.
+            include: ["src/**/*.test.ts", "test-support/**/*.test.ts"],
             coverage: {
                 provider: "v8",
                 include: ["src/**/*.{ts,js,svelte}"],

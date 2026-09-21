@@ -23,12 +23,15 @@
     // `dev-harness/` is a second entry point that no tier's build has as an input (it mounts the
     // app against the simulated device, #903) — not shipped, but checked to the same bar.
     // `test-support/` holds what the suites need and the app must not have: the loader for the wasm
-    // test device. It is checked to the same bar; its generated `pkg/` is not ours to check.
+    // test device, and the device smoke's phases. `tests/device-smoke/` is that smoke's operator
+    // half, which imports the shipping USB client and so is checked against it. Both are checked to
+    // the same bar; the generated `pkg/` is not ours to check.
     "include": [
         "src/**/*.ts",
         "src/**/*.svelte",
         "dev-harness/**/*.ts",
         "test-support/**/*.ts",
+        "tests/device-smoke/*.ts",
         "vite.config.ts",
         "vite/**/*.ts"
     ],

@@ -97,6 +97,7 @@ tools/obc.local
 # got committed by accident (and the server mounted nothing).
 builder/app/node_modules/
 builder/app/tests/browser/node_modules/
+builder/app/tests/device-smoke/node_modules/
 apps/obc-web-demo/tests/browser/node_modules/
 builder/app/dist/
 builder/server/static/dist/
