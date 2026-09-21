@@ -64,7 +64,6 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     /// True only across the gated-phase retry beat, where `authenticateContinuation` is
     /// momentarily nil. A disconnect in this window is terminal: kicking the reconnect loop
     /// could re-raise the passkey sheet.
-    /// is momentarily `nil`, so a disconnect must be treated as terminal here
     private var awaitingGatedRetry = false
     /// The beat before the one gated-phase retry: long enough for the firmware's post-pairing
     /// window to drain, short enough to stay imperceptible.
@@ -279,7 +278,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     public func listRoutes() async throws -> [RouteCatalogEntry] {
         // This catalog is reconcile-only: identity and CRC are its proof, and it never feeds
         // route rows. LIST carries both. Downloading every object to fill the display fields
-        // would be an N+1 transfer storm and would block a foreground PUT behind the
+        // would be an N+1 transfer storm and would block a foreground PUT behind the operation gate.
         try await headEntries(kind: .route).map { entry in
             RouteCatalogEntry(
                 id: DeviceObjectID(entry.objectID.rawValue), name: entry.displayName,
@@ -316,7 +315,6 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         // The stored route blob, decoded app-side for the waypoints and the elevation profile.
         // Header totals are exact; the profile and max grade come from the stored geometry.
         let decoded = try RouteObjectCodec.decode(try await download(id))
-        // Header totals are exact (from the producer's raw-point pass); the profile
         let geometry = RouteStats.compute(from: decoded.points)
         // A device-stored object has no library identity, so the summary rides under a
         // placeholder id that nothing keys on.
@@ -343,7 +341,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     public func listTrips() async throws -> [TripCatalogEntry] {
-        // Badge and reconcile input, like routes. Stage details are fetched only when a caller
+        // Badge and reconcile input, like routes. Stage details are fetched only by a download.
         try await headEntries(kind: .trip).map { entry in
             TripCatalogEntry(
                 id: DeviceObjectID(entry.objectID.rawValue), name: entry.displayName,
@@ -1187,7 +1185,7 @@ private actor RideDownloadRunner {
         } catch is CancellationError {
             finish(.canceled)
         } catch DeviceError.crcMismatch {
-            // A corrupt ride object is a hard, non-retryable failure: the bytes on the card are
+            // A corrupt ride object is a hard, non-retryable failure: the bytes on the card are bad.
             if !finished {
                 finished = true
                 progress.finish()
@@ -1247,6 +1245,7 @@ extension BLETransport: TransferLink {
     /// Release the control receive its transfer has walked away from. A parked receive takes the
     /// cancellation here and now; only a cancel that found nobody is remembered for the receive
     /// about to park, because remembering both would leave an unclaimed cancellation for the next
+    /// receive, and that next one is the reconciliation LIST. The next control write re-arms it.
     public func cancelControlReceive() async {
         let waiters = queue.sync { () -> [CheckedContinuation<Data, Error>] in
             let parked = objectControlWaiters
