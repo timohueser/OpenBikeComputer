@@ -688,7 +688,7 @@ final class MainScreenModelTests: XCTestCase {
         let library = InMemoryLibraryStore()
         let (model, control) = makeModel(.happyPath, library: library, seedLibrary: false)
         // The device holds this content under object 900; the phone kept the route but has no
-        // route but (post-reinstall) has no link to it.
+        // link to it.
         let template = importedRecord(id: "lib-adopt", name: "Reinstalled Ridge")
         var fixtures = control.fixtures
         fixtures.routes.append(RouteEntry(
