@@ -1,19 +1,9 @@
 //! The spec-derived fixture producer for `specs/vectors/flat-store-v4/`.
 //!
-//! Every byte below is laid down **by hand**, at the offset `FLAT_Store_Protocol.md` §3 states,
-//! through the little [`raw`] helpers — never through [`super::wire`]'s encoders and never through
-//! its decoders. A golden vector a codec produced proves only that the codec agrees with itself; the
-//! only thing the two sides here share is the specification, and the tests then close the loop in
-//! both directions:
-//!
-//! 1. [`tests::checked_in_fixtures_match_the_producer`] proves the files on disk are exactly what
-//!    this emits, so an unreviewed fixture rewrite fails CI.
-//! 2. [`tests::the_codec_encodes_every_response_vector_byte_for_byte`] and its request twin prove the
-//!    production codec agrees with these bytes, and
-//!    [`tests::every_negative_vector_is_refused_with_its_stated_code_and_detail`] proves every
-//!    refusal lands where §3.9 says.
-//! 3. [`tests::section_3_11s_own_frames_are_in_the_suite_verbatim`] pins the four frames the spec
-//!    prints, against the spec's own hex.
+//! Every byte below is laid down by hand, at the offset `FLAT_Store_Protocol.md` states, through the
+//! [`raw`] helpers and never through [`super::wire`]. A golden vector a codec produced proves only
+//! that the codec agrees with itself; here the two sides share the specification alone, and the
+//! tests in [`tests`] close the loop in both directions.
 //!
 //! Regenerate after a deliberate spec change with:
 //!
@@ -55,7 +45,6 @@ pub mod raw {
         buffer[offset..offset + value.len()].copy_from_slice(value);
     }
 
-    /// Lower-case hex of a byte slice.
     pub fn hex(bytes: &[u8]) -> String {
         use core::fmt::Write;
         let mut out = String::with_capacity(bytes.len() * 2);
@@ -65,7 +54,7 @@ pub mod raw {
         out
     }
 
-    /// The contract's §1 CRC, computed the long way so a fixture does not inherit a bug from the
+    /// The contract's CRC, computed the long way so a fixture does not inherit a bug from the
     /// shared implementation it exists to pin.
     pub fn crc32(bytes: &[u8]) -> u32 {
         let mut crc = 0xFFFF_FFFFu32;
@@ -96,19 +85,17 @@ impl Json {
         self.parts.push(format!("\"{key}\": {value}"));
     }
 
-    /// A string value.
     pub fn str(mut self, key: &str, value: &str) -> Self {
         self.push(key, format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"")));
         self
     }
 
-    /// A number small enough to be exact in JSON.
     pub fn num(mut self, key: &str, value: i64) -> Self {
         self.push(key, format!("{value}"));
         self
     }
 
-    /// A `u64`, as a canonical decimal string — the suite never puts one in a JSON number.
+    /// A `u64`, as a canonical decimal string: the suite never puts one in a JSON number.
     pub fn big(mut self, key: &str, value: u64) -> Self {
         self.push(key, format!("\"{value}\""));
         self
@@ -119,7 +106,6 @@ impl Json {
         self
     }
 
-    /// A nested object.
     pub fn obj(mut self, key: &str, value: Json) -> Self {
         if value.parts.is_empty() {
             self.push(key, "{}".to_string());
@@ -129,7 +115,6 @@ impl Json {
         self
     }
 
-    /// An array of nested objects.
     pub fn array(mut self, key: &str, values: Vec<Json>) -> Self {
         if values.is_empty() {
             self.push(key, "[]".to_string());
@@ -146,7 +131,6 @@ impl Json {
         format!("{{\n{}\n{}}}", inner.join(",\n"), " ".repeat(indent.saturating_sub(2)))
     }
 
-    /// The object as a complete file.
     pub fn render_file(&self) -> String {
         format!("{}\n", self.render(2))
     }
@@ -219,29 +203,24 @@ pub fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../specs/vectors/flat-store-v4")
 }
 
-// ------------------------------------------------------------------------------------------------
-// The identities every fixture is built from. `FLAT_Store_Format.md` §4.1 and §5.7, and
-// `FLAT_Store_Protocol.md` §3.11, which carry the same two objects.
-// ------------------------------------------------------------------------------------------------
+// The identities every fixture is built from, as both specifications carry them.
 
-/// §4.1's `StoreId`.
 pub const STORE: [u8; 16] =
     [0x8F, 0x2C, 0x41, 0xD9, 0x6B, 0x07, 0x4E, 0xA3, 0xB1, 0x55, 0x9C, 0x20, 0x7D, 0xE8, 0x34, 0x66];
-/// §3.10's new era after the destructive FORMAT fixture.
+/// The new era after the destructive FORMAT fixture.
 pub const REPLACEMENT_STORE: [u8; 16] =
     [0x2A, 0x7B, 0x16, 0xC4, 0x90, 0x31, 0x45, 0xD8, 0xA6, 0xE2, 0x73, 0x0F, 0xB9, 0x4C, 0x58, 0x11];
-/// §5.7's commit sequence.
 const SEQUENCE: u64 = 7;
-/// §5.7's route: `ObjectId 1` at `Revision 3`, 42,137 bytes, CRC `0x9C4A7E21`, "Grimsel Loop".
+/// The route: `ObjectId 1` at `Revision 3`, 42,137 bytes, CRC `0x9C4A7E21`, "Grimsel Loop".
 const ROUTE_ID: u64 = 1;
 const ROUTE_REVISION: u64 = 3;
 const ROUTE_LEN: u64 = 42_137;
 const ROUTE_CRC: u32 = 0x9C4A_7E21;
 const ROUTE_NAME: &[u8] = b"Grimsel Loop";
-/// §5.7's ride: `ObjectId 2` at `Revision 1`, `RECORDING`, no name.
+/// The ride: `ObjectId 2` at `Revision 1`, `RECORDING`, no name.
 const RIDE_ID: u64 = 2;
 const RIDE_REVISION: u64 = 1;
-/// §3.11's `RequestId` for the upload, and the one its `LIST` uses.
+/// The `RequestId` for the upload, and the one its `LIST` uses.
 const UPLOAD_REQUEST: u32 = 0x0000_2A01;
 const LIST_REQUEST: u32 = 0x0000_2A02;
 
@@ -258,7 +237,7 @@ fn header(opcode: u8, flags: u16, payload: usize, request: u32) -> Vec<u8> {
     frame
 }
 
-/// One row of a `LIST` page, as §3.3's entry table lays it out.
+/// One row of a `LIST` page.
 struct Row {
     id: u64,
     revision: u64,
@@ -269,7 +248,7 @@ struct Row {
     name: &'static [u8],
 }
 
-/// §3.3's 88-byte entry, written at `at`.
+/// The 88-byte entry, written at `at`.
 fn list_entry(frame: &mut [u8], at: usize, row: &Row) {
     u64_at(frame, at, row.id);
     u64_at(frame, at + 8, row.revision);
@@ -401,7 +380,7 @@ fn negative(name: &str, note: &str, target: Target, bytes: Vec<u8>) -> Fixture {
     Fixture { name: name.to_string(), category: Category::Negative, bytes, json }
 }
 
-/// The `PUT` of §3.11, verbatim: creating the route, 100 bytes on the wire.
+/// The specification's own `PUT`, verbatim: creating the route, 100 bytes on the wire.
 fn put_create_request() -> Vec<u8> {
     let mut frame = header(0x04, 0, 84, UPLOAD_REQUEST);
     u64_at(&mut frame, HEADER_LEN + 16, ROUTE_LEN);
@@ -412,7 +391,7 @@ fn put_create_request() -> Vec<u8> {
     frame
 }
 
-/// The `LIST` response of §3.11, verbatim: both entries, no further page, 216 bytes.
+/// The specification's own `LIST` response, verbatim: both entries, no further page, 216 bytes.
 fn list_response_two_entries() -> Vec<u8> {
     let mut frame = header(0x01, 0b1, 24 + 2 * 88, LIST_REQUEST);
     bytes_at(&mut frame, HEADER_LEN, &STORE);
@@ -436,7 +415,6 @@ fn list_response_two_entries() -> Vec<u8> {
 pub fn fixtures() -> Vec<Fixture> {
     let mut all = Vec::new();
 
-    // -- controls ---------------------------------------------------------------------------------
     let mut first_page = header(0x01, 0, 32, LIST_REQUEST);
     all.push(control(
         "list-first-page-request",
@@ -818,7 +796,6 @@ pub fn fixtures() -> Vec<Fixture> {
         all.push(negative(name, "Clients reject malformed archive responses.", Target::ControlResponse, bad));
     }
 
-    // -- streams ----------------------------------------------------------------------------------
     let kilobyte: Vec<u8> = (0..1_024).map(|index| (index % 251) as u8).collect();
     all.push(stream_fixture(
         "stream-frame-of-section-3-11",
@@ -849,7 +826,6 @@ pub fn fixtures() -> Vec<Fixture> {
         &kilobyte[..1],
     ));
 
-    // -- errors -----------------------------------------------------------------------------------
     all.push(error_fixture(
         "unsupported-opcode",
         "An unknown opcode. There is no generic forwarding path.",
@@ -977,7 +953,6 @@ pub fn fixtures() -> Vec<Fixture> {
         0,
     ));
 
-    // -- negative ---------------------------------------------------------------------------------
     let framing = |name: &str, note: &str, detail: (&'static str, u16), mutate: fn(&mut Vec<u8>)| {
         let mut bytes = put_create_request();
         mutate(&mut bytes);
