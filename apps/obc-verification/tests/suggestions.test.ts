@@ -59,17 +59,27 @@ test('requirement suggestions are recorded, superseded, decided once, and never 
     store().saveRevision(restored.id, 'owner', restored.requirements.map(amended(subject.statement)));
     assert.equal((await listed()).find((s: any) => s.id === second.id).stale, undefined);
 
+    // The agent reads the new statement and sends the same text against the current revision. The
+    // record is replaced, so the warning clears without a change to the prose.
+    const reedited = store().latestRevision();
+    store().saveRevision(reedited.id, 'owner', reedited.requirements.map(amended(`${subject.statement} It shall also keep the zoom level.`)));
+    assert.ok((await listed()).find((s: any) => s.id === second.id).stale);
+    const again = await (await suggest({ ...change, statement: second.statement })).json();
+    assert.equal(again.supersedes, second.id);
+    assert.equal((await listed()).find((s: any) => s.id === again.id).stale, undefined);
+    assert.equal((await listed()).find((s: any) => s.id === second.id).status, 'superseded');
+
     const removed = store().latestRevision();
     store().saveRevision(removed.id, 'owner', removed.requirements.filter(r => r.id !== 'EXAMPLE-002'));
-    assert.equal((await listed()).find((s: any) => s.id === second.id).missing, true);
+    assert.equal((await listed()).find((s: any) => s.id === again.id).missing, true);
     const dismissedFrom = JSON.stringify(store().latestRevision());
-    const dismissed = await (await request(`requirement-suggestions/${second.id}`, 'POST', { accept: false, feedback: 'That belongs to SYS-044.' }, owner)).json();
+    const dismissed = await (await request(`requirement-suggestions/${again.id}`, 'POST', { accept: false, feedback: 'That belongs to SYS-044.' }, owner)).json();
     assert.equal(dismissed.status, 'dismissed');
     assert.equal(dismissed.feedback, 'That belongs to SYS-044.');
     assert.equal(JSON.stringify(store().latestRevision()), dismissedFrom, 'dismissing writes no requirement and no revision');
 
     // The newest suggestion stays first, although the decisions wrote the newest records.
-    assert.deepEqual((await listed()).map((s: any) => s.id), [second.id, first.id, created.id]);
+    assert.deepEqual((await listed()).map((s: any) => s.id), [again.id, second.id, first.id, created.id]);
     store().clearHistory(store().latestRevision().id, 'owner', false);
     assert.deepEqual(await listed(), []);
   } finally { store().db.close(); rmSync(directory, { recursive: true, force: true }); }
