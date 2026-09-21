@@ -29,20 +29,34 @@
 //! beyond the cell it is asked for ([`HALO`]). A node on a cell seam therefore gets the same lift
 //! whichever of the two cells computes it, which is what keeps one published cell byte-identical to
 //! the same square inside a wide shard.
+//!
+//! ## One pass over the reference, per cell
+//!
+//! The reference is the archive of `reference.rs`: max-pooled whole metres on a `2^6` µdeg lattice,
+//! in tiles a bake streams. So the scan is **pixel-driven**, not node-driven. It visits the tiles
+//! the cell's node window touches, one decoded tile in memory at a time, and drops each pixel into
+//! the node whose half-posting cell holds its centre. Every archive pixel inside the window is read
+//! exactly once, which is both the cheapest possible pass and a finer probe grid than any node-side
+//! sub-sampling: at the v1 posting a node's cell holds 64 archive pixels.
+//!
+//! A pooled pixel is a maximum, not a sample, so the gap under one is measured against the
+//! **highest** the native surface reaches over that pixel's own footprint
+//! ([`roof`](NativeWindow::roof)). Measuring it at the pixel's centre instead reads the gap high
+//! wherever the ground is steep, and lifts nodes the reference does not stand `LIFT_M` above.
 
 use obc_formats::obct::{cell_samples_log2, GRID_ORIGIN, NODATA};
+
+use crate::reference::{ReferenceArchive, TileLookup, Window, NO_PIXEL, STEP_LOG2};
 
 /// A node is a candidate when the reference stands this far above our bilinear surface.
 const LIFT_M: f64 = 10.0;
 /// …and only where the reference's node maxima are locally convex by this much.
 const CONVEX_M: f64 = 3.0;
-/// Sub-samples per node axis when scanning a node's half-posting cell for its reference maximum.
-/// 32 puts the step below 2 m at the v1 posting of `2^9` µdeg, so a metre-scale tower cannot hide
-/// between them. A bake at a much coarser posting would need more, at the square of the cost.
-const SUBSAMPLES: u32 = 32;
 /// Nodes the scan reaches beyond the map's own range, which is the 2-ring the rule reads: the
 /// convexity test needs a node's four neighbours, and the dilation needs their own selection.
 const HALO: i64 = 2;
+/// Half an archive pixel, µdeg: the reach of a pooled pixel's footprint from its centre.
+const HALF_PIXEL: i64 = 1 << (STEP_LOG2 - 1);
 /// A lift past this is worth an operator's attention. There is no ceiling on a lift — where the
 /// source lost a rock wall, the reference is the better measurement and a clamp would put the error
 /// back — but a reference with a spike in it looks exactly like a cliff, and the two have to be
@@ -71,6 +85,35 @@ impl LiftTally {
     }
 }
 
+/// The µdeg box of reference pixels one cell's rule reads: the `side + 1` nodes the cell's lift map
+/// holds and a two-node halo, each node reaching half a posting on every side.
+///
+/// Public because a caller that wants to know which tiles a cell reads — a mirror, a test — should
+/// ask this rather than re-derive the halo.
+pub fn cell_window(ci: u32, cj: u32, posting_log2: u8, cell_log2: u8) -> Option<Window> {
+    let side = 1i64 << cell_samples_log2(posting_log2, cell_log2)?;
+    let step = 1i64 << posting_log2;
+    let origin_y = i64::from(GRID_ORIGIN) + (i64::from(ci) << cell_log2);
+    let origin_x = i64::from(GRID_ORIGIN) + (i64::from(cj) << cell_log2);
+    Some(Window {
+        lat_lo: origin_y - HALO * step - step / 2,
+        lat_hi: origin_y + (side + HALO) * step + step / 2,
+        lon_lo: origin_x - HALO * step - step / 2,
+        lon_hi: origin_x + (side + HALO) * step + step / 2,
+    })
+}
+
+/// What one cell's scan produced: the map, and what the archive could not give it.
+///
+/// The two are separate because a cell with no lift at all still has something to report — a mirror
+/// that is short of its box costs a whole cell's lifts and does not fail.
+pub struct CellLift {
+    /// The lifts, or `None` when the rule selected nothing in this cell.
+    pub map: Option<LiftMap>,
+    /// Tiles the index named for this cell's window that the archive does not hold.
+    pub absent_tiles: Vec<(u32, u32)>,
+}
+
 /// One cell's lifts in whole metres, over the nodes it owns and its inclusive high edge.
 ///
 /// Native level only. The coarser §8.1 levels select native posts, so a pyramid baked through
@@ -86,6 +129,10 @@ pub struct LiftMap {
     /// Lift in whole metres per node, row-major, never negative.
     lifts: Vec<i16>,
     tally: LiftTally,
+    /// Every source that contributed a pixel to a tile this cell **decoded**, sorted. An index
+    /// entry whose tile a mirror does not hold is not in here: a container cannot be derived from
+    /// bytes the bake never read, and attribution follows what was read.
+    sources: Vec<String>,
 }
 
 impl LiftMap {
@@ -93,75 +140,79 @@ impl LiftMap {
     /// common case, since national reference coverage stops at borders.
     ///
     /// `native` is the unlifted lattice, sampled in µdeg: the gap is measured against the bilinear
-    /// surface through it. `reference` is the finer DEM in the same geographic frame, answering
-    /// `None` outside its coverage, which may stop at any node.
+    /// surface through it. `archive` holds the reference, and coverage may stop at any pixel.
     pub fn bake(
         ci: u32,
         cj: u32,
         posting_log2: u8,
         cell_log2: u8,
-        mut native: impl FnMut(i32, i32) -> i16,
-        reference: &dyn Fn(f64, f64) -> Option<f64>,
-    ) -> Option<LiftMap> {
-        let side = 1i64 << cell_samples_log2(posting_log2, cell_log2)?;
+        native: impl FnMut(i32, i32) -> i16,
+        archive: &ReferenceArchive,
+    ) -> Result<CellLift, String> {
+        let samples_log2 = cell_samples_log2(posting_log2, cell_log2).ok_or_else(|| {
+            format!("posting 2^{posting_log2} µdeg with cell 2^{cell_log2} µdeg is not a pairing OBCT permits")
+        })?;
+        // A node has to own at least one archive pixel, or the rule has nothing to measure: the
+        // reference maximum inside its half-posting cell, and the roof of a pixel's footprint, are
+        // both areas of the archive lattice. Below that step the two lattices invert — a pixel would
+        // span several nodes — and the pass silently produced no lift at all rather than saying so.
+        if posting_log2 < STEP_LOG2 {
+            return Err(format!(
+                "posting 2^{posting_log2} µdeg is finer than the reference archive's 2^{STEP_LOG2} µdeg step, \
+                 so a node owns no archive pixel"
+            ));
+        }
+        let window = cell_window(ci, cj, posting_log2, cell_log2).expect("the pairing is checked above");
+        let side = 1i64 << samples_log2;
         let step = 1i64 << posting_log2;
         let origin_y = i64::from(GRID_ORIGIN) + (i64::from(ci) << cell_log2);
         let origin_x = i64::from(GRID_ORIGIN) + (i64::from(cj) << cell_log2);
         let scan = Scan::new(side, HALO);
 
+        // The native heights the rule reads: every node the scan holds, plus the one further ring
+        // its 3×3 hole test and its bilinear intervals reach into.
+        let heights = NativeWindow::sample(origin_y, origin_x, posting_log2, scan.low - 1, scan.high + 1, native);
+        // A node with a hole anywhere in its 3×3 native ring is out of the rule altogether (§9.1):
+        // there is no bilinear surface there to measure a gap against. Deciding it once per node
+        // rather than once per pixel is also what keeps the hole test off the inner loop — and it is
+        // what lets the loop below interpolate without checking for a hole, because a pixel lands in
+        // the node nearest it, and the interval holding the pixel's whole footprint has all four of
+        // its corners in that node's 3×3 ring.
+        let holed: Vec<bool> = scan.nodes_iter().map(|(y, x)| heights.hole_in_ring(y, x)).collect();
+
         // The reference maximum inside each node's own half-posting cell, and how far that maximum
         // stands above the bilinear surface we would otherwise draw there.
-        let mut node_max = vec![f64::NEG_INFINITY; scan.nodes()];
-        let mut over = vec![f64::NEG_INFINITY; scan.nodes()];
+        let mut node_max = vec![NO_PIXEL; scan.nodes()];
+        let mut gap = vec![f64::NEG_INFINITY; scan.nodes()];
         let mut any = false;
-        for y in scan.axis() {
-            for x in scan.axis() {
-                let lat = origin_y + y * step;
-                let lon = origin_x + x * step;
-                // One cheap probe rules out the whole node outside coverage, which is most of a
-                // 58 × 40 km cell whenever the reference is a national dataset.
-                if reference(lat as f64 / 1e6, lon as f64 / 1e6).is_none() {
+        // Attribution follows what was decoded, not what the index promised.
+        let mut contributors: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        let mut absent_tiles = Vec::new();
+        for (ti, tj) in window.tiles() {
+            let (tile, sources) = match archive.tile(ti, tj)? {
+                TileLookup::Held { tile, sources } => (tile, sources),
+                TileLookup::Absent => {
+                    absent_tiles.push((ti, tj));
                     continue;
                 }
-                // The node's own cell spans the four intervals that meet at it, so the surface over
-                // that cell is defined by the 3×3 lattice around it.
-                let mut around = [[0i16; 3]; 3];
-                for (dy, row) in around.iter_mut().enumerate() {
-                    for (dx, corner) in row.iter_mut().enumerate() {
-                        *corner = native((lat + (dy as i64 - 1) * step) as i32, (lon + (dx as i64 - 1) * step) as i32);
-                    }
+                TileLookup::Unknown => continue,
+            };
+            contributors.extend(sources.iter().map(String::as_str));
+            tile.centres_in(window, |lat, lon, height| {
+                let at = scan.at(node_of(lat, origin_y, step), node_of(lon, origin_x, step));
+                if holed[at] {
+                    return;
                 }
-                // No bilinear surface to measure against, so no gap and no lift. A hole in the
-                // native lattice therefore stays a hole, and its neighbours are left alone.
-                if around.iter().flatten().any(|&h| h == NODATA) {
-                    continue;
-                }
-                let (mut top, mut gap) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
-                for sy in 0..SUBSAMPLES {
-                    // The node owns the half posting either side of itself, so its cell spans
-                    // [-1/2, +1/2] of the interval in both axes.
-                    let fy = (sy as f64 + 0.5) / SUBSAMPLES as f64 - 0.5;
-                    for sx in 0..SUBSAMPLES {
-                        let fx = (sx as f64 + 0.5) / SUBSAMPLES as f64 - 0.5;
-                        let plat = lat as f64 + fy * step as f64;
-                        let plon = lon as f64 + fx * step as f64;
-                        let Some(value) = reference(plat / 1e6, plon / 1e6) else { continue };
-                        top = top.max(value);
-                        gap = gap.max(value - bilinear(&around, fy, fx));
-                    }
-                }
-                if top.is_finite() {
-                    node_max[scan.at(y, x)] = top;
-                    over[scan.at(y, x)] = gap;
-                    any = true;
-                }
-            }
+                node_max[at] = node_max[at].max(height);
+                gap[at] = gap[at].max(f64::from(height) - heights.roof(lat, lon));
+                any = true;
+            });
         }
         if !any {
-            return None;
+            return Ok(CellLift { map: None, absent_tiles });
         }
 
-        let core = select(&node_max, &over, &scan);
+        let core = select(&node_max, &gap, &scan);
         let stride = (side + 1) as usize;
         let mut lifts = vec![0i16; stride * stride];
         let mut tally = LiftTally::default();
@@ -169,14 +220,15 @@ impl LiftMap {
             for x in 0..=side {
                 let top = node_max[scan.at(y, x)];
                 let (lat, lon) = ((origin_y + y * step) as i32, (origin_x + x * step) as i32);
-                let here = native(lat, lon);
-                if here == NODATA || !top.is_finite() || !dilated(&core, &scan, y, x) {
+                let here = heights.at(y, x);
+                if here == NODATA || top == NO_PIXEL || !dilated(&core, &scan, y, x) {
                     continue;
                 }
-                // Whole metres, because the sample it lands in is whole metres (§1.2). Never
+                // Whole metres either side, because an archive pixel is whole metres and so is the
+                // sample it lands in (§1.2), which makes §9.1's `round` the identity here. Never
                 // negative: the reference may sit below our surface in a hollow, and §9 raises
                 // crests rather than editing the lattice wherever the two disagree.
-                let lift = (top.round() - f64::from(here)).clamp(0.0, f64::from(i16::MAX)) as i16;
+                let lift = (i32::from(top) - i32::from(here)).clamp(0, i32::from(i16::MAX)) as i16;
                 if lift == 0 {
                     continue;
                 }
@@ -199,7 +251,9 @@ impl LiftMap {
         // seam answer 0 there while its neighbour answers the lift, which is exactly the
         // disagreement the halo exists to prevent.
         let any_lift = lifts.iter().any(|&lift| lift != 0);
-        any_lift.then_some(LiftMap { origin_y, origin_x, step, stride, lifts, tally })
+        let sources = contributors.into_iter().map(str::to_string).collect();
+        let map = any_lift.then_some(LiftMap { origin_y, origin_x, step, stride, lifts, tally, sources });
+        Ok(CellLift { map, absent_tiles })
     }
 
     /// The native sampler with this map's lifts added. `NODATA` passes through — a lift describes a
@@ -230,6 +284,23 @@ impl LiftMap {
     pub fn tally(&self) -> LiftTally {
         self.tally
     }
+
+    /// Every reference source this cell's lifts are derived from, sorted — the attribution that
+    /// must travel with a container holding this cell (§9.3).
+    pub fn sources(&self) -> &[String] {
+        &self.sources
+    }
+}
+
+/// The node whose half-posting cell holds a reference pixel centre: the nearest node.
+///
+/// Pixel centres sit on odd multiples of `2^5` µdeg, so at every posting from `2^7` µdeg up a centre
+/// is never exactly half way between two nodes and there is no tie to break. At `2^6` µdeg — a
+/// posting no production bake uses, and the archive's own step — every centre is exactly half way,
+/// and the rounding then goes north and east; that is deterministic, which is all the lift rule
+/// needs from it.
+fn node_of(centre: i64, origin: i64, step: i64) -> i64 {
+    (centre - origin + step / 2).div_euclid(step)
 }
 
 /// The square of node coordinates a bake scans: `-halo ..= side + halo` on both axes, which is the
@@ -248,15 +319,22 @@ impl Scan {
         self.low..=self.high
     }
 
+    fn side(&self) -> usize {
+        (self.high - self.low + 1) as usize
+    }
+
     fn nodes(&self) -> usize {
-        let side = (self.high - self.low + 1) as usize;
-        side * side
+        self.side() * self.side()
+    }
+
+    /// Every node coordinate the scan holds, in the row-major order [`at`](Self::at) indexes.
+    fn nodes_iter(&self) -> impl Iterator<Item = (i64, i64)> + '_ {
+        self.axis().flat_map(move |y| self.axis().map(move |x| (y, x)))
     }
 
     /// Flat index of a node coordinate. Callers stay inside [`axis`](Self::axis).
     fn at(&self, y: i64, x: i64) -> usize {
-        let side = (self.high - self.low + 1) as usize;
-        (y - self.low) as usize * side + (x - self.low) as usize
+        (y - self.low) as usize * self.side() + (x - self.low) as usize
     }
 
     /// Whether the scan holds this node **and** the ring around it, which is what the convexity
@@ -267,17 +345,101 @@ impl Scan {
     }
 }
 
-/// The bilinear surface over the node's own cell, at a fractional offset in `[-1/2, 1/2]` of one
-/// interval from the node. `around` is the 3×3 lattice centred on it, so the offset's sign picks
-/// which of the four meeting intervals the point falls in and the rest is one interpolation.
-fn bilinear(around: &[[i16; 3]; 3], fy: f64, fx: f64) -> f64 {
-    let (qy, ty) = if fy >= 0.0 { (1usize, fy) } else { (0usize, fy + 1.0) };
-    let (qx, tx) = if fx >= 0.0 { (1usize, fx) } else { (0usize, fx + 1.0) };
-    let a = f64::from(around[qy][qx]);
-    let b = f64::from(around[qy][qx + 1]);
-    let c = f64::from(around[qy + 1][qx]);
-    let d = f64::from(around[qy + 1][qx + 1]);
-    a * (1.0 - tx) * (1.0 - ty) + b * tx * (1.0 - ty) + c * (1.0 - tx) * ty + d * tx * ty
+/// The native lattice over the square of node coordinates one cell's rule reads, sampled once.
+///
+/// The pass over archive pixels reads this a few times per pixel — 67 million pixels for a v1 cell
+/// — so the sampler behind it, a bilinear over a GeoTIFF mosaic, is called once per node instead of
+/// once per probe.
+struct NativeWindow {
+    origin_y: i64,
+    origin_x: i64,
+    posting_log2: u8,
+    step: i64,
+    low: i64,
+    side: usize,
+    heights: Vec<i16>,
+}
+
+impl NativeWindow {
+    fn sample(
+        origin_y: i64,
+        origin_x: i64,
+        posting_log2: u8,
+        low: i64,
+        high: i64,
+        mut native: impl FnMut(i32, i32) -> i16,
+    ) -> NativeWindow {
+        let step = 1i64 << posting_log2;
+        let side = (high - low + 1) as usize;
+        let mut heights = Vec::with_capacity(side * side);
+        for y in low..=high {
+            for x in low..=high {
+                heights.push(native((origin_y + y * step) as i32, (origin_x + x * step) as i32));
+            }
+        }
+        NativeWindow { origin_y, origin_x, posting_log2, step, low, side, heights }
+    }
+
+    /// The native height at a node coordinate. Outside the window is a hole, which stops the rule
+    /// rather than reading a neighbour's value — but `HALO` means no caller asks.
+    fn at(&self, y: i64, x: i64) -> i16 {
+        let index = |v: i64| usize::try_from(v - self.low).ok().filter(|&i| i < self.side);
+        match (index(y), index(x)) {
+            (Some(y), Some(x)) => self.heights[y * self.side + x],
+            _ => NODATA,
+        }
+    }
+
+    /// Whether any of the 3×3 native heights around a node is a hole (§9.1).
+    fn hole_in_ring(&self, y: i64, x: i64) -> bool {
+        (y - 1..=y + 1).any(|dy| (x - 1..=x + 1).any(|dx| self.at(dy, dx) == NODATA))
+    }
+
+    /// The bilinear native surface at a µdeg coordinate inside the window.
+    ///
+    /// In corner-and-slope form, as `DemMosaic::height` is and for the same reason: over four equal
+    /// corners the three difference terms are exactly `0.0`, so a flat surface stays flat to the bit
+    /// and a gap over it is exactly the reference's own height above it.
+    fn surface_at(&self, lat: i64, lon: i64) -> f64 {
+        let (dy, dx) = (lat - self.origin_y, lon - self.origin_x);
+        // A posting is a power of two, so `>>` is the floor division and `&` the remainder — for a
+        // coordinate south or west of the cell origin as well, which is where the halo reads.
+        let (iy, ix) = (dy >> self.posting_log2, dx >> self.posting_log2);
+        let step = self.step as f64;
+        let (fy, fx) = ((dy & (self.step - 1)) as f64 / step, (dx & (self.step - 1)) as f64 / step);
+        let v00 = f64::from(self.at(iy, ix));
+        let v10 = f64::from(self.at(iy + 1, ix));
+        let v01 = f64::from(self.at(iy, ix + 1));
+        let v11 = f64::from(self.at(iy + 1, ix + 1));
+        v00 + (v10 - v00) * fy + (v01 - v00) * fx + (v11 - v01 - v10 + v00) * fy * fx
+    }
+
+    /// The **highest** the native surface reaches over one archive pixel's footprint: the pixel's
+    /// own square, [`HALF_PIXEL`] µdeg either side of the centre this is given.
+    ///
+    /// §9.1's gap has to be a lower bound on how far the reference stands above our surface, and an
+    /// archive pixel is a *maximum* that may have come from anywhere inside its square. Measuring
+    /// it against the surface at the pixel's centre therefore reads the gap high on steep ground —
+    /// up to 3 m on a 40° face, which is a third of the 10 m gate — and lifts nodes the reference
+    /// does not stand 10 m above. Against the roof of the footprint the gap can only read low.
+    ///
+    /// Four corners settle it. A bilinear patch is a saddle, so its maximum over an axis-aligned
+    /// rectangle is at a corner, and each corner is evaluated in the lattice interval that holds it.
+    ///
+    /// **Requires a posting of at least [`STEP_LOG2`]**, which [`LiftMap::bake`] refuses otherwise.
+    /// At or above that step the lattice interval boundaries are multiples of the pixel side, so a
+    /// footprint lies inside one interval and the four corners are the exact maximum. Below it a
+    /// footprint would span several intervals and could enclose a lattice node, whose height the
+    /// corners would miss — the maximum would then read low and the gap high, which is the error
+    /// this function exists to remove.
+    fn roof(&self, lat: i64, lon: i64) -> f64 {
+        let (south, north) = (lat - HALF_PIXEL, lat + HALF_PIXEL);
+        let (west, east) = (lon - HALF_PIXEL, lon + HALF_PIXEL);
+        self.surface_at(south, west)
+            .max(self.surface_at(south, east))
+            .max(self.surface_at(north, west))
+            .max(self.surface_at(north, east))
+    }
 }
 
 /// Nodes the rule selects before dilation: the reference stands `LIFT_M` above our surface at a
@@ -286,24 +448,23 @@ fn bilinear(around: &[[i16; 3]; 3], fy: f64, fx: f64) -> f64 {
 /// A node the reference misses at any of those five places is left unselected. The test has no
 /// answer there, and inventing one — by clamping to the node itself, say — would make the lift
 /// depend on which cell asked for it.
-fn select(node_max: &[f64], over: &[f64], scan: &Scan) -> Vec<bool> {
+fn select(node_max: &[i16], gap: &[f64], scan: &Scan) -> Vec<bool> {
     let mut core = vec![false; scan.nodes()];
-    for y in scan.axis() {
-        for x in scan.axis() {
-            if !scan.has_ring(y, x) {
-                continue;
-            }
-            let here = node_max[scan.at(y, x)];
-            if !here.is_finite() || over[scan.at(y, x)] <= LIFT_M {
-                continue;
-            }
-            let around =
-                [scan.at(y - 1, x), scan.at(y + 1, x), scan.at(y, x - 1), scan.at(y, x + 1)].map(|at| node_max[at]);
-            if around.iter().any(|v| !v.is_finite()) {
-                continue;
-            }
-            core[scan.at(y, x)] = here - around.iter().sum::<f64>() / 4.0 > CONVEX_M;
+    for (y, x) in scan.nodes_iter() {
+        if !scan.has_ring(y, x) {
+            continue;
         }
+        let here = node_max[scan.at(y, x)];
+        if here == NO_PIXEL || gap[scan.at(y, x)] <= LIFT_M {
+            continue;
+        }
+        let around =
+            [scan.at(y - 1, x), scan.at(y + 1, x), scan.at(y, x - 1), scan.at(y, x + 1)].map(|at| node_max[at]);
+        if around.contains(&NO_PIXEL) {
+            continue;
+        }
+        let mean = around.iter().map(|&v| f64::from(v)).sum::<f64>() / 4.0;
+        core[scan.at(y, x)] = f64::from(here) - mean > CONVEX_M;
     }
     core
 }
@@ -319,184 +480,42 @@ fn dilated(core: &[bool], scan: &Scan, y: i64, x: i64) -> bool {
 mod tests {
     use super::*;
 
-    /// A cone on a planar slope, in the geographic frame the baker works in.
-    struct Cone {
-        posting: u8,
-        cell: u8,
-        peak: (f64, f64),
-        height: f64,
-    }
-
-    impl Cone {
-        fn new(ci: u32, cj: u32, posting: u8, cell: u8, at: (f64, f64), height: f64) -> Self {
-            let step = (1i64 << posting) as f64;
-            let origin_y = f64::from(GRID_ORIGIN) + (f64::from(ci) * (1i64 << cell) as f64);
-            let origin_x = f64::from(GRID_ORIGIN) + (f64::from(cj) * (1i64 << cell) as f64);
-            Self { posting, cell, peak: (origin_y + at.0 * step, origin_x + at.1 * step), height }
-        }
-
-        /// A 40° planar slope, which a coarse lattice under-samples but must not inflate.
-        fn plane(&self, lat: f64, lon: f64) -> f64 {
-            let step = (1i64 << self.posting) as f64;
-            (lat - f64::from(GRID_ORIGIN)) / step * 40.0 + (lon - f64::from(GRID_ORIGIN)) / step * 8.0
-        }
-
-        fn reference(&self) -> impl Fn(f64, f64) -> Option<f64> + '_ {
-            move |lat_deg: f64, lon_deg: f64| {
-                let (lat, lon) = (lat_deg * 1e6, lon_deg * 1e6);
-                let step = (1i64 << self.posting) as f64;
-                let d = ((lat - self.peak.0).powi(2) + (lon - self.peak.1).powi(2)).sqrt() / step;
-                Some(self.plane(lat, lon) + (self.height - self.height * d).max(0.0))
-            }
-        }
-
-        fn native(&self) -> impl Fn(i32, i32) -> i16 + '_ {
-            move |lat: i32, lon: i32| self.plane(f64::from(lat), f64::from(lon)).round() as i16
-        }
-
-        fn bake(&self, ci: u32, cj: u32) -> Option<LiftMap> {
-            let reference = self.reference();
-            LiftMap::bake(ci, cj, self.posting, self.cell, self.native(), &reference)
-        }
-    }
-
-    /// A node at `(y, x)` of the cell, in µdeg.
-    fn node(ci: u32, cj: u32, posting: u8, cell: u8, y: i64, x: i64) -> (i32, i32) {
-        let step = 1i64 << posting;
-        let origin_y = i64::from(GRID_ORIGIN) + (i64::from(ci) << cell);
-        let origin_x = i64::from(GRID_ORIGIN) + (i64::from(cj) << cell);
-        ((origin_y + y * step) as i32, (origin_x + x * step) as i32)
-    }
-
-    /// The tower is lifted to its own height, the plane it stands on is not, and the lift reaches
-    /// the tip's neighbours but no further.
+    /// A pixel centre belongs to the node nearest it, on both sides of the origin and at a negative
+    /// coordinate — the arithmetic every lift depends on, and the one place a `>> log2` would have
+    /// been wrong.
     #[test]
-    fn a_tower_is_lifted_and_the_plane_it_stands_on_is_not() {
-        let cone = Cone::new(0, 0, 9, 16, (8.0, 8.0), 120.0);
-        let map = cone.bake(0, 0).expect("the tower is a crest");
-        let at = |y, x| map.at(node(0, 0, 9, 16, y, x).0, node(0, 0, 9, 16, y, x).1);
-
-        assert!((100..=130).contains(&at(8, 8)), "the tip is lifted to the tower's own height, got {}", at(8, 8));
-        assert_eq!(at(1, 1), 0, "a planar slope four nodes away is left alone");
-        assert_eq!(at(14, 14), 0, "and so is one on the far side");
-        assert!(at(8, 9) > 0, "the one-node extension reaches the tip's neighbour");
-
-        // The tally is what an operator sees: how much, how many, and where the worst of it is.
-        let tally = map.tally();
-        assert!(tally.nodes < 40, "the rule stays local to the tower, lifted {}", tally.nodes);
-        assert_eq!(tally.max_m, at(8, 8), "the largest lift is the tip's");
-        assert_eq!(tally.max_at, node(0, 0, 9, 16, 8, 8), "and it is reported at the tip");
-        assert_eq!(tally.over_report, 0, "a 120 m tower is not worth an operator's attention");
-        assert_eq!(LiftTally::default().join(tally), tally, "joining an empty tally changes nothing");
-    }
-
-    /// `apply` adds the lift to the native height, leaves a hole a hole, and leaves a coordinate
-    /// the map does not describe alone.
-    #[test]
-    fn apply_adds_the_lift_and_keeps_nodata_a_hole() {
-        let cone = Cone::new(0, 0, 9, 16, (8.0, 8.0), 120.0);
-        let map = cone.bake(0, 0).expect("the tower is a crest");
-        let tip = node(0, 0, 9, 16, 8, 8);
-        let native = cone.native();
-        let hole = |lat: i32, lon: i32| if (lat, lon) == tip { NODATA } else { native(lat, lon) };
-
-        let mut lifted = map.apply(cone.native());
-        assert_eq!(lifted(tip.0, tip.1), native(tip.0, tip.1) + map.at(tip.0, tip.1));
-        let far = node(0, 0, 9, 16, 1, 1);
-        assert_eq!(lifted(far.0, far.1), native(far.0, far.1), "an unlifted node passes through");
-
-        let mut over_hole = map.apply(hole);
-        assert_eq!(over_hole(tip.0, tip.1), NODATA, "a lift never fills a hole");
-
-        // Half a posting off the lattice is not a node this map describes.
-        assert_eq!(map.at(tip.0 + (1 << 8), tip.1), 0);
-        // Nor is a node in the next cell along.
-        assert_eq!(map.at(node(0, 1, 9, 16, 8, 8).0, node(0, 1, 9, 16, 8, 8).1), 0);
-    }
-
-    /// The whole point of the halo: a node two or four cells share is lifted by the same amount
-    /// whichever of them computes it. The tower stands on the node all four cells of a 2 × 2 block
-    /// share, so one fixture exercises both seams, the corner, the convexity ring across a seam and
-    /// the dilation across it.
-    #[test]
-    fn cells_agree_on_every_node_they_share() {
-        let (posting, cell) = (9u8, 16u8);
-        let side = 1i64 << cell_samples_log2(posting, cell).unwrap();
-        let cone = Cone::new(0, 0, posting, cell, (side as f64, side as f64), 120.0);
-        let map = |ci, cj| cone.bake(ci, cj).expect("the corner tower is a crest in every cell of the block");
-        let (nw, ne, sw, se) = (map(0, 0), map(0, 1), map(1, 0), map(1, 1));
-
-        let mut shared = 0;
-        // Each row's eastern seam: cell (i, 0)'s inclusive high edge is cell (i, 1)'s column 0.
-        for (west, east, row) in [(&nw, &ne, 0u32), (&sw, &se, 1)] {
-            for y in 0..=side {
-                let (lat, lon) = node(row, 0, posting, cell, y, side);
-                assert_eq!(west.at(lat, lon), east.at(lat, lon), "row {row} seam node {y} disagrees");
-                shared += i32::from(west.at(lat, lon) > 0);
-            }
+    fn a_pixel_centre_belongs_to_the_node_nearest_it() {
+        let step = 512i64;
+        let origin = -1_024_000i64;
+        // The eight centres of the node's own cell either side of it, and the next node's first.
+        for (offset, want) in [(-256 + 32, 0), (-32, 0), (32, 0), (256 - 32, 0), (256 + 32, 1), (512 + 32, 1)] {
+            assert_eq!(node_of(origin + offset, origin, step), want, "centre {offset} µdeg from the node");
         }
-        // Each column's northern seam: cell (0, j)'s high edge is cell (1, j)'s row 0.
-        for (south, north, col) in [(&nw, &sw, 0u32), (&ne, &se, 1)] {
-            for x in 0..=side {
-                let (lat, lon) = node(0, col, posting, cell, side, x);
-                assert_eq!(south.at(lat, lon), north.at(lat, lon), "column {col} seam node {x} disagrees");
-                shared += i32::from(south.at(lat, lon) > 0);
-            }
-        }
-        assert!(shared > 0, "the test would pass on four empty edges");
-
-        // The node all four describe, which is the one the tower stands on.
-        let (lat, lon) = node(0, 0, posting, cell, side, side);
-        let corner: Vec<i16> = [&nw, &ne, &sw, &se].map(|m| m.at(lat, lon)).into();
-        assert!(corner.iter().all(|&lift| lift == corner[0]), "the shared corner disagrees: {corner:?}");
-        assert!(corner[0] > 0, "the tower stands on that corner");
+        // Below the origin the answer is negative rather than clamped, which is what lets the halo
+        // reach into the cell to the south and west.
+        assert_eq!(node_of(origin - 256 - 32, origin, step), -1);
+        assert_eq!(node_of(origin - 512 - 32, origin, step), -1);
+        assert_eq!(node_of(origin - 512 - 256 - 32, origin, step), -2);
     }
 
-    /// A cell whose reference coverage begins on its own seam owns no lifted node at all, but the
-    /// seam node it shares with its neighbour is lifted — by the dilation from a ridge one posting
-    /// into the neighbour. The map has to exist for that one node, or the two cells disagree about
-    /// a node neither owns alone.
-    #[test]
-    fn a_cell_lifted_only_on_its_seam_still_has_a_map() {
-        let (posting, cell) = (9u8, 16u8);
-        let side = 1i64 << cell_samples_log2(posting, cell).unwrap();
-        let step = (1i64 << posting) as f64;
-        let origin = f64::from(GRID_ORIGIN);
-        let seam_lon = origin + side as f64 * step;
-        let ridge_lon = seam_lon + step;
-        let plane = |lat: f64, lon: f64| (lat - origin) / step * 4.0 + (lon - origin) / step * 4.0;
-        // Coverage starts exactly on the seam; a north–south ridge stands one posting east of it.
-        let reference = |lat_deg: f64, lon_deg: f64| {
-            let (lat, lon) = (lat_deg * 1e6, lon_deg * 1e6);
-            if lon < seam_lon {
-                return None;
-            }
-            let d = (lon - ridge_lon).abs() / step;
-            Some(plane(lat, lon) + (120.0 - 120.0 * d).max(0.0))
-        };
-        let native = |lat: i32, lon: i32| plane(f64::from(lat), f64::from(lon)).round() as i16;
-
-        let west = LiftMap::bake(0, 0, posting, cell, native, &reference).expect("the seam node is lifted");
-        let east = LiftMap::bake(0, 1, posting, cell, native, &reference).expect("and so is its column 0");
-        assert_eq!(west.tally().nodes, 0, "the west cell owns no lifted node, which is the trap");
-
-        let mut lifted = 0;
-        for y in 0..=side {
-            let (lat, lon) = node(0, 0, posting, cell, y, side);
-            assert_eq!(west.at(lat, lon), east.at(lat, lon), "seam node {y} disagrees");
-            lifted += i32::from(west.at(lat, lon) > 0);
-        }
-        assert!(lifted > 0, "the ridge must reach the seam by dilation, or the test proves nothing");
-    }
-
-    /// A reference that covers nothing produces no map, so the cell bakes exactly as it would
-    /// without one.
+    /// An archive that holds no tile the cell reads leaves the cell exactly as a bake without a
+    /// reference would — `None`, not a map of zeroes.
     #[test]
     fn a_reference_that_covers_nothing_produces_no_map() {
+        let root = std::env::temp_dir().join(format!("obc-dem-empty-archive-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("index.json"),
+            br#"{"schema": 1, "step_log2": 6, "tile_log2": 16, "sources": {}, "tiles": {}}"#,
+        )
+        .unwrap();
+        let archive = ReferenceArchive::open(&root).unwrap();
+        assert!(archive.is_empty());
+
         let native = |_: i32, _: i32| 1000i16;
-        assert!(LiftMap::bake(0, 0, 9, 16, native, &|_, _| None).is_none());
-        // …and neither does one that covers the cell but finds no crest in it.
-        let flat = |_: f64, _: f64| Some(1000.0);
-        assert!(LiftMap::bake(0, 0, 9, 16, native, &flat).is_none());
+        assert!(LiftMap::bake(0, 0, 9, 19, native, &archive).unwrap().map.is_none());
+        // A pairing OBCT does not permit is refused before any tile is read.
+        assert!(LiftMap::bake(0, 0, 9, 12, native, &archive).is_err());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

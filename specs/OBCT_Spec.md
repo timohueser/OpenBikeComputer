@@ -721,11 +721,21 @@ A node with `NODATA` anywhere in the 3 × 3 native lattice around it MUST NOT be
 the dilation. There is no bilinear surface there to measure a gap against, so a hole keeps a
 one-node rim of unlifted ground around it rather than a height the rule cannot justify.
 
-`node_max` and the gap are sampled on a probe grid the producer chooses. The v1 bakery uses
-32 × 32 sub-samples, centred in the node's cell, which puts the probe step below 2 m at the v1
-posting. This document therefore does **not** promise that two producers agree byte for byte on a
-lifted cell. It promises the identity of section 9.2: where there is no coverage, there is no
-difference.
+`node_max` and the gap are sampled on a probe grid the producer chooses. The v1 bakery uses **every
+reference pixel inside the node's half-posting cell**: its reference is an archive on a `2^6` µdeg
+lattice, so that is 64 probes per node at the v1 posting.
+
+A probe that is a **maximum over an area** must have its gap measured against the **highest point of
+the surface over that same area**, not against the surface under one point of it. Each archive pixel
+is the maximum of the source pixels inside its square, and it may have come from anywhere in that
+square, so the gap the bakery credits it is `pixel − max(surface over the pixel's square)`. Measured
+against the surface at the pixel's centre instead, the gap reads high wherever the ground is steep —
+about 3 m on a 40° face, a third of the whole 10 m gate — and nodes the reference does not stand 10 m
+above are lifted. Measured against the highest point, the gap can only read low, which loses a
+correction rather than inventing ground.
+
+This document therefore does **not** promise that two producers agree byte for byte on a lifted cell.
+It promises the identity of section 9.2: where there is no coverage, there is no difference.
 
 Each test earns its place. The gap is measured against the bilinear surface, not against the node,
 because that surface is what a consumer draws. The convexity test is what leaves a steep planar

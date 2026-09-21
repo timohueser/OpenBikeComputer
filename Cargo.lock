@@ -2733,6 +2733,7 @@ dependencies = [
  "obc-elevation",
  "obc-fixtures",
  "obc-formats",
+ "serde_json",
  "sha2",
  "tiff",
  "ureq",
