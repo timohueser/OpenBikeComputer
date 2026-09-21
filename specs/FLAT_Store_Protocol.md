@@ -2,11 +2,9 @@
 
 - Status: **normative** for the flat store's public seam and for wire major **4**
 - On-card contract: [`FLAT_Store_Format.md`](FLAT_Store_Format.md)
-- Replaces: the Device Object System v2 wire, system and registry contracts
 
-Two contracts, one document, because they are two sides of the same narrow boundary. §2 is the seam
-between the store and everything above it inside the firmware. §3 is what crosses the link to a
-phone, a cable client, or the simulator. §4 binds §3 to BLE and USB.
+§2 is the seam between the store and everything above it inside the firmware. §3 is what crosses
+the link to a phone, a cable client, or the simulator. §5 binds §3 to BLE and USB.
 
 Integers are unsigned little-endian; signed fields say so and are two's complement at their stated
 width. Reserved bytes are zero and rejected when nonzero. Every message in this document is a fixed
@@ -20,29 +18,6 @@ CRC and retransmission, USB packet CRC and retry).
 
 `ObjectId`, `Revision`, `StoreId`, object kinds and entry flags are defined by
 [`FLAT_Store_Format.md`](FLAT_Store_Format.md) §3 and carry the same values here.
-
-## 1. What the design refuses
-
-Stated once, because most of what follows is short for these reasons and does not repeat them.
-
-- **One engine, one owner.** BLE and USB are byte-identical adapters over one transfer engine. One
-  store owns the card. A storage change reaches neither.
-- **One transfer at a time.** The device serves exactly one `PUT` or `GET`; a second is `busy`.
-- **Nothing durable but a commit.** Everything short of it is atomically invisible and cancellable
-  from either side.
-- **No `OperationId`, no claim record, no result ring, no durable operation result.** The catalog is
-  the result, and §3.4 is how a client reads it after a break. There is no `Unknown` to reconcile.
-- **No resume, no checkpoints, no prefix-CRC exchange.** A broken transfer is discarded whole; the
-  worst case is re-sending a whole map over USB, about twenty minutes, which is cheaper than the
-  machinery resume needs.
-- **No sessions.** The `RequestId` of the transfer's own request is the identifier.
-- **No Hello, no capability discovery, no wire minor.** The major is a transport fact and every
-  message fits every link.
-- **No metadata envelopes, no schema registry, no draft parts.** An object is bytes, a kind, a name
-  and a CRC — a map included, since a map is one object with its terrain inside it
-  (`OBCM_Spec.md` §1.3).
-- **No fault frames on the stream channel.** A transfer has one outcome and it is the answer to its
-  own request.
 
 ## 2. The store seam
 
@@ -107,8 +82,8 @@ pub trait Store {
 
     /// The next `ObjectId` the cursor will hand out. **Reading it reserves nothing**: two creates
     /// that both read it before either commits name the same id, and the second commit is refused
-    /// as a duplicate key. Safe only because §1 serves one transfer at a time, and safest read at
-    /// the commit rather than held across one.
+    /// as a duplicate key. Safe only because the device serves one transfer at a time (§3.2), and
+    /// safest read at the commit rather than held across one.
     fn next_object_id(&self) -> ObjectId;
 
     /// The ride exception, and the only way bytes become durable without a commit. Performs both
@@ -176,15 +151,7 @@ pub enum StoreError {
 }
 ```
 
-The members below the comment separator sit beside the five and are counted separately because they
-are not object operations. `cancel` and `close` are the releases the five have no way to express —
-Rust's `Drop` cannot reach the store, so an abandoned reservation or a dropped handle would otherwise
-hold its row until the next mount. `entries` mutates nothing and names nothing below the seam, and
-`entries_ok` is how its one failure mode reports itself. `mode`, `store_id`, `commit_sequence` and
-`next_object_id` are facts, not verbs: they read resident state, touch no media, and a `LIST` page or
-a `PUT` admission is built from them. `journal` is the ride exception the epic granted.
-
-A binding may of course name them differently or fold the four facts into one; what is normative is
+A binding may name these members differently or fold the four facts into one. What is normative is
 that each is reachable and that nothing else is.
 
 **Local sealed producer storage.**
@@ -218,42 +185,31 @@ hold rows and two reservation rows do not grow. A recording start or transfer th
 space while detour output uses both slots MUST refuse through its existing bounded path.
 
 **Every operation takes a shared reference to the store, the mutators included.** A store is shared,
-not owned: a mounted map holds its object open for the life of the image while an upload
-commits and a ride journals, and an exclusive write half makes that shape un-expressible rather than
-merely awkward. (It was an open object *per shard* until OBCM v14 / #1420; one map is now one
-handle, which is the accounting change FS7.5c lands.) An implementation carries whatever interior mutability that needs, under two rules.
+not owned: a mounted map holds its object open for the life of the image while an upload commits and
+a ride journals. An implementation carries whatever interior mutability that needs, under two rules.
 
-1. **Granularity is per card command for the state a reader needs.** A 1,024-entry commit is ~36 write
-   commands over ~250 ms; releasing between them lets a read interleave into the gaps, so the worst
-   stall a reader sees is one command rather than a whole commit. Concretely: the catalog, the free
-   map and whatever table records open objects must be unheld at every card command a write path
-   issues, so that `open`, `read`, `entries`, `entries_ok` and the free-space answer are all
-   serviceable throughout a `commit`.
+1. **Granularity is per card command for the state a reader needs.** The catalog, the free map and
+   whatever table records open objects must be unheld at every card command a write path issues, so
+   that `open`, `read`, `entries`, `entries_ok` and the free-space answer are all serviceable
+   throughout a `commit`.
 
    Writer-private state — a reservation's staging buffer, which no read operation names — may be held
-   across the commands that drain it, because the alternative is copying that buffer per command and
-   §1 serves one transfer at a time anyway. An implementation taking this carve-out states which state
-   it covers and for how many commands. State must never be held across an `await`, across a callback,
+   across the commands that drain it. An implementation taking this carve-out states which state it
+   covers and for how many commands. State must never be held across an `await`, across a callback,
    or across another seam call, carve-out or not.
 2. **`close` on an object another reader still holds is a runtime refusal, not a teardown.** The
-   reader refcount §6.2 already requires is what decides it: such a `close` spends a count and returns,
-   and the extents come back only when the last reader lets go. The guarantee is kept at runtime —
-   *refused*, never *silent*.
+   reader refcount of `FLAT_Store_Format.md` §6.2 decides it: such a `close` spends a count and
+   returns, and the extents come back only when the last reader lets go. The guarantee is kept at
+   runtime — *refused*, never *silent*.
 
 The `&mut` on `write`'s allocation is the caller's own token and stays: an `Allocation` carries a
 cursor that has to advance with the store's row. Mount and initialization are constructors and are
 exempt — nothing else can reach the store while one runs.
 
 `EntryMeta` is the metadata half of a catalog entry — kind, flags, `ObjectId`, `Revision`, payload
-length, payload CRC, display name — and nothing else. `Allocation` is opaque: it exposes its reserved
-length. **Neither carries an extent**, which is what makes the sentence at the head of this section
-true rather than aspirational: extents enter the store through `allocate`, leave it never, and the
-only thing a caller ever holds is the opaque token that stands for them.
-
-`journal` is the one place where the "nothing above names an extent" rule needs a written reason
-rather than a definition: flushing a payload page is a write into an object's own extents that no
-commit certifies, so it cannot be `write` (which appends to an uncommitted allocation) and it cannot
-be `commit`. It is the exception the epic granted the ride, and it is deliberately the only one.
+length, payload CRC, display name — and nothing else. `Allocation` is opaque: it exposes its
+reserved length. **Neither carries an extent.** Extents enter the store through `allocate`, leave it
+never, and the only thing a caller ever holds is the opaque token that stands for them.
 
 Mount and initialization are lifecycle, not seam: they are constructors, and initialization is
 destructive and explicit.
@@ -288,8 +244,9 @@ destructive and explicit.
 ## 3. Protocol v4
 
 Wire major **4**. There is no negotiation: the major is a transport fact readable before any frame
-(§4), the frame ceiling is a property of the link, and every message below fits inside the smallest
-ceiling either link offers. There is no Hello, no capability page, and no minor.
+(§5), the frame ceiling is a property of the link, and every message below fits inside the smallest
+ceiling either link offers. There is no Hello, no capability page, no capability discovery, and no
+minor.
 
 A client learns the store's identity and the freshness of its cache from `LIST`, which every client
 issues before it does anything else. A `StoreId` it has not seen means the card was re-initialized
@@ -338,6 +295,10 @@ carry the same value (§3.8). That is why there is no session identifier in this
 
 An unknown opcode is `unsupported`. There is no generic forwarding path.
 
+The device MUST serve at most one `PUT` or `GET` at a time. A second one is refused `busy` with
+detail `transfer` (§3.9). BLE and USB are byte-identical adapters over that one transfer engine
+(§5).
+
 ### 3.3 `LIST`
 
 Request, 32 bytes:
@@ -351,11 +312,9 @@ Request, 32 bytes:
 | 16 | 8 | cursor `Revision`; zero unless the cursor bit is set |
 | 24 | 8 | expected commit sequence; zero unless the cursor bit is set |
 
-The cursor is the **pair**, and the page resumes strictly after it, because the catalog is keyed by
-`(ObjectId, Revision)` and an object may hold two entries. A cursor of `ObjectId` alone would skip the
-head of an object whose retained revision ended the previous page — the retained entry sorts first
-(`FLAT_Store_Format.md` §5.3), so that page boundary is not exotic: it is two entries wide on BLE and
-would silently drop the current revision of the very object a client asked about.
+The cursor is the **pair**, and the page resumes strictly after it: the catalog is keyed by
+`(ObjectId, Revision)` and an object may hold two entries, the retained one sorting first
+(`FLAT_Store_Format.md` §5.3).
 
 Response payload is a 24-byte prefix followed by `n` entries:
 
@@ -415,10 +374,6 @@ that was lost. There is nothing to ask `STATUS` about. The client reconciles a l
 match sound. Finding it means the create landed; not finding it means it did not. A false negative
 costs one duplicate object, which the client removes with `REMOVE` once it sees both.
 
-Closing that hole on the device would require exactly the durable claim record this design does not
-have, so it is a client obligation, priced at one duplicate in a case that needs a link to break
-inside the one round trip between commit and response.
-
 A `STATUS` naming `ObjectId` zero is `invalidRequest`; the identity of the store comes from `LIST`.
 
 ### 3.5 `GET`
@@ -468,14 +423,12 @@ The client streams the payload on the stream channel under this `RequestId`, fro
 contiguous and ascending, ending at the declared length. It **may begin immediately**, without
 waiting for an acceptance: the device has admitted the request and allocated by the time it processes
 the first stream frame, and if it refuses it answers the request and discards frames bearing that
-`RequestId`. The cost of a refusal is one round trip of wasted bytes, which is the price of not
-having a second round trip on every upload.
+`RequestId`.
 
-That sentence rests on an ordering the two channels do not provide by themselves — on BLE the control
-write and the CoC are independent — so §5 makes it an **adapter obligation**: a control frame reaches
-the engine before any stream frame bearing the same `RequestId`. Without it the first frame arrives
-pre-admission, is discarded as belonging to no live transfer, and the upload dies on a gap at offset
-zero.
+That rests on an ordering the two channels do not provide by themselves, so §5 makes it an
+**adapter obligation**: a control frame reaches the engine before any stream frame bearing the same
+`RequestId`. Without it the first frame arrives pre-admission, is discarded as belonging to no live
+transfer, and the upload dies on a gap at offset zero.
 
 On the last byte the device verifies the length and the whole-payload CRC, runs the kind's validator,
 and commits. The response, 32 bytes:
@@ -539,17 +492,14 @@ terminates the transfer with an error response on the control channel. There are
 terminal flags and no acknowledgements on this channel: the transfer's one outcome is the answer to
 its control request.
 
-A frame bearing a `RequestId` that is not the live transfer's is discarded in silence. Late frames
-from a transfer the peer has already been told about are ordinary in-flight traffic, not an attack. A
-frame bearing the `RequestId` of a live **`GET`** is discarded the same way: that identifier already
-settles which way the bytes go, so bytes arriving against the direction it names belong to no transfer
-the receiver can be sure of.
+A frame bearing a `RequestId` that is not the live transfer's is discarded in silence. A frame
+bearing the `RequestId` of a live **`GET`** is discarded the same way: bytes arriving against the
+direction that identifier names belong to no transfer the receiver can be sure of.
 
-That silence is also why a client **SHOULD NOT** reuse a `RequestId` immediately after the answer to
-the request that carried it. A `PUT` that was terminated mid-stream can leave in-flight stream frames
-on the link; a new transfer that reuses the identifier absorbs them as its own, and a stale offset
-kills it with `invalidRequest`/`streamOffset`. Identifiers are 32 bits and cost nothing — advancing is
-the whole remedy.
+A client **SHOULD NOT** reuse a `RequestId` immediately after the answer to the request that carried
+it. A `PUT` terminated mid-stream can leave in-flight stream frames on the link; a new transfer that
+reuses the identifier absorbs them as its own, and a stale offset kills it with
+`invalidRequest`/`streamOffset`.
 
 **Cancel is bilateral and symmetric.** The client cancels with `CANCEL`, request 4 bytes
 (`RequestId u32`), response 1 byte: `0` cancelled, `1` no such transfer. The cancelled `PUT` or `GET`
@@ -557,11 +507,8 @@ also receives its own error response, `cancelled`. The device cancels by answeri
 `PUT` or `GET` with an error and dropping the transfer. Either way the allocation is released and the
 catalog is unchanged; there is nothing else to unwind.
 
-A transfer that moves **no payload byte for 21 seconds** is one such device-side cancel, and the only
-one a well-behaved client can provoke. Nothing else bounds how long a wedged peer holds the store —
-the device withdraws heavy rider-facing work while a transfer is live, so an unbounded one is a
-device that refuses its rider indefinitely. The deadline is on *progress*, never on duration: a
-300 MB map is not on a clock, and a slow link is never the reason a transfer ends.
+A transfer that moves **no payload byte for 21 seconds** is one such device-side cancel. The
+deadline is on *progress*, never on duration: a slow link is never the reason a transfer ends.
 
 Link teardown is the third form of the same thing: the adapter calls the engine once, the live
 transfer is dropped, the allocation is released, and no record of it exists.
@@ -577,8 +524,7 @@ An error response payload is exactly this 16-byte body:
 | 4 | 8 | context, code-scoped; zero when the code defines none |
 | 12 | 4 | zero |
 
-There is no diagnostic text. Text drove nothing in the contract this replaces, and a device with 16
-bytes to spare per error has better uses for the frame.
+There is no diagnostic text.
 
 | Code | Name | Context | Details |
 | --: | :-- | :-- | :-- |
@@ -600,13 +546,11 @@ bytes to spare per error has better uses for the frame.
 Code `0` is invalid and is treated as a malformed body. A receiver reads a code it does not know as a
 failure it cannot classify; it never treats an unknown code as success.
 
-`busy` has **two** details because a device has two transient reasons to say *ask again*, and a
-client's retry policy is the same for both. `transfer 1` is §1's one-at-a-time rule: another `PUT`
-or `GET` is live, and its `RequestId` is the context. `holds 2` is the store's open-object table
-being full — every row taken by a reader that has not closed yet — which names no request and
-carries no context. Neither is `invalidRequest`: the request is well formed and would succeed
-against the same device a moment later, so a client that gave up on it would be giving up on a
-queue.
+`busy` has **two** details. `transfer 1` is the one-at-a-time rule of §3.2: another `PUT` or `GET`
+is live, and its `RequestId` is the context. `holds 2` is the store's open-object table being full —
+every row taken by a reader that has not closed yet — which names no request and carries no context.
+Neither is `invalidRequest`: the request is well formed and would succeed against the same device a
+moment later.
 
 `readOnly` is the wire face of a store that cannot be written: no usable catalog, an exhausted
 revision space, or a card §5.6 step 1 classified as **not a flat store**
@@ -748,8 +692,7 @@ timestamp without writing payload or changing the catalog sequence. Before ackno
 duplicate, the hook MUST complete a media sync barrier: a live-medium remount can read a gate whose
 previous final sync failed. A failed duplicate barrier fences mutations until remount and returns
 no success. A duplicate MUST preserve the existing proof.
-The serialized storage writer owns the whole operation; it does not call back into App or read a
-client clock. A zero timestamp records possession without a known archive date. No background task changes it.
+A zero timestamp records possession without a known archive date. No background task changes it.
 
 **Response — 16 bytes**
 
@@ -765,14 +708,10 @@ RequestId. A committed proof remains idempotent after remount. If the first atte
 a retry must complete the write or fail. If the ride was removed or replaced meanwhile, the source
 mismatch is terminal for that receipt; the device does not recreate the ride or its proof.
 
-The iOS client delivers and retries receipts from its durable archives. The board uses validated
-durable proof for its synced indicator. It does not delete rides automatically.
-
 ## 4. Firmware update
 
 An update package arrives as an ordinary `PUT` of kind `7`. Uploading never installs. `ARM` is the
-one explicit step that makes an installed image the next boot, and it is a separate authenticated
-command precisely so that delivery and installation are different decisions.
+one explicit step that makes an installed image the next boot.
 
 Request, 16 bytes: package `ObjectId u64`, expected `Revision u64`. The device then, in this order:
 
@@ -783,34 +722,31 @@ Request, 16 bytes: package `ObjectId u64`, expected `Revision u64`. The device t
    ride-recording one included, since it is a fact about whether this package may install now and not
    about a transfer holding the engine — and changes nothing.
 2. **Allocates and commits the rollback reserve**: one entry of kind `8` with the `RESERVED` flag and
-   enough extents for the running image. This is the one commit `ARM` makes, and it exists because
-   the bootloader cannot allocate — it can only write where it is told.
+   enough extents for the running image. This is the one commit `ARM` makes; the bootloader cannot
+   allocate, only write where it is told.
 3. **Writes the boot handoff**: both extent lists, resolved to absolute 512-byte block runs, into the
    RRAM boot-state page, then reads it back and verifies. The page format and the bootloader's
-   decision logic are [`OBCU_Spec.md`](OBCU_Spec.md); its `Extent { start_block, blocks }` is exactly
-   what §6.1 of the format contract computes, and its 96-extent capacity is twelve times the eight
-   ranges an object can have. **The bootloader's shape does not change.**
+   decision logic are [`OBCU_Spec.md`](OBCU_Spec.md) §2; its `Extent { start_block, blocks }` is
+   exactly what `FLAT_Store_Format.md` §6.1 computes.
 4. **Answers and drains**: the response, 16 bytes — rollback `ObjectId u64`, new catalog commit
    sequence `u64` — must reach the transport before the reboot, or the adapter's bounded drain
    timeout must expire.
 5. **Reboots.**
 
-Step 3 is also the one place an `ARM` can fail with a commit already made. A refusal there — the page
-did not read back — is **not** the cut below: a cut reboots, and the reboot is what runs the
-reconciliation. So the device takes step 2's commit back and answers `internal`, and §3.9's rule that
-an error means the mutation did not happen holds. If that removal is refused too, the device answers
-the error and stops: what it leaves is exactly the state a cut leaves — a boot page that does not
-decode and an orphaned reserve — which the next boot's reconciliation settles with one commit. It
-self-heals; it does not accumulate.
+Step 3 is the one place an `ARM` can fail with a commit already made. When the page does not read
+back, the device takes step 2's commit back and answers `internal`, so §3.9's rule that an error
+means the mutation did not happen holds. If that removal is refused too, the device answers the
+error and stops: what it leaves is the state a cut leaves — a boot page that does not decode and an
+orphaned reserve — which the next boot's reconciliation settles with one commit.
 
 `ARM` is not cancellable once it has been answered. A cut anywhere before step 3 completes leaves a
 boot page that does not decode, which the bootloader reads as *no pending update*; the rollback
 reserve is then an ordinary object the next boot removes. A cut after step 3 is the bootloader's
 business, and its trial boot and rollback are unchanged by this document.
 
-The rollback reserve is the single deliberate exception to the format's rule that the store writes an
-object's bytes: the bootloader writes into those extents. The entry exists to keep them out of the
-allocator, nothing more, and post-install reconciliation removes it with one commit.
+The rollback reserve is the single exception to the format's rule that the store writes an object's
+bytes: the bootloader writes into those extents. The entry exists to keep them out of the allocator,
+and post-install reconciliation removes it with one commit.
 
 There is no card-sideload path. The card is not user-accessible and the only delivery routes are
 BLE, USB and the builder.
@@ -863,10 +799,6 @@ static random address, bonding and reconnect are unchanged.
   establishment; it is the maximum complete stream-frame length, independent of how that frame is
   segmented into SDUs.
 - CoC credits are pacing. They acknowledge nothing about durability.
-- `3C920009` keeps its v3 meaning across this major bump rather than being retired and reassigned.
-  The no-reuse convention of [`obc-ble-interface-spec.md`](obc-ble-interface-spec.md) forbids giving a
-  retired UUID a *new* meaning; this characteristic keeps the one it has — the control channel — and
-  what changed is the frames it carries, which `protocolVersion` already announces.
 - Before an `ARM` reboot, the terminal indication must be confirmed and accepted outbound records
   must complete, or the drain timeout must expire.
 
@@ -895,9 +827,7 @@ package signature and version check are what bound what may run on the device.
 - Before an `ARM` reboot, the response record and every earlier IN record must complete at the
   device-controller layer, or the drain timeout must expire.
 
-**Record ceilings are a constant of this binding, not a negotiation.** §3 has no capability
-discovery, and USB offers nothing to derive a ceiling from — a bulk endpoint's max packet is a
-packet size, and §5.2's records span packets by design. So the number is fixed here:
+**Record ceilings are a constant of this binding, not a negotiation:**
 
 | Direction / channel | Ceiling | Why this number |
 | :-- | --: | :-- |
@@ -910,16 +840,9 @@ length above the link's ceiling terminate the transfer.
 
 #### 5.2.1 Identity and device information: EP0 vendor requests
 
-BLE's non-object control surface is a set of GATT characteristics — separately addressed by the
-transport, outside this document's scope, and untouched by the major bump. USB has one control
-endpoint pair and §5.2 has just given all of it to §3, so USB's equivalent of "a second, separately
-addressed control surface" is **EP0**, where every USB device's identity already lives. That is the
-whole of the decision recorded on #1420: nothing about §3's frozen framing changes, and no third
-endpoint pair is added to carry a retired envelope.
-
-Enumeration is already the authorization boundary on this link (above), and these requests sit below
-the record framing, so they are readable the moment the interface is claimed and before any record is
-exchanged.
+§5.2 gives both bulk endpoint pairs to §3, so the device's identity and device information are read
+on **EP0**. These requests sit below the record framing: they are readable the moment the interface
+is claimed and before any record is exchanged.
 
 | Field | Value |
 | :-- | :-- |
@@ -936,32 +859,3 @@ is available" compares against, and the running image's version lives there and 
 
 Recipient is **interface** rather than device so this request cannot collide with the device-level
 MS OS 2.0 descriptor request (`bRequest = 0x01`, `wIndex = 7`) the same device answers for Windows.
-
-**There is no identity request, and that is the point of Option A rather than an omission.** The two
-things a v1 identity read carried are both already answerable without one:
-
-- *Which USB record binding does this device speak?* — the interface descriptor's
-  `bInterfaceProtocol` and the device descriptor's `bcdDevice`, per §5.2's opening paragraph. The
-  binding is settled by matching before a record moves; §3 independently validates application
-  protocol major 4 in the first complete frame.
-- *Which store is this, and is my cache still valid?* — `LIST`'s `StoreId` and commit sequence (§3.3),
-  which every client issues first anyway.
-
-Adding a third answer to questions the wire already answers is exactly the duplication the major bump
-removed.
-
-#### 5.2.2 What the v1 selector envelope's other reads become
-
-The envelope this section replaces carried five more host→device selectors. None of them survives on
-this link, and each has a stated successor rather than a deletion:
-
-| v1 selector | Successor |
-| :-- | :-- |
-| `cardFreeRead` | Nothing asks in advance. §1 refuses capability discovery, and the question *"will this map fit"* is answered at the point of decision: a `PUT` that does not fit is `noSpace`, whose context is the bytes required (§3.9). What a client can know without trying is the catalog — `LIST` carries every object's payload length. |
-| `status` (device→host, unsolicited) | There are no unsolicited control frames (§3.1). A transfer's outcome is the answer to its own `PUT`/`GET`; a store movement is the commit sequence a client reads back from `LIST` (§3.3), which is also how it learns of movements it did not cause. |
-| `transferControl` | `PUT`, `GET`, `CANCEL` (§3.5–§3.8), with `RequestId` as the transfer identifier. |
-| `command` | The imperatives that act on the store are opcodes: `deleteObject` is `REMOVE` (§3.7) and `installFw` is `ARM` (§4). Bond and clock remain device-local BLE commands; the cable does not carry them. The former ride acknowledgement command is replaced by `ARCHIVE_RIDE` (§3.12), which accepts proof of an exact durable archive. |
-| `config` read / write | The device's own settings are not objects in this store and never were. They keep the BLE characteristics that carry them today. |
-
-There is no USB mass storage binding and there will not be one: it would hand the host raw blocks and
-force the firmware off the card.
