@@ -7,7 +7,7 @@ upload fact it produces, while transient reads must keep the prior snapshot and 
 The board drains no `HostCommand`s: the rescan is `CatalogEffect::ReadCatalog`'s body
 (`read_catalogs`), the delivery is `note_catalog_uploads` writing `ExternalFacts` for the *next*
 pass, and a partial read is answered `Failed { Unreadable }` so that `CatalogMachine` re-offers the
-read (#1541) — the executor keeps no retry of its own.
+read — the executor keeps no retry of its own.
 """
 
 from pathlib import Path

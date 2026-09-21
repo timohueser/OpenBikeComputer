@@ -1,11 +1,10 @@
 /**
- * Placement for a panel that hangs off a control: the test-kind panel, the group list.
+ * Placement for a panel that hangs off a control.
  *
- * A panel cannot be drawn below its control by CSS alone. The control can sit anywhere on a long
- * page, and `.workbench` clips what leaves it, so a panel near the bottom is cut off or falls out
- * of the window where nothing can scroll to it. These two pieces put it against the window
- * instead: [`portal`] moves it to the body, which is what makes `position: fixed` mean the window
- * and takes the panel out of the clipping container, and [`place`] computes the box.
+ * CSS alone cannot draw a panel below its control: the control can sit anywhere on a long page, and
+ * `.workbench` clips what leaves it, so a panel near the bottom is cut off. [`portal`] moves the
+ * panel to the body, which makes `position: fixed` mean the window and takes it out of the clipping
+ * container, and [`place`] computes the box.
  */
 
 /** Distance kept from every window edge, and between a panel and its control. */
@@ -17,14 +16,12 @@ export function portal(node: HTMLElement) {
 }
 
 /**
- * The style for a panel that is wholly visible: below the control when the room below holds it,
- * above when it does not, and inside both side edges. `max-height` is the room it actually has, so
- * a window too short for the whole panel gives it a scrollbar instead of a part that cannot be
- * reached.
+ * The style for a panel that is wholly visible: below the control when there is room, above when
+ * there is not, and inside both side edges. `max-height` is the room it has, so a short window
+ * gives the panel a scrollbar instead of a part that cannot be reached.
  *
- * Lay the panel out at `width` and let it wrap before calling this. Measuring an unconstrained
- * panel reports the height of text on fewer lines than it will wrap to, which put the test-kind
- * panel about 40 px past the bottom of the window.
+ * Lay the panel out at `width` and let it wrap before calling this: measuring an unconstrained
+ * panel reports the height of text on fewer lines than it will wrap to.
  */
 export function place(control: HTMLElement, panel: HTMLElement, width: number): string {
   const anchor = control.getBoundingClientRect();

@@ -16,9 +16,8 @@ pub const SCHEMA_FRAME_H: u32 = 320;
 
 const CAMERA_LON: i32 = 7_814_000;
 const CAMERA_LAT: i32 = 48_130_000;
-// The packer's requested crop. Complete OSM ways may legally extend the OBCM
-// header beyond it; those overhangs are not evidence of dense preview coverage
-// and must never become pannable just because their coordinates are present.
+// The packer's requested crop. Complete OSM ways may legally extend the map header beyond it, and
+// those overhangs are not dense preview coverage, so they must never become pannable.
 const TENINGEN_COVERAGE: BBox =
     BBox { min_lon: 7_798_000, min_lat: 48_119_000, max_lon: 7_830_000, max_lat: 48_141_000 };
 const DEFAULT_METERS_PER_PIXEL: f32 = 5.0;
@@ -51,8 +50,8 @@ pub struct PreviewFailure {
 
 /// Camera and production-renderer diagnostics for the last requested frame.
 ///
-/// Kept in the Rust bridge so every browser surface reports the exact LOD and
-/// budget accounting chosen by `obc-render`, not a TypeScript approximation.
+/// Kept in the Rust bridge, so every browser surface reports the LOD and budget accounting
+/// `obc-render` chose and not a TypeScript approximation.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PreviewStats {
     pub camera_lon: i32,
@@ -114,9 +113,9 @@ pub struct MapPreview {
     dirty: bool,
 }
 
-/// A freshly native-packed schema preview. Unlike [`MapPreview`], these bytes
-/// already carry the edited style table, so opening never accepts a skin or
-/// rewrites the OBCM. The frame matches the device's complete 240×320 map plane.
+/// A freshly native-packed schema preview. Unlike [`MapPreview`], these bytes already carry the
+/// edited style table, so opening never accepts a skin or rewrites the map. The frame matches the
+/// device's whole map plane.
 pub struct SchemaMapPreview {
     bytes: Vec<u8>,
     tables: MapTables,
@@ -180,8 +179,8 @@ impl MapPreview {
         let skin = Skin::parse(skin_json).map_err(PreviewFailure::input)?;
         let styles = skin.resolve(&self.schema).map_err(PreviewFailure::input)?;
 
-        // Style table + marker colour, in place — the assembler owns that algorithm, and the
-        // published thumbnails in `obc-bake`'s `previews.rs` go through the same function.
+        // Style table and marker colour, in place. The assembler owns that algorithm, and the
+        // published thumbnails go through the same function.
         restamp_style_table(&mut self.bytes, &styles, skin.marker_color).map_err(|e| match e {
             RestampError::ShorterThanHeader => {
                 PreviewFailure::input("The Teningen preview is shorter than the OBCM header.")
@@ -204,15 +203,15 @@ impl MapPreview {
         Ok(())
     }
 
-    /// Move the rendered map by a logical-frame pixel delta. Invalid deltas are
-    /// ignored at this trust boundary; valid moves are clamped to the map bbox.
+    /// Move the rendered map by a logical-frame pixel delta. An invalid delta is ignored at this
+    /// trust boundary, and a valid move is clamped to the map bbox.
     pub fn pan_by(&mut self, dx: f32, dy: f32) {
         if !dx.is_finite() || !dy.is_finite() || (dx == 0.0 && dy == 0.0) {
             return;
         }
-        // Pointer capture can report a coordinate far outside the element. One
-        // event never needs to move more than a whole frame; bounding it also
-        // keeps `Viewport::to_map` away from hostile float-to-i32 saturation.
+        // Pointer capture can report a coordinate far outside the element. One event never needs
+        // to move more than a whole frame, and bounding it keeps `Viewport::to_map` away from
+        // float-to-integer saturation.
         let dx = dx.clamp(-(FRAME_W as f32), FRAME_W as f32);
         let dy = dy.clamp(-(FRAME_H as f32), FRAME_H as f32);
         let viewport = self.viewport();
@@ -224,9 +223,9 @@ impl MapPreview {
         self.dirty |= self.camera != before;
     }
 
-    /// Zoom around `(x, y)` in logical-frame pixels. `factor > 1` zooms in.
-    /// The point under the cursor stays under it unless a coverage edge clamps
-    /// the camera. Non-finite and non-positive input is ignored.
+    /// Zoom around `(x, y)` in logical-frame pixels, where a factor above one zooms in. The point
+    /// under the cursor stays under it unless a coverage edge clamps the camera. Non-finite and
+    /// non-positive input is ignored.
     pub fn zoom_at(&mut self, factor: f32, x: f32, y: f32) {
         if !factor.is_finite() || factor <= 0.0 || !x.is_finite() || !y.is_finite() {
             return;
@@ -300,10 +299,9 @@ impl MapPreview {
     }
 
     fn clamp_camera(&mut self) {
-        // First keep the whole viewport within the real header bbox. Then keep
-        // a small view within the dense requested crop; once the viewport is
-        // wider than that crop, keep its *centre* in the crop instead. This
-        // reaches the complete LOD ladder without turning complete-way header
+        // First keep the whole viewport within the real header bbox, then keep a small view
+        // within the dense requested crop. Once the viewport is wider than that crop, keep its
+        // centre in the crop instead. That reaches the whole LOD ladder without turning header
         // overhang into a sparse pannable region.
         for _ in 0..3 {
             let view = self.viewport().visible_bbox();
@@ -349,9 +347,9 @@ impl SchemaMapPreview {
         })
     }
 
-    /// Select any authored LOD through the renderer's ordinary m/px dispatch.
-    /// The generous upper cap intentionally permits coarsest-LOD inspection
-    /// even if a custom/fixture map's bbox is narrower than that whole frame.
+    /// Select any authored LOD through the renderer's ordinary metres-per-pixel dispatch. The
+    /// upper cap is generous, so the coarsest LOD stays inspectable even when a map's bbox is
+    /// narrower than a whole frame.
     pub fn set_meters_per_pixel(&mut self, value: f32) {
         if !value.is_finite() || value <= 0.0 {
             return;
@@ -589,10 +587,8 @@ mod tests {
     #[test]
     fn reports_the_production_lod_at_every_exact_threshold() {
         let mut preview = opened();
-        // The fixture's own ranges — which since FS7.5b's repack are the **current** preset's, all
-        // fourteen rungs: it had been lagging the schema's two far-zoom tiers, and repacking it for
-        // OBCM v14 necessarily picked up the ladder as well. What is under test is the dispatch
-        // policy, which reads the map's table, so the list follows the fixture rather than leading it.
+        // The fixture's own ranges. What is under test is the dispatch policy, which reads the
+        // map's table, so the list follows the fixture rather than leading it.
         let thresholds = [
             (401.0, 0),
             (400.0, 1),
@@ -622,11 +618,10 @@ mod tests {
     #[test]
     fn wheel_scale_can_reach_every_lod_but_never_expose_blank_coverage() {
         let mut preview = opened();
-        // Zooming fully out is bounded by the map's own extent, not by the ladder: the camera
-        // stops where the frame would leave the file's coverage. Since the FS7.5b repack the
-        // fixture carries all fourteen current rungs, and the six above rung 7 describe ground
-        // scales a 2.4 km crop of the Rhine plain can never fill — so the widest *reachable* rung
-        // is the one the extent selects, and asserting rung 0 would be asserting a blank frame.
+        // Zooming fully out is bounded by the map's own extent and not by the ladder: the camera
+        // stops where the frame would leave the file's coverage. The coarsest rungs describe
+        // ground scales this crop can never fill, so the widest reachable rung is the one the
+        // extent selects.
         preview.zoom_at(1.0e-6, FRAME_W as f32 / 2.0, FRAME_H as f32 / 2.0);
         let widest = preview.stats().lod_index;
         assert_eq!(widest, 7, "the coarsest rung this fixture's extent can reach without blank coverage");
@@ -674,8 +669,8 @@ mod tests {
         let pixels = preview.frame().to_vec();
         let stats = preview.stats();
         let colored = non_modal_pixels(&pixels);
-        // The widest view the extent allows (see the wheel-scale test above for why that is rung 7
-        // and not rung 0 since the fixture picked up the current fourteen-rung ladder).
+        // The widest view the extent allows; see the wheel-scale test above for why that is not
+        // the coarsest rung.
         assert_eq!(stats.lod_index, 7);
         assert!(stats.features_drawn >= 3, "widest rung must retain useful Teningen context: {stats:?}");
         assert!(colored >= 1_000, "widest rung is effectively blank: only {colored} non-modal pixels");
@@ -748,9 +743,8 @@ mod tests {
         let mut preview = SchemaMapPreview::open(MAP.to_vec()).expect("packed map opens without restamping");
         assert_eq!((SCHEMA_FRAME_W, SCHEMA_FRAME_H), (240, 320));
 
-        // Representative m/px values for the fixture's authored ranges — all fourteen of the
-        // current preset's since FS7.5b repacked it. Selection is the production Reader policy, not
-        // a UI formula.
+        // Representative metres-per-pixel values for the fixture's authored ranges. Selection is
+        // the production reader policy, not a UI formula.
         for (mpp, expected) in [(500.0, 0), (400.0, 1), (110.0, 4), (35.0, 7), (16.0, 9), (5.0, 11), (1.2, 13)] {
             preview.set_meters_per_pixel(mpp);
             assert_eq!(preview.lod_index(), expected, "{mpp} m/px");

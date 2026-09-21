@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
 """Fail when a scheduler-owned card is constructed outside the card scheduler.
 
-Six modal card families are the [`CardScheduler`](firmware/obc-app/src/card_scheduler.rs)'s: the
-BLE passkey card, the map-transfer card, the route/trip upload popups, the advisory warning card,
-the post-update toast, and the terminal DFU answers. Their delivery rules — never land mid-hold,
-the passkey card outranks, replace instead of stacking, timeout dismisses, revalidate the durable
-identity at delivery — hold only if nothing else builds one of those screens and pushes it. That
-is what this guard keeps true: production code reaches those cards through the scheduler's slots,
-never through their constructors.
+Six modal card families belong to `CardScheduler`. Their delivery rules hold only if nothing else
+builds one of those screens and pushes it, so production code must reach those cards through the
+scheduler's slots and never through their constructors.
 """
 
 from __future__ import annotations
@@ -38,18 +34,16 @@ OWNED = [
     re.compile(r"\bDfuInstallingScreen::" + r"new\b"),
 ]
 
-# Where building one is legitimate:
-#   * the scheduler itself — it is the one that lands them;
-#   * test harnesses and integration tests, which stage a stack to exercise something else.
+# Building one is legitimate in the scheduler itself, and in test harnesses that stage a stack to
+# exercise something else.
 #
-# `firmware/obc-app/src/screen/` is deliberately **not** exempt, even though it defines these cards:
-# it is where every `Transition::Push` in the codebase is authored, so a screen's `handle()` pushing
-# a scheduler-owned card is the single most plausible way this invariant breaks. The cards' own
-# constructor uses there all sit below their file's `#[cfg(test)]` gate, which the scan already
-# honours, so covering the directory costs nothing.
+# `firmware/obc-app/src/screen/` is not exempt, although it defines these cards: it is where every
+# push is authored, so a screen's `handle()` pushing a scheduler-owned card is the most plausible
+# way this invariant breaks. The constructor uses there sit below a `#[cfg(test)]` gate the scan
+# already honours.
 #
-# Deliberately not on the banned list at all: `RouteSwapScreen::new` (the rider's own menu-opened
-# swap prompt) is a rider-opened screen, so any screen may open it.
+# `RouteSwapScreen::new` is not banned at all: it is a rider-opened screen, so any screen may open
+# it.
 ALLOWED_PATHS = (
     Path("firmware/obc-app/src/card_scheduler.rs"),
     Path("firmware/obc-app/src/harness"),
@@ -57,8 +51,8 @@ ALLOWED_PATHS = (
 )
 
 # A `#[cfg(test)]` module is the crate's own staging ground: a test that pushes a passkey card to
-# check some *other* rule is not a second delivery path. Every such module in this repository sits
-# at the end of its file, so the first `#[cfg(test)]` line is where production code stops.
+# check another rule is not a second delivery path. Every such module sits at the end of its file,
+# so the first `#[cfg(test)]` line is where production code stops.
 TEST_GATE = "#[cfg(test)]"
 
 # Another checkout of this repository is not this checkout. Without this, a linked agent

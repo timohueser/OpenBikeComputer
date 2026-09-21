@@ -1,25 +1,19 @@
-//! **The differential repaint test** (#1447): render-on-demand must be indistinguishable from
-//! rendering every frame.
+//! The differential repaint test: render-on-demand must be indistinguishable from rendering every
+//! frame.
 //!
-//! Two identical devices are driven through the same replay, pass for pass. The **reference**
-//! renders the whole frame every pass and is therefore always correct by construction. The
-//! **candidate** renders only what its [`PassPlan`] asked for. After every single pass the two
-//! composited framebuffers are compared byte for byte: a difference is an **under-redraw**, which
-//! the dirty contract calls a bug, and the replay step that caused it is named in the failure.
+//! Two identical devices are driven through the same replay, pass for pass. The reference renders
+//! the whole frame every pass and is correct by construction. The candidate renders only what its
+//! [`PassPlan`] asked for. The two composited framebuffers are compared byte for byte after every
+//! pass, and a difference is an under-redraw, which the dirty contract calls a bug.
 //!
-//! The candidate also counts its repaints. Over-redraw is safe but not free — a full map render is
-//! tens of milliseconds on the panel — so the counts are reported and held to a ceiling: the
-//! candidate must never repaint *more* often than there are passes, and the quiet stretches of the
-//! replay must stay quiet.
+//! The candidate also counts its repaints, because over-redraw is safe but a full map render is
+//! tens of milliseconds on the panel.
 //!
-//! ## The two-buffer model, and why it is the honest one
-//!
-//! The panel keeps two things: the clean map frame the renderer produced, and the glass, which is
-//! that frame with the transient overlay composited on top. A map repaint re-renders the clean
-//! frame; an overlay repaint re-composites the bulge over the *unchanged* clean frame, and a
-//! trailing overlay repaint with nothing live is what wipes the last bulge off. That is exactly what
-//! the board's `present_bulge` does with its row span, so modelling it here is what makes the
-//! comparison mean something.
+//! The panel model keeps two frames: the clean map frame the renderer produced, and the glass,
+//! which is that frame with the transient overlay composited over it. A map repaint re-renders the
+//! clean frame. An overlay repaint re-composites the bulge over the unchanged clean frame, and a
+//! trailing overlay repaint with nothing live is what wipes the last bulge off. That is what the
+//! board's `present_bulge` does with its row span.
 
 #[path = "cases/diagnostics.rs"]
 mod diagnostics;
@@ -47,16 +41,12 @@ use obc_route::{RouteIndex, RouteReader, RouteSummary};
 
 const W: u32 = 240;
 const H: u32 = 320;
-/// The route's latitude and its western end — the replay walks east along it.
+/// The route's latitude and its western end. The replay walks east along it.
 const LAT: f64 = 48.0;
 const LON0: f64 = 7.8;
 
-// ---------------------------------------------------------------------------------------------
-// The frame buffer and the byte ports.
-// ---------------------------------------------------------------------------------------------
-
-/// A plain RGB888 frame. Comparison is over the whole buffer, so nothing about *where* a difference
-/// is can hide it.
+/// A plain RGB888 frame. Comparison is over the whole buffer, so where a difference sits cannot
+/// hide it.
 #[derive(Clone, PartialEq, Eq)]
 struct Frame(Vec<Rgb888>);
 
@@ -65,8 +55,8 @@ impl Frame {
         Frame(vec![Rgb888::BLACK; (W * H) as usize])
     }
 
-    /// The first and last row on which the two frames differ, and how many pixels do — what a
-    /// repaint actually moved, which is what the sheet-only open is judged on.
+    /// The first and last row on which the two frames differ, and how many pixels do: what a
+    /// repaint moved.
     fn diff_rows(&self, other: &Frame) -> Option<(u32, u32, usize)> {
         let (mut lo, mut hi, mut count) = (u32::MAX, 0, 0);
         for (i, (a, b)) in self.0.iter().zip(other.0.iter()).enumerate() {
@@ -80,7 +70,7 @@ impl Frame {
         (count > 0).then_some((lo, hi, count))
     }
 
-    /// Where the two frames first differ, and how many pixels do — the failure message's evidence.
+    /// Where the two frames first differ, and how many pixels do.
     fn diff(&self, other: &Frame) -> Option<(usize, usize)> {
         let mut first = None;
         let mut count = 0;
@@ -131,7 +121,7 @@ fn color_of(c: u16) -> Rgb888 {
     Rgb888::new(r, g, b)
 }
 
-/// A `ByteSink` over a growable `Vec` — the GPX→OBCR conversion's backing.
+/// A `ByteSink` over a growable `Vec`, backing the GPX conversion.
 #[derive(Default)]
 struct VecSink(Vec<u8>);
 
@@ -147,10 +137,7 @@ impl ByteSink for VecSink {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// The sensor ports: plain values, fed per pass.
-// ---------------------------------------------------------------------------------------------
-
+/// The sensor ports: plain values, fed per pass.
 #[derive(Clone, Copy, Default)]
 struct Ports {
     fix: Option<Fix>,
@@ -158,9 +145,9 @@ struct Ports {
     power: Option<u16>,
     cadence: Option<u8>,
     battery: Option<u8>,
-    /// An electronic-compass heading (degrees CW from north). The app adopts it only where it would
-    /// actually drive the rotation — heading-up, not panning, and a fix with no course — which is
-    /// the one way the map's orientation moves with no gesture and no camera move behind it.
+    /// An electronic-compass heading, degrees clockwise from north. The app adopts it only where
+    /// it drives the rotation: heading-up, not panning, and a fix with no course. It is the one way
+    /// the map's orientation moves with no gesture behind it.
     compass: Option<f32>,
 }
 
@@ -204,31 +191,24 @@ impl InputSource for Keys {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// The replay.
-// ---------------------------------------------------------------------------------------------
-
 /// One replay step: what the host feeds the device before the pass, and what the ports carry.
 #[derive(Default)]
 struct Step {
-    /// A short label naming the change category — quoted back when the frames diverge.
+    /// A short label naming the change category, quoted back when the frames diverge.
     what: &'static str,
     at_ms: u32,
     keys: Vec<InputEvent>,
     ports: Ports,
     /// Host seams applied to both instances identically, before the pass.
     feed: Option<fn(&mut App)>,
-    /// An external fact the pass consumes at stage 2 — the door a runtime's own facts come through.
+    /// An external fact the pass consumes at stage 2.
     fact: Option<fn(&mut ExternalFacts)>,
 
-    /// What must be true of the device after this step. The replay's own coverage check: a segment
-    /// that silently stopped exercising its category (a route that is no longer active, a heading
-    /// that never went up) fails here rather than passing as a comparison of two identical
-    /// nothings.
+    /// What must be true of the device after this step. A segment that stopped exercising its
+    /// category fails here rather than passing as a comparison of two identical nothings.
     probe: Option<fn(&App)>,
-    /// The screen this step must leave on top. Every navigation in the replay states its
-    /// destination, so a binding that moves elsewhere fails here instead of quietly draining the
-    /// replay of the screens it exists to visit.
+    /// The screen this step must leave on top, so a binding that moves elsewhere fails here
+    /// instead of draining the replay of the screens it visits.
     expect: Option<&'static str>,
 }
 
@@ -265,8 +245,8 @@ impl Step {
         self.ports.compass = Some(deg);
         self
     }
-    /// A stationary fix — a rider stopped at a light. No `course`, so the heading-up map falls back
-    /// to the compass.
+    /// A stationary fix, as at a traffic light. No `course`, so the heading-up map falls back to
+    /// the compass.
     fn stopped_at(mut self, i: u32) -> Step {
         let f = fix_at(i);
         self.ports.fix = Some(Fix { course: None, speed_mps: Some(0.0), ..f });
@@ -291,13 +271,14 @@ impl Step {
     }
 }
 
-/// The `i`-th fix along the route, moving east at ~150 m per step with a live course and speed.
+/// The `i`-th fix along the route, moving east at about 150 m per step with a live course and
+/// speed.
 fn fix_at(i: u32) -> Fix {
     let lon = LON0 + 0.0020 * i as f64;
     Fix { lat: (LAT * 1e6) as i32, lon: (lon * 1e6) as i32, course: Some(90.0), speed_mps: Some(6.0 + i as f32 * 0.1) }
 }
 
-/// A fix well north of the route — far outside the corridor, so the matcher reports off-route.
+/// A fix well north of the route, outside the corridor, so the matcher reports off-route.
 fn fix_off_route(i: u32) -> Fix {
     let lon = LON0 + 0.0020 * i as f64;
     Fix::at(((LAT + 0.02) * 1e6) as i32, (lon * 1e6) as i32)
@@ -311,30 +292,25 @@ fn release(b: Button) -> InputEvent {
     InputEvent::Button(ButtonEvent::Up(b))
 }
 
-/// A **chord**: the two buttons pressed together, inside the recognizer's window. Their releases
-/// land in the following step, which is what clears the latch.
+/// A chord: the two buttons pressed together, inside the recognizer's window. Their releases land
+/// in the following step, which clears the latch.
 fn squeeze(a: Button, b: Button) -> [InputEvent; 2] {
     [InputEvent::Button(ButtonEvent::Down(a)), InputEvent::Button(ButtonEvent::Down(b))]
 }
 
-// ---------------------------------------------------------------------------------------------
-// The two instances.
-// ---------------------------------------------------------------------------------------------
-
 const SUPPORT: PlatformSupport =
     PlatformSupport { detour: true, settings_persistence: true, dfu: true, bonding: true, storage_space_report: true };
 
-/// What one map repaint cost and what it moved — the record the sheet-only open is judged on.
+/// What one map repaint cost and what it moved.
 #[derive(Debug)]
 struct Repaint {
     /// The replay clock of the pass that rendered it.
     at_ms: u32,
-    /// Map features the base's draw walked. **Zero means the base was not drawn at all** — nothing
-    /// else in the frame reads the map, so this is the direct measure of the render the frozen
-    /// base's pixels save (#1559).
+    /// Map features the base's draw walked. Zero means the base was not drawn at all, because
+    /// nothing else in the frame reads the map.
     features_tried: usize,
     /// `(first row changed, last row changed, pixels changed)`, or `None` for a render that moved
-    /// no pixel at all — the "whole render spent on nothing" the bench measured.
+    /// no pixel at all.
     pixels: Option<(u32, u32, usize)>,
 }
 
@@ -343,7 +319,7 @@ struct Instance {
     app: App,
     outcomes: OutcomeSlots,
     scratch: Box<obc_render::RenderScratch>,
-    /// The last full map render — what the panel holds behind the transient overlay.
+    /// The last full map render: what the panel holds behind the transient overlay.
     clean: Frame,
     /// What is actually on glass: `clean` with this frame's overlay composited over it.
     glass: Frame,
@@ -354,10 +330,9 @@ struct Instance {
 }
 
 impl Instance {
-    /// `resident` is the host statement the **candidate** makes and the reference does not
-    /// ([`App::set_resident_frame`], #1559): a resident host repaints over the frame it already
-    /// has, so the app may leave the frozen base's rows standing under a sheet. The reference
-    /// composes every screen every pass, which is what makes it the oracle for that.
+    /// `resident` is the host statement the candidate makes and the reference does not: a resident
+    /// host repaints over the frame it already has, so the app may leave the frozen base's rows
+    /// standing under a sheet. The reference composes every screen every pass.
     fn new(mut app: App, resident: bool) -> Instance {
         app.set_resident_frame(resident);
         Instance {
@@ -372,8 +347,8 @@ impl Instance {
         }
     }
 
-    /// Run one pass with this step's input, then paint: `on_demand` false renders every pass (the
-    /// reference), true renders only what the plan asked for (the candidate).
+    /// Run one pass with this step's input, then paint. `on_demand` false renders every pass, as
+    /// the reference does; true renders only what the plan asked for.
     fn advance(&mut self, s: &Step, route: Option<&RouteReader<'_>>, reader: &Reader, on_demand: bool) -> Dirty {
         if let Some(feed) = s.feed {
             feed(&mut self.app);
@@ -387,9 +362,9 @@ impl Instance {
         let mut fuel = One(s.ports.battery.map(|p| (p,)));
         let mut compass = One(s.ports.compass);
         let mut facts = ExternalFacts::NONE;
-        // The card this device has, reported every pass exactly as the board reports its flat
-        // store's live sequence. `store_writable` is what admits a ride recording, and these
-        // replays ride. A step's own (higher) revision still wins — the fact keeps the newest.
+        // The card this device has, reported every pass as the board reports its flat store's live
+        // sequence. `store_writable` is what admits a ride recording, and these replays ride. A
+        // step's own higher revision still wins, because the fact keeps the newest.
         facts.note_store_revision(StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(1) });
         if let Some(note) = s.fact {
             note(&mut facts);
@@ -438,8 +413,8 @@ impl Instance {
             if render_overlay {
                 self.overlay_repaints += 1;
             }
-            // The overlay always composites over the *clean* frame — a bulge that has gone quiet is
-            // wiped by re-presenting the clean rows underneath it, never by painting over itself.
+            // The overlay always composites over the clean frame. A bulge that has gone quiet is
+            // wiped by re-presenting the clean rows under it, never by painting over itself.
             self.glass = self.clean.clone();
             self.app.render_overlay(&mut self.glass, W as f32, H as f32, color_of);
         }
@@ -447,18 +422,14 @@ impl Instance {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// The fixtures.
-// ---------------------------------------------------------------------------------------------
-
-/// A due-east 40-point route along 48.0000° N from 7.8000° E, with four named waypoints along it —
-/// so the Map's waypoint chip has something to move between, and the Up-ahead timeline has rows
-/// whose distance-to-go figures move with the rider.
+/// A due-east 40-point route with four named waypoints, so the Map's waypoint chip has something
+/// to move between and the timeline has rows whose distance-to-go figures move with the rider.
 fn route_bytes() -> Vec<u8> {
     route_gpx(|_| 200.0)
 }
 
-/// The same geometry with a 300 m climb over points 12..28 — the relief the Climb view needs.
+/// The same geometry with a 300 m climb over points 12..28, which is the relief the Climb view
+/// needs.
 fn climb_route_bytes() -> Vec<u8> {
     route_gpx(|i| {
         let rise = i.clamp(12, 28) - 12;
@@ -484,7 +455,7 @@ fn route_gpx(relief: impl Fn(u32) -> f64) -> Vec<u8> {
 }
 
 /// The smallest map that draws something: one style, one rung, one chunk of line work under the
-/// route, so a camera move genuinely changes pixels.
+/// route, so a camera move changes pixels.
 fn map_bytes() -> Vec<u8> {
     use obcm_testkit::{build_file, pack_line16, seal, LodSpec, Style};
     const STYLES: &[Style] = &[(1, 0, 0x07E0, 3, 1, false, None)];
@@ -497,8 +468,8 @@ fn map_bytes() -> Vec<u8> {
     )
 }
 
-/// The catalog entry for the replay route, read from its own header — no hand-built twin. Built
-/// once, because the replay's host seams are plain `fn` pointers with nothing to capture.
+/// The catalog entry for the replay route, read from its own header rather than a hand-built
+/// twin.
 fn route_summary() -> RouteSummary {
     static SUMMARY: std::sync::OnceLock<RouteSummary> = std::sync::OnceLock::new();
     SUMMARY
@@ -506,9 +477,9 @@ fn route_summary() -> RouteSummary {
         .clone()
 }
 
-/// The device both instances start from: the three live sensor tiles pinned to the grid — one page
-/// of them, so the grid's auto-cycle never fires — because the whole point of the Statistics key is
-/// that a value the rider chose to see repaints when it moves.
+/// The device both instances start from: the three live sensor tiles pinned to the grid, one page
+/// of them so the auto-cycle never fires. A value the rider chose to see must repaint when it
+/// moves.
 fn riding_device(camera: AppState) -> App {
     use obc_app::{StatField, StatFieldList};
     let mut app = App::new(camera);
@@ -518,12 +489,11 @@ fn riding_device(camera: AppState) -> App {
     app
 }
 
-/// A map whose POI section carries drinking water and a bike shop **inside the route's 300 m
-/// corridor** — the only fixture in this file a corridor query answers from, and therefore the only
-/// one whose `Next: <category>` tiles ever name anything.
+/// A map whose POI section carries drinking water and a bike shop inside the route's corridor. It
+/// is the only fixture here a corridor query answers from, so the only one whose next-category
+/// tiles name anything.
 ///
-/// The water POIs are spaced so the tile's named entry changes as the rider rides past them, which
-/// is the exact mutation #1538 asks about.
+/// The water POIs are spaced so the tile's named entry changes as the rider passes them.
 fn poi_map_bytes() -> Vec<u8> {
     use obcm_testkit::{build_poi_map, PoiSpec};
     let water = vec![
@@ -541,36 +511,32 @@ fn climb_summary() -> RouteSummary {
     SUMMARY.get_or_init(|| RouteSummary::read(&SliceSource(&climb_route_bytes())).expect("its header reads")).clone()
 }
 
-/// A saved, connected heart-rate sensor — the Sensors page's status row.
+/// A saved, connected heart-rate sensor, for the Sensors page's status row.
 fn connected_hr() -> [SensorStatus; 3] {
     let mut s = [SensorStatus::default(); 3];
     s[0] = SensorStatus { phase: SensorPhase::Connected, battery: Some(78), last_value_ms: 1_000 };
     s
 }
 
-// ---------------------------------------------------------------------------------------------
-// The replay itself.
-// ---------------------------------------------------------------------------------------------
-
 /// Every change category the render keys claim to cover, in one continuous ride. The clock advances
-/// monotonically, so the timers (the no-fix window, the sensor staleness gate, the upload popup's
-/// auto-close, the idle return) all fire inside the replay rather than being staged.
+/// monotonically, so the no-fix window, the sensor staleness gate, the upload popup's auto-close and
+/// the idle return all fire inside the replay rather than being staged.
 fn replay() -> Vec<Step> {
     let mut steps = vec![
-        // --- the boot frame, then quiet -------------------------------------------------------
+        // The boot frame, then quiet.
         step("boot", 0).expect("Map"),
         step("quiet after boot", 100),
-        // --- the route arrives: a host seam for the catalog, an external fact for the card -----
+        // The route arrives: a host seam for the catalog, an external fact for the card.
         step("route uploaded", 500)
             .feed(|app| app.set_routes_with_ids(&[route_summary()], &[7]))
             .fact(|f| f.note_route_upload(RouteUpload { id: 7, replaced: false, elevation: None }))
             .expect("RouteReceived"),
         step("quiet with the upload card up", 800),
         step("dismiss the upload card", 1_000).keys(&tap(Button::Back)).expect("Map"),
-        // --- start a ride, so the Map has its Statistics sibling to swap to --------------------
+        // Start a ride, so the Map has its Statistics sibling to swap to.
         step("open the start card", 1_400).keys(&tap(Button::Select)).expect("RideStart"),
-        // Starting the ride enters the riding view, which is what turns the map heading-up — and it
-        // begins a route-*less* session, so the route is adopted after it rather than before.
+        // Starting the ride enters the riding view, which turns the map heading-up. It begins a
+        // session with no route, so the route is adopted after it rather than before.
         step("start the ride", 1_600).keys(&tap(Button::Select)).expect("Map"),
         step("adopt the route", 1_800).feed(|app| app.activate_route(0)).probe(|app| {
             assert!(app.state.heading_up, "the riding view is heading-up — the compass segment needs it");
@@ -578,7 +544,7 @@ fn replay() -> Vec<Step> {
         }),
     ];
 
-    // --- fix acquisition, movement, staleness and recovery ------------------------------------
+    // Fix acquisition, movement, staleness and recovery.
     steps.push(step("fix acquisition", 2_000).fix(0));
     for i in 1..6 {
         steps.push(step("fix movement (camera, progress)", 2_000 + i * 1_000).fix(i));
@@ -587,7 +553,7 @@ fn replay() -> Vec<Step> {
     steps.push(step("still stale", 14_000));
     steps.push(step("fix recovery", 16_000).fix(6));
 
-    // --- off route and back --------------------------------------------------------------------
+    // Off route and back.
     steps.push(Step { ports: Ports { fix: Some(fix_off_route(7)), ..Ports::default() }, ..step("off route", 17_000) });
     steps.push(
         Step { ports: Ports { fix: Some(fix_off_route(8)), ..Ports::default() }, ..step("still off route", 18_000) }
@@ -601,29 +567,28 @@ fn replay() -> Vec<Step> {
         steps.push(step("route progress and the next waypoint", 19_000 + (i - 9) * 1_000).fix(i));
     }
 
-    // --- the Statistics grid: the one screen that draws the live sensor tiles -------------------
+    // The Statistics grid: the one screen that draws the live sensor tiles.
     steps.push(step("swap to the riding grid", 26_000).keys(&tap(Button::Back)).expect("Statistics"));
-    // **No fix on any of these.** A sensor sample that arrives between fixes is exactly the edge
-    // the grid's key exists for: nothing else about the device moves, so if the value is not in the
-    // key, the tile freezes on glass (epic #744, SR3).
+    // No fix on any of these. A sensor sample that arrives between fixes is the edge the grid's
+    // key exists for: nothing else moves, so a value missing from the key freezes on glass.
     steps.push(step("heart rate arrives, no fix", 26_500).hr(120));
     steps.push(step("power arrives, no fix", 27_000).power(210));
     steps.push(step("cadence arrives, no fix", 27_500).cadence(84));
     steps.push(step("an unchanged heart rate", 28_000).hr(120));
     steps.push(step("a changed heart rate", 29_000).hr(131));
     steps.push(step("quiet on the grid", 30_000));
-    // Past the 5 s staleness gate with no fresh sample: every tile blanks to `--`.
+    // Past the 5 s staleness gate with no fresh sample: every tile blanks.
     steps.push(step("the sensor tiles go stale", 36_000));
     steps.push(step("still blank", 37_000));
     // Progress and the climb move under the grid, with the fix that carries them.
     steps.push(step("progress under the grid", 38_000).fix(16));
     steps.push(step("more progress under the grid", 39_000).fix(17));
 
-    // --- the battery: on a riding view, and on Home ---------------------------------------------
+    // The battery, on a riding view and on Home.
     steps.push(step("battery read while riding", 40_000).battery(75));
     steps.push(step("battery change while riding", 71_000).battery(61));
 
-    // --- back to the Map for the camera and overlay work ----------------------------------------
+    // Back to the Map for the camera and overlay work.
     steps.push(step("swap back to the map", 72_000).keys(&tap(Button::Back)).expect("Map"));
     steps.push(step("zoom step", 72_500).keys(&[InputEvent::Step(1)]));
     steps.push(step("zoom step back", 73_000).keys(&[InputEvent::Step(-1)]));
@@ -636,18 +601,16 @@ fn replay() -> Vec<Step> {
     steps.push(step("pan the camera", 74_900).keys(&[InputEvent::Step(1)]));
     steps.push(step("leave pan mode", 75_400).keys(&tap(Button::Back)).expect("Map"));
 
-    // --- camera **orientation**, which moves with no gesture and no camera move -------------------
-    // Heading-up plus a stopped rider is the one state where the electronic compass drives the
-    // projection: `App::advance_inputs` adopts a reading only when the map is heading-up, not
-    // panning, and the latest fix carries no course. So the map rotates *inside* a pass off a sensor
-    // nothing else in the frame reacts to — which is exactly why `course_rad` is in the Map key.
+    // Camera orientation, which moves with no gesture and no camera move. Heading-up plus a
+    // stopped rider is the one state where the compass drives the projection, so the map rotates
+    // inside a pass off a sensor nothing else in the frame reacts to.
     steps.push(step("the rider stops at a light", 75_600).stopped_at(19));
     steps.push(step("the compass turns the map", 75_700).compass(40.0));
     steps.push(step("the same heading again", 75_800).compass(40.0));
     steps.push(step("the rider turns their bars", 75_900).compass(115.0));
     steps.push(step("the compass goes quiet", 76_000));
 
-    // The production timeline keeps its prepared rows while fixes advance beneath it.
+    // The production timeline keeps its prepared rows while fixes advance under it.
     steps.push(step("squeeze the ride context open", 76_100).keys(&squeeze(Button::Down, Button::Back)));
     steps.push(step("the sheet settles", 76_700).expect("ContextDrawer"));
     steps.push(step("release the squeeze", 76_800).keys(&[release(Button::Back), release(Button::Down)]));
@@ -662,15 +625,13 @@ fn replay() -> Vec<Step> {
     steps.push(step("return to questions", 78_400).keys(&tap(Button::Back)).expect("Assistant"));
     steps.push(step("return to map", 78_500).keys(&tap(Button::Back)).expect("Map"));
 
-    // --- the freeze banner ----------------------------------------------------------------------
-    // Between leaving the timeline (78_400) and the first card (79_000): the clock is monotonic
-    // across the whole replay, which is what lets its timers — the no-fix window, the sensor
-    // staleness gate, the gauge cadence, the popup auto-close — fire from the clock itself.
+    // The freeze banner, between leaving the timeline and the first card. The clock is monotonic
+    // across the whole replay, which is what lets its timers fire from the clock itself.
     steps.push(step("a planner run starts (freeze on)", 78_700).feed(|app| app.debug_set_plan_live(true)));
     steps.push(step("frozen, with fixes still arriving", 78_800).fix(22));
     steps.push(step("the planner answers (freeze off)", 78_900).feed(|app| app.debug_set_plan_live(false)));
 
-    // --- the cards: arrival, replacement, removal ------------------------------------------------
+    // The cards: arrival, replacement, removal.
     steps.push(
         step("a passkey card arrives", 79_000)
             .feed(|app| {
@@ -705,9 +666,8 @@ fn replay() -> Vec<Step> {
             app.set_sensor_scan_hits(&[obc_app::SensorScanHit::new(0, 0, [1, 2, 3, 4, 5, 6], "HRM", -55)])
         }));
     steps.push(step("the scan list clears", 86_000).feed(|app| app.set_sensor_scan_hits(&[])));
-    // --- an upload card, left to time out ----------------------------------------------------------
-    // Mid-ride the same upload lands as the **swap prompt** instead — same family, same 30 s
-    // auto-close, and the replay leaves this one alone so the timeout dismissal is exercised too.
+    // An upload card, left to time out. Mid-ride the same upload lands as the swap prompt, with
+    // the same 30 s auto-close, and the replay leaves this one alone.
     steps.push(
         step("a second upload card arrives", 90_000)
             .fact(|f| f.note_route_upload(RouteUpload { id: 7, replaced: false, elevation: None }))
@@ -716,31 +676,26 @@ fn replay() -> Vec<Step> {
     steps.push(step("waiting out the popup", 105_000).expect("RouteSwap"));
     steps.push(step("the popup times out", 121_000).expect("Map"));
 
-    // --- and a long quiet tail -----------------------------------------------------------------------
+    // A long quiet tail.
     for i in 0..5 {
         steps.push(step("quiet tail", 122_000 + i * 1_000));
     }
 
-    // --- the one battery fact a map base draws: the low-battery cue ------------------------------
-    // A map base draws no gauge, but it does draw the top-left low-battery glyph, so the *cue* (not
-    // the level) is in the Map key. Each crossing is placed on the gauge's own ~30 s cadence, which
-    // is what makes the reading land at all.
+    // The one battery fact a map base draws: a map base draws no gauge, but it draws the low-battery
+    // glyph, so the cue and not the level is in the Map key. Each crossing is placed on the gauge's
+    // own cadence, which is what makes the reading land.
     steps.push(step("the battery crosses into the low-battery cue", 155_000).battery(5).expect("Map"));
     steps.push(step("quiet with the cue up", 156_000).expect("Map"));
     steps.push(step("the battery charges back over the cue", 190_000).battery(40).expect("Map"));
     steps.push(step("quiet with the cue gone", 191_000).expect("Map"));
 
-    // --- the quick drawer: the same landing-frame edge, on the other sheet ------------------------
-    // Both drawers report the frame their open slide *lands* on, because that frame still differs
-    // from the one before it — and a render-on-demand host that skips it keeps a half-arrived sheet
-    // on the panel until something unrelated repaints. The ride-context squeeze at 76,100 ms proves
-    // it for one sheet; nothing else in the replay opens the other, so this proves it for the quick
-    // drawer too. It sits at the tail because the property needs a step **after** the open has
-    // finished and the busy stretch above has no such gap.
+    // The quick drawer. Both drawers report the frame their open slide lands on, because that
+    // frame still differs from the one before it, and a host that skips it keeps a half-arrived
+    // sheet on the panel. This sits at the tail because the property needs a step after the open
+    // has finished.
     //
-    // The three halves, in order: the landing frame is reported, an idle map under a settled sheet
-    // asks for nothing, and the close asks for exactly one repaint. The open itself, step by step,
-    // is `the_drawer_open_damages_only_the_sheet_…` below.
+    // In order: the landing frame is reported, an idle map under a settled sheet asks for nothing,
+    // and the close asks for exactly one repaint.
     steps.push(step("squeeze the quick drawer open", 192_000).keys(&squeeze(Button::Up, Button::Select)));
     steps.push(step("release the squeeze", 192_100).keys(&[release(Button::Select), release(Button::Up)]));
     steps.push(step("the quick sheet settles", 192_600).expect("QuickDrawer"));
@@ -750,7 +705,7 @@ fn replay() -> Vec<Step> {
     steps
 }
 
-/// The climbing replay: start a ride on a route with relief and let the auto-switch open the Climb
+/// The climbing replay: start a ride on a route with relief, let the auto-switch open the Climb
 /// view, then keep riding under it.
 fn climb_replay() -> Vec<Step> {
     let mut steps = vec![
@@ -781,7 +736,7 @@ fn climb_replay() -> Vec<Step> {
 fn pages_replay() -> Vec<Step> {
     let mut steps = vec![
         step("boot on Home", 0).expect("Home"),
-        // Home -> Menu -> Settings -> Connections -> Sensors, the recorded snapshot path.
+        // Home to Menu to Settings to Connections to Sensors, the recorded snapshot path.
         step("open the menu", 500).keys(&tap(Button::Select)).expect("Menu"),
         step("step to Settings", 1_000).keys(&[InputEvent::Step(-1)]).expect("Menu"),
         step("the needle settles", 1_400).expect("Menu"),
@@ -791,10 +746,9 @@ fn pages_replay() -> Vec<Step> {
         step("step to Sensors", 2_600).keys(&[InputEvent::Step(1)]),
         step("open the Sensors page", 3_000).keys(&tap(Button::Select)).expect("Sensors"),
     ];
-    // The two sensor seams, with the page that draws them actually up. Both are host feeders that
-    // run between passes, so each keeps its own repaint request; what this proves is that the
-    // page's declared key is built, holds still when the seam re-feeds the same value, and stays in
-    // parity across every one of them.
+    // The two sensor seams, with the page that draws them up. Both are host feeders that run
+    // between passes, so each keeps its own repaint request. The page's declared key must be built,
+    // hold still when the seam re-feeds the same value, and stay in parity.
     steps.push(
         step("a saved sensor connects", 3_500).feed(|app| app.set_sensor_status(&connected_hr())).expect("Sensors"),
     );
@@ -820,8 +774,8 @@ fn pages_replay() -> Vec<Step> {
     steps.push(step("the scan list clears", 5_600).feed(|app| app.set_sensor_scan_hits(&[])));
     steps.push(step("quiet on the scan list", 5_800).expect("SensorScan"));
 
-    // A passkey card arrives over the settings tree, and its **digits change** while it is up — the
-    // in-place card rewrite the scheduler's sweep is the one writer of.
+    // A passkey card arrives over the settings tree and its digits change while it is up, which is
+    // the in-place card rewrite only the scheduler's sweep writes.
     steps.push(
         step("a passkey card arrives", 6_000)
             .feed(|app| {
@@ -857,13 +811,12 @@ fn pages_replay() -> Vec<Step> {
     steps
 }
 
-/// The `Next: <category>` replay (#1538): a grid with two of the tiles pinned, on the one fixture
-/// whose map answers a corridor query.
+/// The next-category replay: a grid with two of the tiles pinned, on the one fixture whose map
+/// answers a corridor query.
 ///
-/// The cache behind the tiles is refreshed **one category per pass**, round-robin, and the query it
-/// asks for runs only inside a map render. So the second tile's request is armed on a pass where
-/// nothing else moved — and unless the arming itself is a repaint, a render-on-demand host never
-/// runs the query and that tile keeps showing `--`.
+/// The cache behind the tiles refreshes one category per pass, round-robin, and its query runs only
+/// inside a map render. The second tile's request is therefore armed on a pass where nothing else
+/// moved, so unless the arming is itself a repaint that tile never fills.
 ///
 /// Every quiet step here is deliberate: the tiles must fill, then hold still.
 fn tiles_replay() -> Vec<Step> {
@@ -874,19 +827,19 @@ fn tiles_replay() -> Vec<Step> {
         step("start the ride", 1_400).keys(&tap(Button::Select)).expect("Map"),
         step("adopt the route", 1_800).feed(|app| app.activate_route(0)),
         step("the first fix", 2_000).fix(0),
-        // Entering the grid is what starts the refreshes: the tiles draw nowhere else.
+        // Entering the grid starts the refreshes: the tiles draw nowhere else.
         step("swap to the riding grid", 2_500).keys(&tap(Button::Back)).expect("Statistics").probe(|app| {
             assert_eq!(first_corridor_poi(app), Some("Fontaine"), "the water tile's first answer landed on entry");
         }),
-        // **The step this replay exists for.** No fix, no key, no gesture — only the scheduler
-        // taking its turn at the second placed category.
+        // The step this replay exists for: no fix, no key, no gesture, only the scheduler taking
+        // its turn at the second placed category.
         step("the scheduler serves the second tile", 2_700).expect("Statistics").probe(|app| {
             assert_eq!(first_corridor_poi(app), Some("Velo"), "the bike-shop tile filled on a pass nothing moved in");
         }),
         step("both tiles are settled", 2_900).expect("Statistics"),
         step("and stay settled", 3_100).expect("Statistics"),
     ];
-    // Riding on: each fountain is passed in turn, so the water tile's *named* entry changes under a
+    // Riding on: each fountain is passed in turn, so the water tile's named entry changes under a
     // grid whose other figures move with it.
     for i in 1..12 {
         let mut riding = step("riding under the grid", 3_000 + i * 1_000).fix(i).expect("Statistics");
@@ -905,14 +858,14 @@ fn tiles_replay() -> Vec<Step> {
     steps
 }
 
-/// The name of the nearest POI in the corridor snapshot that last landed — what the tile the
-/// snapshot was taken for now names. `None` when the query found nothing.
+/// The name of the nearest POI in the corridor snapshot that last landed. `None` when the query
+/// found nothing.
 fn first_corridor_poi(app: &App) -> Option<&str> {
     app.corridor_snapshot().first().map(|e| e.poi.name.as_str())
 }
 
-/// **The `Next: <category>` tiles.** A tile whose answer arrives from the card, on a device that
-/// only renders when something moved.
+/// A tile whose answer arrives from the card, on a device that only renders when something
+/// moved.
 #[test]
 fn the_next_category_tiles_stay_in_parity() {
     use obc_app::{StatField, StatFieldList};
@@ -934,7 +887,7 @@ fn the_next_category_tiles_stay_in_parity() {
         || {
             let mut app = App::new(camera);
             // Two of the six tiles, which is what makes the round-robin visible: with one placed,
-            // the single request is armed by the same pass the screen transition already dirtied.
+            // the single request is armed by the same pass the screen transition dirtied.
             let fields = StatFieldList::decode(2, &[StatField::NextWater as u8, StatField::NextBikeShop as u8]);
             app.set_settings(obc_app::Settings { stat_fields: fields, ..*app.settings() });
             app
@@ -943,7 +896,7 @@ fn the_next_category_tiles_stay_in_parity() {
         Some(&route),
         &reader,
     );
-    // A settled cache must stop asking: were every pass to re-arm, the grid would repaint at the
+    // A settled cache must stop asking: if every pass re-armed, the grid would repaint at the
     // frame rate for six tiles nobody touched.
     assert!(map_repaints < steps.len(), "the grid does not repaint every pass while the tiles sit still");
 }
@@ -954,15 +907,15 @@ fn home_replay() -> Vec<Step> {
         step("boot on Home", 0).expect("Home"),
         step("the first battery read", 100).battery(75),
         step("quiet", 1_000),
-        // The gauge is read on a ~30 s cadence, so a change is only seen at the next read. The
-        // clock's minute rollovers (60 s, 120 s) are drained on their own passes, so the gauge
-        // assertions below are about the gauge and not about the digits beside it.
+        // The gauge is read on a 30 s cadence, so a change is seen only at the next read. The
+        // clock's minute rollovers are drained on their own passes, so the assertions below are
+        // about the gauge and not the digits beside it.
         step("an unchanged level at the cadence", 30_500).battery(75),
         step("the minute rolls over", 61_000).battery(75),
         step("quiet", 61_500),
         step("a changed level at the next cadence", 91_500).battery(61),
         step("quiet after the gauge moved", 92_000),
-        // The connected indicator: chrome Home draws in its title area.
+        // The connected indicator, which chrome Home draws in its title area.
         step("the phone connects", 92_500)
             .feed(|app| app.set_ble_status(BleStatus { link: BleLink::Connected, paired: true, passkey: None })),
         step("an unchanged link", 93_000)
@@ -981,9 +934,8 @@ fn home_replay() -> Vec<Step> {
     steps
 }
 
-/// Drive one replay through both instances and compare the glass after **every** pass. Returns the
-/// candidate's `(map, overlay)` repaint counts beside the reference's, so a caller can hold them to
-/// a ceiling.
+/// Drive one replay through both instances and compare the glass after every pass. Answers the
+/// candidate's `(map, overlay)` repaint counts beside the reference's.
 fn run_replay(
     label: &str,
     app: impl Fn() -> App,
@@ -995,8 +947,8 @@ fn run_replay(
     ((candidate.map_repaints, candidate.overlay_repaints), (reference.map_repaints, reference.overlay_repaints))
 }
 
-/// The same drive, handing both instances back — for a test that judges *what* the candidate
-/// repainted rather than only how often (the sheet-only open, #1559).
+/// The same drive, handing both instances back, for a test that judges what the candidate
+/// repainted and not only how often.
 fn drive_replay(
     label: &str,
     app: impl Fn() -> App,
@@ -1040,8 +992,8 @@ fn drive_replay(
     (candidate, reference)
 }
 
-/// **The ride.** Frame-for-frame parity across a route-following ride: the fix, the grid, the
-/// camera, the overlay, the freeze, and every host-pushed card.
+/// Frame-for-frame parity across a route-following ride: the fix, the grid, the camera, the
+/// overlay, the freeze, and every host-pushed card.
 #[test]
 fn on_demand_rendering_is_pixel_identical_to_rendering_every_pass() {
     let map = map_bytes();
@@ -1060,8 +1012,8 @@ fn on_demand_rendering_is_pixel_identical_to_rendering_every_pass() {
     let ((map_repaints, overlay), (ref_map, ref_overlay)) =
         run_replay("ride", || riding_device(camera), &steps, Some(&route), &reader);
 
-    // Over-redraw is safe, so this is a ceiling and not an equality — but a candidate that repainted
-    // as often as the reference would mean render-on-demand had stopped demanding anything.
+    // Over-redraw is safe, so this is a ceiling and not an equality. A candidate that repainted as
+    // often as the reference would mean render-on-demand had stopped demanding anything.
     assert_eq!(ref_map, steps.len(), "the reference renders the map every pass, by definition");
     assert!(
         map_repaints < steps.len(),
@@ -1071,10 +1023,9 @@ fn on_demand_rendering_is_pixel_identical_to_rendering_every_pass() {
     assert!(overlay <= ref_overlay, "candidate overlay repaints {overlay} exceeded the reference's {ref_overlay}");
 }
 
-/// **The Climb view.** The last declared kind, and the only one whose screen the rider never opens:
-/// the C5 auto-switch puts it up the moment a climb becomes active, so a replay that exercises it
-/// has to ride into real relief. The flat replay route is flat on purpose — a climb there would
-/// swap the Map and the grid away and swallow the coverage those segments exist for.
+/// The Climb view is the only kind whose screen the rider never opens: the auto-switch puts it up
+/// the moment a climb becomes active, so a replay that exercises it must ride into real relief. The
+/// flat replay route is flat on purpose, because a climb there would swap the Map and the grid away.
 #[test]
 fn the_climb_view_stays_in_parity_through_a_climb() {
     let map = map_bytes();
@@ -1094,9 +1045,9 @@ fn the_climb_view_stays_in_parity_through_a_climb() {
     assert!(map_repaints < steps.len(), "the climb view does not repaint every pass");
 }
 
-/// **The parked device.** Home is the screen a bikepacker leaves the computer on, and it draws three
-/// things nothing else does: the battery gauge, the connected indicator, and the screensaver
-/// backdrop the idle return re-rolls. None of them moves with a fix, so this replay carries none.
+/// Home draws three things nothing else does: the battery gauge, the connected indicator, and the
+/// screensaver backdrop the idle return re-rolls. None of them moves with a fix, so this replay
+/// carries none.
 #[test]
 fn a_parked_device_repaints_only_what_home_draws() {
     let map = map_bytes();
@@ -1111,9 +1062,8 @@ fn a_parked_device_repaints_only_what_home_draws() {
     assert!(map_repaints < steps.len(), "a parked device does not repaint every pass");
 }
 
-/// The quiet half of the same contract: with nothing at all happening, the candidate must plan
-/// **zero** repaints — the render-on-demand claim in its strongest form, and the one a render key
-/// that named too much would break silently.
+/// With nothing happening at all, the candidate must plan zero repaints. A render key that named
+/// too much would break this silently.
 #[test]
 fn a_device_with_nothing_happening_plans_no_repaint_at_all() {
     let map = map_bytes();
@@ -1123,7 +1073,7 @@ fn a_device_with_nothing_happening_plans_no_repaint_at_all() {
     let reader = Reader::new(&map_src, &tables, &cache);
 
     let mut device = Instance::new(App::new_idle(AppState::new((LON0 * 1e6) as i32, (LAT * 1e6) as i32, 0.05)), true);
-    // The boot frame, plus the Home clock's first minute tick, are the device's own — drain them.
+    // The boot frame and the Home clock's first minute tick are the device's own, so drain them.
     for ms in [0, 60_000, 120_000] {
         device.advance(&step("settling", ms), None, &reader, true);
     }
@@ -1134,38 +1084,30 @@ fn a_device_with_nothing_happening_plans_no_repaint_at_all() {
     assert_eq!(device.map_repaints, before, "an idle device with no input and no fix must render nothing");
 }
 
-// ---------------------------------------------------------------------------------------------
-// The sheet-only open (#1559).
-// ---------------------------------------------------------------------------------------------
-
-/// When the squeeze lands, **a long way after the pass in front of it** (#1569).
+/// When the squeeze lands, a long way after the pass in front of it.
 ///
-/// The gap is the board's: its Map sleeps until something it asked for happens, so the pass before
-/// a squeeze is hundreds of milliseconds to whole seconds back, and 900 ms is already twice the
-/// sheet's whole open. A sheet stamped with that pass's clock is drawn landed on its first frame —
-/// the open cuts — which is what the board did while this replay, run at dense ticks, passed 9/9.
-/// The open has to start on the frame the squeeze woke.
+/// The gap is the board's: its Map sleeps until something it asked for happens, so the pass before a
+/// squeeze is hundreds of milliseconds back, and this gap is already twice the sheet's whole open. A
+/// sheet stamped with that pass's clock would be drawn landed on its first frame. The open has to
+/// start on the frame the squeeze woke.
 ///
-/// **What the gap costs the oracle, for whoever moves this next.** The reference draws the base
-/// every pass; the candidate's first sheet-only frame does not draw it at all. So any base fact
-/// that is *time-driven* and crosses the 8,000 → 8,900 window makes the two disagree on the
-/// squeeze pass — and `drive_replay` reports that as lost pixels, which reads like a drawer fault
-/// and is not one. Nothing crosses it today (the pass at 8,000 is the last wake the Map asked
-/// for, so the base is current). Widen the gap, or move the pass in front of it, and a ride-clock
-/// digit or a banner phase can land inside — the fix is another pass at the wake the base wanted,
-/// never a weaker assertion here.
+/// The gap costs the oracle something. The reference draws the base every pass, and the candidate's
+/// first sheet-only frame does not draw it at all, so any time-driven base fact that crosses the
+/// window makes the two disagree on the squeeze pass and reads like a drawer fault. Nothing crosses
+/// it today. If the gap widens, add another pass at the wake the base wanted rather than weakening
+/// an assertion here.
 const SQUEEZE_MS: u32 = 8_900;
 
-/// The **quick drawer's open, step by step**, over a riding Map — the one base whose row says it is
-/// not recessed under a sheet.
+/// The quick drawer's open, step by step, over a riding Map, which is the one base whose row says
+/// it is not recessed under a sheet.
 ///
-/// Sampled at the sheet's own step cadence so every intermediate position is a pass of its own,
-/// and squeezed a long way after the pass in front of it ([`SQUEEZE_MS`]), which is the board's.
+/// Sampled at the sheet's own step cadence, so every intermediate position is a pass of its own, and
+/// squeezed a long way after the pass in front of it ([`SQUEEZE_MS`]).
 fn drawer_open_replay() -> Vec<Step> {
     let mut steps = vec![
         step("boot on the Map", 0).expect("Map"),
         step("the first fix", 200).fix(0).expect("Map"),
-        // **The board's cadence, and it is the point** — see [`SQUEEZE_MS`].
+        // The board's cadence; see [`SQUEEZE_MS`].
         step("quiet", 500).expect("Map"),
         step("the last wake the Map asked for", 8_000).expect("Map"),
         step("squeeze the quick drawer open", SQUEEZE_MS - 80).keys(&squeeze(Button::Up, Button::Select)),
@@ -1174,8 +1116,8 @@ fn drawer_open_replay() -> Vec<Step> {
     for i in 1..=9 {
         steps.push(step("an open step", SQUEEZE_MS + i * 32).expect("QuickDrawer"));
     }
-    // The tail at four times the sheet's own rate — a device wakes on more than its own timers (a
-    // fix, a notification, a card sweep), and a wake between two steps must not cost a render.
+    // The tail at four times the sheet's own rate: a device wakes on more than its own timers, and
+    // a wake between two steps must not cost a render.
     for i in 0..30 {
         steps.push(step("a wake between two steps", SQUEEZE_MS + 292 + i * 4).expect("QuickDrawer"));
     }
@@ -1187,20 +1129,9 @@ fn drawer_open_replay() -> Vec<Step> {
     steps
 }
 
-/// **The sheet-only open, measured** (#1559). Three properties, all read off the candidate's own
-/// damage log, with the full-frame reference standing beside it as the oracle for every one of them
-/// (`drive_replay` compares the two after every pass, so a base row that went stale is a failure
-/// before any assertion here runs).
-///
-/// 1. **Every step of the open damages the sheet's band and nothing else.** The base is not drawn:
-///    its rows stand exactly as the frame before the sheet arrived left them.
-/// 2. **No step is spent on nothing.** The bench measured whole renders pushing zero rows; a step
-///    that would not move the sheet is not reported at all now.
-/// 3. **The close is one repaint**, and the frames after it are clean.
-///
-/// The mutants: drop `resident_frame` from the render's `sheet_only` and property 1 fails (the
-/// whole frame is damaged on the first step, because the base is drawn again); drop the
-/// `shown_h` comparison in the drawer's tick and property 2 fails.
+/// The sheet-only open, measured off the candidate's own damage log, with the full-frame reference
+/// as the oracle: every step of the open damages the sheet's band and nothing else, no step is spent
+/// on nothing, and the close is one repaint followed by clean frames.
 #[test]
 fn the_drawer_open_damages_only_the_sheet_and_the_close_is_one_repaint() {
     let map = map_bytes();
@@ -1213,8 +1144,8 @@ fn the_drawer_open_damages_only_the_sheet_and_the_close_is_one_repaint() {
     let steps = drawer_open_replay();
     let (candidate, _) = drive_replay("drawer open", || riding_device(camera), &steps, None, &reader);
 
-    // The quick drawer's root sheet is 104 px tall on a 320 px panel; give the rounded lip a couple
-    // of rows and nothing below that may move.
+    // The quick drawer's root sheet is 104 px tall on a 320 px panel. Give the rounded lip a
+    // couple of rows; nothing below that may move.
     const SHEET_ROWS: u32 = 110;
     let open: Vec<&Repaint> =
         candidate.damage.iter().filter(|r| (SQUEEZE_MS..=SQUEEZE_MS + 560).contains(&r.at_ms)).collect();
@@ -1233,7 +1164,7 @@ fn the_drawer_open_damages_only_the_sheet_and_the_close_is_one_repaint() {
             r.at_ms
         );
     }
-    // The sheet really grew across those steps rather than snapping to its height on the first.
+    // The sheet grew across those steps rather than snapping to its height on the first.
     let deepest: Vec<u32> = open.iter().filter_map(|r| r.pixels.map(|(_, hi, _)| hi)).collect();
     assert!(deepest.first() < deepest.last(), "the sheet arrived over the steps: {deepest:?}");
 
@@ -1243,8 +1174,8 @@ fn the_drawer_open_damages_only_the_sheet_and_the_close_is_one_repaint() {
         "a settled sheet over a frozen base repaints nothing"
     );
 
-    // The close: exactly one repaint, it renders the base once, and then quiet. With the map never
-    // dimmed, even that repaint only has the sheet's own rows to put back.
+    // The close: exactly one repaint, which renders the base once, and then quiet. With the map
+    // never dimmed, that repaint has only the sheet's own rows to put back.
     let close: Vec<&Repaint> = candidate.damage.iter().filter(|r| r.at_ms >= SQUEEZE_MS + 900).collect();
     assert_eq!(close.len(), 1, "the close is one repaint and no more: {close:?}");
     assert!(close[0].features_tried > 0, "the close is the one base re-render — its status-quo cost");
@@ -1252,9 +1183,9 @@ fn the_drawer_open_damages_only_the_sheet_and_the_close_is_one_repaint() {
     assert!(hi < SHEET_ROWS, "the close put back rows {lo}..={hi} — only the sheet's own were wrong");
 }
 
-/// The sheet's **pages**, which is where the frozen base's pixels get their one exception: the
-/// brightness editor is taller than the icon row, so going back to the root **shrinks** the sheet
-/// and gives rows back that still hold sheet pixels.
+/// The sheet's pages are where the frozen base's pixels get their one exception: the brightness
+/// editor is taller than the icon row, so going back to the root shrinks the sheet and gives back
+/// rows that still hold sheet pixels.
 fn drawer_pages_replay() -> Vec<Step> {
     let mut steps = vec![
         step("boot on the Map", 0).expect("Map"),
@@ -1266,22 +1197,20 @@ fn drawer_pages_replay() -> Vec<Step> {
     for i in 1..=14 {
         steps.push(step("the sheet arrives", 1_100 + i * 32).expect("QuickDrawer"));
     }
-    // Into the brightness editor: the sheet grows 104 -> 136.
+    // Into the brightness editor: the sheet grows 104 to 136.
     steps.push(step("press the brightness icon", 1_600).keys(&tap(Button::Select)).expect("QuickDrawer"));
     for i in 1..=7 {
         steps.push(step("the page slides in", 1_600 + i * 32).expect("QuickDrawer"));
     }
-    // …and back out: the sheet shrinks 136 -> 104, uncovering 32 rows of map.
+    // Back out: the sheet shrinks 136 to 104, uncovering 32 rows of map.
     steps.push(step("back out of the editor", 1_900).keys(&tap(Button::Back)).expect("QuickDrawer"));
     for i in 1..=5 {
         steps.push(step("the page slides back", 1_900 + i * 32).expect("QuickDrawer"));
     }
-    // **A gesture landing on exactly the frame the slide settles on** (#1515 D5): 1_900 + SLIDE_MS.
-    // Input runs before the tick in one pass, so this is the pass that used to retire the slide
-    // itself and leave the tick no edge to arm the base draw from — and the settling frame is the
-    // last that can leave the outgoing page's ink in the 4 px margin either side of the sheet. The
-    // tap moves the icon selection, so the frame is asked for either way; what the reference catches
-    // is *what* it drew.
+    // A gesture landing on exactly the frame the slide settles on. Input runs before the tick in
+    // one pass, and the settling frame is the last that can leave the outgoing page's ink in the
+    // 4 px margin either side of the sheet. The tap moves the icon selection, so the frame is asked
+    // for either way; the reference catches what it drew.
     steps.push(step("a step lands exactly as the slide does", 2_080).keys(&tap(Button::Up)).expect("QuickDrawer"));
     for i in 6..=7 {
         steps.push(step("the page slides back", 1_900 + i * 32).expect("QuickDrawer"));
@@ -1292,24 +1221,13 @@ fn drawer_pages_replay() -> Vec<Step> {
     steps
 }
 
-/// **Covering is cheap, uncovering is not** (#1559). The open pays no base render at all. A page
-/// slide pays one per frame, and both halves of the sheet's own `needs_base` reason show up here:
-/// the pages travel through the inset margin either side of the sheet, where the base shows, and
-/// coming back out of the taller editor *shrinks* the sheet, giving back rows that still hold sheet
-/// pixels.
+/// Covering is cheap and uncovering is not: the open pays no base render at all, and a page slide
+/// pays one per frame. Both halves of the sheet's `needs_base` reason appear here, because the pages
+/// travel through the inset margin either side of the sheet, and coming back out of the taller
+/// editor shrinks the sheet.
 ///
-/// `drive_replay` compares the two panels after every pass, so anything left standing is a failure
-/// before an assertion below runs. The assertions state which frames paid for the base and which
-/// did not.
-///
-/// One step of the replay lands a gesture on **exactly** the frame the second slide settles on
-/// (#1515 D5) — the pixel proof of the drawers' own
-/// `a_press_as_the_slide_lands_does_not_spend_the_base_draw_it_owes`. The mutant is `settle` back at
-/// the top of `handle`: the frame is still asked for (the tap moved the selection) but is drawn
-/// sheet-only, and the reference names the ink the outgoing page left in the margin.
-///
-/// The other mutant: make `Screen::needs_base` return `false` and the parity comparison fails inside
-/// the first page slide, naming the pixel the outgoing page left in the margin.
+/// One step lands a gesture on exactly the frame the second slide settles on, which is the pixel
+/// proof that a press as the slide lands does not spend the base draw it owes.
 #[test]
 fn the_open_pays_no_base_render_and_a_page_slide_pays_for_what_it_uncovers() {
     let map = map_bytes();
@@ -1320,8 +1238,8 @@ fn the_open_pays_no_base_render_and_a_page_slide_pays_for_what_it_uncovers() {
 
     let camera = AppState::new((LON0 * 1e6) as i32, (LAT * 1e6) as i32, 0.05);
     let steps = drawer_pages_replay();
-    // A platform with a panel light, so the sheet's first icon is the brightness editor — the one
-    // page taller than the icon row, and therefore the one that shrinks on the way back.
+    // A platform with a panel light, so the sheet's first icon is the brightness editor: the one
+    // page taller than the icon row, and so the one that shrinks on the way back.
     let device = || {
         let mut app = riding_device(camera);
         app.set_backlight_available(true);
@@ -1344,9 +1262,8 @@ fn the_open_pays_no_base_render_and_a_page_slide_pays_for_what_it_uncovers() {
     assert_eq!(rendered_base(2_300, 2_500), 1, "the close renders the base once, and once only");
 }
 
-/// The **context sheet's swap**: the riding Map's five-row sheet (244 px) replaced by the map
-/// display sheet (156 px), which is the one path in the two-drawer grammar that gives a band of the
-/// screen below back without any slide at all.
+/// The context sheet's swap: the riding Map's 244 px sheet replaced by the 156 px map display
+/// sheet, which is the one path that gives a band of the screen below back with no slide at all.
 fn drawer_swap_replay() -> Vec<Step> {
     let mut steps = vec![
         step("boot on the Map", 0).expect("Map"),
@@ -1355,12 +1272,12 @@ fn drawer_swap_replay() -> Vec<Step> {
         step("squeeze the map context open", 1_000).keys(&squeeze(Button::Down, Button::Back)),
         step("release the squeeze", 1_100).keys(&[release(Button::Back), release(Button::Down)]),
     ];
-    // The context sheet's own cadence: OPEN_MS 440 in STEP_MS 48 steps.
+    // The context sheet's own cadence: `OPEN_MS` in `STEP_MS` steps.
     for i in 1..=10 {
         steps.push(step("the sheet arrives", 1_100 + i * 48).expect("ContextDrawer"));
     }
     steps.push(step("quiet on the settled sheet", 1_700).expect("ContextDrawer"));
-    // One step back wraps to the fifth row — Map display, the row only the Map declares.
+    // One step back wraps to the fifth row, Map display, the row only the Map declares.
     steps.push(step("wrap to the Map display row", 1_800).keys(&tap(Button::Up)).expect("ContextDrawer"));
     steps.push(
         step("the shorter sheet takes the taller one's place", 1_900)
@@ -1375,11 +1292,9 @@ fn drawer_swap_replay() -> Vec<Step> {
     steps
 }
 
-/// **One drawer replacing the other**: the quick drawer (104 px, hung from the top) is up, and the
-/// context chord swaps the map's sheet (244 px, rising from the bottom) in for it. The two sheets
-/// share no row, so the swap uncovers the quick drawer's whole band — and on the board that band kept
-/// the quick drawer's parchment while the context sheet slid up under it, because the swap frame was
-/// drawn sheet-only over a frozen base that was never redrawn.
+/// One drawer replacing the other: the quick drawer hangs from the top, and the context chord
+/// swaps the map's sheet, which rises from the bottom, in for it. The two sheets share no row, so
+/// the swap uncovers the quick drawer's whole band.
 fn drawer_replaces_drawer_replay() -> Vec<Step> {
     let mut steps = vec![
         step("boot on the Map", 0).expect("Map"),
@@ -1403,13 +1318,9 @@ fn drawer_replaces_drawer_replay() -> Vec<Step> {
     steps
 }
 
-/// **The drawer that replaces the other draws the base once, on the frame the chord produced.** The
-/// full-frame reference is the oracle: `drive_replay` compares the two panels after every pass, so
-/// the quick drawer's parchment left standing at the top fails before any assertion here runs.
-///
-/// The mutant is `App::toggle_drawer` not arming `owe_base_draw` on the incoming sheet: every frame
-/// of the context sheet's open is then sheet-only, and the reference names the first pixel of the
-/// quick drawer's band that never went away.
+/// The drawer that replaces the other draws the base once, on the frame the chord produced. The
+/// full-frame reference is the oracle, so the quick drawer's parchment left standing at the top
+/// fails before any assertion here runs.
 #[test]
 fn the_drawer_that_replaces_the_other_puts_back_the_departed_sheet() {
     let map = map_bytes();
@@ -1422,7 +1333,7 @@ fn the_drawer_that_replaces_the_other_puts_back_the_departed_sheet() {
     let steps = drawer_replaces_drawer_replay();
     let (candidate, _) = drive_replay("drawer replaces drawer", || riding_device(camera), &steps, None, &reader);
 
-    // The quick drawer hangs from the top: its 104 rows are the ones only it covered.
+    // The quick drawer hangs from the top, so its 104 rows are the ones only it covered.
     const QUICK_ROWS: u32 = 104;
 
     let swap: Vec<&Repaint> = candidate.damage.iter().filter(|r| (1_800..2_600).contains(&r.at_ms)).collect();
@@ -1441,17 +1352,11 @@ fn the_drawer_that_replaces_the_other_puts_back_the_departed_sheet() {
     );
 }
 
-/// **The swap puts back the band the taller sheet held, once** (#1515 D4c's review note, closed by
-/// D5). The sheet-to-sheet swap had no parity coverage at all: the two drawer replays above are both
-/// the quick drawer's, and both reach the base only through a page *slide*.
+/// The swap puts back the band the taller sheet held, once.
 ///
-/// A sheet that is already on the panel makes no entrance, so the swap is a single frame — and that
-/// frame owes the screen below the 88 rows the 244 px sheet held and the 156 px one does not. The
-/// full-frame reference is the oracle for those rows: `drive_replay` compares the two panels after
-/// every pass, so parchment left standing over the map fails before any assertion here runs.
-///
-/// The mutant is dropping `needs_base: true` from `ContextDrawerScreen::swapped_in`: the swap frame
-/// draws the sheet alone and the band above it keeps the taller sheet's parchment.
+/// A sheet that is already on the panel makes no entrance, so the swap is a single frame, and that
+/// frame owes the screen below the 88 rows the taller sheet held and the shorter one does not. The
+/// full-frame reference is the oracle for those rows.
 #[test]
 fn the_sheet_swap_puts_back_the_band_the_taller_sheet_held() {
     let map = map_bytes();
@@ -1464,7 +1369,7 @@ fn the_sheet_swap_puts_back_the_band_the_taller_sheet_held() {
     let steps = drawer_swap_replay();
     let (candidate, _) = drive_replay("drawer swap", || riding_device(camera), &steps, None, &reader);
 
-    // The Map's sheet is 244 px on a 320 px panel, so its top edge is row 76; the display sheet is
+    // The Map's sheet is 244 px on a 320 px panel, so its top edge is row 76. The display sheet is
     // 156 px, top edge row 164. Those 88 rows are what the swap gives back.
     const TALLER_TOP: u32 = 76;
     const SHORTER_TOP: u32 = 164;
@@ -1480,7 +1385,7 @@ fn the_sheet_swap_puts_back_the_band_the_taller_sheet_held() {
          row {SHORTER_TOP} that only the taller sheet covered"
     );
 
-    // …and once only: a landed sheet over a frozen base asks for nothing.
+    // Once only: a landed sheet over a frozen base asks for nothing.
     assert!(
         !candidate.damage.iter().any(|r| (1_948..2_200).contains(&r.at_ms)),
         "the swapped-in sheet is landed on arrival, so no frame after it repaints anything"
@@ -1491,7 +1396,8 @@ fn the_sheet_swap_puts_back_the_band_the_taller_sheet_held() {
     assert!(close[0].features_tried > 0, "…and it is the base's one re-render");
 }
 
-/// The quick drawer opened over **Home** — a chrome base, which is the class that keeps the recess.
+/// The quick drawer opened over Home, which is a chrome base and so the class that keeps the
+/// recess.
 fn drawer_over_chrome_replay() -> Vec<Step> {
     let mut steps = vec![
         step("boot on Home", 0).expect("Home"),
@@ -1509,17 +1415,15 @@ fn drawer_over_chrome_replay() -> Vec<Step> {
     steps
 }
 
-/// **A sheet over a chrome base still recesses it** (#1559, ruling 1's second half).
+/// A sheet over a chrome base still recesses it.
 ///
-/// A chrome base recesses only *through its second draw*, and that draw is the one the frozen
-/// base's pixels remove — so a base that declares [`recess`] has to keep taking it. Without this
-/// the dim would survive in the snapshot sweep, the one host that composes every frame, and be
-/// absent on every host a rider touches.
+/// A chrome base recesses only through its second draw, which is the draw the frozen base's pixels
+/// remove, so a base that declares a recess has to keep taking it. Without this the dim would
+/// survive in the snapshot sweep, the one host that composes every frame, and be absent on every
+/// host a rider touches.
 ///
 /// The parity comparison is the assertion: the reference draws Home dimmed under the sheet on every
-/// pass, and a candidate that left the previous frame's undimmed pixels standing loses most of the
-/// panel. The mutant — drop `!recessed` from the render's `sheet_only` — fails here at the first
-/// step of the open, 71,506 of 76,800 pixels.
+/// pass, and a candidate that left the undimmed pixels standing loses most of the panel.
 #[test]
 fn a_sheet_over_a_chrome_base_keeps_the_recess() {
     let map = map_bytes();
@@ -1537,9 +1441,8 @@ fn a_sheet_over_a_chrome_base_keeps_the_recess() {
     };
     let (candidate, _) = drive_replay("sheet over Home", device, &steps, None, &reader);
 
-    // Home draws no map at any point, so the render-work probe says nothing here; what the recess
-    // costs is a chrome redraw per step, which ruling 1 priced at about 12 ms and accepted. The
-    // steps themselves are still the sheet's own: the dim does not move once it is on.
+    // Home draws no map, so the render-work probe says nothing here. The recess costs a chrome
+    // redraw per step. The steps are still the sheet's own: the dim does not move once it is on.
     let open: Vec<&Repaint> = candidate.damage.iter().filter(|r| (1_100..=1_700).contains(&r.at_ms)).collect();
     assert!(open.len() >= 6, "the open over chrome is still many small steps: {} repaint(s)", open.len());
     for r in open.iter().skip(1) {

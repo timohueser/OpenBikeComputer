@@ -1,9 +1,8 @@
 //! Native landing place for verified assemblies.
 //!
-//! The wasm worker produces exactly the same bytes in every host. The website
-//! hands each file to the browser downloader; desktop writes the files into one
-//! newly-created folder under `Documents/OpenBikeComputer`. An opaque id keeps
-//! the webview from turning this into a write-anywhere command.
+//! The wasm worker produces the same bytes in every host. The website hands each file to the
+//! browser downloader; the desktop writes the files into one newly created folder under the maps
+//! directory. An opaque id keeps the webview from turning this into a write-anywhere command.
 
 use std::collections::HashMap;
 use std::io::Write;
