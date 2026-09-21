@@ -60,7 +60,7 @@ use crate::reference::{ReferenceArchive, TileLookup, Window, NO_PIXEL, STEP_LOG2
 ///
 /// A bakery puts it in its skip key, because the rule is as much an input to a baked sample as the
 /// archive tiles are. Nothing here reads it.
-pub const CREST_RULE_VERSION: u32 = 1;
+pub const CREST_RULE_VERSION: u32 = 2;
 
 /// A node is a candidate when the reference stands this far above our bilinear surface.
 const LIFT_M: f64 = 10.0;
