@@ -51,11 +51,9 @@ Use the nearest README for surface-specific setup. `companion-ios/CLAUDE.md` is 
   ```
 
 - Use `obc test fixtures -p <crate>` only for captured external data. For non-Rust work, run the
-  affected surface's native focused command. Select whole suites, never individual test
-  functions.
-- For a change spanning packages, let the plan choose: `obc test affected --base origin/develop`
-  (add `--dry-run` to see the plan first). It is the same selection CI runs, and it prints one
-  reason per suite.
+  affected surface's native focused command. Select whole suites, never individual test functions.
+- For a change spanning packages, `obc test affected --base origin/develop` is the same selection
+  CI runs; `--dry-run` shows the plan first.
 - Run `obc test full` or `obc check full` only for cross-cutting changes, such as workspace or
   feature-resolution changes, shared contracts, foundational crates, CI/tooling, or releases.
 - Run `obc suites check` after changing test sources, validation commands, workflows, the plan
@@ -108,9 +106,8 @@ obc governs firmware/obc-app/src/screen/map.rs
 It joins the suites, contracts, guards, coverage components, snapshot frames, layering and
 prose budgets that name the path. Nothing in it is authored, so it cannot drift from CI.
 
-Prose is budgeted like every other resource here: `obc prose --check` holds guide pages,
-READMEs, guard docstrings and these policy files to a recorded size. Over-budget files must
-not grow. Run `obc prose --update` when one shrinks.
+`obc prose --check` budgets guide pages, READMEs, guard docstrings and these policy files:
+an over-budget file must not grow. Run `obc prose --update` when one shrinks.
 
 ## Documentation
 
@@ -138,13 +135,9 @@ for each criterion, and the gaps that remain. The owner writes requirement prose
 plans. Agents propose plans. Read the console with the agent credential; never write with an
 owner session, and never invent a requirement or claim a test is linked.
 
-To look up a requirement, run `obc req SYS-003` (`--json` for the raw record). It prints the
-statement, the coverage state, and the criteria numbered 1..n, so "criterion 2 of SYS-003" is the
-second one in that listing. `obc req` with no arguments lists the rest: `list` with filters,
-`proposal SYS-003`, `tests <query>` to search the CI catalogue, `changed --since rN` for the
-requirements a revision added or reworded, and `propose plan.json` to validate a coverage plan and
-submit it. Always `propose --check` first; it catches what a reviewer would send back. The agent
-token is stored at `~/.config/openbikecomputer/verification-agent.token`.
+`obc req SYS-003` prints a requirement, its coverage state and its criteria numbered 1..n; bare
+`obc req` lists every other subcommand. Always `propose --check` before `propose`. The agent token
+is at `~/.config/openbikecomputer/verification-agent.token`.
 
 - **When you implement or test behavior that a requirement describes**, say so in the pull
   request in one line: `Requirements: SYS-012, SYS-030` or `Requirements: none`. List a
@@ -157,17 +150,5 @@ token is stored at `~/.config/openbikecomputer/verification-agent.token`.
 - **Alert the owner** when requested behavior contradicts a requirement, when a change needs a
   requirement that does not exist, or when a test cited as evidence was deleted or hollowed out.
   The console does not block development; the alert is the duty.
-
-### Occasional requirements check
-
-Run this when asked, or when a milestone lands, not per pull request. It takes one session.
-
-1. Read the current revision and every plan from the console. Read `git log --since` the last
-   check (the previous check's report names its end commit).
-2. For each requirement touched by those commits, answer three questions: does the prose still
-   describe the product; does the plan still name the right tests, with no cited test removed or
-   emptied; is there new user-visible behavior that no requirement covers.
-3. Report the findings as a short list grouped by those three questions, name the end commit,
-   and propose plan updates for the second group. Requirement prose changes are for the owner.
 
 See [the application README](apps/obc-verification/README.md) for the API and release flow.
