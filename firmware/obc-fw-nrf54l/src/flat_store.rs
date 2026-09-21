@@ -1,62 +1,14 @@
-//! The flat store on the board: the card binding, the boot mount, and the one storage task
-//! (FS7.5-c1, epic #1256).
+//! The flat store on the board: the card binding, the boot mount, and the one storage task.
 //!
-//! This is the first slice that puts `obc_storage::flat` into the **shipping image**. Until now the
-//! store existed on glass only inside `bin/flat_store_bench.rs`, which owns its own `Semmc` and
-//! measures the store beside the app rather than under it. Three things move here:
+//! Reads go direct, through `&'static FlatStore` and `StoreSource`. Writes serialize through
+//! [`storage_task`]: callers send async messages and block only while they await confirmation.
 //!
-//! 1. **[`FlatCard`]** — the bench's `Card` generalized out of its private `static mut SEMMC` onto
-//!    the app's one host, through [`flpr_mux::with_storage`](crate::flpr_mux::with_storage). Same
-//!    shape as [`sd::SemmcCard`](crate::sd): a zero-sized handle, because all the state is the mux's.
-//! 2. **[`mount_at_boot`]** — `FlatStore::mount` into a `.bss` slot behind `#[inline(never)]`, so a
-//!    ~10.5 KB store never becomes a permanent poll-frame slot and its ~14 KB constructor frame
-//!    never becomes part of the boot task's (issues #677, #1084, #1108).
-//! 3. **[`storage_task`]** — the owner ruling of 2026-08-18 on #1256, in code: **reads go direct**
-//!    through `&'static FlatStore` + `StoreSource`; **writes serialize through one task**, callers
-//!    sending async messages and blocking only while they await confirmation.
-//!
-//! ## One card is one store *or* one filesystem — never both
-//!
-//! The flat store owns the **raw card from LBA 0** (`FLAT_Store_Format.md` §2): no partition table,
-//! no boot record, no filesystem. FAT is a filesystem *on* a card. There is no LBA at which the two
-//! can be laid out side by side, and any arrangement that tried would have `sd.rs`'s
-//! `VolumeManager` and this store writing the same blocks with different meanings.
-//!
-//! Boot classifies the card once, and §5.6 step 1 is precisely that test:
-//!
-//! > *Read superblock A block 0; on failure read superblock B. Neither valid ⇒ the card is not a
-//! > flat store.*
-//!
-//! `FlatStore::mount` **is** the probe — it never fails, it classifies — so the board does not need a
-//! second, board-private superblock reader that could disagree with the store's own rule. A FAT or
-//! otherwise unformatted card costs two block reads and is rejected; there is no compatibility
-//! mount or ride-recording fallback.
-//!
-//! ## Why no card can answer to both classifiers
-//!
-//! The ordering above would still be a coin toss if a card could satisfy both tests, so it is worth
-//! writing down that **neither classifier can accept the other's card**, and that this holds in both
-//! directions from facts already in the tree rather than from the order boot happens to ask in:
-//!
-//! - **A flat card can never FAT-mount.** `FLAT_Store_Format.md` §2 makes block 0 *deliberately not
-//!   an MBR*: its bytes `510..511` are zero — the superblock CRC sits elsewhere precisely so that
-//!   footer can stay zero — and `superblock.rs`'s encoder asserts it. The vendored `embedded-sdmmc`
-//!   fork requires the `0xAA55` boot signature there before it will read a partition table or a BPB,
-//!   so it refuses a flat card at its first block.
-//! - **A FAT card can never flat-mount.** §5.6 step 1 validates a superblock magic and CRC at two
-//!   fixed blocks; an MBR or a volume boot record carries neither, so `mount` returns
-//!   [`Mode::Unformatted`].
-//!
-//! So the two are disjoint by construction, and the classification is a fact about the card rather
-//! than a policy of this module. What the *ordering* buys is only honest reporting — see
-//! [`crate::sd::bring_up_card`] for why FAT must not be tried first.
-//!
-//! ## What FS7.5 finished here
-//!
-//! c1 mounted and stopped; c2 pointed the renderer at [`open_map`]; c3a and c3b put both links'
-//! protocol-v4 engine inside [`storage_task`], which is why the engine is a field of the one task
-//! that writes rather than a value a transport owns. FS8 adds the tail-in-slot ride journal through
-//! that same task; the raw flat store is now the only supported card layout.
+//! A card is a flat store or a filesystem, never both. The flat store owns the raw card from LBA 0,
+//! so there is no layout in which the two could sit side by side. `FlatStore::mount` is the probe —
+//! it never fails, it classifies — so the board runs no second superblock reader that could
+//! disagree with it. The two classifiers are disjoint by construction: a flat card's block 0 is
+//! deliberately not an MBR, so the FAT reader refuses it at the first block, and a FAT card carries
+//! neither superblock magic nor CRC, so `mount` returns [`Mode::Unformatted`].
 
 use core::{cell::RefCell, mem::MaybeUninit};
 
@@ -78,35 +30,21 @@ use obc_storage::flat::{
 
 use crate::semmc::{SemmcError, BLOCK_BYTES};
 
-// ══════════════════════════════ the card ══════════════════════════════
+// The flat binding places no alignment buffer of its own, and that is a stack decision. The sEMMC
+// firmware's DMA wants 32-bit alignment, and the store hands the device frame locals and streaming
+// windows that carry no alignment attribute, so whether a call is aligned is a codegen accident and
+// the binding must be correct either way. It borrows the raw-card layer's 4-block buffer
+// (`card_io::with_bounce`) instead of placing one, because on this part every `.bss` byte comes out
+// of the deep-ride path's stack headroom. What the shared buffer costs when it fires is one extra
+// card command per commit-body window.
 
-// **The flat binding places no alignment buffer of its own, and that is a stack decision.** The
-// sEMMC firmware's DMA wants 32-bit alignment; the store hands the device `[u8; 512]` frame locals
-// and its 2 KiB/4 KiB streaming windows, none of which carries an alignment attribute, so whether a
-// given call is aligned is a codegen accident and the binding has to be correct either way. It
-// borrows the raw-card layer's 4-block buffer for that (`card_io::with_bounce`) rather than placing one.
-//
-// A second buffer sized to §5.5's 8-block commit window would have cost 4 KiB — and on this part
-// every `.bss` byte is a main-stack byte (`_stack_start − __euninit`), taken out of the deep-ride
-// path's headroom, for a case that may never occur. What the shared 4-block buffer costs when it
-// *does* fire is one extra card command per commit-body window; a mount's 2 KiB window is one chunk
-// either way, so the figure c1 measures is unaffected. The bounce's one-shot line is how a run
-// says which side of the alignment accident this build fell on — and if it fires and a measurement
-// says the commit cost matters, the flat binding places its own buffer then, with the number in hand.
-
-/// **The card, as `obc_storage::flat` wants it.**
+/// The card, as `obc_storage::flat` wants it.
 ///
-/// Zero-sized on purpose, and that is the whole generalization this slice performs: the bench's
-/// `Card` reached a `static mut SEMMC` of its own through a `with` helper documented as
-/// *"the caller must not be inside another `with` — this binary never is"*, which is a claim a
-/// single-threaded bench can make and an app with a ride loop, a BLE plane and a USB plane cannot.
-/// Here every method is one [`flpr_mux::with_storage`](crate::flpr_mux::with_storage) call, so the
-/// FLPR mode and the driver borrow are taken together, the re-entrancy assertion is the mux's, and
-/// this type owns nothing that a second instance could duplicate.
-///
-/// `BlockDevice` takes `&self` throughout (`flat::device`), which — as that module's docs say — is
-/// the fact that makes per-card-command borrow granularity implementable at all: the store reaches
-/// the card holding none of its own cells.
+/// Zero-sized: every method is one [`flpr_mux::with_storage`](crate::flpr_mux::with_storage) call,
+/// so the FLPR mode and the driver borrow are taken together and this type owns nothing a second
+/// instance could duplicate. `BlockDevice` takes `&self` throughout, which is what makes
+/// per-card-command borrow granularity implementable: the store reaches the card holding none of
+/// its own cells.
 #[derive(Clone, Copy)]
 pub(crate) struct FlatCard;
 
@@ -167,8 +105,8 @@ impl BlockDevice for FlatCard {
         let addr = buf.as_ptr() as usize;
         crate::flpr_mux::with_storage(|sd| {
             // Two arena halves give the USB task an owned, aligned DMA source. Join the older half,
-            // start this one, and return while the card runs; the engine can then receive, CRC and
-            // fill the disjoint half. Generic callers are synchronous as before.
+            // start this one, and return while the card runs, so the engine can receive, CRC and
+            // fill the disjoint half. Generic callers stay synchronous.
             if addr.is_multiple_of(4) && crate::arena::usb_stage_contains(addr, buf.len()) {
                 sd.finish_write_blocks()?;
                 // SAFETY: the arena gate retains both halves for the transfer, and the engine does
@@ -199,32 +137,24 @@ impl BlockDevice for FlatCard {
     /// join seam before its arena grant is released, so a deferred card DMA can never outlive the
     /// buffer it borrows.
     ///
-    /// `Semmc::write_blocks` polls CMD13 until the card has left `prg`, so the program cycle *is*
-    /// the completion signal and every write is already durable when the store's next statement
-    /// runs. §5.5 calls its three synchronizations the dominant term; on this card they cost
-    /// nothing, and a commit's whole cost is its block writes plus the M33's per-entry work
-    /// (`obc_storage::flat::cost`). A transport with a write-back cache would move that cost back
-    /// here, and every commit figure would move with it.
+    /// `Semmc::write_blocks` polls CMD13 until the card has left `prg`, so the program cycle is the
+    /// completion signal and every write is already durable when the store's next statement runs. A
+    /// transport with a write-back cache would move that cost back here.
     fn sync(&self) -> Result<(), SemmcError> {
         crate::flpr_mux::with_storage(|sd| sd.finish_write_blocks())?
     }
 }
 
-// ══════════════════════════ the boot mount ══════════════════════════
-
 /// The mounted store, resident for the life of the image.
 ///
-/// `.bss`, and written **in place**: `FlatStore` is ~10.5 KB, most of it §6.2's 8 KiB free bitmap,
-/// and this board's rules about values that size are not stylistic. See [`mount_at_boot`].
+/// `.bss`, and written in place: `FlatStore` is about 10.5 KB, most of it the 8 KiB free bitmap.
+/// See [`mount_at_boot`].
 static mut FLAT_STORE: MaybeUninit<FlatStore<FlatCard>> = MaybeUninit::uninit();
 static FLAT_STORE_READY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// What this layer costs the resident budget: the store and the write queue. The alignment bounce
-/// is `sd`'s and is already counted there — see the note above [`FLAT_BOUNCE_WARNED`].
-///
-/// The recording caller's bounded append buffer is not here: [`crate::flat_ride`] owns and reports
-/// it separately because the ride loop, rather than the storage task, lends its bytes. Durable
-/// full-page tail snapshots remain card-resident and storage reconstructs them media-to-media.
+/// is `sd`'s and is counted there. The recording caller's bounded append buffer is
+/// [`crate::flat_ride`]'s, because the ride loop lends its bytes.
 pub(crate) const RESIDENT_BYTES: usize = core::mem::size_of::<FlatStore<FlatCard>>()
     + REQUEST_QUEUE_BYTES
     + CATALOG_UPLOAD_BYTES
@@ -232,13 +162,8 @@ pub(crate) const RESIDENT_BYTES: usize = core::mem::size_of::<FlatStore<FlatCard
     + ROUTE_READ_BYTES
     + ENGINE_BYTES;
 
-/// **Everything the read cutover keeps resident on this arm** (FS7.5-c2): the session-long
-/// [`MAP_SOURCE`] *and* the [`MAP_NAME`] the same boot step captures.
-///
-/// Both, because this budget's discipline is that every resident byte is named — an itemization
-/// that quietly omits 28 B is worse than one that admits it, since the next reader has no way to
-/// know which of the two it is. (The first version of this constant counted only the source and
-/// still called itself the whole cost; the review caught it.)
+/// Everything the read path keeps resident: the session-long [`MAP_SOURCE`] and the [`MAP_NAME`]
+/// the same boot step captures.
 pub(crate) const MAP_READ_BYTES: usize = core::mem::size_of::<obc_storage::flat::StoreSource<'static, FlatCard>>()
     + core::mem::size_of::<heapless::String<24>>();
 
@@ -246,75 +171,55 @@ pub(crate) const MAP_READ_BYTES: usize = core::mem::size_of::<obc_storage::flat:
 pub(crate) const ROUTE_READ_BYTES: usize =
     core::mem::size_of::<Option<obc_storage::flat::StoreSource<'static, FlatCard>>>();
 
-/// The store is the free bitmap plus its rows; if that ever stops being true the budget note above
-/// is wrong before anything else notices.
+/// The store is the free bitmap plus its rows; if that stops being true, the budget note above is
+/// wrong before anything else notices.
 const _: () = assert!(core::mem::size_of::<FlatStore<FlatCard>>() > 8 * 1_024);
 
-/// **Mount the card's flat store into the `.bss` slot, and hand back the one `&'static` to it.**
+/// Mount the card's flat store into the `.bss` slot, and hand back the one `&'static` to it.
 ///
-/// `#[inline(never)]` is load-bearing twice over, and neither reason is style:
+/// `#[inline(never)]` is load-bearing twice over. A `FlatStore` built by value inside the boot
+/// task's async block is a permanent 10.5 KB slot in that task's poll frame, allocated at the entry
+/// of every poll. And `mount` links at about 14 KB, because `load` streams the catalog in the frame
+/// that is building the store; called from here that frame is one transient sibling step of the
+/// boot chain, which is what `resource_guard.py board` measures.
 ///
-/// - **The store must not become a poll-frame slot.** A `FlatStore` built by-value inside the boot
-///   task's async block is a permanent ~10.5 KB slot in that task's poll frame, allocated at entry
-///   on every poll — the #1084/#1108 mechanism exactly, which boot-bricked develop for five days.
-///   The `.bss` slot plus this out-of-line helper is the pattern `mount_terrain` and
-///   `ObjectStore::empty`/`hydrate` already established for the same reason.
-/// - **The constructor's own frame must stay transient, and must not be paid twice.** `mount` links
-///   at ~14 KB (CI's `--match 'obc_storage::flat' --limit 16384` gate): `load` streams the catalog in
-///   the frame that is building the store, which is why `MOUNT_STREAM_BLOCKS` is half a commit's
-///   window. In an ordinary call that frame pops on return; inlined into the boot task's coroutine it
-///   would be permanent. Called from here it is one sibling step of the boot chain, which is what
-///   `resource_guard.py board`'s `boot_chain_roots` measures — and this helper is baselined as one of
-///   those roots, so the gate sees it.
+/// It goes through [`FlatStore::mount_in_place`] rather than `mount`, and the difference is
+/// measured: `slot.write(FlatStore::mount(card))` builds the store as a local of this function and
+/// copies it into the slot, which puts a second 10,688 B frame on the boot chain. Placed, this
+/// frame carries a pointer.
 ///
-///   It goes through [`FlatStore::mount_in_place`] rather than `mount`, and the difference is
-///   measured, not stylistic: `slot.write(FlatStore::mount(card))` builds the store as a local of
-///   *this* function and `memcpy`s it into the slot, which put a second 10,688 B frame on the boot
-///   chain beside `mount`'s own 14,016. Placed, this frame carries a pointer.
-///
-/// **This is `mount`'s only caller and it runs exactly once**, before anything is spawned, so the
-/// slot is written once per boot and the `&'static` handed out is the only reference. A warm reset
+/// This is `mount`'s only caller and it runs exactly once, before anything is spawned. A warm reset
 /// re-enters and overwrites in place; `FlatStore` has no `Drop`, which is the `init_static`
 /// contract.
 ///
-/// The card must already be up — [`crate::sd::bring_up_card`] first, or every probe read is
-/// `SemmcError::NoBoot` and the store classifies a perfectly good card as unformatted.
+/// The card must already be up — [`crate::sd::bring_up_card`] first — or every probe read is
+/// `SemmcError::NoBoot` and the store classifies a good card as unformatted.
 #[inline(never)]
 pub(crate) fn mount_at_boot() -> &'static FlatStore<FlatCard> {
-    // SAFETY: sole writer of FLAT_STORE; `mount_at_boot` runs once per boot on the one thread-mode
+    // SAFETY: sole writer of FLAT_STORE. `mount_at_boot` runs once per boot on the one thread-mode
     // executor, before any task that could hold a reference exists, so this `&mut` is the only live
-    // borrow of the slot. The write is unconditional — no `StaticCell` one-shot flag a warm reset
-    // could find already set — and `FlatStore` has no `Drop`, which is the `init_static` contract.
+    // borrow. The write is unconditional and `FlatStore` has no `Drop`.
     let store = unsafe { FlatStore::mount_in_place(&mut *core::ptr::addr_of_mut!(FLAT_STORE), FlatCard) };
     FLAT_STORE_READY.store(true, core::sync::atomic::Ordering::Release);
     &*store
 }
 
-/// **What the probe found, in the terms boot has to act on.** The three outcomes are the three
-/// different things a rider's card can be; `Mode`'s six variants collapse onto them here so `main`
-/// never has to re-derive the mapping.
+/// What the probe found, in the terms boot has to act on.
 pub(crate) enum Card {
-    /// A flat store this build can read (`Mode::readable()` — read-write, or read-only because a
-    /// revision or sequence space is exhausted). The flat path takes the card.
+    /// A flat store this build can read: read-write, or read-only because a revision or sequence
+    /// space is exhausted.
     Flat,
-    /// §5.6 step 1: neither superblock is valid, so **this is not a supported flat store**. Two
-    /// block reads and out; boot reports the card as unformatted/unsupported.
+    /// Neither superblock is valid, so this is not a supported flat store. Two block reads and out.
     NotFlat,
-    /// A card that *is* a flat store and will not serve one: `CatalogUnreadable` (no well-formed
-    /// gate, or no candidate body validated — §5.6 steps 2–3 call this media damage, since no state
-    /// the store can produce leaves both gates ill-formed) or `CardTooSmall` (the card in the slot
-    /// is smaller than the superblock on it describes).
-    ///
-    /// **Not a fall-through to FAT.** The superblock says a flat store was written here, so a FAT
-    /// mount would fail anyway and report the failure of the stack that was never on this card.
-    /// `StorageFault` is the honest superset — *"something below the filesystem broke, and it was
-    /// not the card's absence"* — and it is what [`crate::sd::mount_fat`] already reports for the
-    /// mirror case, a card whose FAT volume will not mount.
+    /// A card that is a flat store and will not serve one: no well-formed gate and no validated
+    /// candidate body, which is media damage, or a card smaller than the superblock on it describes.
+    /// This is not a fall-through to FAT: the superblock says a flat store was written here, so a
+    /// FAT mount would report the failure of a stack that was never on this card.
     FlatBroken(obc_app::BootFault),
 }
 
-/// Collapse §5.6's classification onto the three cards above, logging the reason for the one that
-/// is neither a working store nor a plain FAT card.
+/// Collapse the classification onto the three cards above, and log the reason for the one that is
+/// neither a working store nor a plain FAT card.
 pub(crate) fn classify(store: &FlatStore<FlatCard>) -> Card {
     let mode = store.mode();
     if mode.readable() {
@@ -330,80 +235,63 @@ pub(crate) fn classify(store: &FlatStore<FlatCard>) -> Card {
     Card::FlatBroken(obc_app::BootFault::StorageFault)
 }
 
-/// Classify a missing or unreadable map from the catalog facts already collected by [`report`].
-/// The host-tested app rule consumes the map count and listing completeness without another scan.
+/// Classify a missing or unreadable map from the catalog facts [`report`] already collected, so the
+/// listing is paid for once.
 pub(crate) fn boot_fault_for(catalog: Catalog) -> obc_app::BootFault {
     obc_app::flat_boot_fault(catalog.maps, catalog.listing_complete)
 }
 
-/// What one walk of the catalog found. [`report`] produces it and [`boot_fault_for`] consumes it, so
-/// the mount's listing is paid for once.
+/// What one walk of the catalog found.
 #[derive(Clone, Copy)]
 pub(crate) struct Catalog {
     /// Entries whose kind is a map (§3.1's `MapShard` / `MapSetManifest`).
     pub(crate) maps: usize,
-    /// False when a commit moved the catalog under the listing cursor, so the walk cannot prove
-    /// that the card is empty.
+    /// False when a commit moved the catalog under the listing cursor, so the walk cannot prove that
+    /// the card is empty.
     pub(crate) listing_complete: bool,
 }
 
-// ══════════════════════════ the storage task ══════════════════════════
-
-/// **How many tasks hold a [`Writer`]** — the BLE v4 adapter, USB v4 adapter, and ride loop.
+/// How many tasks hold a [`Writer`]: the BLE v4 adapter, the USB v4 adapter, and the ride loop.
 ///
-/// The ride loop's two possible outstanding jobs are its resumable nav ticket and its recorder
-/// call; they share this one two-job allowance because the task cannot be polled in two places at
-/// once. A census, not a guess, and [`REQUEST_QUEUE`] is derived from it.
+/// The ride loop's nav ticket and its recorder call share one two-job allowance, because the task
+/// cannot be polled in two places at once. [`REQUEST_QUEUE`] is derived from this census.
 const SENDERS: usize = 3;
 
 /// Write requests queued at once.
 ///
-/// **Two per sender, and that number is load-bearing rather than generous.** Each link has at most
-/// two jobs on this queue at one instant: the one its lane is awaiting, and at most one *orphan* — a
-/// job whose caller's future was dropped between the send and the answer, which a link teardown
-/// during a long finalizing commit genuinely does. Nothing produces a third, because a lane holds
-/// one buffer and cannot issue a second call without it.
+/// Two per sender, and that number is load-bearing rather than generous. Each link has at most two
+/// jobs on this queue at one instant: the one its lane is awaiting, and at most one orphan, whose
+/// caller's future was dropped between the send and the answer. Nothing produces a third, because a
+/// lane holds one buffer and cannot issue a second call without it.
 ///
 /// Sizing to that census is what keeps the queue from ever filling, and a queue that cannot fill is
 /// the difference between a recoverable orphan and a lost one: `Sender::send` on a full queue
-/// *parks*, and a `Writer::call` future dropped while parked never enqueues its job at all — taking
-/// the `&'static mut` reaction buffer inside it with it, permanently, since nothing may re-derive
-/// one. [`Lane::reclaim`] rests on this; see there.
-///
-/// c3a's two slots were sized for one sender and said so. A `Job` is not small (see [`Request`]), so
-/// this is `.bss` and the growth is priced in the resource baseline rather than waved through.
+/// parks, and a `Writer::call` future dropped while parked never enqueues its job at all, taking
+/// the `&'static mut` reaction buffer with it permanently. [`Lane::reclaim`] rests on this.
 const REQUEST_QUEUE: usize = 2 * SENDERS;
 
-/// The queue's resident cost, for the budget table in `main.rs`. Named rather than left anonymous
-/// because it is the one part of this layer whose size is a *design* choice rather than a
-/// consequence: it is `REQUEST_QUEUE` times a `Job`, and a `Job` is as large as the largest request.
+/// The queue's resident cost, named rather than left anonymous because it is the one part of this
+/// layer whose size is a design choice: `REQUEST_QUEUE` times a `Job`, and a `Job` is as large as
+/// the largest request.
 pub(crate) const REQUEST_QUEUE_BYTES: usize =
     core::mem::size_of::<Channel<CriticalSectionRawMutex, Job, REQUEST_QUEUE>>();
 
-/// One unit of write work, exactly as the seam spells it.
+/// One unit of write work.
 ///
-/// **Reads are not here, and that is the design.** `ByteSource::read_at` is synchronous and
-/// latency-bound; routing a render's reads through a channel would add a scheduler round trip to
-/// every one of them and buy nothing, because the store already serves a reader with **no borrow
-/// held** at every card command of a running write (`flat::store`'s rule 2, pinned by
-/// `flat::granularity`). The ruling's word for this shape is *hybrid*.
+/// Reads are not here, and that is the design. `ByteSource::read_at` is synchronous and
+/// latency-bound, and routing a render's reads through a channel would add a scheduler round trip
+/// to every one of them for nothing: the store already serves a reader with no borrow held at every
+/// card command of a running write.
 ///
-/// Everything carried here is owned or `'static` on purpose: a request outlives the statement that
-/// sent it, so a borrowed payload would need a lifetime the channel cannot express. `Allocation` is
-/// `Copy` RAM state, `Handle` is a row token, a batch is at most [`MAX_BATCH`] mutations, and a
-/// write's bytes come from a `'static` staging buffer — which is what c3's transports already have
-/// (the USB plane stages into the scratch arena).
+/// Everything carried here is owned or `'static`, because a request outlives the statement that
+/// sent it and a borrowed payload would need a lifetime the channel cannot express. A write's bytes
+/// come from a `'static` staging buffer.
 ///
-/// `Journal` is FS8's live ride checkpoint path. `Close` currently has no caller because every
-/// image reader stays inside `with_source`; it remains the explicit hold-return operation for a
-/// future reader that outlives that scope.
-///
-/// The variants also differ in size by an order of magnitude — a `Commit` carries up to
-/// [`MAX_BATCH`] `Mutation`s and each embeds an `EntryMeta` with §9's 48-byte display name, so the
-/// enum is as large as a batch. That is inherent, not accidental: `no_std` with no allocator, so the
-/// lint's advice (box the large field) is not available, and the two alternatives — a `'static`
-/// batch slot per caller, or a commit carrying one mutation and giving up §5.5's atomicity across a
-/// batch — are both worse than the ~1 KB [`REQUEST_QUEUE_BYTES`] accounts for.
+/// The variants differ in size by an order of magnitude: a `Commit` carries up to [`MAX_BATCH`]
+/// mutations and each embeds a 48-byte display name, so the enum is as large as a batch. That is
+/// inherent. There is no allocator, so the lint's advice to box the large field is not available,
+/// and the alternatives — a `'static` batch slot per caller, or a commit of one mutation that gives
+/// up atomicity across a batch — are both worse than the roughly 1 KB this costs.
 #[allow(dead_code, clippy::large_enum_variant)]
 pub(crate) enum Request {
     WriteCheckpoint {
@@ -416,13 +304,13 @@ pub(crate) enum Request {
         store: obc_app::device_core::StoreIdentity,
         active: Option<ObjectId>,
     },
-    /// §6's extent reservation.
+    /// The extent reservation.
     Allocate {
         bytes: u64,
     },
     /// Append a staged planner step and optionally backfill its completed OBCR header. Replies with
-    /// the advanced allocation. Patch-first ordering keeps the caller's old token cancellable if
-    /// the append fails.
+    /// the advanced allocation. Patch-first ordering keeps the caller's old token cancellable if the
+    /// append fails.
     WriteComputedRoute {
         allocation: Allocation,
         bytes: &'static [u8],
@@ -441,7 +329,7 @@ pub(crate) enum Request {
         name: DisplayName,
         original: Option<(ObjectId, Revision)>,
     },
-    /// Compensate a cancellation that raced the synchronous publish. The exact revision is carried
+    /// Compensate a cancellation that raced the synchronous publish. The exact revision is carried,
     /// so this can never remove a later replacement that happens to share the object id.
     RemoveComputedRoute {
         id: ObjectId,
@@ -452,11 +340,11 @@ pub(crate) enum Request {
         id: ObjectId,
         kind: obc_app::catalog_state::CatalogObjectKind,
     },
-    /// §5.5's atomic batch. Replies with the commit sequence.
+    /// One atomic batch. Replies with the commit sequence.
     Commit {
         batch: heapless::Vec<Mutation, MAX_BATCH>,
     },
-    /// §7.2's ride checkpoint.
+    /// The ride checkpoint.
     Journal {
         checkpoint: RideCheckpoint<'static>,
     },
@@ -464,32 +352,26 @@ pub(crate) enum Request {
     Cancel {
         allocation: Allocation,
     },
-    /// Return a hold row. Refused rather than obeyed while another reader holds it (`flat::source`).
+    /// Return a hold row. Refused rather than obeyed while another reader holds it.
     Close {
         handle: Handle,
     },
 
-    // ── the protocol-v4 engine (FS7.5-c3a) ──────────────────────────────────────────────────────
-    //
-    // The engine runs *here*, inside the one task that writes, and the transports are pure record
-    // shippers. That is not a convenience: `obc_link::flat::Store` is synchronous throughout — the
-    // mutators included — so an engine driven from a transport task would have to reach the card
-    // from a second execution context, which is exactly what the #1256 owner ruling forbids. Sitting
-    // it behind this queue makes "one engine, one owner" (`FLAT_Store_Protocol.md` §1) a property of
-    // the type rather than a convention, and it is what `Writer::call`'s one-slot-per-concurrently-
-    // live-call contract was written for.
+    // The engine runs here, inside the one task that writes, and the transports are pure record
+    // shippers. `obc_link::flat::Store` is synchronous throughout, including the mutators, so an
+    // engine driven from a transport task would have to reach the card from a second execution
+    // context. Sitting it behind this queue makes "one engine, one owner" a property of the type.
     /// One whole control record (§3.1), and the buffer the reaction's bytes land in.
-    ///
-    /// `out` is the **caller's** `'static` buffer and rides back in [`Outcome::Reacted`]. It is a
+    /// `out` is the caller's `'static` buffer and rides back in [`Outcome::Reacted`]. It is a
     /// borrow rather than a copy for the same reason [`Request::Write`]'s bytes are: a request
-    /// outlives the statement that sent it, and a `LIST` page or a stream record is up to a link
-    /// ceiling of bytes that would otherwise be memcpy'd twice per record.
+    /// outlives the statement that sent it, and a page or stream record would otherwise be copied
+    /// twice per record.
     Control {
         link: Link,
         record: &'static [u8],
         out: &'static mut [u8],
     },
-    /// One whole stream record (§3.8): the 16-byte frame followed by exactly its payload.
+    /// One whole stream record: the 16-byte frame followed by exactly its payload.
     Stream {
         link: Link,
         record: &'static [u8],
@@ -510,38 +392,32 @@ pub(crate) enum Request {
     },
     /// Join any card DMA that still borrows the USB arena before its guard is released.
     FinishUsbStage,
-    /// Pump the engine once — a live `GET`'s next record, or an error owed to a dropped transfer.
-    /// An adapter repeats this until the reaction is [`Reaction::Idle`]; a driver that stops pumping
+    /// Pump the engine once: a live `GET`'s next record, or an error owed to a dropped transfer. An
+    /// adapter repeats this until the reaction is [`Reaction::Idle`]; a driver that stops pumping
     /// stalls a download.
     Pump {
         link: Link,
         out: &'static mut [u8],
     },
-    /// **This** link came up with these record ceilings (§5.1, §5.2).
+    /// This link came up with these record ceilings.
     ///
-    /// It re-pins `link`'s ceilings and releases `link`'s transfer if it had one — and touches
-    /// nothing belonging to the other link, which is the point. See the arm in [`serve`] for the
-    /// bug that shape exists to prevent.
-    ///
-    /// It carries a **validated** [`Ceilings`], not two numbers, so §5.1's floor refusal never
-    /// reaches this queue: [`Ceilings::for_ble`] is where a link is judged, the adapter closes the
-    /// channel on `None`, and nothing here has to answer a transport verdict with a `StoreError`.
+    /// It re-pins this link's ceilings and releases this link's transfer if it had one, and touches
+    /// nothing belonging to the other link. It carries a validated [`Ceilings`], not two numbers, so
+    /// a floor refusal never reaches this queue: the adapter closes the channel on `None`.
     LinkUp {
         link: Link,
         ceilings: Ceilings,
     },
-    /// §3.8's third form of cancel: **this** link went away. Answers nobody, because there is nobody
-    /// left to answer — and releases only what that link held, so an unplugged cable is not a reason
-    /// to kill a phone's download.
+    /// This link went away. It answers nobody, because there is nobody left to answer, and releases
+    /// only what that link held, so an unplugged cable is not a reason to kill a phone's download.
     LinkLost {
         link: Link,
     },
     /// The live transfer's `RequestId`, if one owns the engine.
     ///
-    /// The one *read* on this queue, and it earns its place: §5's cross-channel ordering makes an
-    /// adapter hold a stream frame for a `RequestId` it has not yet seen admitted, and "has this
-    /// been admitted" is a question only the engine can answer. One round trip, and only inside the
-    /// race window.
+    /// The one read on this queue, and it earns its place: cross-channel ordering makes an adapter
+    /// hold a stream frame for a `RequestId` it has not yet seen admitted, and only the engine can
+    /// answer whether it was. One round trip, and only inside the race window.
     LiveTransfer,
     /// Whether this exact request is a map upload owned by USB. This is the admission proof for the
     /// cable-only arena arm; app-facing map progress intentionally carries no link identity.
@@ -551,9 +427,6 @@ pub(crate) enum Request {
 }
 
 /// What one [`Request`] produced.
-///
-/// Every variant has a caller since c3a except the two [`Request`] names above, and the linker keeps
-/// only what is reached.
 #[allow(dead_code)]
 pub(crate) enum Outcome {
     CleanedRoute(Option<ObjectId>),
@@ -565,12 +438,12 @@ pub(crate) enum Outcome {
     Published(ObjectId),
     /// §5.5's commit sequence.
     Committed(u64),
-    /// A [`Request::RemoveObject`] ran. `false` = the entry was already absent, which the catalog
-    /// domain reads as a success rather than a failure.
+    /// A [`Request::RemoveObject`] ran. `false` means the entry was already absent, which the
+    /// catalog domain reads as a success.
     Removed {
         existed: bool,
     },
-    /// Nothing to hand back: `journal`, `cancel`, `close`.
+    /// Nothing to hand back.
     Done,
     /// What the engine wants done, and the caller's buffer back with the bytes in it.
     Reacted {
@@ -583,23 +456,20 @@ pub(crate) enum Outcome {
     UsbMap(Option<u64>),
 }
 
-/// The caller's half of one round trip: the answer, **tagged with the request it answers**.
+/// The caller's half of one round trip: the answer, tagged with the request it answers.
 ///
-/// The tag is what makes [`Writer::call`] cancellation-safe, and without it this seam is not.
-/// `call` is an `async fn`, so its future can be dropped between the send and the wait — by a
-/// `select`, a timeout, or an early `return` in a caller that is racing something else. The task
-/// has no idea; it serves the request and signals the slot anyway. The **next** caller to use that
-/// same slot would then wake on a value that answers a request it never made, and take a stale
-/// `Allocation` or a stale commit sequence for its own. Every transport in c3 is built on this call,
-/// so the failure would be a transfer publishing against another transfer's reservation.
+/// The tag is what makes [`Writer::call`] cancellation-safe. `call` is an `async fn`, so its future
+/// can be dropped between the send and the wait. The task serves the request and signals the slot
+/// anyway, and the next caller to use that slot would otherwise wake on a value that answers a
+/// request it never made, and take a stale `Allocation` or commit sequence for its own.
 ///
-/// A `Signal` rather than a channel is still right — exactly one value per round trip, and a
-/// dropped caller must not leave a *queued* reply behind either — but "the value in the slot is
-/// mine" has to be checked rather than assumed.
+/// A `Signal` rather than a channel is right — exactly one value per round trip, and a dropped
+/// caller must not leave a queued reply behind — but "the value in the slot is mine" has to be
+/// checked.
 pub(crate) type Reply = Signal<CriticalSectionRawMutex, (u32, Result<Outcome, StoreError>)>;
 
-/// Hands out [`Job::tag`]s. Monotonic and never reused in any window that matters: a collision needs
-/// 2^32 intervening calls *and* the same reply slot, on a device that issues a few writes a second.
+/// Hands out [`Job::tag`]s. Monotonic, and never reused in any window that matters: a collision
+/// needs 2^32 intervening calls and the same reply slot.
 static NEXT_TAG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(1);
 
 /// A request, where its answer goes, and which request that answer is for.
@@ -610,14 +480,13 @@ pub(crate) struct Job {
     tag: u32,
 }
 
-/// The queue itself. One producer-agnostic channel: any task may send, exactly one task receives.
+/// The queue itself: any task may send, exactly one task receives.
 static REQUESTS: Channel<CriticalSectionRawMutex, Job, REQUEST_QUEUE> = Channel::new();
 
-/// **The write half's front door**, handed to every plane that mutates the store.
+/// The write half's front door, handed to every plane that mutates the store.
 ///
-/// `Copy`, so it costs a caller nothing to hold, and it carries no store reference at all — which is
-/// what makes "there is exactly one execution context that writes" a property of the type rather
-/// than a convention.
+/// `Copy`, and it carries no store reference at all, which is what makes "there is exactly one
+/// execution context that writes" a property of the type rather than a convention.
 ///
 #[derive(Clone, Copy)]
 pub(crate) struct Writer {
@@ -658,24 +527,18 @@ impl Writer {
 
     /// Send `request` and wait for the store's answer.
     ///
-    /// **The caller blocks here and nowhere else**, which is the ruling's "callers block only if
-    /// they await confirmation" — and it blocks on its own `Signal`, not on the store: the queue slot
-    /// is released the moment the task takes the job. A caller that does not need the answer wants a
-    /// fire-and-forget variant, and c3 adds one when it has such a caller; c1 has none, so there is
-    /// none to be dead.
+    /// The caller blocks here and nowhere else, and it blocks on its own `Signal`, not on the store:
+    /// the queue slot is released the moment the task takes the job.
     ///
-    /// **Cancellation-safe**: dropping this future between the send and the answer is legitimate
-    /// (a `select` lost, a caller that stopped caring), and the answer that arrives afterwards is
-    /// discarded by the *next* caller rather than mistaken for its own — see [`Reply`] for why that
-    /// is the whole reason a tag exists. The slot is never `reset`, only advanced past.
+    /// Cancellation-safe: dropping this future between the send and the answer is legitimate, and
+    /// the answer that arrives afterwards is discarded by the next caller rather than mistaken for
+    /// its own. The slot is never `reset`, only advanced past.
     ///
-    /// `reply` is a `'static` slot the caller owns, and the contract on it is **one slot per
-    /// concurrently live call**. A slot may be reused freely *across time* — that is what the tag is
-    /// for — but it must never be awaited by two callers at once: a `Signal` holds **one value and
-    /// one waker**, so two live waiters on one slot lose an answer (the second `signal` overwrites
-    /// the first before either polls) and wake each other instead of themselves, which on this board
-    /// is an executor-starving ready-loop and then a watchdog reset. The `debug_assert` above encodes
-    /// the same sequential-only contract from the other side.
+    /// `reply` is a `'static` slot the caller owns, and the contract on it is one slot per
+    /// concurrently live call. A slot may be reused across time, but it must never be awaited by two
+    /// callers at once: a `Signal` holds one value and one waker, so two live waiters lose an answer
+    /// and wake each other instead of themselves, which on this board is an executor-starving loop
+    /// and then a watchdog reset.
     pub(crate) async fn call(&self, request: Request, reply: &'static Reply) -> Result<Outcome, StoreError> {
         let tag = NEXT_TAG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         self.requests.send(Job { request, reply, tag }).await;
@@ -683,8 +546,8 @@ impl Writer {
     }
 
     /// Enqueue one call and return without waiting for the answer. The awaited half is
-    /// [`Writer::finish_call`]; between the two the reply slot and whatever the request borrows are
-    /// committed to this call. The USB adapter's deferred mid-upload batch is the one caller.
+    /// [`Writer::finish_call`]; between the two, the reply slot and whatever the request borrows are
+    /// committed to this call.
     pub(crate) async fn begin_call(&self, request: Request, reply: &'static Reply) -> Ticket {
         let tag = NEXT_TAG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         self.requests.send(Job { request, reply, tag }).await;
@@ -703,31 +566,21 @@ impl Writer {
                 return outcome;
             }
             // Someone else's answer, left in this slot by a `call` whose future was dropped before
-            // it collected. Consuming it is the point — `Signal::wait` takes the value, so the slot
-            // is now empty and the next wait is for ours. Deliberately not a `warn!`: a dropped
-            // caller is a legitimate outcome of a `select`, not a fault.
+            // it collected. Consuming it is the point: `Signal::wait` takes the value, so the next
+            // wait is for ours. A dropped caller is a legitimate outcome of a `select`, not a fault.
             debug_assert!(answered < tag, "a reply slot answered a tag that has not been issued");
         }
     }
 }
 
-// ══════════════════════════ the lane ══════════════════════════
-
-/// **One link's half of a round trip to the engine**: the buffer it lends, the slot the answer comes
+/// One link's half of a round trip to the engine: the buffer it lends, the slot the answer comes
 /// back in, and nothing else.
 ///
-/// One lane per link, because two links are live at once — a phone in a pocket and a cable in J3 —
-/// and every part of a round trip is per-caller: the reaction buffer (§5's ceilings differ by two
-/// orders of magnitude between them), the reply slot ([`Writer::call`]'s one-slot-per-concurrently-
-/// live-call contract), and the recovery below.
-///
-/// The buffer is *lent* rather than copied — it crosses the queue inside the request and comes back
-/// inside the answer, which is what stops a `LIST` page being memcpy'd twice per record — so a
-/// `None` here means a previous call's future was dropped between the send and the answer.
+/// One lane per link, because two links are live at once and every part of a round trip is
+/// per-caller: the reaction buffer, the reply slot, and the recovery below. The buffer is lent
+/// rather than copied — it crosses the queue inside the request and comes back inside the answer —
+/// so a `None` here means a previous call's future was dropped between the send and the answer.
 /// [`Lane::reclaim`] is how that is recovered.
-///
-/// Shared between the two adapters rather than written twice, so that the argument at `reclaim` has
-/// one home and cannot drift into two versions that disagree.
 pub(crate) struct Lane {
     out: Option<&'static mut [u8]>,
     reply: &'static Reply,
@@ -737,10 +590,9 @@ pub(crate) struct Lane {
 
 /// How long [`Lane::reclaim`] waits for an orphaned answer before giving the link up.
 ///
-/// It is waiting on the storage task to finish jobs already in the queue, so the bound is a
-/// *scheduling* one — and the longest single thing that task does is a commit, ~250 ms at 1,024
-/// entries (`storage_task`'s own note). Two seconds is that with room; a link that has not been
-/// answered by then is not going to be, and refusing it is better than parking a transport forever.
+/// It waits on the storage task to finish jobs already in the queue, so the bound is a scheduling
+/// one, and the longest single thing that task does is a commit of about 250 ms. A link that has
+/// not been answered by then is not going to be.
 const RECLAIM_TIMEOUT: embassy_time::Duration = embassy_time::Duration::from_secs(2);
 
 impl Lane {
@@ -749,31 +601,19 @@ impl Lane {
         Lane { out: Some(out), reply, who }
     }
 
-    /// **Recover the buffer from a call whose future was dropped.**
+    /// Recover the buffer from a call whose future was dropped.
     ///
-    /// c3a inferred this from the queue's service order: requests are served FIFO by one consumer,
-    /// so once *any* later call had been answered, every earlier job had run and an orphan could
-    /// only be sitting in the reply slot. That was an argument about the **queue**, and it named
-    /// this slice as owing its re-establishment, because a second sender can interleave a job
-    /// between the orphan and the reclaiming call.
+    /// It waits on its own slot rather than reasoning about when someone else's call proves the
+    /// orphan ran. Two facts, each local to one lane, make that an observation:
     ///
-    /// It is re-established by not needing it. Three facts, each local to one lane:
+    /// 1. A reply slot has exactly one caller. Each is a `static` private to its adapter, so
+    ///    whatever arrives in this slot is this lane's orphan and no other link's.
+    /// 2. The orphan is always in the queue. [`REQUEST_QUEUE`] is sized to the sender census, so
+    ///    `Sender::send` never parks and a dropped future is always dropped after its job was
+    ///    enqueued. A job in the queue is a job that will be served and answered.
     ///
-    /// 1. **A reply slot has exactly one caller.** Each is a `static` private to its adapter and is
-    ///    named by that adapter alone, so whatever arrives in this slot is *this* lane's orphan and
-    ///    no other link's. The buffers are disjoint statics too, so a mis-reclaim could not even
-    ///    type-check into the wrong lane. The other link's activity is invisible here, which is the
-    ///    whole property the queue argument could not supply once the queue had two senders.
-    /// 2. **The orphan is always in the queue.** [`REQUEST_QUEUE`] is sized to the sender census, so
-    ///    `Sender::send` never parks, so a dropped `Writer::call` future is always dropped *after*
-    ///    its job was enqueued. A job in the queue is a job that will be served and answered.
-    /// 3. **So this is an observation, not an inference.** It waits on its own slot rather than
-    ///    reasoning about when someone else's call proves the orphan ran. (1) says what arrives is
-    ///    ours; (2) says something arrives.
-    ///
-    /// The wait is bounded anyway: (2) is an argument about a constant two files can change
-    /// independently, and a transport that parked forever on it would be a watchdog reset rather
-    /// than a log line.
+    /// The wait is bounded anyway, because (2) rests on a constant two files can change
+    /// independently.
     pub(crate) async fn reclaim(&mut self) {
         if self.out.is_some() {
             return;
@@ -811,13 +651,11 @@ impl Lane {
         }
     }
 
-    /// Hand one request to the engine **without waiting for its answer**.
+    /// Hand one request to the engine without waiting for its answer.
     ///
     /// The buffer travels with the request, so until [`Lane::collect`] takes it back this lane can
-    /// make no other call — the caller owns that sequencing. The USB adapter uses the pair to keep
-    /// receiving stream records while a mid-upload card batch is being served: the enqueue itself
-    /// never blocks in practice ([`REQUEST_QUEUE`] is sized to the sender census), so the await
-    /// here is queue admission, not storage work.
+    /// make no other call, and the caller owns that sequencing. The enqueue never blocks in
+    /// practice, so the await here is queue admission, not storage work.
     pub(crate) async fn call_deferred(
         &mut self,
         writer: &Writer,
@@ -828,7 +666,7 @@ impl Lane {
     }
 
     /// Take a deferred call's answer and the buffer back. The reaction's bytes are in this lane's
-    /// buffer exactly as after [`Lane::call`], so [`Lane::sent`] serves them unchanged.
+    /// buffer exactly as after [`Lane::call`].
     pub(crate) async fn collect(&mut self, writer: &Writer, ticket: Ticket) -> Option<Reaction> {
         match writer.finish_call(ticket, self.reply).await {
             Ok(Outcome::Reacted { reaction, out }) => {
@@ -854,24 +692,18 @@ impl Lane {
 /// True once [`arm`] has handed the receive end to the storage task.
 static ARMED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
-/// **The [`Writer`], if there is anything on the other end** — `None` on a card that is not a flat
+/// The [`Writer`], if there is anything on the other end; `None` on a card that is not a flat
 /// store.
 ///
-/// The `Option` is not defensive typing, it is the difference between an error and a hang. The
-/// queue is a `static`, so `REQUESTS.sender()` succeeds whether or not a task is draining it; on a
-/// FAT card no storage task is ever spawned, and a c3 caller that sent into that channel would fill
-/// two slots and then wait **forever** in `Sender::send` — no timeout, no error, no log. A write
-/// path that cannot run should say so at the first call, not wedge the plane that made it.
+/// The `Option` is the difference between an error and a hang. The queue is a `static`, so
+/// `REQUESTS.sender()` succeeds whether or not a task is draining it, and a caller that sent into
+/// an undrained channel would fill two slots and then wait forever in `Sender::send`.
 pub(crate) fn writer() -> Option<Writer> {
     ARMED.load(core::sync::atomic::Ordering::Relaxed).then(|| Writer { requests: REQUESTS.sender() })
 }
 
-/// The ride loop's **wake source** on a catalog movement — not a level and not a count.
-///
-/// The level is [`FlatStore::sequence`], read straight off the store as
-/// `ExternalFacts::note_store_revision`; the commit-edge counter this used to sit beside is gone
-/// with #1397 S6b, because counting edges to synthesise a revision the store already has was the
-/// only thing it did.
+/// The ride loop's wake source on a catalog movement. It is not a level: the level is
+/// [`FlatStore::sequence`], read straight off the store.
 static CATALOG_WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 static LIVE_TRANSFER: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
@@ -924,9 +756,9 @@ impl CatalogUpload {
 const _: () = assert!(core::mem::size_of::<CatalogUpload>() == 9);
 
 /// A complete UI catalog's worth of upload facts. The engine serializes transfers, and the ride
-/// task drains these after the catalog rescan caused by the same commits. Bounding this to the
-/// menus' combined identity capacity keeps the resident cost explicit. Same-object commits
-/// coalesce; churn beyond one full snapshot retains the newest facts and raises the conservative
+/// task drains these after the catalog rescan the same commits caused. Bounding this to the menus'
+/// combined identity capacity keeps the resident cost explicit. Same-object commits coalesce, and
+/// churn beyond one full snapshot retains the newest facts and raises the conservative
 /// active-route refresh below.
 const UPLOAD_EVENTS_CAP: usize = obc_app::MAX_ROUTES + obc_app::MAX_TRIPS;
 static UPLOAD_EVENTS: Mutex<CriticalSectionRawMutex, RefCell<Deque<CatalogUpload, UPLOAD_EVENTS_CAP>>> =
@@ -991,34 +823,21 @@ pub(crate) async fn wait_catalog_commit() {
     CATALOG_WAKE.wait().await
 }
 
-/// **The one task that writes.**
+/// The one task that writes.
 ///
-/// It owns nothing: the store is `&'static` and every reader has one too. What it owns is the
-/// *right to call the mutators*, and that is the whole of the ruling's serialization — no lock, no
-/// `Mutex`, no `RefCell` at this layer. The store's own cells are what make a concurrent reader
-/// safe, and this task is what makes concurrent *writers* impossible instead of merely refused.
+/// It owns nothing: the store is `&'static` and every reader has one too. What it owns is the right
+/// to call the mutators, and that is the whole of the serialization — no lock and no `RefCell` at
+/// this layer. The store's own cells are what make a concurrent reader safe, and this task is what
+/// makes concurrent writers impossible instead of merely refused.
 ///
-/// **What it deliberately does not have is a lock around a commit.** The ruling's granularity law —
-/// *per card command, never per commit* — is a property of `obc_storage::flat`, pinned by
-/// `flat::granularity` (a re-entrant probe device asserts that reads, listings and free-space
-/// queries are served at every card command of a write and of a commit). This layer's obligation is
-/// not to take that away, and the way it would have taken it away is a coarse lock held across
-/// `commit`. There is none: a render's `read_at` never touches this channel.
+/// What it deliberately does not have is a lock around a commit. The granularity law — per card
+/// command, never per commit — is a property of `obc_storage::flat`, and this layer's obligation is
+/// not to take it away. A render's `read_at` never touches this channel.
 ///
-/// **The remaining stall is the executor's, not the store's, and c1 measures it rather than
-/// claiming otherwise.** `Store::commit` is synchronous — ~36 card commands over ~250 ms at 1,024
-/// entries — and this is one cooperative thread-mode executor, so between its first and last command
-/// no other task is polled. The borrow granularity that lets a reader *be served* mid-commit is
-/// necessary and, on a single-threaded executor, not sufficient: the store would also have to hand
-/// control back between commands. Closing that needs a yield seam in `obc-storage` — a resumable
-/// commit, an async device, or a per-command callback — which is not this slice's and is not
-/// smuggled in as a lock here. **That follow-up is closed, not built** (#1420, item I2): the board
-/// session found no felt stall on glass, and the speculative-capability rule says a mechanism bought
-/// against a cost nobody has measured is a mechanism that should not exist. The harness that would
-/// have measured it — an `interleave_exercise` task behind a `flat-exercise` feature — is deleted
-/// with the question, per the owner's rule that scaffolding is stripped when its purpose is served
-/// rather than kept as a permanent fixture. If a stall ever shows up on a real ride, both come back
-/// out of git history with the reasoning intact.
+/// The remaining stall is the executor's, not the store's. `Store::commit` is synchronous, about 36
+/// card commands over 250 ms at 1,024 entries, and this is one cooperative executor, so between its
+/// first and last command no other task is polled. Closing that needs a yield seam in
+/// `obc-storage`, which is not smuggled in as a lock here: no felt stall was found on glass.
 #[embassy_executor::task]
 pub(crate) async fn storage_task(
     store: &'static FlatStore<FlatCard>,
@@ -1028,9 +847,8 @@ pub(crate) async fn storage_task(
     // The engine and its policy live in `.bss`, built out of line: see `engine_slot`.
     let engine = engine_slot();
     let mut policy = BoardPolicy;
-    // **When the stall watchdog next looks** — `None` while no transfer is live, and then this arm
-    // never fires at all. That gate is the point: a free-running ticker would wake a parked device
-    // every second, and the ride loop deliberately dozes to its watchdog-feed cap instead.
+    // When the stall watchdog next looks. `None` while no transfer is live, and then this arm never
+    // fires at all. A free-running ticker would wake a parked device every second.
     let mut next_look: Option<Instant> = None;
     loop {
         let watch = async {
@@ -1042,24 +860,24 @@ pub(crate) async fn storage_task(
         match select(requests.receive(), watch).await {
             Either::First(job) => {
                 let before = store.sequence();
-                // The FLPR is switched per card command by `flpr_mux::with_storage`, so nothing is held
-                // across this call and there is no mode session to acquire around the batch.
+                // The FLPR is switched per card command by `flpr_mux::with_storage`, so nothing is
+                // held across this call and there is no mode session to acquire around the batch.
                 let outcome = serve(store, engine, &mut policy, job.request);
                 if store.sequence() != before {
                     note_catalog_commit();
                 }
-                // The tag rides back with the answer: the caller may be gone, and the next user of this slot
-                // has to be able to tell that this value is not theirs. See `Reply`.
+                // The tag rides back with the answer: the caller may be gone, and the next user of
+                // this slot has to be able to tell that the value is not theirs. See `Reply`.
                 job.reply.signal((job.tag, outcome));
             }
             // The deadline came round. Nothing to do here: the watchdog runs below on every pass,
             // and this arm exists only so a wedged peer's silence still produces one.
             Either::Second(()) => {}
         }
-        // **The stall watchdog, on every pass** — after a served request, so byte progress re-anchors
-        // the deadline, and after the timer, so silence expires it. It runs here rather than in the
-        // timer arm because the requests this task serves are not all the transfer's: a ride
-        // journalling every few seconds would otherwise keep resetting a wedged transfer's clock.
+        // The stall watchdog, on every pass: after a served request, so byte progress re-anchors the
+        // deadline, and after the timer, so silence expires it. It runs here rather than in the timer
+        // arm because the requests this task serves are not all the transfer's, and a ride
+        // journalling every few seconds would keep resetting a wedged transfer's clock.
         let now = Instant::now();
         next_look = match engine.watch_stall(store, now.as_millis() as u32) {
             Stall::Idle => None,
@@ -1070,8 +888,8 @@ pub(crate) async fn storage_task(
                     request.0,
                     STALL_TIMEOUT_MS / 1_000
                 );
-                // The level the ride loop reads as `ExternalFacts::note_transfer` is published from
-                // here, so a plan the rider asks for next is no longer refused by a peer that left.
+                // The level the ride loop reads is published from here, so a plan the rider asks for
+                // next is no longer refused by a peer that left.
                 publish_upload(store, engine);
                 None
             }
@@ -1081,12 +899,13 @@ pub(crate) async fn storage_task(
 
 /// Remove the head revision of `id`.
 ///
-/// `Ok(false)` = there was nothing at `id` — the goal state already holds, which
-/// [`Request::RemoveObject`] answers as a success. `Err` = the store refused or failed the commit.
+/// `Ok(false)` means there was nothing at `id`, so the goal state already holds, which
+/// [`Request::RemoveObject`] answers as a success. `Err` means the store refused or failed the
+/// commit.
 ///
-/// A listing that stopped early is a **failure**, never an absent object. `existed: false` is read
-/// as "the goal state holds", and a cascade advances past the member on it — so a media error that
-/// truncated the walk before it reached `id` would orphan a route that is still stored.
+/// A listing that stopped early is a failure, never an absent object: a cascade advances past a
+/// member on `existed: false`, so a media error that truncated the walk before it reached `id`
+/// would orphan a route that is still stored.
 fn remove_head(
     store: &FlatStore<FlatCard>,
     id: ObjectId,
@@ -1127,23 +946,15 @@ fn remove_head(
     }
 }
 
-/// One request against the store. **Synchronous and out of line**: it is the whole write surface, so
-/// its frame is measured as its own symbol rather than folded into the task's poll frame — the same
-/// reason `mount_at_boot` is `#[inline(never)]`.
+/// One request against the store. Synchronous and out of line: it is the whole write surface, so
+/// its frame is measured as its own symbol rather than folded into the task's poll frame.
 ///
-/// # ⚠️ Synchronous is a contract here, not an implementation detail
-///
-/// The v4 adapters hand this function `&'static` borrows of buffers **they** own — a staged control
-/// record, a received stream record, the reaction buffer — and they are free to reuse those buffers
-/// the instant the answer to their call arrives. That is sound for exactly one reason: `serve` never
-/// yields, so "the answer arrived" and "the engine is done with the bytes" are the same instant.
-///
-/// **The stepped-commit follow-up recorded on #1420 would break that.** A resumable commit, an async
-/// block device, or a per-command yield seam inside `Store::commit` all turn this into a function
-/// that can be suspended with an adapter's buffer borrowed — at which point the adapter may stage
-/// the next record over bytes the engine has not finished reading. Whoever lands that seam owes this
-/// module a different ownership story (a copy at the boundary, or a per-record token the adapter
-/// waits on), and this paragraph is the note that says so at the site rather than in an issue.
+/// Synchronous is a contract here, not an implementation detail. The v4 adapters hand this function
+/// `&'static` borrows of buffers they own, and they are free to reuse those buffers the instant the
+/// answer arrives. That is sound for exactly one reason: `serve` never yields, so "the answer
+/// arrived" and "the engine is done with the bytes" are the same instant. A resumable commit, an
+/// async block device or a per-command yield seam inside `Store::commit` would all break it, and
+/// whoever lands one owes this module a different ownership story.
 #[inline(never)]
 fn serve(
     store: &'static FlatStore<FlatCard>,
@@ -1193,7 +1004,7 @@ fn serve(
             }
             // Publishing can race a queued cancellation. Reserve one further catalog sequence for
             // the exact-revision compensating remove before making the route visible; otherwise a
-            // publish at u64::MAX would succeed and leave a ghost that no later commit can retract.
+            // publish at the last sequence would leave a ghost that no later commit can retract.
             if !store.has_commit_capacity(2) {
                 return Err(StoreError::ReadOnly);
             }
@@ -1264,8 +1075,8 @@ fn serve(
                     })
                 })
                 .unwrap_or_else(|| {
-                    // Losing the arm invalidates the staged prefix. Cancel rather than switching to the
-                    // resident 512-byte buffer and writing unrelated bytes under the same cursor.
+                    // Losing the arm invalidates the staged prefix. Cancel rather than switching to
+                    // the resident buffer and writing unrelated bytes under the same cursor.
                     engine.on_link_lost(Link::Usb, store);
                     Reaction::Close(obc_link::flat::Channel::Stream)
                 });
@@ -1304,27 +1115,18 @@ fn serve(
             Ok(Outcome::Reacted { reaction, out })
         }
         Request::LinkUp { link, ceilings } => {
-            // **Scoped to `link`, and that is the whole of FS7.5-c3b's P1 fix.** This used to
-            // release the live transfer and rebuild the engine outright, which was right while one
-            // link existed: there was nothing else for it to disturb. With two — a phone in a pocket
-            // and a cable in J3, both spawned side by side in `main` — it meant a reconnecting
-            // radio destroyed a cable's twenty-minute map upload with no answer to the client
-            // sending it, *and* re-pinned the shared stream ceiling to the radio's 245 bytes so the
-            // cable's next 4,112-byte record died as over-ceiling. The reverse direction broke the
-            // radio's framing the same way.
-            //
-            // `Engine::on_link_up` now touches only this link's ceilings and only this link's
-            // transfer, and every transfer carries the ceilings it was admitted under. The
-            // newcomer's own `PUT` then meets §1's one-at-a-time rule the ordinary way — `busy`,
-            // with the live `RequestId` as context, whichever wire asked, which is exactly what the
-            // spec commit's §10 sentence promises.
+            // Scoped to `link`, and that scoping is the whole point. Releasing the live transfer
+            // and rebuilding the engine outright was right while one link existed. With two, a
+            // reconnecting radio destroyed a cable's long map upload with no answer to the client
+            // sending it, and re-pinned the shared stream ceiling to the radio's 245 bytes so the
+            // cable's next record died as over-ceiling. `Engine::on_link_up` now touches only this
+            // link's ceilings and transfer, and every transfer carries the ceilings it was admitted
+            // under. The newcomer's own `PUT` then meets the one-at-a-time rule the ordinary way.
             engine.on_link_up(link, store, ceilings);
-            // **The reconnecting link may have owned the live transfer**, and `on_link_up` abandons
-            // it — so the engine's transfer state moved here exactly as it does on a `LinkLost`.
-            // Without this the `LIVE_TRANSFER` level the ride loop reads as
-            // `ExternalFacts::note_transfer` would stay `true` until some later engine request
-            // happened to run, withdrawing heavy-operation admission in between; the #927 card would
-            // stay up for the same window.
+            // The reconnecting link may have owned the live transfer, and `on_link_up` abandons it,
+            // so the engine's transfer state moves here exactly as it does on a `LinkLost`. Without
+            // this the level the ride loop reads would stay `true` until some later engine request
+            // happened to run, withdrawing heavy-operation admission in between.
             publish_upload(store, engine);
             defmt::info!(
                 "flat/v4: link up ({}) — control {=usize} B, stream {=usize} B",
@@ -1354,18 +1156,16 @@ pub(crate) fn take_route_storage_full() -> bool {
     ROUTE_STORAGE_FULL.swap(false, core::sync::atomic::Ordering::Relaxed)
 }
 
-/// **A committed map is not yet a readable map.** The USB map path skips the whole-payload CRC on
-/// purpose, so until now the first code that ever looked at these bytes was the next boot. Re-open
-/// the object and parse its tables: the header, the section bounds, the LOD table, the style table
-/// and the place and navigation directories. That is about 3 KB of structure in some forty small
-/// reads, tens of milliseconds against a transfer that took minutes.
+/// A committed map is not yet a readable map. The USB map path skips the whole-payload CRC, so
+/// without this the first code to look at these bytes would be the next boot. Re-open the object
+/// and parse its tables: about 3 KB of structure in some forty small reads, tens of milliseconds
+/// against a transfer that took minutes.
 ///
-/// It proves the map mounts. It does not prove the bytes are undamaged — nothing here reads a
+/// It proves the map mounts. It does not prove the bytes are undamaged: nothing here reads a
 /// geometry chunk, and OBCM carries no checksum that would make reading them cheap.
 ///
-/// `#[inline(never)]` for the reason [`open_map`] carries it: `MapTables` and its parse scratch are
-/// a few KiB, and a value built inside an async block is a permanent slot in that task's poll frame
-/// (#1084/#1108). Keeping the parse in its own out-of-line sync frame keeps it off the store task.
+/// `#[inline(never)]` because `MapTables` and its parse scratch are a few KiB, and a value built
+/// inside an async block is a permanent slot in that task's poll frame.
 #[inline(never)]
 fn check_committed_map(store: &'static FlatStore<FlatCard>, id: ObjectId) -> Option<crate::link::MapVerifyFault> {
     use crate::link::MapVerifyFault;
@@ -1404,7 +1204,7 @@ fn publish_upload(store: &'static FlatStore<FlatCard>, engine: &mut BoardEngine)
         ROUTE_STORAGE_FULL.store(true, core::sync::atomic::Ordering::Relaxed);
         CATALOG_WAKE.signal(());
     }
-    // The transfer *level* — every kind, not just the map the card shows. See [`LIVE_TRANSFER`].
+    // The transfer level, every kind and not just the map the card shows. See [`LIVE_TRANSFER`].
     LIVE_TRANSFER.store(engine.live_transfer().is_some(), core::sync::atomic::Ordering::Relaxed);
     // A map's structure is checked here, after the commit, because the store has no read seam over
     // an uncommitted upload. The card says installed only if the bytes parse.
@@ -1417,8 +1217,8 @@ fn publish_upload(store: &'static FlatStore<FlatCard>, engine: &mut BoardEngine)
             obc_link::flat::ObjectKind::Trip => {
                 note_catalog_upload(CatalogUpload::new(CatalogUploadKind::Trip, id.0, replaced))
             }
-            // The link and the store each name objects with their own `ObjectId` newtype over the
-            // same u64; the seam between them is this crate's job, as everywhere else here.
+            // The link and the store each name objects with their own newtype over the same u64;
+            // the seam between them is this crate's job, as everywhere else here.
             obc_link::flat::ObjectKind::MapShard => fault = check_committed_map(store, ObjectId(id.0)),
             _ => {}
         }
@@ -1429,43 +1229,33 @@ fn publish_upload(store: &'static FlatStore<FlatCard>, engine: &mut BoardEngine)
     }
 }
 
-// ══════════════════════════ the protocol-v4 engine ══════════════════════════
-
 /// The engine's staging buffer, in bytes.
 ///
-/// **512 — the minimum the engine's own `const` assertion allows — and that is a c3a decision with a
-/// c3b sequel.** The stage exists to turn a burst of small link records into few large card writes,
-/// and on BLE there is no burst to turn: a CoC SDU is 245 bytes and the radio delivers a handful per
-/// connection interval, so a 4 KiB stage would batch writes the link cannot feed it fast enough to
-/// fill. What it *would* cost is real — [`Engine`] embeds the buffer, and a 4 KiB engine built by
-/// value is 4 KiB of transient frame at a depth this board measures (#1084/#1108).
-///
-/// USB is the case the default was written for, and c3b raises this with that transport's measured
-/// number in hand rather than inheriting a guess from the radio.
+/// 512, the minimum the engine's own assertion allows. The stage exists to turn a burst of small
+/// link records into few large card writes, and on BLE there is no burst to turn: a CoC SDU is 245
+/// bytes, so a 4 KiB stage would batch writes the link cannot fill it with. What it would cost is
+/// real: [`Engine`] embeds the buffer, so a 4 KiB engine built by value is 4 KiB of transient frame
+/// at a depth this board measures.
 const ENGINE_STAGE: usize = 512;
 
 /// The one engine, bound to this board's store.
 pub(crate) type BoardEngine = Engine<FlatStore<FlatCard>, ENGINE_STAGE>;
 
-/// `.bss`, for the reason every value this size on this board is: an engine built by value inside
-/// [`storage_task`]'s async block is a permanent slot in that task's poll frame, allocated at entry
-/// on every poll (#677, #1084, #1108).
+/// `.bss`, because an engine built by value inside [`storage_task`]'s async block is a permanent
+/// slot in that task's poll frame, allocated at the entry of every poll.
 static mut ENGINE: MaybeUninit<BoardEngine> = MaybeUninit::uninit();
 
-/// The engine's resident cost. Named for the budget table in `main.rs`.
+/// The engine's resident cost, named for the resource report.
 pub(crate) const ENGINE_BYTES: usize = core::mem::size_of::<BoardEngine>();
 
-/// **Build the engine into its slot and hand back the one `&'static mut`.**
+/// Build the engine into its slot and hand back the one `&'static mut`.
 ///
 /// `#[inline(never)]` so the constructor's frame is a transient sibling rather than part of the
-/// task's poll frame. It is small — [`ENGINE_STAGE`] is 512 B and the rest is a live-transfer record
-/// — but the rule is about *where a value is built*, not how big it is.
+/// task's poll frame. It is small, but the rule is about where a value is built, not how big it is.
 ///
-/// **It comes up with no link up and therefore no ceilings**, which is the honest starting state of
-/// a device nobody has connected to: each adapter announces itself with [`Request::LinkUp`] and is
-/// served only while it has. The engine used to be built with the radio's preferred numbers, which
-/// was a guess that happened to be right for one link and wrong for the other the moment USB
-/// arrived.
+/// It comes up with no link up and therefore no ceilings, which is the honest starting state of a
+/// device nobody has connected to: each adapter announces itself with [`Request::LinkUp`] and is
+/// served only while it has.
 ///
 /// # Safety
 /// Sole writer of [`ENGINE`]; called exactly once, from [`storage_task`], which is spawned once.
@@ -1479,29 +1269,22 @@ pub(crate) struct BoardPolicy;
 
 impl Policy for BoardPolicy {}
 
-/// **Take the receive end and arm the write half**, for the one `spawn` in `main`.
+/// Take the receive end and arm the write half, for the one `spawn` in `main`.
 ///
-/// One function rather than two because the two facts are the same fact: there is a consumer, and
+/// One function rather than two, because the two facts are the same fact: there is a consumer, and
 /// therefore [`writer`] may hand out senders. Splitting them would allow an arming that never
-/// spawned (senders that wedge) or a spawn that never armed (a live task no one can reach), and
-/// both are silent.
+/// spawned, whose senders wedge, or a spawn that never armed, whose task no one can reach.
 ///
-/// Call it exactly once, at the spawn site. A second call would make a second consumer and the
-/// serialization this whole module exists for would be gone; the `debug_assert` is what says so on
-/// the host, and the single call site is what makes it true on the device.
+/// Call it exactly once. A second call would make a second consumer, and the serialization this
+/// module exists for would be gone.
 pub(crate) fn arm() -> Receiver<'static, CriticalSectionRawMutex, Job, REQUEST_QUEUE> {
     let already = ARMED.swap(true, core::sync::atomic::Ordering::Relaxed);
     debug_assert!(!already, "the flat store's write half was armed twice — that is a second consumer");
     REQUESTS.receiver()
 }
 
-// ══════════════════════════ the boot report ══════════════════════════
-
-/// What the mount found, on RTT. The same catalog drives the boot fault and the flat map reader, so
-/// the log, glass and served object all describe one mount result.
-///
-/// It returns the [`Catalog`] its walk produced, so `boot_fault_for` decides from this listing
-/// rather than taking a second one off the card.
+/// What the mount found, on the log. It returns the [`Catalog`] its walk produced, so
+/// `boot_fault_for` decides from this listing rather than taking a second one off the card.
 pub(crate) fn report(store: &FlatStore<FlatCard>, mount_us: u64) -> Catalog {
     defmt::info!(
         "flat: {} at sequence {=u64} — {=u16} entries, {=u32} free extents of {=u64} B, mount {=u64} us",
@@ -1512,8 +1295,8 @@ pub(crate) fn report(store: &FlatStore<FlatCard>, mount_us: u64) -> Catalog {
         store.extent_size(),
         mount_us,
     );
-    // §5.6's cost is stated for a card with no ride in progress; a mount that also read the 16 slot
-    // headers and CRC'd a 32 KiB slot did more than that figure covers, so it is reported apart.
+    // The mount cost is stated for a card with no ride in progress, so a mount that also read the
+    // slot headers and CRC'd a slot did more than that figure covers and is reported apart.
     if let Some(recovered) = store.recovered_ride() {
         defmt::info!(
             "flat: §7.3 recovered a ride — object {=u64} revision {=u64}, checkpoint {=u64}, {=u64} B flushed + {=u32} B tail",
@@ -1536,7 +1319,7 @@ pub(crate) fn report(store: &FlatStore<FlatCard>, mount_us: u64) -> Catalog {
             _ => other += 1,
         }
     }
-    // Read once, after the walk: `entries_ok` reports whether the listing *just taken* crossed a
+    // Read once, after the walk: `entries_ok` reports whether the listing just taken crossed a
     // commit, so reading it before the loop would answer about the previous one.
     let listing_complete = store.entries_ok();
     defmt::info!(
@@ -1550,18 +1333,15 @@ pub(crate) fn report(store: &FlatStore<FlatCard>, mount_us: u64) -> Catalog {
     Catalog { maps: usize::from(maps), listing_complete }
 }
 
-/// The metadata of the first object of `kind`, or `None`. The one catalog helper the read path
-/// needs: [`open_map`] resolves the map with it.
+/// The metadata of the first object of `kind`, or `None`.
 pub(crate) fn first_of(store: &FlatStore<FlatCard>, kind: ObjectKind) -> Option<EntryMeta> {
     store.entries().find(|entry| entry.kind == kind)
 }
 
-/// `debug-uart` only (#1591 on-device acceptance): print the whole catalog, one line per entry,
-/// plus the entry count, whether the listing ran to the end, and the free extents.
-///
-/// The before/after comparison of two of these is what proves a repair removed exactly one object
-/// and left every other one byte-identical — `EntryMeta` already carries the per-object CRC, so
-/// "unchanged" is a comparison rather than a claim.
+/// `debug-uart` only: print the whole catalog, one line per entry, plus the entry count, whether
+/// the listing ran to the end, and the free extents. Comparing two of these proves a repair removed
+/// exactly one object and left every other one byte-identical, because `EntryMeta` carries the
+/// per-object CRC.
 #[cfg(feature = "debug-uart")]
 pub(crate) fn debug_census(store: &FlatStore<FlatCard>) {
     for entry in store.entries() {
@@ -1584,16 +1364,12 @@ pub(crate) fn debug_census(store: &FlatStore<FlatCard>) {
     );
 }
 
-// ══════════════════════════ the map, as bytes ══════════════════════════
-
 /// The session-long source over the mounted card's map object.
 ///
-/// `.bss`, and **session-long by construction**: `flat::source`'s two shapes are a scoped
-/// `with_source` and a `StoreSource` released by hand, and a map that is read from boot to power-off
-/// across a hundred `await`s cannot be a scope. So this is the second shape, and the hold row it
-/// spends is never given back — which is correct rather than a leak: §6.2's row is what keeps the
-/// revision the renderer is drawing from alive while an upload commits over it, and this image has
-/// no state in which the map stops being needed.
+/// `.bss`, and session-long by construction: a map that is read from boot to power-off across a
+/// hundred `await`s cannot be a scope, so this is the by-hand shape. The hold row it spends is
+/// never given back, which is correct rather than a leak: that row is what keeps the revision the
+/// renderer is drawing from alive while an upload commits over it.
 static mut MAP_SOURCE: MaybeUninit<obc_storage::flat::StoreSource<'static, FlatCard>> = MaybeUninit::uninit();
 
 /// Called only by the ride task after a map was opened successfully at boot.
@@ -1634,11 +1410,10 @@ pub(crate) fn route_fingerprint(
     meta.map(obc_storage::flat::metadata::fingerprint)
 }
 
-/// The open map's §9 display name, truncated to what the System-settings row shows.
+/// The open map's display name, truncated to what the System settings row shows.
 ///
-/// Captured in [`open_map`] because the alternative is a **second catalog walk** — at 1,027 entries
-/// that is ~69 read commands and a tenth of a second, for a string. Same reasoning as
-/// [`boot_fault_for`]'s: one walk, both consumers.
+/// It is captured in [`open_map`] because the alternative is a second catalog walk: at 1,027
+/// entries that is about 69 read commands and a tenth of a second, for a string.
 static mut MAP_NAME: heapless::String<24> = heapless::String::new();
 
 /// The open map's display name, or `""` before [`open_map`] has run / on a card with no map.
@@ -1647,23 +1422,19 @@ pub(crate) fn map_name() -> &'static str {
     unsafe { (*core::ptr::addr_of!(MAP_NAME)).as_str() }
 }
 
-/// **Open the card's map object and hand back a `'static` [`ByteSource`] over it** — the read
-/// cutover's one new boot step (FS7.5-c2, #1420).
+/// Open the card's map object and hand back a `'static` [`ByteSource`] over it.
 ///
 /// `None` when no map object can be opened. [`boot_fault_for`] distinguishes an empty, complete
-/// catalog from an unreadable map or incomplete listing. A header parse failure is also reported
-/// as MAP UNREADABLE by the caller.
+/// catalog from an unreadable map or an incomplete listing.
 ///
-/// **The active map is the lowest-`ObjectId` `MapShard`.** Catalog iteration is ordered by
-/// `(ObjectId, Revision)`, and `first_of` resolves that object's head, so selection is deterministic
-/// even on a card that already contains several maps. Companion map sends follow the same rule:
-/// replace this object using its listed revision, and create only when no map exists.
+/// The active map is the lowest-`ObjectId` `MapShard`. Catalog iteration is ordered by
+/// `(ObjectId, Revision)` and `first_of` resolves that object's head, so selection is deterministic
+/// even on a card that holds several maps. Companion map sends follow the same rule: replace this
+/// object using its listed revision, and create only when no map exists.
 ///
-/// `#[inline(never)]` for the reason every constructor on this boot path is: a `StoreSource` built
-/// by value inside the boot task's async block is a permanent slot in that task's poll frame
-/// (#1084/#1108). It is small — the store reference, a hold row token and a length — but the rule is
-/// about *where a value is built*, not how big it is, and the next thing to grow this type would do
-/// it silently.
+/// `#[inline(never)]` because a `StoreSource` built by value inside the boot task's async block is
+/// a permanent slot in that task's poll frame. It is small, but the rule is about where a value is
+/// built, and the next thing to grow this type would do it silently.
 #[inline(never)]
 pub(crate) fn open_map(store: &'static FlatStore<FlatCard>) -> Option<&'static dyn obc_formats::io::ByteSource> {
     #[cfg(feature = "peak-view-demo")]
@@ -1693,11 +1464,10 @@ pub(crate) fn open_map(store: &'static FlatStore<FlatCard>) -> Option<&'static d
                     }
                 }
             }
-            // SAFETY: sole writer of MAP_SOURCE; `open_map` runs once per boot on the one
-            // thread-mode executor, before any task that could hold a reference exists. The write is
-            // unconditional (no `StaticCell` one-shot flag a warm reset could find set), and the
-            // `&'static` handed out is the only reference. `StoreSource`'s `Drop` is a
-            // `debug_assert` that never runs here: the value is never dropped.
+            // SAFETY: sole writer of MAP_SOURCE. `open_map` runs once per boot on the one
+            // thread-mode executor, before any task that could hold a reference exists, the write is
+            // unconditional, and the `&'static` handed out is the only reference. `StoreSource`'s
+            // `Drop` never runs here, because the value is never dropped.
             Some(unsafe { crate::init_static(core::ptr::addr_of_mut!(MAP_SOURCE), source) })
         }
         Err(error) => {
@@ -1710,8 +1480,6 @@ pub(crate) fn open_map(store: &'static FlatStore<FlatCard>) -> Option<&'static d
         }
     }
 }
-
-// ══════════════════════════ route + trip menus ══════════════════════════
 
 /// The active route's held revision. One route is streamed by the matcher/renderer at a time; this
 /// single slot replaces FAT's open file handle and spends one of the store's bounded hold rows.
@@ -1777,9 +1545,9 @@ pub(crate) fn reconcile_route(
 }
 
 /// The only catalog fields a later object open needs. Keeping the full [`EntryMeta`] here retained
-/// 48-byte display names, flags, lengths, and CRCs for every menu slot at once; at 64 routes that
-/// made `load_routes` an 18 KiB frame. This 16-byte key preserves the exact selection/open contract
-/// without moving scratch into resident memory.
+/// a 48-byte display name, flags, length and CRC for every menu slot at once, which at 64 routes
+/// made `load_routes` an 18 KiB frame. This 16-byte key preserves the same selection and open
+/// contract.
 #[derive(Clone, Copy)]
 struct CatalogHead {
     id: ObjectId,
@@ -1959,15 +1727,14 @@ pub(crate) fn load_rides(store: &'static FlatStore<FlatCard>, app: &mut obc_app:
     true
 }
 
-/// Answer one keyed **ride-track** derived need from one immutable flat object revision: the
-/// elevation profile, filled in place into the app's resident buffer, and the decimated track
-/// shape, decimated into the caller's stack buffer.
+/// Answer one keyed ride-track derived need from one immutable flat object revision: the elevation
+/// profile, filled in place into the app's resident buffer, and the decimated track shape, into the
+/// caller's stack buffer.
 ///
-/// The polyline goes to the caller rather than into the app directly because it reaches
-/// DeviceCore as `DerivedTargets::ride_preview` beside the key that guards it — and because at
-/// `NAV_PREVIEW_MAX` it is 512 B that must not become resident (the board has 72 B of resident
-/// headroom). Both outputs come from one sample pass; failure clears the preview and leaves
-/// the profile unpublished.
+/// The polyline goes to the caller rather than into the app because it reaches DeviceCore beside
+/// the key that guards it, and because at `NAV_PREVIEW_MAX` it is 512 B that must not become
+/// resident. Both outputs come from one sample pass; a failure clears the preview and leaves the
+/// profile unpublished.
 #[inline(never)]
 pub(crate) fn fill_ride_track(
     store: &'static FlatStore<FlatCard>,
