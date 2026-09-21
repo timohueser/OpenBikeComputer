@@ -1,5 +1,5 @@
 /**
- * The CRC-32 constants of interface spec §6, pinned as literals.
+ * The CRC-32 constants of the interface spec, pinned as literals.
  *
  * `vectors.test.ts` asserts the same things against `specs/vectors/`; this file states them
  * without any file to read, so a hasher that quietly became CRC-32C — same shape, same API, wrong
@@ -15,7 +15,7 @@ const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
 
 describe("CRC-32/IEEE", () => {
     it("matches the spec's check value", () => {
-        // §6: reflected, polynomial 0xEDB88320, init and xorout 0xFFFFFFFF.
+        // Reflected, polynomial 0xEDB88320, init and xorout 0xFFFFFFFF.
         expect(Crc32.of(bytes("123456789"))).toBe(0xcbf43926);
     });
 

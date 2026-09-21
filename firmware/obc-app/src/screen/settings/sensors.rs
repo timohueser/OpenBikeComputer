@@ -1,22 +1,9 @@
-//! The Sensors screen (BLE sensors epic #707, SE7) — pair, view and forget the HR / power / cadence
-//! sensors, placed next to Bluetooth in Settings.
+//! Pair, view and forget the heart rate, power and cadence sensors. [`SensorsScreen`] lists the
+//! three kinds, and [`SensorScanScreen`] is the scan list for one kind.
 //!
-//! Two screens live here:
-//!
-//! - [`SensorsScreen`]: three rows — `Heart rate` / `Power` / `Cadence` — each a kind label over a
-//!   live status line (`Not set` · `Searching` · `Connecting` · `Connected · 78%`, battery only when
-//!   known). **Press** a row → open its scan list; on a **saved** row a **hold** forgets it (the
-//!   Bluetooth Forget-family guarded footer: a plain prompt while unselected, the shaded base filling
-//!   warning-red with the live hold while the row is selected).
-//! - [`SensorScanScreen`]: the scan list for one quantity — the discovered sensors of that kind
-//!   (name, or address when unnamed, + RSSI), a step to move, a press to **save + connect** (writes
-//!   the settings slot → the host reconciles it to the radio) and pop back to the row now `Connecting`.
-//!   Empty while scanning shows `Searching…`.
-//!
-//! Saving/forgetting is a plain [`Settings`](crate::Settings) edit — the host's per-pass reconcile
-//! (the `set_radio_enabled` shape) carries the change to the board's central manager and persists it,
-//! so there is one durable path (no separate one-shot to race the settings write). Scan mode is a
-//! level ([`Activity::request_sensor_scan`]) the host polls to keep a discovery scan running.
+//! A save or a forget is a plain [`Settings`](crate::Settings) edit. The host reconcile carries the
+//! change to the radio and persists it, so there is one durable path. Scan mode is a level
+//! ([`Activity::request_sensor_scan`]) the host polls to keep a discovery scan running.
 
 use core::fmt::Write;
 
@@ -35,9 +22,9 @@ use crate::sensors::{SensorPhase, SensorStatus};
 use crate::settings::{Language, SavedSensor, SENSOR_SLOTS};
 use crate::Msg;
 
-/// Two-line row height — matches the Bluetooth toggle row's family.
+/// Two-line row height. It matches the Bluetooth toggle rows.
 const ROW_H: i32 = 58;
-/// The i18n key for a slot's kind label (`Heart rate` / `Power` / `Cadence`). Slot index = kind.
+/// The label key for a slot. The slot index is the sensor kind.
 fn kind_msg(slot: usize) -> Msg {
     match slot {
         0 => Msg::SensorsHeartRate,
@@ -46,7 +33,6 @@ fn kind_msg(slot: usize) -> Msg {
     }
 }
 
-/// The Sensors screen — the three kind rows. State is the highlighted row.
 #[derive(Debug, Default)]
 pub struct SensorsScreen {
     selected: usize,
@@ -57,8 +43,7 @@ impl SensorsScreen {
         SensorsScreen { selected: 0 }
     }
 
-    /// True while a hold would charge the Forget footer — the selected row has a saved sensor
-    /// ([`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) repaints a charging hold).
+    /// True while a hold would charge the Forget footer, that is, the selected row has a sensor.
     pub(crate) fn selection_is_guarded(&self, settings: &crate::Settings) -> bool {
         settings.saved_sensors.get(self.selected).is_some_and(|s| s.present)
     }
@@ -69,15 +54,12 @@ impl SensorsScreen {
                 self.selected = crate::screen::vocab::list::step_selection(self.selected, n, SENSOR_SLOTS);
                 Transition::None
             }
-            // Enter the row's scan list — raise scan mode so the host runs a discovery scan and feeds
-            // the hits back; the scan screen lowers it on exit.
+            // Scan mode makes the host run a discovery scan. The scan screen lowers it on exit.
             Gesture::Press => {
                 cx.activity.request_sensor_scan(true);
                 Transition::Push(Screen::SensorScan(SensorScanScreen::new(self.selected as u8)))
             }
-            // Forget: the guarded hold, live only while the selected slot holds a saved sensor. A plain
-            // settings edit — the host reconcile drops the link and persists the cleared slot (the same
-            // path a factory reset takes). No confirmation popup; the guarded hold *is* the confirm.
+            // The guarded hold is the confirmation. There is no popup.
             Gesture::Hold if self.selection_is_guarded(cx.settings) => {
                 cx.settings.saved_sensors[self.selected] = SavedSensor::EMPTY;
                 Transition::None
@@ -102,18 +84,14 @@ impl SensorsScreen {
             super::row_label(cv, row, rx.t(kind_msg(slot)), Some(&sub));
         }
 
-        // The Forget footer, drawn only when the selected slot is saved (the only-when-possible
-        // grammar) — so on this page it is always the guarded row holding the cursor.
         if self.selection_is_guarded(rx.settings) {
             super::forget_footer(cv, w, h, rx.t(Msg::SensorsForget), true, rx.hold_progress);
         }
     }
 }
 
-/// Compose one row's status line into `buf`: `Not set` when no sensor is saved, else the live phase
-/// (`Searching` / `Connecting` / `Connected`, with `· NN%` when the battery is known). A saved slot
-/// whose status snapshot hasn't caught up (`NotSet`) still reads `Searching` — it will connect — so
-/// the line never contradicts the saved-and-forgettable footer.
+/// Compose one row's status line into `buf`. A saved slot whose status snapshot is not yet current
+/// reads `Searching`, so the line does not contradict the armed Forget footer.
 fn status_line(buf: &mut heapless::String<24>, present: bool, status: SensorStatus, lang: Language) {
     if !present {
         let _ = buf.push_str(crate::t(Msg::SensorsNotSet, lang));
@@ -129,17 +107,16 @@ fn status_line(buf: &mut heapless::String<24>, present: bool, status: SensorStat
                 let _ = write!(buf, " \u{00b7} {pct}%");
             }
         }
-        // NotSet (snapshot not caught up) or Searching both read as searching for the saved sensor.
+        // A stale snapshot (`NotSet`) reads the same as `Searching`.
         _ => {
             let _ = buf.push_str(crate::t(Msg::SensorsSearching, lang));
         }
     }
 }
 
-/// The scan list for one sensor quantity (SE7). State is the target slot + the highlighted hit.
 #[derive(Debug)]
 pub struct SensorScanScreen {
-    /// The quantity being paired (0 HR · 1 Power · 2 Cadence) — filters the scan hits.
+    /// The kind being paired: 0 heart rate, 1 power, 2 cadence. It filters the scan hits.
     slot: u8,
     selected: usize,
 }
@@ -149,7 +126,6 @@ impl SensorScanScreen {
         SensorScanScreen { slot, selected: 0 }
     }
 
-    /// The hits of this screen's quantity, in feed order — the visible rows.
     fn hits<'a>(
         &self,
         all: &'a [crate::sensors::SensorScanHit],
@@ -158,7 +134,6 @@ impl SensorScanScreen {
         all.iter().filter(move |h| h.slot == slot)
     }
 
-    /// How many hits this quantity has right now — bounds the cursor.
     fn count(&self, all: &[crate::sensors::SensorScanHit]) -> usize {
         self.hits(all).count()
     }
@@ -172,9 +147,7 @@ impl SensorScanScreen {
                 }
                 Transition::None
             }
-            // Save + connect the highlighted sensor: write the settings slot (the host reconcile
-            // carries it to the radio and persists it), leave scan mode, and pop back to the row —
-            // which now reads `Connecting` from the pushed status.
+            // The settings write is the save. The host reconcile connects the sensor.
             Gesture::Press => {
                 let picked = self.hits(cx.sensor_scan_hits).nth(self.selected).map(|h| (h.addr_kind, h.addr));
                 if let Some((addr_kind, addr)) = picked {
@@ -185,7 +158,6 @@ impl SensorScanScreen {
                     Transition::None
                 }
             }
-            // Back cancels the scan (lowers scan mode) and returns to the row list unchanged.
             Gesture::Back => {
                 cx.activity.request_sensor_scan(false);
                 Transition::Pop
@@ -197,13 +169,10 @@ impl SensorScanScreen {
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
-        // The kind being paired titles the scan list, so the three lists read distinctly; the body
-        // (a sensor list, or the `Searching...` note) makes it clear this is the pairing screen.
         title_frame(cv, w, h, rx.t(kind_msg(self.slot as usize)), "");
 
         let len = self.count(rx.sensor_scan_hits);
         if len == 0 {
-            // Empty while scanning: the calm searching note (no list yet).
             empty_state(cv, w, h, rx.t(Msg::SensorsScanning), "");
             return;
         }
@@ -213,7 +182,6 @@ impl SensorScanScreen {
             let y = LIST_TOP + 8 + i as i32 * ROW_H;
             let row = row_rect(y, w, ROW_H);
             row_cursor(cv, row, i == selected, false);
-            // Name, or the address when the advert carried none.
             let x = row.top_left.x + 10;
             if hit.name.is_empty() {
                 let mut addr = heapless::String::<24>::new();
@@ -222,7 +190,6 @@ impl SensorScanScreen {
             } else {
                 cv.text(&hit.name, Point::new(x, row.top_left.y + 5), Font::Body, TextAlign::Left, INK);
             }
-            // RSSI (dBm) under the name — the signal cue.
             let mut rssi = heapless::String::<12>::new();
             let _ = write!(rssi, "{} dBm", hit.rssi);
             cv.text(&rssi, Point::new(x, row.top_left.y + 30), Font::Label, TextAlign::Left, SUBTEXT);
@@ -269,13 +236,12 @@ mod tests {
         scr.handle(g, &mut cx)
     }
 
-    /// Entering a row pushes its scan list and raises scan mode; the slot travels with the screen.
     #[test]
     fn press_opens_scan_for_the_selected_kind() {
         let mut st = AppState::new(0, 0, 1.0);
         let mut s = Settings::default();
         let mut scr = SensorsScreen::new();
-        run(&mut scr, &mut st, &mut s, &[], Gesture::Step(1)); // → Power (slot 1)
+        run(&mut scr, &mut st, &mut s, &[], Gesture::Step(1));
         let t = {
             let mut act = Activity::new(Mode::Idle);
             let mut cx = test_ctx(&mut st, &mut act, &mut s);
@@ -291,37 +257,32 @@ mod tests {
         }
     }
 
-    /// Forget is guarded: live only on a saved row, and it clears the settings slot (the host reconcile
-    /// drops the link + persists). A hold on an empty row does nothing.
     #[test]
     fn forget_hold_is_guarded_and_clears_the_slot() {
         let mut st = AppState::new(0, 0, 1.0);
         let mut s = Settings::default();
         let mut scr = SensorsScreen::new();
 
-        // Empty HR row: the footer isn't armed, a hold does nothing.
         assert!(!scr.selection_is_guarded(&s));
         run(&mut scr, &mut st, &mut s, &[], Gesture::Hold);
         assert!(!s.saved_sensors[0].present, "nothing to forget on an empty row");
 
-        // Save HR, then the hold clears it.
         s.saved_sensors[0] = SavedSensor::saved(1, [9, 9, 9, 9, 9, 9]);
         assert!(scr.selection_is_guarded(&s), "a saved row arms the footer");
         run(&mut scr, &mut st, &mut s, &[], Gesture::Hold);
         assert_eq!(s.saved_sensors[0], SavedSensor::EMPTY, "the hold forgets the sensor");
     }
 
-    /// Picking a scan hit saves its address to the slot, leaves scan mode, and pops back.
     #[test]
     fn picking_a_hit_saves_and_pops() {
         let mut st = AppState::new(0, 0, 1.0);
         let mut s = Settings::default();
         let mut act = Activity::new(Mode::Idle);
         act.request_sensor_scan(true);
-        let mut scr = SensorScanScreen::new(0); // HR
+        let mut scr = SensorScanScreen::new(0);
         let hits = [hit(1, "PWR", -50), hit(0, "HRM", -60), hit(0, "Watch", -72)];
 
-        // The cursor + press select the *first HR* hit (the power hit is filtered out).
+        // The press selects the first heart rate hit. The power hit is filtered out.
         let t = run_scan(&mut scr, &mut st, &mut s, &mut act, &hits, Gesture::Press);
         assert!(matches!(t, Transition::Pop), "a pick pops back to the row list");
         assert!(s.saved_sensors[0].present, "the HR slot now holds a saved sensor");
@@ -329,13 +290,12 @@ mod tests {
         assert!(!act.sensor_scan_active(), "picking leaves scan mode");
     }
 
-    /// Up/Down walks only this quantity's hits; a press with no hits does nothing (no panic on empty).
     #[test]
     fn scan_cursor_bounded_to_kind_and_empty_is_safe() {
         let mut st = AppState::new(0, 0, 1.0);
         let mut s = Settings::default();
         let mut act = Activity::new(Mode::Idle);
-        let mut scr = SensorScanScreen::new(2); // Cadence — no hits below
+        let mut scr = SensorScanScreen::new(2);
         let hits = [hit(0, "HRM", -60), hit(1, "PWR", -50)];
 
         run_scan(&mut scr, &mut st, &mut s, &mut act, &hits, Gesture::Step(1));
@@ -345,7 +305,6 @@ mod tests {
         assert!(!s.saved_sensors[2].present, "and saves nothing");
     }
 
-    /// Back lowers scan mode and pops.
     #[test]
     fn back_cancels_scan() {
         let mut st = AppState::new(0, 0, 1.0);
@@ -358,7 +317,6 @@ mod tests {
         assert!(!act.sensor_scan_active(), "Back leaves scan mode");
     }
 
-    /// The status line: `Not set` when empty, else the phase, with the battery only when known.
     #[test]
     fn status_line_reads_the_phase() {
         let en = Language::En;
@@ -371,8 +329,6 @@ mod tests {
         status_line(&mut b, true, SensorStatus { phase: SensorPhase::Searching, ..Default::default() }, en);
         assert_eq!(b.as_str(), "Searching");
 
-        // A saved slot whose snapshot hasn't caught up still reads Searching (never contradicts the
-        // armed Forget footer).
         b.clear();
         status_line(&mut b, true, SensorStatus { phase: SensorPhase::NotSet, ..Default::default() }, en);
         assert_eq!(b.as_str(), "Searching");

@@ -1,18 +1,16 @@
 /**
  * A {@link DeviceSession} backed by the simulated device — **the dev harness only**.
  *
- * The LM20's USB peripheral does not exist yet (#889), so without this there is no way to click
- * through a map upload, a route drop or a firmware update at all. The device on the far end is the
- * real one — `obc_link::flat::Engine` over a real flat store on a simulated card, compiled to wasm —
- * so the UI is driven against the protocol conversation the board will hold. The only fiction is the
- * cable, and the pacing that stands in for a card's write speed.
+ * The LM20's USB peripheral does not exist yet, so without this there is no way to click through a
+ * map upload, a route drop or a firmware update at all. The device on the far end is the real one,
+ * compiled to wasm, so the UI is driven against the protocol conversation the board will hold. The
+ * only fiction is the cable, and the pacing that stands in for a card's write speed.
  *
- * **Why it lives outside `src/`.** C3 drew a hard line: no shipping module may import the simulated
- * device, guarded by the chunk assertion in `platform/bundle.test.ts`. A dev-only dynamic import
- * inside `src/` would not satisfy it, and the guard is right to refuse one: whether such a branch is
- * tree-shaken depends on how the build was invoked (`import.meta.env.DEV` is not `false` when Rollup
- * runs under vitest), so "it gets dropped in production" would be a property nothing in CI actually
- * checks. A separate entry point that no tier's build has as an input is a fact instead of a hope.
+ * **Why it lives outside `src/`.** No shipping module may import the simulated device, guarded by
+ * the chunk assertion in `platform/bundle.test.ts`. A dev-only dynamic import inside `src/` would
+ * not satisfy it: whether such a branch is tree-shaken depends on how the build was invoked, so "it
+ * gets dropped in production" would be a property nothing in CI actually checks. A separate entry
+ * point that no tier's build has as an input is a fact instead of a hope.
  */
 
 import { gpxToObcr } from "../src/lib/convert/bridge";
@@ -30,16 +28,13 @@ const IDLE: DeviceState = { status: "idle", client: null, store: null, info: nul
 /**
  * The rate the simulated device moves bytes to and from its card.
  *
- * ~700 KB/s was the retired SPI transport's write ceiling, and it is kept **deliberately
- * pessimistic** rather than re-pinned: the sEMMC pivot (#1158) took the card to 8.2 MB/s raw and the
- * upload pipeline was retuned for it, but nothing end to end has been measured on glass. A harness
- * that promised a number the hardware has not confirmed would be worse than one that is honestly
- * slow. What it has to do is only this: an unthrottled loopback finishes a 100 MB "map" in seconds,
- * which would make every progress bar, rate and remaining-time estimate in the UI untestable.
+ * A chosen value, and deliberately pessimistic: nothing end to end has been measured on glass, and a
+ * harness that promised a number the hardware has not confirmed would be worse than one that is
+ * honestly slow. What it has to do is only this: an unthrottled loopback finishes a 100 MB "map" in
+ * seconds, which would make every progress bar, rate and remaining-time estimate untestable.
  *
  * **Both directions**, and for the same reason. Pacing only what the device *receives* left a ride
- * pull (C5 #904) running at memory speed, so its progress bar and Cancel button existed for about
- * four milliseconds — a surface that could not be looked at, let alone driven.
+ * pull running at memory speed, so its progress bar and Cancel button existed for four milliseconds.
  */
 const CARD_BYTES_PER_SECOND = 700 * 1024;
 
@@ -48,18 +43,16 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /**
  * The device end of a link, paced to {@link CARD_BYTES_PER_SECOND} in both directions.
  *
- * Only the **stream** channel is paced (§5.2's second endpoint pair): it is where payload bytes
- * move, and it is the one whose speed any progress bar is a picture of. The control channel carries
- * §3's request and response frames — a hundred bytes each, at most one in flight — so throttling it
- * would only add latency to a `LIST` without making any surface more testable.
+ * Only the **stream** channel is paced: it is where payload bytes move, and it is the one whose
+ * speed any progress bar is a picture of. The control channel carries request and response frames —
+ * a hundred bytes each, at most one in flight — so throttling it would only add latency to a `LIST`.
  */
 function paced(link: DeviceLink): DeviceLink {
     const stream = link.stream;
     /**
-     * A leaky bucket: the wall-clock instant the card will have finished everything charged to it
-     * so far. Charging forward from `max(budgetUntil, now)` rather than from a transfer's start
-     * makes the pacing correct across an idle gap — a start-anchored budget goes stale between
-     * transfers and lets the next one run unthrottled until it catches up.
+     * A leaky bucket: the wall-clock instant the card will have finished everything charged to it so
+     * far. Charging forward from `max(budgetUntil, now)` rather than from a transfer's start makes
+     * the pacing correct across an idle gap.
      */
     let budgetUntil = 0;
 
@@ -98,16 +91,13 @@ function paced(link: DeviceLink): DeviceLink {
 /**
  * Rides on the simulated card, so the ride surfaces have a catalog to render.
  *
- * A device with nothing on it renders one empty-state line, which is not the screen worth looking
- * at. These are shaped for the cases the surfaces have to get right rather than for plausibility:
- * an 11-hour ride with sensors — long enough on the wire that the progress bar, the rate and the
- * Cancel button are real rather than a flash — a short one without, one recorded before any peer
- * set the clock, and one the device is **still recording**.
+ * These are shaped for the cases the surfaces have to get right rather than for plausibility: an
+ * 11-hour ride with sensors — long enough on the wire that the progress bar, the rate and the Cancel
+ * button are real rather than a flash — a short one without, one recorded before any peer set the
+ * clock, and one the device is **still recording**.
  *
- * The last is a metadata-only row on purpose. §3.5 refuses a `GET` of an entry carrying `RECORDING`
- * — its payload length and CRC are zero until the commit that ends the ride — so seeding it with no
- * bytes is what the device really holds, and it is what makes the "listed, not offered" path
- * something a developer can look at rather than reason about.
+ * The last is a metadata-only row on purpose: a `GET` of an entry carrying `RECORDING` is refused,
+ * so seeding it with no bytes is what the device really holds.
  */
 function seedRides(device: FlatDevice): void {
     const rides: RideObject[] = [
@@ -122,14 +112,12 @@ function seedRides(device: FlatDevice): void {
 }
 
 /**
- * A route with named, categorized waypoints on the simulated card, so the chart-room preview
- * (waypoint card, map diamonds, profile ticks) can be exercised end to end.
+ * A route with named, categorized waypoints on the simulated card, so the chart-room preview can be
+ * exercised end to end.
  *
  * The OBCR is **real**: generated at connect time by the same wasm bridge a dropped GPX goes
- * through, from the deterministic inline GPX below — not hand-forged bytes, so the preview's
- * read-back (`routeTrack` + `routeWaypoints`) decodes exactly what the converter stores, waypoint
- * placement and all. The wasm module is local to the bundle, so this stays offline-safe; it is
- * the same prerequisite the harness's route-drop flow already has.
+ * through, from the deterministic inline GPX below, so the preview's read-back decodes exactly what
+ * the converter stores, waypoint placement and all.
  */
 async function seedWaypointRoute(device: FlatDevice): Promise<void> {
     try {
@@ -143,10 +131,9 @@ async function seedWaypointRoute(device: FlatDevice): Promise<void> {
 /**
  * Convert one inline GPX through the real wasm bridge and put it on the card.
  *
- * The catalog entry is the whole of what a `LIST` carries — id, revision, payload length, payload
- * CRC, kind, flags and a display name (§3.3) — and the store derives every one of them, the id
- * included, so there is nothing else to state. A route's distance, ascent and point count are
- * *payload* facts, in the OBCR header, and no seed here has to repeat them.
+ * The catalog entry is the whole of what a `LIST` carries, and the store derives every one of its
+ * fields, the id included, so there is nothing else to state. A route's distance, ascent and point
+ * count are *payload* facts and no seed has to repeat them.
  */
 async function seedGpxRoute(device: FlatDevice, name: string, gpx: string): Promise<bigint> {
     const bytes = await gpxToObcr(new TextEncoder().encode(gpx), name);
@@ -154,17 +141,15 @@ async function seedGpxRoute(device: FlatDevice, name: string, gpx: string): Prom
 }
 
 /**
- * A three-stage tour on the simulated card, so the trip band and its combined preview — the
- * multi-color map, the concatenated elevation profile with its stage seams, the merged waypoint
- * card — can be exercised end to end without dropping three GPX files first.
+ * A three-stage tour on the simulated card, so the trip band and its combined preview can be
+ * exercised end to end without dropping three GPX files first.
  *
- * The stages are contiguous (each starts where the last ended), every stage has a real elevation
- * shape, and two of the three carry waypoints — so the merged card shows cumulative distances
- * across a stage that contributes none.
+ * The stages are contiguous, every stage has a real elevation shape, and two of the three carry
+ * waypoints — so the merged card shows cumulative distances across a stage that contributes none.
  *
- * The trip object names its stages with the store's full-width `u64` ObjectIds (`objects.ts`), read
- * off the entries the store committed — an `ObjectId` is store-global (`FLAT_Store_Format.md` §3),
- * so the routes, the trip and the rides here share one numbering and none of them chooses its own.
+ * The trip object names its stages with the store's full-width `u64` ObjectIds, read off the entries
+ * the store committed: an `ObjectId` is store-global, so the routes, the trip and the rides here
+ * share one numbering and none of them chooses its own.
  */
 async function seedTour(device: FlatDevice): Promise<void> {
     try {
@@ -251,8 +236,8 @@ function legGpx(leg: TourLeg): string {
 }
 
 /**
- * A ~15 km loop around the Kaiserstuhl with a real elevation shape (so the profile zoom has
- * something to zoom into) and four `<wpt>`s spanning the symbol table: resupply, water, a
+ * A ~15 km loop around the Kaiserstuhl with a real elevation shape, so the profile zoom has
+ * something to zoom into, and four `<wpt>`s spanning the symbol table: resupply, water, a
  * deliberately-unmapped Viewpoint (generic), and a campsite.
  */
 function kaiserstuhlGpx(): string {
@@ -329,8 +314,8 @@ class LoopbackWatcher implements DeviceWatcher {
         return () => this.listeners.delete(listener);
     }
 
-    /** Stands in for the browser's chooser, so the connect button is exercised exactly as it will
-     *  be against hardware — including the rule that it only runs from a real click. */
+    /** Stands in for the browser's chooser, so the connect button is exercised exactly as it will be
+     *  against hardware — including the rule that it only runs from a real click. */
     async requestDevice(): Promise<boolean> {
         if (this.open) return true;
         this.publish({ ...IDLE, status: "connecting" });
@@ -352,8 +337,8 @@ class LoopbackWatcher implements DeviceWatcher {
                 await link.device.close();
             },
         };
-        // The same two reads `WebUsbWatcher.connect` makes, in the same order: §5.2.1's strings over
-        // EP0, then the `LIST` page whose prefix carries the store's identity (§3.3).
+            // The same two reads `WebUsbWatcher.connect` makes, in the same order: the identity
+            // strings over EP0, then the `LIST` page whose prefix carries the store's identity.
         const info = await client.deviceInfo();
         const page = await client.listPage({});
         this.publish({

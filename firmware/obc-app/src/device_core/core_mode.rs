@@ -1,66 +1,37 @@
-//! **`CoreMode`** — the one owner of *what heavy work may run now, and what the rider is looking
-//! at* (#1397 S5).
+//! `CoreMode`: the one owner of what heavy work may run now, and what the rider is looking at.
 //!
-//! Four levels and nothing else. Two of them say a planner run holds the scratch arena's nav arm
-//! (one per [`PlanFamily`]), one says a bulk transfer holds the store, and the fourth is the
-//! level→edge converter the Recalculating banner's single repaint comes from.
+//! Three levels and nothing else. Two say a planner run holds the scratch arena's nav arm (one per
+//! [`PlanFamily`]), and one says a bulk transfer holds the store. Everything that asks "is a search
+//! live?" reads these levels: the freeze, the two arena proof tokens, and the pass's admission
+//! stage.
 //!
-//! Everything that used to answer "is a search live?" reads these levels now: the freeze, the two
-//! arena proof tokens, and the pass's admission stage. Before S5 that fact existed four times over
-//! — a freeze module, a link gate, the arena's owner and the board's own planner handle — and the
-//! four could disagree.
+//! A route search and a map render want the same RAM (the arena's `render ⊥ nav` rule), so while the
+//! device recalculates, the map stops. The host skips map redraws and leaves the last frame on
+//! glass, [`App::tick`](crate::App::tick) stops advancing route-match progress so the guidance
+//! cannot drift away from that frame, and a banner says why. Fixes still record: a freeze pauses the
+//! map, never the ride.
 //!
-//! # The Recalculating freeze (#1146, P2)
+//! The freeze is engaged only when the base screen would draw a map. Planning from the menus is an
+//! opaque chrome screen that already says the same thing in its own words. The window that needs the
+//! freeze is a detour planned over a map base, where Back pops the planning screen while the search
+//! still owns the arena.
 //!
-//! A route search and a map render want the same RAM (the arena's `render ⊥ nav` rule), and the
-//! product rule that makes them disjoint is the one every commercial bike computer already ships:
-//! while it recalculates, the map stops. So a live planner run engages a freeze in which
+//! The nav arm is one block, so it stays out until every family that took it is done. A single
+//! family tag would have to pick a winner, and every terminal edge fires unconditionally on whatever
+//! is live, so a detour's edge would release a freeze a route search is still holding the arm
+//! behind.
 //!
-//! - the host skips map redraws ([`App::reroute_freeze_active`](crate::App::reroute_freeze_active)),
-//!   leaving the last frame on glass — a reflective panel keeps showing it for free;
-//! - [`App::tick`](crate::App::tick) stops advancing route-match progress, so the guidance the
-//!   frozen frame shows cannot drift away from it (fixes still record — breadcrumb, ride totals,
-//!   altimeter, sensors — a freeze pauses the *map*, never the ride);
-//! - a banner says so. A screen that stops responding without saying why reads as a crash, and the
-//!   freeze lasts as long as the search does.
-//!
-//! ## Why the base screen matters
-//!
-//! The freeze is engaged only when the base screen would actually draw a map. Planning from the
-//! menus already renders no map — `NavPlanning` is an opaque chrome screen, so it *is* the base
-//! while it is up — and freezing there would put a banner over a spinner that is already saying
-//! the same thing in its own words ("Finding a route..." for a route plan, "Planning detour..." for
-//! a detour).
-//!
-//! The window that needs this is the **detour** path (#882), where the planning screen is *pushed
-//! over a map base*: Back pops it while the planner is still running, and the next frame would
-//! render the map straight into the arena the search still owns. One predicate covers both: a live
-//! search plus [`base_draws_map`](crate::App::base_draws_map).
-//!
-//! # Two search levels, never a family tag
-//!
-//! The nav arm is **one block**, so it stays out until every family that took it is done. A single
-//! tag would have to pick a winner, and every terminal edge — a drained cancel, an answer, a
-//! failure tier — fires unconditionally on whatever is live: a detour's edge would release a
-//! freeze a *route* search is still holding the arm behind, the map plane would resume, and the
-//! next frame's render claim would be refused for the rest of the ride (#1146).
-//!
-//! # No atomics, no task, no latch
-//!
-//! `CoreMode` is plain data inside [`App`](crate::App), taken by `&mut` for the same reason
-//! [`ArenaGate`](crate::ArenaGate) is: the ride loop is the sole switcher. Every level is exactly
-//! that — a level, recomputed from what is true now and never latched.
+//! `CoreMode` is plain data inside [`App`](crate::App), taken by `&mut` because the ride loop is the
+//! sole switcher. Every level is recomputed from what is true now and never latched.
 
 use crate::arena_gate::{MapQuiesced, TransferReady};
 use crate::navigator::PlanFamily;
 
-/// What the device is busy with, as the rider would name it — the ranked, payload-free answer.
-///
-/// The ranking decides only what the rider is **told**. It never decides admission: that reads the
-/// levels, because a search and a transfer exclude different things.
+/// What the device is busy with, as the rider would name it. The ranking decides only what the
+/// rider is told; admission reads the levels, because a search and a transfer exclude different
+/// things.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModeState {
-    /// Nothing heavy is holding the device.
     Free,
     /// A planner run holds the nav arm.
     Searching,
@@ -71,21 +42,17 @@ pub enum ModeState {
 /// The three levels: two searches and one transfer.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct CoreMode {
-    /// A live [`Route`](PlanFamily::Route) planner run.
     route_search: bool,
-    /// A live [`Detour`](PlanFamily::Detour) planner run.
     detour_search: bool,
-    /// A bulk transfer is streaming into the store — the latest level reported, never a count.
+    /// A bulk transfer is streaming into the store: the latest level reported, never a count.
     transferring: bool,
 }
 
 impl CoreMode {
-    /// The boot state: nothing searching, nothing streaming.
     pub(crate) const fn new() -> CoreMode {
         CoreMode { route_search: false, detour_search: false, transferring: false }
     }
 
-    /// The level `family` owns.
     fn slot(&mut self, family: PlanFamily) -> &mut bool {
         match family {
             PlanFamily::Route => &mut self.route_search,
@@ -94,9 +61,8 @@ impl CoreMode {
     }
 
     /// An executor took `family`'s planner operation: the search holds the nav arm from now on.
-    /// Returns whether this *changed* whether any search is live at all.
-    ///
-    /// Written only from [`NavigatorMachine::next_plan_effect`](crate::navigator::NavigatorMachine).
+    /// Returns whether this changed whether any search is live at all. Written only from
+    /// [`NavigatorMachine::next_plan_effect`](crate::navigator::NavigatorMachine).
     pub(crate) fn search_started(&mut self, family: PlanFamily) -> bool {
         let was = self.searching();
         *self.slot(family) = true;
@@ -104,27 +70,23 @@ impl CoreMode {
     }
 
     /// A `family` planner run is over — answered, failed, or its cancellation reached the executor.
-    /// Returns whether that ended the *last* live search. Idempotent (several of those edges
-    /// legitimately land for one run: a cancel is delivered and the late answer arrives behind it),
-    /// and it never touches the other family — see the module docs for the regression that is.
-    ///
-    /// Written only from `NavigatorMachine`'s `released` and its explicit debug fixture.
+    /// Returns whether that ended the last live search. Idempotent, because several of those edges
+    /// legitimately land for one run, and it never touches the other family.
     pub(crate) fn search_ended(&mut self, family: PlanFamily) -> bool {
         let was = self.searching();
         *self.slot(family) = false;
         was && !self.searching()
     }
 
-    /// Whether a planner run holds the nav arm at all — true through a menu plan too, where no
-    /// freeze is engaged. Deliberately the **union** of the two families.
+    /// Whether a planner run holds the nav arm at all, including a menu plan where no freeze is
+    /// engaged. Deliberately the union of the two families.
     pub(crate) fn searching(&self) -> bool {
         self.route_search || self.detour_search
     }
 
     /// A bulk transfer started or ended. Written only from
-    /// [`App::set_map_transfer`](crate::App::set_map_transfer) and from
-    /// [`ExternalFacts::transfer`](crate::device_core::ExternalFacts) at the pass's fact stage —
-    /// two reports of the same fact, and the newest one is the truth.
+    /// [`App::set_map_transfer`](crate::App::set_map_transfer) and from the pass's fact stage: two
+    /// reports of the same fact, and the newest one is the truth.
     pub(crate) fn note_transfer(&mut self, streaming: bool) {
         self.transferring = streaming;
     }
@@ -141,27 +103,22 @@ impl CoreMode {
         }
     }
 
-    /// Whether a **new** heavy operation may start — the verdict
-    /// [`Capabilities::calculate`](crate::device_core::Capabilities::calculate) withdraws
-    /// `plan_route`, `plan_detour` and `dfu.install` on.
-    ///
-    /// Reads the levels, not [`state`](CoreMode::state): a search and a transfer each exclude
-    /// heavy work on their own, so the ranking must not be able to hide one behind the other.
+    /// Whether a new heavy operation may start. Reads the levels, not [`state`](CoreMode::state): a
+    /// search and a transfer each exclude heavy work on their own, so the ranking must not be able
+    /// to hide one behind the other.
     pub(crate) fn admits_heavy(&self) -> bool {
         !self.searching() && !self.transferring
     }
 
-    /// Whether the freeze is **engaged**: a live search *and* a base screen that would draw a map.
+    /// Whether the freeze is engaged: a live search and a base screen that would draw a map.
     pub(crate) fn frozen(&self, base_draws_map: bool) -> bool {
         self.searching() && base_draws_map
     }
 
-    /// Mint the proof that the **map plane will not draw this pass**, or `None` when it still
-    /// would — the precondition on [`ArenaGate::claim_nav`](crate::ArenaGate::claim_nav).
-    ///
-    /// Two ways to be quiesced: menu planning happens on a chrome base (there is no map underneath
-    /// to freeze), and a mid-ride detour plan happens over a **map** base, where the freeze is what
-    /// makes the second case as safe as the first.
+    /// Mint the proof that the map plane will not draw this pass, or `None` when it still would.
+    /// Two ways to be quiesced: menu planning happens on a chrome base, with no map underneath to
+    /// freeze, and a mid-ride detour plan happens over a map base, where the freeze makes the second
+    /// case as safe as the first.
     pub(crate) fn nav_precondition(&self, base_draws_map: bool) -> Option<MapQuiesced> {
         (self.frozen(base_draws_map) || !base_draws_map).then(MapQuiesced::mint)
     }
@@ -177,8 +134,8 @@ impl CoreMode {
 mod tests {
     use super::*;
 
-    /// The lifecycle in one test: nothing frozen at rest, engaged only where a map would be drawn,
-    /// and released by whichever edge lands first.
+    /// Nothing frozen at rest, engaged only where a map would be drawn, released by whichever edge
+    /// lands first.
     #[test]
     fn the_freeze_follows_the_search_and_the_base_screen() {
         let mut m = CoreMode::new();
@@ -195,9 +152,9 @@ mod tests {
         assert!(!m.frozen(true));
     }
 
-    /// **The regression** a stuck freeze would be: the map never redraws again for the rest of the
-    /// ride. Every release edge is idempotent, so the delivered cancel and the late answer behind
-    /// it can both fire, in either order, without leaving the level inconsistent.
+    /// A stuck freeze means the map never redraws again for the rest of the ride. Every release edge
+    /// is idempotent, so the delivered cancel and the late answer behind it can both fire, in either
+    /// order.
     #[test]
     fn releasing_twice_is_harmless_and_a_new_search_re_engages() {
         let mut m = CoreMode::new();
@@ -210,11 +167,8 @@ mod tests {
         assert!(m.frozen(true));
     }
 
-    /// **The regression** the families exist for, in both directions: every terminal edge fires
-    /// unconditionally on whatever is live, so one shared level would let a detour's cancel (or the
-    /// board's immediate `NoPath` answer for the detour half it has not built) release a freeze a
-    /// *route* search is still holding the nav arm behind — and the very next frame would claim the
-    /// render arm the search is mid-way through.
+    /// Every terminal edge fires unconditionally on whatever is live, so one shared level would let
+    /// a detour's edge release a freeze a route search is still holding the nav arm behind.
     #[test]
     fn a_search_is_released_only_by_its_own_familys_terminal_edge() {
         let mut m = CoreMode::new();
@@ -233,9 +187,8 @@ mod tests {
         assert!(!m.frozen(true));
     }
 
-    /// Two runs live at once is reachable through the legacy drain's cancel window, and the arm is
-    /// **one block** — so the freeze must hold until the last of them is done, not the first. Two
-    /// levels give that for free; a single family *tag* would not.
+    /// Two runs live at once is reachable, and the arm is one block, so the freeze must hold until
+    /// the last of them is done rather than the first.
     #[test]
     fn the_freeze_outlives_the_first_of_two_live_runs() {
         let mut m = CoreMode::new();
@@ -247,8 +200,8 @@ mod tests {
         assert!(!m.searching());
     }
 
-    /// The axis stage 12 did not have before S5: a live search withdraws heavy work exactly as a
-    /// streaming transfer does, so a second plan is never *started* and then failed.
+    /// A live search withdraws heavy work exactly as a streaming transfer does, so a second plan is
+    /// never started and then failed.
     #[test]
     fn a_live_search_withdraws_heavy_work() {
         let mut m = CoreMode::new();
@@ -259,9 +212,8 @@ mod tests {
         assert!(m.admits_heavy(), "and it comes straight back when the answer lands");
     }
 
-    /// The other half of the same verdict, and the two levels are independent: a transfer teardown
-    /// never releases a search, and an answer never ends a transfer. (`link_gate`'s
-    /// `tearing_down_one_side_never_releases_the_other`, on the levels that replaced it.)
+    /// The two levels are independent: a transfer teardown never releases a search, and an answer
+    /// never ends a transfer.
     #[test]
     fn a_streaming_transfer_withdraws_heavy_work_and_the_two_levels_are_independent() {
         let mut m = CoreMode::new();
@@ -281,7 +233,7 @@ mod tests {
         assert!(m.admits_heavy());
     }
 
-    /// The ranking says what the rider is told and nothing else — with both levels set, admission
+    /// The ranking says what the rider is told and nothing else: with both levels set, admission
     /// answers the same as it would for either one alone.
     #[test]
     fn searching_outranks_transferring_and_the_ranking_never_decides_admission() {
@@ -298,8 +250,7 @@ mod tests {
         assert!(!m.admits_heavy(), "so the ranking hid nothing");
     }
 
-    /// The proof tokens are the gate, and `CoreMode` is now their only mint. Pin exactly which
-    /// levels mint one. (`arena_gate`'s two precondition tests, re-pointed at the new mint.)
+    /// The proof tokens are the gate, and `CoreMode` is their only mint. Pin which levels mint one.
     #[test]
     fn the_arena_proofs_can_only_be_minted_from_the_levels() {
         let mut m = CoreMode::new();

@@ -1,19 +1,14 @@
-//! **The restatement pins.** Two places in this crate deliberately write bytes `obc-pack` already
-//! knows how to write, because the engine may not depend on the packer at runtime (libGEOS follows
-//! it, and the engine compiles for `wasm32-unknown-unknown`):
+//! The restatement pins. Two places in this crate deliberately write bytes `obc-pack` already
+//! knows how to write, because the engine may not depend on the packer at runtime: libGEOS follows
+//! it, and the engine compiles for `wasm32-unknown-unknown`.
 //!
-//! - `shard.rs` restates the OBCM header, style table and LOD table (`obc-pack`'s `header_bytes`,
-//!   `pack_style_dict`, `push_lod_entry`);
+//! - `emit.rs` restates the OBCM header, style table and LOD table;
 //! - `qtree.rs` restates the quadtree's recursion floor and its bin-packing policy.
 //!
-//! A restatement is only acceptable if a divergence *fails a test* rather than mis-writing a map, so
-//! these compare the two implementations **byte for byte over identical inputs** — the same
-//! discipline `tests/oracle.rs::the_engine_and_the_packer_agree_on_the_grid` applies to the grid
-//! arithmetic. `obc-pack` is a dev-dependency, so none of this enters the engine's build graph.
-//!
-//! The inputs are read back out of a file the *packer* produced, so neither side gets to state what
-//! the answer is: the packer writes a map, this test slices the three tables out of it, and the
-//! engine's writers are asked to produce the same bytes.
+//! A restatement is only acceptable if a divergence fails a test rather than mis-writing a map, so
+//! these compare the two implementations byte for byte over identical inputs. The inputs are read
+//! back out of a file the packer produced, so neither side gets to state what the answer is.
+//! `obc-pack` is a dev-dependency, so none of this enters the engine's build graph.
 
 use obc_elevation::NullElevation;
 use obc_formats::obcm::{HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE, POI_CHUNK_SIZE, STYLE_RECORD_LEN};
@@ -28,8 +23,8 @@ use obcm_assemble::emit;
 use obcm_assemble::grid::AlignedBox;
 use obcm_assemble::schema::{LineStyle, StyleRecord};
 
-/// A grid-aligned power-of-two box, because the engine's header writer takes one (§2.1) — the
-/// worked example's `2^19` square, so the values are the ones OBCA §7 already prints.
+/// A grid-aligned power-of-two box, because the engine's header writer takes one — the worked
+/// example's `2^19` square.
 const BOX: AlignedBox = AlignedBox { min_lat: 47_185_920, min_lon: 7_340_032, span_log2: 19 };
 
 /// One style, in the shape both sides construct from: `(id, z_index, color, weight, priority,
@@ -37,9 +32,9 @@ const BOX: AlignedBox = AlignedBox { min_lat: 47_185_920, min_lon: 7_340_032, sp
 type Row = (u8, i8, u16, u8, u8, bool, Option<u16>, bool, bool);
 
 /// The style set both sides are handed. Every defined flag bit is exercised: four priorities, a
-/// dashed record, a `color2` record (including `Some(0x0000)`, which is a real colour and not a
-/// sentinel), #1095's fixed-width (bit 4) and terrain-layer (bit 5) — separately and together —
-/// both extremes of the signed `z_index`, and one plain record.
+/// dashed record, a `color2` record including `Some(0x0000)`, which is a real colour and not a
+/// sentinel, fixed-width and terrain-layer separately and together, both extremes of the signed
+/// `z_index`, and one plain record.
 fn styles() -> (Vec<Style>, Vec<StyleRecord>) {
     let rows: [Row; 7] = [
         (1, 0, 0x001F, 1, 1, false, None, false, false),
@@ -82,7 +77,7 @@ fn styles() -> (Vec<Style>, Vec<StyleRecord>) {
 }
 
 /// One map from the real packer, with a three-level ladder whose LODs carry different amounts of
-/// geometry — so the LOD table has three distinct `(offset, node count, chunk count)` triples rather
+/// geometry, so the LOD table has three distinct `(offset, node count, chunk count)` triples rather
 /// than three copies of one.
 fn packed() -> (Vec<u8>, Vec<Style>, Vec<StyleRecord>, u16) {
     let (pack_styles, engine_styles) = styles();
@@ -123,44 +118,43 @@ fn packed() -> (Vec<u8>, Vec<Style>, Vec<StyleRecord>, u16) {
     (bytes, pack_styles, engine_styles, marker_color)
 }
 
-/// The header (`OBCM_Spec.md` §1): 57 bytes of magic, version, bbox in lat/lon/lat/lon order, five
-/// **scaled** offsets, the `Offset Scale` byte and the terrain pair. The engine writes it from a
-/// [`AlignedBox`] and the packer from a raw bbox tuple, so this is the one place their *interfaces*
-/// differ and their bytes may not.
+/// The header: 57 bytes of magic, version, bbox in lat/lon/lat/lon order, five scaled offsets, the
+/// `Offset Scale` byte and the terrain pair. The engine writes it from an [`AlignedBox`] and the
+/// packer from a raw bbox tuple, so this is the one place their interfaces differ and their bytes
+/// may not.
 #[test]
 fn the_header_matches_the_packers_byte_for_byte() {
     let (bytes, _, engine_styles, marker_color) = packed();
     let want = &bytes[..HEADER_LEN];
     // The packer's own choices for the three offsets, read back out of what it wrote and resolved
-    // through its own unit — so the comparison is over identical inputs rather than over two
-    // guesses at a layout.
+    // through its own unit, so the comparison is over identical inputs rather than over two guesses
+    // at a layout.
     let unit = emit::SCALE.unit();
     let at = |field: usize| u32::from_le_bytes(want[field..field + 4].try_into().unwrap()) as u64 * unit;
     let (lod_table_offset, poi_offset, nav_offset) = (at(26), at(32), at(36));
     let got =
         emit::header_bytes(BOX, 3, marker_color, lod_table_offset, poi_offset, nav_offset, 0, 0).expect("in range");
     assert_eq!(got, want, "the restated OBCM header diverged from obc-pack's");
-    // …and the field the offsets were read from is the one the engine writes there: v14's style
-    // table does not begin where the 65-byte header ends, it begins at the first unit boundary at
-    // or after it, and the LOD table follows the style table by the same rule.
+    // …and the field the offsets were read from is the one the engine writes there: the style table
+    // does not begin where the 65-byte header ends, it begins at the first unit boundary at or
+    // after it, and the LOD table follows the style table by the same rule.
     assert_eq!(at(21), emit::STYLE_OFFSET, "the style table is at align_up(HEADER_LEN)");
     assert_eq!(emit::STYLE_OFFSET, 80, "…which at U = 16 is 80, so `Style Offset` reads 5");
     assert_eq!(
         lod_table_offset,
         emit::align_up(emit::STYLE_OFFSET + (1 + engine_styles.len() * STYLE_RECORD_LEN) as u64)
     );
-    // The two v14 tail fields: the scale byte both writers pin at `4`, and §1.3's absence.
+    // The scale byte both writers pin at `4`, and terrain's absence.
     assert_eq!(want[40], emit::SCALE.log2());
-    // The packer never splices a raster, so its pair is §1.3's absence — and that is exactly the
-    // pair the engine is asked for here. An assembly *with* terrain is where the two writers now
-    // legitimately differ, which is why the header comparison passes the absence explicitly rather
-    // than letting it be a default.
+    // The packer never splices a raster, so its pair is the absence, and that is the pair the
+    // engine is asked for here. An assembly with terrain is where the two writers legitimately
+    // differ, which is why the absence is passed explicitly rather than left as a default.
     assert_eq!(&want[41..49], &[0u8; 8], "no embedded terrain region, offset and length both 0");
 }
 
-/// The §1.2 gap the header now leaves behind it. Every offset in the header above resolves the same
-/// whether these fifteen bytes are `0xFF`, zeros, or anything else — the reader never looks at them
-/// — so the pin has to name the fill byte or a writer could quietly stop agreeing with the packer's
+/// The gap the header leaves behind it. Every offset in the header above resolves the same whether
+/// these fifteen bytes are `0xFF`, zeros, or anything else — the reader never looks at them — so
+/// the pin has to name the fill byte or a writer could quietly stop agreeing with the packer's
 /// bytes while every field still read correctly.
 #[test]
 fn the_gap_behind_the_header_is_filler_and_the_packer_agrees() {
@@ -181,9 +175,9 @@ fn the_gap_behind_the_header_is_filler_and_the_packer_agrees() {
     assert!(style_gap > 0, "a seven-style table ends mid-unit, so the fixture really exercises the run");
 }
 
-/// The style table (§2): the skin's half of a restyle, and the table the §4.1 agreement check keys
-/// on. `pack_style_dict` sorts by id; the engine refuses an unsorted table instead (§4.7), so the
-/// inputs here are already in order and the *bytes* must agree.
+/// The style table: the skin's half of a restyle, and the table the cross-cell agreement check keys
+/// on. `pack_style_dict` sorts by id; the engine refuses an unsorted table instead, so the inputs
+/// here are already in order and the bytes must agree.
 #[test]
 fn the_style_table_matches_the_packers_byte_for_byte() {
     let (bytes, pack_styles, engine_styles, _) = packed();
@@ -194,16 +188,16 @@ fn the_style_table_matches_the_packers_byte_for_byte() {
     assert_eq!(emit::pack_style_table(&engine_styles), pack_style_dict(&pack_styles));
 }
 
-/// Restamping a skin is the *same* table, written back into a map the packer produced — the
-/// operation the catalog's "a skin invalidates no cell" rests on. It has to touch the style table
-/// and the header's marker colour and **nothing else**, and it has to find the table through the
-/// header's own `Style Offset` rather than through an assumption about where the packer puts it.
+/// Restamping a skin is the same table, written back into a map the packer produced — the operation
+/// "a skin invalidates no cell" rests on. It has to touch the style table and the header's marker
+/// colour and nothing else, and it has to find the table through the header's own `Style Offset`
+/// rather than through an assumption about where the packer puts it.
 #[test]
 fn a_restamp_writes_the_style_table_and_the_marker_and_nothing_else() {
     let (bytes, pack_styles, engine_styles, marker_color) = packed();
     let len = 1 + pack_styles.len() * STYLE_RECORD_LEN;
-    // Found through the header's own scaled `Style Offset`, which is exactly what a restamp has to
-    // do since v14: the table no longer begins where the header ends.
+    // Found through the header's own scaled `Style Offset`, which is what a restamp has to do: the
+    // table does not begin where the header ends.
     let at = emit::header_style_offset(&bytes).expect("the packer's map states its style offset");
     assert_eq!(at, emit::STYLE_OFFSET);
     let at = at as usize;
@@ -218,15 +212,15 @@ fn a_restamp_writes_the_style_table_and_the_marker_and_nothing_else() {
 
     assert_eq!(&map[at..at + len], emit::pack_style_table(&restyled), "the restamped table");
     assert_eq!(&map[30..32], &0x1234u16.to_le_bytes(), "the header's marker colour");
-    // Everything else is the file the packer wrote, byte for byte — the §1.2 filler between the
-    // header and the table included, which a restamp that assumed the old adjacency would overrun.
+    // Everything else is the file the packer wrote, byte for byte — the filler between the header
+    // and the table included, which a restamp that assumed the old adjacency would overrun.
     let mut untouched = map.clone();
     untouched[at..at + len].copy_from_slice(&bytes[at..at + len]);
     untouched[30..32].copy_from_slice(&marker_color.to_le_bytes());
     assert_eq!(untouched, bytes, "a restamp moved a byte outside the table and the marker");
 
     // A skin whose ids are not the map's is refused rather than stamped over: those ids are baked
-    // into every feature header in every chunk (§4.7).
+    // into every feature header in every chunk.
     let mut renumbered = restyled.clone();
     renumbered[0].id = 200;
     assert!(matches!(
@@ -243,8 +237,8 @@ fn a_restamp_writes_the_style_table_and_the_marker_and_nothing_else() {
     ));
 }
 
-/// The LOD table (§3): one 18-byte `<fIIHI>` entry per ladder level. `Max Meters/Pixel` is the trap
-/// — it is an `f32` with `+inf` at the top, and `null` and `0.0` are different maps.
+/// The LOD table: one 18-byte `<fIIHI>` entry per ladder level. `Max Meters/Pixel` is the trap — it
+/// is an `f32` with `+inf` at the top, and `null` and `0.0` are different maps.
 #[test]
 fn the_lod_table_matches_the_packers_byte_for_byte() {
     let (bytes, pack_styles, _, _) = packed();
@@ -269,10 +263,9 @@ fn the_lod_table_matches_the_packers_byte_for_byte() {
     assert!(f32::from_le_bytes(want[0..4].try_into().unwrap()).is_infinite());
 }
 
-/// The quadtree's recursion floor. `qtree.rs` restates the packer's literal `10` in
-/// `build_poi_tree` / `build_nav_tree`; the reader resolves exactly one subdivision rule, so a
-/// divergence would put records outside the leaf that indexes them — silently, and only for the
-/// dense clusters where it matters most.
+/// The quadtree's recursion floor. `qtree.rs` restates the packer's literal `10`; the reader
+/// resolves exactly one subdivision rule, so a divergence would put records outside the leaf that
+/// indexes them — silently, and only for the dense clusters where it matters most.
 #[test]
 fn the_split_floor_matches_the_packers() {
     assert_eq!(

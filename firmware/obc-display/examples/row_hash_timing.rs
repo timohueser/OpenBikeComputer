@@ -4,7 +4,7 @@ fn main() {
     use std::hint::black_box;
     use std::time::Instant;
 
-    /// The pre-fix hash (plain word-folded FNV-1a, no premix) — the #350 baseline.
+    /// The pre-fix hash: plain word-folded FNV-1a with no premix.
     fn old_row_hash(row: &[u8]) -> u32 {
         let mut h: u32 = 0x811c_9dc5;
         let (words, remainder) = row.as_chunks::<4>();

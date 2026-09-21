@@ -1,21 +1,16 @@
-//! Integration: the coverage pass through the real quadtree + serializer + `obc-reader`
+//! Integration: the coverage pass through the real quadtree, serializer and `obc-reader`
 //! read-back, and through the real `pack` pipeline.
 //!
-//! The unit suite in `src/coverage.rs` pins the transform's semantics on bare geometry. What is
-//! left to close here is the thing the transform exists for and the thing a bake-time knob must
-//! promise:
+//! The unit suite in `src/coverage.rs` pins the transform's semantics on bare geometry. What is left
+//! to close here is the thing the transform exists for — two abutting fills of different classes
+//! come out of a real pack with the identical seam vertices, with a control showing the per-feature
+//! path putting different ones there — and the two byte-identity guarantees: a tier with no
+//! participating fills packs exactly as a pack without the pass does, and the flag's mere presence
+//! in a config changes nothing.
 //!
-//! - [`a_shared_seam_reaches_the_device_glued`] — two abutting fills of *different* classes come
-//!   out of a real pack with the identical seam vertices, and the control
-//!   ([`the_same_seam_reaches_the_device_torn`]) shows the per-feature path putting different
-//!   ones there. Everything in between — µdeg rounding, the quadtree, the chunk encoder, the
-//!   reader — is the real code.
-//! - the two byte-identity guarantees: a tier with no participating fills packs exactly as it
-//!   did before the pass existed, and the flag's mere presence in a config changes nothing.
-//!
-//! The last section is the branch's **adversarial probes**, adopted from the review round — the
-//! degenerate-input and thread-safety sweeps over the raw GEOS wrapper, the elimination stress
-//! fixture, and the two probes that found real defects, kept here inverted so the fixes stay fixed.
+//! The last section is the degenerate-input and thread-safety sweeps over the raw GEOS wrapper, the
+//! elimination stress fixture, and two probes that found real defects, kept here inverted so the
+//! fixes stay fixed.
 
 use obc_elevation::NullElevation;
 use obc_map_scene::M_PER_DEG;
@@ -314,12 +309,10 @@ fn a_coverage_cut_is_deterministic_and_stays_glued() {
     );
 }
 
-// --- adversarial probes -----------------------------------------------------------------
+// --- adversarial probes --------------------------------------------------------------------
 //
-// Adopted from the branch's review round, where they were written to break the pass' claimed
-// properties. Three of them held; two found real defects and are kept here inverted, pinning the
-// fixed behaviour. They work on bare geometry through the public API rather than through a pack,
-// because what they are about is the operator, not the file.
+// These work on bare geometry through the public API rather than through a pack, because what they
+// are about is the operator, not the file.
 
 /// A plain-fill style at a chosen `z_index` — the paint-order key the probes need to vary.
 fn probe_fill(id: u8, z_index: i8, color: u16) -> Style {
@@ -345,12 +338,14 @@ fn threshold_for(deg2: f64, mpp: f64) -> Eliminate {
     Eliminate { mpp, min_area_px: deg2 * (M_PER_DEG / mpp) * (M_PER_DEG / mpp) }
 }
 
-/// **An isolated sub-threshold face escapes neither operator.** On a coverage tier `min_area_px`
-/// is an elimination threshold and the caller's `footprint_below` drop is suppressed for
-/// everything the pass produced — so a face with no *covered* neighbour to be absorbed into used
-/// to satisfy neither and survive at any size. That is the mechanism behind the measured
-/// `--no-land` blow-up: a 0.35° x 0.20° Freiburg crop packed without the `natural.land` base fill
-/// emitted **1069** fill polygons at LOD 0, against **21** once the cull below runs.
+/// An isolated sub-threshold face escapes neither operator. On a coverage tier `min_area_px` is an
+/// elimination threshold and the caller's `footprint_below` drop is suppressed for everything the
+/// pass produced, so a face with no covered neighbour to be absorbed into satisfied neither and
+/// survived at any size. A 0.35° x 0.20° crop packed without the `natural.land` base fill emitted
+/// 1069 fill polygons at LOD 0, against 21 once the cull below runs.
+///
+/// The pass applies the cull to exactly those faces itself: an island is part of no tiling, so
+/// dropping it opens no hole.
 ///
 /// The pass now applies the cull to exactly those faces itself: an island is part of no tiling, so
 /// dropping it opens no hole.
@@ -377,9 +372,9 @@ fn an_isolated_small_face_is_culled_by_the_pass_itself() {
     assert!(out.iter().any(|(sid, _, _)| *sid == 1), "and the anchor is untouched: {out:?}");
 }
 
-/// **The hole trim may not paint out a kept face.** A face between the threshold and whatever
-/// looser floor a hole trim used would survive elimination *deliberately* — and if it is a hole in
-/// a higher-`z` neighbour's dissolved polygon, filling that hole makes the neighbour paint over it:
+/// The hole trim may not paint out a kept face. A face between the threshold and whatever looser
+/// floor a hole trim used would survive elimination deliberately — and if it is a hole in a
+/// higher-`z` neighbour's dissolved polygon, filling that hole makes the neighbour paint over it:
 /// the kept face is in the file, costs bytes, and is invisible. The coverage tier's hole floor is
 /// therefore exactly the elimination threshold and not a multiple of it.
 #[test]

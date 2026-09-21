@@ -1,28 +1,16 @@
-//! Fetching bytes over HTTPS, and unpacking a `.zip` — **in process**, with no
-//! `curl` and no `unzip`.
+//! Fetching bytes over HTTPS, and unpacking a `.zip`, in process, with no `curl` and no `unzip`.
 //!
-//! This module exists because of what the packer became. As a developer's CLI it
-//! could shell out to whatever a developer's machine happens to have; as the
-//! engine inside a shipped desktop app (#906) it cannot. `curl` is not on every
-//! Windows box and `unzip` is on essentially none of them — the two land-dataset
-//! shell-outs would have failed on the very platform D2 (#907) exists to support,
-//! *after* a user had already picked a region and started a build.
+//! Shelling out is not available to an engine inside a shipped desktop app: `curl` is not on every
+//! Windows box and `unzip` is on essentially none of them. Doing it in process also buys three
+//! things a subprocess could not give. Cancellation: the token is checked every chunk and every
+//! archive entry, where a `Command::status()` blocks until the child exits. Progress: the percentage
+//! arrives through [`Progress`] like every other stage, instead of a meter on a stderr nobody sees.
+//! Zip-slip safety: [`ZipFile::enclosed_name`] refuses a hostile `../../etc/whatever` entry.
 //!
-//! Three things fall out of doing it in-process that the subprocesses could not
-//! give us:
+//! It is also the only downloader in the tree — the desktop app delegates here — so there is one
+//! retry policy, one `.part`-then-rename rule, and one cancellation contract.
 //!
-//! - **Cancellation.** A `Command::status()` blocks until the child exits; a
-//!   950 MB download through `curl` could not be stopped by the app's cancel
-//!   token at all. Here the token is checked every chunk and every archive entry.
-//! - **Progress.** `curl`'s meter went to the *app's* stderr, i.e. nowhere a user
-//!   could see, which made a first build look hung for several minutes. The
-//!   percentage now arrives through [`Progress`] like every other stage.
-//! - **Zip-slip safety.** `unzip` will happily write `../../etc/whatever` from a
-//!   hostile archive; [`ZipFile::enclosed_name`] refuses to.
-//!
-//! It is also the *only* downloader in the tree: the desktop app's `http.rs`
-//! delegates here rather than keeping its own copy, so there is one retry policy,
-//! one `.part`-then-rename rule, and one cancellation contract.
+//! [`ZipFile::enclosed_name`]: zip::read::ZipFile::enclosed_name
 //!
 //! [`ZipFile::enclosed_name`]: zip::read::ZipFile::enclosed_name
 
@@ -35,37 +23,38 @@ use crate::progress::Progress;
 /// irrelevant on a 950 MB body, small enough that a cancel lands promptly.
 const CHUNK: usize = 1 << 16;
 
-/// How many times a download is attempted before giving up. Matches the
+/// How many times a download is attempted before giving up. An attempt restarts from zero rather
+/// than resuming, because the servers involved are not guaranteed to honour a `Range` request and a
+/// silently truncated dataset is far worse than a slow one.
 /// `curl --retry 3` this replaced — and, like it, an attempt restarts from zero
 /// rather than resuming, because the servers involved are not guaranteed to honour
 /// a `Range` request and a silently truncated dataset is far worse than a slow one.
 const ATTEMPTS: usize = 3;
 
-/// Small documents (a region index, a catalog manifest) — read whole, because both
-/// are parsed as one document and a partial one is worthless.
+/// Small documents, such as a region index or a catalog manifest, are read whole: each is parsed as
+/// one document and a partial one is worthless.
 pub fn get_text(url: &str) -> Result<String, String> {
     let mut resp = ureq::get(url).call().map_err(|e| format!("GET {url}: {e}"))?;
     resp.body_mut().read_to_string().map_err(|e| format!("read {url}: {e}"))
 }
 
-/// Download `url` to `dest`, reporting percentage through `on_pct` and honouring
-/// `progress`'s cancel token. Returns the number of bytes written.
+/// Download `url` to `dest`, reporting percentage through `on_pct` and honouring `progress`'s cancel
+/// token. Returns the number of bytes written.
 ///
-/// The write goes to a `.part` sibling and is renamed on completion, so an
-/// interrupted download — cancelled, crashed, unplugged — can never be mistaken
-/// for a cached extract on the next run. A region is hundreds of megabytes and
-/// this is where a cancelled build usually is when the user changes their mind, so
-/// the token is checked every chunk.
+/// The write goes to a `.part` sibling and is renamed on completion, so an interrupted download can
+/// never be mistaken for a cached extract on the next run. A region is hundreds of megabytes, so the
+/// token is checked every chunk.
+///
+/// A failed attempt is retried up to [`ATTEMPTS`] times unless it failed because the run was
+/// cancelled: retrying a cancellation would make the stop button do nothing.
 ///
 /// A failed attempt is retried up to [`ATTEMPTS`] times *unless* it failed because
-/// the run was cancelled: retrying a cancellation would be the one way to make the
-/// stop button do nothing.
 pub fn download(url: &str, dest: &Path, progress: &Progress, mut on_pct: impl FnMut(u8)) -> Result<u64, String> {
     let dir = dest.parent().ok_or("download destination has no directory")?;
     std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    // Appended to the whole file name, not `with_extension`: that *replaces* the
-    // extension, so `x.zip` and `x.obcd` downloading side by side would share one
-    // `x.part`, and a dotted stem (`glo-30.n47e008.tif`) would lose a segment.
+    // Appended to the whole file name, not `with_extension`: that replaces the extension, so
+    // `x.zip` and `x.obcd` downloading side by side would share one `x.part`, and a dotted stem
+    // would lose a segment.
     let mut part_name = dest.file_name().ok_or("download destination has no file name")?.to_os_string();
     part_name.push(".part");
     let part = dest.with_file_name(part_name);
@@ -127,11 +116,9 @@ fn download_once(url: &str, part: &Path, progress: &Progress, on_pct: &mut impl 
 
 /// Extract every entry of the zip at `archive` beneath `dest_dir`, creating it.
 ///
-/// Entry names are resolved with [`zip::read::ZipFile::enclosed_name`], which
-/// returns `None` for anything that would escape the destination (`..`, an
-/// absolute path, a Windows drive letter). Such an entry is a **hard error**, not
-/// a skip: a land dataset that contains one is not a land dataset, and quietly
-/// unpacking the rest of it would hand the packer a half-archive to puzzle over.
+/// Entry names are resolved with [`zip::read::ZipFile::enclosed_name`], which returns `None` for
+/// anything that would escape the destination. Such an entry is a hard error and not a skip: a land
+/// dataset that contains one is not a land dataset.
 pub fn extract_zip(archive: &Path, dest_dir: &Path, progress: &Progress) -> Result<(), String> {
     let file = std::fs::File::open(archive).map_err(|e| format!("open {}: {e}", archive.display()))?;
     let mut zip =
@@ -170,8 +157,8 @@ mod tests {
         dir
     }
 
-    /// Build a deflate-compressed zip in memory, the way the land dataset is
-    /// shipped: one directory with files under it.
+    /// Build a deflate-compressed zip in memory, the way the land dataset is shipped: one directory
+    /// with files under it.
     fn sample_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
         let mut buf = std::io::Cursor::new(Vec::new());
         let mut w = zip::ZipWriter::new(&mut buf);
@@ -185,8 +172,7 @@ mod tests {
         buf.into_inner()
     }
 
-    /// The `unzip` replacement, doing the job `unzip` used to do: a nested archive
-    /// unpacks with its directory structure and its bytes intact.
+    /// A nested archive unpacks with its directory structure and its bytes intact.
     #[test]
     fn a_zip_unpacks_without_the_unzip_binary() {
         let dir = tmp("extract");
@@ -210,8 +196,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Zip-slip. `unzip` needed `-j` or a careful invocation to be safe about this;
-    /// refusing is the default here, and it refuses *loudly*.
+    /// Zip-slip: refusing is the default here, and it refuses loudly.
     #[test]
     fn an_entry_that_escapes_the_destination_is_refused() {
         let dir = tmp("slip");
@@ -225,9 +210,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A cancelled run stops the unpack, which is the half of the story `unzip`
-    /// could not do at all — the app's stop button could not reach into a
-    /// subprocess.
+    /// A cancelled run stops the unpack, which a stop button could not do to a subprocess.
     #[test]
     fn a_cancelled_run_stops_the_unpack() {
         let dir = tmp("cancel");

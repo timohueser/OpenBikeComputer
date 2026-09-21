@@ -1,16 +1,7 @@
-//! Shared helpers for the `obc-app` tests — the in-crate staging harnesses ([`super`]) and the
-//! integration tests alike, which pull this very file in through `tests/common/mod.rs`:
-//!
-//! - [`Buf`] — a recording `Rgb888` `DrawTarget` with per-test accessors ([`Buf::count`],
-//!   [`Buf::get`], [`Buf::edge_halves`]).
-//! - [`build_min_obcm`] — the minimal flat-backdrop `.obcm` builder.
-//! - The scripted hardware: [`Keys`] / [`keys`] / [`down`] / [`up`] / [`step`] / [`tap`] inputs, and
-//!   the [`LocationSource`] stand-ins [`ReplayFix`] (replay forever) vs [`OnceFix`] (emit once).
-//! - [`wpts`] / [`wpts_detailed`] — synthetic route waypoint tables.
-//!
-//! `#[allow(dead_code)]` keeps unused-per-binary items from warning. `App` is named through
-//! `obc_app::` so the source compiles unchanged on both sides of the crate boundary (lib.rs aliases
-//! the crate to itself under `cfg(test)`).
+//! Shared helpers for the `obc-app` tests: the in-crate staging harnesses ([`super`]) and the
+//! integration tests alike, which pull this very file in through `tests/common/mod.rs`. `App` is
+//! named through `obc_app::` so the source compiles unchanged on both sides of the crate boundary
+//! (lib.rs aliases the crate to itself under `cfg(test)`).
 
 #![allow(dead_code)]
 
@@ -26,8 +17,6 @@ use obc_app::{App, Dirty};
 use obc_ports::{Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource, RideClock, Sensors};
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, PoiCategory, Reader, SliceSource};
 use obc_route::{RouteReader, Waypoints, WptEntry};
-
-// Recording DrawTarget.
 
 /// A `w`×`h` `Rgb888` buffer implementing `DrawTarget`, with clipped writes.
 pub struct Buf {
@@ -102,23 +91,18 @@ impl DrawTarget for Buf {
     }
 }
 
-// Minimal OBCM fixture.
-
-/// A minimal valid `.obcm`: one sea-backdrop style, one LOD with a single empty leaf and no
-/// chunks, an empty POI directory (six empty categories), and an empty hours pool. It renders as a
-/// flat backdrop, so the only non-backdrop pixels come from whatever is drawn on top — making
-/// overlays/markers trivial to detect. `marker` is the header's marker color (pass `0` when ignored).
+/// A minimal valid `.obcm`: one sea-backdrop style, one LOD with a single empty leaf and no chunks,
+/// an empty POI directory and an empty hours pool. It renders as a flat backdrop, so the only
+/// non-backdrop pixels come from whatever is drawn on top. `marker` is the header's marker color.
 pub fn build_min_obcm(marker: u16) -> Vec<u8> {
     build_min_obcm_profiles(marker, &["Default"])
 }
 
-/// [`build_min_obcm`] with a caller-chosen §8.6 profile table (1..=8 names, every multiplier the
-/// neutral 1.0×) — for the N5 bike-type tests, which need a map carrying several named profiles.
+/// [`build_min_obcm`] with a caller-chosen profile table (1..=8 names, every multiplier 1.0×).
 pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
-    // v14 (§1.1/§1.2): every offset a header or directory carries is a count of `U = 16`-byte
-    // units, so every structure one reaches starts on a unit boundary and the `0..U-1` bytes
-    // between them are `0xFF` filler. The 57-byte header is not a unit multiple, so the style
-    // table begins at 64.
+    // Every offset a header or directory carries is a count of `U = 16`-byte units, so every
+    // structure one reaches starts on a unit boundary and the bytes between them are `0xFF` filler.
+    // The 57-byte header is not a unit multiple, so the style table begins at 64.
     use obc_formats::obcm::{OffsetScale, FILLER};
     const SCALE: OffsetScale = OffsetScale::DEFAULT;
     let unit = SCALE.unit() as usize;
@@ -150,21 +134,21 @@ pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
     table.extend_from_slice(&16u16.to_le_bytes());
     table.extend_from_slice(&0u32.to_le_bytes());
 
-    // Index: a single empty leaf (no chunk), then the offset table — always written, here the one
-    // `chunk_count + 1` entry a chunkless LOD carries — then filler to the boundary `data_start`
-    // would land on, so the section behind it can be named.
+    // Index: a single empty leaf (no chunk), then the offset table — the one `chunk_count + 1`
+    // entry a chunkless LOD carries — then filler to the boundary `data_start` would land on, so
+    // the section behind it can be named.
     let mut index = Vec::new();
     index.extend_from_slice(&0x7FFF_FFFFu32.to_le_bytes());
     index.extend_from_slice(&0u32.to_le_bytes());
     index.resize(align_up(index_off + index.len()) - index_off, FILLER);
 
     // POI section starts right after the index + offset table (no LOD chunks here). Empty directory:
-    // count=6, chunk_size=512, six 13-byte entries (all node_count/chunk_count 0), then the two
-    // v7 pool fields (hours_pool_offset u32 + hours_pool_count u16), then an empty hours pool
-    // (a bare `count 0`). The directory length is 3 + 6*13 + 6 = 87.
+    // count=6, chunk_size=512, six 13-byte entries (all node_count/chunk_count 0), then the two pool
+    // fields (hours_pool_offset u32 + hours_pool_count u16), then an empty hours pool (a bare
+    // `count 0`). The directory length is 3 + 6*13 + 6 = 87.
     let poi_section_off = index_off + index.len();
     let dir_len = 3 + 6 * 13 + 6;
-    // Every zero-length region still has to be *nameable*, so it points at the first unit boundary
+    // Every zero-length region still has to be nameable, so it points at the first unit boundary
     // past the directory rather than at the directory's last byte.
     let after_dir = align_up(poi_section_off + dir_len);
     let mut poi_dir = vec![6u8]; // category_count
@@ -177,16 +161,16 @@ pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
     }
     poi_dir.extend_from_slice(&scaled(after_dir).to_le_bytes()); // hours_pool_offset
     poi_dir.extend_from_slice(&0u16.to_le_bytes()); // hours_pool_count = 0
-    poi_dir.resize(after_dir - poi_section_off, FILLER); // §1.2 filler to the pool's boundary
+    poi_dir.resize(after_dir - poi_section_off, FILLER); // filler to the pool's boundary
     poi_dir.extend_from_slice(&0u16.to_le_bytes()); // the empty pool's own `count u16` = 0
     poi_dir.resize(align_up(poi_section_off + poi_dir.len()) - poi_section_off, FILLER);
 
-    // Empty nav section at the tail: the 40-byte directory + the always-present §8.6 profile
-    // table (the caller's names, every multiplier 16 = 1.0×, climb-blind — this fixture has no
-    // graph to climb). Zero-length index + edge pool "start" just past the profile table.
+    // Empty nav section at the tail: the 40-byte directory + the always-present profile table (the
+    // caller's names, every multiplier 16 = 1.0×, climb-blind — this fixture has no graph to climb).
+    // Zero-length index + edge pool "start" just past the profile table.
     let nav_section_off = poi_section_off + poi_dir.len();
     // The 40-byte directory is not a unit multiple, so the profile table starts at the section's
-    // byte 48 with eight bytes of filler behind the directory — §8.5's worked case exactly.
+    // byte 48, with eight bytes of filler behind the directory.
     let profile_table_off = align_up(nav_section_off + obc_formats::obcm::NAV_DIR_LEN);
     let mut profile_table = Vec::new();
     for name in profiles {
@@ -195,7 +179,7 @@ pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
         profile_table.resize(base + 12, 0xFF); // 0xFF-padded 12-byte name
         profile_table.extend_from_slice(&[16u8; 32]); // highway multipliers (1.0×)
         profile_table.extend_from_slice(&[16u8; 8]); // surface multipliers (1.0×)
-        profile_table.push(0); // v12 climb_weight
+        profile_table.push(0); // climb_weight
         profile_table.resize(base + 56, 0); // three reserved bytes, zero
     }
     let after_nav = align_up(profile_table_off + profile_table.len());
@@ -228,8 +212,8 @@ pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
     f.extend_from_slice(&marker.to_le_bytes());
     f.extend_from_slice(&scaled(poi_section_off).to_le_bytes());
     f.extend_from_slice(&scaled(nav_section_off).to_le_bytes());
-    f.push(SCALE.log2()); // §1.1 offset scale
-    f.extend_from_slice(&0u32.to_le_bytes()); // §1.3 terrain offset — this fixture has no raster
+    f.push(SCALE.log2()); // offset scale
+    f.extend_from_slice(&0u32.to_le_bytes()); // terrain offset — this fixture has no raster
     f.extend_from_slice(&0u32.to_le_bytes()); // …and its length is `0` exactly when the offset is
     f.extend_from_slice(&[0; 16]); // no landmark or peak section
     debug_assert_eq!(f.len(), obc_formats::obcm::HEADER_LEN);
@@ -244,8 +228,6 @@ pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
     f
 }
 
-// Scripted hardware.
-
 /// A scripted `InputSource` draining a queue of raw input events, one per `poll`.
 pub struct Keys(pub VecDeque<InputEvent>);
 
@@ -255,7 +237,6 @@ impl InputSource for Keys {
     }
 }
 
-/// Build a [`Keys`] source from a slice of events.
 pub fn keys(evs: &[InputEvent]) -> Keys {
     Keys(evs.iter().copied().collect())
 }
@@ -274,10 +255,7 @@ pub fn tap(b: Button) -> [InputEvent; 2] {
     [down(b), up(b)]
 }
 
-// Location sources. Two disciplines, kept under distinct names.
-
-/// A `LocationSource` that replays the same fix on every poll — stands in for the simulator's
-/// control-panel override.
+/// A `LocationSource` that replays the same fix on every poll, like the simulator's override.
 pub struct ReplayFix(pub Option<Fix>);
 impl LocationSource for ReplayFix {
     fn poll(&mut self) -> Option<Fix> {
@@ -285,8 +263,8 @@ impl LocationSource for ReplayFix {
     }
 }
 
-/// A `LocationSource` that emits its fix exactly **once**, then `None` — the real
-/// one-fresh-fix-per-tick contract (no per-poll replay).
+/// A `LocationSource` that emits its fix exactly once, then `None` — the real one-fresh-fix-per-
+/// tick contract, with no per-poll replay.
 pub struct OnceFix(pub Option<Fix>);
 impl LocationSource for OnceFix {
     fn poll(&mut self) -> Option<Fix> {
@@ -302,11 +280,8 @@ impl LocationSource for NoFix {
     }
 }
 
-// Frame rendering.
-
-/// Tick once with no fix / no sensors, then composite one frame of `app` over `bytes` into a
-/// `120×120` recording [`Buf`] — the shared "drive to a screen, snapshot it" helper the screen and
-/// i18n suites use for their compositing assertions.
+/// Tick once with no fix and no sensors, then composite one frame of `app` over `bytes` into a
+/// 120×120 recording [`Buf`].
 pub fn render_120(app: &mut App, bytes: &[u8]) -> Buf {
     app.tick(RideClock(0), Sensors::new(&mut NoFix), None);
     let cache = MapCache::new();
@@ -322,17 +297,13 @@ pub fn render_120(app: &mut App, bytes: &[u8]) -> Buf {
     buf
 }
 
-// Route waypoint fixtures.
-
-/// A synthetic waypoint table from `(distance, name)` pairs: every entry on the line, uncategorised
-/// — the plain shape the Navigator / stat-field / panel suites want.
+/// A synthetic waypoint table from `(distance, name)` pairs: every entry on the line, uncategorised.
 pub fn wpts(items: &[(u32, &str)]) -> Waypoints {
     let full: Vec<_> = items.iter().map(|&(d, n)| (d, n, None, 0)).collect();
     wpts_detailed(&full)
 }
 
-/// The full shape — `(distance, name, category, lateral offset)` — for the Up-ahead timeline, the
-/// one suite that cares about categorised, off-the-line waypoints.
+/// The full shape: `(distance, name, category, lateral offset)`, for the Up-ahead timeline.
 pub fn wpts_detailed(items: &[(u32, &str, Option<PoiCategory>, i16)]) -> Waypoints {
     let mut w = Waypoints::new();
     for &(dist_along_m, name, category, lateral_offset_m) in items {
@@ -343,15 +314,13 @@ pub fn wpts_detailed(items: &[(u32, &str, Option<PoiCategory>, i16)]) -> Waypoin
     w
 }
 
-// The DeviceCore pass.
-
 /// Every capability the test platform implements. A suite that needs a device without one names it.
 pub const EVERY_CAPABILITY: PlatformSupport =
     PlatformSupport { detour: true, settings_persistence: true, dfu: true, bonding: true, storage_space_report: true };
 
 /// Run one DeviceCore pass at `ms` with the executor's answers — the production frame every host
-/// drives. The ports these suites do not exercise (a fix, keyed derived answers) stay empty; a
-/// suite that needs one drives [`App::run_pass`] itself.
+/// drives. The ports these suites do not exercise stay empty; a suite that needs one drives
+/// [`App::run_pass`] itself.
 pub fn pass(
     app: &mut App,
     ms: u32,
@@ -387,29 +356,23 @@ pub fn pass_with_fact(app: &mut App, ms: u32, note: impl FnOnce(&mut ExternalFac
     pass(app, ms, &mut OutcomeSlots::new(), &mut facts, None)
 }
 
-/// Report the store a device with a card has, through one real pass.
-///
-/// `store_writable` is what admits a catalog mutation, a route plan and — since #1552 — a ride
-/// recording, and it rises only from a `StoreRevision` fact. A suite that starts a ride needs this
-/// first: a device with nowhere to put a ride does not start one.
+/// Report the store a device with a card has, through one real pass. `store_writable` admits a
+/// catalog mutation, a route plan and a ride recording, and it rises only from a `StoreRevision`
+/// fact, so a suite that starts a ride needs this first.
 pub fn mount_store(app: &mut App) {
     pass_with_fact(app, 0, |facts| {
         facts.note_store_revision(StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(1) })
     });
 }
 
-/// **A runtime host in miniature.** Each [`frame`](Frames::frame) recognises raw button events
-/// through the app's own shared recogniser and then runs one DeviceCore pass with the gestures that
-/// came out — the single-loop composition the simulator and the web demo use since #1397 S6, and
-/// therefore the only one in which the render keys are compared (#1447). A suite that drives
-/// `handle_input` + `tick` + `take_dirty` by hand is exercising a composition no host has.
-///
-/// The sensor ports are built inside the frame from plain values, so a caller never has to keep a
-/// port alive across the pass's borrows. [`fuel_polls`](Frames::fuel_polls) counts what the gauge
-/// was actually asked for, which is how the battery cadence is pinned.
+/// A runtime host in miniature. Each [`frame`](Frames::frame) recognises raw button events through
+/// the app's own shared recogniser and then runs one DeviceCore pass with the gestures that came
+/// out — the single-loop composition the simulator and the web demo use, and therefore the only one
+/// in which the render keys are compared. The sensor ports are built inside the frame from plain
+/// values, so a caller never has to keep a port alive across the pass's borrows.
 pub struct Frames {
     outcomes: OutcomeSlots,
-    /// How many times the fuel gauge has been polled across every frame so far.
+    /// Cumulative fuel-gauge polls across every frame so far.
     pub fuel_polls: u32,
 }
 
@@ -473,21 +436,15 @@ impl obc_ports::FuelGauge for CountingGauge {
     }
 }
 
-// The navigation executor.
-
 /// The suites' navigation executor: one pass at a time, it takes the search DeviceCore hands out,
 /// answers it with a scripted terminal result and returns the workspace when Navigator asks for it.
-///
-/// Acquire and release are acknowledged. Each next step waits for the scripted result.
-///
-/// The outcome slots are the planner's own, exactly like a real executor's: an answer it deposits
-/// is read by the *next* pass. The passes it runs are the app's frames, so it also collects what
-/// they asked to repaint — after a pass there is no dirt left for [`App::take_dirty`] to report.
+/// An answer it deposits is read by the next pass. Its passes are the app's frames, so after one
+/// there is no dirt left for [`App::take_dirty`] to report.
 pub struct Planner<'r> {
     /// The clock its passes run at.
     ms: u32,
-    /// The active route's reader. A pass without it is the route line *vanishing*, which resets the
-    /// matcher — so a suite that rides a real route hands it over.
+    /// The active route's reader. A pass without it is the route line vanishing, which resets the
+    /// matcher, so a suite that rides a real route hands it over.
     route: Option<&'r RouteReader<'r>>,
     /// What it has answered, waiting for the next pass to read.
     outcomes: OutcomeSlots,
@@ -495,7 +452,6 @@ pub struct Planner<'r> {
     token: Option<OperationToken<NavigatorTag>>,
     /// The last operation the app abandoned — what a late answer carries.
     abandoned: Option<OperationToken<NavigatorTag>>,
-    /// The work the running operation went out with.
     work: Option<PlannerWork>,
     /// Whether the app asked for the workspace back since the last read.
     released: bool,
@@ -512,7 +468,7 @@ impl Default for Planner<'_> {
 }
 
 impl<'r> Planner<'r> {
-    /// A planner whose passes run at `ms` — for a suite that drives the animation clock itself.
+    /// A planner whose passes run at `ms`, for a suite that drives the animation clock itself.
     pub fn at(ms: u32) -> Self {
         Planner {
             ms,
@@ -532,7 +488,7 @@ impl<'r> Planner<'r> {
         Planner { route: Some(route), ..Planner::at(0) }
     }
 
-    /// Run **one** pass and serve whatever navigation work it hands out, leaving the answer in the
+    /// Run one pass and serve whatever navigation work it hands out, leaving the answer in the
     /// slots for the next one. The single-pass shape is the board's own loop.
     pub fn one_pass(&mut self, app: &mut App) -> PassPlan {
         let ms = self.ms;

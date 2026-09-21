@@ -70,7 +70,7 @@ macro_rules! setting_enum {
 
     (@keyed $Name:ident { $( $Var:ident = $key:expr; )+ }) => {
         impl $Name {
-            #[doc = concat!("This value's label in the UI `lang` (epic #602), from the [`", stringify!($Name), "`] table.")]
+            #[doc = concat!("This value's label in the UI `lang`, from the [`", stringify!($Name), "`] table.")]
             #[inline]
             pub const fn name(self, lang: $crate::settings::Language) -> &'static str {
                 match self {
@@ -116,12 +116,9 @@ macro_rules! setting_enum {
                 Self::from_byte(((self as usize + 1) % Self::COUNT) as u8)
             }
 
-            /// Walk `n` values through the ring, wrapping at both ends — a value picker's
-            /// left/right step (`n` is signed, and a multi-step flick compounds).
-            ///
-            /// The walk is arithmetic on the byte rather than a search through
-            /// [`ALL`](Self::ALL) — the discriminants are asserted contiguous below, so a value's
-            /// byte *is* its index in the ring.
+            /// Walk `n` signed values through the ring, wrapping at both ends. The walk is
+            /// arithmetic on the byte rather than a search through [`ALL`](Self::ALL): the
+            /// discriminants are asserted contiguous below, so a value's byte is its index.
             #[inline]
             pub fn stepped(self, n: i32) -> Self {
                 Self::from_byte((self as i32 + n).rem_euclid(Self::COUNT as i32) as u8)
@@ -138,21 +135,18 @@ macro_rules! setting_enum {
         }
 
         // The settings-blob codec: the declared discriminant is the stored byte, so a declared
-        // enum is a `settings_table!` row without a second declaration.
-        //
-        // Every declared enum gets this, persisted or not — the two sets coincide today, and one
-        // unused one-byte impl is cheaper than a marker column that would have to be kept true. An
-        // enum that is *not* persisted simply never appears in the table; nothing else changes.
+        // enum is a `settings_table!` row without a second declaration. Every declared enum gets
+        // one, persisted or not; an unused one-byte impl is cheaper than a marker column that would
+        // have to be kept true.
         $crate::settings_table::setting_enum_codec!($Name);
 
-        // The on-disk contract, enforced: the table still runs `0..COUNT` in declaration order,
-        // which is exactly what `ALL`, `cycled`, `stepped`, and `from_byte` all assume. Renumber a
-        // row, reorder two, or shift the range and the build stops, instead of a stored byte
-        // quietly decoding to a different value.
+        // The on-disk contract, enforced: the table runs `0..COUNT` in declaration order, which is
+        // what `ALL`, `cycled`, `stepped` and `from_byte` all assume. Renumber a row, reorder two,
+        // or shift the range and the build stops, instead of a stored byte quietly decoding to a
+        // different value.
         //
         // One loop and no per-variant assert: inside a macro, `$Var as u8 == $disc` compares a
-        // value against the very literal that declared it, so it cannot fail. This is the whole
-        // check.
+        // value against the literal that declared it, so it cannot fail.
         const _: () = {
             let mut i = 0;
             while i < $Name::COUNT {

@@ -1,14 +1,9 @@
-//! Query-contract tests for the route-corridor POI scan (`Reader::corridor_pois`, epic #946 U2).
+//! Query-contract tests for the route-corridor POI scan (`Reader::corridor_pois`).
 //!
-//! Each test builds a synthetic map whose POI section is a real per-category quadtree (via
-//! `obcm-testkit`'s `build_poi_map`, which mirrors the packer's tree build) and drives the query
-//! against a hand-built [`RoutePath`] — a chunked polyline with the same seam-sharing and
-//! cumulative-distance convention OBCR uses, so the projections here are the ones a real route
-//! produces. `obc-reader` sits below `obc-route`, so the route side is a fixture, not a `RouteReader`
-//! (the end-to-end pin over a real `.obcr` lives in `obc-route`'s `corridor.rs`).
-//!
-//! The tests pin signed offsets, distinct route encounters, page order, exclusions, failures,
-//! and bounded work per query step.
+//! Each test builds a synthetic map whose POI section is a real per-category quadtree and drives
+//! the query against a hand-built [`RoutePath`] with the same seam-sharing and cumulative-distance
+//! convention OBCR uses, so the projections are the ones a real route produces. `obc-reader` sits
+//! below `obc-route`, so the route side is a fixture; the end-to-end pin lives in `obc-route`.
 
 use std::cell::Cell;
 
@@ -20,26 +15,22 @@ use obcm_testkit::{build_poi_map, PoiSpec};
 
 use crate::common::CountingSource;
 
-/// The fixture map bbox `(min_lon, min_lat, max_lon, max_lat)` — the 1°×1° square the other POI
-/// suites use.
+/// The fixture map bbox, the 1°×1° square the other POI suites use.
 const BBOX: (i32, i32, i32, i32) = (7_000_000, 43_000_000, 8_000_000, 44_000_000);
-/// The latitude the fixture routes run along. At 43.5° N one µdeg of latitude is ≈0.111 m and one
-/// µdeg of longitude ≈0.081 m, so the offsets below are easy to state in meters.
+/// The latitude the fixture routes run along. At 43.5° N one µdeg of latitude is about 0.111 m and
+/// one µdeg of longitude about 0.081 m, so the offsets below are easy to state in metres.
 const LAT: i32 = 43_500_000;
-/// POI chunk size the fixtures pack at (the packer's §7.1 default).
+/// POI chunk size the fixtures pack at.
 const CS: usize = 512;
 
-// ============================== the route fixture ==============================
-
-/// A hand-built [`RoutePath`]: chunks of `(lon, lat)` µdeg with their cumulative along-route
-/// distances precomputed exactly the way OBCR does it — segment lengths from
-/// [`ground_dist_m_cl`] at each chunk's **first-point** `cos_lat`, and chunk `k`'s last point
-/// repeated as chunk `k+1`'s first (seam sharing), so distances stitch without a gap.
+/// A hand-built [`RoutePath`]: chunks of `(lon, lat)` µdeg with their cumulative distances
+/// precomputed the way OBCR does it, taking segment lengths at each chunk's first-point `cos_lat`
+/// and repeating chunk `k`'s last point as chunk `k+1`'s first, so distances stitch without a gap.
 struct FixturePath {
     chunks: Vec<Vec<(i32, i32)>>,
     starts: Vec<u32>,
     total_m: u32,
-    /// How many times the query asked for a chunk's points — the "did it stop early?" counter.
+    /// How many times the query asked for a chunk's points: the did-it-stop-early counter.
     visits: Cell<u32>,
 }
 
@@ -54,8 +45,8 @@ impl FixturePath {
         FixturePath { chunks, starts, total_m: acc as u32, visits: Cell::new(0) }
     }
 
-    /// A straight eastbound route at [`LAT`] from `lon0`, `segs` segments of `step` µdeg each,
-    /// split into chunks of `per_chunk` segments (seam-shared, like OBCR).
+    /// A straight eastbound route at [`LAT`], `segs` segments of `step` µdeg each, split into
+    /// seam-shared chunks.
     fn straight(lon0: i32, step: i32, segs: usize, per_chunk: usize) -> FixturePath {
         let pts: Vec<(i32, i32)> = (0..=segs).map(|i| (lon0 + step * i as i32, LAT)).collect();
         FixturePath::new(chunked(&pts, per_chunk))
@@ -106,8 +97,6 @@ impl RoutePath for FixturePath {
     }
 }
 
-// ============================== harness ==============================
-
 /// Run the corridor query over a built map + route and return the results.
 fn query(bytes: &[u8], cats: PoiCategorySet, path: &FixturePath, progress_m: u32) -> Vec<CorridorPoi> {
     let src = SliceSource(bytes);
@@ -119,7 +108,7 @@ fn query(bytes: &[u8], cats: PoiCategorySet, path: &FixturePath, progress_m: u32
     out.into_iter().collect()
 }
 
-/// The name of each result, in order — the readable assertion for membership + ordering.
+/// The name of each result, in order.
 fn names(got: &[CorridorPoi]) -> Vec<&str> {
     got.iter().map(|c| c.poi.name.as_str()).collect()
 }
@@ -129,11 +118,8 @@ fn water(name: &str, lon: i32, lat: i32) -> PoiSpec {
     PoiSpec { lat, lon, subtype: 1, name: name.into(), payload: 0xFFFF }
 }
 
-// ============================== tests ==============================
-
-/// The offset's **sign** is the side of travel: eastbound, a POI north of the line is on the
-/// rider's left (negative) and one south of it on the right (positive), with the magnitude the
-/// perpendicular ground distance. This is what U3 renders `←` / `→` from.
+/// The offset's sign is the side of travel: eastbound, a POI north of the line is on the rider's
+/// left and one south of it on the right, with the magnitude the perpendicular ground distance.
 #[test]
 fn offset_sign_is_positive_to_the_right_of_travel() {
     // 1000 µdeg of latitude ≈ 111 m.
@@ -152,8 +138,8 @@ fn offset_sign_is_positive_to_the_right_of_travel() {
     assert_eq!(got[1].offset_m, 111);
 }
 
-/// Reversing the direction of travel flips the side: the identical POI reads left on an eastbound
-/// route and right on a westbound one. (The sign is about *travel*, not about north.)
+/// Reversing the direction of travel flips the side, because the sign is about travel and not
+/// about north.
 #[test]
 fn reversing_the_route_flips_the_side() {
     let bytes = build_poi_map(BBOX, CS, &[(1, vec![water("Spring", 7_150_000, LAT + 1_000)])]);
@@ -168,9 +154,8 @@ fn reversing_the_route_flips_the_side() {
     assert_eq!(e[0].offset_m, -w[0].offset_m, "same magnitude, opposite sign");
 }
 
-/// The along-route distance is the projection onto the route axis — the same axis stored waypoints
-/// and live progress use — so a POI beside the 4th segment reports that segment's distance, not its
-/// straight-line range from anywhere.
+/// The along-route distance is the projection onto the route axis, the same axis stored waypoints
+/// and live progress use, so a POI beside the 4th segment reports that segment's distance.
 #[test]
 fn dist_along_projects_onto_the_route_axis() {
     let bytes = build_poi_map(BBOX, CS, &[(1, vec![water("Spring", 7_140_000, LAT + 500)])]);
@@ -185,8 +170,8 @@ fn dist_along_projects_onto_the_route_axis() {
     assert_eq!(got_ahead[0].poi.distance_m, got_ahead[0].dist_along_m - 1_000);
 }
 
-/// A POI outside the 300 m half-width is not "up ahead on my route" — it's somewhere else, and the
-/// query drops it. The boundary is checked from both sides.
+/// A POI outside the 300 m half-width is somewhere else, not up ahead, and the query drops it.
+/// The boundary is checked from both sides.
 #[test]
 fn off_corridor_pois_are_rejected() {
     let pois = vec![
@@ -201,8 +186,8 @@ fn off_corridor_pois_are_rejected() {
     assert!(got[0].offset_m.abs() <= 300);
 }
 
-/// Only what is **ahead** qualifies: a POI the rider has already passed is dropped, even though it
-/// sits squarely in the corridor. The boundary is inclusive (a POI exactly at progress is ahead).
+/// Only what is ahead qualifies: a POI the rider has passed is dropped even though it sits in the
+/// corridor. The boundary is inclusive.
 #[test]
 fn pois_behind_progress_are_rejected() {
     let pois = vec![water("Passed", 7_110_000, LAT + 500), water("Ahead", 7_190_000, LAT + 500)];
@@ -213,7 +198,7 @@ fn pois_behind_progress_are_rejected() {
     // Ride past the first one (it sits ≈808 m along).
     let got = query(&bytes, PoiCategorySet::ALL, &path, 2_000);
     assert_eq!(names(&got), ["Ahead"], "the passed POI is gone, the one ahead stays");
-    // Anchored exactly on the survivor's projection it is still ahead (inclusive boundary).
+    // Anchored exactly on the survivor's projection it is still ahead.
     let at = got[0].dist_along_m;
     assert_eq!(names(&query(&bytes, PoiCategorySet::ALL, &path, at)), ["Ahead"]);
     assert_eq!(query(&bytes, PoiCategorySet::ALL, &path, at + 1).len(), 0);
@@ -222,8 +207,8 @@ fn pois_behind_progress_are_rejected() {
 /// A hairpin leaves the POI radius between its two legs, creating two distinct passes.
 #[test]
 fn switchback_retains_distinct_route_encounters() {
-    // Out east along LAT, up 2000 µdeg (≈222 m), back west — a hairpin whose two legs are inside
-    // each other's corridor. Chunked at 2 segments so the two legs are scanned separately.
+    // Out east, up 2000 µdeg, back west: a hairpin whose two legs are inside each other's
+    // corridor, chunked so the two legs are scanned separately.
     let pts = vec![
         (7_100_000, LAT),
         (7_150_000, LAT),
@@ -233,8 +218,7 @@ fn switchback_retains_distinct_route_encounters() {
     ];
     let path = FixturePath::new(chunked(&pts, 2));
     assert!(path.chunk_count() >= 2, "the legs must fall in different chunks for this to bite");
-    // 600 µdeg (≈67 m) above the outbound leg, i.e. ≈155 m below the return leg — inside both
-    // corridors, nearer the outbound one.
+    // Above the outbound leg and below the return leg: inside both corridors, nearer the outbound.
     let bytes = build_poi_map(BBOX, CS, &[(1, vec![water("Crook spring", 7_120_000, LAT + 600)])]);
 
     let got = query(&bytes, PoiCategorySet::ALL, &path, 0);
@@ -249,7 +233,7 @@ fn switchback_retains_distinct_route_encounters() {
 /// A later encounter preserves its own geometry without replacing the earlier occurrence.
 #[test]
 fn later_closer_encounter_preserves_the_earlier_encounter() {
-    // Return leg passes much closer to the POI than the outbound leg does.
+    // The return leg passes much closer to the POI than the outbound leg does.
     let pts = vec![
         (7_100_000, LAT),
         (7_150_000, LAT),
@@ -258,7 +242,6 @@ fn later_closer_encounter_preserves_the_earlier_encounter() {
         (7_050_000, LAT + 2_500),
     ];
     let path = FixturePath::new(chunked(&pts, 2));
-    // 2300 µdeg up: ≈256 m from the outbound leg, ≈22 m from the return leg.
     let bytes = build_poi_map(BBOX, CS, &[(1, vec![water("Near the return", 7_120_000, LAT + 2_300)])]);
 
     let got = query(&bytes, PoiCategorySet::ALL, &path, 0);
@@ -268,8 +251,8 @@ fn later_closer_encounter_preserves_the_earlier_encounter() {
     assert!(got[1].dist_along_m > leg, "the second encounter lies on the return leg");
 }
 
-/// The category filter scopes the walk: "Everything" returns both categories interleaved in route
-/// order, a single-category filter returns only its own, and the empty set returns nothing.
+/// The category filter scopes the walk: everything returns both categories interleaved in route
+/// order, a single-category filter only its own, and the empty set nothing.
 #[test]
 fn the_category_filter_scopes_the_result() {
     let water_pois = vec![water("W1", 7_110_000, LAT + 500), water("W2", 7_170_000, LAT + 500)];
@@ -286,15 +269,15 @@ fn the_category_filter_scopes_the_result() {
     let two = only_water.with(PoiCategory::BikeShop);
     assert_eq!(names(&query(&bytes, two, &path, 0)).len(), 4);
     assert!(query(&bytes, PoiCategorySet::EMPTY, &path, 0).is_empty(), "no categories ⇒ no rows");
-    // A category the map doesn't carry is a valid empty answer, not an error.
+    // A category the map does not carry is a valid empty answer, not an error.
     assert!(query(&bytes, PoiCategorySet::only(PoiCategory::Pharmacy), &path, 0).is_empty());
 }
 
 /// The cap is 16 and the order is ascending along-route distance: a route with 40 POIs beside it
-/// returns the **first** 16, in route order, and nothing farther.
+/// returns the first 16, in route order.
 #[test]
 fn cap_and_ordering_are_pinned() {
-    // 40 water points, one every 5000 µdeg (≈404 m) along an 80-segment route.
+    // 40 water points along an 80-segment route.
     let pois: Vec<PoiSpec> = (0..40).map(|i| water(&format!("P{i:02}"), 7_102_000 + 5_000 * i, LAT + 500)).collect();
     let bytes = build_poi_map(BBOX, CS, &[(1, pois)]);
     let path = FixturePath::straight(7_100_000, 5_000, 80, 8);
@@ -304,15 +287,15 @@ fn cap_and_ordering_are_pinned() {
     assert_eq!(names(&got), (0..16).map(|i| format!("P{i:02}")).collect::<Vec<_>>(), "the first 16, in route order");
     assert!(got.windows(2).all(|w| w[0].dist_along_m <= w[1].dist_along_m), "ascending along-route");
 
-    // Riding on re-anchors the window: the same query from 4 km in returns the *next* 16.
+    // Riding on re-anchors the window, so the same query returns the next 16.
     let later = query(&bytes, PoiCategorySet::ALL, &path, 4_000);
     assert_eq!(later.len(), MAX_CORRIDOR_RESULTS);
     assert!(later[0].dist_along_m >= 4_000, "only what is still ahead");
     assert_ne!(names(&later)[0], "P00");
 }
 
-/// A route with no POIs beside it, an empty map, and a zero-chunk route are all valid empty answers
-/// — never an error, never a panic.
+/// A route with no POIs beside it, an empty map, and a zero-chunk route are all valid empty
+/// answers, never an error.
 #[test]
 fn empty_answers_are_not_errors() {
     let bytes = build_poi_map(BBOX, CS, &[(1, vec![water("Far away", 7_900_000, 43_900_000)])]);
@@ -326,13 +309,12 @@ fn empty_answers_are_not_errors() {
     assert!(query(&bytes, PoiCategorySet::ALL, &path, 1_000_000).is_empty());
 }
 
-/// **The cost pin** (the epic's acceptance measurement, deterministic half). A POI-dense fixture with
-/// a long remaining route must not pay for the whole route: the walk stops once the 16 slots are
-/// filled by nearer entries, so both the visited-chunk count and the SD reads stay bounded by the
-/// prefix that produced the answer — not by the route length.
+/// The cost pin: a POI-dense fixture with a long remaining route must not pay for the whole route.
+/// The walk stops once the 16 slots are filled by nearer entries, so the visited-chunk count and
+/// the SD reads stay bounded by the prefix that produced the answer.
 #[test]
 fn dense_route_bounds_each_step_and_the_first_page_reads() {
-    // 120 water POIs over a 240-segment (~19 km) route: the first 16 are all inside the first ~7 km.
+    // 120 water POIs over a 240-segment route; the first 16 are all inside the first 7 km.
     let pois: Vec<PoiSpec> = (0..120).map(|i| water(&format!("P{i:03}"), 7_101_000 + 2_000 * i, LAT + 400)).collect();
     let bytes = build_poi_map(BBOX, CS, &[(1, pois)]);
     let path = FixturePath::straight(7_100_000, 1_000, 240, 8); // 30 chunks
@@ -479,7 +461,7 @@ fn meanders_across_chunks_keep_one_nearest_encounter_per_pass_and_stable_pages()
         assert_eq!(q.key(&page[0]), first);
 
         // An anchor inside the first pass must include its nearest point once, then stop showing
-        // that pass after the rider has passed the canonical nearest point.
+        // that pass after the rider has passed it.
         let before = query(&bytes, PoiCategorySet::ALL, &path, hits[0].dist_along_m - 5);
         assert_eq!(before.len(), 2);
         assert_eq!(before[0].dist_along_m, hits[0].dist_along_m);

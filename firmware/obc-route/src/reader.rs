@@ -1,9 +1,9 @@
 //! OBCR route reader: header, chunk index, and on-demand chunk decode.
 //!
-//! [`RouteReader`] loads the fixed header and the (small) chunk index into RAM, then
-//! pulls individual geometry chunks through the [`ByteSource`] only when asked — a
-//! hundreds-of-km route never has to be resident. It holds a `&dyn ByteSource` (not a
-//! generic), so it threads through the app/render layers without making them generic.
+//! [`RouteReader`] keeps the header and the chunk index in RAM and pulls geometry chunks through
+//! the [`ByteSource`] only when asked, so a route of hundreds of km is never resident. It holds a
+//! `&dyn ByteSource` rather than a generic, so it threads through the app and render layers
+//! without making them generic.
 
 use core::{
     cell::RefCell,
@@ -16,36 +16,29 @@ use obc_formats::cache::lru_victim;
 use obc_formats::io::{rd_i16, rd_i32, rd_u16, rd_u32, ByteSource, DecodeError, Error};
 use obc_map_scene::BBox;
 
-// The OBCR format constants this reader parses against are owned by `obc-formats`; imported here.
-// Not re-exported — consumers reach the format authority via `obc_formats::obcr`.
 use obc_formats::obcr::{validate_header_prefix, POINT_RECORD_LEN};
 use obc_formats::obcr::{
     CHUNK_META_LEN, HEADER_FULL_LEN, HEADER_LEN, NAME_CAP, WAYPOINT_LEN, WAYPOINT_NAME_CAP, WAYPOINT_NAME_OFF,
 };
 use obc_reader::PoiCategory;
-/// The device's waypoint cap — one number for both roles: the converter's `<wpt>` emission cap
-/// ([`gpx_to_obcr`](crate::gpx_to_obcr)) and the resident [`Waypoints`] table the ride loop holds
-/// (~40 B/entry ≈ 1.3 KB — negligible on the 512 KB target). The *format* allows up to `u16::MAX`
-/// waypoints (a phone-side encoder isn't bound by this), so [`RouteReader::load_waypoints`] windows
-/// + truncates a longer file rather than overflowing.
+/// The device's waypoint cap, for both the converter's emission and the resident [`Waypoints`]
+/// table. The format allows up to `u16::MAX`, so [`RouteReader::load_waypoints`] windows and
+/// truncates a longer file rather than overflowing.
 pub const MAX_WAYPOINTS: usize = 32;
-/// Resident chunk-index capacity — **the one knob that sets both the max route length and a
-/// large slice of the device's stack peak**, because a [`RouteIndex`] is `MAX_ROUTE_CHUNKS × 48 B`
-/// and several call paths hold one (or more) on the stack. A route past the cap fails conversion
-/// with [`Error::TooLarge`] rather than being silently coarsened; the value is shared with the
-/// host packer, so anything that packs, loads.
+/// Resident chunk-index capacity. It sets both the maximum route length and a large part of the
+/// device's stack peak, because a [`RouteIndex`] is `MAX_ROUTE_CHUNKS * 48 B` and several call
+/// paths hold one on the stack. A route past the cap fails conversion with [`Error::TooLarge`];
+/// the host packer shares the value, so anything that packs, loads.
 ///
-/// **256** ≈ 65 k points (~650 km at 10 m spacing) for a ~12.3 KB index. 512 was tried during the
-/// LM20 retarget and measured *far* too expensive on glass: it put a 73.7 KB frame in
-/// [`elevation_sparkline`](crate::elevation_sparkline) — larger than the whole 69 KB stack region,
-/// i.e. a guaranteed overflow on the first phone route upload (2026-07-24). Raising it again means
-/// first making the by-value paths resident (see [`read_into`](RouteIndex::read_into)).
+/// 256 is about 65 k points, a ~12.3 KB index. Raising it needs the by-value paths to become
+/// resident first (see [`read_into`](RouteIndex::read_into)); 512 measured as a 73.7 KB frame in
+/// [`elevation_sparkline`](crate::elevation_sparkline), larger than the whole stack region.
 pub const MAX_ROUTE_CHUNKS: usize = 256;
 const _: () = assert!(MAX_ROUTE_CHUNKS < u16::MAX as usize);
 /// Max points a single chunk may hold (bounds the per-chunk decode buffer).
 pub const MAX_POINTS_PER_CHUNK: usize = 256;
 
-/// One decoded route point: position in microdegrees + elevation in meters.
+/// Position in microdegrees, elevation in meters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RoutePoint {
     pub lon: i32,
@@ -62,11 +55,9 @@ impl RoutePoint {
     }
 }
 
-/// An interpolated position on the route polyline at an exact, clamped along-route distance.
-///
-/// The public fields are the coordinate/distance a map chooser needs; the containing chunk and
-/// segment stay crate-private so [`RouteMatch`](crate::RouteMatch) can move its forward cursor to
-/// the same point without exposing file-layout details to applications.
+/// An interpolated position on the route polyline at a clamped along-route distance. The chunk
+/// and segment stay crate-private so [`RouteMatch`](crate::RouteMatch) can move its cursor to the
+/// same point without exposing the file layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RoutePosition {
     pub progress_m: u32,
@@ -76,9 +67,8 @@ pub struct RoutePosition {
     pub(crate) seg: usize,
 }
 
-/// One chunk's index entry — its bbox (for viewport query), the absolute anchor it
-/// decodes from, and the cumulative stats at its first point (for remaining-distance/
-/// climb). See `OBCR_Spec.md` §2.
+/// One chunk's index entry: its bbox, the absolute anchor it decodes from, and the cumulative
+/// stats at its first point. See `OBCR_Spec.md`.
 #[derive(Debug, Clone, Copy)]
 pub struct ChunkMeta {
     pub bbox: BBox,
@@ -92,14 +82,13 @@ pub struct ChunkMeta {
     pub byte_len: u32,
 }
 
-/// The lightweight route description for the Route menu — readable from the header alone
-/// (no chunk index), so a catalog scan is one small read per file.
+/// The route description for the Route menu. It reads from the header alone, so a catalog scan is
+/// one small read per file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteSummary {
     pub name: String<NAME_CAP>,
-    /// Total distance, km (rounded) — the v1 stat display unit.
+    /// Total distance, km, rounded.
     pub distance_km: u32,
-    /// Total ascent, m.
     pub climb_m: u32,
     pub bbox: BBox,
     /// First route point, for centering the camera on load.
@@ -108,8 +97,6 @@ pub struct RouteSummary {
 }
 
 impl RouteSummary {
-    /// Read just the header into a summary — cheap enough to call per file when building
-    /// the Route-menu catalog.
     pub fn read(src: &dyn ByteSource) -> Result<RouteSummary, Error> {
         Self::read_with_candidate(src).map(|(summary, _)| summary)
     }
@@ -130,9 +117,8 @@ impl RouteSummary {
     }
 }
 
-/// The stored-route facts a BLE `routeList` entry serves: raw metres (not
-/// [`RouteSummary`]'s display-rounded km) plus the waypoint count from the header
-/// extension. Reads the base header and the 16-byte extension; never the chunk index.
+/// The stored-route facts a BLE `routeList` entry serves: raw meters, not
+/// [`RouteSummary`]'s rounded km, plus the waypoint count. It never reads the chunk index.
 #[derive(Debug, Clone)]
 pub struct RouteObjectInfo {
     pub name: String<NAME_CAP>,
@@ -148,9 +134,8 @@ pub struct RouteObjectInfo {
 }
 
 impl RouteObjectInfo {
-    /// Read the header (+ extension) into the wire facts. Same validation as any header
-    /// read (bad magic/version/name reject), which the upload commit path relies on to keep
-    /// a non-OBCR payload — or a pre-v3 route — out of the catalog.
+    /// Read the header and its extension. The validation is the same as any header read, which
+    /// is what keeps a non-OBCR payload out of the catalog on the upload commit path.
     pub fn read(src: &dyn ByteSource) -> Result<RouteObjectInfo, Error> {
         let h = read_header(src)?;
         let waypoint_count = {
@@ -191,13 +176,12 @@ impl RouteObjectInfo {
     }
 }
 
-/// The resident, source-independent parse of a route: the header summary fields plus the
-/// chunk index and its segment prefix sums. [`read`](Self::read) does the route's only
-/// up-front cost — the header read **and the full chunk-meta walk** — so afterwards a
-/// [`RouteReader`] streams geometry chunk-by-chunk without re-reading the index.
+/// The resident, source-independent parse of a route: the header fields plus the chunk index and
+/// its segment prefix sums. [`read`](Self::read) pays the route's only up-front cost, the header
+/// read and the full chunk-meta walk.
 ///
-/// Build it **once** when the active route changes and reuse it across frames, so a redraw
-/// pays only the geometry reads, not an N+1 re-walk of the index off the SD card.
+/// Build it once when the active route changes and reuse it across frames, so a redraw pays only
+/// the geometry reads.
 pub struct RouteIndex {
     pub bbox: BBox,
     pub start_lon: i32,
@@ -210,40 +194,31 @@ pub struct RouteIndex {
     pub max_ele_m: i16,
     name: String<NAME_CAP>,
     index: Vec<ChunkMeta, MAX_ROUTE_CHUNKS>,
-    /// Prefix sum of segments per chunk: `cum_seg[c]` = segments before chunk `c`
-    /// (∑ `point_count − 1`, the shared seam point not double-counted). The total is derived in
-    /// O(1) from the last prefix + last chunk, avoiding a redundant trailing word; this offsets
-    /// the identity word so [`RouteIndex`] does not grow. Built once at [`read`](Self::read) so
-    /// [`global_seg_index`](Self::global_seg_index) — on the matcher's per-fix hot path — remains
-    /// O(1), not a prefix scan.
+    /// Segments before chunk `c`, the shared seam point not counted twice. The total comes from
+    /// the last prefix plus the last chunk, so there is no trailing word. Built once, which keeps
+    /// [`global_seg_index`](Self::global_seg_index) O(1) on the matcher's hot path.
     cum_seg: Vec<u32, MAX_ROUTE_CHUNKS>,
-    /// Non-persisted identity of this successful parse. Moves preserve it, so a by-value host
-    /// index and the board's in-place resident slot have identical cache-adoption semantics.
-    /// Zero belongs only to [`empty`](Self::empty) / a failed parse.
+    /// Identity of this parse, not persisted. A move preserves it, so a by-value host index and
+    /// the board's resident slot adopt caches the same way. Zero means empty or a failed parse.
     identity: u32,
     flags: u8,
 }
 
-/// A parsed route, ready to query and decode: a [`RouteIndex`] (resident, reusable across
-/// frames) paired with a shared borrow of the byte source its geometry chunks stream from.
-/// Cheap to build via [`new`](Self::new) — the expensive parse lives in [`RouteIndex::read`].
-///
-/// Derefs to its [`RouteIndex`], so the summary fields and resident-only queries read through
-/// `route.field` / `route.method()`; only [`decode_chunk`](Self::decode_chunk) needs the source.
+/// A [`RouteIndex`] paired with a borrow of the byte source its geometry chunks stream from.
+/// Cheap to build: the expensive parse lives in [`RouteIndex::read`]. It derefs to its index, so
+/// only [`decode_chunk`](Self::decode_chunk) needs the source.
 pub struct RouteReader<'a> {
     src: &'a dyn ByteSource,
     idx: &'a RouteIndex,
-    /// Optional resident decoded-chunk cache: when present,
-    /// [`decode_chunk`](Self::decode_chunk) serves an unchanged route from RAM instead of
-    /// re-reading its geometry every redraw / matcher fix. `None` streams every call (the host
-    /// store is fast, so the sim/tests skip it).
+    /// When present, [`decode_chunk`](Self::decode_chunk) serves an unchanged route from RAM
+    /// instead of re-reading its geometry. `None` streams every call.
     cache: Option<&'a RouteCache>,
 }
 
 impl RouteIndex {
-    /// An empty, chunk-less index — the resident slot [`read_into`](Self::read_into) fills.
-    /// Queryable but matches nothing; callers that need "is there a route?" keep their own
-    /// validity flag (a failed `read_into` leaves the slot in exactly this state).
+    /// An empty index, which is what [`read_into`](Self::read_into) fills. It is queryable but
+    /// matches nothing, and a failed `read_into` leaves the slot in this state, so a caller that
+    /// needs "is there a route?" keeps its own validity flag.
     pub fn empty() -> RouteIndex {
         RouteIndex {
             bbox: BBox { min_lon: 0, min_lat: 0, max_lon: 0, max_lat: 0 },
@@ -263,19 +238,14 @@ impl RouteIndex {
         }
     }
 
-    /// Parse the header and chunk index from `src`. Validates magic/version and that
-    /// every chunk lies within the source and within the resident buffers.
+    /// Parse the header and chunk index from `src`, validating that every chunk lies inside the
+    /// source and inside the resident buffers.
     ///
-    /// Returns the ~12.3 KB index **by value** — fine on a std host (the sim, tests, `obc-pack`),
-    /// but on the MCU that value transits the stack right where the ride pass is deepest. A
-    /// board caller must use [`read_into`](Self::read_into) on its resident slot instead: the
-    /// by-value return is exactly what overflowed the 44 KB main stack on the 256 KB DK when the
-    /// post-upload rescan rebuilt the index (STKOF HardFault in this frame, 2026-07-12).
+    /// It returns the ~12.3 KB index by value, which transits the stack. A board caller must use
+    /// [`read_into`](Self::read_into) on its resident slot instead.
     ///
-    /// `#[inline(never)]` is load-bearing, not a hint: inlined into a caller, the index-building
-    /// temporaries coexist with the returned value in *one* frame — measured as ~3 live copies
-    /// (73.7 KB) in `elevation_sparkline` on the LM20. Kept out of line, the build temporaries
-    /// live in this frame and pop before the caller continues, so a caller pays for one index.
+    /// Must stay `#[inline(never)]`: inlined, the index-building temporaries share one frame with
+    /// the returned value. Out of line they pop before the caller continues.
     #[inline(never)]
     pub fn read(src: &dyn ByteSource) -> Result<RouteIndex, Error> {
         let mut idx = RouteIndex::empty();
@@ -283,10 +253,9 @@ impl RouteIndex {
         Ok(idx)
     }
 
-    /// The in-place twin of [`read`](Self::read): fill `self` — the caller's **resident** slot —
-    /// field by field, so the index never exists as a stack temporary. On any error `self` is
-    /// left as [`empty`](Self::empty) (never half-filled), and the caller's validity flag stays
-    /// down.
+    /// The in-place twin of [`read`](Self::read): fill the caller's resident slot field by field,
+    /// so the index is never a stack temporary. On an error `self` is left empty, never half
+    /// filled.
     pub fn read_into(&mut self, src: &dyn ByteSource) -> Result<(), Error> {
         let r = self.fill_from(src);
         if r.is_err() {
@@ -314,17 +283,14 @@ impl RouteIndex {
         let mut seg_acc: u32 = 0;
         let mut meta = [0u8; CHUNK_META_LEN];
         for k in 0..h.chunk_count {
-            // Checked exactly as the waypoint walk: `index_offset` is untrusted header input
-            // (browser-supplied bytes reach here through obc-web-convert), and a forged offset near
-            // `u32::MAX` must surface as a bad offset — never wrap back into the file.
+            // `index_offset` is untrusted header input, so a forged offset near `u32::MAX` must
+            // surface as a bad offset and never wrap back into the file.
             let off = k
                 .checked_mul(CHUNK_META_LEN as u32)
                 .and_then(|rel| h.index_offset.checked_add(rel))
                 .ok_or(Error::BadOffset)?;
             src.read_at(off.into(), &mut meta)?;
             let cm = parse_chunk_meta(&meta, src.len())?;
-            // Running segment prefix sum, built alongside the index so the matcher never
-            // re-walks the chunk list per fix.
             self.cum_seg.push(seg_acc).map_err(|_| Error::TooLarge)?;
             seg_acc += (cm.point_count as u32).saturating_sub(1);
             self.index.push(cm).map_err(|_| Error::TooLarge)?;
@@ -343,25 +309,24 @@ impl RouteIndex {
         Ok(())
     }
 
-    /// The route name.
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// The chunk index (in route order).
+    /// The chunk index, in route order.
     pub fn chunks(&self) -> &[ChunkMeta] {
         &self.index
     }
 
-    /// Global index (from the route start) of segment `seg` in chunk `c`. O(1) via the
-    /// `cum_seg` prefix sum. `c` past the last chunk clamps to the total.
+    /// Index from the route start of segment `seg` in chunk `c`. `c` past the last chunk clamps
+    /// to the total.
     pub(crate) fn global_seg_index(&self, c: usize, seg: usize) -> usize {
         let c = c.min(self.index.len());
         self.cum_seg.get(c).copied().unwrap_or_else(|| self.segment_count()) as usize + seg
     }
 
-    /// Total seam-deduplicated segments. The last prefix excludes the last chunk, so add that
-    /// chunk's own `point_count - 1`; empty indexes have no segments.
+    /// Total segments, seams not counted twice. The last prefix excludes the last chunk, so that
+    /// chunk's own count is added.
     #[inline]
     fn segment_count(&self) -> u32 {
         match (self.cum_seg.last(), self.index.last()) {
@@ -370,9 +335,8 @@ impl RouteIndex {
         }
     }
 
-    // Cumulative ascent at a position is read from the elevation `Profile`
-    // (`Profile::ascent_to`) at column resolution, not from the coarse per-chunk
-    // `cum_ascent_m` (too few chunks to place "to climb" accurately).
+    // Cumulative ascent at a position comes from `Profile::ascent_to` at column resolution. The
+    // per-chunk `cum_ascent_m` has too few chunks to place "to climb" accurately.
 
     /// At least one retained point has a valid elevation. Flat sea-level routes remain valid.
     pub fn has_elevation(&self) -> bool {
@@ -391,7 +355,6 @@ impl RouteIndex {
         self.identity
     }
 
-    /// A [`RouteSummary`] for this route (for the menu / centering).
     pub fn summary(&self) -> RouteSummary {
         RouteSummary {
             name: self.name.clone(),
@@ -403,10 +366,8 @@ impl RouteIndex {
         }
     }
 
-    /// Visit each chunk whose bbox intersects `view`, in route order, passing its
-    /// index `k` and `ChunkMeta`. The caller decodes the ones it wants with
-    /// [`RouteReader::decode_chunk`] into its own reused buffer — keeping the
-    /// streaming draw allocation-free.
+    /// Visit each chunk whose bbox intersects `view`, in route order. The caller decodes the ones
+    /// it wants with [`RouteReader::decode_chunk`] into its own reused buffer.
     pub fn for_each_visible_chunk<F: FnMut(usize, &ChunkMeta)>(&self, view: &BBox, mut f: F) {
         for (k, cm) in self.index.iter().enumerate() {
             if cm.bbox.intersects(view) {
@@ -417,21 +378,19 @@ impl RouteIndex {
 }
 
 impl<'a> RouteReader<'a> {
-    /// Pair an already-parsed [`RouteIndex`] with the byte source its geometry chunks stream
-    /// from. No I/O; [`decode_chunk`](Self::decode_chunk) pulls chunks on demand. Build the
-    /// index once per route and call this per frame.
+    /// Pair a parsed [`RouteIndex`] with the byte source its chunks stream from. No I/O. Build
+    /// the index once per route and call this per frame.
     pub fn new(idx: &'a RouteIndex, src: &'a dyn ByteSource) -> RouteReader<'a> {
         RouteReader { src, idx, cache: None }
     }
 
-    /// The underlying byte source — for the crate's own whole-file passes over sections the
-    /// chunk index doesn't cover (the splicer's [`for_each_waypoint`] sweep).
+    /// The byte source, for this crate's whole-file passes over sections the chunk index does not
+    /// cover.
     /// Start a bounded cursor over the complete authored waypoint section.
     pub fn waypoint_cursor(&self) -> Result<WaypointCursor, Error> {
         WaypointCursor::new(self.source())
     }
 
-    /// Read one authored record without retaining a source handle in the cursor.
     pub fn next_waypoint(&self, cursor: &mut WaypointCursor) -> Result<Option<Waypoint>, Error> {
         cursor.next(self.source())
     }
@@ -440,22 +399,17 @@ impl<'a> RouteReader<'a> {
         self.src
     }
 
-    /// Like [`new`](Self::new), but back [`decode_chunk`](Self::decode_chunk) with a resident
-    /// [`RouteCache`], so a redraw of an unchanged route — and the matcher's per-fix decode —
-    /// hit RAM instead of re-reading geometry from the SD card. The cache adopts the index's
-    /// parse identity here, automatically invalidating same-key slots from a different route;
-    /// callers do not need to coordinate a [`RouteCache::clear`] on route switches.
+    /// Like [`new`](Self::new), but backs [`decode_chunk`](Self::decode_chunk) with a resident
+    /// [`RouteCache`]. The cache adopts the index's parse identity here, which invalidates
+    /// same-key slots from a different route, so a caller never has to clear it on a switch.
     pub fn new_cached(idx: &'a RouteIndex, src: &'a dyn ByteSource, cache: &'a RouteCache) -> RouteReader<'a> {
         cache.adopt(idx.identity);
         RouteReader { src, idx, cache: Some(cache) }
     }
 
-    /// Decode chunk `k` into `out` (cleared first): its anchor followed by each
-    /// delta-stepped point. The chunk's last point equals chunk `k+1`'s anchor (seam
-    /// sharing), so adjacent chunks stitch without a gap.
-    ///
-    /// With a [`RouteCache`] attached ([`new_cached`](Self::new_cached)) a chunk decoded earlier
-    /// is served from RAM; otherwise its geometry is read from the source every call.
+    /// Decode chunk `k` into `out`, which is cleared first: its anchor, then each delta-stepped
+    /// point. The chunk's last point is chunk `k+1`'s anchor, so adjacent chunks stitch without a
+    /// gap. With a [`RouteCache`] attached, a chunk decoded earlier is served from RAM.
     pub fn decode_chunk(&self, k: usize, out: &mut Vec<RoutePoint, MAX_POINTS_PER_CHUNK>) -> Result<(), Error> {
         out.clear();
         let m = self.idx.index.get(k).ok_or(Error::BadOffset)?;
@@ -463,9 +417,9 @@ impl<'a> RouteReader<'a> {
         if n == 0 {
             return Ok(());
         }
-        // A hit fills `out` with no SD read; a miss decodes and stores it. Revalidate the reader
-        // identity for both operations: another safe reader can use the same cache between calls,
-        // including reentrantly from `ByteSource::read_at` while this miss is being decoded.
+        // The reader identity is revalidated for both the hit and the miss: another reader can
+        // use the same cache between calls, including reentrantly from `ByteSource::read_at`
+        // while this miss is being decoded.
         if let Some(cache) = self.cache {
             if cache.get(self.idx.identity, k, out) {
                 return Ok(());
@@ -500,9 +454,9 @@ impl<'a> RouteReader<'a> {
         obc_formats::obcr::VisitDescriptor::decode(&bytes).map(Some).map_err(|_| Error::BadOffset)
     }
 
-    /// Locate `progress_m` on the route, clamping it to the route end and linearly interpolating
-    /// inside the containing segment. Uses caller-owned decode scratch so the matcher can seek its
-    /// resident buffer without adding a stack-sized route copy.
+    /// Locate `progress_m` on the route, clamped to the route end and interpolated inside the
+    /// containing segment. It uses caller-owned decode scratch, so the matcher adds no
+    /// stack-sized route copy.
     pub(crate) fn locate_progress(
         &self,
         progress_m: u32,
@@ -513,9 +467,9 @@ impl<'a> RouteReader<'a> {
         Some(RoutePosition { progress_m: target, lon: p.lon, lat: p.lat, chunk, seg })
     }
 
-    /// The shared clamped-walk core of [`locate_progress`](Self::locate_progress) and
-    /// [`elevation_at`](Self::elevation_at): the interpolated [`RoutePoint`] at `target`
-    /// (already clamped by the caller) plus its containing chunk and segment.
+    /// The shared walk behind [`locate_progress`](Self::locate_progress) and
+    /// [`elevation_at`](Self::elevation_at): the interpolated point at `target`, which the caller
+    /// has already clamped, plus its chunk and segment.
     fn locate_interpolated(
         &self,
         target: u32,
@@ -545,13 +499,9 @@ impl<'a> RouteReader<'a> {
         None
     }
 
-    /// The interpolated elevation at `progress_m`, clamped to the route end — the splice path's
-    /// seam-endpoint sampler ([`locate_progress`](Self::locate_progress) keeps position only;
-    /// this keeps the elevation those callers drop). Cold path with its own decode scratch.
-    ///
-    /// Public so the splice's seam contract ("the blended detour opens and lands on *these* two
-    /// heights, exactly") can be asserted against the same lookup the splice itself uses, rather
-    /// than against a test's re-derivation of it.
+    /// The interpolated elevation at `progress_m`, clamped to the route end: the splice path's
+    /// seam-endpoint sampler. A cold path with its own decode scratch. It is public so the
+    /// splice's seam contract can be asserted against the same lookup the splice uses.
     #[inline(never)]
     pub fn elevation_at(&self, progress_m: u32) -> Option<i16> {
         let mut buf = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
@@ -559,19 +509,17 @@ impl<'a> RouteReader<'a> {
         self.locate_interpolated(target, &mut buf)?.0.elevation()
     }
 
-    /// Return the coordinate at `progress_m`, clamped to the route end. This is the cold UI-facing
-    /// wrapper around [`locate_progress`](Self::locate_progress); the hot matcher supplies its own
-    /// resident scratch instead.
+    /// The coordinate at `progress_m`, clamped to the route end. The UI-facing wrapper around
+    /// [`locate_progress`](Self::locate_progress); the matcher supplies its own scratch instead.
     #[inline(never)]
     pub fn position_at(&self, progress_m: u32) -> Option<RoutePosition> {
         let mut buf = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
         self.locate_progress(progress_m, &mut buf)
     }
 
-    /// Stream only the polyline stretch in the inclusive along-route interval `[start_m, end_m]`.
-    /// Each callback slice is one clipped chunk: its first and last coordinates are interpolated at
-    /// the interval boundary, with no retained route copy. Decode failures skip that chunk, matching
-    /// the normal route-overlay contract.
+    /// Stream only the polyline stretch in the inclusive interval `[start_m, end_m]`. Each
+    /// callback slice is one clipped chunk, its first and last coordinates interpolated at the
+    /// boundary. A chunk that fails to decode is skipped.
     #[inline(never)]
     pub fn visit_points_between(&self, start_m: u32, end_m: u32, mut visit: impl FnMut(&[(i32, i32)])) {
         let lo = start_m.min(self.total_distance_m);
@@ -580,9 +528,8 @@ impl<'a> RouteReader<'a> {
             return;
         }
         let chunks = self.chunks();
-        // Keep only coordinate scratch live across `visit`: the deeper RoutePoint decode frame is
-        // `#[inline(never)]` below and has returned before a renderer's stroke/fill stack starts.
-        // This mirrors `obc-app::route::decode_lonlat`'s measured stack-lifetime discipline.
+        // Only coordinate scratch stays live across `visit`. The deeper decode frame is
+        // `#[inline(never)]` and has returned before a renderer's stroke and fill stack starts.
         let mut lonlat = [(0i32, 0i32); MAX_POINTS_PER_CHUNK];
         for (k, cm) in chunks.iter().enumerate() {
             let chunk_hi = chunks.get(k + 1).map_or(self.total_distance_m, |next| next.cum_distance_m);
@@ -630,8 +577,8 @@ impl<'a> RouteReader<'a> {
         self.preview_span(lo, hi, |point| {
             let next = if keep > 1 { selected * (count - 1) / (keep - 1) } else { 0 };
             if selected < keep && ordinal == next {
-                // Both spans share the stop occurrence. Keep its first representation even when
-                // a chunk boundary quantizes the second span's start to a different coordinate.
+                // Both spans share the stop occurrence. Keep the first representation even when a
+                // chunk boundary quantizes the second span's start to another coordinate.
                 if !(continues && selected == 0) && shape.last() != Some(&point) {
                     let _ = shape.push(point);
                 }
@@ -672,17 +619,15 @@ impl<'a> RouteReader<'a> {
         Ok(())
     }
 
-    /// The route's polyline decimated to at most `N` points — uniform by point index, the first
-    /// and last point always kept — the computed-route overview's shape-preview seam (#685 §4:
-    /// the host hands the app this bounded copy; ≤ 64 points is plenty for a ~212×90 px sketch).
+    /// The route's polyline decimated to at most `N` points, uniform by point index with the
+    /// first and last always kept: the overview's shape preview.
     ///
-    /// Streams every chunk once in route order (a chunk seam's shared point is skipped, so the
-    /// walk is over **distinct** points, matching the segment prefix sums) — call it once per
-    /// plan, never per frame. A chunk that fails to decode is skipped: the preview just loses
-    /// its points (a sketch, not navigation data).
+    /// It streams every chunk once in route order, skipping each seam's shared point, so the walk
+    /// is over distinct points. Call it once per plan, never per frame. A chunk that fails to
+    /// decode is skipped; the preview is a sketch, not navigation data.
     pub fn preview_polyline<const N: usize>(&self) -> Vec<(i32, i32), N> {
         let mut out: Vec<(i32, i32), N> = Vec::new();
-        // Distinct points = total segments + 1; an index with no chunks has nothing to walk.
+        // Distinct points are the total segments plus one.
         if self.idx.index.is_empty() || N == 0 {
             return out;
         }
@@ -696,7 +641,7 @@ impl<'a> RouteReader<'a> {
             if self.decode_chunk(k, &mut buf).is_err() {
                 continue;
             }
-            // Chunk k>0 re-decodes chunk k−1's last point as its anchor — skip the duplicate.
+            // Every chunk after the first re-decodes the previous chunk's last point.
             let skip = usize::from(k > 0);
             for p in buf.iter().skip(skip) {
                 if gi == next {
@@ -705,8 +650,8 @@ impl<'a> RouteReader<'a> {
                     if kept == keep {
                         return out;
                     }
-                    // The j-th kept point sits at j × (total−1) / (keep−1): endpoints exact,
-                    // the rest an even stride (keep ≥ 2 here — keep == 1 returned above).
+                    // The j-th kept point sits at `j * (total-1) / (keep-1)`: the endpoints are
+                    // exact and the rest are an even stride.
                     next = kept * (total - 1) / (keep - 1);
                 }
                 gi += 1;
@@ -716,15 +661,12 @@ impl<'a> RouteReader<'a> {
     }
 }
 
-/// The route-corridor POI query's geometry seam (epic #946, U2). `obc-reader` sits **below** this
-/// crate, so it cannot name a [`RouteReader`]; it declares [`RoutePath`](obc_reader::RoutePath) and
-/// the OBCR side implements it — the same inversion `obc-render`'s `RouteOverlaySource` uses for
-/// the map overlay.
+/// The route-corridor POI query's geometry seam. `obc-reader` sits below this crate, so it cannot
+/// name a [`RouteReader`]: it declares [`RoutePath`](obc_reader::RoutePath) and the OBCR side
+/// implements it.
 ///
 /// Everything but [`visit_chunk_points`](obc_reader::RoutePath::visit_chunk_points) reads the
-/// **resident** chunk index (no I/O); the point visit decodes one chunk through
-/// [`decode_chunk`](RouteReader::decode_chunk), so with a [`RouteCache`] attached a snapshot over a
-/// route the ride loop is already streaming costs no extra card reads for the chunks it has seen.
+/// resident chunk index and does no I/O.
 impl obc_reader::RoutePath for RouteReader<'_> {
     #[inline]
     fn chunk_count(&self) -> usize {
@@ -733,7 +675,7 @@ impl obc_reader::RoutePath for RouteReader<'_> {
 
     #[inline]
     fn chunk_start_m(&self, k: usize) -> u32 {
-        // Past the last chunk the answer is "the route end" — the contract the corridor query's
+        // Past the last chunk the answer is the route end, which the corridor query's
         // chunk-extent arithmetic relies on.
         self.chunks().get(k).map_or(self.total_distance_m, |cm| cm.cum_distance_m)
     }
@@ -744,9 +686,8 @@ impl obc_reader::RoutePath for RouteReader<'_> {
     }
 
     fn visit_chunk_points(&self, k: usize, visit: &mut dyn FnMut(&[(i32, i32)])) {
-        // Only coordinate scratch stays live across `visit`: the deeper `RoutePoint` decode frame is
-        // `#[inline(never)]` and has returned before the query descends into the POI quadtree walk.
-        // Same measured stack-lifetime discipline as `visit_points_between`.
+        // Only coordinate scratch stays live across `visit`. The deeper decode frame is
+        // `#[inline(never)]` and has returned before the query descends into the POI walk.
         let mut lonlat = [(0i32, 0i32); MAX_POINTS_PER_CHUNK];
         if let Some(n) = decode_chunk_lonlat(self, k, &mut lonlat) {
             visit(&lonlat[..n]);
@@ -754,9 +695,9 @@ impl obc_reader::RoutePath for RouteReader<'_> {
     }
 }
 
-/// Decode chunk `k` into caller-owned `(lon, lat)` scratch, returning the point count. Kept out of
-/// line so its `Vec<RoutePoint, 256>` frame is gone before the caller's callback runs (see
-/// [`decode_points_between`], the same rule).
+/// Decode chunk `k` into caller-owned `(lon, lat)` scratch, returning the point count. Must stay
+/// `#[inline(never)]`: its `Vec<RoutePoint, 256>` frame must be gone before the caller's callback
+/// runs.
 #[inline(never)]
 fn decode_chunk_lonlat(route: &RouteReader, k: usize, out: &mut [(i32, i32); MAX_POINTS_PER_CHUNK]) -> Option<usize> {
     let mut buf = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
@@ -785,9 +726,9 @@ fn interpolate_point(a: RoutePoint, b: RoutePoint, t: f32) -> RoutePoint {
     }
 }
 
-/// Decode and clip one route chunk into caller-owned `(lon, lat)` scratch. Kept out of line so its
-/// `Vec<RoutePoint, 256>` frame is gone before [`RouteReader::visit_points_between`]'s callback
-/// enters the renderer's stroke/fill stack.
+/// Decode and clip one route chunk into caller-owned `(lon, lat)` scratch. Must stay
+/// `#[inline(never)]`: its `Vec<RoutePoint, 256>` frame must be gone before the callback enters
+/// the renderer's stroke and fill stack.
 #[inline(never)]
 fn decode_points_between(
     route: &RouteReader,
@@ -804,12 +745,10 @@ fn decode_points_between(
     Some(n)
 }
 
-/// Decode chunk `k` and clip it in place to the inclusive along-route interval `[lo, hi]`,
-/// keeping the full [`RoutePoint`] records: `buf` ends up holding only the clipped stretch, its
-/// first and last points interpolated at the interval boundary (elevation included). This is the
-/// splice path's chunk primitive; [`decode_points_between`] layers the render-facing `(lon, lat)`
-/// view on top so there is exactly one clipping implementation. Returns the kept point count;
-/// `None` when the chunk misses the interval or fails to decode.
+/// Decode chunk `k` and clip it in place to the inclusive interval `[lo, hi]`, keeping the full
+/// [`RoutePoint`] records with the boundary points interpolated. [`decode_points_between`] layers
+/// the `(lon, lat)` view on top, so there is one clipping implementation. `None` when the chunk
+/// misses the interval or fails to decode.
 #[inline(never)]
 pub(crate) fn decode_route_points_between(
     route: &RouteReader,
@@ -856,7 +795,7 @@ pub(crate) fn decode_route_points_between_checked(
     }
     let (Some((a, pa)), Some((b, pb))) = (first, last) else { return Ok(None) };
     let n = b - a + 1;
-    // Shift the kept stretch to the front in place — no second point buffer on the stack.
+    // Shift the kept stretch to the front in place: no second point buffer on the stack.
     for i in 0..n {
         buf[i] = buf[a + i];
     }
@@ -866,12 +805,9 @@ pub(crate) fn decode_route_points_between_checked(
     Ok(Some(n))
 }
 
-/// Decode chunk `m` (its `n` points) from `src` into the already-cleared `out`: the anchor,
-/// then each delta-stepped point. Shared by the cached and uncached decode paths.
-/// Decode one §2 chunk-meta record (validating its point count and that its data region lies
-/// inside `src_len`). Factored out of [`RouteIndex::fill_from`] so a **streaming** consumer —
-/// one that walks chunks without ever materialising the whole index — parses metas through the
-/// exact same code path; see [`elevation_sparkline`](crate::elevation_sparkline).
+/// Decode one chunk-meta record, validating its point count and that its data region lies inside
+/// `src_len`. It is separate from [`RouteIndex::fill_from`] so a streaming consumer, one that
+/// never materialises the whole index, parses metas through the same code.
 pub(crate) fn parse_chunk_meta(meta: &[u8; CHUNK_META_LEN], src_len: u64) -> Result<ChunkMeta, Error> {
     let point_count = rd_u16(meta, 26);
     if point_count as usize > MAX_POINTS_PER_CHUNK {
@@ -893,17 +829,15 @@ pub(crate) fn parse_chunk_meta(meta: &[u8; CHUNK_META_LEN], src_len: u64) -> Res
         byte_offset: rd_u32(meta, 36),
         byte_len: rd_u32(meta, 40),
     };
-    // Bounds-check the chunk's data region up front (no per-decode checks). OBCR's own offsets are
-    // `uint32` — the format's width, not the seam's — so the sum is widened for the comparison
-    // rather than the source's length narrowed to meet it.
+    // The data region is bounds-checked once here, so the decode does no per-point check. OBCR
+    // offsets are `uint32`, so the sum is widened for the comparison.
     let end = u64::from(cm.byte_offset) + u64::from(cm.byte_len);
     if end > src_len {
         return Err(Error::BadOffset);
     }
-    // …and cross-check that region against the point count. The data is exactly the non-anchor
-    // points (§3: `point_count − 1` fixed 7-byte records) and every writer emits it that way, but
-    // the decode path sizes its read from `point_count` alone — so a forged meta whose `byte_len`
-    // disagrees would silently hand the decoder the *next* chunk's bytes as this chunk's geometry.
+    // The region is cross-checked against the point count. The decode sizes its read from
+    // `point_count` alone, so a forged meta whose `byte_len` disagrees would hand the decoder the
+    // next chunk's bytes as this chunk's geometry.
     if cm.byte_len != (point_count as u32).saturating_sub(1) * POINT_RECORD_LEN as u32 {
         return Err(Error::BadOffset);
     }
@@ -924,7 +858,7 @@ pub(crate) fn decode_chunk_from(
         elevation_incomplete: false,
     });
 
-    // Remaining n-1 points are fixed 7-byte records; read the chunk in one go.
+    // The points after the anchor are fixed 7-byte records, read in one go.
     let want = (n - 1) * POINT_RECORD_LEN;
     let mut buf = [0u8; (MAX_POINTS_PER_CHUNK - 1) * POINT_RECORD_LEN];
     let bytes = buf.get_mut(..want).ok_or(Error::TooLarge)?;
@@ -953,61 +887,53 @@ pub(crate) fn decode_chunk_from(
     Ok(())
 }
 
-/// Allocate a non-zero, process-local parse identity. This is deliberately independent of the
-/// OBCR bytes and source: parsing the same bytes into a new resident session gets a new identity,
-/// while moving/reborrowing that parsed [`RouteIndex`] keeps its identity and cache hits.
-///
-/// A 32-bit token is the target's native atomic width and takes one word in [`RouteIndex`] plus one
-/// owner word in [`RouteCache`]. Zero preserves the all-zero empty/cache initialization contract,
-/// and the counter never wraps: after exhausting the non-zero token space, parses fail closed
-/// instead of reusing an identity that a long-lived cache could still own.
+/// Allocate a non-zero, process-local parse identity. It is independent of the OBCR bytes, so
+/// parsing the same bytes again gets a new identity while a move of a parsed [`RouteIndex`] keeps
+/// its identity and its cache hits. Zero keeps the all-zero initialization contract. The counter
+/// never wraps: once the token space is exhausted, a parse fails rather than reuse an identity a
+/// live cache could still own.
 fn next_route_identity() -> Result<u32, Error> {
-    // Zero-init keeps the allocator in `.bss`; the returned token is the successfully stored next
-    // value, so zero itself is never live.
+    // Zero-init keeps the allocator in `.bss`, and the returned token is the stored next value,
+    // so zero itself is never live.
     static LAST: AtomicU32 = AtomicU32::new(0);
     LAST.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |identity| identity.checked_add(1))
         .map(|identity| identity + 1)
         .map_err(|_| Error::TooLarge)
 }
 
-/// Resident decoded-route-chunk cache slots. Only the chunks crossing the view are decoded,
-/// so a small LRU holds a frame's working set, sized to also absorb a wide zoomed-out view of
-/// a winding route: the matcher's chunk, the riding-zoom view, and one spare for a zoomed-out
-/// pan (3 × ~3 KB ≈ 9 KB; a very wide view of a winding route still re-decodes, accepted).
+/// Resident decoded-chunk slots. Only the chunks crossing the view are decoded, so a small LRU
+/// holds a frame's working set: the matcher's chunk, the riding-zoom view, and one spare for a
+/// zoomed-out pan. A very wide view of a winding route still re-decodes.
 const ROUTE_CHUNK_SLOTS: usize = 3;
 
-/// One cache slot: a decoded chunk's points, keyed by chunk index, with LRU recency. The owning
-/// route identity lives once on [`RouteCacheInner`]. The key is stored as `index + 1`, reserving
-/// zero as the empty tag so the cache remains safe to create from all-zero memory without a
-/// separate validity byte.
+/// A decoded chunk's points, keyed by chunk index, with LRU recency. The owning route identity
+/// lives once on [`RouteCacheInner`]. The key is stored as `index + 1`, so zero is the empty tag
+/// and the cache is safe to create from all-zero memory.
 struct RouteSlot {
     tag: u16,
-    // LRU order, not a diagnostic counter. It is rebased before exhaustion, preserving exact
-    // ordering while keeping the slot header at four bytes on the target.
+    // LRU order, not a diagnostic counter. It is rebased before it can overflow, which keeps the
+    // slot header at four bytes.
     used: u16,
     pts: Vec<RoutePoint, MAX_POINTS_PER_CHUNK>,
 }
 
-/// A small resident cache of **decoded** route-geometry chunks — the route analogue of
-/// `obc_reader::MapCache`. Without it, a per-frame map redraw and the matcher's per-fix decode
-/// re-pull the same visible chunks from the SD card every time; holding the decoded points
-/// resident turns those repeats into RAM copies.
+/// A small resident cache of decoded route-geometry chunks, the route analogue of
+/// `obc_reader::MapCache`. Without it, a redraw and the matcher's per-fix decode re-pull the same
+/// visible chunks from the card every time.
 ///
-/// Caller-owned and reused across frames (the device places one in its reserved region; the
-/// host skips it), paired with the per-frame [`RouteReader`] via
-/// [`new_cached`](RouteReader::new_cached). Slots remain keyed by chunk index, while the cache as a
-/// whole adopts the parsed [`RouteIndex`]'s identity. A different route therefore invalidates all
-/// same-key slots by construction; [`clear`](Self::clear) remains an optional explicit reset.
+/// Caller-owned and reused across frames, paired with the per-frame [`RouteReader`] via
+/// [`new_cached`](RouteReader::new_cached). Slots are keyed by chunk index and the cache as a whole
+/// adopts the parsed index's identity, so a different route invalidates every same-key slot.
 ///
-/// State is in a `RefCell` so a `&RouteCache` `decode_chunk` (`&self`) can fill it; the borrow
-/// is scoped to a single get/put.
+/// The state is in a `RefCell` so a `&RouteCache` can fill it; the borrow is scoped to one
+/// get or put.
 pub struct RouteCache {
     inner: RefCell<RouteCacheInner>,
 }
 
 struct RouteCacheInner {
-    /// The successful [`RouteIndex`] parse whose chunks occupy the slots. Zero is the unowned
-    /// all-zero initialization state and is never assigned to a parsed index.
+    /// The [`RouteIndex`] parse whose chunks occupy the slots. Zero is the unowned initial state
+    /// and is never a parsed index.
     identity: u32,
     tick: u16,
     slots: [RouteSlot; ROUTE_CHUNK_SLOTS],
@@ -1022,42 +948,38 @@ impl Default for RouteCache {
 }
 
 impl RouteCache {
-    /// A fresh, empty cache. On the device, place it once in the reserved region (e.g.
-    /// `ptr::write`) so it stays off the main stack.
+    /// A fresh, empty cache. On the device, place it once in the reserved region so it stays off
+    /// the main stack.
     pub fn new() -> Self {
         RouteCache { inner: RefCell::new(RouteCacheInner::new()) }
     }
 
-    /// Drop every resident slot and zero the counters. Route switches already invalidate
-    /// automatically through [`RouteReader::new_cached`]; this remains useful for diagnostics and
-    /// explicit resets. Only the slot tags + counters are touched, not the point buffers.
+    /// Drop every resident slot and zero the counters. A route switch already invalidates through
+    /// [`RouteReader::new_cached`]. Only the slot tags and counters are touched.
     pub fn clear(&self) {
         self.inner.borrow_mut().clear();
     }
 
-    /// Cumulative `(hits, misses)` since the last [`clear`](Self::clear). Nothing on the device
-    /// reads it; it is how this crate's own tests observe residency and eviction.
+    /// `(hits, misses)` since the last [`clear`](Self::clear), for the tests.
     pub fn stats(&self) -> (u32, u32) {
         let inner = self.inner.borrow();
         (inner.hits, inner.misses)
     }
 
-    /// Bind the cache to one parsed route session. A different identity clears all same-index
-    /// slots before the reader can decode; reborrowing or moving the same [`RouteIndex`] preserves
-    /// its identity and therefore preserves hits. Identity zero is accepted for the public empty
-    /// index: it owns no decodable chunks, and a later non-zero parsed identity still invalidates.
+    /// Bind the cache to one parsed route. A different identity clears every same-index slot
+    /// before the reader can decode; a move of the same index preserves its hits. Identity zero is
+    /// accepted for the empty index, which owns no decodable chunks.
     fn adopt(&self, identity: u32) {
         self.inner.borrow_mut().adopt(identity);
     }
 
-    /// If chunk `key` is resident, copy its points into `out` (cleared first), bump recency + the
-    /// hit counter, and return `true`; otherwise leave `out` untouched and return `false`. Identity
-    /// adoption and lookup share one borrow so an interleaved reader cannot cross-serve a slot.
+    /// If chunk `key` is resident, copy its points into `out` and return `true`. Identity
+    /// adoption and lookup share one borrow, so an interleaved reader cannot cross-serve a slot.
     fn get(&self, identity: u32, key: usize, out: &mut Vec<RoutePoint, MAX_POINTS_PER_CHUNK>) -> bool {
         let mut inner = self.inner.borrow_mut();
         inner.adopt(identity);
-        // Bounded by `RouteIndex::index`; the compile-time assertion above leaves zero available
-        // as the empty tag after adding one.
+        // Bounded by `RouteIndex::index`, and the assertion above leaves zero free as the empty
+        // tag after adding one.
         let tag = key as u16 + 1;
         let Some(i) = inner.slots.iter().position(|s| s.tag == tag) else {
             return false;
@@ -1070,10 +992,9 @@ impl RouteCache {
         true
     }
 
-    /// Store chunk `key`'s decoded `pts` into the LRU slot (evicting the least-recently-used) and
-    /// count the miss that prompted it. The identity is deliberately re-adopted here, after the
-    /// source read, because a reentrant source can fill the shared cache for another reader while
-    /// this reader's miss is in flight.
+    /// Store chunk `key`'s decoded points, evicting the least recently used slot. The identity is
+    /// re-adopted here, after the source read, because a reentrant source can fill the shared
+    /// cache for another reader while this miss is in flight.
     fn put(&self, identity: u32, key: usize, pts: &[RoutePoint]) {
         let mut inner = self.inner.borrow_mut();
         inner.adopt(identity);
@@ -1081,7 +1002,7 @@ impl RouteCache {
         let i = lru_victim(inner.slots.iter().map(|s| (s.tag == 0, s.used)));
         let t = inner.touch();
         let s = &mut inner.slots[i];
-        // Bounded by `RouteIndex::index`; zero remains reserved for an empty slot.
+        // Bounded by `RouteIndex::index`; zero stays reserved for an empty slot.
         s.tag = key as u16 + 1;
         s.used = t;
         s.pts.clear();
@@ -1090,11 +1011,9 @@ impl RouteCache {
 }
 
 impl RouteCacheInner {
-    /// A `const` struct literal rather than a `zeroed()` `assume_init`: `heapless::Vec::new()` is
-    /// `const`, so the whole value is a constant and the buffers are never materialised in
-    /// `.rodata` to be copied from. Measured on the board link, not assumed — the failure mode of
-    /// the `.rodata`-plus-`memcpy` lowering is a boot brick (#1084/#1108), and `MapCacheInner` keeps
-    /// its `zeroed()` because that proof is per-site.
+    /// A `const` struct literal, not a zeroed `assume_init`: `heapless::Vec::new()` is `const`,
+    /// so the whole value is a constant and the buffers are never put in `.rodata` to be copied
+    /// from. The `.rodata` plus `memcpy` lowering bricks the boot.
     const fn new() -> Self {
         RouteCacheInner {
             identity: 0,
@@ -1112,9 +1031,8 @@ impl RouteCacheInner {
         }
     }
 
-    /// Invalidate slots and reset diagnostics without changing the adopted identity. Keeping the
-    /// owner means an explicit clear followed by another reader over the same resident index simply
-    /// starts cold; a later different identity still runs this path before any lookup.
+    /// Invalidate the slots and reset the counters without changing the adopted identity, so a
+    /// reader over the same index simply starts cold.
     fn clear(&mut self) {
         for s in &mut self.slots {
             s.tag = 0;
@@ -1127,9 +1045,8 @@ impl RouteCacheInner {
     #[inline]
     fn touch(&mut self) -> u16 {
         if self.tick == u16::MAX {
-            // This path is extremely rare (once per 65,535 cache touches). Compress the live
-            // timestamps to their ranks before incrementing, preserving exact LRU order without
-            // allocating or letting an old slot become recent across integer wraparound.
+            // Once per 65 535 touches, compress the live timestamps to their ranks. This keeps
+            // the exact LRU order and stops an old slot becoming recent across a wraparound.
             let old = core::array::from_fn::<_, ROUTE_CHUNK_SLOTS, _>(|i| self.slots[i].used);
             let mut live = 0;
             for i in 0..ROUTE_CHUNK_SLOTS {
@@ -1176,9 +1093,8 @@ impl core::ops::Deref for RouteReader<'_> {
     }
 }
 
-/// Parsed header fields (shared by [`RouteIndex::read`] and [`RouteSummary::read`]). No `version`
-/// field: [`read_header`] accepts exactly one version, so every reader below it is v4 by
-/// construction.
+/// Parsed header fields. There is no `version` field: [`read_header`] accepts exactly one
+/// version, so every reader below it has that version by construction.
 pub(crate) struct Header {
     pub(crate) bbox: BBox,
     pub(crate) start_lon: i32,
@@ -1198,11 +1114,9 @@ pub(crate) struct Header {
 pub(crate) fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
     let mut h = [0u8; HEADER_FULL_LEN];
     src.read_at(0, &mut h).map_err(|_| Error::BadOffset)?;
-    // The magic + version gate is `obc-formats`' to own, not this reader's: one prefix check for
-    // every OBCR consumer. It reports `Version` only *after* the magic matched, so the two-step
-    // "not an OBCR" / "an OBCR we can't read" distinction the callers pin survives the mapping.
-    // (`Bounds` is unreachable — `h` is a fixed 112-byte buffer — and would mean the same thing
-    // as a magic mismatch anyway: this is not a route.)
+    // `obc-formats` owns the magic and version gate: one prefix check for every OBCR consumer. It
+    // reports `Version` only after the magic matched, which keeps the "not an OBCR" and "an OBCR
+    // we cannot read" answers apart.
     match validate_header_prefix(&h) {
         Ok(_) => {}
         Err(DecodeError::Version) => return Err(Error::BadVersion),
@@ -1275,44 +1189,39 @@ pub(crate) fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
     })
 }
 
-/// One stored route waypoint (`OBCR_Spec.md` §4): a POI pinned to a position along the route, as it
-/// sits on disk — every field, `ele`/`category_id` included. The ride *geometry* path still skips
-/// the section entirely; [`RouteReader::load_waypoints`] distils the named ones into the resident
-/// [`Waypoints`] table the waypoint UI reads. Also serves hosts and tests.
+/// One stored route waypoint as it sits on disk, every field included. The ride geometry path
+/// skips the section; [`RouteReader::load_waypoints`] distils the named ones into the resident
+/// [`Waypoints`] table the UI reads. See `OBCR_Spec.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Waypoint {
-    /// Cumulative distance from the route start to this waypoint's position, meters.
+    /// Distance from the route start to this waypoint's position, meters.
     pub dist_along_m: u32,
-    /// The waypoint's own coordinate (microdegrees) — may sit off the polyline.
+    /// The waypoint's own coordinate, microdegrees. It can sit off the polyline.
     pub lon: i32,
     pub lat: i32,
     /// Elevation in meters; [`WAYPOINT_ELE_NONE`](obc_formats::obcr::WAYPOINT_ELE_NONE) when the source carried none.
     pub ele: i16,
-    /// The stored category byte (§4): `0` = generic, `1..=6` the OBCM §7.4 [`PoiCategory`] wire
-    /// ids. Kept **raw** so a rewrite (the detour splice) can carry an unknown value through
-    /// byte-for-byte; [`category`](Self::category) is the typed read.
+    /// The stored category byte: `0` is generic and `1..=6` are the [`PoiCategory`] wire ids.
+    /// Kept raw so a rewrite carries an unknown value through byte for byte.
     pub category_id: u8,
-    /// Signed lateral offset from the route line in meters, positive = **right** of the direction
-    /// of travel, `0` = on-route (§4). Saturating: a waypoint further than `i16` metres off route
-    /// clamps rather than wrapping.
+    /// Lateral offset from the route line, meters. Positive is right of the direction of travel
+    /// and `0` is on-route. It clamps rather than wraps.
     pub lateral_offset_m: i16,
     pub name: String<WAYPOINT_NAME_CAP>,
     pub provenance: Option<obc_formats::obcr::WaypointProvenance>,
 }
 
 impl Waypoint {
-    /// The typed category, or `None` for **generic** — an unmapped source symbol, a hand-placed
-    /// waypoint, or a category byte outside `1..=6` (the spec's "render unknown as generic").
+    /// The typed category, or `None` for generic, which also covers a byte outside `1..=6`.
     #[inline]
     pub fn category(&self) -> Option<PoiCategory> {
         PoiCategory::from_id(self.category_id)
     }
 }
 
-/// Visit each stored waypoint in route order (ascending `dist_along_m`), streaming one fixed
-/// [`WAYPOINT_LEN`] record at a time — the low-level cursor over the whole (unfiltered, any-count)
-/// section. [`RouteReader::load_waypoints`] layers the resident-table policy (name filter, window,
-/// cap) on top of it. Returns the number visited; a route without waypoints yields none.
+/// Visit each stored waypoint in route order, one [`WAYPOINT_LEN`] record at a time: the cursor
+/// over the whole unfiltered section. [`RouteReader::load_waypoints`] layers the resident-table
+/// policy on top. Returns the number visited.
 pub fn for_each_waypoint<F: FnMut(&Waypoint)>(src: &dyn ByteSource, mut f: F) -> Result<u16, Error> {
     let mut cursor = WaypointCursor::new(src)?;
     let count = cursor.count;
@@ -1322,7 +1231,7 @@ pub fn for_each_waypoint<F: FnMut(&Waypoint)>(src: &dyn ByteSource, mut f: F) ->
     Ok(count)
 }
 
-/// A source-free cursor; each advance reads at most one stored record.
+/// A source-free cursor. Each advance reads at most one stored record.
 #[derive(Debug)]
 pub struct WaypointCursor {
     offset: u32,
@@ -1367,65 +1276,58 @@ impl WaypointCursor {
     }
 }
 
-/// One resident waypoint: the compact subset of a stored [`Waypoint`] the ride UI actually needs —
-/// its along-route position, its own coordinate, its category, how far off the route it sits, and
-/// its (non-empty) name. `ele` is **dropped** on purpose (the UI never shows it; distances come
-/// from `dist_along_m`), so the entry stays cheap to hold [`MAX_WAYPOINTS`] resident.
+/// The subset of a stored [`Waypoint`] the ride UI needs. `ele` is dropped on purpose, so the
+/// entry stays cheap to hold [`MAX_WAYPOINTS`] of resident.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WptEntry {
-    /// Cumulative distance from the route start to this waypoint, meters — the axis the ride
-    /// progress, the progress-bar ticks, and the chip's distance-to-go all share.
+    /// Distance from the route start, meters: the axis the ride progress, the progress-bar ticks
+    /// and the chip's distance-to-go all share.
     pub dist_along_m: u32,
-    /// The waypoint's own coordinate (microdegrees) — where its map diamond is drawn.
+    /// The waypoint's own coordinate, where its map diamond is drawn.
     pub lon: i32,
     pub lat: i32,
-    /// The waypoint's category, or `None` for **generic** — the diamond a hand-placed waypoint
-    /// keeps. Shares the map's [`PoiCategory`] ids, so one icon language covers both sources.
+    /// The waypoint's category, or `None` for generic. It shares the map's [`PoiCategory`] ids,
+    /// so one icon language covers both sources.
     pub category: Option<PoiCategory>,
-    /// Signed lateral offset from the route line, meters — positive = **right** of the direction
-    /// of travel, `0` = on-route. The `←`/`→` side hint reads this.
+    /// Lateral offset from the route line, meters. Positive is right of the direction of travel.
+    /// The side hint reads this.
     pub lateral_offset_m: i16,
-    /// The waypoint's name (non-empty: an unnamed waypoint never enters the table).
+    /// The waypoint's name. An unnamed waypoint never enters the table.
     pub name: String<WAYPOINT_NAME_CAP>,
 }
 
-/// A route's resident named-waypoint table, in route order (ascending `dist_along_m`) — the
-/// waypoint sibling of [`Climbs`](crate::Climbs). Built once per route load by
-/// [`RouteReader::load_waypoints`] and cached in the app; the riding views then read it per frame.
+/// A route's resident named-waypoint table, in route order. Built once per route load and read
+/// per frame by the riding views.
 ///
-/// Capacity is fixed at [`MAX_WAYPOINTS`]. When a file carries more named, in-window waypoints than
-/// fit, the first-by-distance ones are kept and [`truncated`](Self::truncated) is set, so the ride
-/// loop can slide the window forward once the rider passes the resident tail (re-window on
-/// exhaustion — see the app's `tick`). A normal route (≤ cap) never truncates.
+/// When a file carries more qualifying waypoints than [`MAX_WAYPOINTS`], the nearest are kept and
+/// [`truncated`](Self::truncated) is set, so the ride loop can slide the window forward once the
+/// rider passes the resident tail.
 #[derive(Debug, Clone, Default)]
 pub struct Waypoints {
-    /// The kept named waypoints, route order (ascending `dist_along_m`).
+    /// The kept named waypoints, in route order.
     pub entries: Vec<WptEntry, MAX_WAYPOINTS>,
-    /// `true` when the file had more qualifying (named, at/after the load window) waypoints than
-    /// [`MAX_WAYPOINTS`] — the re-window signal. `false` for any route within the cap.
+    /// `true` when the file had more qualifying waypoints than [`MAX_WAYPOINTS`]: the re-window
+    /// signal.
     pub truncated: bool,
 }
 
 impl Waypoints {
-    /// An empty table (no route loaded, or a route without waypoints).
+    /// An empty table.
     #[inline]
     pub fn new() -> Self {
         Waypoints { entries: Vec::new(), truncated: false }
     }
 
-    /// The kept waypoints in route order.
     #[inline]
     pub fn as_slice(&self) -> &[WptEntry] {
         &self.entries
     }
 
-    /// Number of resident waypoints.
     #[inline]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    /// Whether the table holds no waypoints.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
@@ -1433,32 +1335,24 @@ impl Waypoints {
 }
 
 impl RouteReader<'_> {
-    /// Load the route's **named** waypoints into a resident [`Waypoints`] table, windowed and capped
-    /// for the device — the waypoint sibling of [`detect_climbs`](Self::detect_climbs). Streams the
-    /// stored waypoint section via [`for_each_waypoint`] and keeps each record that
+    /// Load the route's named waypoints into a resident table. It keeps each record that sits at
+    /// or past `min_dist_m` and has a non-empty name after trimming: an unnamed waypoint appears
+    /// nowhere in the UI.
     ///
-    /// - sits at or past `min_dist_m` (`dist_along_m >= min_dist_m`), and
-    /// - has a non-empty name after trimming ASCII whitespace — an unnamed waypoint surfaces nowhere
-    ///   in the UI (no diamond, tick, chip, or row), so it never enters the table.
+    /// Records arrive in ascending distance, so the first [`MAX_WAYPOINTS`] kept are the nearest
+    /// ahead of `min_dist_m`. A file with more sets [`truncated`](Waypoints::truncated), so the
+    /// caller can re-window forward once the rider passes the tail.
     ///
-    /// Records arrive in ascending `dist_along_m`, so the first [`MAX_WAYPOINTS`] kept are the nearest
-    /// ahead of `min_dist_m`; a file with more qualifying waypoints stops filling and sets
-    /// [`truncated`](Waypoints::truncated), so the caller can re-window forward with a larger
-    /// `min_dist_m` once the rider passes the tail.
-    ///
-    /// O(waypoints), one small read per record — call on route load (and on re-window), never per
-    /// frame. A route whose waypoint section is empty — or whose every waypoint is unnamed or
-    /// behind `min_dist_m` — yields an empty table. (Pre-v3 files never reach here: the header
-    /// read inside [`for_each_waypoint`] is the version gate and rejects them.)
+    /// One small read per record. Call it on route load and on a re-window, never per frame.
     pub fn load_waypoints(&self, min_dist_m: u32) -> Waypoints {
         let mut wpts = Waypoints::new();
-        // A read error (a torn waypoint section) ends the stream early; the partial table is still
-        // safe to hand back, matching `for_each_waypoint`'s best-effort contract.
+        // A torn waypoint section ends the stream early. The partial table is still safe to hand
+        // back, which matches `for_each_waypoint`'s contract.
         let _ = for_each_waypoint(self.src, |w| {
             if w.dist_along_m < min_dist_m {
                 return;
             }
-            // Unnamed = empty, or only ASCII whitespace: `all()` on the bytes is true for both.
+            // Unnamed means empty or only whitespace; `all()` is true for both.
             if w.name.as_bytes().iter().all(u8::is_ascii_whitespace) {
                 return;
             }
@@ -1470,8 +1364,7 @@ impl RouteReader<'_> {
                 lateral_offset_m: w.lateral_offset_m,
                 name: w.name.clone(),
             };
-            // Full: keep the first-by-distance ones already pushed and flag the overflow. Keep
-            // streaming (don't break) so `truncated` reflects the whole file, not the first extra.
+            // Keep streaming rather than break, so `truncated` reflects the whole file.
             if wpts.entries.push(entry).is_err() {
                 wpts.truncated = true;
             }

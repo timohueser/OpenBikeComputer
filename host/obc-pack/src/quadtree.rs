@@ -1,20 +1,12 @@
-//! Quadtree build — bucket a LOD's features into chunks.
+//! Quadtree build: bucket a LOD's features into chunks.
 //!
-//! A node holds every feature reaching it. If their combined [`packed_size_budget`]
-//! (an upper bound on the real packed bytes, including densify midpoints) fits the
-//! chunk size it becomes a leaf; otherwise it splits four ways and hands each child
-//! the features that reach it — contained ones whole, straddling ones clipped to the
-//! child box — and recurses. The four children are built **in parallel**.
+//! A node holds every feature reaching it. If their combined [`packed_size_budget`] — an upper bound
+//! on the real packed bytes, including densify midpoints — fits the chunk size it becomes a leaf;
+//! otherwise it splits four ways and hands each child the features that reach it, contained ones
+//! whole and straddling ones clipped to the child box. The four children are built in parallel.
 //!
-//! This is a batch reformulation of the older one-feature-at-a-time insert+split:
-//! since a leaf splits exactly when its features overflow the chunk and then
-//! redistributes *all* of them, "does the running total ever exceed the chunk" and
-//! "does the final total exceed the chunk" decide the same splits, and each child
-//! still receives its features in input order — so the tree (and its serialized
-//! bytes) are identical, only now the subtrees fan out across threads.
-//!
-//! Overlap/containment tests and clipping run in **degree space** (bbox / 1e6), so
-//! leaf membership matches the node bounds the reader recomputes at render time.
+//! Overlap and containment tests and clipping run in degree space, so leaf membership matches the
+//! node bounds the reader recomputes at render time.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -39,12 +31,11 @@ struct StoredFeature {
     bounds: Bounds,
 }
 
-/// Store a simple geometry only once every polygon hole can be encoded from that feature's
-/// exterior anchor. The OBCM format has no per-hole anchor, so this is a **feature-local** format
-/// constraint rather than a reason to subdivide the whole spatial index: clip only the offending
-/// polygon into two lossless pieces and keep both in the same quadtree node. This avoids making
-/// every unrelated road, fill, and boundary pay several extra tree levels for one large holed
-/// coverage polygon.
+/// Store a simple geometry only once every polygon hole can be encoded from that feature's exterior
+/// anchor. OBCM has no per-hole anchor, so this is a feature-local format constraint rather than a
+/// reason to subdivide the whole spatial index: clip only the offending polygon into two lossless
+/// pieces and keep both in the same node, instead of making every unrelated road and fill pay extra
+/// tree levels for one large holed polygon.
 fn store_encodable(style_id: u8, geom: Geom, bounds: Bounds, out: &mut Vec<StoredFeature>) {
     if hole_anchors_encodable(&geom) {
         out.push(StoredFeature { style_id, geom, bounds });
@@ -98,16 +89,13 @@ fn store_clipped_polygon_parts(style_id: u8, geom: Geom, out: &mut Vec<StoredFea
     }
 }
 
-/// Below this many features a node builds its four children serially — the rayon
-/// fork/join overhead isn't worth it for a small subtree (the big top-of-tree nodes
-/// still fan out, which is where the time is).
+/// Below this many features a node builds its four children serially: the rayon fork/join overhead
+/// is not worth it for a small subtree.
 const PARALLEL_MIN_FEATURES: usize = 2048;
 
-/// Push a **simple** `geom` whose `bounds` are already known into the box `bbox`:
-/// dropped if it misses, kept whole if fully inside, else clipped to the box and
-/// flattened. `dbox` is `bbox` in degrees. The known `bounds` let the hot
-/// contained-feature path skip a full coordinate scan — only a clip (which changes
-/// the geometry) recomputes bounds, via [`flatten`].
+/// Push a simple `geom` whose `bounds` are already known into the box `bbox`: dropped if it misses,
+/// kept whole if fully inside, else clipped to the box and flattened. `dbox` is `bbox` in degrees.
+/// The known `bounds` let the hot contained-feature path skip a full coordinate scan.
 fn place(
     bbox: (i64, i64, i64, i64),
     dbox: DegBox,
@@ -133,9 +121,9 @@ fn place(
     }
 }
 
-/// Append the simple parts of `geom` (recomputing each part's bounds) to `out`,
-/// flattening `Multi`s. Used for geometry whose bounds aren't already known: a clip
-/// result and each raw input feature at the root.
+/// Append the simple parts of `geom` to `out`, recomputing each part's bounds and flattening
+/// `Multi`s. Used for geometry whose bounds are not already known: a clip result, and each raw input
+/// feature at the root.
 fn flatten(style_id: u8, geom: Geom, out: &mut Vec<StoredFeature>) {
     match geom {
         Geom::Line(_) | Geom::Polygon { .. } => {
@@ -161,17 +149,14 @@ fn ring_count(g: &Geom) -> usize {
     }
 }
 
-/// Build the subtree for `bbox` from `feats` (already clipped to `bbox`, in input
-/// order). Leaf iff the features fit the chunk — in bytes AND in the reader's
-/// per-feature ring cap — or the box hit the 10 µdeg split floor; otherwise split
-/// four ways and build the children in parallel.
+/// Build the subtree for `bbox` from `feats`, already clipped to `bbox` and in input order. A leaf
+/// iff the features fit the chunk in bytes and in the reader's per-feature ring cap, or the box hit
+/// the 10 µdeg split floor; otherwise split four ways and build the children in parallel.
 ///
-/// The ring cap matters because bytes alone don't imply it: at a coarse LOD a
-/// merged fill (forest, farmland) can carry dozens of holes whose simplified rings
-/// fit a chunk easily, and the reader discards such a feature *whole*
-/// (`CapacityError::Rings`) — a corrupt artifact by `obc-bake verify`'s standard.
-/// Splitting clips it, spreading the holes across the children. `trimmed` counts
-/// holes dropped by the floor-guard fallback below.
+/// The ring cap matters because bytes alone do not imply it: at a coarse LOD a merged fill can carry
+/// dozens of holes whose simplified rings fit a chunk easily, and the reader discards such a feature
+/// whole. Splitting clips it, spreading the holes across the children. `trimmed` counts holes
+/// dropped by the floor-guard fallback below.
 fn build_node(bbox: (i64, i64, i64, i64), chunk_size: usize, feats: Vec<StoredFeature>, trimmed: &AtomicUsize) -> Node {
     let (min_lon, min_lat, max_lon, max_lat) = bbox;
     // Recursion guard: don't split below 10 µdeg on either axis.
@@ -182,9 +167,8 @@ fn build_node(bbox: (i64, i64, i64, i64), chunk_size: usize, feats: Vec<StoredFe
         let features = feats
             .into_iter()
             .filter_map(|mut f| {
-                // Only reachable at the split floor: a sub-10-µdeg polygon still
-                // over the ring cap. Keeping its largest holes beats emitting a
-                // feature the reader is guaranteed to discard whole.
+                // Only reachable at the split floor: a sub-10-µdeg polygon still over the ring
+                // cap. Keeping its largest holes beats emitting a feature the reader discards.
                 let n = trim_excess_holes(&mut f.geom, MAX_FEAT_RINGS);
                 if n > 0 {
                     trimmed.fetch_add(n, Ordering::Relaxed);
@@ -207,9 +191,8 @@ fn build_node(bbox: (i64, i64, i64, i64), chunk_size: usize, feats: Vec<StoredFe
     ];
     let dboxes = [deg(boxes[0]), deg(boxes[1]), deg(boxes[2]), deg(boxes[3])];
 
-    // Hand each feature to the children it reaches, in NW,NE,SW,SE order, cloning
-    // into every reached child but the last (which takes it by move). A feature
-    // contained in one quadrant thus never allocates a throwaway copy.
+    // Hand each feature to the children it reaches, in NW, NE, SW, SE order, cloning into every
+    // reached child but the last, which takes it by move.
     let mut buckets: [Vec<StoredFeature>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
     for f in feats {
         let StoredFeature { style_id, geom, bounds } = f;
@@ -234,9 +217,9 @@ fn build_node(bbox: (i64, i64, i64, i64), chunk_size: usize, feats: Vec<StoredFe
     }
 
     let [nw, ne, sw, se] = buckets;
-    // Build the four subtrees; big nodes fan out across threads (only plain `Geom`,
-    // which is Send, crosses threads, and each `clip_to_box` builds/consumes its GEOS
-    // geometry on its own thread), small ones stay serial to dodge the join overhead.
+    // Build the four subtrees. Big nodes fan out across threads — only plain `Geom`, which is
+    // `Send`, crosses a thread, and each `clip_to_box` builds and consumes its GEOS geometry on its
+    // own thread — while small ones stay serial to dodge the join overhead.
     let children = if n_feats >= PARALLEL_MIN_FEATURES {
         let ((nw, ne), (sw, se)) = rayon::join(
             || (build_node(boxes[0], chunk_size, nw, trimmed), build_node(boxes[1], chunk_size, ne, trimmed)),
@@ -267,12 +250,10 @@ pub fn build_lod(
 
 /// [`build_lod`], abandonable.
 ///
-/// The root placement loop is the only interruptible part — `build_node`'s
-/// recursion is a single divide-and-conquer over whatever it is given — so a
-/// cancelled build stops feeding it and hands it nothing. That is deliberate
-/// rather than lazy: the result is discarded either way, and returning an empty
-/// tree in microseconds is what keeps the tail after a cancel short instead of
-/// paying for a split of a country's worth of features nobody will read.
+/// The root placement loop is the only interruptible part, since `build_node`'s recursion is a
+/// single divide-and-conquer over whatever it is given, so a cancelled build stops feeding it. The
+/// result is discarded either way, and returning an empty tree in microseconds is what keeps the
+/// tail after a cancel short.
 pub fn build_lod_with(
     features: impl IntoIterator<Item = (u8, Geom)>,
     global_bbox: (i64, i64, i64, i64),
@@ -302,10 +283,9 @@ pub fn build_lod_with(
     node
 }
 
-/// Root entry: flatten a raw input `geom` (possibly a `Multi`) to its simple parts
-/// and [`place`] each against the box, computing per-part bounds. Split-level
-/// distribution uses [`place`] directly since it already knows each feature's
-/// bounds; only the root's raw inputs need this bounds-computing wrapper.
+/// Root entry: flatten a raw input `geom` to its simple parts and [`place`] each against the box,
+/// computing per-part bounds. Split-level distribution uses [`place`] directly, since it already
+/// knows each feature's bounds.
 fn place_any(bbox: (i64, i64, i64, i64), dbox: DegBox, style_id: u8, geom: Geom, out: &mut Vec<StoredFeature>) {
     match geom {
         Geom::Multi(parts) => {
@@ -423,7 +403,6 @@ mod tests {
         assert_eq!(leaf_feature_count(&n), 1);
     }
 
-    // --- Split + straddle ⇒ real GEOS clip -----------------------------------
     // Force a split and feed geometry crossing the new child boundaries, so every
     // piece goes through `clip_to_box`. The reassembled pieces must cover the original.
 
@@ -442,9 +421,9 @@ mod tests {
         out
     }
 
-    /// A dense horizontal line straddling the NW/NE midline: the two top children
-    /// each clip it via GEOS. Surviving segments must reassemble to the original
-    /// x-span, and every clipped vertex must stay within its leaf's bbox.
+    /// A dense horizontal line straddling the NW/NE midline: the two top children each clip it via
+    /// GEOS. Surviving segments must reassemble to the original x-span, and every clipped vertex
+    /// must stay within its leaf's bbox.
     #[test]
     fn split_then_clip_straddling_line_reassembles() {
         // bbox 0..1.0°. Line at y=0.75° spanning x=0.05°..0.95°, 40 vertices →
@@ -482,9 +461,8 @@ mod tests {
         assert!(total_pts >= n, "clip must not drop interior vertices (got {total_pts}, had {n})");
     }
 
-    /// A polygon straddling the vertical midline: each half clips to its child box.
-    /// The combined x-extent must still cover the original, and each clipped polygon
-    /// stays a valid closed ring inside its leaf.
+    /// A polygon straddling the vertical midline: each half clips to its child box. The combined
+    /// x-extent must still cover the original, and each clipped polygon stays a valid closed ring.
     #[test]
     fn split_then_clip_straddling_polygon_covers_original() {
         // Wide short rectangle centered on x=0.5° (straddles the midline), dense
@@ -527,18 +505,14 @@ mod tests {
         assert!((max_x - x1).abs() < 1e-6, "right extent preserved: {max_x} vs {x1}");
     }
 
-    // --- Reader ring-cap enforcement -----------------------------------------
-
     /// A closed square ring at `(x0, y0)` with side `s`, in degrees.
     fn sq(x0: f64, y0: f64, s: f64) -> Vec<(f64, f64)> {
         vec![(x0, y0), (x0 + s, y0), (x0 + s, y0 + s), (x0, y0 + s), (x0, y0)]
     }
 
-    /// The bake-verify "oversized" shape: a merged fill whose simplified rings fit
-    /// any chunk by bytes but whose 40 holes exceed the reader's ring cap. Bytes
-    /// alone would make it a single leaf; the reader would then discard the whole
-    /// feature (`CapacityError::Rings`). The tree must split it instead, and every
-    /// emitted leaf feature must fit the cap.
+    /// A merged fill whose simplified rings fit any chunk by bytes but whose 40 holes exceed the
+    /// reader's ring cap. Bytes alone would make it a single leaf and the reader would discard the
+    /// whole feature, so the tree must split it instead.
     #[test]
     fn many_holed_polygon_splits_to_honor_ring_cap() {
         let mut interiors = Vec::new();
@@ -564,9 +538,9 @@ mod tests {
         assert!(holes > 0, "clipping spreads the holes across pieces, it doesn't erase them");
     }
 
-    /// At the 10-µdeg split floor a many-holed polygon can't be clipped apart, so
-    /// the leaf keeps the largest `MAX_FEAT_RINGS - 1` holes (original order) and
-    /// drops the rest — a trimmed feature beats one the reader discards whole.
+    /// At the 10-µdeg split floor a many-holed polygon cannot be clipped apart, so the leaf keeps
+    /// the largest holes in their original order and drops the rest: a trimmed feature beats one the
+    /// reader discards whole.
     #[test]
     fn ring_cap_floor_guard_keeps_the_largest_holes() {
         // Hole `i` sits at x = i·1e-7 with side (i+1)·1e-8: area grows with the
@@ -585,11 +559,9 @@ mod tests {
         assert!((f.rings[1][0].0 - 9.0e-7).abs() < 1e-12, "the smallest holes are the ones dropped");
     }
 
-    /// A 2-point line spanning 3° densifies to ~100 extra vertices at pack time,
-    /// far beyond what its raw vertex count suggests (12 + 2*4 = 20 bytes). The
-    /// budget must count the densified size so the tree keeps splitting until
-    /// every leaf's REAL packed bytes fit its chunk — under raw accounting the
-    /// single leaf would overflow and `pack_chunk` would silently drop the line.
+    /// A 2-point line spanning 3° densifies to about 100 extra vertices at pack time, far beyond
+    /// what its raw vertex count suggests. The budget must count the densified size, or the single
+    /// leaf would overflow and `pack_chunk` would silently drop the line.
     #[test]
     fn budget_counts_densified_midpoints_so_nothing_drops() {
         let g = line(&[(0.1, 3.9), (3.1, 3.9)]);
@@ -607,9 +579,8 @@ mod tests {
         assert!(populated >= 2, "the long line lands in several leaves, got {populated}");
     }
 
-    /// An `Empty` geometry (what simplify/clip can return) is dropped by `build_lod`,
-    /// not panicked on or stored. Mixed with a real feature to prove only the Empty
-    /// one is gone.
+    /// An `Empty` geometry, which simplify or clip can return, is dropped by `build_lod` rather
+    /// than panicked on or stored.
     #[test]
     fn build_lod_drops_empty_geometry() {
         let real = line(&[(0.1, 0.1), (0.2, 0.2)]);

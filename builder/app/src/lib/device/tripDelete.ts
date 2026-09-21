@@ -2,22 +2,18 @@
  * What deleting a trip *with its routes* may actually delete — computed up front, so the
  * confirmation can say the truth before anything happens.
  *
- * Pure bookkeeping over the dashboard's trip views (`dashboard.trips`), separated from the page
- * for the same reason `elevation.ts` is: the rules are easy to state and easy to get subtly
- * wrong, so they live where a unit test can hold them still.
+ * Pure bookkeeping over the dashboard's trip views, separated from the page because the rules are
+ * easy to state and easy to get subtly wrong.
  *
  * The rules:
  *
  *  1. A route that is **also a stage of another trip** is never deleted with this one — the other
- *     trip still points at it, and deleting it would leave that trip a dangling stage. Shared
- *     stages are excluded from the deletable set and named in the dialog's note.
+ *     trip still points at it. Shared stages are excluded and named in the dialog's note.
  *  2. **Unreadable stage lists poison the whole offer.** If any *other* trip's `detail` is null,
- *     nothing can prove a route of this trip isn't shared with it — so the offer degrades to
- *     "delete the trip only", with the reason. Same when this trip's own list is unreadable:
- *     there is no route list to offer.
- *  3. Duplicate stage ids within the trip count once, and ids that no longer resolve to a route
- *     on the device (dangling stages) are not "routes" at all — nothing to delete, nothing to
- *     count in the dialog's numbers.
+ *     nothing can prove a route of this trip is not shared with it, so the offer degrades to
+ *     "delete the trip only", with the reason. Same when this trip's own list is unreadable.
+ *  3. Duplicate stage ids within the trip count once, and ids that no longer resolve to a route on
+ *     the device are not "routes" at all.
  */
 
 /** The slice of a `TripView` this module reads — structural, so tests need no protocol types. */
@@ -84,9 +80,8 @@ export function planTripDelete(
 }
 
 /**
- * The dialog's up-front sentence about the routes that stay: how many, and with whom. Only
- * reached from the "both" offer, where at least one route is shared and at least one is not —
- * so `0 < sharedIn.size < routeCount`, and "of its N routes" is always plural.
+ * The dialog's up-front sentence about the routes that stay: how many, and with whom. Only reached
+ * from the "both" offer, where at least one route is shared and at least one is not.
  */
 function sharedNote(routeCount: number, sharedIn: ReadonlyMap<bigint, readonly TripStages[]>): string | null {
     if (sharedIn.size === 0) return null;

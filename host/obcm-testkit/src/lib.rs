@@ -1,49 +1,31 @@
-//! Hand-written current-OBCM byte builder shared by the `obc-reader` and `obc-render`
-//! integration tests.
+//! Hand-written current-OBCM byte builder shared by the `obc-reader` and `obc-render` integration
+//! tests.
 //!
-//! Both crates need to synthesise `.obcm` byte buffers by hand (rather than checking
-//! in a binary fixture) so the Rust reader stays pinned to `OBCM_Spec.md`: if
-//! either drifts, the format tests break. Before this kit the header + style-record
-//! pack and the `pack_*` feature encoders were copy-pasted into both crates'
-//! `tests/format.rs` / `tests/priority.rs`, so a format bump would have meant
-//! editing the same layout in two places. This crate is the single source: a bump
-//! edits it once.
+//! Both crates synthesise `.obcm` byte buffers by hand rather than checking in a binary fixture, so
+//! the Rust reader stays pinned to `OBCM_Spec.md`: if either drifts, the format tests break. This
+//! crate is the single source, so a format bump edits the layout once.
 //!
-//! v6 grew the header to 36 bytes (the trailing `POI Section Offset`) and appended
-//! the POI section (spec §7). **v7** widened the POI record 32 → 36 bytes (name
-//! 20 → 24 plus a `hours_ref` u16), appended two directory fields
-//! (`hours_pool_offset`, `hours_pool_count`), and added the tail hours-pool section
-//! (§7.5). **v8** grew the header to 40 bytes (the trailing `Nav Graph Offset`) and
-//! appended the nav-graph section (spec §8): a node quadtree over variable-length
-//! junction records plus a chunked edge pool. **v9** reworked §8 (28-byte nav
-//! directory + profile table, 17-byte neighbor entries, pinned 512-byte nav chunks).
-//! **v10** grows the style record 6 → 8 bytes: a `dashed` flag bit + an optional
-//! `color2` u16 (spec §2, epic #556). **v11** packs geometry chunks tight behind a
-//! per-LOD offset table (`chunk_region`, [`seal`]) and reorders the feature header
-//! — `flags` to byte 1, then either the 7-byte compact or 12-byte wide layout
-//! (issue #1009). **v12** adds directional ascent and profile climb weight. **v13** grows the nav
-//! directory to 40 bytes for the sparse exact-edge snap index. **v14** grows the header to 49 bytes
-//! (`Offset Scale` plus the `Terrain Offset` / `Terrain Length` pair) and makes every offset field a
-//! count of `U = 1 << Offset Scale` byte **units** (§1.1): every structure an offset reaches begins
-//! on a unit boundary and the `0..U-1` bytes before it are `0xFF` filler (§1.2) — see [`align_up`],
-//! [`filler_len`], [`scaled`] and [`splice_terrain`]. [`build_file`]/[`build_priority_tree`]
-//! write **empty** POI + nav sections so the reader accepts them; the directory,
-//! record, and pool builders ([`poi_directory`], [`pack_poi_record`], [`hours_pool`],
-//! [`nav_directory`], [`pack_nav_record`], [`pack_nav_edge_record`]) let the
+//! [`build_file`] and [`build_priority_tree`] write empty POI and nav sections so the reader
+//! accepts them; the directory, record and pool builders ([`poi_directory`], [`pack_poi_record`],
+//! [`hours_pool`], [`nav_directory`], [`pack_nav_record`], [`pack_nav_edge_record`]) let the
 //! contract tests pin each section's bytes explicitly.
 //!
-//! Three map shapes are needed and kept as distinct, clearly-named builders so each call
-//! site's bytes stay identical:
-//! - [`build_file`] — the general multi-LOD builder ([`LodSpec`] per layer), used by
-//!   the reader's format-contract tests.
-//! - [`build_priority_tree`] — a fixed single-LOD NW-branch / NE-leaf quadtree, used by
-//!   the renderer's priority-saturation test.
-//! - [`build_bench_map`] — the deterministic two-LOD bench fixture `obc-bench` renders and
-//!   hashes (issue #327); its bytes must stay identical on every machine, forever.
+//! Every offset field is a count of `U = 1 << Offset Scale` byte units: every structure an offset
+//! reaches begins on a unit boundary and the `0..U-1` bytes before it are `0xFF` filler. See
+//! [`align_up`], [`filler_len`], [`scaled`] and [`splice_terrain`].
+//!
+//! Three map shapes are needed and kept as distinct, clearly-named builders so each call site's
+//! bytes stay identical:
+//! - [`build_file`] — the general multi-LOD builder ([`LodSpec`] per layer), used by the reader's
+//!   format-contract tests.
+//! - [`build_priority_tree`] — a fixed single-LOD NW-branch, NE-leaf quadtree, used by the
+//!   renderer's priority-saturation test.
+//! - [`build_bench_map`] — the deterministic two-LOD bench fixture `obc-bench` renders and hashes;
+//!   its bytes must stay identical on every machine, forever.
 //!
 //! Style records are `(id, z_index, color_rgb565, weight, priority, dashed, color2)`; feature
-//! encoders ([`pack_line`], [`pack_line16`], [`pack_poly`], [`pack_poly_hole`]) return one
-//! packed feature, [`seal`] closes a chunk with its single `0xFF` sentinel, and the file builders'
+//! encoders ([`pack_line`], [`pack_line16`], [`pack_poly`], [`pack_poly_hole`]) return one packed
+//! feature, [`seal`] closes a chunk with its single `0xFF` sentinel, and the file builders'
 //! `chunk_region` lays sealed chunks out behind their offset table.
 
 /// Throwaway temp paths for tests — not an OBCM concern, but this crate is the one dev-dep every
@@ -75,21 +57,19 @@ use obc_formats::obcm::{
 /// reader's round-trip test is meaningful.
 pub const MARKER: u16 = 0xABCD;
 
-// --- §1.1/§1.2 scaled offsets ------------------------------------------------
-//
-// The three helpers below are the whole of v14's addressing, transcribed from the spec rather than
-// imported from `serialize.rs` — the packer's `align_up`/`filler_len`/`scaled` are the bytes this
-// kit is the independent oracle *for*.
+// The three helpers below are the whole of the scaled-offset addressing, transcribed from the spec
+// rather than imported from `serialize.rs`: the packer's `align_up`, `filler_len` and `scaled` are
+// the bytes this kit is the independent oracle for.
 
-/// The `Offset Scale` byte every file this kit builds carries (§1.1): the base-2 logarithm of the
-/// offset unit, `4` ⇒ `U = 16`, the value every producer in this tree writes.
+/// The `Offset Scale` byte every file this kit builds carries: the base-2 logarithm of the offset
+/// unit, so `4` gives `U = 16`, which is what every producer in this tree writes.
 pub const OFFSET_SCALE: u8 = OFFSET_SCALE_DEFAULT;
 
 /// `U`, the offset unit in bytes — `1 << OFFSET_SCALE`. A scaled offset counts these, not bytes.
 pub const UNIT: usize = 1usize << OFFSET_SCALE;
 
-/// The next unit boundary at or after `at` (§1.2's `align_up`). Every structure a header or
-/// directory offset reaches begins on one.
+/// The next unit boundary at or after `at`. Every structure a header or directory offset reaches
+/// begins on one.
 pub const fn align_up(at: usize) -> usize {
     (at + UNIT - 1) & !(UNIT - 1)
 }
@@ -101,22 +81,21 @@ pub const fn filler_len(at: usize) -> usize {
 
 /// The `uint32` a scaled offset field stores for byte offset `at`.
 ///
-/// A scaled offset **cannot** name a byte that is not a multiple of `U`, so a non-boundary argument
-/// is a bug in the layout above it, not a rounding request — hence the panic. Every builder here
-/// aligns the cursor it passes, and a test handing this a bad offset fails loudly instead of
-/// silently writing a file the reader then rejects for the wrong reason.
+/// A scaled offset cannot name a byte that is not a multiple of `U`, so a non-boundary argument is
+/// a bug in the layout above it rather than a rounding request — hence the panic. A test handing
+/// this a bad offset fails loudly instead of silently writing a file the reader then rejects for
+/// the wrong reason.
 pub fn scaled(at: usize) -> u32 {
     assert_eq!(at % UNIT, 0, "byte {at} is not on a {UNIT}-byte unit boundary (§1.1)");
     (at / UNIT) as u32
 }
 
 /// Byte offset of the style table in every file this kit builds: the first unit boundary at or
-/// after the 65-byte header (§1.2), which at the default `U = 16` is `80` — so `Style Offset` is
-/// `5` and bytes `65..80` are [`FILLER`].
+/// after the 65-byte header, which at the default `U = 16` is `80`.
 pub const STYLE_OFFSET: usize = align_up(HEADER_LEN);
 
 /// One LOD layer: its quadtree index (flat u32 nodes) and its data chunks. Each chunk is the tight
-/// v11 byte string [`seal`] produces — `chunk_size` bounds it, it no longer pads to it.
+/// byte string [`seal`] produces, bounded by `chunk_size` rather than padded to it.
 pub struct LodSpec {
     pub max_mpp: f32,
     pub index: Vec<u32>,
@@ -148,19 +127,17 @@ fn style_table(styles: &[Style]) -> Vec<u8> {
     style_bytes
 }
 
-/// The 49-byte v14 OBCM header (§1), shared by both file builders. The version byte is `VERSION`,
-/// so this builds whatever the reader currently reads — the length is asserted against
-/// `HEADER_LEN` below rather than trusted to this comment.
+/// The 49-byte OBCM header, shared by both file builders. The version byte is `VERSION`, so this
+/// builds whatever the reader currently reads.
 ///
 /// `<4sBiiiiIBIHIIBII`: magic, ver, min_lat, min_lon, max_lat, max_lon, style_off, lod_count,
 /// lod_table_off, marker_color, poi_section_off, nav_section_off, offset_scale, terrain_off,
 /// terrain_len. `bbox` is `(min_lon, min_lat, max_lon, max_lat)`.
 ///
-/// Every offset argument is a **byte** offset and is [`scaled`] here, so a caller passing one that
-/// is not on a unit boundary panics at the point of the mistake rather than producing a file the
-/// reader refuses for some downstream reason. `terrain` is the §1.3 region as
-/// `(byte offset, byte length)`, both unit-aligned; `None` writes the `(0, 0)` pair that means
-/// "this map carries no elevation" — and `Terrain Length` is `0` exactly when the offset is.
+/// Every offset argument is a byte offset and is [`scaled`] here, so a caller passing one that is
+/// not on a unit boundary panics at the point of the mistake. `terrain` is the terrain region as
+/// `(byte offset, byte length)`, both unit-aligned; `None` writes the `(0, 0)` pair that means this
+/// map carries no elevation.
 #[allow(clippy::too_many_arguments)]
 fn obcm_header(
     bbox: (i32, i32, i32, i32),
@@ -194,7 +171,7 @@ fn obcm_header(
     f
 }
 
-/// The header plus the §1.2 filler that carries it to the style table's unit boundary — the first
+/// The header plus the filler that carries it to the style table's unit boundary — the first
 /// [`STYLE_OFFSET`] bytes of every file this kit builds.
 #[allow(clippy::too_many_arguments)]
 fn header_block(
@@ -210,30 +187,25 @@ fn header_block(
     f
 }
 
-/// A recognisable, deterministic stand-in for a baked OBCT container: `len` bytes of position-
-/// derived noise that is *not* a parseable terrain file.
+/// A recognisable, deterministic stand-in for a baked OBCT container: `len` bytes of
+/// position-derived noise that is not a parseable terrain file.
 ///
-/// §1.3's whole point is that a reader hands the region over without parsing it, so the fixture's
-/// job is to be distinguishable at the byte level (an off-by-one in the window's offset or length
-/// shows up immediately) and nothing else.
+/// A reader hands the region over without parsing it, so the fixture's job is to be
+/// distinguishable at the byte level and nothing else.
 pub fn terrain_stub(len: usize) -> Vec<u8> {
     (0..len).map(|k| (k as u8).wrapping_mul(37).wrapping_add(0x5A)).collect()
 }
 
-/// Splice a §1.3 terrain region into a finished map: `region`'s bytes land at the first unit
-/// boundary at or after the file's current tail, `0xFF`-filled up to the next boundary, and the
-/// header's `Terrain Offset` / `Terrain Length` pair is patched to name them.
+/// Splice a terrain region into a finished map: `region`'s bytes land at the first unit boundary at
+/// or after the file's current tail, `0xFF`-filled up to the next boundary, and the header's
+/// `Terrain Offset` and `Terrain Length` pair is patched to name them.
 ///
-/// Terrain sits **last** precisely so that splicing it moves no other offset, which is why this is
-/// a post-pass over an already-built file rather than a parameter of every builder. `Terrain
-/// Length` counts units, so the window this hands a reader is up to `U - 1` bytes longer than
-/// `region` — the tail is filler, and the container's own header is what bounds its content.
+/// Terrain sits last precisely so that splicing it moves no other offset, which is why this is a
+/// post-pass over an already-built file rather than a parameter of every builder. `Terrain Length`
+/// counts units, so the window this hands a reader is up to `U - 1` bytes longer than `region`.
 ///
-/// `obcm-assemble` splices for real now, so this is no longer the only writer of a §1.3 region —
-/// and it stays anyway, for the reason the testkit's alignment arithmetic stays: an oracle must not
-/// import the code it is an oracle for. `obc-reader`'s §1.3 tests are read against bytes laid out
-/// by a second, independent transcription of the same three sentences of spec, which is what makes
-/// them a check on the reader rather than a round trip through one shared opinion.
+/// It stays here although `obcm-assemble` splices for real, for the reason the testkit's alignment
+/// arithmetic stays: an oracle must not import the code it is an oracle for.
 pub fn splice_terrain(map: &[u8], region: &[u8]) -> Vec<u8> {
     assert!(!region.is_empty(), "an absent terrain region is the header's `0` pair, not a zero-length one");
     let mut f = map.to_vec();
@@ -249,9 +221,8 @@ pub fn splice_terrain(map: &[u8], region: &[u8]) -> Vec<u8> {
 
 /// One POI-directory category entry (spec §7.1): `category_id, index_offset, index_node_count,
 /// chunk_count`. Used by [`poi_directory`] and the reader's POI contract tests.
-///
-/// `index_offset` is the index's **byte** offset; [`poi_directory`] scales it (§1.1), so a category
-/// pointed at a byte that is no unit boundary fails at the point of the mistake.
+/// `index_offset` is the index's byte offset; [`poi_directory`] scales it, so a category pointed at
+/// a byte that is no unit boundary fails at the point of the mistake.
 pub struct PoiCat {
     pub category_id: u8,
     pub index_offset: usize,
@@ -259,11 +230,10 @@ pub struct PoiCat {
     pub chunk_count: u32,
 }
 
-/// Build a v7 POI directory (spec §7.1): the count byte, the shared `chunk_size`, one 13-byte entry
-/// per category, then the `hours_pool_offset u32` + `hours_pool_count u16`. The caller supplies the
-/// (already-computed) per-category **byte** offsets/counts and the pool's byte offset/count — this
-/// only lays out the directory bytes, not the indexes/chunks/pool that follow. Both offset fields
-/// are scaled here (§1.1).
+/// Build a POI directory (spec §7.1): the count byte, the shared `chunk_size`, one 13-byte entry
+/// per category, then the `hours_pool_offset u32` and `hours_pool_count u16`. The caller supplies
+/// the already-computed per-category byte offsets and counts and the pool's byte offset and count;
+/// this only lays out the directory bytes. Both offset fields are scaled here.
 pub fn poi_directory(chunk_size: u16, cats: &[PoiCat], hours_pool_offset: usize, hours_pool_count: u16) -> Vec<u8> {
     let mut d = Vec::with_capacity(3 + cats.len() * POI_CAT_ENTRY_LEN + POI_DIR_POOL_FIELDS_LEN);
     d.push(cats.len() as u8);
@@ -279,7 +249,7 @@ pub fn poi_directory(chunk_size: u16, cats: &[PoiCat], hours_pool_offset: usize,
     d
 }
 
-/// The full v7 POI-directory length (bytes): count + chunk_size + six entries + the two pool fields.
+/// The full POI-directory length in bytes: count + chunk_size + six entries + the two pool fields.
 pub const fn poi_dir_len() -> usize {
     3 + POI_CATEGORY_COUNT as usize * POI_CAT_ENTRY_LEN + POI_DIR_POOL_FIELDS_LEN
 }
@@ -296,17 +266,14 @@ pub fn hours_pool(blobs: &[[u8; POI_HOURS_BLOB_LEN]]) -> Vec<u8> {
     out
 }
 
-/// An **empty** v7 POI section (spec §7.1/§7.5): the directory's six categories all carry
-/// `node_count 0` and `chunk_count 0`, and the hours pool is a bare `count 0`. `section_off` is the
-/// directory's absolute byte offset, which must itself be a unit boundary. This is what a map with
-/// no POIs carries, and what [`build_file`]/[`build_priority_tree`] append so the reader accepts
-/// them.
+/// An empty POI section: the directory's six categories all carry `node_count 0` and
+/// `chunk_count 0`, and the hours pool is a bare `count 0`. `section_off` is the directory's
+/// absolute byte offset, which must itself be a unit boundary. This is what a map with no POIs
+/// carries.
 ///
-/// A zero-length region still has to be **nameable**, so every one of those offsets points at the
-/// first unit boundary past the 87-byte directory rather than at the byte behind it — nine bytes
-/// further on at the default `U = 16`, with that gap written as §1.2 filler. The returned section
-/// ends on a unit boundary too, so the nav directory behind it can be named without the caller
-/// aligning anything.
+/// A zero-length region still has to be nameable, so every one of those offsets points at the first
+/// unit boundary past the 87-byte directory rather than at the byte behind it, with that gap
+/// written as filler. The returned section ends on a unit boundary too.
 pub fn empty_poi_directory(section_off: usize) -> Vec<u8> {
     let dir_gap = filler_len(section_off + poi_dir_len());
     let after_dir = section_off + poi_dir_len() + dir_gap;
@@ -323,11 +290,10 @@ pub fn empty_poi_directory(section_off: usize) -> Vec<u8> {
     d
 }
 
-/// Build a current nav directory (spec §8.1). The caller supplies the (already-computed) absolute
-/// **byte** offsets/counts — this only lays out the 40 directory bytes, not the profile table /
-/// index / chunks / pool that follow. Each offset is [`scaled`] here (§1.1), so one that is not on
-/// a unit boundary panics rather than becoming a file the reader rejects for a different reason.
-/// `chunk_size` must be 512 (the reader rejects anything else).
+/// Build a current nav directory (spec §8.1). The caller supplies the already-computed absolute
+/// byte offsets and counts; this only lays out the 40 directory bytes. Each offset is [`scaled`]
+/// here, so one that is not on a unit boundary panics rather than becoming a file the reader
+/// rejects for a different reason. `chunk_size` must be 512.
 #[allow(clippy::too_many_arguments)]
 pub fn nav_directory(
     index_offset: usize,
@@ -350,7 +316,7 @@ pub fn nav_directory(
     d.push(profile_count);
     d.push(0); // reserved — a field, so `0`, unlike a gap
 
-    // Testkit graphs carry no long-edge lookup anchors. Point the empty §8.7 region just past the
+    // Testkit graphs carry no long-edge lookup anchors. Point the empty snap region just past the
     // edge pool, matching the production writer's empty-index convention. 512 is a multiple of `U`
     // at every legal scale, so a whole number of chunks past an aligned pool is aligned too.
     let snap_offset = edge_pool_offset + edge_chunk_count as usize * usize::from(chunk_size);
@@ -361,9 +327,9 @@ pub fn nav_directory(
     d
 }
 
-/// Pack one §8.6 profile record (56 bytes, v12): a `0xFF`-padded 12-byte name + 32 highway + 8
-/// surface multipliers (`u8` 1/16 fixed-point) + the `climb_weight` byte + 3 reserved zero bytes.
-/// `name` is truncated to 12 bytes.
+/// Pack one profile record (56 bytes): a `0xFF`-padded 12-byte name, 32 highway and 8 surface
+/// multipliers (`u8` 1/16 fixed-point), the `climb_weight` byte and 3 reserved zero bytes. `name`
+/// is truncated to 12 bytes.
 pub fn nav_profile_record(name: &str, highway: [u8; 32], surface: [u8; 8], climb_weight: u8) -> Vec<u8> {
     let mut rec = Vec::with_capacity(NAV_PROFILE_LEN);
     let nb = name.as_bytes();
@@ -378,22 +344,20 @@ pub fn nav_profile_record(name: &str, highway: [u8; 32], surface: [u8; 8], climb
     rec
 }
 
-/// A minimal §8.6 profile table: one profile ("Default", every multiplier 16 = 1.0×, climb-blind),
-/// 56 bytes — enough to satisfy the reader's "1..=8 profiles, always present" rule.
+/// A minimal profile table: one profile ("Default", every multiplier 16 = 1.0×, climb-blind), 56
+/// bytes — enough to satisfy the reader's "1..=8 profiles, always present" rule.
 pub fn default_nav_profile_table() -> Vec<u8> {
     nav_profile_record("Default", [16; 32], [16; 8], 0)
 }
 
-/// An **empty** current nav section: the directory, its §1.2 filler, and the (always-present)
-/// profile table — no quadtree, no chunks, no edges. This is what a map with no routable ways
-/// carries, and what [`build_file`]/[`build_priority_tree`] append so the current reader accepts
-/// them. `section_off` must be a unit boundary.
+/// An empty nav section: the directory, its filler, and the always-present profile table — no
+/// quadtree, no chunks, no edges. This is what a map with no routable ways carries. `section_off`
+/// must be a unit boundary.
 ///
-/// §8.5 works this exact case through: the directory is 40 bytes, which is no multiple of `U`, so
-/// the profile table sits at `align_up(section_off + 40, U)` — `section_off + 48` at the default
-/// `U = 16`, with eight bytes of filler behind the directory. The zero-length index and edge pool
-/// then "start" at the first unit boundary past the table, because a zero-length region still has
-/// to be nameable.
+/// The directory is 40 bytes, which is no multiple of `U`, so the profile table sits at
+/// `align_up(section_off + 40, U)`, with eight bytes of filler behind the directory at the default
+/// `U = 16`. The zero-length index and edge pool then start at the first unit boundary past the
+/// table, because a zero-length region still has to be nameable.
 pub fn empty_nav_directory(section_off: usize) -> Vec<u8> {
     let table = default_nav_profile_table();
     let dir_gap = filler_len(section_off + NAV_DIR_LEN);
@@ -407,17 +371,17 @@ pub fn empty_nav_directory(section_off: usize) -> Vec<u8> {
     out
 }
 
-/// One v12 §8.3 neighbor entry for [`pack_nav_record`]: `(neighbor_id, lat, lon, edge_id, cost_m,
-/// way_kind, ascent_m)`. `lat`/`lon` are the neighbor's **absolute** µdeg coords
-/// ([`pack_nav_record`] stores the `i16` delta from the owning record's own coord); `cost_m` must
-/// fit `u16`; `ascent_m` is the climb of riding **toward** this neighbor, so the two entries of one
-/// edge legitimately differ in it.
+/// One neighbor entry for [`pack_nav_record`]: `(neighbor_id, lat, lon, edge_id, cost_m, way_kind,
+/// ascent_m)`. `lat` and `lon` are the neighbor's absolute µdeg coords, and [`pack_nav_record`]
+/// stores the `i16` delta from the owning record's own coord; `cost_m` must fit `u16`; `ascent_m`
+/// is the climb of riding toward this neighbor, so the two entries of one edge legitimately differ
+/// in it.
 pub type NavNeighborSpec = (u32, i32, i32, u32, u32, u8, u16);
 
-/// Pack one variable-length v12 §8.3 junction record: `lat i32, lon i32, node_id u32, degree u8`,
-/// then one 17-byte entry per neighbor (`id u32, dlat i16, dlon i16, edge_id u32, cost_m u16,
-/// way_kind u8, ascent_m u16`). The record head coords are absolute µdeg (lat first); each
-/// neighbor's coord is stored as an `i16` delta from this record's own `lat`/`lon`.
+/// Pack one variable-length junction record: `lat i32, lon i32, node_id u32, degree u8`, then one
+/// 17-byte entry per neighbor (`id u32, dlat i16, dlon i16, edge_id u32, cost_m u16, way_kind u8,
+/// ascent_m u16`). The record head coords are absolute µdeg, latitude first; each neighbor's coord
+/// is stored as an `i16` delta from this record's own.
 pub fn pack_nav_record(lat: i32, lon: i32, node_id: u32, neighbors: &[NavNeighborSpec]) -> Vec<u8> {
     let mut rec = Vec::with_capacity(NAV_NODE_FIXED_LEN + neighbors.len() * NAV_NEIGHBOR_LEN);
     rec.extend_from_slice(&lat.to_le_bytes());
@@ -448,13 +412,12 @@ pub fn pack_nav_chunk(records: &[Vec<u8>], chunk_size: usize) -> Vec<u8> {
     c
 }
 
-/// Pack one §8.4 edge record: `length_m u32, pt_count u16, way_kind u8, anchor_lat i32,
-/// anchor_lon i32`, then `pt_count - 1` × `(dlat i16, dlon i16)`. The polyline is absolute µdeg
-/// `(lat, lon)` pairs (lat first, the §8 record convention); the caller keeps deltas within `i16`.
+/// Pack one edge record: `length_m u32, pt_count u16, way_kind u8, anchor_lat i32, anchor_lon i32`,
+/// then `pt_count - 1` × `(dlat i16, dlon i16)`. The polyline is absolute µdeg `(lat, lon)` pairs,
+/// latitude first, and the caller keeps deltas within `i16`.
 ///
-/// **Byte-identical in v14** — the record did not move a byte. What changed is the *id* that names
-/// it: an `Edge Id` is now the packed `(chunk, ordinal)` pair, so a caller writing one into an
-/// adjacency entry or a snap anchor builds it with [`nav_edge_id`] rather than from a byte offset.
+/// An `Edge Id` is the packed `(chunk, ordinal)` pair, so a caller writing one into an adjacency
+/// entry or a snap anchor builds it with [`nav_edge_id`] rather than from a byte offset.
 pub fn pack_nav_edge_record(length_m: u32, way_kind: u8, polyline: &[(i32, i32)]) -> Vec<u8> {
     let mut rec = Vec::with_capacity(NAV_EDGE_FIXED_LEN + (polyline.len() - 1) * 4);
     rec.extend_from_slice(&length_m.to_le_bytes());
@@ -469,11 +432,10 @@ pub fn pack_nav_edge_record(length_m: u32, way_kind: u8, polyline: &[(i32, i32)]
     rec
 }
 
-/// Pack one 36-byte v7 POI record (spec §7.3): absolute `int32 lat, int32 lon`, `u8 subtype`, `u8
-/// name_len`, a 24-byte `0xFF`-padded name, and the `u16 payload` at offset 34 — an hours-pool index
-/// for a service place (`0xFFFF` = none), a signed elevation for a summit, a population in hundreds
-/// for a settlement. `name` is stored as-is (the caller pre-folds it to ≤ 24 bytes, as the packer
-/// does).
+/// Pack one 36-byte POI record: absolute `int32 lat, int32 lon`, `u8 subtype`, `u8 name_len`, a
+/// 24-byte `0xFF`-padded name, and the `u16 payload` at offset 34 — an hours-pool index for a
+/// service place (`0xFFFF` means none), a signed elevation for a summit, a population in hundreds
+/// for a settlement. `name` is stored as-is, pre-folded by the caller to at most 24 bytes.
 pub fn pack_poi_record(lat: i32, lon: i32, subtype: u8, name: &str, payload: u16) -> [u8; POI_RECORD_LEN] {
     let mut rec = [0xFFu8; POI_RECORD_LEN];
     rec[0..4].copy_from_slice(&lat.to_le_bytes());
@@ -519,12 +481,12 @@ pub struct PoiSpec {
     pub payload: u16,
 }
 
-/// Serialize one category's POIs into a per-category quadtree over `bbox` — the flat `u32` index +
-/// its data chunks (spec §7.2/§7.3), built to walk **identically** to the reader/packer: a leaf
-/// holds ≤ `chunk_size/36` records; an over-full leaf subdivides on floor-division midpoints in
-/// NW/NE/SW/SE order (east/north of the midline is `>= mid`), stopping at the 10-µdeg recursion
-/// floor. Returns `(index_bytes, node_count, chunk_bytes, chunk_count)`. The test-only mirror of
-/// `obc-pack`'s `build_poi_tree` + `flatten_tree`, so the reader tests need no GEOS-linked packer.
+/// Serialize one category's POIs into a per-category quadtree over `bbox`: the flat `u32` index and
+/// its data chunks, built to walk identically to the reader and packer. A leaf holds at most
+/// `chunk_size/36` records; an over-full leaf subdivides on floor-division midpoints in NW/NE/SW/SE
+/// order, where east and north of the midline is `>= mid`, stopping at the 10-µdeg recursion floor.
+/// Returns `(index_bytes, node_count, chunk_bytes, chunk_count)`. The test-only mirror of
+/// `obc-pack`'s tree builder, so the reader tests need no GEOS-linked packer.
 fn serialize_poi_category(
     pois: &[PoiSpec],
     bbox: (i32, i32, i32, i32),
@@ -542,8 +504,8 @@ fn serialize_poi_category(
         }
         let mid_lon = (min_lon + max_lon).div_euclid(2);
         let mid_lat = (min_lat + max_lat).div_euclid(2);
-        // West is lon < mid, South is lat < mid — a point on a midline lands East/North (>= mid),
-        // matching the packer's assignment so it stays inside its leaf's bbox for the query.
+        // West is lon < mid, South is lat < mid — a point on a midline lands East or North, matching
+        // the packer's assignment so it stays inside its leaf's bbox for the query.
         let mut quads: [Vec<PoiSpec>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
         for p in points {
             let east = p.lon >= mid_lon;
@@ -575,8 +537,8 @@ fn serialize_poi_category(
     let capacity = chunk_size / POI_RECORD_LEN;
     let root = build(pois.to_vec(), bbox, capacity);
 
-    // The shared resident walk fixes child numbering; this oracle retains its independent tree
-    // construction, leaf policy, record encoding, and chunk framing.
+    // The shared resident walk fixes child numbering; this oracle keeps its independent tree
+    // construction, leaf policy, record encoding and chunk framing.
     let (nodes, first_child) = obc_tree_walk::breadth_first(&root, |node| match node {
         PoiNode::Leaf(_) => None,
         PoiNode::Branch(children) => Some(children),
@@ -604,22 +566,19 @@ fn serialize_poi_category(
     (index_bytes, index.len() as u32, chunks, chunk_count)
 }
 
-/// Build a full v8 `.obcm` with a **populated POI section** — the query-test analogue of
-/// [`build_file`]. `bbox` is `(min_lon, min_lat, max_lon, max_lat)`; a minimal one-line geometry LOD
-/// keeps the map valid; `pois_by_cat` maps a category id to the POIs to place there (each a
-/// full per-category quadtree over `bbox`, `chunk_size`-byte chunks). Categories absent from the map
-/// are written empty. An **empty hours pool** (`count 0`) follows at the tail — the query tests don't
-/// exercise hours, and each `PoiSpec` carries its own `payload` into its record. Use
-/// [`build_poi_map_with_hours`] to bake a real pool (the detail-screen tests). The section is
-/// assembled at its file-absolute offset so the reader's `walk_leaves`/`chunk_range` math resolves.
+/// Build a full `.obcm` with a populated POI section — the query-test analogue of [`build_file`].
+/// `bbox` is `(min_lon, min_lat, max_lon, max_lat)`; a minimal one-line geometry LOD keeps the map
+/// valid; `pois_by_cat` maps a category id to the POIs to place there, each a full per-category
+/// quadtree over `bbox`. Categories absent from the map are written empty, and an empty hours pool
+/// follows at the tail. Use [`build_poi_map_with_hours`] to bake a real pool. The section is
+/// assembled at its file-absolute offset so the reader's walk resolves.
 pub fn build_poi_map(bbox: (i32, i32, i32, i32), chunk_size: usize, pois_by_cat: &[(u8, Vec<PoiSpec>)]) -> Vec<u8> {
     build_poi_map_with_hours(bbox, chunk_size, pois_by_cat, &[])
 }
 
-/// Like [`build_poi_map`] but bakes a real **hours pool** of `hours_blobs` (spec §7.5) at the file
-/// tail, with the directory's `hours_pool_offset`/`hours_pool_count` pointing at it. Each
-/// [`PoiSpec`]'s `payload` indexes into `hours_blobs` (`0xFFFF` = no hours). Used by the POI
-/// detail-screen tests to exercise the reader's `poi_hours` lookup end to end through the app.
+/// Like [`build_poi_map`] but bakes a real hours pool of `hours_blobs` at the file tail, with the
+/// directory's `hours_pool_offset` and `hours_pool_count` pointing at it. Each [`PoiSpec`]'s
+/// `payload` indexes into `hours_blobs`, where `0xFFFF` means no hours.
 pub fn build_poi_map_with_hours(
     bbox: (i32, i32, i32, i32),
     chunk_size: usize,
@@ -640,10 +599,10 @@ pub fn build_poi_map_with_hours(
     );
     let poi_off = resolve_offset(&base, 32);
 
-    // Lay out: [directory][filler][cat index][filler][chunks]*[hours pool] — categories in id order.
-    // Every `Index Offset` is scaled, so each index starts on a unit boundary, and a
-    // category's chunks begin at `align_up(Index Offset * U + Index Node Count * 4, U)` — §7.1's
-    // one rounding step. 512 is a multiple of `U`, so whole chunks leave the cursor aligned.
+    // Lay out `[directory][filler][cat index][filler][chunks]*[hours pool]`, categories in id
+    // order. Every `Index Offset` is scaled, so each index starts on a unit boundary, and a
+    // category's chunks begin at `align_up(Index Offset * U + Index Node Count * 4, U)`. 512 is a
+    // multiple of `U`, so whole chunks leave the cursor aligned.
     let mut ids: Vec<_> = obc_formats::obcm::PoiCategory::ALL.into_iter().map(|c| c.id()).collect();
     ids.extend(pois_by_cat.iter().map(|(id, _)| *id));
     ids.sort_unstable();
@@ -683,8 +642,8 @@ pub fn build_poi_map_with_hours(
     let mut f = base[..poi_off].to_vec();
     f.extend_from_slice(&poi_directory(chunk_size as u16, &cats, hours_pool_offset, hours_blobs.len() as u16));
     f.extend_from_slice(&payload);
-    // The populated POI section displaced `base`'s tail sections, so re-append the empty nav
-    // section at the new (aligned) tail and patch the header's nav offset (byte 36) to match.
+    // The populated POI section displaced `base`'s tail sections, so re-append the empty nav section
+    // at the new aligned tail and patch the header's nav offset to match.
     f.resize(align_up(f.len()), FILLER);
     let nav_section_off = f.len();
     f[36..40].copy_from_slice(&scaled(nav_section_off).to_le_bytes());
@@ -693,8 +652,7 @@ pub fn build_poi_map_with_hours(
 }
 
 /// Resolve the scaled `uint32` at byte `at` back to a byte offset: `u32(field) * U`, widened before
-/// the multiply (§1.1). The read-back twin of [`scaled`] — what a builder or a test uses to find a
-/// section in a file it (or [`build_file`]) just wrote.
+/// the multiply. The read-back twin of [`scaled`].
 pub fn resolve_offset(bytes: &[u8], at: usize) -> usize {
     u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize * UNIT
 }
@@ -704,8 +662,8 @@ pub fn resolve_offset(bytes: &[u8], at: usize) -> usize {
 /// [`FEATURE_FLAG_WIDE`] set — the common prefix of every `pack_*` encoder.
 ///
 /// The form is picked by the same rule the packer uses, so a caller's ordinary small-anchor feature
-/// exercises the compact path and one anchored on a real µdeg coordinate (or holding more than 255
-/// vertices) exercises the wide escape. Note `flags` moved to byte 1 in v11: a reader must know the
+/// exercises the compact path and one anchored on a real µdeg coordinate, or holding more than 255
+/// vertices, exercises the wide escape. `flags` sits at byte 1 because a reader must know the
 /// `WIDE` bit before it can know the header's width.
 fn feature_header(style_id: u8, point_count: u16, ax: i32, ay: i32, flags: u8) -> Vec<u8> {
     let compact = |v: i32| (0..=u16::MAX as i32).contains(&v);
@@ -741,16 +699,15 @@ fn push_deltas16(v: &mut Vec<u8>, deltas: &[(i16, i16)]) {
     }
 }
 
-/// Build a general multi-LOD `.obcm` (mirrors `serialize.rs`). `bbox` is
-/// `(min_lon, min_lat, max_lon, max_lat)`; `styles` are
-/// `(id, z_index, color_rgb565, weight, priority, dashed, color2)`; each [`LodSpec`] is one layer
-/// with its own quadtree index and padded chunks. The header carries [`MARKER`] as the
-/// marker color.
+/// Build a general multi-LOD `.obcm`. `bbox` is `(min_lon, min_lat, max_lon, max_lat)`; `styles`
+/// are `(id, z_index, color_rgb565, weight, priority, dashed, color2)`; each [`LodSpec`] is one
+/// layer with its own quadtree index and padded chunks. The header carries [`MARKER`] as the marker
+/// color.
 pub fn build_file(bbox: (i32, i32, i32, i32), styles: &[Style], lods: &[LodSpec]) -> Vec<u8> {
     let style_bytes = style_table(styles);
 
-    // Every offset field names a unit boundary (§1.2), so the style table sits at `STYLE_OFFSET`
-    // and each following structure starts at the first boundary past the one before it.
+    // Every offset field names a unit boundary, so the style table sits at `STYLE_OFFSET` and each
+    // following structure starts at the first boundary past the one before it.
     let lod_tab_off = align_up(STYLE_OFFSET + style_bytes.len());
     let style_gap = lod_tab_off - (STYLE_OFFSET + style_bytes.len());
     let payload_start = align_up(lod_tab_off + lods.len() * LOD_ENTRY_LEN);
@@ -779,8 +736,8 @@ pub fn build_file(bbox: (i32, i32, i32, i32), styles: &[Style], lods: &[LodSpec]
         payload.extend_from_slice(&chunk_bytes);
     }
 
-    // The POI section begins right after the LOD payload (`cursor` now points there, on a boundary
-    // — `chunk_region` ends aligned); the empty nav section follows it at the file tail.
+    // The POI section begins right after the LOD payload, which ends aligned; the empty nav section
+    // follows it at the file tail.
     let poi_section_off = cursor;
     let poi_dir = empty_poi_directory(poi_section_off);
     let nav_section_off = poi_section_off + poi_dir.len();
@@ -796,12 +753,12 @@ pub fn build_file(bbox: (i32, i32, i32, i32), styles: &[Style], lods: &[LodSpec]
     f
 }
 
-/// Build a single-LOD file whose root quadtree node is a branch. NW is itself a branch whose
-/// four leaves are chunks 0–3 (the "early" chunks, all visited before NE); NE is chunk 4 (the
-/// "late" chunk). Splitting the early load across four leaves keeps every chunk under the
-/// reader's `MAX_CHUNK_BYTES` cap while still saturating the frame buffer before NE is reached.
-/// `styles` are `(id, z, color, weight, priority, dashed, color2)`. The marker color is unused here,
-/// so it is 0.
+/// Build a single-LOD file whose root quadtree node is a branch. NW is itself a branch whose four
+/// leaves are chunks 0–3, all visited before NE, which is chunk 4. Splitting the early load across
+/// four leaves keeps every chunk under the reader's `MAX_CHUNK_BYTES` cap while still saturating
+/// the frame buffer before NE is reached. `styles` are
+/// `(id, z, color, weight, priority, dashed, color2)`. The marker color is unused here, so it is
+/// 0.
 pub fn build_priority_tree(
     bbox: (i32, i32, i32, i32),
     styles: &[Style],
@@ -824,8 +781,8 @@ pub fn build_priority_tree(
     for node in index {
         idx_bytes.extend_from_slice(&node.to_le_bytes());
     }
-    // Chunk data in chunk-id order: 0..3 = NW leaves, 4 = NE. Sealed + laid out with their offset
-    // table, the v11 §5 region.
+    // Chunk data in chunk-id order: 0..3 are the NW leaves, 4 is NE. Sealed and laid out with their
+    // offset table.
     let [nw0, nw1, nw2, nw3] = nw_chunks;
     let chunks: Vec<Vec<u8>> = [nw0, nw1, nw2, nw3, ne_chunk].into_iter().map(|c| seal(c, chunk_size)).collect();
     let chunk_bytes = chunk_region(&chunks, idx_bytes.len());
@@ -856,42 +813,39 @@ pub fn build_priority_tree(
     f
 }
 
-/// Close a v11 geometry chunk: append the **one** trailing `0xFF` [`CHUNK_END`] sentinel that ends
-/// its feature stream (spec §5), asserting the sealed chunk still fits `capacity` — the LOD's
-/// declared `Chunk Size`, which v11 uses as a bound rather than a stride. v10's `pad` filled the rest
-/// of the chunk with `0xFF`; tight chunks make that padding the thing the format got rid of.
+/// Close a geometry chunk: append the one trailing `0xFF` [`CHUNK_END`] sentinel that ends its
+/// feature stream, asserting the sealed chunk still fits `capacity` — the LOD's declared
+/// `Chunk Size`, which is a bound rather than a stride.
 ///
-/// A test that wants an *unsealed* chunk (no sentinel — malformed in v11) simply skips this.
-///
-/// The still-fixed-stride sections (POI §7.3, nav §8.3/§8.4) keep [`pad`].
+/// A test that wants an unsealed chunk, which is malformed, simply skips this. The fixed-stride
+/// POI and nav chunks keep [`pad`].
 pub fn seal(mut chunk: Vec<u8>, capacity: usize) -> Vec<u8> {
     chunk.push(CHUNK_END);
     assert!(chunk.len() <= capacity, "sealed chunk {} exceeds chunk_size {}", chunk.len(), capacity);
     chunk
 }
 
-/// Right-pad a **fixed-stride** chunk to `size` bytes with `0xFF` (the filler the reader skips):
-/// the POI §7.3 and nav §8.3/§8.4 chunks, which v11 left alone. Geometry chunks are tight — they
-/// want [`seal`].
+/// Right-pad a fixed-stride chunk to `size` bytes with `0xFF`, the filler the reader skips: the POI
+/// and nav chunks. Geometry chunks are tight and want [`seal`].
 pub fn pad(mut chunk: Vec<u8>, size: usize) -> Vec<u8> {
     assert!(chunk.len() <= size, "chunk {} exceeds chunk_size {}", chunk.len(), size);
     chunk.resize(size, CHUNK_END);
     chunk
 }
 
-/// The §5 chunk-data region for one LOD: the `chunks.len() + 1` entry `uint32` offset table, the
-/// §1.2 filler that carries it to a unit boundary, then the chunks — each `0xFF`-padded to the next
+/// The chunk-data region for one LOD: the `chunks.len() + 1` entry `uint32` offset table, the
+/// filler that carries it to a unit boundary, then the chunks, each `0xFF`-padded to the next
 /// boundary. Hand-assembled here exactly as the spec reads it, so the testkit stays an oracle
 /// independent of `serialize.rs`.
 ///
-/// v14 makes the offsets **scaled** (§5.1): entry `e` names byte `data_start + e * U`, where
+/// The offsets are scaled: entry `e` names byte `data_start + e * U`, where
 /// `data_start = align_up(index_start + node_count * 4 + (chunk_count + 1) * 4, U)`. That rounding
-/// step is the only thing between the table and the chunks, and it is computable here **because
-/// `index_start` is itself a unit boundary** — which is why `index_len` (the preceding index's byte
-/// length) is an argument: the gap depends on the two lengths alone.
+/// step is the only thing between the table and the chunks, and it is computable here because
+/// `index_start` is itself a unit boundary — which is why `index_len`, the preceding index's byte
+/// length, is an argument.
 ///
 /// The table is written even for a chunkless LOD, where it is the single `0` entry, and the region
-/// ends on a unit boundary so the next LOD's index starts on one with no work from the caller.
+/// ends on a unit boundary.
 fn chunk_region(chunks: &[Vec<u8>], index_len: usize) -> Vec<u8> {
     let table_len = (chunks.len() + 1) * 4;
     let gap = filler_len(index_len + table_len);
@@ -950,10 +904,9 @@ pub fn pack_poly_hole(style_id: u8, ax: i32, ay: i32, ext_deltas: &[(i8, i8)], h
     v
 }
 
-/// A hole-free polygon with 16-bit deltas (flag bit 0) — the polygon analogue of [`pack_line16`].
-/// Lets a test build a polygon whose vertices span more than ±127 µdeg per delta (e.g. a screen-
-/// sized square for the renderer's edge-fill tests), which the 8-bit [`pack_poly`] can't express.
-/// The stored exterior point count is `1 + deltas.len()`.
+/// A hole-free polygon with 16-bit deltas — the polygon analogue of [`pack_line16`]. Lets a test
+/// build a polygon whose vertices span more than ±127 µdeg per delta, such as a screen-sized square
+/// for the renderer's edge-fill tests. The stored exterior point count is `1 + deltas.len()`.
 pub fn pack_poly16(style_id: u8, ax: i32, ay: i32, deltas: &[(i16, i16)]) -> Vec<u8> {
     // polygon | 16-bit deltas
     let mut v = feature_header(style_id, (1 + deltas.len()) as u16, ax, ay, FEATURE_FLAG_POLYGON | FEATURE_FLAG_16BIT);
@@ -961,11 +914,11 @@ pub fn pack_poly16(style_id: u8, ax: i32, ay: i32, deltas: &[(i16, i16)]) -> Vec
     v
 }
 
-/// A polygon with `holes.len()` 8-bit-delta holes (each its own delta list). Generalises
-/// [`pack_poly_hole`] so a test can pack *more rings than the reader's `MAX_FEAT_RINGS` scratch
-/// holds* and assert the past-capacity rings are dropped (issue #96, reader item 1). The
-/// exterior's stored point count is `1 + ext_deltas.len()`; each hole's stored count is its own
-/// `hole.len()` (every hole vertex is a delta, the first relative to the anchor).
+/// A polygon with `holes.len()` 8-bit-delta holes, each its own delta list. Generalises
+/// [`pack_poly_hole`] so a test can pack more rings than the reader's `MAX_FEAT_RINGS` scratch
+/// holds and assert the past-capacity rings are dropped. The exterior's stored point count is
+/// `1 + ext_deltas.len()`; each hole's stored count is its own `hole.len()`, because every hole
+/// vertex is a delta and the first is relative to the anchor.
 pub fn pack_poly_holes(style_id: u8, ax: i32, ay: i32, ext_deltas: &[(i8, i8)], holes: &[Vec<(i8, i8)>]) -> Vec<u8> {
     // polygon | has-holes, 8-bit deltas
     let mut v =
@@ -979,9 +932,7 @@ pub fn pack_poly_holes(style_id: u8, ax: i32, ay: i32, ext_deltas: &[(i8, i8)], 
     v
 }
 
-// ---------------------------------------------------------------------------
-// Deterministic bench fixture (issue #327)
-// ---------------------------------------------------------------------------
+// The deterministic bench fixture.
 
 /// Bounding box of [`build_bench_map`] (µdeg, `(min_lon, min_lat, max_lon, max_lat)`): a 54 000 µdeg
 /// square near 47° N (≈ 6 km of latitude, ≈ 4.1 km of ground longitude at that latitude's aspect).
@@ -992,9 +943,9 @@ pub const BENCH_BBOX: (i32, i32, i32, i32) = (8_500_000, 47_000_000, 8_554_000, 
 /// A quadtree-node bbox in the builders' `(min_lon, min_lat, max_lon, max_lat)` µdeg spelling.
 type LeafBox = (i32, i32, i32, i32);
 
-/// A tiny inline xorshift64* PRNG — deterministic and dependency-free (no `rand`, no time/OS
-/// input), so [`build_bench_map`] produces the *same bytes on every machine, forever*. The bench's
-/// committed frame hashes depend on that.
+/// A tiny inline xorshift64* PRNG — deterministic and dependency-free, so [`build_bench_map`]
+/// produces the same bytes on every machine, forever. The bench's committed frame hashes depend on
+/// that.
 struct BenchRng(u64);
 
 impl BenchRng {
@@ -1014,12 +965,12 @@ impl BenchRng {
     }
 }
 
-/// Build a **complete, uniform-depth** breadth-first quadtree over `bbox` — the generalization of
+/// Build a complete, uniform-depth breadth-first quadtree over `bbox` — the generalization of
 /// [`build_priority_tree`]'s hand-laid 9-node index to depth `k`. Nodes are laid out exactly like
 /// the packer flattens them: level by level, each branch pointing at its four children's block in
-/// the next level, children in NW/NE/SW/SE order with floor-division midpoints (matching the
-/// reader's `walk_leaves` split). Every level-`depth` node is a leaf holding chunk id = its
-/// breadth-first position, so the caller packs one chunk per leaf in returned-bbox order.
+/// the next level, children in NW/NE/SW/SE order with floor-division midpoints. Every level-`depth`
+/// node is a leaf holding chunk id = its breadth-first position, so the caller packs one chunk per
+/// leaf in returned-bbox order.
 ///
 /// Returns `(index, leaf_bboxes)`: the flat `u32` node array and each leaf's bbox in chunk-id order.
 fn uniform_quadtree(bbox: LeafBox, depth: u32) -> (Vec<u32>, Vec<LeafBox>) {
@@ -1035,8 +986,8 @@ fn uniform_quadtree(bbox: LeafBox, depth: u32) -> (Vec<u32>, Vec<LeafBox>) {
         }
         let mut next = Vec::with_capacity(boxes.len() * 4);
         for &(min_lon, min_lat, max_lon, max_lat) in &boxes {
-            // Floor-division midpoints + NW/NE/SW/SE order — must match the reader's `walk_leaves`
-            // subdivision or the leaf bboxes (and thus every anchor base) disagree.
+            // Floor-division midpoints and NW/NE/SW/SE order must match the reader's `walk_leaves`
+            // subdivision, or the leaf bboxes and every anchor base disagree.
             let mid_lon = (min_lon + max_lon).div_euclid(2);
             let mid_lat = (min_lat + max_lat).div_euclid(2);
             next.push((min_lon, mid_lat, mid_lon, max_lat)); // NW
@@ -1054,11 +1005,10 @@ fn uniform_quadtree(bbox: LeafBox, depth: u32) -> (Vec<u32>, Vec<LeafBox>) {
 }
 
 /// One coarse-LOD chunk: a leaf-covering land backdrop, a lake on roughly half the leaves, and 225
-/// short 3-point road stubs cycling the three line styles. 16 leaves × ~226 features ≈ 3 620 —
-/// deliberately **over the frame's feature ceiling, `obc_render::MAX_SPANS` (3,072)**. Every one
-/// of these features is a single-ring polygon or line stub; after the packed-coordinate rebalance
-/// the span budget is the first limit, so a full-map overview scene saturates and exercises the
-/// priority-drop path. ~3.7 KB, under the 4 KB chunk size.
+/// short 3-point road stubs cycling the three line styles. 16 leaves × about 226 features is
+/// deliberately over the frame's feature ceiling, `obc_render::MAX_SPANS`, so a full-map overview
+/// scene saturates and exercises the priority-drop path. About 3.7 KB, under the 4 KB chunk
+/// size.
 fn bench_coarse_chunk(rng: &mut BenchRng, leaf: LeafBox) -> Vec<u8> {
     let (min_lon, min_lat, max_lon, max_lat) = leaf;
     let (w, h) = (max_lon - min_lon, max_lat - min_lat);
@@ -1083,12 +1033,12 @@ fn bench_coarse_chunk(rng: &mut BenchRng, leaf: LeafBox) -> Vec<u8> {
 
 /// One fine-LOD chunk: a leaf-covering backdrop, an occasional lake, small 8-bit-delta buildings
 /// (every fourth with a hole), a few long 16-bit-delta roads, and a batch of short 8-bit paths of
-/// varying vertex counts — the riding-zoom feature mix. ≤ ~2 KB, well under the 4 KB chunk size.
+/// varying vertex counts — the riding-zoom feature mix, well under the 4 KB chunk size.
 fn bench_fine_chunk(rng: &mut BenchRng, leaf: LeafBox) -> Vec<u8> {
     let (min_lon, min_lat, max_lon, max_lat) = leaf;
     let (w, h) = (max_lon - min_lon, max_lat - min_lat);
     let mut c = Vec::new();
-    // Land backdrop covering the leaf — a polygon big enough to *force* 16-bit deltas (6 750 µdeg).
+    // Land backdrop covering the leaf — a polygon big enough to force 16-bit deltas.
     c.extend(pack_poly16(1, 0, 0, &[(w as i16, 0), (0, h as i16), (-w as i16, 0)]));
     // A lake on roughly a third of the leaves.
     if rng.range(0, 3) == 0 {
@@ -1129,10 +1079,9 @@ fn bench_fine_chunk(rng: &mut BenchRng, leaf: LeafBox) -> Vec<u8> {
         let (ax, ay) = (rng.range(0, w), rng.range(0, h));
         c.extend(pack_line(style, ax, ay, &deltas));
     }
-    // A "village" cluster within ~700 µdeg of **every leaf corner**. The bench's riding camera sits
-    // at the map center — the shared corner of the four center leaves — so corner clusters guarantee
-    // the ~0.5 m/px scenes draw a realistic feature load instead of a near-empty frame, whichever
-    // leaves the view straddles.
+    // A "village" cluster within about 700 µdeg of every leaf corner. The bench's riding camera sits
+    // at the map center, the shared corner of the four center leaves, so corner clusters guarantee
+    // the 0.5 m/px scenes draw a realistic feature load whichever leaves the view straddles.
     for &(qx, qy) in &[(0, 0), (1, 0), (0, 1), (1, 1)] {
         for _ in 0..rng.range(5, 10) {
             let (bw, bh) = (rng.range(40, 110), rng.range(40, 110));
@@ -1154,22 +1103,21 @@ fn bench_fine_chunk(rng: &mut BenchRng, leaf: LeafBox) -> Vec<u8> {
     c
 }
 
-/// The deterministic **bench fixture** (issue #327): a two-LOD OBCM v8 map whose bytes are
-/// identical on every machine, forever — the `obc-bench` frame hashes are computed over renders of
-/// it, so any byte drift here invalidates the committed golden file.
+/// The deterministic bench fixture: a two-LOD map whose bytes are identical on every machine,
+/// forever — the `obc-bench` frame hashes are computed over renders of it, so any byte drift here
+/// invalidates the committed golden file.
 ///
-/// Shape:
-/// - **Coarse LOD** (`max_mpp = ∞`): a uniform depth-2 quadtree (16 leaves, one 4 KB chunk each)
-///   holding ≈ 3 620 features — over the frame's feature ceiling `obc_render::MAX_SPANS`
-///   (3,072) in a full-map view, so the overview scenes saturate the span buffer and take the
-///   priority-drop path.
-/// - **Fine LOD** (`max_mpp = 2.0`): a real depth-3 multi-chunk quadtree (64 leaves, one chunk
-///   each), built breadth-first exactly like the packer, holding the riding-zoom mix: per-leaf
-///   backdrop polygons (16-bit deltas), buildings with and without holes, long 16-bit roads and
-///   short 8-bit paths of varying vertex counts.
-/// - **6 styles** spanning priorities 1–4 and z-indices −10…4, including an obvious backdrop
-///   (lowest z) and line weights 1, 2 and 3 (weight 1 exercises the `Polyline` path, ≥ 2 the
-///   span-stroke path).
+/// - Coarse LOD (`max_mpp = ∞`): a uniform depth-2 quadtree, 16 leaves with one 4 KB chunk each,
+///   holding about 3 620 features — over the frame's feature ceiling `obc_render::MAX_SPANS` in a
+///   full-map view, so the overview scenes saturate the span buffer and take the priority-drop
+///   path.
+/// - Fine LOD (`max_mpp = 2.0`): a real depth-3 multi-chunk quadtree, 64 leaves with one chunk
+///   each, built breadth-first exactly like the packer, holding the riding-zoom mix: per-leaf
+///   backdrop polygons, buildings with and without holes, long 16-bit roads and short 8-bit paths
+///   of varying vertex counts.
+/// - Six styles spanning priorities 1–4 and z-indices −10…4, including an obvious backdrop at the
+///   lowest z and line weights 1, 2 and 3, where weight 1 exercises the `Polyline` path and 2 or
+///   more the span-stroke path.
 ///
 /// Geometry is generated by the inline seeded [`BenchRng`] and packed through the same `pack_*`
 /// encoders the format tests use, so a format layout bump lands here automatically.
@@ -1196,19 +1144,18 @@ pub fn build_bench_map() -> Vec<u8> {
         BENCH_BBOX,
         &styles,
         &[
-            // Strictly decreasing max_mpp, coarse (∞) first — the LOD-table ordering the reader expects.
+            // Strictly decreasing max_mpp, coarse first — the LOD-table ordering the reader expects.
             LodSpec { max_mpp: f32::INFINITY, index: coarse_index, chunks: coarse_chunks, chunk_size: CHUNK },
             LodSpec { max_mpp: 2.0, index: fine_index, chunks: fine_chunks, chunk_size: CHUNK },
         ],
     )
 }
 
-/// A line whose **declared** exterior point count (`decl_count`, the `uint16` in the feature
-/// header) is set independently of the `deltas` actually written. The reader trusts that count and
-/// loops `decl_count - 1` deltas; a `decl_count` *larger* than `1 + deltas.len()` forges a header
-/// that runs past the bytes present — and, sized right, past the reader's `MAX_FEAT_PTS` scratch —
-/// letting a test drive the scratch-overflow + truncated-ring guards of issue #96 (reader items 1
-/// and 4) that the count-correct [`pack_line`] never reaches. 8-bit deltas.
+/// A line whose declared exterior point count — the `uint16` in the feature header — is set
+/// independently of the `deltas` actually written. The reader trusts that count and loops
+/// `decl_count - 1` deltas, so a count larger than `1 + deltas.len()` forges a header that runs
+/// past the bytes present, and, sized right, past the reader's `MAX_FEAT_PTS` scratch. That drives
+/// the scratch-overflow and truncated-ring guards the count-correct [`pack_line`] never reaches.
 pub fn pack_line_decl(style_id: u8, ax: i32, ay: i32, decl_count: u16, deltas: &[(i8, i8)]) -> Vec<u8> {
     // line, 8-bit deltas — no flags. Count is forged, not derived from `deltas`.
     let mut v = feature_header(style_id, decl_count, ax, ay, 0);
@@ -1216,9 +1163,9 @@ pub fn pack_line_decl(style_id: u8, ax: i32, ay: i32, decl_count: u16, deltas: &
     v
 }
 
-/// A hole-free polygon whose **declared** exterior point count is forged independently of the
-/// `deltas` written — the polygon analogue of [`pack_line_decl`], used to overrun the reader's
-/// `MAX_FEAT_PTS` exterior scratch with one big feature (issue #96, reader item 1). 8-bit deltas.
+/// A hole-free polygon whose declared exterior point count is forged independently of the `deltas`
+/// written — the polygon analogue of [`pack_line_decl`], used to overrun the reader's
+/// `MAX_FEAT_PTS` exterior scratch with one big feature.
 pub fn pack_poly_decl(style_id: u8, ax: i32, ay: i32, decl_count: u16, deltas: &[(i8, i8)]) -> Vec<u8> {
     // polygon, no holes, 8-bit deltas. Count is forged, not derived from `deltas`.
     let mut v = feature_header(style_id, decl_count, ax, ay, FEATURE_FLAG_POLYGON);

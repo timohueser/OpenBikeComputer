@@ -25,11 +25,9 @@ use super::{palette, Ctx, Render, Transition};
 #[derive(Debug)]
 pub struct PoiDetailScreen {
     poi: Poi,
-    /// The POI's **signed** lateral offset from the route line (m; positive = right of the direction
-    /// of travel) when it was opened from the [Up-ahead timeline](super::WhatsNextScreen) — `None`
-    /// from the nearby-POI browser, which has no route to be off. Drawn as one extra line under the
-    /// distance row with the side spelled out in words (epic #946, U3): the list row's side arrow is
-    /// a glance cue, this is the answer to "how far off my route is it, and which side".
+    /// The signed lateral offset from the route line (m; positive is right of the direction of
+    /// travel), when the detail was opened from the [Up-ahead timeline](super::WhatsNextScreen).
+    /// `None` from the nearby-POI browser, which has no route.
     off_route_m: Option<i16>,
     /// The first schedule read has completed, including missing data or an error.
     schedule_ready: bool,
@@ -38,8 +36,8 @@ pub struct PoiDetailScreen {
 }
 
 impl PoiDetailScreen {
-    /// Open the detail for `poi` (cloned out of the list snapshot by the list's `Gesture::Press`).
-    /// The schedule is resolved lazily on the first [`prepare`](Self::prepare) pass with a `Reader`.
+    /// Open the detail for `poi`. The schedule resolves on the first [`prepare`](Self::prepare)
+    /// pass that has a `Reader`.
     pub fn new(poi: Poi) -> Self {
         PoiDetailScreen { poi, off_route_m: None, schedule_ready: false, visit_error: None, landmark_category: 0 }
     }
@@ -53,19 +51,15 @@ impl PoiDetailScreen {
         self
     }
 
-    /// Carry the POI's signed lateral offset from the route (m) onto the detail — what the
-    /// [Up-ahead timeline](super::WhatsNextScreen) knows and the nearby browser doesn't. Clamped to
-    /// the record's `i16`, which the 300 m corridor half-width can never reach.
+    /// Carry the POI's signed lateral offset from the route (m) onto the detail.
     pub(crate) fn off_route(mut self, offset_m: i32) -> Self {
         self.off_route_m = Some(offset_m.clamp(i16::MIN as i32, i16::MAX as i32) as i16);
         self
     }
 
-    /// The carried off-route offset, if this detail was opened from the Up-ahead timeline. The draw
-    /// reads the field directly, so this exists for the timeline's own hand-off pin.
-    /// Whether the schedule cache still needs a `Reader` — it hasn't resolved yet. Drives
-    /// [`base_needs_reader`](crate::App::base_needs_reader) so the board host keeps building the
-    /// reader until the one hours read lands in `prepare`, then stops.
+    /// Whether the schedule cache still needs a `Reader`. It drives
+    /// [`base_needs_reader`](crate::App::base_needs_reader), so the host keeps the reader built
+    /// until the hours read lands in `prepare`.
     pub(crate) fn hours_pending(&self, scratch: &super::PoiScratch) -> bool {
         self.visit_error != Some(crate::navigator::VisitUnavailable::SourceChanged)
             && (!self.schedule_ready || scratch.detail_source != self.poi.metadata.source.0)
@@ -88,11 +82,9 @@ impl PoiDetailScreen {
         }
     }
 
-    /// Resolve the POI's schedule on the first [`prepare`](super::Screen::prepare) pass that has a
-    /// `Reader`, caching it in `self.schedule`. A no-op once resolved (the cache is `Some`). Runs in
-    /// the pre-draw prepare pass (#803) — the one place the side-effectful hours read lives — so
-    /// [`base_needs_reader`](crate::App::base_needs_reader) keeps the `Reader` built and passed here
-    /// until this lands, then [`draw`](Self::draw) consumes the cache immutably.
+    /// Resolve the POI's schedule into the App scratch, on the first prepare pass that has a
+    /// `Reader`. This is the one place the side-effectful hours read runs; [`draw`](Self::draw)
+    /// then only reads the cache.
     pub(crate) fn prepare(&mut self, px: &mut super::Prepare) {
         if !self.hours_pending(px.poi_scratch) {
             return;
@@ -119,8 +111,7 @@ impl PoiDetailScreen {
             "",
         );
 
-        // The subtype fallback label ("Supermarket", "Pharmacy", …) — the subtitle, and the whole
-        // name line when the POI is unnamed.
+        // The subtype label is the subtitle, and the whole name line when the POI is unnamed.
         let label = if self.landmark_category > 0 {
             rx.t(super::landmarks::kind(self.landmark_category))
         } else {
@@ -129,11 +120,8 @@ impl PoiDetailScreen {
         let named = !self.poi.name.is_empty();
         let name = if named { self.poi.name.as_str() } else { label };
 
-        // Name row — the category's pixel icon (the poi_menu glyphs, drawn unscaled: their ~22 px
-        // box is a Body line's height) at the left inset, the name beside it (#685 §2). The name
-        // stays un-ellipsized: Body-tier, wrapping to a second line rather than truncating; a
-        // wrapped second line runs under the icon's column, which reads fine (the icon marks the
-        // row, not a margin).
+        // The category icon at the left inset, the name beside it. The name is never ellipsized: it
+        // wraps to a second line, which runs under the icon's column.
         let x = 16;
         let name_top = LIST_TOP + 4;
         let mut name_x = x;
@@ -144,8 +132,7 @@ impl PoiDetailScreen {
         }
         let name_bot = draw_wrapped(cv, name, name_x, name_top, w - name_x - 16, INK);
 
-        // Subtitle — the subtype label, muted, under the name. Skipped when the name line already IS
-        // the label (unnamed POI), so it never repeats.
+        // The subtitle is skipped when the name line is already the label, so it never repeats.
         let mut sub_bot = name_bot;
         if named {
             let sub_y = name_bot + 6;
@@ -153,11 +140,8 @@ impl PoiDetailScreen {
             sub_bot = sub_y + Font::Label.cap_bottom() as i32;
         }
 
-        // Distance + bearing row — promoted directly under the category line (#685 §2: the two
-        // numbers that decide "do I go"). The same 8-way arrow as the list rows at Body-line size,
-        // then the distance in Body type (`1km`; metres below 1 km — the list's format). The arrow
-        // hides when there's no heading reference (GPS course while moving / compass while
-        // stopped, the #231 seam); the distance stays.
+        // The distance and bearing row: the same 8-way arrow as the list rows, at Body-line size,
+        // then the distance. The arrow hides when there is no heading reference; the distance stays.
         let dist_y = sub_bot + 14;
         let heading = rx.state.effective_heading_deg();
         let fix = rx.state.user_fix;
@@ -187,27 +171,24 @@ impl PoiDetailScreen {
         );
         let mut dist_bot = dist_y + Font::Body.cap_bottom() as i32;
 
-        // Off-route line (epic #946, U3) — only when the Up-ahead timeline handed the offset over.
-        // The list row draws a side *arrow* (the device font has no arrow glyph, so it's a drawn
-        // triangle); here the side is a word, because this is the screen you read rather than
-        // glance at. Muted Label under the distance, so the two route numbers stack.
+        // The off-route line, only when the Up-ahead timeline handed the offset over. The side is a
+        // word here, because this is a screen the rider reads rather than glances at.
         if let Some(off) = self.off_route_m {
             let mut line: heapless::String<24> = heapless::String::new();
             write_distance_coarse(&mut line, "", off.unsigned_abs() as u32, rx.settings.units);
             let _ = line.push(' ');
             let _ = line.push_str(rx.t(if off > 0 { Msg::PoiDetailSideRight } else { Msg::PoiDetailSideLeft }));
             let off_y = dist_bot + 6;
-            // The same drawn side arrow the timeline row uses, left of the words: without it
-            // "245m left" reads as a *remaining* distance, which is exactly the number above it.
+            // The side arrow left of the words: without it "245m left" reads as a remaining
+            // distance, which is exactly the number above it.
             use super::poi_display::{draw_side_arrow, ARROW_GAP, ARROW_W};
             draw_side_arrow(cv, Point::new(x, off_y + Font::Label.cap_mid() as i32), off > 0, SUBTEXT);
             cv.text(&line, Point::new(x + ARROW_W + ARROW_GAP, off_y), Font::Label, TextAlign::Left, SUBTEXT);
             dist_bot = off_y + Font::Label.cap_bottom() as i32;
         }
 
-        // Today's hours — a muted heading row ("Today" / "Closed today" / "Hours not listed"), then
-        // each open interval on its own row. An overnight spillover can add a third range;
-        // compact numeric rows keep that case within the same hours area.
+        // Today's hours: a heading row, then each open interval on its own row. An overnight
+        // spillover can add a third range, which the compact rows still fit in the same area.
         let head_y = dist_bot + 16;
         let schedule = rx.poi_scratch.detail_schedule.filter(|s| {
             self.visit_error != Some(crate::navigator::VisitUnavailable::SourceChanged)
@@ -228,25 +209,14 @@ impl PoiDetailScreen {
             row_y += range_step as i32;
         }
 
-        // OPEN / CLOSED-now badge — only when the POI has a schedule; read from the live wall-clock
-        // this frame. A rounded pill, Body type on white — green fill when open, warning-red when
-        // closed, so the closed state reads as a state, not just quieter text. Owner review round 1
-        // (t7): the #685 shrink to a Label-in-18px pill read terribly — the text is back at Body
-        // (the pre-epic weight) and the pill is sized *from* it: the measured text width plus a
-        // symmetric [`BADGE_PAD_X`], and the visible ink bounds plus [`BADGE_PAD_Y`].
-        // Accents in translated labels are included in the bounds.
+        // The OPEN / CLOSED badge, only when the POI has a schedule. The pill is sized from the
+        // measured text, so accents in a translated label stay inside it.
         //
-        // Placement (owner review round 2, screenshot of a two-line name + split hours pushing the
-        // badge under the footer bar): with interval rows on the page the badge rides the "Today"
-        // caption line — right-aligned at the card's right inset — which retires the badge's own
-        // row entirely, so the true worst case (two-line name + the format's two-intervals-per-day
-        // maximum) clears the bottom-anchored `Route here` bar with room to spare. The pill is
-        // ~34 px tall against the caption's ~18, so a cap-centred pill sagged to within a pixel of
-        // the first hours row (owner review round 3: "it gets really close to the opening time") —
-        // [`BADGE_RAISE`] lifts it into the free band above the caption instead, splitting its
-        // overhang toward the roomier side. With no interval rows ("Closed today") the badge keeps
-        // its old spot under the caption: there's no vertical pressure without ranges, and the
-        // longer closed-today captions would collide with a right-aligned pill.
+        // With interval rows on the page the badge rides the "Today" caption line, right-aligned,
+        // so even a two-line name with two intervals clears the footer bar. The pill is taller than
+        // the caption, so [`BADGE_RAISE`] lifts it clear of the first hours row. With no interval
+        // rows the badge keeps its own spot under the caption, where a longer closed-today caption
+        // would collide with a right-aligned pill.
         if let Some(sched) = schedule.filter(|s| s.status(rx.place_local) != obc_reader::hours::OpeningStatus::Unknown)
         {
             let open = sched.status(rx.place_local) == obc_reader::hours::OpeningStatus::Open;
@@ -265,9 +235,8 @@ impl PoiDetailScreen {
             cv.text(text, Point::new(bx + badge_w / 2, ty), font, TextAlign::Center, PARCHMENT);
         }
 
-        // Footer action row — `▶Route here`, exactly the Route overview's START RIDE bar (#685 §2:
-        // the shared drawer, so the two can't drift). Press anywhere already opened the create-route
-        // confirm; the bar only makes that visible. Back still returns to the list.
+        // The footer action row uses the same drawer as the Route overview's START RIDE bar, so the
+        // two cannot drift. A press anywhere already opens the create-route confirm.
         let label = if self.visit_error == Some(crate::navigator::VisitUnavailable::SourceChanged) {
             rx.t(Msg::AssistantMapChanged)
         } else if self.hours_pending(rx.poi_scratch) || !rx.poi_scratch.detail_valid {
@@ -298,14 +267,13 @@ impl PoiDetailScreen {
     }
 }
 
-/// How far the Today-line badge lifts above the caption's cap-centre (owner review round 3): the
-/// pill overhangs the ~18 px caption line by ~8 px on each side, and centred it crowded the first
-/// hours row below — raised, the overhang splits toward the free band above the caption instead.
+/// How far the Today-line badge lifts above the cap-centre of the caption. Centred, the pill
+/// crowds the first hours row below it.
 const BADGE_RAISE: i32 = 5;
 
-/// The OPEN/CLOSED badge's symmetric horizontal padding — pill edge to the measured text width.
+/// The badge's horizontal padding, from the pill edge to the measured text width.
 const BADGE_PAD_X: i32 = 8;
-/// The badge's symmetric vertical padding — pill edge to the measured text extents, both sides.
+/// The badge's vertical padding, from the pill edge to the measured text extents.
 const BADGE_PAD_Y: i32 = 8;
 /// Format quarter-hours from midnight (`0..=96`, `96` = 24:00) as `HH:MM` into `s`.
 fn write_quarter<const N: usize>(s: &mut heapless::String<N>, q: u8) {
@@ -313,18 +281,16 @@ fn write_quarter<const N: usize>(s: &mut heapless::String<N>, q: u8) {
     let _ = write!(s, "{:02}:{:02}", minutes / 60, minutes % 60);
 }
 
-/// Write one interval as `HH:MM-HH:MM` into `s`. A plain ASCII hyphen — the Terminus bitmap font
-/// has no en-dash glyph (it renders as a `?`), so the range dash is a hyphen throughout.
+/// Write one interval as `HH:MM-HH:MM` into `s`. The dash is an ASCII hyphen, because the bitmap
+/// font has no en-dash glyph.
 fn write_interval<const N: usize>(s: &mut heapless::String<N>, iv: &Interval) {
     write_quarter(s, iv.open_q);
     let _ = s.push('-');
     write_quarter(s, iv.close_q);
 }
 
-/// Draw `text` in [`Font::Body`], wrapping to a second line on a word boundary when it overflows
-/// `max_w` px (a 24-byte POI name almost always fits one line; a long one gets two rather than being
-/// clipped). Returns the y just below the last line drawn. At most two lines — a POI name never
-/// needs a third.
+/// Draw `text` in [`Font::Body`], wrapped to at most two lines at `max_w` px, and return the y
+/// below the last line. A POI name is at most 24 bytes, so it never needs a third line.
 fn draw_wrapped(cv: &mut impl Surface, text: &str, x: i32, top: i32, max_w: i32, color: u16) -> i32 {
     let cw = Font::Body.char_width() as i32;
     let max_chars = (max_w / cw).max(1) as usize;
@@ -333,20 +299,17 @@ fn draw_wrapped(cv: &mut impl Surface, text: &str, x: i32, top: i32, max_w: i32,
         cv.text(text, Point::new(x, top), Font::Body, TextAlign::Left, color);
         return top + Font::Body.cap_bottom() as i32;
     }
-    // Split into two lines on the last space that keeps the first line within `max_chars`; fall back
-    // to a hard char split if there's no such space (one very long token).
     let split = split_at(text, max_chars);
     let (first, rest) = text.split_at(split);
     cv.text(first.trim_end(), Point::new(x, top), Font::Body, TextAlign::Left, color);
-    // Second line: truncate to fit; the name is at most 24 bytes, so two lines always cover it.
     let second = fit_chars(rest.trim_start(), max_chars);
     let y2 = top + line_h;
     cv.text(&second, Point::new(x, y2), Font::Body, TextAlign::Left, color);
     y2 + Font::Body.cap_bottom() as i32
 }
 
-/// Byte index to split `text` for a first line of at most `max_chars` chars — the last space at or
-/// before `max_chars`, else a hard char-boundary cut at `max_chars` (no space to break on).
+/// Byte index to split `text` for a first line of at most `max_chars` chars: the last space at or
+/// before `max_chars`, else a hard cut at a char boundary.
 fn split_at(text: &str, max_chars: usize) -> usize {
     let mut last_space: Option<usize> = None;
     for (n, (byte_idx, ch)) in text.char_indices().enumerate() {
@@ -360,8 +323,7 @@ fn split_at(text: &str, max_chars: usize) -> usize {
     text.len()
 }
 
-/// Copy at most `max` chars of `s` into a bounded string (char-boundary safe). Used for the wrapped
-/// name's second line, which a 24-byte name never overruns.
+/// Copy at most `max` chars of `s` into a bounded string.
 fn fit_chars(s: &str, max: usize) -> heapless::String<24> {
     let mut out = heapless::String::new();
     for ch in s.chars().take(max) {
@@ -387,8 +349,7 @@ mod tests {
     use obc_reader::weekday_from_ymd;
     use obc_reader::WeeklySchedule;
 
-    /// A 29-byte pool blob from `flags` + per-day `(open_q, close_q)` slot pairs (Mon..Sun) — the
-    /// same shape the reader/packer hours tests build.
+    /// A pool blob from `flags` and per-day `(open_q, close_q)` slot pairs, Mon..Sun.
     fn blob(flags: u8, days: [[(u8, u8); 2]; 7]) -> [u8; POI_HOURS_BLOB_LEN] {
         let mut b = [0u8; POI_HOURS_BLOB_LEN];
         b[0] = flags;
@@ -407,16 +368,13 @@ mod tests {
         WeeklySchedule::decode(&blob(0, days)).unwrap()
     }
 
-    /// A DateTime on a known weekday: 2025-01-01 is a Wednesday (weekday index 2), so pick concrete
-    /// dates for the tests. Mon 2025-01-06, Sun 2025-01-05.
+    /// A DateTime on a known weekday: Mon 2025-01-06, Sun 2025-01-05.
     fn dt(year: u16, month: u8, day: u8, hour: u8, minute: u8) -> DateTime {
         DateTime { year, month, day, hour, minute }
     }
 
-    /// The heading + per-interval range strings the draw would render for `sched` on `now`'s
-    /// weekday — uses the production hours view so the format is asserted without a
-    /// framebuffer (this crate is `no_std`, so a `heapless::Vec` collects the rows). `schedule`
-    /// `None` = the POI has no hours at all.
+    /// The heading and range strings the draw renders for `sched` on the weekday of `now`. It uses
+    /// the production hours view, so the format is asserted without a framebuffer.
     fn render_hours(
         schedule: Option<&WeeklySchedule>,
         now: DateTime,
@@ -438,7 +396,6 @@ mod tests {
         (head, rows)
     }
 
-    /// The range strings from a [`hours_view`] result, as `&str`s for comparison.
     fn rows_of(rows: &heapless::Vec<heapless::String<16>, 3>) -> heapless::Vec<&str, 3> {
         rows.iter().map(|r| r.as_str()).collect()
     }
@@ -518,7 +475,7 @@ mod tests {
 
     #[test]
     fn open_now_badge_state_from_clock() {
-        // Mon 08:00-18:00; is_open on the same weekday/minute the badge computes.
+        // Mon 08:00-18:00.
         let mut days = [[(0u8, 0u8); 2]; 7];
         days[0][0] = (32, 72);
         let s = sched(days);

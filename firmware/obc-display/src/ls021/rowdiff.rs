@@ -1,60 +1,30 @@
-//! [`RowDiff`] — the **self-diffing present** core (epic #199): a per-row hash of the last-presented
-//! framebuffer, so the present path pushes only the rows that actually changed.
+//! [`RowDiff`]: the self-diffing present core. It keeps a per-row hash of the last presented
+//! framebuffer, so the present path pushes only the rows that changed.
 //!
-//! The map plane is render-on-demand at the *frame* granularity (the app's dirty signal): a
-//! coarse per-screen timer poll (`tick_timers`) decides *whether* to present, but not *where* it
-//! changed. Screens stay
-//! immediate-mode (`clear()` + redraw), so tracking writes would mark everything dirty. Instead the
-//! present layer keeps a 32-bit hash per row and, on present, re-hashes each row, pushes only the
-//! contiguous spans whose hash changed, and updates the store. A Home clock ticking a minute
-//! re-presents its handful of rows instead of all 320 — on the LS021/FLPR, a few ms vs. a ~44 ms
-//! full frame.
+//! Screens are immediate-mode, so tracking writes would mark everything dirty. Instead the present
+//! layer re-hashes each row, pushes only the contiguous spans whose hash changed, and updates the
+//! store. A Home clock ticking a minute re-presents a handful of rows instead of all 320: a few ms
+//! against a 44 ms full frame on the LS021.
 //!
-//! - [`row_hash`] — FNV-1a mixing over one row as **pre-mixed** `u32` words. 32-bit: 320 rows =
-//!   1.28 KB of store, and the only failure mode (a changed row hashing equal, so skipped) is
-//!   ~2⁻³² per row-change and **self-healing** — caught systematically by the simulator's
-//!   exact-diff CI oracle ([`spans_missed_changes`]); only random collisions reach the field.
-//!   (The pre-mix is load-bearing: without it, word-FNV misses certain 2-pixel changes at ~2⁻⁸ —
-//!   see [`row_hash`] and issue #626.)
-//! - [`diff_rows`] — the core diff, generic over the hash fn (the oracle injects a colliding stub)
-//!   and the row count (a `&mut [u32]` store), so the device's fixed-size store and the simulator's
-//!   runtime-sized one share one implementation.
-//! - [`RowDiff`] — the ergonomic fixed-height store: a `[u32; H]` in `.bss` plus a priming flag.
-//! - [`spans_missed_changes`] — the exact-diff **oracle**: a full byte compare (host/tests only,
-//!   *never* on device) reporting how many real changes the hash-diff's spans missed. `0` ⇒ honest;
-//!   non-zero ⇒ a systematic bug for CI to fail on.
+//! The only failure mode, a changed row hashing equal and so being skipped, is about 2⁻³² per row
+//! change and self-heals. [`spans_missed_changes`] is the exact-diff oracle for host tests.
 //!
-//! Pixel-format-agnostic: the diff is over raw row bytes with a caller-supplied stride (the device's
-//! 1-byte/px RGB222 plane, the simulator's 3-byte/px RGB888). It's a separate full-framebuffer hash
-//! pass *before* the present — word-at-a-time, well under a ms over the 75 KB device plane — and
-//! that extra read earns back far more than it costs against the ~44 ms full-frame push.
+//! Pixel-format-agnostic: the diff is over raw row bytes with a caller-supplied stride, and the
+//! hash pass is word-at-a-time and well under a millisecond over the 75 KB device plane.
 
-/// FNV-1a (32-bit) over one framebuffer row, mixed a **pre-avalanched** `u32` word at a time — the
-/// per-row hash the self-diff compares. The self-diffing present runs this over the *whole*
-/// framebuffer on every map-dirty present, so it's the diff pass's floor: folding four bytes per
-/// multiply (one word load on thumbv8m) instead of one cuts that pass ~4× (issue #350). The values
-/// differ from byte-FNV-1a, but the store never leaves this module.
+/// FNV-1a (32-bit) over one framebuffer row, mixed a pre-avalanched `u32` word at a time. It runs
+/// over the whole framebuffer on every map-dirty present, so folding four bytes per multiply
+/// instead of one cuts the pass about fourfold.
 ///
-/// **Why each word is pre-mixed before the FNV step (issue #626).** Plain word-FNV
-/// (`h = (h ^ w) * prime`) only ever moves information toward *higher* bits: XOR is bitwise and
-/// multiplying by an odd prime preserves the lowest set bit of a difference (its `2^24` term only
-/// adds bits further up). So two rows that differ **only in the top byte of their words** (pixel
-/// columns `x % 4 == 3`) keep their hash difference confined to bits 24..32 — 8 bits of
-/// discrimination — and a second such changed word cancels it with ~2⁻⁸ probability, not 2⁻³²
-/// (measured: 30 784 colliding pairs among the 8.4 M two-pixel variants of one row — e.g. from an
-/// all-0x00 row, `fb[3]=0x02, fb[7]=0x2E` hashed *equal*). Real frames hit that family constantly
-/// (any row whose change lands only on columns ≡ 3 mod 4: marker edges, glyph updates, dashes), and
-/// on a *static* screen the resulting skipped row never self-heals — a persistently stale row on
-/// glass, and the oracle panic the sim demo tripped. Multiplying each word by the golden-ratio
-/// constant and folding the high half down (`k ^= k >> 15`) avalanches every injected difference
-/// across the word *before* it meets the accumulator, so a cancellation again needs a full 32-bit
-/// match: structured-family scans (per-lane pairs, sparse two-byte changes, sliding dashes) come
-/// out collision-free / at the SipHash-reference rate. Cost: one extra multiply + shift-xor per
-/// word — the pass stays well under a ms over the 75 KB device plane.
+/// The pre-mix is load-bearing. Plain word-FNV only moves information toward higher bits, so two
+/// rows differing only in the top byte of their words, pixel columns `x % 4 == 3`, keep their hash
+/// difference in bits 24..32, and a second such word cancels it with probability about 2⁻⁸ rather
+/// than 2⁻³². Real frames hit that family constantly, and on a static screen the skipped row never
+/// self-heals. The golden-ratio multiply and shift-xor avalanche the difference before it meets
+/// the accumulator, so a cancellation again needs a full 32-bit match.
 #[inline]
 pub fn row_hash(row: &[u8]) -> u32 {
-    /// Avalanche one injected word so no sparse difference survives confined to a byte lane:
-    /// golden-ratio multiply spreads low bits up, the shift-xor folds the high half back down.
+    /// Avalanche one injected word, so no sparse difference stays confined to a byte lane.
     #[inline(always)]
     fn premix(w: u32) -> u32 {
         let k = w.wrapping_mul(0x9e37_79b1);
@@ -66,8 +36,7 @@ pub fn row_hash(row: &[u8]) -> u32 {
         h ^= premix(u32::from_le_bytes([w[0], w[1], w[2], w[3]]));
         h = h.wrapping_mul(0x0100_0193); // FNV prime
     }
-    // Byte tail for strides that aren't a multiple of 4 — generality only; the device stride (240)
-    // and the simulator stride (720) are both exact.
+    // Byte tail for strides that are not a multiple of 4; the real strides are both exact.
     for &b in remainder {
         h ^= premix(b as u32);
         h = h.wrapping_mul(0x0100_0193);
@@ -75,16 +44,13 @@ pub fn row_hash(row: &[u8]) -> u32 {
     h
 }
 
-/// The self-diff core: re-hash each of `prev.len()` rows of `fb` (`stride` bytes per row), compare
-/// to `prev`, update it in place, and emit each **maximal run of changed rows** as one span via
-/// `push_span(y0, rows)`. An unchanged row between two changed ones splits the run, so nothing
-/// unchanged is ever pushed.
+/// The self-diff core: re-hash each row of `fb`, compare to `prev`, update it in place, and emit
+/// each maximal run of changed rows as one span through `push_span(y0, rows)`. An unchanged row
+/// between two changed ones splits the run.
 ///
-/// `hash` is the per-row hash — [`row_hash`] in production; the oracle passes a colliding stub.
-/// `force_all` treats *every* row as changed (the first present after construction / a
-/// [`RowDiff::reset`], where the store holds no meaningful prior frame).
-///
-/// The store's length *is* the row count. Panics (debug) if `fb` is shorter than `rows * stride`.
+/// `hash` is the per-row hash, with a colliding stub for the oracle, and `force_all` treats every
+/// row as changed, for the first present after construction or a reset. The store's length is the
+/// row count.
 pub fn diff_rows(
     fb: &[u8],
     stride: usize,
@@ -95,8 +61,7 @@ pub fn diff_rows(
 ) {
     let rows = prev.len();
     debug_assert!(fb.len() >= rows * stride, "framebuffer shorter than rows*stride");
-    // Walk the rows tracking the start of the current changed run; emit the run the moment an
-    // unchanged row (or the end of the frame) closes it.
+    // Walk the rows tracking the current changed run, and emit it as soon as a row closes it.
     let mut run_start: Option<usize> = None;
     for y in 0..rows {
         let h = hash(&fb[y * stride..y * stride + stride]);
@@ -116,14 +81,13 @@ pub fn diff_rows(
     }
 }
 
-/// A fixed-height per-row hash store — the ergonomic [`diff_rows`] wrapper a board owns in `.bss`.
-/// `H` is the frame's row count, so the store is `[u32; H]` (320 rows = 1.28 KB) and the priming
-/// flag forces a full first present.
+/// A fixed-height per-row hash store, the [`diff_rows`] wrapper a board owns in `.bss`. The
+/// priming flag forces a full first present.
 pub struct RowDiff<const H: usize> {
-    /// Last-presented per-row hashes (one per frame row). Seeded by the first [`diff`](RowDiff::diff).
+    /// Last-presented per-row hashes, seeded by the first diff.
     prev: [u32; H],
-    /// `false` until the first diff: the stored hashes hold no real prior frame yet, so the first
-    /// present must push (and seed) the whole frame regardless of the zero-init store.
+    /// `false` until the first diff: the stored hashes hold no prior frame, so the first present
+    /// must push and seed the whole frame whatever the zero-init store says.
     primed: bool,
 }
 
@@ -133,34 +97,27 @@ impl<const H: usize> RowDiff<H> {
         Self { prev: [0; H], primed: false }
     }
 
-    /// Force the next [`diff`](RowDiff::diff) to push the whole frame again — for a forced full
-    /// repaint (a panel re-init, a resolution change) where the on-glass frame no longer matches the
-    /// store.
+    /// Force the next diff to push the whole frame again, for a repaint such as a panel re-init
+    /// where the on-glass frame no longer matches the store.
     pub fn reset(&mut self) {
         self.primed = false;
     }
 
-    /// Diff `fb` (`H` rows of `stride` bytes) against the store using [`row_hash`], emitting each
-    /// changed-row span via `push_span(y0, rows)` and updating the store. The first call after
-    /// [`new`](RowDiff::new) / [`reset`](RowDiff::reset) pushes the whole frame as one span.
+    /// Diff `fb` against the store, emitting each changed-row span and updating the store. The
+    /// first call after [`new`](RowDiff::new) or [`reset`](RowDiff::reset) pushes the whole frame.
     pub fn diff(&mut self, fb: &[u8], stride: usize, push_span: impl FnMut(u16, u16)) {
         diff_rows(fb, stride, &mut self.prev, !self.primed, row_hash, push_span);
         self.primed = true;
     }
 
-    /// [`diff`](RowDiff::diff) with a live overlay's rows **clipped out** — the shared present
-    /// skeleton both display backends run (a present with a live overlay's rows excluded,
-    /// issue #345).
+    /// [`diff`](RowDiff::diff) with a live overlay's rows clipped out: the shared present skeleton
+    /// both display backends run.
     ///
-    /// Diffs the whole frame (the store is updated for **every** row, the excluded ones included —
-    /// it tracks the clean framebuffer, so when the overlay later goes quiet its rows re-push clean
-    /// with no stale entry), clips each changed span around the exclude interval `[y0, y0+rows)`
-    /// ([`clip_span`]), and collects the clipped spans into the caller's `spans` scratch. If they
-    /// don't fit, it falls back to "the whole frame minus the exclude" (≤ 2 spans — pathological
-    /// fragmentation a UI never produces) rather than silently dropping rows. Returns the filled
-    /// prefix, ascending + disjoint; empty ⇒ nothing changed outside the overlay, push nothing.
-    ///
-    /// `spans` must hold at least 2 entries (the fallback's worst case).
+    /// It diffs the whole frame, excluded rows included, because the store tracks the clean
+    /// framebuffer and the overlay's rows must re-push clean when it goes quiet. Each changed span
+    /// is clipped around the exclude interval and collected into `spans`; if they do not fit, it
+    /// falls back to the whole frame minus the exclude rather than dropping rows. `spans` must
+    /// hold at least 2 entries, the fallback's worst case.
     pub fn diff_clipped<'s>(
         &mut self,
         fb: &[u8],
@@ -200,15 +157,12 @@ impl<const H: usize> Default for RowDiff<H> {
     }
 }
 
-/// Emit the changed-row span `[y0, y0+n)` with the half-open `exclude` interval `[e0, e1)` removed,
-/// as up to two ascending, disjoint sub-spans — the **bulge-coordination clip** the LS021/FLPR
-/// self-diffing present runs.
+/// Emit the changed-row span `[y0, y0+n)` with the half-open `exclude` interval removed, as up to
+/// two ascending, disjoint sub-spans.
 ///
-/// When the hold bulge is live, the map present pushes the changed rows *around* it and leaves the
-/// bulge's rows for the overlay composite that follows: presenting them clean here would blank the
-/// bulge until the composite repaints them (the "pop flicker" on the long-press transition). A span
-/// straddling the bulge splits in two, one entirely inside it emits nothing, one clear of it passes
-/// whole. `None` ⇒ no live bulge, always passes through.
+/// When the hold bulge is live, the map present pushes the changed rows around it and leaves the
+/// bulge's rows to the overlay composite, because presenting them clean here would blank the bulge
+/// until the composite repaints them. `None` means no live bulge.
 pub fn clip_span(y0: u16, n: u16, exclude: Option<(u16, u16)>, emit: &mut impl FnMut(u16, u16)) {
     let (a, b) = (y0, y0 + n); // the changed span [a, b)
     let (e0, e1) = match exclude {
@@ -227,13 +181,9 @@ pub fn clip_span(y0: u16, n: u16, exclude: Option<(u16, u16)>, emit: &mut impl F
     }
 }
 
-/// The exact-diff **oracle**: count how many rows that *actually* changed between `prev_fb` and
-/// `cur_fb` the hash-diff's `spans` failed to cover. `0` ⇒ honest; non-zero ⇒ a *systematic* miss
-/// for CI to fail on (a real device only ever sees random, self-healing collisions).
-///
-/// A full byte compare of the two frames, independent of the hashes — **never** run on the device.
-/// `covered` is a caller-provided `rows`-long scratch (so this stays no-alloc), rewritten each call.
-/// Panics (debug) if a frame or the scratch is too short.
+/// The exact-diff oracle: count how many really changed rows the hash-diff's `spans` failed to
+/// cover. Non-zero means a systematic miss for CI to fail on, because a real device only sees
+/// random, self-healing collisions. A full byte compare, never run on the device.
 pub fn spans_missed_changes(
     prev_fb: &[u8],
     cur_fb: &[u8],
@@ -264,14 +214,12 @@ pub fn spans_missed_changes(
 mod tests {
     use super::*;
 
-    // Tests run on the host, so a `Vec` span sink is fine even though the crate is no_std. `std`
-    // isn't in a no_std crate's extern prelude, so name it.
+    // Tests run on the host, so a `Vec` span sink is fine even though the crate is no_std.
     extern crate std;
     use std::vec;
     use std::vec::Vec;
 
-    /// Run the production diff over `prev`/`cur` framebuffers (`rows`×`stride`), returning the
-    /// emitted spans. `force_all=false` so it exercises the hash compare, not the priming path.
+    /// Run the production diff and return the emitted spans, exercising the hash compare.
     fn diff(prev: &mut [u32], fb: &[u8], stride: usize) -> Vec<(u16, u16)> {
         let mut spans = Vec::new();
         diff_rows(fb, stride, prev, false, row_hash, |y0, n| spans.push((y0, n)));
@@ -282,15 +230,14 @@ mod tests {
     fn equal_rows_hash_equal_and_differ_otherwise() {
         assert_eq!(row_hash(&[1, 2, 3]), row_hash(&[1, 2, 3]));
         assert_ne!(row_hash(&[1, 2, 3]), row_hash(&[1, 2, 4]));
-        // Empty row is the bare offset basis — a stable, non-zero seed (no words, no tail, so the
-        // word-at-a-time rework left this constant intact).
+        // An empty row is the bare offset basis: a stable, non-zero seed.
         assert_eq!(row_hash(&[]), 0x811c_9dc5);
     }
 
     #[test]
     fn word_and_tail_bytes_both_reach_the_hash() {
-        // A 6-byte row = one 4-byte word + a 2-byte tail (the strides above are all-tail, so this
-        // is the only test walking both loops). A change in either part must change the hash.
+        // A 6-byte row is one word plus a 2-byte tail, the only test walking both loops, and a
+        // change in either part must change the hash.
         let row = [1u8, 2, 3, 4, 5, 6];
         assert_eq!(row_hash(&row), row_hash(&row));
         for i in 0..row.len() {
@@ -302,12 +249,9 @@ mod tests {
         assert_ne!(row_hash(&[1, 2, 3, 4]), row_hash(&[4, 3, 2, 1]));
     }
 
-    /// Issue #626 regression: the pre-fix word-FNV hash collided on rows differing **only in the
-    /// top byte of their words** (pixel columns ≡ 3 mod 4) at ~2⁻⁸ within device-64 content —
-    /// e.g. an all-zero row vs. the same row with `[3] = 0x02, [7] = 0x2E` hashed equal, so the
-    /// self-diff skipped a genuinely changed row (a stale row on glass / the sim's oracle panic).
-    /// Pin the measured pair, then require the whole two-pixel family — every byte lane — to be
-    /// collision-free (the old hash had 30 784 duplicates in lane 3's 4 096-row family).
+    /// The pre-fix hash collided on rows differing only in the top byte of their words, so the
+    /// self-diff skipped a genuinely changed row. Pin the measured pair, then require the whole
+    /// two-pixel family, every byte lane, to be collision-free.
     #[test]
     fn byte_lane_confined_changes_never_collide() {
         use std::collections::HashSet;
@@ -337,8 +281,7 @@ mod tests {
     fn unchanged_frame_emits_no_spans() {
         let fb = [10u8, 20, 30, 40, 50, 60]; // 3 rows × 2 bytes
         let mut prev = [0u32; 3];
-        // Prime the store, then re-diff the identical frame: zero spans (the "spurious dirty is
-        // free" property — a redraw that changes nothing pushes nothing).
+        // Prime the store, then re-diff the identical frame: a redraw that changes nothing pushes nothing.
         let _ = diff(&mut prev, &fb, 2);
         assert_eq!(diff(&mut prev, &fb, 2), Vec::new());
     }
@@ -393,8 +336,7 @@ mod tests {
 
     #[test]
     fn first_diff_pushes_the_whole_frame_via_priming() {
-        // An unprimed RowDiff: the first diff is one full-frame span regardless of the zeroed store
-        // (so a row that happens to hash to a stored value is still pushed on the first present).
+        // An unprimed RowDiff: the first diff is one full-frame span whatever the store holds.
         let mut rd = RowDiff::<6>::new();
         let fb = [7u8; 6 * 3];
         let mut spans = Vec::new();
@@ -478,8 +420,7 @@ mod tests {
         let mut fb1 = fb0;
         fb1[3 * 2] = 0x77; // row 3 changes, but is excluded this present
         assert_eq!(diff_clipped(&mut rd, &fb1, Some((3, 1))), Vec::new());
-        // The store tracked the clean fb anyway: a later present with no exclude does NOT re-push
-        // the unchanged excluded row (the overlay plane's trailing clear owns repainting it).
+        // The store tracked the clean fb, so a later present does not re-push the excluded row.
         assert_eq!(diff_clipped(&mut rd, &fb1, None), Vec::new());
     }
 
@@ -497,8 +438,7 @@ mod tests {
         let fb0 = [0u8; 6 * 2];
         let _ = diff_clipped(&mut rd, &fb0, None); // prime
         let mut fb1 = fb0;
-        // Rows 0, 2, 4 change → three disjoint spans, overflowing a 2-slot scratch: the fallback
-        // must cover the whole frame while still respecting the exclude [1, 2).
+        // Three disjoint spans overflow a 2-slot scratch, so the fallback covers the whole frame.
         fb1[0] = 1;
         fb1[2 * 2] = 1;
         fb1[4 * 2] = 1;
@@ -527,8 +467,8 @@ mod tests {
 
     #[test]
     fn oracle_catches_a_systematic_miss_from_a_colliding_hash() {
-        // A deliberately-colliding hash: every row hashes to the same value, so the diff sees *no*
-        // change and emits no spans — yet rows really did change. The oracle must catch the miss.
+        // A deliberately colliding hash: the diff sees no change and emits no spans, yet rows
+        // really did change, so the oracle must catch the miss.
         let stride = 2;
         let rows = 4;
         let prev_fb = [0u8; 4 * 2];

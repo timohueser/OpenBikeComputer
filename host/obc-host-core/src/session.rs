@@ -1,7 +1,6 @@
 //! The parsed active-route session — a host holds one for the session's lifetime and reparses the
-//! ~6.7 KB [`RouteIndex`] only when the active route's *bytes* actually change (a selection change,
-//! a re-route rewrite, an import). The web demo used to reparse every frame; this is the
-//! acceptance-criterion fix (#801): no per-frame route-index parse.
+//! ~6.7 KB [`RouteIndex`] only when the active route's bytes actually change: a selection change,
+//! a re-route rewrite, an import. A settled Map view reparses nothing.
 
 use obc_app::App;
 use obc_route::{RouteIndex, RouteReader};
@@ -9,7 +8,7 @@ use obc_route::{RouteIndex, RouteReader};
 use crate::RouteRepository;
 
 /// The resident parse of the active route's `RouteIndex`, kept across frames. Its cache identity
-/// (the [`RouteIndex`]'s non-persisted `identity`, #799) rides with the parse, so a settled Map view
+/// (the [`RouteIndex`]'s non-persisted `identity`) rides with the parse, so a settled Map view
 /// re-uses one parse indefinitely.
 ///
 /// The ~8 KB `RouteIndex` is **boxed**: a host holds this session as a field beside its app, and a
@@ -50,7 +49,7 @@ impl ActiveRouteSession {
     }
 }
 
-/// Fill an open Route overview's decimated shape preview (#678 rework 3) — the once-per-entry cue
+/// Fill an open Route overview's decimated shape preview — the once-per-entry cue
 /// every frame-stepped host shares. `nav_preview_missing` is false again the moment the copy lands,
 /// so this is a per-frame no-op otherwise.
 pub fn fill_nav_preview(app: &mut App, route: Option<&RouteReader>) {

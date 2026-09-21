@@ -1,19 +1,10 @@
-//! Shared-fixture pins for the OBCU update container (`OBCU_Spec.md` §1).
-//!
-//! Two checked-in files, both full `UPDATE.BIN`s over the same 128-byte image:
-//! `specs/vectors/update-container-v1.bin` (unsigned) and
-//! `update-container-v2.bin` (Ed25519-signed, #997). These tests decode both
-//! through the production [`ImageHeader::decode`], verify both CRCs, verify the v2
-//! signature, and assert the two headers agree on every v1 field — the same bytes
-//! the iOS companion's `OBCUHeader` decoder pins in `OBCUHeaderTests` and the
-//! `obc-vectors` builder regenerates. A drift on either side goes red, so the files
-//! are the contract between the firmware and the app.
+//! Shared-fixture pins for the OBCU update container. Two checked-in `UPDATE.BIN` files over the
+//! same image, one unsigned and one signed, decoded here through the production decoder. The iOS
+//! companion pins the same bytes, so the files are the contract between the firmware and the app.
 
 use obc_dfu::sig::test_key;
 use obc_dfu::{crc32, verify_image, ImageHeader, HEADER_LEN, SIG_LEN, SIG_SCHEME_ED25519, SIG_SCHEME_NONE};
 
-/// A fixture under `specs/vectors/`, resolved from this crate's root
-/// (`firmware/obc-dfu` → repo root).
 fn fixture(name: &str) -> Vec<u8> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../specs/vectors").join(name);
     std::fs::read(&path).unwrap_or_else(|e| {
@@ -32,9 +23,7 @@ fn container_v2() -> Vec<u8> {
     fixture("update-container-v2.bin")
 }
 
-/// The fixture header decodes to the pinned fields, and the raw-image CRC in the
-/// header matches a fresh CRC over the body — the full "verify before trust" the
-/// armer and the app both run.
+/// The header decodes to the pinned fields, and its image CRC matches a fresh CRC over the body.
 #[test]
 fn update_container_decodes_and_both_crcs_match() {
     let bytes = container();
@@ -59,8 +48,7 @@ fn update_container_decodes_and_both_crcs_match() {
     assert_eq!(header.encode(), hdr, "header round-trips byte-for-byte");
 }
 
-/// A single flipped body byte breaks the image CRC (the app rejects it in the
-/// picker, the armer before erase) even though the header itself still decodes.
+/// A flipped body byte breaks the image CRC even though the header still decodes.
 #[test]
 fn corrupt_image_body_fails_the_image_crc() {
     let mut bytes = container();
@@ -73,7 +61,7 @@ fn corrupt_image_body_fails_the_image_crc() {
     assert_ne!(crc32(&bytes[HEADER_LEN..]), header.image_crc32);
 }
 
-/// The v2 fixture: decodes, both CRCs match, the scheme marker is where §1.1 says, and the trailer
+/// The signed fixture: both CRCs match, the scheme marker is at its pinned offset, and the trailer
 /// verifies against the committed test key.
 #[test]
 fn signed_container_decodes_and_verifies() {
@@ -101,9 +89,8 @@ fn signed_container_decodes_and_verifies() {
     assert_eq!(header.encode(), hdr, "header round-trips byte-for-byte");
 }
 
-/// The cross-implementation form of the flash-once guarantee: the two fixtures carry the same image
-/// and agree on **every byte a v1 reader looks at**. Any decoder — the firmware's, the bootloader's,
-/// the iOS companion's — must read v1 and v2 identically outside bytes `48..52` and the header CRC.
+/// The two fixtures carry the same image and agree on every byte an unsigned reader looks at, so
+/// any decoder reads them identically outside bytes `48..52` and the header CRC.
 #[test]
 fn the_two_fixtures_agree_on_every_v1_field() {
     let v1 = container();

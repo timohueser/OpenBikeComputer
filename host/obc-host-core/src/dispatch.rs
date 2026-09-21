@@ -52,7 +52,7 @@ fn feed_rides(app: &mut App, rides: &dyn RideRepository, trace: &mut dyn TraceSi
     trace.feeder(FeederCall::new(FeederKind::RideCatalog, DataKey::from("host.rides"), rides.catalog().len()));
 }
 
-/// Remove one object from the store, and **nothing else** (#1541).
+/// Remove one object from the store, and **nothing else**.
 ///
 /// Execute only the family selected by CatalogMachine. Absence never probes another repository.
 fn remove_object(
@@ -75,10 +75,10 @@ fn remove_object(
     }
 }
 
-/// The one in-flight plan a host steps — a POI route plan or a detour plan (#882). One enum slot
-/// instead of two `Option`s: the two flows can never run concurrently **by construction** (Navigator
-/// hands out at most one operation at a time), and only one large scratch/tile frame is alive at a
-/// time (the stack rule below).
+/// The one in-flight plan a host steps — a POI route plan or a detour plan. One enum slot instead
+/// of two `Option`s: the two flows can never run concurrently by construction, because Navigator
+/// hands out at most one operation at a time, and only one large scratch or tile frame is alive at
+/// a time.
 pub enum InflightPlan {
     Nav(NavPlan),
     Detour(DetourPlan),
@@ -145,13 +145,12 @@ struct Preview {
     sources: PlanSources,
 }
 
-/// Plan requests a host deliberately takes without starting. This is only needed by deterministic
-/// hosts that must freeze a planning screen (for example the simulator's `--hold nav` snapshots);
-/// ordinary frame loops use [`PlanHold::NONE`].
+/// Plan requests a host deliberately takes without starting. Only a deterministic host that must
+/// freeze a planning screen needs this; ordinary frame loops use [`PlanHold::NONE`].
 ///
-/// Under the typed executor a hold is exactly "acquire the operation and run nothing": the token
-/// still comes back with the effect, so a scripted answer (`--inject nav-fail=…`) is a real answer
-/// to a real operation rather than an event with nothing behind it.
+/// A hold is exactly "acquire the operation and run nothing": the token still comes back with the
+/// effect, so a scripted answer is a real answer to a real operation rather than an event with
+/// nothing behind it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PlanHold {
     pub(crate) route: bool,
@@ -169,11 +168,11 @@ impl PlanHold {
 }
 
 /// The bounded platform work only a specific host can do — everything the shared repositories
-/// cannot. Every method has a default, so a host without one simply does not implement it (the web
-/// demo implements none, and `()` is the whole platform it needs).
+/// cannot. Every method has a default, so a host without one simply does not implement it; the web
+/// demo implements none, and `()` is the whole platform it needs.
 ///
-/// Each answer is a *result*, never an event: the executor attaches the operation token the domain
-/// issued, which is the field the legacy protocol had no room for.
+/// Each answer is a result, never an event: the executor attaches the operation token the domain
+/// issued.
 pub trait HostPlatform {
     /// Persist `settings` as `revision`. The default acknowledges the write, because a host with no
     /// durable store has nothing that can fail — leaving it unanswered would park the handshake.
@@ -192,15 +191,15 @@ pub trait HostPlatform {
         Err(obc_app::ble::BondError::Unsupported)
     }
 
-    /// Validate the staged update package. `None` = **this host does not answer** — nothing
-    /// re-polls the platform between passes, so the operation is simply never completed and the
-    /// rider's next request mints a fresh one.
+    /// Validate the staged update package. `None` means this host does not answer — nothing
+    /// re-polls the platform between passes, so the operation is never completed and the rider's
+    /// next request mints a fresh one.
     fn scan_update(&mut self) -> Option<Result<DfuScanReport, DfuScanError>> {
         None
     }
 
-    /// Arm the staged update. `None` = this host does not answer, as above — which is exactly what
-    /// a progress spinner with no terminal swap behind it is.
+    /// Arm the staged update. `None` means this host does not answer, as above, which is exactly
+    /// what a progress spinner with no terminal swap behind it is.
     fn arm_install(&mut self) -> Option<Result<(), DfuInstallError>> {
         None
     }
@@ -230,10 +229,10 @@ pub struct HostLoop {
     inbox: Inbox,
     plan: Option<InflightPlan>,
     /// The operation the planner is running under — the token every planner answer carries back.
-    /// Held even while a search is *frozen* (`PlanHold`), which is what lets a scripted failure
-    /// answer the operation the rider actually started.
+    /// Held even while a search is frozen (`PlanHold`), which is what lets a scripted failure answer
+    /// the operation the rider actually started.
     plan_token: Option<OperationToken<NavigatorTag>>,
-    /// A planned detour's bytes + frozen splice context (#882), held from the search's answer until
+    /// A planned detour's bytes + frozen splice context, held from the search's answer until
     /// the rider commits or cancels.
     detour_ready: Option<Preview>,
     sources: Option<PlanSources>,
@@ -249,9 +248,9 @@ pub struct HostLoop {
     opened_session: Option<u32>,
     /// The store revision this host reports through [`note_store_commit`](HostLoop::note_store_commit).
     /// An in-process repository has none of its own, so the executor mints a monotonic one per
-    /// commit it is *told* about — a boot scan, an import, an upload landing. A catalog **read**
-    /// mints nothing: the domain owes its own re-reads, and inventing a revision per read would
-    /// have reported the executor's own work back to it as a store that moved.
+    /// commit it is told about — a boot scan, an import, an upload landing. A catalog read mints
+    /// nothing: the domain owes its own re-reads, and inventing a revision per read would report
+    /// the executor's own work back to it as a store that moved.
     revision: u64,
 }
 
@@ -260,9 +259,8 @@ impl Default for HostLoop {
     ///
     /// A `HostLoop` is constructed around the caller's repositories, so a store exists from the
     /// first pass — and `store_writable` is what admits a catalog mutation, a route plan and a ride
-    /// recording. Without this the level never rose on a host that imports nothing, and every one of
-    /// those capabilities read absent for the whole run. The board has no such gap: it reports its
-    /// flat store's live sequence on every pass.
+    /// recording. Without this the level never rises on a host that imports nothing. The board has
+    /// no such gap: it reports its flat store's live sequence on every pass.
     fn default() -> Self {
         let mut host = HostLoop {
             trace: None,
@@ -331,11 +329,10 @@ impl HostLoop {
         &mut self.inbox.facts
     }
 
-    /// Report that the object store moved **underneath** the executor — the host scanned it at
-    /// boot, imported a file, or committed an upload into it.
+    /// Report that the object store moved underneath the executor — the host scanned it at boot,
+    /// imported a file, or committed an upload into it.
     ///
-    /// The fact does not order a re-read; the domain's owed refresh does — the pass arms it via
-    /// `CatalogState::note_store_moved` (`catalog_state.rs`'s own rule). Never called for a change
+    /// The fact does not order a re-read; the domain's owed refresh does. Never called for a change
     /// the executor made itself: it has already re-fed the catalogs, and announcing its own work
     /// would order a rescan of it.
     pub fn note_store_commit(&mut self) {
@@ -491,8 +488,6 @@ impl HostLoop {
         }
     }
 
-    // ---- one arm per domain effect ----
-
     /// Serve every effect the plan carries, one per domain. `#[inline(never)]` so the `NavPlan`
     /// reservation doesn't bleed into the caller's frame.
     #[allow(clippy::too_many_arguments)]
@@ -578,12 +573,10 @@ impl HostLoop {
 
     /// The two store operations: read the catalogs, remove one object.
     ///
-    /// A trip's *cascade* is not composed here. `CatalogMachine` owns that order and sends it as one
-    /// removal per member and one for the folder (#1491), so this executor performs no ordering of
-    /// its own — the rule the module header states.
-    ///
-    /// Neither is the **re-read a removal implies** (#1541). The domain owes it and orders it as its
-    /// own `ReadCatalog`, so a removal here is a removal and nothing more.
+    /// A trip's cascade is not composed here. `CatalogMachine` owns that order and sends it as one
+    /// removal per member and one for the folder, so this executor performs no ordering of its own.
+    /// Neither is the re-read a removal implies: the domain owes it and orders it as its own
+    /// `ReadCatalog`.
     fn serve_catalog(
         &mut self,
         app: &mut App,
@@ -1082,19 +1075,16 @@ impl HostLoop {
 
     /// Open a ride object when Recorder owes one.
     ///
-    /// The **only** thing this executor does about the ride lifecycle outside an effect, and it
-    /// decides nothing: it opens the identity Recorder named. Closing is an effect, so a session
-    /// that ended leaves nothing to do here — the operation that ended it already finalized or
-    /// discarded the object.
+    /// The only thing this executor does about the ride lifecycle outside an effect, and it decides
+    /// nothing: it opens the identity Recorder named. Closing is an effect, so a session that ended
+    /// leaves nothing to do here.
     ///
-    /// Asking by **id** rather than by "the session changed" is what makes this safe on an executor
+    /// Asking by id rather than by "the session changed" is what makes this safe on an executor
     /// whose pass and effects run in either order: a close served before its verdict is applied
-    /// still shows an open session, and only the id says the object for it is already served. This
-    /// host runs its pass first, so it never sees that window — the board does, and both ask the
-    /// same question of the same domain rather than each keeping a rule.
+    /// still shows an open session, and only the id says the object for it is already served.
     ///
-    /// Read the save name only while an open is owed. A failed open stays owed; success freezes
-    /// the name, so a later route swap cannot rename a ride that is already recording.
+    /// Read the save name only while an open is owed. A failed open stays owed; success freezes the
+    /// name, so a later route swap cannot rename a ride that is already recording.
     fn sync_recorder(&mut self, app: &mut App, tracks: &mut dyn TrackRepository) {
         let Some(id) = app.recorder.object_owed(self.opened_session) else { return };
         if tracks.open(id, active_route_name(app).as_deref(), app.recorder.now_ms()) {
@@ -1102,11 +1092,9 @@ impl HostLoop {
         }
     }
 
-    // ---- the two derived levels ----
-
-    /// Answer the plan's keyed derived needs. A *level*, not an operation: the key is the guard, so
-    /// an answer that lands after the subject moved is simply about something else and the pass
-    /// drops it (#1437).
+    /// Answer the plan's keyed derived needs. A level, not an operation: the key is the guard, so an
+    /// answer that lands after the subject moved is simply about something else and the pass drops
+    /// it.
     fn serve_derived(
         &mut self,
         app: &mut App,
@@ -1129,7 +1117,7 @@ impl HostLoop {
             // Re-sync first: a plan or a splice this very `execute` committed replaced the active
             // route's bytes, and the resident parse is still the old route's until the store is
             // pointed at the new one. Reading before that would answer the level `Failed` for a
-            // route that is perfectly readable a line later — and a failure *is* an answer, so the
+            // route that is perfectly readable a line later — and a failure is an answer, so the
             // overview would settle with no shape at all.
             session.sync(app, routes);
             let src = routes.active_source();
@@ -1141,10 +1129,9 @@ impl HostLoop {
                     Some(reader.preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>())
                 }
             });
-            // Answered either way, exactly as the ride-track arm above it is: a failure *is* an
-            // answer (`derived.rs`'s "a dead file must cost one read, not one read per pass"), and
-            // a level left unanswered is what turns an unreadable route into a headless driver
-            // settling for `MAX_SETTLE_PASSES`.
+            // Answered either way, exactly as the ride-track arm above it is: a failure is an
+            // answer, and a level left unanswered is what turns an unreadable route into a headless
+            // driver settling for `MAX_SETTLE_PASSES`.
             self.inbox.derived.nav_preview = Some(match pts {
                 Some(pts) => {
                     self.inbox.nav_preview = pts.iter().copied().collect();
@@ -1158,11 +1145,11 @@ impl HostLoop {
 
 /// Hand one outcome to its domain's slot.
 ///
-/// [`Slot::try_put`](obc_app::device_core::Slot) hands a refused value **back** so its owner can
-/// offer it again, and this executor's owner is the pass: it drains every slot the executor writes
-/// at stage 1, unconditionally, so a full slot here means two answers were produced for one domain
-/// inside a single `execute`. That cannot happen today — each arm serves at most one effect — and a
-/// change that made it happen would otherwise lose the second answer silently.
+/// [`Slot::try_put`](obc_app::device_core::Slot) hands a refused value back so its owner can offer
+/// it again, and this executor's owner is the pass: it drains every slot the executor writes at
+/// stage 1, unconditionally, so a full slot here means two answers were produced for one domain
+/// inside a single `execute`. That cannot happen today, and a change that made it happen would
+/// otherwise lose the second answer silently.
 fn deliver<T: core::fmt::Debug>(slot: &mut obc_app::device_core::Slot<T>, outcome: T, domain: &str) {
     let refused = slot.try_put(outcome);
     debug_assert!(refused.is_ok(), "{domain} answered twice in one execute: {refused:?}");
@@ -1197,8 +1184,8 @@ fn serve_recorder(
             match tracks.finalize(app.recorder.ride_stats()) {
                 RideClose::Committed(ride) => RecorderOutcome::Finalized { token, ride },
                 // The object was never created — a start this store refused, which already warned
-                // the rider. There is nothing to save, and saying so is **terminal**: answering
-                // `Failed` would retry a close against an object that does not exist, for ever.
+                // the rider. There is nothing to save, and saying so is terminal: answering `Failed`
+                // would retry a close against an object that does not exist, for ever.
                 RideClose::Nothing => RecorderOutcome::Discarded { token },
                 RideClose::Failed => RecorderOutcome::Failed { token, error: RecorderError::Write },
             }
@@ -1923,7 +1910,8 @@ mod tests {
 
     /// A ride recording `fixes` samples, none of which any append has taken: every append this
     /// executor is offered is refused, which is what leaves a tail staged for the close to find.
-    /// Fixes are one second and ~11 m apart, so each one is logged and none reads as a teleport.
+    /// Fixes are one second and about 11 m apart, so each one is logged and none reads as a
+    /// teleport.
     fn ride_with_a_staged_tail(fixes: u32) -> (App, HostLoop) {
         let mut app = App::new(AppState::new(0, 0, 1.0)); // the map-first app is `Mode::Riding`
         let mut host = HostLoop::new();

@@ -1,4 +1,4 @@
-// Third-party licence notices for the shipped web bundle (#1149).
+// Third-party licence notices for the shipped web bundle.
 //
 // MIT, BSD and friends all say the same thing: the copyright notice and the permission
 // text have to travel with the distribution. A `dependencies` list cannot answer that

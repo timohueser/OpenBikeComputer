@@ -1,13 +1,10 @@
-//! Render-level test for priority rendering under buffer saturation: **when the frame buffers
-//! saturate, the highest-priority features survive and the lowest-priority ones are dropped —
-//! across chunks**.
+//! Render-level test for priority under buffer saturation: when the frame buffers saturate, the
+//! highest-priority features survive and the lowest-priority ones are dropped, across chunks.
 //!
-//! The setup is the worst case for any chunk-order collector: a *late* chunk holds the single
-//! priority-1 polygon while an *early* chunk is packed with enough priority-4 polygons to overflow
-//! `MAX_SPANS` on its own. A chunk-order dropper would fill the buffer from the early chunk and drop
-//! the late priority-1 polygon (no red pixels). Stub-select ranks candidates by priority globally
-//! across all chunks before budgeting, so the late priority-1 polygon wins over the early
-//! priority-4 crowd and survives.
+//! The setup is the worst case for any chunk-order collector: a late chunk holds the single
+//! priority-1 polygon while an early chunk is packed with enough priority-4 polygons to overflow
+//! `MAX_SPANS` on its own. Stub-select ranks candidates by priority globally before budgeting, so
+//! the late polygon wins.
 
 use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::*;
@@ -23,34 +20,30 @@ const HIGH_565: u16 = 0xF800; // priority 1, red
 const RED: Rgb888 = Rgb888::new(255, 0, 0);
 const BLUE: Rgb888 = Rgb888::new(0, 0, 255);
 
-/// Priority-4 polygons in the early chunk: enough to overflow `MAX_SPANS` on their
-/// own, so the buffer is already full before the late chunk is even reached.
+/// Priority-4 polygons in the early chunk: enough to overflow `MAX_SPANS` on their own, so the
+/// buffer is full before the late chunk is reached.
 const NUM_LOW: usize = MAX_SPANS + 64;
 
 #[test]
 fn priority_one_survives_saturation_across_chunks() {
-    // Global bbox (0,0,1000,1000); root branch midpoints (500,500). The early
-    // chunk lands in the NW quadrant, the late chunk in NE — they project to the
-    // left and right halves of the screen respectively, so their colors never
-    // overlap and can be counted independently.
+    // Global bbox (0,0,1000,1000) with root midpoints (500,500). The early chunk lands in the NW
+    // quadrant and the late chunk in NE, so they project to opposite halves of the screen and
+    // their colours can be counted independently.
     let styles: &[Style] = &[
         (1, 0, LOW_565, 1, 4, false, None), // priority 4 (lowest) — the bulk, in the early chunk
         (2, 1, HIGH_565, 1, 1, false, None), // priority 1 (highest) — one polygon, in the late chunk
     ];
 
-    // Early chunks (the four NW leaves, all in the left/upper quadrant): NUM_LOW small
-    // priority-4 triangles split evenly across them (remainder into the last), each near its
-    // leaf-local (50,50). Together they overflow MAX_SPANS before NE is reached, and splitting
-    // keeps every chunk well under the reader's MAX_CHUNK_BYTES cap (a single chunk of all
-    // NUM_LOW features would exceed it).
+    // Early chunks, the four NW leaves: NUM_LOW small priority-4 triangles split evenly across
+    // them. Together they overflow MAX_SPANS before NE is reached, and splitting keeps every chunk
+    // under the reader's chunk cap.
     let one_low = pack_poly(1, 50, 50, &[(50, 0), (0, 50)]);
     let make = |n: usize| -> Vec<u8> { (0..n).flat_map(|_| one_low.clone()).collect() };
     let base = NUM_LOW / 4;
     let nw_chunks = [make(base), make(base), make(base), make(NUM_LOW - 3 * base)];
     let chunk_size = nw_chunks.iter().map(Vec::len).max().unwrap() + 64;
 
-    // Late chunk (NE, node min corner (500,500)): one large priority-1 triangle near
-    // node-local (50,50), big enough that its red fill is unmistakable.
+    // Late chunk (NE): one large priority-1 triangle, big enough for an unmistakable red fill.
     let ne = pack_poly(2, 50, 50, &[(120, 0), (0, 120), (-120, 0)]);
 
     let bytes = build_priority_tree((0, 0, 1000, 1000), styles, chunk_size, nw_chunks, ne);
@@ -59,7 +52,7 @@ fn priority_one_survives_saturation_across_chunks() {
     let tables = MapTables::parse(&src).expect("valid v5 file");
     let reader = Reader::new(&src, &tables, &cache);
 
-    // North-up view centered on the bbox; the whole 1000×1000 map fits on screen.
+    // North-up view centred on the bbox; the whole map fits on screen.
     let vp = Viewport::new(200.0, 200.0, 500, 500, 0.15);
     let mut buf = Buf::new(200, 200);
     let mut renderer = RenderScratch::new();
@@ -82,22 +75,18 @@ fn priority_one_survives_saturation_across_chunks() {
     );
     assert!(stats.features_drawn <= MAX_SPANS, "never draws past the span buffer");
 
-    // The payoff: the lone priority-1 polygon — in the *late* chunk, behind enough
-    // priority-4 features to fill the buffer — survives and is painted. Chunk-order
-    // dropping would have discarded it, leaving zero red pixels.
+    // The payoff: the lone priority-1 polygon, behind enough priority-4 features to fill the
+    // buffer, survives and is painted.
     assert!(buf.count(RED) > 100, "priority-1 polygon must survive saturation (got {} red px)", buf.count(RED));
 
-    // Sanity: priority-4 features are drawn too (just not all of them) — saturation
-    // dropped the overflow, not the whole low-priority layer.
+    // Sanity: priority-4 features are drawn too, so saturation dropped only the overflow.
     assert!(buf.count(BLUE) > 0, "some priority-4 features are still drawn");
 }
 
-/// The other saturation dimension: the **point** buffer (`MAX_FRAME_POINTS`) fills before the span
-/// buffer does. The stub-select collector's `select` phase admits by exact per-feature point count
-/// in priority order, so the lone priority-1 polygon — again in the *late* chunk, behind enough
-/// vertex-heavy priority-4 polygons to exhaust the point budget — must still be admitted (a naive
-/// arrival-order point-budget fill would spend the budget on the early priority-4 features and drop
-/// it). Pins the `select` knapsack the span-count test above doesn't exercise (issue #564).
+/// The other saturation dimension: the point buffer fills before the span buffer does. `select`
+/// admits by exact per-feature point count in priority order, so the lone priority-1 polygon in
+/// the late chunk must still be admitted, where a naive arrival-order fill would spend the budget
+/// on the early features and drop it.
 #[test]
 fn priority_one_survives_point_budget_saturation() {
     let styles: &[Style] = &[
@@ -105,10 +94,9 @@ fn priority_one_survives_point_budget_saturation() {
         (2, 1, HIGH_565, 1, 1, false, None), // priority 1 (highest) — one small polygon, in the late chunk
     ];
 
-    // Each low polygon carries ~60 real projected corners, so relatively few of them overflow the
-    // point buffer while the span buffer stays far from full — isolating point-budget saturation.
-    // The wide alternating sawtooth is deliberate: a densely sampled straight edge is now removed
-    // by the raster-lossless viewport compactor and therefore cannot create point pressure.
+    // Each low polygon carries about 60 real projected corners, so relatively few overflow the
+    // point buffer while the span buffer stays far from full. The wide alternating sawtooth is
+    // deliberate: a densely sampled straight edge is removed by the raster-lossless compactor.
     let low_deltas: Vec<(i8, i8)> = (0..59).map(|i| if i % 2 == 0 { (100i8, 1i8) } else { (-100i8, 1i8) }).collect();
     let pts_per = 1 + low_deltas.len(); // exterior anchor + deltas
     let num_low = MAX_FRAME_POINTS / pts_per + 64; // overflow the point budget…
@@ -136,8 +124,7 @@ fn priority_one_survives_point_budget_saturation() {
         Rgb888::new(r, g, b)
     });
 
-    // It must be the *point* buffer that saturates, not the span buffer — else this proves nothing
-    // the span-count test didn't.
+    // It must be the point buffer that saturates, not the span buffer.
     assert!(stats.features_dropped > 0, "point buffer must saturate");
     assert_eq!(stats.feature_decode_capacity_drops, 0);
     assert!(stats.span_utilization < 1.0, "spans must not be the limiting buffer");

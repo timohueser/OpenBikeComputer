@@ -1,41 +1,23 @@
 //! `obcm-assemble` — the native driver for the assembly engine.
 //!
-//! Everything here is I/O and argument parsing. The crate's rule is that the **engine** never
-//! touches a filesystem (it has to run in a browser tab, #1024/P4), so this file owns every
-//! `std::fs` call: it opens cell artifacts as [`ByteSource`]s, implements the [`MapStore`] over
-//! real files, and prints what the engine reports.
+//! Everything here is I/O and argument parsing. The engine never touches a filesystem, because it
+//! has to run in a browser tab, so this file owns every `std::fs` call: it opens cell artifacts as
+//! [`ByteSource`]s, implements the [`MapStore`] over real files, and prints what the engine
+//! reports.
 //!
 //! ```text
 //! obcm-assemble --cells <cells.json> --skin <skin.json> --out <path.obcm> [options]
 //! ```
 //!
-//! `cells.json` is the cutter's provenance sidecar (`obc-pack cut`), which already states every
-//! cell's band, path and `partial` flag plus the schema they were baked at — so the common case
-//! needs no second document. `--schema` overrides it (an OBCC v2 root or a bare `SchemaEntry`),
-//! which is what a hosted catalog hands in.
+//! `cells.json` is the cutter's provenance sidecar, which already states every cell's band, path
+//! and `partial` flag plus the schema they were baked at, so the common case needs no second
+//! document. `--schema` overrides it, which is what a hosted catalog hands in.
 //!
-//! # Measuring the assembler's memory (`--features mem-profile`)
-//!
-//! The engine's peak heap is the thing a hosted (wasm) assembly is rationed on, and it is not
-//! something a benchmark can guess: it is dominated by one phase (the nav rewrite) at a multiple of
-//! the nav section it produces. The `mem-profile` feature — **off by default, native only** — wraps
-//! the global allocator and the CLI's [`Clock`], so every phase boundary the engine ticks also
-//! snapshots the peak since the previous one. It prints a table to **stderr**; the summary on stdout
-//! (including `--json`) is byte-for-byte unchanged.
-//!
-//! Two commands, the second of which is the measurement:
-//!
-//! ```text
-//! # 1. fetch a real region from the published catalog (resumable, stdlib python3)
-//! python3 host/obcm-assemble/dev/fetch_region.py \
-//!     europe/germany/baden-wuerttemberg/freiburg-regbez /tmp/obca/freiburg
-//!
-//! # 2. assemble it under the harness
-//! cargo run --release -p obcm-assemble --features mem-profile -- \
-//!     --cells /tmp/obca/freiburg/cells.json \
-//!     --skin  /tmp/obca/freiburg/skin.json \
-//!     --out   /tmp/obca/freiburg.obcm --accept-holes
-//! ```
+//! The `mem-profile` feature — off by default, native only — wraps the global allocator and the
+//! CLI's [`Clock`], so every phase boundary the engine ticks also snapshots the peak since the
+//! previous one. It prints a table to stderr; the summary on stdout, `--json` included, is
+//! byte-for-byte unchanged. `dev/fetch_region.py` fetches a real region from the published catalog
+//! to run it against.
 
 use std::cell::RefCell;
 use std::fs::File;
@@ -55,12 +37,10 @@ use obcm_assemble::{
 
 /// A file this driver reads on demand: an input cell, a terrain cell, or the sealed map the verify
 /// pass reads back. Cell regions are copied in 256 KB blocks, so the whole tree never has to be
-/// resident — which is what keeps a country assembly's memory about the nav graph rather than about
-/// the geometry.
+/// resident.
 ///
 /// The shared adapter does the reading; what this adds is the profiler's split between the reads
-/// that feed the assembly and the reads that verify the sealed map. Without `mem-profile` it is
-/// the adapter and nothing else.
+/// that feed the assembly and the reads that verify the sealed map.
 struct ProfiledSource {
     src: FileSource,
     #[cfg(feature = "mem-profile")]
@@ -88,11 +68,8 @@ impl ByteSource for ProfiledSource {
     }
 }
 
-/// The map as one file at a path the caller named.
-///
-/// It used to be a directory of derived `MS<id>S<kk>.OBM` names plus an `MS<id>.OBS` manifest
-/// written last, plus an orphan sweep for the shards a smaller re-assembly left behind. One file
-/// needs none of that: the name is the caller's, and replacing a map is truncating it.
+/// The map as one file at a path the caller named: the name is the caller's, and replacing a map
+/// is truncating it.
 struct FileStore {
     path: PathBuf,
     open: Option<std::io::BufWriter<File>>,
@@ -136,13 +113,13 @@ impl MapStore for FileStore {
     }
 }
 
-/// The engine's spill area, as ordinary files under a directory of this run's own (#1116 D2).
+/// The engine's spill area, as ordinary files under a directory of this run's own.
 ///
 /// Anonymous in the sense the seam means: the names are ordinals nothing outside this store knows,
 /// the directory is created per process and per invocation, and it is removed whole when the store
-/// drops — including after a failed assembly, which is the case a bare `remove_file` per file would
-/// miss. A file is also removed as soon as the engine says it is done with it, so a country-scale
-/// run's *live* scratch is one or two streams rather than all of them.
+/// drops — including after a failed assembly, which a bare `remove_file` per file would miss. A
+/// file is also removed as soon as the engine says it is done with it, so a country-scale run's
+/// live scratch is one or two streams rather than all of them.
 struct FileScratch {
     dir: PathBuf,
     /// Open handles by [`ScratchId`], with each one's length so an append never has to seek to find
@@ -153,7 +130,8 @@ struct FileScratch {
 impl FileScratch {
     fn new() -> std::result::Result<FileScratch, String> {
         // The pid keeps two concurrent assemblies apart, and every file is opened `truncate`, so a
-        // directory left behind by a crashed run with a recycled pid is overwritten rather than read.
+        // directory left behind by a crashed run with a recycled pid is overwritten rather than
+        // read.
         let dir = std::env::temp_dir().join(format!("obcm-assemble-scratch-{}", std::process::id()));
         std::fs::create_dir_all(&dir).map_err(|e| format!("create scratch dir {}: {e}", dir.display()))?;
         Ok(FileScratch { dir, files: RefCell::new(Vec::new()) })
@@ -238,14 +216,14 @@ impl ScratchStore for FileScratch {
 impl Drop for FileScratch {
     fn drop(&mut self) {
         self.files.borrow_mut().clear();
-        // Best effort: the run is over either way, and a temp directory that could not be removed is
-        // not a reason to turn a written set into a failure.
+        // Best effort: the run is over either way, and a temp directory that could not be removed
+        // is not a reason to turn a written map into a failure.
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
-/// The terrain sidecar the CLI is driven by — the catalog's §13.1 lattice plus the downloaded
-/// cells, in the same shape `cells.json` states the OBCM ones.
+/// The terrain sidecar the CLI is driven by: the catalog's lattice plus the downloaded cells, in
+/// the same shape `cells.json` states the OBCM ones.
 struct TerrainSidecar {
     params: TerrainParams,
     cells: Vec<(CellId, String, Option<[u8; 32]>)>,
@@ -290,8 +268,7 @@ impl Clock for StdClock {
     }
 }
 
-/// The peak-allocation harness (`--features mem-profile`). See this file's module docs for the
-/// two-command workflow; everything here is compiled out by default.
+/// The peak-allocation harness (`--features mem-profile`). Compiled out by default.
 #[cfg(feature = "mem-profile")]
 mod mem_profile {
     use std::alloc::{GlobalAlloc, Layout, System};
@@ -324,9 +301,9 @@ mod mem_profile {
     /// The high-water mark over the whole run, never reset.
     static PEAK: AtomicUsize = AtomicUsize::new(0);
 
-    /// Raise `slot` to `now` if `now` is higher. Relaxed throughout: each counter is a statistic, not
-    /// a lock — no other memory is published through it, and the assembly is single-threaded, so the
-    /// only contention is with whatever the runtime allocates on its own threads.
+    /// Raise `slot` to `now` if `now` is higher. Relaxed throughout: each counter is a statistic,
+    /// not a lock, and the assembly is single-threaded, so the only contention is with whatever the
+    /// runtime allocates on its own threads.
     #[inline]
     fn raise(slot: &AtomicUsize, now: usize) {
         let mut seen = slot.load(Ordering::Relaxed);
@@ -344,11 +321,10 @@ mod mem_profile {
         raise(&PEAK, now);
     }
 
-    /// A pass-through over [`System`] that counts. It charges the **net** size change of every
-    /// allocation, so a `Vec` growth that the system realloc satisfies by copying into a fresh block
-    /// is charged its increment, not `old + new` for the instant both exist. That undercount is
-    /// bounded by the largest single buffer and is why a run worth publishing is cross-checked
-    /// against `/usr/bin/time -l`'s peak RSS.
+    /// A pass-through over [`System`] that counts. It charges the net size change of every
+    /// allocation, so a `Vec` growth the system realloc satisfies by copying into a fresh block is
+    /// charged its increment rather than `old + new`. That undercount is bounded by the largest
+    /// single buffer, which is why a run worth publishing is cross-checked against peak RSS.
     pub struct Tracking;
 
     unsafe impl GlobalAlloc for Tracking {
@@ -397,12 +373,10 @@ mod mem_profile {
 
     /// The CLI's clock, plus a snapshot at every tick.
     ///
-    /// The engine calls its [`Clock`] exactly once per phase boundary, in a documented order
-    /// (`assemble_full`): start, open, poi, nav, plan, then write, verify and the total.
-    /// [`ProfilingClock::report`] labels
-    /// the samples against the summary it is handed, and falls back to positional labels if the
-    /// engine ever ticks a different number of times than that arithmetic predicts — a wrong label
-    /// on a real number is worse than an honest `tick N`.
+    /// The engine calls its [`Clock`] once per phase boundary, in the order `assemble_full`
+    /// documents. [`ProfilingClock::report`] labels the samples against the summary it is handed,
+    /// and falls back to positional labels if the engine ticks a different number of times than
+    /// that arithmetic predicts: a wrong label on a real number is worse than an honest `tick N`.
     pub struct ProfilingClock<C: Clock> {
         inner: C,
         samples: RefCell<Vec<Sample>>,
@@ -465,8 +439,8 @@ mod mem_profile {
         fn now_us(&self) -> u64 {
             let us = self.inner.now_us();
             let live = LIVE.load(Ordering::Relaxed);
-            // Close the window at the level the heap is actually sitting at, so the next phase's
-            // number is what *that* phase added rather than what a previous one left behind.
+            // Close the window at the level the heap is sitting at, so the next phase's number is
+            // what that phase added rather than what a previous one left behind.
             let window_peak = WINDOW.swap(live, Ordering::Relaxed);
             self.samples.borrow_mut().push(Sample { us, window_peak, live });
             us
@@ -477,8 +451,7 @@ mod mem_profile {
         format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
     }
 
-    /// The tick order `assemble_full` documents. It is a fixed list now — one file means one write
-    /// and one verify, where a set meant four ticks per shard and two more for the raster.
+    /// The tick order `assemble_full` documents.
     fn labels_for(ticks: usize) -> Vec<String> {
         let mut out: Vec<String> = [
             "start (CLI: sidecar + open)",
@@ -687,14 +660,14 @@ fn run() -> std::result::Result<(), String> {
     let clock = StdClock(Instant::now());
     #[cfg(feature = "mem-profile")]
     let clock = mem_profile::ProfilingClock::new(StdClock(Instant::now()));
-    // The engine's spill area. Real files, so the merge's sorted passes are genuinely off-heap —
+    // The engine's spill area. Real files, so the merge's sorted passes are genuinely off-heap,
     // which is also what makes the `mem-profile` numbers mean anything.
     let scratch = FileScratch::new()?;
     let summary = assemble_full(inputs, Vec::new(), job, &schema, &skin, &opts, &mut store, &clock, &scratch)
         .map_err(|e| e.to_string())?;
 
-    // The engine returns what the spec says to report; the CLI is what has a stderr (§4.5.2, §5.7,
-    // `OBCM_Spec.md` §8.3). Printed before the summary so a long JSON blob cannot bury them.
+    // The engine returns what a producer reports; the CLI is what has a stderr. Printed before the
+    // summary so a long JSON blob cannot bury them.
     for w in &summary.warnings {
         eprintln!("warning: {w}");
     }

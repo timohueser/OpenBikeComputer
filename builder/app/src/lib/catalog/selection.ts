@@ -1,30 +1,21 @@
 // The selection: a list of composable **parts** that resolve to a set of cells
-// per band.
+// per band. A selection is an ordered list of parts and a resolution is a
+// *union*; both live here rather than in a component, because the arithmetic
+// that decides what a map contains should be testable without a browser.
 //
-// This is epic #1016 §8 U2 as data. The map owns selection through a tool rail;
-// step 1 becomes a ledger of parts — a picked region, a drawn box, a route
-// corridor — each named, each removable, each with its own size. So a selection
-// is an ordered list of parts and a resolution is a *union*, and both of those
-// are here rather than in a component, because the arithmetic that decides what
-// a map contains should be testable without a browser.
-//
-// Three properties are worth stating because they are consequences rather than
-// features:
+// Three properties are consequences rather than features:
 //
 //   * **Generous coarse coverage is not a rule.** Every part resolves through
 //     the same "cells whose square intersects this shape" test, run once per
 //     band. Because coarse bands use larger cells, that single test yields
-//     precise coverage at `2^18` and whole-cell context at `2^20`
-//     (`OBCA_Spec.md` §1.2). There is no coarse-band special case anywhere in
-//     this file, and there must never be one.
-//   * **A region part is a lookup, not a computation.** §11.7's cell list is
-//     stored precisely so no consumer derives it from the drawable boundary; a
-//     simplification error would drop an edge cell, and a dropped fine cell is a
-//     silent hole in street detail. So `region` parts read the published list
-//     and nothing else.
+//     precise coverage at `2^18` and whole-cell context at `2^20`. There is no
+//     coarse-band special case anywhere in this file, and there must never be one.
+//   * **A region part is a lookup, not a computation.** The published cell list
+//     is stored precisely so no consumer derives it from the drawable boundary;
+//     a simplification error would drop an edge cell, and a dropped fine cell is
+//     a silent hole in street detail.
 //   * **Overlap is free.** Two parts sharing ground share the *same cells*, and
-//     the union counts them once. That is the epic's headline saving, and it is
-//     also why per-part bytes need two answers (below).
+//     the union counts them once, which is why per-part bytes need two answers.
 
 import { corridorCells, type LatLon } from "./corridor";
 import { cellsIntersecting, formatCellId, type UBox } from "./grid";
@@ -45,11 +36,10 @@ interface PartBase {
     /** Stable within a session; the UI's key for the row and the remove button. */
     id: string;
     /**
-     * What the parts list calls it. Held by the part rather than derived,
-     * because the three kinds get their names from three different places — the
-     * catalog's region name, the user's drawn box, the route's own title — and a
-     * list that renamed a row when the catalog reloaded would be a list that
-     * cannot be trusted to be the same list.
+     * What the parts list calls it. Held by the part rather than derived, because
+     * the three kinds get their names from three different places, and a list
+     * that renamed a row when the catalog reloaded would be a list that cannot be
+     * trusted to be the same list.
      */
     name: string;
 }
@@ -82,12 +72,11 @@ export interface LassoPart extends PartBase {
 export type SelectionPart = RegionPart | BoxPart | CorridorPart | LassoPart;
 
 /**
- * A selection: the parts, and the one corridor width that applies to every
- * route in the map.
+ * A selection: the parts, and the one corridor width that applies to every route
+ * in the map.
  *
- * The radius is on the selection rather than on each corridor part because §8 U3
- * decided it is a single global slider. Per-part widths would be a different UI
- * and a different mock; this type is the one that was approved.
+ * The radius is on the selection rather than on each corridor part because it is
+ * a single global slider. Per-part widths would be a different UI.
  */
 export interface Selection {
     parts: SelectionPart[];
@@ -102,9 +91,9 @@ export interface SelectionContext {
     indices: ReadonlyMap<string, CellIndexDocument>;
     /** Region id → its published cell list, for every `region` part in play. */
     regionCells: ReadonlyMap<string, RegionCellsDocument>;
-    /** The pinned terrain index, or `null`/absent when the catalog publishes no
-     *  raster — in which case the selection simply names no terrain and the map
-     *  assembles exactly as it did before terrain existed (`OBCC_Spec.md` §13). */
+    /** The pinned terrain index, or `null` when the catalog publishes no raster,
+     *  in which case the selection names no terrain and the map assembles
+     *  without it. */
     terrain?: TerrainIndexDocument | null;
 }
 
@@ -118,9 +107,8 @@ export interface PartResolution {
      * Bytes of the published cells this part covers.
      *
      * **Gross**: a cell shared with another part is counted in both, so these do
-     * not sum to the selection's total. That is the honest answer to "how big is
-     * this part", and {@link PartResolution.marginalBytes} is the honest answer
-     * to the other question a remove button asks.
+     * not sum to the selection's total. {@link PartResolution.marginalBytes} is
+     * the answer the remove button needs.
      */
     bytes: number;
     /** Bytes of the cells **no other part** contributes — what removing this
@@ -131,32 +119,28 @@ export interface PartResolution {
     missingCount: number;
     /**
      * True while this part's answer is still arriving — a `region` whose stored
-     * cell list has not been fetched.
-     *
-     * It exists because the alternative is indistinguishable from the truth: a
-     * pending region contributes no cells, which is exactly what an empty region
-     * contributes, so without this flag a summary card shows "0 B" for DACH
-     * with the same confidence it shows 0 B for a box drawn over the sea. One
-     * of those is a number and the other is a spinner.
+     * cell list has not been fetched. Without it a pending region is
+     * indistinguishable from an empty one, so a summary card would show "0 B" for
+     * DACH as confidently as for a box drawn over the sea.
      */
     pending: boolean;
 }
 
-/** The raster a selection covers (§13.3, EL4). Separate from `cellsByBand`
- *  because terrain is a second artifact class, not a band — and separately
- *  priced, because a rider may take the map without it. */
+/** The raster a selection covers. Separate from `cellsByBand` because terrain is
+ *  a second artifact class, not a band — and separately priced, because a rider
+ *  may take the map without it. */
 export interface TerrainResolution {
     /** Squares with a published object: what the download fetches, sorted. */
     cells: string[];
-    /** Squares that are canonically void (§13.6): coverage with no object, so
-     *  they cost nothing and reach the shard as a `0` directory slot. */
+    /** Squares that are canonically void: coverage with no object, so they cost
+     *  nothing and reach the shard as a `0` directory slot. */
     knownEmpty: string[];
     /** Summed `bytes` of {@link TerrainResolution.cells}. */
     bytes: number;
     /** Ground the selection covers that the terrain store says nothing about at
-     *  all — outside the published coverage. Legal (the shard's directory says
-     *  `0` there too) but not the same thing as canonically void, and shown as
-     *  what it is: elevation this map will not have. */
+     *  all — outside the published coverage. Legal, but not the same thing as
+     *  canonically void, and shown as what it is: elevation this map will not
+     *  have. */
     missing: string[];
 }
 
@@ -175,16 +159,15 @@ export interface SelectionResolution {
      *  reach assembly without a payload. */
     cellsByBand: Map<string, string[]>;
     /** Ground the selection covers for which no cell is published, per band —
-     *  the holes. Legal by construction (a missing cell is an empty leaf and the
-     *  renderer paints backdrop there), which is exactly why they have to be
-     *  shown rather than merely tolerated. */
+     *  the holes. Legal by construction, since the renderer paints backdrop
+     *  there, which is exactly why they have to be shown rather than merely
+     *  tolerated. */
     missingByBand: Map<string, string[]>;
     /** Bands named by the schema that have no loaded index. Empty in normal
      *  operation; non-empty means a price that is not yet the whole price. */
     unresolvedBands: string[];
-    /** Ids of the parts whose contribution has not arrived yet ({@link
-     *  PartResolution.pending}). The other half of "this price is not final":
-     *  `unresolvedBands` is a column missing, this is a row. */
+    /** Ids of the parts whose contribution has not arrived yet.
+     *  `unresolvedBands` is a column missing; this is a row. */
     unresolvedParts: string[];
 }
 
@@ -198,10 +181,9 @@ export function emptySelection(corridorRadiusM: number): Selection {
  * selection — nothing here mutates, so a Svelte `$state` holding one re-renders
  * on assignment rather than on a deep proxy.
  *
- * In place matters: §8 U2's parts list is a ledger the user reads, and a row
- * that jumped to the bottom every time its box was nudged or its corridor
- * renamed would be a list that reorders itself while someone is looking at it.
- * A new part still goes on the end, where it was just added.
+ * In place matters: the parts list is a ledger the user reads, and a row that
+ * jumped to the bottom every time its box was nudged would reorder itself while
+ * someone is looking at it.
  */
 export function withPart(selection: Selection, part: SelectionPart): Selection {
     const at = selection.parts.findIndex((p) => p.id === part.id);
@@ -216,25 +198,22 @@ export function withoutPart(selection: Selection, partId: string): Selection {
     return { ...selection, parts: selection.parts.filter((p) => p.id !== partId) };
 }
 
-/** Set the one global corridor width (§8 U3). */
+/** Set the one global corridor width. */
 export function withCorridorRadius(selection: Selection, radiusM: number): Selection {
     return { ...selection, corridorRadiusM: Math.max(0, radiusM) };
 }
 
 /**
- * §11.7's cross-document MUST, re-applied here over the full set of loaded
- * indices — which is the set the client could not check when it fetched the
- * region list one round trip earlier.
+ * Re-apply the cross-document rule over the full set of loaded indices — the set
+ * the client could not check when it fetched the region list one round trip
+ * earlier.
  *
- * It matters because without it a region cell the catalog does not index would
- * fall through the published/missing split below into `missingByBand`, and
- * `missingByBand` is drawn as a **hole**: ground with no published cell, legal
- * by construction, priced at nothing, shown to the rider as coverage they are
- * choosing to accept. But this is not that. A hole is ground nobody baked; this
- * is a *named* cell with no bytes, no size and no digest — a broken publish,
- * exactly what `assertRegionCellsIndexed` exists to refuse and what `client.ts`
- * promises callers they will never be handed. Two different failures with two
- * different remedies must not arrive as the same drawing.
+ * Without it a region cell the catalog does not index would fall through into
+ * `missingByBand`, which is drawn as a **hole**: ground with no published cell,
+ * legal by construction, priced at nothing. But this is not that. A hole is
+ * ground nobody baked; this is a *named* cell with no bytes, no size and no
+ * digest — a broken publish. Two different failures with two different remedies
+ * must not arrive as the same drawing.
  */
 function assertRegionListsIndexed(selection: Selection, ctx: SelectionContext): void {
     const checked = new Set<string>();
@@ -248,19 +227,16 @@ function assertRegionListsIndexed(selection: Selection, ctx: SelectionContext): 
 
 /**
  * The cell ids one part contributes to one band, before any published/missing
- * distinction — pure geometry (or, for a region, pure lookup).
+ * distinction — pure geometry, or for a region pure lookup.
  */
 function partCells(part: SelectionPart, bandEntry: BandEntry, ctx: SelectionContext, radiusM: number): string[] {
     switch (part.kind) {
         case "region": {
             const list = ctx.regionCells.get(part.regionId);
-            // A region whose list has not been fetched contributes nothing yet.
-            // Not an error: the UI adds the part and the list arrives a moment
-            // later, and a resolution that threw would make that a crash rather
-            // than a frame.
-            //
-            // `hasOwn`, because band ids are document strings and
-            // `"constructor"` is a legal one.
+                // A region whose list has not been fetched contributes nothing
+                // yet. Not an error: the UI adds the part and the list arrives a
+                // moment later. `hasOwn`, because band ids are document strings
+                // and `"constructor"` is a legal one.
             if (!list || !Object.hasOwn(list.cells, bandEntry.id)) return [];
             return [...list.cells[bandEntry.id]];
         }
@@ -274,14 +250,13 @@ function partCells(part: SelectionPart, bandEntry: BandEntry, ctx: SelectionCont
 }
 
 /**
- * The terrain squares one part covers — the OBCA §1.2 coverage rule, verbatim,
- * applied to the terrain grid (§13.3 says a region's list is built the same way).
+ * The terrain squares one part covers — the same coverage rule, applied to the
+ * terrain grid.
  *
  * There is no terrain special case here and there must never be one: a box and a
  * corridor resolve through exactly the test the bands use, and a region reads its
- * published list for the same reason it does for bands — deriving one from the
- * drawable boundary would let a simplification error drop an edge square, and a
- * dropped square is a stretch of route with no elevation at all.
+ * published list, because deriving one from the drawable boundary would let a
+ * simplification error drop an edge square.
  */
 function partTerrainCells(part: SelectionPart, log2: number, ctx: SelectionContext, radiusM: number): string[] {
     switch (part.kind) {
@@ -303,9 +278,8 @@ interface BandCells {
 }
 
 /** {@link partCells}, split against the band's index and sorted. Canonical ids
- *  sort lexicographically into `(i, j)` order (the padding width is fixed per
- *  band, `OBCA_Spec.md` §1.3), so a plain string compare matches the order the
- *  catalog publishes. */
+ *  sort lexicographically into `(i, j)` order, because the padding width is fixed
+ *  per band, so a plain string compare matches the order the catalog publishes. */
 function classify(
     part: SelectionPart,
     bandEntry: BandEntry,
@@ -328,9 +302,8 @@ type CellSource = (part: SelectionPart, bandEntry: BandEntry, index: CellIndexDo
  * Resolve a selection into the cells it names, per band, with per-part
  * attribution.
  *
- * This is the one-shot path: it computes every part from scratch. A UI holding
- * a slider does not want that sixty times a second — see {@link
- * SelectionResolver}.
+ * The one-shot path: it computes every part from scratch. A UI holding a slider
+ * does not want that sixty times a second — see {@link SelectionResolver}.
  */
 export function resolveSelection(selection: Selection, ctx: SelectionContext): SelectionResolution {
     assertRegionListsIndexed(selection, ctx);
@@ -387,9 +360,8 @@ function resolveWith(selection: Selection, ctx: SelectionContext, cellsFor: Cell
     const bytesOf = (band: string, id: string) => ctx.indices.get(band)?.byId.get(id)?.bytes ?? 0;
 
     // The raster: one union over every part, split three ways against the pinned
-    // terrain index. Not per part, because §13.3 prices terrain as one number for
-    // the selection and the parts list has no terrain column — the ledger shows
-    // one "elevation" line, which is what the "no toggle" decision implies.
+    // terrain index. Not per part, because terrain is priced as one number for the
+    // selection and the parts list has no terrain column.
     const terrainIndex = ctx.terrain ?? null;
     const terrain = emptyTerrainResolution();
     if (terrainIndex) {
@@ -458,32 +430,25 @@ interface CachedBand {
 /**
  * `resolveSelection`, but remembering what it worked out.
  *
- * The reason this exists is the corridor slider. Resolving a bikepacking-sized
- * selection is tens of milliseconds — the geometry is per band, per part, per
- * segment — and a slider asks for a new answer on every frame it moves. Almost
- * none of that work is new: a global corridor width (§8 U3) changes what the
- * *corridor* parts cover and nothing else, so a map of two regions and a drawn
- * box recomputes three parts to answer a question about none of them.
+ * The reason is the corridor slider. Resolving a bikepacking-sized selection is
+ * tens of milliseconds and a slider asks for a new answer on every frame it
+ * moves, yet almost none of that work is new: a global corridor width changes
+ * what the *corridor* parts cover and nothing else.
  *
  * So the cache is keyed per **(part, band)** — the finest grain at which an
  * answer is reusable — and an entry is reused only when everything it was
  * computed from is still the same object: the part itself, the band's index
- * document, the region's cell list, and (for corridors) the radius. Parts are
+ * document, the region's cell list, and for corridors the radius. Parts are
  * values here, replaced rather than edited by `withPart`, so identity is the
- * right test and a caller that does edit one in place can say so with
+ * right test; a caller that does edit one in place says so with
  * {@link invalidate}.
- *
- * Deliberately UI-free: no store, no `$state`, no framework. It is a data
- * structure with a lifetime, and the component that owns one is the component
- * that decides when it dies.
  */
 export class SelectionResolver {
     private readonly cache = new Map<string, CachedBand>();
-    /** The last index set a region's list was checked against, so §11.7's
-     *  cross-document check is not re-walked on every frame either. */
+    /** The last index set a region's list was checked against, so the cross-document
+     *  check is not re-walked on every frame either. */
     private readonly checked = new WeakMap<RegionCellsDocument, ReadonlyMap<string, CellIndexDocument>>();
-    /** Cache hits and misses, for tests and for anyone wondering where a frame
-     *  went. Not load-bearing. */
+    /** Cache hits and misses, for tests. Not load-bearing. */
     readonly stats = { computed: 0, reused: 0 };
 
     /** Drop everything remembered about one part — the escape hatch for a

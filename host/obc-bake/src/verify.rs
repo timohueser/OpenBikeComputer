@@ -1,36 +1,31 @@
 //! "Verify the output actually opens with `obc-reader`" — meant literally.
 //!
-//! A header sniff would pass on a file that is a valid 40-byte header followed by
-//! garbage, and that is exactly the artifact a killed packer, a full disk, or a
-//! truncated copy leaves behind. So verification runs the **real reader**, the same
-//! crate the device runs, over the **whole** artifact: parse the tables, then walk
-//! every LOD's quadtree and decode every feature in every chunk it reaches.
+//! A header sniff would pass on a file that is a valid 40-byte header followed by garbage, and that
+//! is exactly the artifact a killed packer, a full disk, or a truncated copy leaves behind. So
+//! verification runs the real reader, the same crate the device runs, over the whole artifact:
+//! parse the tables, then walk every LOD's quadtree and decode every feature in every chunk it
+//! reaches.
 //!
 //! Two things make that a real gate rather than a smoke test:
 //!
-//! - [`DecodeStatus`] is checked, not just the `Result`. The reader is written to
-//!   survive a corrupt map on a rider's SD card — it consumes an undecodable
-//!   feature whole and keeps going, counting it. So a walk that "succeeded" can
-//!   still have skipped a thousand malformed features, and only the counters say
-//!   so. Any `malformed` or `capacity_dropped` fails the artifact: the packer
-//!   validates its chunk size against the reader's cap
-//!   ([`obc_pack::serialize::validate_chunk_size`]), so neither can be a legitimate
+//! - [`DecodeStatus`] is checked, not just the `Result`. The reader is written to survive a corrupt
+//!   map on a rider's SD card: it consumes an undecodable feature whole and keeps going, counting
+//!   it. So a walk that succeeded can still have skipped a thousand malformed features, and only
+//!   the counters say so. Any `malformed` or `capacity_dropped` fails the artifact, because the
+//!   packer validates its chunk size against the reader's cap and neither can be a legitimate
 //!   outcome of a good bake.
-//! - The read goes through a **file-backed** [`ByteSource`], not a slice. A country
-//!   artifact is hundreds of megabytes; verifying it must not need it resident, and
-//!   reading it through `read_at` is also closer to how the device sees it (small
-//!   positioned reads through a cache) than a `Vec<u8>` would be.
+//! - The read goes through a file-backed [`ByteSource`], not a slice. A country artifact is
+//!   hundreds of megabytes; verifying it must not need it resident, and reading it through
+//!   `read_at` is also closer to how the device sees it.
 //!
-//! Verification happens on the temporary file, **before** it is renamed into the
-//! bake tree, so a failed artifact never exists at a path the catalog generator
-//! walks. That is the mechanism behind "a corrupted artifact never reaches the
-//! manifest": not a check the publisher performs, but a file that was never there.
+//! Verification happens on the temporary file, before it is renamed into the bake tree, so a failed
+//! artifact never exists at a path the catalog generator walks. That is the mechanism behind "a
+//! corrupted artifact never reaches the manifest": not a check the publisher performs, but a file
+//! that was never there.
 //!
-//! Since the cells cutover there is exactly one entrant, [`verify_cell`]: everything
-//! this bakery publishes is a cell. An **empty** cell is not a failure — open sea, or a
-//! `network`-band square with no roads — so the walk has no "must contain features"
-//! rule left; what it reports back is only what the caller then checks against the id.
-
+//! An empty cell is not a failure — open sea, or a `network`-band square with no roads — so the
+//! walk has no "must contain features" rule; what it reports back is only what the caller then
+//! checks against the id.
 use std::path::Path;
 
 use obc_file_source::FileSource;
@@ -40,22 +35,19 @@ use obc_reader::{MapCache, MapTables, Reader, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 
 /// What a verified artifact states about itself once the whole of it has been walked.
 ///
-/// Only what a caller acts on: the walk's real product is the *absence* of an error,
-/// and the counters it accumulates along the way are a means to that, not a result.
+/// Only what a caller acts on: the walk's real product is the absence of an error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Verified {
     pub obcm_version: u8,
     pub bbox: BBox,
 }
 
-/// The full walk for one **cell** artifact, plus the one check that makes it a cell:
-/// its header bbox must be *exactly* its grid square
-/// ([`OBCA_Spec.md` §3.1](../../../specs/OBCA_Spec.md)).
+/// The full walk for one cell artifact, plus the one check that makes it a cell: its header bbox
+/// must be exactly its grid square.
 ///
-/// The bbox is checked against the id rather than merely for sanity, because that
-/// identity is what lets an assembler graft the cell's chunk bytes in without decoding
-/// them — a cell whose header disagrees with its id would land its geometry somewhere
-/// else, silently.
+/// The bbox is checked against the id rather than merely for sanity, because that identity is what
+/// lets an assembler graft the cell's chunk bytes in without decoding them — a cell whose header
+/// disagrees with its id would land its geometry somewhere else, silently.
 pub fn verify_cell(path: &Path, square: (i64, i64, i64, i64)) -> Result<Verified, String> {
     let verified = walk(path)?;
     let (min_lon, min_lat, max_lon, max_lat) = square;
@@ -78,7 +70,7 @@ pub fn verify_cell(path: &Path, square: (i64, i64, i64, i64)) -> Result<Verified
 fn walk(path: &Path) -> Result<Verified, String> {
     let src = open_map(path)?;
     let tables = MapTables::parse(&src).map_err(|e| format!("{}: not a readable OBCM map: {e:?}", path.display()))?;
-    // The cache is ~277 KB — heap, never the stack (`alloc` feature).
+    // The cache is about 277 KB — heap, never the stack.
     let cache = MapCache::new_boxed();
     let reader = Reader::new(&src, &tables, &cache);
 
@@ -123,9 +115,8 @@ fn walk(path: &Path) -> Result<Verified, String> {
     Ok(Verified { obcm_version: reader.version, bbox })
 }
 
-/// The header a cell states about itself: its OBCM version and its bbox, and nothing
-/// else read. Forty bytes, so a whole cell store can be checked against its ids
-/// without decoding a single chunk.
+/// The header a cell states about itself: its OBCM version and its bbox, and nothing else read.
+/// Forty bytes, so a whole cell store can be checked against its ids without decoding a chunk.
 pub fn header_of(path: &Path) -> Result<(u8, BBox), String> {
     let src = open_map(path)?;
     let tables = MapTables::parse(&src).map_err(|e| format!("{}: not a readable OBCM map: {e:?}", path.display()))?;
@@ -134,14 +125,12 @@ pub fn header_of(path: &Path) -> Result<(u8, BBox), String> {
     Ok((reader.version, reader.bbox))
 }
 
-// --- verifying a whole cell tree (OBCA §3, OBCC) ------------------------------
-
 /// How much of a cell store to open.
 #[derive(Debug, Clone, Copy)]
 pub struct CellTreeVerifyOptions {
-    /// Full reader round-trip + digest on one cell in every `sample` — the *spot*
-    /// check. `1` opens every cell; `0` opens none. Every cell is still checked for
-    /// size and for header-bbox-equals-its-id, which needs 40 bytes.
+    /// Full reader round-trip and digest on one cell in every `sample` — the spot check. `1` opens
+    /// every cell; `0` opens none. Every cell is still checked for size and for
+    /// header-bbox-equals-its-id, which needs 40 bytes.
     pub sample: usize,
 }
 
@@ -199,25 +188,23 @@ impl CellTreeReport {
     }
 }
 
-/// Verify a published cell tree against its own `schema_version 3` catalog.
+/// Verify a published cell tree against its own catalog.
 ///
-/// The catalog is the thing a consumer trusts, so it is the thing this checks
-/// *against* — every claim in it, back to the bytes:
+/// The catalog is the thing a consumer trusts, so it is the thing this checks against — every claim
+/// in it, back to the bytes:
 ///
-/// 1. **The satellites and previews are the ones the root pinned.** `bytes` and
-///    `sha256` per object (`OBCC_Spec.md` §9). A referenced object that does not
-///    match is the failure the pinning exists to make impossible to miss.
-/// 2. **Every cell's header bbox is its id.** Cheap and total, because it is the check
-///    the catalog deliberately has no field for (§8): the identifier states the
-///    coverage and the bytes are made to agree with the identifier.
-/// 3. **Spot reader round-trips.** A sampled cell is opened with the real reader and
-///    walked whole — every chunk, every feature — and re-hashed against the manifest.
-/// 4. **The region lists resolve.** Every cell a region names is in its band's index,
-///    and the root's `bytes_by_band` adds up to its `bytes` (which is what
-///    `OBCA_Spec.md` §5.7's pre-download projection is arithmetic over).
+/// 1. The satellites and previews are the ones the root pinned, by `bytes` and `sha256` per object.
+/// 2. Every cell's header bbox is its id. Cheap and total, because it is the check the catalog
+///    deliberately has no field for: the identifier states the coverage and the bytes are made to
+///    agree with the identifier.
+/// 3. Spot reader round-trips. A sampled cell is opened with the real reader and walked whole —
+///    every chunk, every feature — and re-hashed against the manifest.
+/// 4. The region lists resolve. Every cell a region names is in its band's index, and the root's
+///    `bytes_by_band` adds up to its `bytes`, which is what the pre-download projection is
+///    arithmetic over.
 ///
-/// Problems are collected rather than thrown, so one run names everything wrong with
-/// a store instead of the first thing.
+/// Problems are collected rather than thrown, so one run names everything wrong with a store
+/// instead of the first thing.
 pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<CellTreeReport, String> {
     use obc_pack::catalog::{parse_strict_id, Catalog, CellIndexDocument, RegionCellsDocument};
     use std::collections::{BTreeMap, BTreeSet};
@@ -383,9 +370,9 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
 
     // 1 + 2, for the terrain artifact class. Same machinery, its own document: the pinned index
     // must be the bytes the root named, and every terrain cell's container must state exactly the
-    // 1 × 1 rectangle its id names (`OBCT_Spec.md` §4.1). Its revision is *not* compared with the
-    // schema's — that is the independence, and comparing them here would quietly reintroduce the
-    // lockstep OBCC §13.2 removes.
+    // 1 × 1 rectangle its id names. Its revision is not compared with the schema's — that is the
+    // independence, and comparing them here would quietly reintroduce the lockstep the two tracks
+    // exist to remove.
     let mut terrain_published: BTreeSet<String> = BTreeSet::new();
     if let Some(terrain) = &root.terrain {
         let rel = format!("cells/{}/index.json", obc_pack::catalog::TERRAIN_DIR);
@@ -490,9 +477,9 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
                 }
             }
         }
-        // A terrain id a region names must be an artifact or a known-empty square. Known-empty
-        // ones are not in `terrain_published`, so only a *missing* id is reported — the generator
-        // already refuses to publish a region naming one that is neither.
+        // A terrain id a region names must be an artifact or a known-empty square. Known-empty ones
+        // are not in `terrain_published`, so only a missing id is reported; the generator already
+        // refuses to publish a region naming one that is neither.
         let priced = region.terrain.as_ref().map_or(0, |t| t.cell_count);
         let listed = doc.terrain.iter().filter(|id| terrain_published.contains(*id)).count() as u32;
         if listed != priced {
@@ -548,9 +535,9 @@ fn satellite<T: serde::de::DeserializeOwned>(
 
 /// The artifact as a [`ByteSource`]: positioned reads, nothing resident.
 ///
-/// OBCM addresses bytes with `u32` offsets, so a >4 GB artifact is not a map the reader could
-/// ever open. That is the format's wall, not the read seam's, which is why it is stated here
-/// rather than inside the shared adapter.
+/// OBCM addresses bytes with `u32` offsets, so a >4 GB artifact is not a map the reader could ever
+/// open. That is the format's wall, not the read seam's, which is why it is stated here rather than
+/// inside the shared adapter.
 fn open_map(path: &Path) -> Result<FileSource, String> {
     let src = FileSource::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let len = src.len();

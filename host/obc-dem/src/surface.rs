@@ -108,9 +108,9 @@ fn approximation(grid: &[i16], stride: usize, y: usize, x: usize, width: usize) 
 
 /// Convert an existing terrain container without changing any native sample.
 ///
-/// Reference-free by construction: §9's lifts are added to the native lattice by the bake, so by
-/// the time a container reaches this function its heights already are the surface every consumer
-/// reads, and the pyramid, the maxima and the error codes describe that one surface.
+/// Reference-free by construction: the lifts are added to the native lattice by the bake, so by the
+/// time a container reaches this function its heights already are the surface every consumer reads,
+/// and the pyramid, the maxima and the error codes describe that one surface.
 pub fn convert<W: Write + Seek>(bytes: &[u8], out: W) -> Result<(), String> {
     let source = SliceSource(bytes);
     let reader = TerrainReader::parse(&source).map_err(|e| format!("invalid source terrain: {e:?}"))?;

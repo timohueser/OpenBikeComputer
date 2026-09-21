@@ -1,9 +1,9 @@
-//! The ride journal (`FLAT_Store_Format.md` §7): the one place in this format where bytes become
+//! The ride journal (`FLAT_Store_Format.md`): the one place in this format where bytes become
 //! durable without a commit.
 //!
-//! Each slot's tail is one full program page. Its header lives in a separate, page-isolated record
-//! and is written only after the tail is durable. One CRC covers the header and the full tail page:
-//! a cut during either write leaves no valid header/tail pair, so recovery skips it.
+//! Each slot's tail is one full program page. Its header lives in a separate, page-isolated record and
+//! is written only after the tail is durable. One CRC covers the header and the full tail page, so a
+//! cut during either write leaves no valid header/tail pair and recovery skips it.
 
 use obc_crc::Crc32;
 
@@ -15,9 +15,8 @@ use super::seam::RIDE_RESUME_LEN;
 use super::seam::{ObjectId, Revision, StoreId};
 use super::FORMAT_VERSION;
 
-/// `FSRJ`.
 pub const MAGIC: [u8; 4] = *b"FSRJ";
-/// Tail bytes one slot carries (§7.1): one whole media program page.
+/// Tail bytes one slot carries: one whole media program page.
 pub const TAIL_CAPACITY: usize = PROGRAM_PAGE;
 /// The slot CRC field, inside the range it covers.
 const CRC_OFFSET: usize = 504;
@@ -45,7 +44,7 @@ pub struct Slot {
     pub flushed: u64,
     pub tail_len: u32,
     /// CRC-32 over `[0, flushed + tail_len)` — a seed for the resumed session, not a verification
-    /// obligation (§7.3).
+    /// obligation.
     pub payload_crc: u32,
     /// Opaque recorder continuation state. Meaningful only on logical slots.
     pub resume: [u8; RIDE_RESUME_LEN],
@@ -87,8 +86,8 @@ impl Slot {
     }
 
     /// The header block this slot decoded from. Every byte outside a decoded field is proven zero, so
-    /// re-encoding reproduces what the card holds — which is what lets a verifier seed
-    /// [`header_digest`] without keeping all sixteen headers in RAM.
+    /// re-encoding reproduces what the card holds, which lets a verifier seed [`header_digest`]
+    /// without keeping all sixteen headers in RAM.
     pub fn header_bytes(&self, store: &StoreId) -> [u8; BLOCK] {
         self.encode_with(self.slot_crc, store)
     }
@@ -182,7 +181,7 @@ impl Slot {
         })
     }
 
-    /// §7.1's cross-check: a slot left by an earlier ride over reused extents is not this one's.
+    /// A slot left by an earlier ride over reused extents is not this one's.
     pub fn describes(&self, entry: &Entry) -> bool {
         self.id == entry.meta.id && self.revision == entry.meta.revision && self.ranges == entry.ranges
     }
@@ -248,8 +247,8 @@ mod tests {
         assert_eq!(expected.payload_len(), 249_472);
     }
 
-    /// The slot CRC covers the header and the whole 16,384-byte tail slot, pad included: a byte flip anywhere in the tail
-    /// fails it, which is what makes a slot all-or-nothing without a gate.
+    /// The slot CRC covers the header and the whole 16,384-byte tail slot, pad included: a byte flip
+    /// anywhere in the tail fails it, which makes a slot all-or-nothing without a gate.
     #[test]
     fn the_slot_crc_covers_the_tail_and_the_pad() {
         let mut tail = tail(3_712);
@@ -277,7 +276,7 @@ mod tests {
         assert_eq!(Slot::decode(&ZERO_PAD[..BLOCK], 0, &STORE, 30_718).unwrap_err().reason, Reason::Magic);
     }
 
-    /// §7.1: a flushed length that is not a multiple of the program page, and a tail above the slot's
+    /// A flushed length that is not a multiple of the program page, and a tail above the slot's
     /// 16,384-byte area, are both invalid — the binding limit is the tail area, not the `u32`.
     #[test]
     fn the_flush_boundary_and_the_tail_bound_are_enforced() {
@@ -295,8 +294,8 @@ mod tests {
         assert!(Slot::decode(&long.seal(&STORE, &[]), 9, &STORE, 30_718).is_ok());
     }
 
-    /// §7.2's full-page tail has no metadata hole: an ordinary checkpoint leaves at most 16,383 bytes behind, and
-    /// every possible remainder fits.
+    /// A full-page tail has no metadata hole: an ordinary checkpoint leaves at most 16,383 bytes
+    /// behind, and every possible remainder fits.
     #[test]
     fn the_tail_slot_carries_every_possible_page_remainder() {
         assert_eq!(TAIL_CAPACITY - (PROGRAM_PAGE - 1), 1);

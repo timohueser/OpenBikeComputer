@@ -1,12 +1,12 @@
 /**
- * The shared check (#1002): one request, made only when asked, and a prompt that remembers what the
- * rider already answered.
+ * The shared check: one request, made only when asked, and a prompt that remembers what the rider
+ * already answered.
  *
  * Two of these are behaviours rather than conveniences. **One fetch** is why the module exists at
  * all — the card and the prompt both want the answer, and two surfaces must not become two
- * requests. **Nothing until `ensure`** is the privacy rule the card's `onMount` comment used to
- * carry: constructing the store, reading it, rendering against it must never reach the network,
- * because the only thing that licenses the request is a connected device.
+ * requests. **Nothing until `ensure`** is the privacy rule: constructing the store, reading it and
+ * rendering against it must never reach the network, because the only thing that licenses the
+ * request is a connected device.
  */
 
 import { describe, expect, it } from "vitest";
@@ -98,7 +98,7 @@ describe("what the prompt is offered", () => {
         const check = await checked();
         expect(check.offer(SERIAL, "1.4.0+deadbee"), "current").toBeNull();
         expect(check.offer(SERIAL, "1.5.0"), "ahead").toBeNull();
-        // #773's locked refusal, and the one that would be worst as a popup: a probe-flashed
+        // The locked refusal, and the one that would be worst as a popup: a probe-flashed
         // device is never told to update.
         expect(check.offer(SERIAL, "abc1234"), "a dev build").toBeNull();
         expect(check.offer(SERIAL, null), "nothing reported").toBeNull();

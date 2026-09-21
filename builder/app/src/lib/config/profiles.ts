@@ -1,8 +1,8 @@
 // Pure logic for the routing-profile editor. Everything here is driven by the
-// config JSON Schema served by `obc-pack schema` (the class-name enums, the
-// >= 1.0 multiplier bound, and the four shipped default profiles all come from
-// the schema — never re-hardcoded in Svelte). The component in
-// components/advanced/ProfilesTab.svelte is thin glue over these functions.
+// config JSON Schema served by `obc-pack schema` — the class-name enums, the
+// multiplier bound and the four shipped default profiles all come from the schema
+// and are never re-hardcoded in Svelte. The component in components/advanced/ is
+// thin glue over these functions.
 
 import {
     deepCopy,
@@ -40,8 +40,8 @@ export interface ProfileSchema {
 }
 
 // Loose views into the schema tree — the served envelope only strong-types
-// $defs.style, so the routing bits are read defensively with fallbacks that
-// match the spec (a schema that predates routing simply yields no editor).
+// $defs.style, so the routing bits are read defensively with fallbacks that match
+// the spec (a schema that predates routing simply yields no editor).
 interface SchemaTree {
     properties?: {
         routing?: {
@@ -64,9 +64,8 @@ interface SchemaTree {
 }
 
 /**
- * Read the routing-profile capabilities out of the served schema, or null when
- * the schema doesn't describe routing (older obc-pack) — the editor hides
- * itself in that case rather than guessing.
+ * Read the routing-profile capabilities out of the served schema, or null when the
+ * schema does not describe routing — the editor hides itself rather than guessing.
  */
 export function readProfileSchema(env: SchemaEnvelope | null): ProfileSchema | null {
     const s = (env?.schema ?? null) as SchemaTree | null;
@@ -87,8 +86,8 @@ export function readProfileSchema(env: SchemaEnvelope | null): ProfileSchema | n
         minProfiles: profilesSchema?.minItems ?? 1,
         maxProfiles: profilesSchema?.maxItems ?? 8,
         nameMaxBytes: profile?.name?.["x-maxUtf8Bytes"] ?? profile?.name?.maxLength ?? 12,
-        // A schema that predates v12 states no climb bounds; the wire field is a
-        // `u8` either way, so fall back to its full range and to climb-blind.
+            // An older schema states no climb bounds; the wire field is a `u8` either
+            // way, so fall back to its full range and to climb-blind.
         climbMin: profile?.climb_weight?.minimum ?? 0,
         climbMax: profile?.climb_weight?.maximum ?? 255,
         climbDefault: profile?.climb_weight?.default ?? 0,
@@ -122,29 +121,26 @@ export function profileDefault(profile: NavProfile, ps: ProfileSchema): Multipli
     return profile.default ?? ps.defaultMultiplier;
 }
 
-/** `true` when the profile states a climb weight of its own (vs. being climb-blind
- * by omission). A legacy config written before v12 states none. */
+/** `true` when the profile states a climb weight of its own, rather than being
+ *  climb-blind by omission. */
 export function hasClimbWeight(profile: NavProfile): boolean {
     return typeof profile.climb_weight === "number" && Number.isFinite(profile.climb_weight);
 }
 
 /**
  * A profile's effective climb weight — flat metres charged per metre of ascent.
- * Unlike a class multiplier this inherits nothing: an absent (or, from a
- * hand-edited config, a non-numeric) field is the schema's `0`, climb-blind,
- * which is exactly how the packer reads it. So a v11-era config renders `0`
- * rather than NaN.
+ * Unlike a class multiplier this inherits nothing: an absent or non-numeric field is
+ * the schema's `0`, climb-blind, which is exactly how the packer reads it.
  */
 export function profileClimbWeight(profile: NavProfile, ps: ProfileSchema): number {
     return hasClimbWeight(profile) ? profile.climb_weight! : ps.climbDefault;
 }
 
 /**
- * Whether a raw climb-weight entry is admissible. The field is the `u8` §8.6
- * carries, so the only rules are "a whole number" and the schema's `0..255` —
- * there is no `>= 1.0` floor to respect, because the climb term is *added*
- * after the way-kind scaling and so can never make an edge cheaper than the
- * crow flies. `0` is a meaningful value, not an unset one.
+ * Whether a raw climb-weight entry is admissible. The field is a `u8`, so the only
+ * rules are "a whole number" and the schema's `0..255`. There is no `>= 1.0` floor,
+ * because the climb term is *added* after the way-kind scaling and so can never make
+ * an edge cheaper than the crow flies. `0` is a meaningful value, not an unset one.
  */
 export function checkClimbWeight(n: number, min: number, max: number): { ok: boolean; hint: string | null } {
     if (!Number.isFinite(n) || !Number.isInteger(n)) {
@@ -173,9 +169,9 @@ export function clearClimbWeight(profile: NavProfile): void {
 }
 
 /**
- * The effective multiplier shown in a cell: the explicit override if the class
- * carries one, otherwise the profile `default`. This mirrors the packer, which
- * fills every one of the 32/8 wire slots from `default` and overlays the map.
+ * The effective multiplier shown in a cell: the explicit override if the class carries
+ * one, otherwise the profile `default`. This mirrors the packer, which fills every wire
+ * slot from `default` and overlays the map.
  */
 export function cellValue(
     profile: NavProfile,
@@ -189,11 +185,9 @@ export function cellValue(
 }
 
 /**
- * Whether a raw numeric entry is admissible against the schema's minimum
- * (`ProfileSchema.multiplierMin`). A value below it is rejected with a hint
- * that mirrors the packer's error text, so the CLI and the web builder tell
- * the user the same thing. This is the single copy of that message — the
- * multiplier cells call it rather than re-wording it.
+ * Whether a raw numeric entry is admissible against the schema's minimum. A value below
+ * it is rejected with a hint that mirrors the packer's error text, so the CLI and the web
+ * builder tell the user the same thing. This is the single copy of that message.
  */
 export function checkMultiplier(n: number, min: number): { ok: boolean; hint: string | null } {
     if (!Number.isFinite(n)) return { ok: false, hint: "enter a number ≥ " + min.toFixed(1) + "." };
@@ -233,21 +227,18 @@ export function setProfileName(profile: NavProfile, name: string): void {
     profile.name = name;
 }
 
-// --- routing-section lifecycle over a working config -------------------------
-
 /**
  * The profiles the editor should display for a config: the config's own
- * `routing.profiles` if present, otherwise the schema's shipped defaults (shown
- * read-until-edited so an untouched CLI config stays `routing`-less).
+ * `routing.profiles` if present, otherwise the schema's shipped defaults, shown
+ * read-until-edited so an untouched CLI config stays `routing`-less.
  */
 export function displayProfiles(config: PackConfig, ps: ProfileSchema): NavProfile[] {
     return config.routing?.profiles ?? defaultProfiles(ps);
 }
 
 /**
- * Materialize `config.routing` so it can be edited in place, seeding it from the
- * schema defaults when the config didn't carry a routing section. Returns the
- * (now guaranteed) routing object. Idempotent.
+ * Materialize `config.routing` so it can be edited in place, seeding it from the schema
+ * defaults when the config did not carry a routing section. Idempotent.
  */
 export function ensureRouting(config: PackConfig, ps: ProfileSchema): RoutingConfig {
     if (!config.routing) {
@@ -270,10 +261,9 @@ function uniqueName(existing: NavProfile[], base = "Custom", max = 12): string {
 }
 
 /**
- * Append a new profile (up to the schema max). The new profile carries only a
- * name + the schema default multiplier, so every class inherits `default` — a
- * neutral starting point the user then tunes. Returns the new profile or null
- * if the profile cap is already reached.
+ * Append a new profile, up to the schema max. The new profile carries only a name and
+ * the schema default multiplier, so every class inherits `default`. Returns null if the
+ * profile cap is already reached.
  */
 export function addProfile(config: PackConfig, ps: ProfileSchema): NavProfile | null {
     const routing = ensureRouting(config, ps);
@@ -296,9 +286,9 @@ export function removeProfile(config: PackConfig, i: number, ps: ProfileSchema):
 }
 
 /**
- * Reset profile `i` to its canonical shipped default. Matches by name first
- * (so "Gravel" resets to the Gravel default wherever it sits), falling back to
- * the same-index default, then the first. Returns the replacement.
+ * Reset profile `i` to its canonical shipped default. Matches by name first, so "Gravel"
+ * resets to the Gravel default wherever it sits, falling back to the same-index default
+ * and then the first.
  */
 export function resetProfile(config: PackConfig, i: number, ps: ProfileSchema): NavProfile | null {
     const routing = ensureRouting(config, ps);

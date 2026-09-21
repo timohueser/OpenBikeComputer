@@ -1,13 +1,11 @@
 //! Every test vector in both frozen specs, pinned byte for byte.
 //!
-//! `FLAT_Store_Format.md` §4.1, §5.7, §6.1 and §7.5 are the on-card ones, and this crate encodes
-//! them, so those are pinned against the encoder's own output. `FLAT_Store_Protocol.md` §3.10's four
-//! frames belong to the engine, which is a later slice; what is pinned of them here is the half this
-//! contract owns — they carry §5.7's objects and §6.1's offset, and the two documents agree about
-//! them or one of the two is wrong.
+//! `FLAT_Store_Format.md`'s vectors are the on-card ones, and this crate encodes them, so they are
+//! pinned against the encoder's own output. `FLAT_Store_Protocol.md`'s frames belong to the engine;
+//! what is pinned of them here is the half this contract owns — they carry the format's objects and
+//! offsets, and the two documents agree about them or one of the two is wrong.
 //!
-//! The hex in each fence is the spec's own, transcribed. A vector that stops describing what the
-//! encoder produces is either a code bug or a spec bug, and either way it stops the build.
+//! The hex in each fence is the spec's own, transcribed.
 
 use std::vec::Vec;
 
@@ -19,12 +17,12 @@ use super::seam::{DisplayName, EntryFlags, EntryMeta, ObjectId, ObjectKind, Revi
 use super::sim::SparseDisk;
 use super::store::FlatStore;
 
-/// §4.1's `StoreId`.
+/// The spec's `StoreId`.
 const STORE: StoreId =
     StoreId([0x8F, 0x2C, 0x41, 0xD9, 0x6B, 0x07, 0x4E, 0xA3, 0xB1, 0x55, 0x9C, 0x20, 0x7D, 0xE8, 0x34, 0x66]);
-/// §4.1's card: a 32 GB card, 62,914,560 blocks.
+/// The spec's card: 32 GB, 62,914,560 blocks.
 const TOTAL_BLOCKS: u64 = 62_914_560;
-/// The extents §6 recomputes from it.
+/// The extents recomputed from it.
 const EXTENTS: u32 = 30_718;
 
 /// Transcribes a spec hex fence: whitespace-separated byte pairs, `//` comments stripped.
@@ -42,7 +40,7 @@ fn assert_prefix_then_zero(bytes: &[u8], prefix: &str) {
     assert!(bytes[expected.len()..].iter().all(|&byte| byte == 0), "the tail past the fence is not zero");
 }
 
-/// §5.7's route: `ObjectId 1` at `Revision 3`, 42,137 bytes in extent 12, named "Grimsel Loop".
+/// The spec's route: `ObjectId 1` at `Revision 3`, 42,137 bytes in extent 12, named "Grimsel Loop".
 fn route() -> Entry {
     let mut ranges = Ranges::default();
     ranges.push(12, 1).unwrap();
@@ -61,7 +59,7 @@ fn route() -> Entry {
     }
 }
 
-/// §5.7's ride: `ObjectId 2` at `Revision 1`, `RECORDING`, a 32 MiB reserve from extent 13.
+/// The spec's ride: `ObjectId 2` at `Revision 1`, `RECORDING`, a 32 MiB reserve from extent 13.
 fn ride() -> Entry {
     let mut ranges = Ranges::default();
     ranges.push(13, 32).unwrap();
@@ -84,7 +82,7 @@ fn catalog_header() -> Header {
     Header { store: STORE, sequence: 7, next_object: 3, entry_count: 2 }
 }
 
-/// §5.7's body: the header followed by the two entries, 768 bytes.
+/// The spec's body: the header followed by the two entries, 768 bytes.
 fn body() -> Vec<u8> {
     let mut body = Vec::new();
     body.extend_from_slice(&catalog_header().encode());
@@ -93,8 +91,8 @@ fn body() -> Vec<u8> {
     body
 }
 
-/// §4.1, both cards: the 32 GB one §8 gives 1 MiB extents, and the 128 GiB one it gives 2 MiB — the
-/// card the old fixed-size format could not address at all.
+/// Both cards: the 32 GB one gets 1 MiB extents, and the 128 GiB one 2 MiB — the card a fixed-size
+/// format could not have addressed at all.
 #[test]
 fn superblock_vector() {
     let bytes = super::superblock::Superblock::for_card(STORE, TOTAL_BLOCKS).expect("§4.1's card").encode();
@@ -110,7 +108,7 @@ fn superblock_vector() {
     assert_eq!(superblock.geometry.extent_size(), 1 << 20, "§4.1: a 32 GB card gets the 1 MiB minimum");
     assert_eq!(superblock.extent_count(), EXTENTS, "§4.1: 30,718 extents");
 
-    // §4.1's second card: 268,435,456 blocks — 128 GiB — whose geometry byte is 21 rather than 20.
+    // The second card: 268,435,456 blocks — 128 GiB — whose geometry byte is 21 rather than 20.
     let bytes = super::superblock::Superblock::for_card(STORE, 268_435_456).expect("§4.1's larger card").encode();
     assert_prefix_then_zero(
         &bytes[..504],
@@ -125,7 +123,6 @@ fn superblock_vector() {
     assert_eq!(superblock.extent_count(), 65_535, "§6: the extent area is one extent short of the index");
 }
 
-/// §5.7, the header block.
 #[test]
 fn catalog_header_vector() {
     let bytes = catalog_header().encode();
@@ -137,7 +134,6 @@ fn catalog_header_vector() {
     );
 }
 
-/// §5.7, entry 0.
 #[test]
 fn route_entry_vector() {
     let bytes = route().encode();
@@ -155,7 +151,6 @@ fn route_entry_vector() {
     assert_eq!(Entry::decode(&bytes, EXTENTS).unwrap(), route());
 }
 
-/// §5.7, entry 1.
 #[test]
 fn ride_entry_vector() {
     let bytes = ride().encode();
@@ -168,7 +163,6 @@ fn ride_entry_vector() {
     assert_eq!(Entry::decode(&bytes, EXTENTS).unwrap(), ride());
 }
 
-/// §5.7: the body is those 768 bytes, and its CRC is what the gate carries.
 #[test]
 fn catalog_body_crc_vector() {
     let body = body();
@@ -177,7 +171,6 @@ fn catalog_body_crc_vector() {
     assert_eq!(crc32(&body), 0x9C1D_23F9);
 }
 
-/// §5.7, the gate of copy A.
 #[test]
 fn catalog_gate_vector() {
     let gate = Gate { copy: 0, store: STORE, sequence: 7, entry_count: 2, body_crc: 0x9C1D_23F9 };
@@ -193,7 +186,7 @@ fn catalog_gate_vector() {
     assert_eq!(Gate::decode(&bytes, 0, &STORE).unwrap(), gate);
 }
 
-/// §7.5: slot 9, checkpoint 41, 15 pages flushed, 3,712 tail bytes.
+/// Slot 9, checkpoint 41, 15 pages flushed, 3,712 tail bytes.
 #[test]
 fn ride_journal_slot_vector() {
     let tail: Vec<u8> = (0..3_712).map(|index| (index * 7 + 3) as u8).collect();
@@ -231,7 +224,7 @@ fn ride_journal_slot_vector() {
     assert_eq!(TAIL_CAPACITY, 16_384);
 }
 
-/// §9's capacities, gathered: each is normative where it is defined, and this is the table.
+/// The spec's capacities, gathered: each is normative where it is defined, and this is the table.
 #[test]
 fn capacity_table() {
     use super::layout::{Geometry, EXTENT_AREA, MAX_EXTENTS, MAX_RANGES, MIN_EXTENT_SIZE, PROGRAM_PAGE, SLOTS};
@@ -241,7 +234,7 @@ fn capacity_table() {
     assert_eq!(EXTENT_AREA, 4_096);
     assert_eq!(MAX_EXTENTS, 65_536);
     assert_eq!(MAX_EXTENTS as usize / 8, 8_192, "the resident free bitmap");
-    // §9's extent area: 64 GiB at the 1 MiB minimum, and 65,536 extents at every size above it.
+    // The extent area: 64 GiB at the 1 MiB minimum, and 65,536 extents at every size above it.
     assert_eq!(MAX_EXTENTS as u64 * MIN_EXTENT_SIZE, 64 << 30);
     assert_eq!(MAX_EXTENTS as u64 * Geometry::from_log2(31).unwrap().extent_size(), 128 << 40);
     assert_eq!(super::layout::CATALOG_BLOCKS as usize * BLOCK, 262_144, "one catalog copy");
@@ -254,8 +247,8 @@ fn capacity_table() {
     assert_eq!(TAIL_CAPACITY, 16_384);
 }
 
-/// `FLAT_Store_Protocol.md` §3.10's `LIST` response carries §5.7's two objects. Its 88-byte entries
-/// are the format entries' metadata, and this is the seam between the two specs.
+/// `FLAT_Store_Protocol.md`'s `LIST` response carries the two objects. Its 88-byte entries are the
+/// format entries' metadata, and this is the seam between the two specs.
 #[test]
 fn wire_list_entries_carry_the_same_metadata() {
     let frame = hex("4F 42 43 34 04 01 01 00 C8 00 00 00 02 2A 00 00
@@ -290,10 +283,8 @@ fn wire_list_entries_carry_the_same_metadata() {
     }
 }
 
-/// §3.10's other three fences. FS3 owns no wire encoder — the control frame is the engine's — so what
-/// is pinned here is the half that belongs to this contract: the object metadata and the payload
-/// offset those frames carry are the format's own, and the frame's self-description agrees with its
-/// length.
+/// The protocol's other three fences. This crate owns no wire encoder, so what is pinned is the half
+/// that belongs to this contract: the object metadata and the payload offset those frames carry.
 #[test]
 fn the_wire_vectors_carry_the_formats_own_values() {
     // `PUT` creating the route: `ObjectId` zero, and the route's declared length, CRC, kind and name.
@@ -316,7 +307,7 @@ fn the_wire_vectors_carry_the_formats_own_values() {
     assert_eq!(put[48] as usize, route.name.len());
     assert_eq!(&put[52..52 + route.name.len()], route.name.as_bytes());
 
-    // A stream frame of that upload, at §6.1's worked offset.
+    // A stream frame of that upload, at the worked offset.
     let stream = hex("01 2A 00 00 00 A0 00 00 00 00 00 00 00 04 00 00");
     assert_eq!(stream.len(), 16);
     assert_eq!(u32_at(&stream, 0), u32_at(&put, 12), "the transfer is named by its request");
@@ -344,9 +335,8 @@ fn the_wire_vectors_carry_the_formats_own_values() {
     );
 }
 
-/// The vectors as a card: §4.1's superblock, §5.7's catalog in copy A, and nothing else. A mount of it
-/// must produce exactly those two objects, that sequence, that cursor, and a free map that is the
-/// catalog's complement.
+/// The vectors as a card. A mount of it must produce exactly those two objects, that sequence, that
+/// cursor, and a free map that is the catalog's complement.
 #[test]
 fn a_card_built_from_the_vectors_mounts_to_the_vectors() {
     let disk = SparseDisk::blank(TOTAL_BLOCKS, 1);
@@ -365,7 +355,7 @@ fn a_card_built_from_the_vectors_mounts_to_the_vectors() {
     assert_eq!(store.entries().collect::<Vec<_>>(), std::vec![route().meta, ride().meta]);
     assert_eq!(store.free_extents(), EXTENTS - 33, "extent 12 and the ride's 32-extent reserve");
 
-    // §6.1's worked example, through the seam this time: payload offset 40,960 of the route.
+    // The worked example, through the seam this time: payload offset 40,960 of the route.
     disk.install(28_752, &[0xAB; BLOCK]);
     let handle = store.open(ObjectId(1), None).unwrap();
     let mut buf = [0u8; 16];

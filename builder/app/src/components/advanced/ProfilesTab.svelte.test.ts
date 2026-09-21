@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 
 // The profiles editor mounted against the *real* schema `obc-pack schema`
-// serves, so the climb-weight cell (#1092) is pinned to the field the packer
-// actually reads rather than to a fixture that could drift from it.
+// serves, so the climb-weight cell is pinned to the field the packer actually
+// reads rather than to a fixture that could drift from it.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";

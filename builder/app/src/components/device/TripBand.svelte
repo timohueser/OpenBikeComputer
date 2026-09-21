@@ -5,14 +5,13 @@
   segment, reorder and remove.
 
   The band's numbers are the ones this side can know. A trip's stage list comes from the trip
-  object, which the page downloads (56 bytes plus eight per stage); its distance and ascent do not
-  exist anywhere but in the stage routes' own payloads, and a `LIST` entry carries neither (§3.3).
-  So the band counts stages and leaves the totals to the preview, which downloads every stage
-  anyway — rather than printing a dash where a number used to be.
+  object, which the page downloads; its distance and ascent exist nowhere but in the stage routes'
+  own payloads, and a catalog entry carries neither. So the band counts stages and leaves the
+  totals to the preview, which downloads every stage anyway.
 
-  The left preview is a real button: it opens the whole trip's preview (the page concatenates the
-  same stage tracks that were drawn here). Each stage row's name is a button too, opening that
-  stage's own preview. Presentation only — every cable operation is a callback from the page.
+  The left preview is a real button: it opens the whole trip's preview. Each stage row's name is a
+  button too, opening that stage's own preview. Presentation only — every cable operation is a
+  callback from the page.
 -->
 <script lang="ts">
     import PopMenu from "./PopMenu.svelte";

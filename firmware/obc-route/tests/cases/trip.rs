@@ -1,10 +1,10 @@
-//! Trip-object codec (`obc-ble-interface-spec.md` §7.7): round-trip, the committed
-//! `specs/vectors/trip-v2.bin` pin (dangling-ref fixture), and the read guards.
+//! Trip-object codec: round-trip, the committed `specs/vectors/trip-v2.bin` pin, and the read
+//! guards.
 
 use obc_formats::io::{ByteSink, Error, SliceSource};
 use obc_route::{trip_object_len, write_trip, TripMeta, TripSummary, MAX_TRIP_STAGES, TRIP_HEADER_LEN, TRIP_VERSION};
 
-/// A `ByteSink` over a `Vec` — the host's whole-object staging buffer.
+/// A `ByteSink` over a `Vec`: the host's whole-object staging buffer.
 #[derive(Default)]
 struct VecSink(Vec<u8>);
 impl ByteSink for VecSink {
@@ -25,7 +25,6 @@ fn encode(name: &str, stages: &[u64]) -> Vec<u8> {
     sink.0
 }
 
-/// Writer → reader round-trip: the header and every stage id survive, in order.
 #[test]
 fn round_trip() {
     let stages = [7u64, 8, 99, 3, 5];
@@ -44,8 +43,8 @@ fn round_trip() {
     assert_eq!(summary.stage_count, stages.len() as u16);
 }
 
-/// An empty trip (no stages) is a valid 56-byte header. The format tolerates it even though the app
-/// dissolves a trip that loses its last stage — the codec is policy-free.
+/// An empty trip is a valid 56-byte header. The codec is policy-free, even though the app
+/// dissolves a trip that loses its last stage.
 #[test]
 fn empty_trip_is_header_only() {
     let bytes = encode("Loose", &[]);
@@ -56,10 +55,8 @@ fn empty_trip_is_header_only() {
     assert_eq!(TripSummary::read(&SliceSource(&bytes)).unwrap().stage_count, 0);
 }
 
-/// The committed vector: "Alpen Traverse", stages `[7, 8, 0x1_0000_0063]` — the deliberately
-/// full-width third id is the dangling ref
-/// the codec carries verbatim (validation is the app's job). Re-encoding reproduces the file
-/// byte-for-byte, so the production writer is pinned to the spec builder too.
+/// The committed vector: "Alpen Traverse" with stages `[7, 8, 0x1_0000_0063]`. The full-width
+/// third id is a dangling ref the codec carries verbatim; validation is the app's job.
 #[test]
 fn pins_the_committed_trip_v2_vector() {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../specs/vectors/trip-v2.bin");
@@ -77,7 +74,6 @@ fn pins_the_committed_trip_v2_vector() {
     assert_eq!(encode("Alpen Traverse", &[7, 8, 0x1_0000_0063]), bytes);
 }
 
-/// A version byte other than 2 is rejected (the OBCR-style version gate).
 #[test]
 fn rejects_wrong_version() {
     let mut bytes = encode("X", &[1, 2]);
@@ -98,9 +94,8 @@ fn rejects_length_mismatch() {
     assert_eq!(TripSummary::read(&SliceSource(&long)), Err(Error::BadOffset));
 }
 
-/// A trip with more stages than the resident cap windows to the first `MAX_TRIP_STAGES` on read
-/// (mirroring the waypoint-section windowing), with `truncated = true`; the summary keeps the true
-/// stored count.
+/// A trip with more stages than the resident cap windows to the first `MAX_TRIP_STAGES` on read,
+/// with `truncated = true`. The summary keeps the true stored count.
 #[test]
 fn windows_a_trip_past_the_stage_cap() {
     let over = MAX_TRIP_STAGES + 5;
@@ -114,8 +109,7 @@ fn windows_a_trip_past_the_stage_cap() {
     assert_eq!(TripSummary::read(&SliceSource(&bytes)).unwrap().stage_count, over as u16);
 }
 
-/// A name longer than the 48-byte cap is truncated on a char boundary by the writer (no panic, no
-/// split multi-byte char).
+/// A name longer than the 48-byte cap is truncated on a char boundary by the writer.
 #[test]
 fn truncates_a_long_name() {
     let long = "ä".repeat(40); // 80 bytes — over the 48-byte cap

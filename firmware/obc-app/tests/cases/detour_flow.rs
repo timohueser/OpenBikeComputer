@@ -1,19 +1,8 @@
-//! The routed-detour flow (#882), end to end through the real gesture path: ride a real route
-//! (matcher locked by ticks over genuine OBCR geometry), open the ride context's Detour row,
-//! step the chooser, Press into the planning spinner (the detour search the pass hands out), land
-//! the executor's `DetourFinished` answer on the preview, commit (the `CommitDetour` effect), and
-//! land `DetourCommitted` — asserting the re-adoption choreography: active route swapped by durable
-//! id, the recording session untouched, the stack back on the riding view, and the seam
-//! re-anchor installing matcher progress + the forward-only floor on the next route-aware tick.
-//! The failure tiers and the planning-screen cancel run through the same seams.
-//!
-//! The executor is [`Planner`], the suites' one-shot navigation host, exactly like `nav.rs`; the
-//! *real* corridor/A*/splice pipeline is pinned end to end in `obc-route/tests/detour.rs` and by
-//! the sim.
-//!
-//! The **Recalculating freeze** (issue #1146, P2) is pinned here too, at the tail: the detour flow
-//! is the one path that runs a search with a *map* base underneath it, so it is where the freeze
-//! engages, pauses the matcher, raises its banner, and — on every exit the flow has — releases.
+//! The routed-detour flow, end to end through the real gesture path: ride a real route, open the
+//! ride context's Detour row, plan, land the preview, commit, and re-anchor at the seam. The
+//! executor is [`Planner`]; the real corridor/A*/splice pipeline is pinned in
+//! `obc-route/tests/detour.rs`. The Recalculating freeze is pinned at the tail, because this is the
+//! one flow that runs a search with a map base underneath it.
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::device_core::ModeState;
@@ -33,13 +22,9 @@ const LAT: f64 = 43.5;
 const LON0: f64 = 7.50;
 
 /// The road as `segs` even steps over the same ~3 230 m span, with every other vertex nudged
-/// `wobble` degrees north.
-///
-/// The wobble is not decoration: the converter decimates anything within 1 m of the chord, so a
-/// *straight* dense road comes back out of `gpx_to_obcr` as a handful of long segments. A test that
-/// needs the matcher's **segment**-counted forward window to be narrower than the ground the rider
-/// covers needs real vertices, and 2.2 m of alternating offset buys them for ~3.6 % of extra route
-/// length and about a metre of cross-track (well inside the 15 m on-route band).
+/// `wobble` degrees north. The converter decimates anything within 1 m of the chord, so a straight
+/// dense road comes back out of `gpx_to_obcr` as a handful of long segments; a test that needs the
+/// matcher's segment-counted forward window to stay narrow needs the real vertices a wobble buys.
 fn road_obcr_segs(segs: usize, wobble: f64) -> Vec<u8> {
     let mut g = String::from("<gpx><trk><trkseg>\n");
     for i in 0..=segs {
@@ -58,7 +43,6 @@ fn road_obcr() -> Vec<u8> {
     road_obcr_segs(10, 0.0)
 }
 
-/// Minimal in-test `ByteSink` (the shared test helper lives per-crate; this suite needs one write).
 #[derive(Default)]
 struct VecSink(Vec<u8>);
 impl obc_formats::io::ByteSink for VecSink {
@@ -85,7 +69,7 @@ fn tick(app: &mut App, now_ms: u32, fix: Option<Fix>, route: Option<&RouteReader
     app.tick(RideClock(now_ms), Sensors::new(&mut loc), route);
 }
 
-/// The coordinate `frac` of the way along the road (good enough for fix placement).
+/// The coordinate `frac` of the way along the road.
 fn road_at(frac: f64) -> Fix {
     Fix::at((LAT * 1e6) as i32, ((LON0 + 0.04 * frac) * 1e6) as i32)
 }
@@ -134,7 +118,6 @@ fn answer_commit(app: &mut App, host: &mut Planner<'_>, result: Result<obc_app::
 }
 
 /// A riding app with the matcher locked ~1 km along the real road, the Detour chooser reachable.
-/// Returns `(app, obcr_bytes)`; [`riding!`] wraps it with the reader and the executor.
 fn riding_app_on(obcr: Vec<u8>) -> (App, Vec<u8>) {
     let mut app = App::new_idle(AppState::new((LON0 * 1e6) as i32, (LAT * 1e6) as i32, 0.05));
     crate::common::mount_store(&mut app); // a device with a card — a ride cannot start without one
@@ -149,7 +132,6 @@ fn riding_app_on(obcr: Vec<u8>) -> (App, Vec<u8>) {
     assert!(app.recording(), "the ride started");
     assert!(matches!(app.top_screen(), Screen::Map(_)));
 
-    // Lock the matcher ~1 km along with a real route-aware tick.
     let src = SliceSource(&obcr[..]);
     let idx = RouteIndex::read(&src).unwrap();
     let route = RouteReader::new(&idx, &src);
@@ -158,11 +140,8 @@ fn riding_app_on(obcr: Vec<u8>) -> (App, Vec<u8>) {
     (app, obcr)
 }
 
-/// A riding app, the road's reader, and the executor riding it.
-///
-/// The reader is not optional furniture: a pass carrying `None` is the active route line
-/// *vanishing*, which resets the matcher — so the executor that runs the passes carries it, exactly
-/// as a host does.
+/// A riding app, the road's reader, and the executor riding it. A pass that carries no reader is
+/// the active route line vanishing, which resets the matcher, so the executor carries it.
 macro_rules! riding {
     ($app:ident, $route:ident, $host:ident) => {
         riding!($app, $route, $host, road_obcr());
@@ -201,7 +180,6 @@ fn full_flow_plans_previews_commits_and_reanchors_at_the_seam() {
     assert_eq!(req.progress_m, progress, "the corridor anchor freezes at Press");
     assert_eq!(req.target_m, progress + 800, "600 m minimum + two steps");
 
-    // The executor answers: preview polyline + figures → the preview screen with the cost line.
     app.set_detour_preview(&[(7_512_000, 43_501_000), (7_516_000, 43_501_000)]);
     answer_plan(
         &mut app,
@@ -210,8 +188,8 @@ fn full_flow_plans_previews_commits_and_reanchors_at_the_seam() {
     );
     assert!(matches!(app.top_screen(), Screen::DetourPreview(_)), "success swaps the spinner for the preview");
 
-    // Commit: Press asks for the splice; the executor splices, rescans (both files exist: the
-    // original and the reserved spliced route), and answers with the spliced durable id.
+    // Commit: the executor splices, rescans (both the original and the spliced route exist), and
+    // answers with the spliced durable id.
     app.apply_gesture(Gesture::Press);
     assert!(host.took_commit(&mut app), "Press asks the executor to splice");
     app.set_routes_with_ids(&[summary("Road"), summary("Detour · Road")], &[7, 9]);
@@ -221,8 +199,6 @@ fn full_flow_plans_previews_commits_and_reanchors_at_the_seam() {
     assert_eq!(app.ride_session(), session, "the recording session is untouched");
     assert!(matches!(app.top_screen(), Screen::Map(_)), "the detour flow truncates back to the riding view");
 
-    // The next route-aware tick installs the seam re-anchor: progress lands exactly at the
-    // frozen anchor, and the forward-only floor holds against a fix back in the (now gone) span.
     tick(&mut app, 1_000, None, Some(&route));
     assert_eq!(app.progress_m(), progress, "the seam re-anchor lands at the frozen anchor");
     tick(&mut app, 2_000, Some(road_at(0.06)), Some(&route));
@@ -234,14 +210,12 @@ fn planning_back_cancels_and_failures_show_the_detour_tiers() {
     riding!(app, _route, host);
     open_chooser(&mut app);
 
-    // Back on the spinner: pops to the chooser and releases the workspace (annihilating the plan).
     app.apply_gesture(Gesture::Press);
     app.apply_gesture(Gesture::Back);
     assert!(matches!(app.top_screen(), Screen::Detour(_)), "cancel returns to the chooser, steps intact");
     assert!(!host.took_release(&mut app), "the request was cancelled before acquisition");
     assert!(detour_req(&mut app, &mut host).is_none(), "the cancel annihilated the request");
 
-    // Replan; the executor fails with the range tier → the detour fail card, dismiss → chooser.
     app.apply_gesture(Gesture::Press);
     answer_plan(&mut app, &mut host, Err(NavError::Exhausted));
     match app.top_screen() {
@@ -275,11 +249,8 @@ fn commit_failure_keeps_the_old_route_and_the_preview_retries() {
     assert!(host.took_commit(&mut app));
 }
 
-// --- The Recalculating freeze (issue #1146, P2) ---
-
-/// Drive a riding app to the **exposure window** the freeze exists for: a planner run the host has
-/// started, with the map-base Detour chooser showing again because Back popped the spinner. Returns
-/// with the freeze engaged and the cancel still undrained.
+/// Drive a riding app to the exposure window the freeze exists for: a planner run started, with
+/// the map-base Detour chooser showing again because Back popped the spinner, cancel undrained.
 fn frozen_over_the_chooser(app: &mut App, host: &mut Planner<'_>) {
     open_chooser(app);
     app.apply_gesture(Gesture::Press); // → the planning spinner, and the search
@@ -288,8 +259,8 @@ fn frozen_over_the_chooser(app: &mut App, host: &mut Planner<'_>) {
     assert!(matches!(app.top_screen(), Screen::Detour(_)));
 }
 
-/// Whether a planner run holds the nav arm — `CoreMode`'s search level, read through the one public
-/// mode. No transfer streams in this file, so `Searching` is exactly "a search is live".
+/// Whether a planner run holds the nav arm. No transfer streams here, so `Searching` is exactly
+/// "a search is live".
 fn searching(app: &App) -> bool {
     app.core_mode() == ModeState::Searching
 }
@@ -299,11 +270,9 @@ fn rgb(c: u16) -> Rgb888 {
     Rgb888::new(r, g, b)
 }
 
-/// **The regression** the freeze exists for: `NavPlanning` is *pushed* over the map-base chooser,
-/// so Back lands a map base back under a search that is still running — and the next frame would
-/// have rendered straight into the arena the planner owns. Draining the plan is the engaging edge
-/// (not the gesture: a request the rider cancels first is annihilated and never reaches the host),
-/// and the base screen is what decides whether there is anything to freeze.
+/// `NavPlanning` is pushed over the map-base chooser, so Back lands a map base back under a search
+/// that is still running, and the next frame would render into the arena the planner owns. Draining
+/// the plan is the engaging edge, and the base screen decides whether there is anything to freeze.
 #[test]
 fn the_freeze_covers_a_live_search_exactly_while_a_map_base_would_draw() {
     riding!(app, _route, host);
@@ -331,15 +300,9 @@ fn the_freeze_covers_a_live_search_exactly_while_a_map_base_would_draw() {
     assert!(app.nav_arena_precondition().is_none(), "a map base with no freeze refuses the nav claim again");
 }
 
-/// A silent freeze reads as a crash — the map stops answering and nothing says why. Pin that the
-/// banner is on the **overlay** plane (the map plane is exactly what is not being redrawn), that
-/// the host is told to paint it (`overlay_active`, the `Dirty::overlay` edge, the row band), and
-/// that all of it vanishes with the freeze.
-///
-/// The window is the one a freeze can actually be *observed* in: a map base returning under a
-/// search that is already running. The chooser's own Back pops the spinner and asks for the
-/// workspace back in the same gesture, so the next pass ends the run — that path is
-/// `the_board_loop_renders_the_map_again_the_pass_a_cancel_lands`.
+/// A silent freeze reads as a crash. The banner is on the overlay plane, because the map plane is
+/// exactly what is not being redrawn, the host is told to paint it, and all of it goes away with
+/// the freeze.
 #[test]
 fn the_frozen_map_wears_a_recalculating_banner_on_the_overlay_plane() {
     riding!(app, _route, host);
@@ -376,8 +339,6 @@ fn the_frozen_map_wears_a_recalculating_banner_on_the_overlay_plane() {
         }
     }
 
-    // Release: the banner comes off, and the map — which held still for the whole search — is asked
-    // to repaint itself.
     app.debug_set_plan_live(false);
     let _ = host.take_render();
     let dirty = host.one_pass(&mut app).render;
@@ -393,22 +354,17 @@ fn the_frozen_map_wears_a_recalculating_banner_on_the_overlay_plane() {
 /// What one ride-loop pass puts on glass.
 #[derive(Debug, PartialEq, Eq)]
 enum Painted {
-    /// The banner band only — the frozen branch (`ride.rs`: `dirty.overlay` while frozen).
     Banner,
-    /// A whole frame — the ordinary render (`dirty.map` with no freeze).
     Frame,
-    /// Nothing was pushed this pass.
     Nothing,
 }
 
-/// The board's ride loop, reduced to the part that decides what gets painted — in the board's order
-/// and, crucially, with **one** pass per frame. That single pass is the whole point: the repaint
-/// flags are one-shots the pass drains, so a loop that ran two silently hands itself an edge the
-/// real one would have spent on the previous frame.
+/// The board's ride loop, reduced to the part that decides what gets painted, with one pass per
+/// frame. The repaint flags are one-shots the pass drains, so a loop that ran two would hand itself
+/// an edge the real one had already spent.
 struct BoardLoop<'r> {
-    /// The executor behind the loop.
     host: Planner<'r>,
-    /// `ride.rs`'s latch: a map redraw the freeze swallowed, replayed the pass it lifts.
+    /// A map redraw the freeze swallowed, replayed on the pass it lifts.
     pending_map_redraw: bool,
 }
 
@@ -440,17 +396,10 @@ impl<'r> BoardLoop<'r> {
     }
 }
 
-/// **The regression**, driven the way the board drives it: the freeze is a *level*, and the two
-/// facts it is made of move independently. A plan that starts under the opaque planning spinner
-/// freezes nothing — and that chrome frame is where a plan-start overlay edge goes to die. When a
-/// map base comes back under the still-running search there is no plan edge left to raise the
-/// banner, so a host keyed on it renders **nothing at all** for the rest of the search: stale pixels
-/// on glass, no explanation, and input going to the screen underneath.
-///
-/// The chrome interlude is the main menu and the plan is the simulator's `--freeze` seam, because
-/// the detour flow's own way back to a map base (Back on the spinner) drains a cancel in the same
-/// pass and ends the run — see `the_freeze_covers_a_live_search_exactly_while_a_map_base_would_draw`
-/// for that path.
+/// The freeze is a level, and the two facts it is made of move independently. A plan that starts
+/// under the opaque planning spinner freezes nothing, so a host keyed on the plan-start edge
+/// renders nothing at all once a map base comes back under the still-running search: stale pixels,
+/// no explanation, and input going to the screen underneath.
 #[test]
 fn the_banner_lands_when_a_map_base_returns_under_a_search_that_already_started() {
     riding!(app, route, _host);
@@ -475,10 +424,9 @@ fn the_banner_lands_when_a_map_base_returns_under_a_search_that_already_started(
     assert!(app.reroute_banner_rows(320.0).is_none(), "with no banner over it");
 }
 
-/// **The regression** the plan families exist for, through the App: an answer that belongs to a
-/// detour operation the app already abandoned must not release a freeze a *route* search is still
-/// holding the nav arm behind — the next frame would claim the render arm, the arena would answer
-/// `Busy(Nav)`, and the map would be dead for the rest of the ride.
+/// An answer that belongs to a detour operation the app already abandoned must not release a
+/// freeze that a route search still holds the nav arm behind: the arena would answer `Busy(Nav)`
+/// and the map would be dead for the rest of the ride.
 #[test]
 fn a_detour_terminal_edge_leaves_a_live_route_search_frozen() {
     riding!(app, _route, host);
@@ -505,9 +453,8 @@ fn a_detour_terminal_edge_leaves_a_live_route_search_frozen() {
     assert!(!searching(&app));
 }
 
-/// And the mirror: a live **detour** plan is ended by nothing but its own terminal edge — not by an
-/// answer that belongs to an operation the rider already walked away from. Same arm, same freeze,
-/// different edges.
+/// The mirror: a live detour plan is ended by nothing but its own terminal edge, not by an answer
+/// that belongs to an operation the rider already walked away from.
 #[test]
 fn a_route_cancel_leaves_a_live_detour_plan_frozen() {
     riding!(app, _route, host);
@@ -536,9 +483,8 @@ fn a_route_cancel_leaves_a_live_detour_plan_frozen() {
     assert!(!app.reroute_freeze_active(), "its own cancel is what releases it");
 }
 
-/// The same single-drain loop over the flow's *own* exit: the spinner is popped by Back, whose
-/// cancel drains in the very next pass and ends the run — so the pass renders the map rather than a
-/// banner, and nothing is left frozen behind it.
+/// The same single-drain loop over the flow's own exit: Back pops the spinner, its cancel drains in
+/// the next pass and ends the run, so that pass renders the map rather than a banner.
 #[test]
 fn the_board_loop_renders_the_map_again_the_pass_a_cancel_lands() {
     riding!(app, route, host);
@@ -560,9 +506,8 @@ fn the_board_loop_renders_the_map_again_the_pass_a_cancel_lands() {
     assert_eq!(board.pass(&mut app), Painted::Nothing, "and nothing is left demanding a repaint");
 }
 
-/// The freeze pauses **the matcher and nothing else**: progress holds still under the frozen frame
-/// (a search can replace the very geometry it is measured along), while the fix itself keeps being
-/// recorded — the camera, the breadcrumb, the ride totals and the altimeter all ride the same tick.
+/// The freeze pauses the matcher and nothing else: a search can replace the geometry progress is
+/// measured along, but the fix itself keeps being recorded.
 #[test]
 fn a_frozen_tick_holds_route_progress_but_still_records_the_fix() {
     riding!(app, route, host);
@@ -585,13 +530,10 @@ fn a_frozen_tick_holds_route_progress_but_still_records_the_fix() {
     assert!(app.progress_m() > held, "the matcher resumes cleanly ({} m)", app.progress_m());
 }
 
-/// …and it re-locks over the ground the rider covered *during* the search, not just the next fix's
-/// worth. The on-route window is 64 **segments** ahead — sized for one fix's travel — while a plan
-/// takes seconds on the SD-bound device, so on a route with real vertex density the rider rides
-/// clean out of it. Without the one-shot wide re-lock the first match after the freeze finds
-/// nothing in range: off-route chip up, progress still frozen, on a rider who never left the line.
-/// The exit under test is a **cancel** on purpose — that is the shape the wide window exists for. A
-/// search that comes back with new geometry resets the matcher instead and never spends the flag.
+/// …and it re-locks over the ground the rider covered during the search. The on-route window is 64
+/// segments ahead, sized for one fix's travel, while a plan takes seconds, so the rider rides clean
+/// out of it. Without the one-shot wide re-lock the first match after the freeze finds nothing in
+/// range: off-route chip up, progress frozen, on a rider who never left the line.
 #[test]
 fn the_matcher_relocks_over_the_ground_covered_during_the_freeze() {
     // 400 segments over the same road: ~8 m each, so the 64-segment on-route window reaches ~520 m
@@ -607,7 +549,7 @@ fn the_matcher_relocks_over_the_ground_covered_during_the_freeze() {
 
     assert!(host.took_release(&mut app));
     tick(&mut app, 9_000, Some(road_at(0.72)), Some(&route));
-    // Progress advancing *is* the on-route assertion: an off-route match freezes it.
+    // Progress advancing is the on-route assertion: an off-route match freezes it.
     assert!(
         app.progress_m() > 2_000,
         "the first fix after the freeze must re-lock where the rider is, not {} m back",
@@ -615,9 +557,8 @@ fn the_matcher_relocks_over_the_ground_covered_during_the_freeze() {
     );
 }
 
-/// The other two exits from a planner run — the answer and the failure — release the freeze too. A
-/// stuck freeze is a map that never redraws again, so every edge that ends a run must clear it,
-/// including a late answer whose planning screen the rider already cancelled away.
+/// The answer and the failure release the freeze too. A stuck freeze is a map that never redraws
+/// again, so every edge that ends a run must clear it, including a late answer behind a cancel.
 #[test]
 fn every_way_a_plan_ends_releases_the_freeze() {
     // The answer: it lands on the map-base preview, which must render immediately.
@@ -643,8 +584,7 @@ fn every_way_a_plan_ends_releases_the_freeze() {
     answer_plan(&mut app, &mut host, Err(NavError::Exhausted));
     assert!(!searching(&app), "a failed run is still a finished run");
 
-    // A late answer behind a cancel: the run already ended, and the abandoned operation's answer
-    // must not re-engage (or leave) anything.
+    // A late answer behind a cancel: the abandoned operation's answer must not re-engage anything.
     riding!(app, _route, host);
     frozen_over_the_chooser(&mut app, &mut host);
     assert!(host.took_release(&mut app));
@@ -657,8 +597,6 @@ fn every_way_a_plan_ends_releases_the_freeze() {
     assert!(!app.reroute_freeze_active(), "the map keeps rendering through a late answer");
 }
 
-/// A `DetourRequest` is `Copy` and its fields are what the host needs — pin the shape so a field
-/// rename shows up here, not in a host at runtime.
 #[test]
 fn request_shape_is_stable() {
     let req = DetourRequest { route: 1, from: (2, 3), progress_m: 4, target_m: 5 };

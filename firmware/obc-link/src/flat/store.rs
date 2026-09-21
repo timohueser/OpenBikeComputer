@@ -1,32 +1,21 @@
 //! The store seam, as the engine names it, and the two policy hooks that are nobody else's.
 //!
-//! `FLAT_Store_Protocol.md` §2 declares five operations plus `entries` and `journal`. This module is
-//! that seam **restated in the crate that consumes it**, because the dependency runs downward: the
-//! engine is a foundation crate and the flat store is a platform adapter, so `firmware/tools/
-//! dependency_rules.json` forbids `obc-link -> obc-storage`. The store therefore implements what the
-//! engine declares; the binder is one `impl` block and it is where the two definitions are pinned to
-//! each other.
+//! The seam is restated in the crate that consumes it, because the dependency runs downward:
+//! `obc-link` is a foundation crate and the flat store is a platform adapter, so the store
+//! implements what the engine declares and the binder pins the two definitions to each other.
+//! There is no block, no extent, no LBA and no filename here: an allocation and a handle are opaque
+//! tokens.
 //!
-//! What the engine does **not** name is as load-bearing as what it does. There is no block, no
-//! extent, no LBA, no path and no filename here; [`Allocation`](Store::Allocation) is an opaque token
-//! and [`Handle`](Store::Handle) is another. `journal` is absent because the ride is not a wire
-//! transfer — it is FS8's, and the engine has no business checkpointing one.
-//!
-//! Two seam laws are worth restating where they are used, because breaking either leaks a row until
-//! the card is remounted:
-//!
-//! - **`cancel` and `close` are mandatory on every abandonment path.** A dropped allocation or a
-//!   dropped handle releases nothing.
-//! - **`next_object_id` reserves nothing.** It is the id a create names, and it is safe only because
-//!   §1 serves one transfer at a time.
+//! Two seam laws, because breaking either leaks a row until the card is remounted: `cancel` and
+//! `close` are mandatory on every abandonment path, and `next_object_id` reserves nothing, which is
+//! safe only because the device serves one transfer at a time.
 
 use super::ids::{EntryMeta, ObjectId, ObjectKind, Revision, StoreId};
 
-/// Why a mounted store refuses writes, or refuses everything (`FLAT_Store_Format.md` §5.6).
+/// Why a mounted store refuses writes, or refuses everything.
 ///
-/// Mirrors the store's own classification variant for variant rather than collapsing it, so that
-/// §3.9's `readOnly` details are chosen by the engine — where they are tested — and the binder is a
-/// table with nothing to decide.
+/// It mirrors the store's own classification variant for variant, so the engine chooses the
+/// `readOnly` details and the binder is a table with nothing to decide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     ReadWrite,
@@ -43,7 +32,6 @@ pub enum Mode {
 }
 
 impl Mode {
-    /// True when a commit may run.
     pub fn writable(self) -> bool {
         self == Mode::ReadWrite
     }
@@ -54,7 +42,7 @@ impl Mode {
     }
 }
 
-/// What an operation at the seam fails with. `FLAT_Store_Protocol.md` §2, verbatim.
+/// What an operation at the seam fails with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreError {
     NotFound,
@@ -66,22 +54,16 @@ pub enum StoreError {
     },
     TooFragmented,
     CatalogFull,
-    /// The seam's catch-all refusal. It is **not** always the client's fault: a full **reservation**
-    /// table lands here too, and §3.9's answer to that is `busy`, never `invalidRequest`.
-    ///
-    /// A full **hold** table used to be here as well and is [`Busy`](StoreError::Busy) now — see
-    /// there for why the two had to stop sharing a value.
+    /// The seam's catch-all refusal. It is not always the client's fault: a full reservation table
+    /// lands here too, and the answer to that is `busy`, never `invalidRequest`.
     Invalid,
     Media,
     ReadOnly,
-    /// **Try again**: every hold row is taken, so an `open` has no slot to resolve into.
+    /// Try again: every hold row is taken, so an `open` has no slot to resolve into.
     ///
-    /// §3.9 code `9` `busy`, detail `holds 2`. Distinct from [`Invalid`](StoreError::Invalid)
-    /// because the two answer opposite questions for a client: `invalidRequest` says *this request
-    /// is wrong and will be wrong next time*, and a full hold table says *someone else is reading
-    /// right now*. They shared a value while the device's table was 16 rows and the arm was
-    /// unreachable in practice; FS7.5-c2 took it to 6, so a client's retry policy now depends on
-    /// telling them apart.
+    /// It is `busy` with the `holds` detail on the wire, and distinct from
+    /// [`Invalid`](StoreError::Invalid) because the two answer opposite questions for a client's
+    /// retry policy: this request is wrong, against someone else is reading right now.
     Busy,
 }
 
@@ -97,10 +79,15 @@ pub enum PutSource<A> {
 /// One entry mutation. A commit applies a batch of them atomically.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mutation<A> {
-    /// Publish a revision.
-    Put { meta: EntryMeta, source: PutSource<A> },
+    Put {
+        meta: EntryMeta,
+        source: PutSource<A>,
+    },
     /// Remove one entry. Its extents are free at the gate.
-    Remove { id: ObjectId, revision: Revision },
+    Remove {
+        id: ObjectId,
+        revision: Revision,
+    },
 }
 
 /// Exact finalized ride bytes held in a durable client archive.
@@ -129,12 +116,9 @@ pub enum ArchiveError {
 
 /// The card, as the engine sees it.
 ///
-/// **Every method takes `&self`, the mutators included**, mirroring the store's own seam after
-/// #1256's owner ruling of 2026-08-18: a store is shared, not owned. A board holds a source per
-/// mounted shard for the life of the image, and a `&mut` write half made an engine that could commit
-/// while a map was mounted un-expressible. The store carries the interior mutability; the engine is
-/// simply a caller that no longer demands exclusivity, which is why [`Engine`](super::engine::Engine)
-/// takes `store: &S` everywhere it used to take `&mut S`.
+/// Every method takes `&self`, the mutators included: a store is shared, not owned. A board holds a
+/// source per mounted shard for the life of the image, so the store carries the interior mutability
+/// and the engine is a caller that demands no exclusivity.
 pub trait Store {
     /// An opaque reservation of extents, released by [`commit`](Store::commit) or
     /// [`cancel`](Store::cancel) and by nothing else.
@@ -143,7 +127,6 @@ pub trait Store {
     /// [`close`](Store::close)d.
     type Handle;
 
-    /// Why this store refuses writes, if it does.
     fn mode(&self) -> Mode;
 
     /// The card's identity, which every `LIST` page carries.
@@ -152,8 +135,8 @@ pub trait Store {
     /// The catalog commit sequence: the staleness hint a paged listing is checked against.
     fn commit_sequence(&self) -> u64;
 
-    /// The next `ObjectId` the cursor will hand out. **Reading it reserves nothing** — a create
-    /// names it, and the commit that publishes the create is what advances the cursor.
+    /// The next `ObjectId` the cursor will hand out. Reading it reserves nothing: the commit that
+    /// publishes a create is what advances the cursor.
     fn next_object_id(&self) -> ObjectId;
 
     /// Reserve space for `bytes`. RAM state until a commit names it.
@@ -184,8 +167,8 @@ pub trait Store {
     fn entries(&self) -> impl Iterator<Item = EntryMeta> + '_;
 
     /// True when the last [`entries`](Store::entries) listing ran to the end of the array. A short
-    /// listing is a media failure with nowhere to report itself, so **every** caller that treats a
-    /// listing as the catalog asks here before it does.
+    /// listing is a media failure with nowhere else to report itself, so every caller that treats a
+    /// listing as the catalog asks here first.
     fn entries_ok(&self) -> bool;
 
     /// Persist exact archive possession without starting a retention countdown. An existing exact
@@ -210,8 +193,7 @@ pub trait Policy {
         Ok(())
     }
 
-    /// §4 step 1: validate the pinned package — OBCU structure, image CRC, signature, version
-    /// monotonicity, ride and battery state — and report how many bytes the rollback reserve needs.
+    /// Validate the pinned package and report how many bytes the rollback reserve needs.
     ///
     /// The default refuses, because a device with no update path must not commit a reserve it can
     /// never hand off.
@@ -220,9 +202,8 @@ pub trait Policy {
         Err(0)
     }
 
-    /// §4 step 3: write both extent lists into the RRAM boot page and read it back. The engine has
-    /// committed the reserve by the time this is called and names both entries; resolving them to
-    /// block runs is below the seam and therefore the binder's, not the engine's.
+    /// Write both extent lists into the RRAM boot page and read it back. The reserve is committed
+    /// by the time this is called; resolving the entries to block runs is below the seam.
     fn hand_off(&mut self, package: (ObjectId, Revision), reserve: (ObjectId, Revision)) -> Result<(), u16> {
         let _ = (package, reserve);
         Err(0)
@@ -230,7 +211,7 @@ pub trait Policy {
 }
 
 /// A device with no kind validators and no update path: every payload is accepted and `ARM` is
-/// refused. It is what the host harness runs and what a board wires until FS7 and FS9 land.
+/// refused.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct OpenPolicy;
 

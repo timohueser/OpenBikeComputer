@@ -1,45 +1,34 @@
-//! Contour lines traced out of the baked OBCT terrain a run was given (epic #1068, EL10a #1094).
+//! Contour lines traced out of the baked OBCT terrain a run was given.
 //!
-//! Contours are **not a new kind of map content**. They are traced here, handed to the packer as
+//! Contours are not a new kind of map content. They are traced here, handed to the packer as
 //! ordinary [`Geom::Line`] features with an ordinary style id, and from that moment on they are
 //! indistinguishable from a road: the same per-LOD simplify, the same densify, the same quadtree
-//! split, the same chunk budget. That is the whole point of the placement #1088 settled on — the
-//! render path is provably unchanged, because nothing about it was told that contours exist.
+//! split, the same chunk budget. The render path is provably unchanged, because nothing about it
+//! was told that contours exist.
 //!
-//! Three rules the rest of this module is an implementation of:
+//! Three rules the rest of this module implements. One sampling truth: heights are read back through
+//! `obc_elevation::TerrainReader`, the same `no_std` reader the device runs, at exact lattice
+//! coordinates, where the bilinear collapses to the stored sample; this crate does not decode a
+//! container. A hole is silence: a lattice cell any of whose four corners is unknown contributes
+//! nothing, and the reader voids a query whose bilinear stencil merely touches `NODATA`, so coverage
+//! erodes by one posting around a hole rather than guessing at its edge. No private geometry
+//! pipeline: the traced polylines are simplified once here, at the clamp (see
+//! [`crate::config::Contours::simplify_m`]), with the packer's own [`topology_preserve_simplify`].
 //!
-//! 1. **One sampling truth.** Heights are read back through `obc_elevation::TerrainReader` — the
-//!    same `no_std` reader the device runs — at exact lattice coordinates, where `OBCT_Spec.md` §5's
-//!    bilinear collapses to the stored sample. This crate does not decode a container.
-//! 2. **A hole is silence** (OBCT principle 6). A lattice cell any of whose four corners is unknown
-//!    contributes nothing at all; a contour is never drawn across ground the DEM does not know. The
-//!    reader is stricter still — it voids a query whose bilinear stencil touches `NODATA` even where
-//!    the weight is zero — so coverage erodes by one posting around a hole rather than guessing at
-//!    its edge, which is the conservative direction.
-//! 3. **No private geometry pipeline.** The traced polylines are simplified **once** here, at the
-//!    clamp (see [`crate::config::Contours::simplify_m`]), and then go into `ingested.features`
-//!    where the ladder takes over. The clamp uses the packer's own
-//!    [`topology_preserve_simplify`], not a second Douglas–Peucker.
+//! The trace is marching squares over the sample lattice, one level at a time. Each lattice cell
+//! contributes 0, 1 or 2 segments, and each segment endpoint sits on a lattice edge and is
+//! materialised once, so the two cells sharing an edge agree on the crossing by construction rather
+//! than by rounding. Segments are then chained into the longest possible polylines.
 //!
-//! ## The trace
+//! The state is a rolling edge window: a crossing on a horizontal edge is shared by the cell rows
+//! below and above, and one on a vertical edge by the two cells beside it, so two rows of horizontal
+//! ids and one row of vertical ids is all a sweep needs. Chaining is map-free for the same reason: a
+//! crossing point belongs to exactly two lattice cells, so its degree can never exceed two.
 //!
-//! Marching squares over the sample lattice, one level at a time. Each lattice cell contributes 0, 1
-//! or 2 segments; each segment endpoint sits on a lattice *edge* and is materialised once, so the
-//! two cells sharing an edge agree on the crossing by construction rather than by rounding. Segments
-//! are then chained into the longest possible polylines.
-//!
-//! The bookkeeping that makes this cheap is the rolling edge window: a crossing on a horizontal edge
-//! is shared by the cell row below and the cell row above, and one on a vertical edge by the two
-//! cells beside it — so **two rows of horizontal ids and one row of vertical ids** is all the state a
-//! sweep needs, `O(cols)` rather than the `O(rows × cols)` map a naive edge-keyed `HashMap` would
-//! hold. Chaining is likewise map-free: a crossing point belongs to exactly two lattice cells, so its
-//! degree can never exceed two and adjacency is a fixed two-slot array.
-//!
-//! Wide extracts are traced in horizontal **strips** so the resident sample window stays bounded;
-//! strips overlap by one lattice row, so every cell is traced exactly once and no contour is left
+//! Wide extracts are traced in horizontal strips, so the resident sample window stays bounded.
+//! Strips overlap by one lattice row, so every cell is traced exactly once and no contour is left
 //! with a gap. A contour crossing a strip boundary becomes two features that meet at a shared
-//! vertex — which `merge_lines` stitches back together if the config asks it to, and which is in any
-//! case what the quadtree would have done to a long line anyway.
+//! vertex, which `merge_lines` stitches back together if the config asks it to.
 
 use rayon::prelude::*;
 
@@ -143,7 +132,7 @@ pub(crate) fn add_contours(
     progress.check()?;
 
     // The clamp, in the packer's own simplifier: everything after this point is the ordinary ladder,
-    // and the ladder's two finest tiers are finer than the DEM's posting can justify (#1088 §4.3).
+    // whose two finest tiers are finer than the DEM's posting can justify.
     let kept: Vec<(u8, usize, Geom)> = if cfg.simplify_m > 0.0 {
         let tol = cfg.simplify_m / M_PER_DEG;
         traced
@@ -177,8 +166,6 @@ pub(crate) fn add_contours(
     Ok(())
 }
 
-// --- the lattice window ------------------------------------------------------------------------
-
 /// The inclusive lattice rectangle a trace walks: rows are latitude indices, columns longitude.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Window {
@@ -208,7 +195,7 @@ fn trace_window(bbox: (i64, i64, i64, i64), set: &TerrainSet) -> Option<Window> 
     let posting_log2 = set.posting_log2()?;
     let (cmin_lon, cmin_lat, cmax_lon, cmax_lat) = set.coverage()?;
     let (min_lon, min_lat) = (bbox.0.max(cmin_lon), bbox.1.max(cmin_lat));
-    // Coverage maxima are half-open (`OBCT_Spec.md` §4.2): the last sample sits one posting inside.
+    // Coverage maxima are half-open: the last sample sits one posting inside.
     let (max_lon, max_lat) = (bbox.2.min(cmax_lon - 1), bbox.3.min(cmax_lat - 1));
     if min_lon > max_lon || min_lat > max_lat {
         return None;
@@ -257,8 +244,6 @@ fn split_strips(window: Window) -> Vec<Window> {
     }
     strips
 }
-
-// --- the sample window -------------------------------------------------------------------------
 
 /// One strip of the lattice, read out of the terrain set. `NODATA` marks every unknown sample —
 /// including the ones the reader voided because their bilinear stencil touched a hole.
@@ -328,8 +313,6 @@ impl Grid {
         f64::from(1u32 << self.window.posting_log2)
     }
 }
-
-// --- marching squares --------------------------------------------------------------------------
 
 /// Sentinel for "this lattice edge has no crossing point yet".
 const NO_POINT: u32 = u32::MAX;
@@ -515,8 +498,6 @@ fn emit(path: &[u32], pts: &[(i32, i32)], out: &mut Vec<Vec<(i32, i32)>>) {
     }
     out.push(path.iter().map(|&p| pts[p as usize]).collect());
 }
-
-// --- handing over to the packer ------------------------------------------------------------------
 
 /// µdeg `(lon, lat)` → the packer's degree-space line.
 fn to_geom(line: &[(i32, i32)]) -> Geom {

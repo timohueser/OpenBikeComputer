@@ -1,5 +1,5 @@
 <script lang="ts">
-    // The per-profile climb-weight cell (OBCM v12 §8.6): flat metres charged per
+    // The per-profile climb-weight cell: flat metres charged per
     // metre of ascent, a whole number in the schema's 0..255. It follows the
     // multiplier cell's two-path editing exactly — valid values commit live while
     // typing, an invalid entry (out of range, fractional, empty) never reaches the

@@ -1,47 +1,36 @@
-//! Board-agnostic pushbutton input → the shared gesture recognizer.
+//! Board-agnostic pushbutton input into the shared gesture recognizer.
 //!
-//! Turns raw GPIO levels into [`InputEvent`]s and implements [`InputSource`], so a board
-//! drops it into the app's input handler, which runs the shared gesture recognizer — the same path
-//! the host uses with its keyboard / on-screen controls. This only manufactures the raw events.
+//! It turns raw GPIO levels into [`InputEvent`]s and implements [`InputSource`], so a board drops
+//! it into the app's input handler. Nothing here decides what an edge means: the shared
+//! recogniser turns UP/DOWN into steps with auto-repeat and SELECT/BACK into `Press`/`Hold` and
+//! `Back`/`BackHold`. This module owns exactly one timing, the contact-settle window.
 //!
-//! The device's controls are four pushbuttons sharing one common pin — **UP** / **DOWN** on the
-//! left flank, **SELECT** / **BACK** on the right — and **all four forward debounced
-//! [`ButtonEvent`] edges**. Nothing here decides what an edge means: the shared recogniser turns
-//! UP/DOWN into steps (with auto-repeat while held) and SELECT/BACK into `Press`/`Hold` and
-//! `Back`/`BackHold`. So this module owns exactly one timing — the contact-settle window — and the
-//! rest of the input model has a single home the hosts share.
+//! Wiring is active-low: each switch connects its GPIO to the shared GND pin and the input uses
+//! its internal pull-up, so pressed is [`InputPin::is_low`].
 //!
-//! ## Wiring convention — active-low
-//! Each switch connects its GPIO to the shared **GND** common pin, and the input uses its
-//! **internal pull-up** (no external parts). So a released line reads high and a press pulls it low:
-//! pressed ≡ [`InputPin::is_low`].
-//!
-//! ## Time
-//! Debounce needs a clock, but [`InputSource::poll`] is clockless, so the board calls
-//! [`ButtonInput::update`] with the current wall-clock millis once per loop *before* `handle_input`;
-//! `update` samples the pins and queues events, `poll` drains the queue. Injecting the clock keeps
-//! the crate board-agnostic and host-testable.
+//! Debounce needs a clock but [`InputSource::poll`] is clockless, so the board calls
+//! [`ButtonInput::update`] with the current wall-clock millis once per loop before
+//! `handle_input`. `update` samples the pins and queues events; `poll` drains the queue.
 
 use embedded_hal::digital::InputPin;
 use heapless::Deque;
 use obc_ports::{Button, ButtonEvent, InputEvent, InputSource};
 
-/// Contact-settle window (ms): a level must hold this long before its edge is reported. 8 ms
+/// Contact-settle window in ms: a level must hold this long before its edge is reported. 8 ms
 /// rejects switch bounce without a perceptible press delay.
 pub const DEBOUNCE_MS: u32 = 8;
 
 /// Capacity of the event ring between [`ButtonInput::update`] and the app's drain. One `update`
-/// queues at most one event per button (four) and the app drains to empty every frame, so this
-/// never fills.
+/// queues at most one event per button and the app drains to empty every frame, so it never fills.
 const QUEUE_LEN: usize = 8;
 
-/// One debounced active-low input: a level is committed — and its edge reported — only once it has
+/// One debounced active-low input: a level is committed, and its edge reported, only once it has
 /// held steady for the debounce window.
 struct Debounced<P> {
     pin: P,
     /// Committed (debounced) state: `true` = pressed.
     pressed: bool,
-    /// Last raw read (active-low: a low line is `true` = pressed).
+    /// Last raw read; active-low, so a low line is `true`, meaning pressed.
     candidate: bool,
     /// Millis the current `candidate` was first seen.
     since: u32,
@@ -58,21 +47,19 @@ impl<P: InputPin> Debounced<P> {
         Debounced { pin, pressed: false, candidate: false, since: 0 }
     }
 
-    /// Sample the pin at `now` (ms) and report a debounced edge if the level just
-    /// committed. A bounce shorter than [`DEBOUNCE_MS`] keeps resetting `since` and so
-    /// is never committed.
+    /// Sample the pin at `now` and report a debounced edge if the level just committed. A bounce
+    /// shorter than [`DEBOUNCE_MS`] keeps resetting `since`, so it is never committed.
     fn update(&mut self, now: u32) -> Option<Edge> {
-        // Active-low: a *low* read is a press. A read error is impossible on real GPIO
-        // (`Infallible`); treat any as "released".
+        // Active-low: a low read is a press. A read error is impossible on real GPIO, so treat
+        // any as released.
         let raw = self.pin.is_low().unwrap_or(false);
         if raw != self.candidate {
-            // New raw level — restart the settle timer; don't commit yet.
+            // New raw level: restart the settle timer without committing.
             self.candidate = raw;
             self.since = now;
             None
         } else if raw != self.pressed && now.wrapping_sub(self.since) >= DEBOUNCE_MS {
-            // Raw has held steady past the window and differs from the committed
-            // state: commit it and report the edge.
+            // Raw has held past the window and differs from the committed state, so commit it.
             self.pressed = raw;
             Some(if raw { Edge::Press } else { Edge::Release })
         } else {
@@ -80,17 +67,16 @@ impl<P: InputPin> Debounced<P> {
         }
     }
 
-    /// Whether this button is fully released *and* settled — neither committed-pressed nor
-    /// mid-bounce toward a press. The idle check the event-driven input plane gates its edge-wake on.
+    /// Whether this button is released and settled: the idle check the event-driven input plane
+    /// gates its edge-wake on.
     fn settled_released(&self) -> bool {
         !self.pressed && !self.candidate
     }
 }
 
-/// Four pushbuttons → raw [`InputEvent`]s for the shared app. Generic over any [`InputPin`], so the
-/// same type serves the nRF board (`embassy_nrf::gpio::Input`) and the host test mock. Drive it as:
-/// [`update`](Self::update) once per loop with the current millis, then hand `&mut self` to
-/// the app's input handler, which drains it through [`InputSource`].
+/// Four pushbuttons turned into raw [`InputEvent`]s. Generic over any [`InputPin`], so the same
+/// type serves the nRF board and the host test mock. Call [`update`](Self::update) once per loop
+/// with the current millis, then hand `&mut self` to the app's input handler.
 pub struct ButtonInput<P> {
     up: Debounced<P>,
     down: Debounced<P>,
@@ -111,24 +97,21 @@ impl<P: InputPin> ButtonInput<P> {
         }
     }
 
-    /// Sample all four pins at wall-clock `now_ms` and queue any resulting events.
-    /// Call once per loop, before the app's input handler; the app then drains
-    /// the queue via [`InputSource::poll`].
+    /// Sample all four pins at wall-clock `now_ms` and queue any resulting events. Call once per
+    /// loop, before the app's input handler.
     pub fn update(&mut self, now_ms: u32) {
-        // Every control forwards its debounced edge unchanged. The shared `Gestures` layer turns
-        // UP/DOWN into steps (first one on the press, then auto-repeat) and SELECT/BACK into
-        // Press/Hold and Back/BackHold.
+        // Every control forwards its debounced edge unchanged; the shared gesture layer gives it
+        // meaning.
         Self::edge(&mut self.up, Button::Up, now_ms, &mut self.queue);
         Self::edge(&mut self.down, Button::Down, now_ms, &mut self.queue);
         Self::edge(&mut self.select, Button::Select, now_ms, &mut self.queue);
         Self::edge(&mut self.back, Button::Back, now_ms, &mut self.queue);
     }
 
-    /// Whether nothing is in flight: every button is released + settled and the event queue is
-    /// drained. The event-driven input plane polls at the loop rate only while *not* idle (a press
-    /// debouncing, a button held); once idle it sleeps on
-    /// [`wait_for_any_press`](ButtonInput::wait_for_any_press). A held UP/DOWN keeps this `false`,
-    /// which is what keeps the recogniser ticking at the loop rate while it auto-repeats.
+    /// Whether nothing is in flight: every button released and settled, and the queue drained. The
+    /// event-driven input plane polls at the loop rate only while not idle, then sleeps on
+    /// [`wait_for_any_press`](ButtonInput::wait_for_any_press). A held UP or DOWN keeps this
+    /// `false`, which is what keeps the recogniser ticking while it auto-repeats.
     pub fn is_idle(&self) -> bool {
         self.queue.is_empty()
             && self.up.settled_released()
@@ -153,19 +136,17 @@ impl<P: InputPin> InputSource for ButtonInput<P> {
     }
 }
 
-/// Async edge-wake for the event-driven input plane, gated behind `input-wait` so the host/sim
-/// build never pulls the async machinery. Available when the pin type also implements async
-/// [`Wait`](embedded_hal_async::digital::Wait) — `embassy_nrf::gpio::Input` does.
+/// Async edge-wake for the event-driven input plane, gated behind `input-wait` so the host build
+/// never pulls the async machinery. Needs the pin type to implement async
+/// [`Wait`](embedded_hal_async::digital::Wait).
 #[cfg(feature = "input-wait")]
 impl<P: embedded_hal::digital::InputPin + embedded_hal_async::digital::Wait> ButtonInput<P> {
-    /// Resolve as soon as **any** of the four buttons goes low (a press) — the edge that ends an
-    /// idle sleep. Called only once [`is_idle`](ButtonInput::is_idle) holds. Active-low, so
-    /// `wait_for_low` completes immediately if a button is already down (no missed press across the
-    /// poll→sleep handoff). Awaits the four pins in parallel, returning on the first.
+    /// Resolve as soon as any of the four buttons goes low. Called only once
+    /// [`is_idle`](ButtonInput::is_idle) holds. Active-low, so `wait_for_low` completes at once if
+    /// a button is already down, and no press is missed across the poll-to-sleep handoff.
     pub async fn wait_for_any_press(&mut self) {
         use embassy_futures::select::{select4, Either4};
-        // `Infallible` on real GPIO; ignore an error (a dead wait falls through to the input plane's
-        // guard-tick re-poll).
+        // `Infallible` on real GPIO; a dead wait falls through to the input plane's guard tick.
         let _ = match select4(
             self.up.pin.wait_for_low(),
             self.down.pin.wait_for_low(),
@@ -179,8 +160,8 @@ impl<P: embedded_hal::digital::InputPin + embedded_hal_async::digital::Wait> But
     }
 }
 
-/// Enqueue, dropping on overflow. Overflow can't happen in practice: the app drains
-/// the queue to empty each frame and `update` queues at most one event per button.
+/// Enqueue, dropping on overflow. Overflow cannot happen in practice: the app drains the queue
+/// each frame and `update` queues at most one event per button.
 fn push(queue: &mut Deque<InputEvent, QUEUE_LEN>, ev: InputEvent) {
     let _ = queue.push_back(ev);
 }
@@ -190,8 +171,8 @@ mod tests {
     use super::*;
     use core::cell::Cell;
 
-    /// Test pin over a shared cell: `cell == true` means the line is *low* (pressed),
-    /// matching the active-low wiring. Tests flip the cell to drive the button.
+    /// Test pin over a shared cell: `cell == true` means the line is low, that is pressed, matching
+    /// the active-low wiring.
     struct MockPin<'a> {
         low: &'a Cell<bool>,
     }
@@ -207,8 +188,7 @@ mod tests {
         }
     }
 
-    /// The four cells backing a [`ButtonInput`] of [`MockPin`]s, in UP/DOWN/SELECT/
-    /// BACK order — kept alive alongside the input the pins borrow from.
+    /// The four cells backing a [`ButtonInput`] of [`MockPin`]s, in UP, DOWN, SELECT, BACK order.
     struct Pins {
         up: Cell<bool>,
         down: Cell<bool>,
@@ -248,8 +228,7 @@ mod tests {
         assert!(bi.poll().is_none());
     }
 
-    /// `is_idle` is true only when every button is released + settled and the queue is drained. A
-    /// press makes it non-idle and it stays non-idle until the edge drains, then idles on release.
+    /// `is_idle` is true only when every button is released and settled and the queue is drained.
     #[test]
     fn is_idle_tracks_in_flight_input() {
         let pins = Pins::new();
@@ -293,8 +272,8 @@ mod tests {
         assert!(bi.poll().is_none(), "a sub-debounce glitch emits nothing");
     }
 
-    /// UP and DOWN forward edges like the other two — no step, no repeat timing. What a held
-    /// direction *means* is the recogniser's business (`obc_app::input`), which owns those tests.
+    /// UP and DOWN forward edges like the other two, with no step and no repeat timing. What a
+    /// held direction means is the recogniser's business.
     #[test]
     fn up_and_down_forward_their_own_edges() {
         let pins = Pins::new();
@@ -318,8 +297,8 @@ mod tests {
         assert!(bi.poll().is_none(), "a held direction repeats in the recogniser, not on the board");
     }
 
-    /// SELECT held while DOWN taps must not block or swallow the DOWN edges — each button
-    /// debounces independently, and a latched SELECT emits nothing further.
+    /// SELECT held while DOWN taps must not block or swallow the DOWN edges: each button debounces
+    /// independently.
     #[test]
     fn select_held_while_down_taps_keeps_both_independent() {
         let pins = Pins::new();
@@ -339,8 +318,8 @@ mod tests {
         assert!(bi.poll().is_none(), "held SELECT does not re-emit while DOWN taps");
     }
 
-    /// UP and DOWN committed on the *same* `update(now)` both enqueue, in UP-then-DOWN order
-    /// (the order `update` samples them), and drain intact.
+    /// UP and DOWN committed on the same `update(now)` both enqueue, in the order `update` samples
+    /// them, and drain intact.
     #[test]
     fn up_and_down_both_pressed_enqueue_in_call_order() {
         let pins = Pins::new();
@@ -355,16 +334,15 @@ mod tests {
         assert!(bi.poll().is_none());
     }
 
-    /// Force the "can't happen" queue overflow — never drain, cycle all four buttons past
-    /// QUEUE_LEN=8 edges — and prove the queue caps at QUEUE_LEN, dropping the overflow rather
-    /// than panicking or wrapping.
+    /// Force the "cannot happen" queue overflow and prove the queue caps at QUEUE_LEN, dropping
+    /// the overflow rather than panicking or wrapping.
     #[test]
     fn queue_caps_at_eight_and_drops_overflow() {
         let pins = Pins::new();
         let mut bi = pins.input();
 
-        // Three press/release cycles of all four buttons = 24 edges, never drained. Every push
-        // beyond 8 hits the `let _ = push_back` drop path.
+        // Three press-and-release cycles of all four buttons, never drained, so every push beyond
+        // the capacity hits the drop path.
         let mut now = 0;
         for _ in 0..3 {
             for down in [true, false] {
@@ -386,8 +364,7 @@ mod tests {
         assert_eq!(drained, QUEUE_LEN, "queue holds at most QUEUE_LEN; overflow is dropped, not panicked");
     }
 
-    /// A level held for *exactly* [`DEBOUNCE_MS`] commits (`>=`, not `>`): at `now - since == 8` the
-    /// edge fires this frame; at `== 7` it does not. Pins the off-by-one a `>` would introduce.
+    /// A level held for exactly [`DEBOUNCE_MS`] commits, so the comparison is `>=` and not `>`.
     #[test]
     fn commit_lands_exactly_on_the_debounce_boundary() {
         let pins = Pins::new();

@@ -9,46 +9,40 @@ use obc_elevation::ELE_DEADBAND_M;
 use obc_formats::io::{ByteSink, Error};
 use obc_map_scene::{cos_lat, ground_dist_m, BBox};
 
-/// Per-point hug distance to the route tail (m). Two consecutive detour points each within this of
-/// the tail count as *sustained* contact — the same both-endpoints-proximity trick
-/// [`Corridor::blocks`](crate::corridor::Corridor) uses, so a single-point crossing or a bridge
-/// overpass never triggers. A deliberately-untuned first value (mirrors the corridor width scale).
+/// Per-point hug distance to the route tail (m). Two consecutive detour points this close to the
+/// tail count as sustained contact, so a single-point crossing or a bridge overpass never
+/// triggers.
 pub(crate) const TRIM_CONTACT_M: f32 = 25.0;
 
 /// How far past `target_m` the tail is materialized when looking for the detour's first contact
-/// with it (m). The A* approach that rides the route backwards does so over at most a few hundred
-/// metres of tail; this window is generous. Deliberately-untuned first value.
+/// with it (m). An A* approach that rides the route backwards covers at most a few hundred metres
+/// of tail, so this window is generous.
 pub(crate) const TRIM_LOOKAHEAD_M: u32 = 1_500;
 
-/// Max resident tail sample points (12 B each → ~1.5 KB) — a longer window widens its stride to
-/// fit, so this is a hard cap by construction (mirrors [`CORRIDOR_MAX_PTS`](crate::corridor)).
+/// Max resident tail sample points. A longer window widens its stride to fit, so this is a hard
+/// cap by construction.
 const TRIM_TAIL_MAX_PTS: usize = 128;
 
-/// Along-tail sampling interval floor (m): finer than the contact radius so the chord between
-/// samples never hides a point that is genuinely on the tail.
+/// Along-tail sampling interval floor (m). It is finer than the contact radius, so the chord
+/// between samples never hides a point that is on the tail.
 const TRIM_MIN_SAMPLE_M: f32 = 20.0;
 
-/// A trim whose rejoin advances no further than this past `target_m` — and which contacts the tail
-/// only at the detour's final pair — is a no-op: every plan's landing hugs the tail near the goal
-/// by construction, so trimming there would rewrite the bytes for nothing.
+/// A trim that advances the rejoin no further than this past `target_m`, and contacts the tail
+/// only at the detour's final pair, is a no-op. Every plan's landing hugs the tail near the goal,
+/// so trimming there rewrites the bytes for nothing.
 const TRIM_NOOP_M: u32 = 30;
 
 /// The result of [`trim_detour_to_tail`] when the detour is advanced to its first sustained tail
-/// contact: the (farther) rejoin distance to splice from, and the trimmed detour's measured length
-/// and climb.
+/// contact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrimOutcome {
-    /// The rejoin distance on the *original* route — always `>= target_m`.
+    /// The rejoin distance on the original route. It is always at least `target_m`.
     pub rejoin_m: u32,
-    /// The trimmed detour's length: measured polyline meters (the emitter's re-measured header
-    /// total), not the planner's summed edge `length_m`. A trimmed detour has no planner-summed
-    /// length for its shortened form, so this is the honest basis for the preview's cost line — the
-    /// same few-percent metric family as the untrimmed splice's header-total precedent.
+    /// The trimmed detour's length in measured polyline metres, not the planner's summed edge
+    /// `length_m`. The planner has no summed length for the shortened form.
     pub detour_len_m: u32,
-    /// The trimmed detour's own dead-banded ascent (m) over its **kept** sampled heights — the
-    /// preview's climb figure needs the shortened leg's climb, not the planner's, exactly as
-    /// [`detour_len_m`](Self::detour_len_m) is its length rather than the planner's. `0` when the
-    /// plan carried no elevation (the caller gates on its own `has_elevation`).
+    /// The trimmed detour's own dead-banded ascent (m) over its kept sampled heights. `0` when
+    /// the plan carried no elevation.
     pub ascent_m: u32,
 }
 
@@ -77,7 +71,7 @@ struct Tail {
 }
 impl Tail {
     /// The nearest tail segment to `p`: `(segment index, t along it, cross-track distance m)`, or
-    /// `None` when `p` is outside the inflated bbox (the cheap reject). Requires `pts.len() >= 2`.
+    /// `None` when `p` is outside the inflated bbox. Requires `pts.len() >= 2`.
     fn nearest(&self, p: (i32, i32)) -> Option<TailHit> {
         if !self.bbox_contains(p) {
             return None;
@@ -106,9 +100,9 @@ impl Tail {
     }
 }
 
-/// First sustained contact advances the rejoin; a final landing near the target is a no-op.
-/// The caller retains unchanged source views and a fresh sink through all steps. A no-op leaves
-/// the sink untouched. On failure discard the sink; optional trimming can keep the untrimmed leg.
+/// First sustained contact advances the rejoin. A final landing near the target is a no-op and
+/// leaves the sink untouched. The caller passes the same source views and sink through all steps,
+/// and discards the sink on failure.
 pub struct Trimmer {
     phase: Phase,
     target_m: u32,
@@ -295,7 +289,9 @@ impl Trimmer {
     }
 }
 
-/// One-shot host convenience over the same bounded phases used by the board.
+/// One-shot host convenience over the same bounded phases the board uses.
+///
+/// Must stay `#[inline(never)]`: the trimmer and its decode buffer stay out of the caller's frame.
 #[inline(never)]
 pub fn trim_detour_to_tail(
     orig: &RouteReader,

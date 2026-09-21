@@ -1,15 +1,13 @@
 //! Routes — the loadable rides shown in the Route menu.
 //!
-//! A route is described to the UI by a [`RouteSummary`] (name + totals + bbox +
-//! start), defined by the [`obc_route`] format crate. The **catalog** of summaries is
-//! loaded from the shared store and paired with full object IDs through
-//! [`App::set_routes_with_ids`](crate::App::set_routes_with_ids); the
-//! app owns a copy and the screens read it through [`Ctx`](crate::screen::Ctx) /
-//! [`Render`](crate::screen::Render). The heavy route *geometry* (the polyline the Map
-//! draws) stays host-owned and is streamed on demand through an
-//! [`obc_route::RouteReader`]; only the one active route is opened at a time.
-//!
-//! Navigator's active route indexes into the catalog.
+//! A route is described to the UI by a [`RouteSummary`] (name, totals, bbox and start), defined by
+//! the [`obc_route`] format crate. The catalog of summaries is loaded from the shared store and
+//! paired with durable object ids through
+//! [`App::set_routes_with_ids`](crate::App::set_routes_with_ids); the app owns a copy and the
+//! screens read it through [`Ctx`](crate::screen::Ctx) / [`Render`](crate::screen::Render). The
+//! heavy route geometry stays host-owned and is streamed on demand through an
+//! [`obc_route::RouteReader`], one active route at a time. Navigator's active route indexes into
+//! the catalog.
 
 use obc_render::{OverlayChunk, RouteOverlaySource};
 use obc_route::{RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
@@ -23,16 +21,15 @@ pub const MAX_ROUTES: usize = 64;
 /// Navigator's active route indexes.
 pub type Catalog = heapless::Vec<RouteSummary, MAX_ROUTES>;
 
-/// The route-overlay seam adapter (issue #332): presents a [`RouteReader`] to the renderer as
+/// The route-overlay seam adapter: presents a [`RouteReader`] to the renderer as
 /// [`obc_render::RouteOverlaySource`] — chunked `(lon, lat)` microdegree polylines with per-chunk
-/// bbox + cumulative distance — so `obc-render` never depends on the OBCR format. A zero-cost
-/// wrapper (the orphan rule forbids implementing the foreign trait on the foreign reader directly).
+/// bbox and cumulative distance — so `obc-render` never depends on the OBCR format. A zero-cost
+/// wrapper, because the orphan rule forbids implementing the foreign trait on the foreign reader.
 pub struct RouteOverlay<'a, 'b>(pub &'a RouteReader<'b>);
 
-/// Decode chunk `k` into `(lon, lat)` pairs. Split out `#[inline(never)]` so the
-/// `RoutePoint` decode scratch (~3 KB, the same buffer `draw_route` used to keep in its own
-/// frame) lives in a frame that is **popped before** `visit` descends into the deep
-/// stroke/fill path — the measured stack peak on the 256 KB DK must not grow.
+/// Decode chunk `k` into `(lon, lat)` pairs. Split out `#[inline(never)]` so the `RoutePoint`
+/// decode scratch (~3 KB) lives in a frame that is popped before `visit` descends into the deep
+/// stroke/fill path; the measured stack peak on the 256 KB DK must not grow.
 #[inline(never)]
 fn decode_lonlat(rr: &RouteReader, k: usize, out: &mut [(i32, i32); MAX_POINTS_PER_CHUNK]) -> Option<usize> {
     let mut pts = heapless::Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();

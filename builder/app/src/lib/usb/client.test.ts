@@ -3,12 +3,11 @@
  *
  * The vectors suite pins the bytes. This one pins everything that only exists once those bytes move
  * over two independent channels — a record reassembled across packet boundaries, an answer that
- * overtakes the last stream frame, a refusal that arrives while a 300 kB payload is still queued, a
- * cancel that has to go out while a download is running. None of that is visible in a frame.
+ * overtakes the last stream frame, a refusal that arrives while a payload is still queued, a cancel
+ * that has to go out while a download is running.
  *
- * The device on the other end is the real one — `obc_link::flat::Engine` over a real flat store on
- * a simulated card — so a test that passes here is a statement about the protocol rather than about
- * a fake's generosity.
+ * The device on the other end is the real one, so a test that passes here is a statement about the
+ * protocol rather than about a fake's generosity.
  */
 
 import { beforeAll, describe, expect, it } from "vitest";
@@ -110,8 +109,6 @@ describe("Blob sources", () => {
     });
 });
 
-// ------------------------------------------------------------------- identity
-
 describe("what a connection learns before anything else", () => {
     it("reads the three §5.2.1 strings over EP0", async () => {
         await withDevice({ deviceInfo: { firmwareRevision: "0.9.1+f00", hardwareRevision: "obc-lm20-r1", serialNumber: "AABB" } }, async ({ client }) => {
@@ -150,8 +147,6 @@ describe("what a connection learns before anything else", () => {
     });
 });
 
-// ----------------------------------------------------------------- FORMAT
-
 describe("FORMAT", () => {
     it("erases the catalog and starts the replacement store era", async () => {
         await withDevice({ storeId: CARD }, async ({ client, device }) => {
@@ -180,8 +175,6 @@ describe("FORMAT", () => {
         });
     });
 });
-
-// ------------------------------------------------------------------- LIST
 
 describe("LIST", () => {
     it("pages with the (ObjectId, Revision) cursor until the device stops setting `more`", async () => {
@@ -250,8 +243,6 @@ describe("LIST", () => {
     });
 });
 
-// ------------------------------------------------------------------- PUT
-
 describe("PUT", () => {
     it("creates an object and reports the id the device assigned", async () => {
         await withDevice({}, async ({ client, device }) => {
@@ -267,9 +258,8 @@ describe("PUT", () => {
     });
 
     it("reassembles across packet boundaries in both directions", async () => {
-        // 64-byte packets: an 8,208-byte stream frame spans many of them, and a `LIST` page is many. The
-        // v1 envelope made this impossible by construction (one frame, one transfer); §5.2 makes it
-        // the ordinary case, so it is the ordinary case here too.
+        // 64-byte packets: an 8,208-byte stream frame spans many of them, and a `LIST` page is many.
+        // A record spanning packets is the ordinary case, so it is the ordinary case here too.
         await withDevice({ packetSize: 64 }, async ({ client, device }) => {
             const bytes = payload(20_000, 7);
             await client.put({ kind: ObjectKind.MapShard, displayName: "Black Forest" }, bytes);
@@ -351,8 +341,8 @@ describe("PUT", () => {
             expect(error).toBeInstanceOf(DeviceError);
             if (!error) throw new Error("the device accepted a payload its card cannot hold");
             expect(error.code).toBe("no-space");
-            // §5.2.2's successor to the free-space read: the answer is at the point of decision, and
-            // its context is what the upload actually needed.
+            // The successor to the free-space read: the answer is at the point of decision, and its
+            // context is what the upload actually needed.
             expect(error.refusal?.context).toBe(4_096n);
             expect(String(error.message)).toContain("4096");
         });
@@ -370,9 +360,9 @@ describe("PUT", () => {
     });
 
     it("stops pushing bytes at the first sign of a refusal", async () => {
-        // §3.6 lets a client stream without waiting for an acceptance; the price is that a refusal
-        // arrives mid-payload. A client that did not look would push a whole map at a device that
-        // said no on the first megabyte.
+        // A client may stream without waiting for an acceptance; the price is that a refusal arrives
+        // mid-payload. A client that did not look would push a whole map at a device that said no on
+        // the first megabyte.
         await withDevice({ extents: 1, streamHighWaterMark: 8 * 1024 }, async ({ client, device, link }) => {
             device.seed({ kind: ObjectKind.Route, displayName: "the only extent", bytes: payload(64) });
             let yielded = 0;
@@ -395,8 +385,6 @@ describe("PUT", () => {
         });
     });
 });
-
-// ------------------------------------------------------------------- GET
 
 describe("GET", () => {
     it("verifies the length and the whole-payload CRC before handing anything back", async () => {
@@ -428,8 +416,8 @@ describe("GET", () => {
     });
 
     it("refuses a ride the device is still recording", async () => {
-        // §3.5: a recording ride's length and CRC are zero until the commit that ends it, so serving
-        // one would report success over an empty payload.
+        // A recording ride's length and CRC are zero until the commit that ends it, so serving one
+        // would report success over an empty payload.
         await withDevice({}, async ({ client, device }) => {
             const ride = device.seed({ kind: ObjectKind.Ride, flags: EntryFlags.Recording });
             await expect(client.get({ objectId: ride.objectId, revision: 0n })).rejects.toMatchObject({
@@ -450,8 +438,6 @@ describe("GET", () => {
         });
     });
 });
-
-// ------------------------------------------------------------------- CANCEL
 
 describe("CANCEL", () => {
     it("stops a running download and answers the transfer with `cancelled`", async () => {
@@ -486,10 +472,9 @@ describe("CANCEL", () => {
 
     it("gives up on a device that is enumerated but hung, instead of wedging the transfer slot", async () => {
         // The failure this pins is not a device that has gone away — that one fails fast, and the
-        // test above it covers it. It is a device that is still *there*: the endpoint accepts
-        // nothing and answers nothing, so an unbounded `CANCEL` inside `abandon` parks forever and
-        // the client's one-transfer latch is never released. That is the exact wedge the latch's own
-        // documentation claims to have retired, and it shipped one call deeper.
+        // test above it covers it. It is a device that is still *there*: the endpoint accepts nothing
+        // and answers nothing, so an unbounded `CANCEL` inside `abandon` parks forever and the
+        // client's one-transfer latch is never released.
         const rig = flatDevice({ clientTimeoutMs: 25 });
         rig.device.seed({ kind: ObjectKind.MapShard, displayName: "map", bytes: payload(200_000) });
         const abort = new AbortController();
@@ -518,8 +503,6 @@ describe("CANCEL", () => {
         await rig.client.close();
     });
 });
-
-// ------------------------------------------------------------------- REMOVE and ARM
 
 describe("REMOVE", () => {
     it("removes under compare-and-swap and returns the new commit sequence", async () => {
@@ -552,7 +535,7 @@ describe("REMOVE", () => {
 
 describe("ARM", () => {
     it("is refused by the device's current policy, and says so", async () => {
-        // §4's dev-window gap. The request is wired and the refusal is the truth; a client that
+        // A stated dev-window gap. The request is wired and the refusal is the truth; a client that
         // reported success here would be claiming a reboot that never comes.
         await withDevice({}, async ({ client, device }) => {
             const pkg = device.seed({ kind: ObjectKind.UpdatePackage, displayName: "0.9.0", bytes: payload(256) });
@@ -581,8 +564,6 @@ describe("ARM", () => {
         });
     });
 });
-
-// ------------------------------------------------------------------- §3.4's reconciliation
 
 describe("reconciling a break", () => {
     it("asks STATUS about a replace, which is what STATUS can answer", async () => {
@@ -631,8 +612,6 @@ describe("reconciling a break", () => {
     });
 });
 
-// ------------------------------------------------------------------- one transfer at a time
-
 describe("§1's one transfer at a time", () => {
     it("refuses a second transfer from this client without a round trip", async () => {
         await withDevice(SMALL_RECORDS, async ({ client, device }) => {
@@ -676,8 +655,6 @@ describe("§1's one transfer at a time", () => {
     });
 });
 
-// ------------------------------------------------------------------- identifiers and teardown
-
 describe("the client's own obligations", () => {
     it("never reuses a RequestId, and never mints zero", async () => {
         await withDevice({}, async ({ client, device }) => {
@@ -685,8 +662,8 @@ describe("the client's own obligations", () => {
             const ids = device.requestLog.map((row) => row.requestId);
             expect(new Set(ids).size, "a RequestId was reused").toBe(ids.length);
             expect(ids).not.toContain(0);
-            // §3.8's "SHOULD NOT reuse immediately after an answer": advancing is the whole remedy,
-            // so the counter only ever goes forward.
+            // A `RequestId` is never reused immediately after an answer: advancing is the whole
+            // remedy, so the counter only ever goes forward.
             expect([...ids].sort((a, b) => a - b)).toEqual(ids);
         });
     });
@@ -694,8 +671,8 @@ describe("the client's own obligations", () => {
     it("fails every waiter the moment the link dies, rather than letting them time out", async () => {
         // The claim is a one-second error against a fifteen-second spinner, so the test has to be
         // about a request that is genuinely outstanding when the cable goes. The device is stopped
-        // first — it serves nothing more, exactly as an unplugged one does — and the request then
-        // has nowhere to be answered from until the link itself fails.
+        // first — it serves nothing more, exactly as an unplugged one does — and the request then has
+        // nowhere to be answered from until the link itself fails.
         const rig = flatDevice({});
         rig.device.stopAnswering();
         const listing = rig.client.listPage({});

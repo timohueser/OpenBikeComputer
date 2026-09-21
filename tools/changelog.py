@@ -25,7 +25,6 @@ CHANGELOG = ROOT / "CHANGELOG.md"
 REPO = "https://github.com/timohueser/OpenBikeComputer"
 
 MERGE = re.compile(r"Merge pull request #(\d+) from ")
-LONG_TITLE = 120
 
 HEADER = """# Changelog
 
@@ -96,14 +95,7 @@ def main() -> int:
         return 0
 
     CHANGELOG.write_text(text)
-    longest = sorted(found, key=lambda e: -len(e[2]))[:3]
     print(f"changelog: wrote {len(found)} pull requests")
-    over = [e for e in found if len(e[2]) > LONG_TITLE]
-    if over:
-        print(f"  {len(over)} title(s) over {LONG_TITLE} characters — a title is one line:")
-        for _, number, title in longest:
-            if len(title) > LONG_TITLE:
-                print(f"    #{number}: {len(title)} chars")
     return 0
 
 

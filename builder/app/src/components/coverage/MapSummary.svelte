@@ -1,16 +1,15 @@
 <script lang="ts">
-    // The Map summary ledger (#1038, §8 U4): the always-visible card that keeps
-    // score — total bytes, cells, and every warning the selection has earned.
+    // The Map summary ledger: the always-visible card that keeps score — total
+    // bytes, cells, and every warning the selection has earned.
     //
-    // Two disciplines from the ledger module, honoured rather than restated:
-    // the total is summed real cell bytes and is only *printed* once `isFinal`
-    // (a pending region prices as 0 B with a straight face otherwise), and
-    // partial cells in the coarse context band never appear here at all.
+    // Two disciplines from the ledger module, honoured rather than restated: the
+    // total is summed real cell bytes and is only *printed* once `isFinal` (a
+    // pending region prices as 0 B with a straight face otherwise), and partial
+    // cells in the coarse context band never appear here at all.
     //
-    // The fits-on-card meter (§9/D4: SD free space, no user-visible file-size
-    // limit) needs a number only a connected card can give, and connecting is
-    // step 4's moment — so until then the card says where that check happens
-    // instead of drawing a meter against a guess.
+    // The fits-on-card meter needs a number only a connected card can give, and
+    // connecting is a later step — so until then the card says where that check
+    // happens instead of drawing a meter against a guess.
 
     import type { CoverageStore } from "../../lib/coverage/store.svelte";
     import { formatBytes } from "../../lib/format";
@@ -19,11 +18,10 @@
 
     const ledger = $derived(store.ledger);
     const hasParts = $derived(store.selection.parts.length > 0);
-    // Holes from every band, matching the hatched squares one for one (#1041
-    // A5 — `store.holeCells` explains the dedup). The partial sentence keeps
-    // the detail band's full count while the map hatches only the
-    // hole-adjacent subset (#1041 A9), so the line is a zoom target exactly
-    // when there is hatch to zoom to.
+    // Holes from every band, matching the hatched squares one for one;
+    // `store.holeCells` explains the dedup. The partial sentence keeps the detail
+    // band's full count while the map hatches only the hole-adjacent subset, so the
+    // line is a zoom target exactly when there is hatch to zoom to.
     const holeCount = $derived(store.holeCells().length);
     const partialCount = $derived(store.partialDetailCells().length);
     const partialHatchCount = $derived(store.partialHatchCells().length);
@@ -94,9 +92,9 @@
                 {/if}
             </p>
             <p class="small faint attribution">{ledger.terrain.attribution}</p>
-            <!-- §13.5 covers every listed reference as well: summit heights in
-                 this raster come from a national model, and its licence asks for
-                 the same credit. One line each, from the catalog. -->
+            <!-- The licence obligation covers every listed reference as well: summit
+                 heights in this raster come from a national model, and its licence asks
+                 for the same credit. One line each, from the catalog. -->
             {#each ledger.terrain.references as reference (reference.key)}
                 <p class="small faint attribution">
                     Summit heights from {reference.product}: {reference.attribution} ({reference.licence})
@@ -104,7 +102,7 @@
             {/each}
         {/if}
 
-        <!-- The map data's own credit (§3.1) — the catalog's string, the same
+        <!-- The map data's own credit — the catalog's string, the same
              take-it-from-the-document rule as the terrain line above. The map
              this card prices is a derivative database of OSM, and the licence
              is part of what a rider downloads. -->

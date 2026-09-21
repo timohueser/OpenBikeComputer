@@ -1,31 +1,20 @@
 /**
  * One update check per page, shared by the card that acts on it and the prompt that mentions it.
  *
- * ## Why the fetch left the card
- *
- * Two surfaces want the same answer: `components/device/FirmwareCard.svelte`, which is still the
- * only place that downloads, stages or asks the device to install anything, and
- * `components/UpdatePrompt.svelte` (#1002), which only says that there is something worth looking
- * at and points at the card. Two `onMount` fetches would cost the update host two requests for one
- * question and could disagree with each other for the lifetime of a page. So the check lives here
- * and both read it.
- *
- * ## The privacy rule survived the move
+ * Two surfaces want the same answer: the firmware card, which is the only place that downloads,
+ * stages or asks the device to install anything, and the update prompt, which only says there is
+ * something worth looking at. Two `onMount` fetches would cost the update host two requests for one
+ * question and could disagree with each other for the lifetime of a page.
  *
  * The check runs on {@link FirmwareCheck.ensure}, and **nothing calls it until a device is
- * connected**. With nothing to compare against, a request buys the visitor nothing and costs them a
- * connection to a host they did not ask to talk to. That was C4's rule when the fetch was the
- * card's `onMount`; moving it here does not weaken it — it gives it one place to hold, and both
- * callers are `$effect`s gated on a live session.
+ * connected**: with nothing to compare against, a request buys the visitor nothing and costs them a
+ * connection to a host they did not ask to talk to. Both callers are `$effect`s gated on a live
+ * session.
  *
- * ## What the rider has already answered
- *
- * A proactive prompt needs a memory or it is nagging. One ledger, keyed by
- * `(device serial, offered version)` and kept in `localStorage`, records the pairs the rider has
- * answered — dismissed it, followed it to the
- * card, or went ahead and staged that very version. A newer release, or a different device, is a
- * new question and is asked. The ledger suppresses the **prompt** and nothing else: the card's own
- * flow — the offer, the send button, the file picker — never reads it.
+ * A proactive prompt needs a memory or it is nagging. One ledger, keyed by `(device serial, offered
+ * version)` and kept in `localStorage`, records the pairs the rider has answered. A newer release,
+ * or a different device, is a new question. The ledger suppresses the **prompt** and nothing else:
+ * the card's own flow never reads it.
  */
 
 import { compareVersions, fetchFirmwareRelease, updateStatus, type FirmwareRelease } from "./release";
@@ -43,8 +32,8 @@ export interface LedgerStorage {
 
 const LEDGER_KEY = "obcm.fwPromptAnswered";
 
-/** Answers kept, most recent last. A handful of devices times a handful of releases is already
- *  generous; the cap only exists so an ancient key cannot grow without bound. */
+/** Answers kept, most recent last. A chosen cap: a handful of devices times a handful of releases
+ *  is already generous, and it only exists so an ancient key cannot grow without bound. */
 export const LEDGER_CAP = 32;
 
 /** One answer's key. Serial-scoped, so answering for one device says nothing about another. */
@@ -74,8 +63,8 @@ export class FirmwareCheck {
     /**
      * Make the check, at most once per page — later callers await the first one's promise.
      *
-     * **Only ever called with a device connected** (see the module comment). The options exist for
-     * the tests and for nothing else; the app calls this with no arguments.
+     * **Only ever called with a device connected.** The options exist for the tests and for nothing
+     * else; the app calls this with no arguments.
      */
     ensure(options: { url?: string; fetch?: typeof globalThis.fetch } = {}): Promise<void> {
         this.started ??= this.run(options);
@@ -97,7 +86,7 @@ export class FirmwareCheck {
      * every state except one.
      *
      * `available` and unanswered is the whole condition: `current`, `ahead` and `no-release` have
-     * nothing to say proactively, and `unknown` is #773's locked refusal — a device reporting a git
+     * nothing to say proactively, and `unknown` is the locked refusal — a device reporting a git
      * hash is never offered an update, least of all in a popup.
      */
     offer(serial: string | null | undefined, running: string | null | undefined): FirmwareRelease | null {
@@ -123,9 +112,8 @@ export class FirmwareCheck {
     }
 
     /**
-     * Record that the question has been answered for `(serial, version)` — dismissed, followed to
-     * the card, or acted on by staging that version. Any of the three means the prompt has nothing
-     * left to add, so all three land here.
+     * Record that the question has been answered for `(serial, version)` — dismissed, followed to the
+     * card, or acted on by staging that version. All three mean the prompt has nothing left to add.
      */
     answer(serial: string | null | undefined, version: string): void {
         if (!serial) return;

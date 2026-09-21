@@ -1,59 +1,50 @@
-//! Raw-block SD access for the install engine — **the sEMMC soft peripheral, bootloader shape**
-//! (epic #1158; replaces the deleted SD-SPI transport, whose pins are the display's now).
+//! Raw-block SD access for the install engine: the sEMMC soft peripheral, bootloader shape.
 //!
-//! The nRF54L has no SD host controller; Nordic ships one as a position-independent RISC-V image
-//! the FLPR executes. The app carries that image in its flash — this crate cannot (the 13.6 KB
-//! blob alone would blow the 32 KB budget), and it must not read it out of the app slot it is
-//! about to rewrite. Instead the **armer staged it into the `SEMMC_STAGE` RRAM carve**
-//! (`OBCU_Spec.md` §3) before writing `Armed`, and [`staged_blob`] validates it — the CRC frame
-//! plus the image's own metadata header, through the shared, host-tested
-//! `obc_dfu::blobstage` — before a single FLPR register is touched. The VRI base comes from that
-//! validated metadata, never from a hard-coded offset.
+//! The nRF54L has no SD host controller. Nordic ships one as a position-independent RISC-V image
+//! that the FLPR executes. The app carries that image in its flash; this crate cannot, because
+//! the 13.6 KB blob alone would blow the 32 KB budget, and it must not read the blob out of the
+//! app slot it is about to rewrite. The armer instead stages the image into the `SEMMC_STAGE`
+//! RRAM carve before it writes `Armed`, and [`staged_blob`] validates it (the CRC frame plus the
+//! image's own metadata header, through the host-tested `obc_dfu::blobstage`) before a single
+//! FLPR register is touched. The VRI base comes from that validated metadata, never from a
+//! hard-coded offset.
 //!
-//! This is a deliberate **port, not a copy**, of the app's driver (`../obc-fw-nrf54l/src/semmc.rs`
-//! — read its module doc first: the three laws, the barrier, and the CMD8 wart are all inherited
-//! verbatim and are not re-explained here). The differences are all subtractions, and each is a
-//! bootloader fact:
+//! This is a port, not a copy, of the app's driver (`../obc-fw-nrf54l/src/semmc.rs`; read its
+//! module doc first, because the three laws, the barrier, and the CMD8 wart are inherited
+//! verbatim and are not repeated here). Every difference is a subtraction:
 //!
-//! - **No `embassy_time`** — deadlines are DWT `CYCCNT` arithmetic at the 64 MHz boot clock (the
-//!   same counter `com.rs` paces the COM wave with), and the settle waits are cycle-counted
-//!   busy-waits. Main gates card construction on the cycle counter actually running, so every
-//!   wait here stays genuinely bounded.
-//! - **No interrupt at all** — the app's `wait_completion` is already a bounded poll that treats
-//!   the VPR00 IRQ as diagnostic-only; here the vector is simply never bound and the poll is the
-//!   whole story.
-//! - **No mode scheduler** — the display blob never runs while this crate owns the machine
-//!   (`com.rs` keeps the glass alive from the M33), so the FLPR is taken once per boot and handed
-//!   back (parked, pads reset) just before the jump. The card-pad configuration is otherwise the
-//!   app's, measured shape: `CTRLSEL = VPR`, E-drive, pulls on D3/D1 only, `HSBIAS = 2`.
-//! - **Reads only, Default Speed only** — no write path (the engine only reads the card), and no
-//!   CMD6 High-Speed switch, which drops the drain-read workaround and its rescue ladder wholesale.
-//!   21.3 MHz 4-bit is ~8× the SPI transport this replaces; the install is RRAM-write-bound anyway.
-//! - **No CMD9/capacity** — extents were resolved by the armer on this very card, and a garbage
-//!   extent past the end comes back as the card's own `OUT_OF_RANGE` R1 error bit, which fails the
-//!   read like any other; a range pre-check would spend bytes to convert one typed error into
-//!   another.
+//! - No `embassy_time`. Deadlines are DWT `CYCCNT` arithmetic at the 64 MHz boot clock, and the
+//!   settle waits are cycle-counted busy-waits. `main` gates card construction on the cycle
+//!   counter actually running, so every wait here stays bounded.
+//! - No interrupts at all. The bounded poll in `wait_completion` is the whole story.
+//! - No mode scheduler. The display blob never runs while this crate owns the machine, so the
+//!   FLPR is taken once per boot and handed back, parked with the pads reset, before the jump.
+//!   The card-pad configuration is otherwise the app's: `CTRLSEL = VPR`, E-drive, pulls on D3/D1
+//!   only, `HSBIAS = 2`.
+//! - Reads only, Default Speed only: no write path, and no CMD6 High-Speed switch, which drops
+//!   the drain-read workaround and its rescue ladder. The install is RRAM-write-bound anyway.
+//! - No CMD9 and no capacity check. The armer resolved the extents on this card, and an extent
+//!   past the end returns the card's own `OUT_OF_RANGE` R1 error bit, which fails the read like
+//!   any other error.
 //!
-//! One genuine addition: [`BootSemmc::read_blocks`] accepts **unaligned** output slices by
-//! bouncing through an aligned block, because the engine's `ExtentStream` hands out mid-buffer
-//! slices the firmware's 32-bit-aligned DMA cannot take directly. The aligned fast path is the
-//! common case.
+//! One addition: [`BootSemmc::read_blocks`] accepts unaligned output slices by bouncing through
+//! an aligned block, because the engine's `ExtentStream` hands out mid-buffer slices that the
+//! firmware's 32-bit-aligned DMA cannot take. The aligned fast path is the common case.
 //!
 //! Clock note: the boot core runs at the reset 64 MHz, not the app's 128 MHz. If the firmware
-//! derives its bus dividers from an assumed 128 MHz core clock, every rate below lands at half the
-//! requested value — 400 kHz → 200 kHz identification, 21.3 → 10.7 MHz data, both squarely legal
-//! (the SD spec's identification window is 100–400 kHz) — and if it reads its real clock they land
-//! exactly. Either way correct; the install is seconds long regardless.
+//! derives its bus dividers from an assumed 128 MHz core clock, every rate below lands at half
+//! the requested value (400 kHz identification becomes 200 kHz, 21.3 MHz data becomes
+//! 10.7 MHz), which is still legal; if it reads its real clock they land exactly.
 
 use embassy_nrf::pac;
 use embassy_nrf::pac::gpio::vals::{Ctrlsel, Dir, Drive, Input, Pull};
 use obc_dfu::blobstage::{sp_geometry, validate_stage, SpImageGeometry};
 
-/// The RAM execution carve, mirroring the app's `build.rs` contract (`SEMMC_CARVE_BYTES` — the
-/// stage carve in flash is sized to match, pinned by `obc_dfu::STAGE_LEN`).
+/// The RAM execution carve, mirroring the app's `build.rs` contract. The stage carve in flash is
+/// sized to match, pinned by `obc_dfu::STAGE_LEN`.
 const SEMMC_RAM_CARVE: usize = 20_480;
 
-/// Base of the flash stage carve (`__semmc_stage_base`, `memory.x`) — the armer's handoff.
+/// Base of the flash stage carve (`__semmc_stage_base`, `memory.x`), the armer's handoff.
 fn stage_base() -> usize {
     extern "C" {
         static __semmc_stage_base: u8;
@@ -61,7 +52,7 @@ fn stage_base() -> usize {
     core::ptr::addr_of!(__semmc_stage_base) as usize
 }
 
-/// Base of the RAM execution carve (`__semmc_ram_base`, `memory.x`) — one past this crate's RAM.
+/// Base of the RAM execution carve (`__semmc_ram_base`, `memory.x`), one past this crate's RAM.
 fn ram_base() -> usize {
     extern "C" {
         static __semmc_ram_base: u8;
@@ -69,7 +60,7 @@ fn ram_base() -> usize {
     core::ptr::addr_of!(__semmc_ram_base) as usize
 }
 
-// ── VRI register offsets (nrfxlib `sEMMC/include/nrf_sp_emmc.h`) — the app driver's constants. ──
+// VRI register offsets (nrfxlib `sEMMC/include/nrf_sp_emmc.h`), the app driver's constants.
 const VRI_EV_XFERCOMPLETE: usize = 0x10;
 const VRI_EV_ABORTED: usize = 0x14;
 const VRI_EV_READYTOTRANSFER: usize = 0x18;
@@ -98,13 +89,13 @@ const RESP_R3: u32 = 4;
 const PROC_PROCESS: u32 = 0;
 const PROC_IGNORE: u32 = 1;
 
-// ── Soft-peripheral VPR task indices (`softperipheral_regif.h`, the nRF54L row). ──
+// Soft-peripheral VPR task indices (`softperipheral_regif.h`, the nRF54L row).
 const T_START: usize = 16;
 const T_CONFIG: usize = 17; // __CSB
 const T_ACTION: usize = 18; // __ASB
 const T_STOP: usize = 19; // __SSB
 
-// ── VPR00 (secure alias) — raw MMIO, same addresses as the app driver. ──
+// VPR00 (secure alias), raw MMIO, the same addresses as the app driver.
 const VPR00_TASKS_TRIGGER: *mut u32 = 0x5004_C000 as *mut u32;
 const VPR00_CPURUN: *mut u32 = 0x5004_C800 as *mut u32;
 const VPR00_INITPC: *mut u32 = 0x5004_C808 as *mut u32;
@@ -112,21 +103,20 @@ const VPR00_DMCONTROL: *mut u32 = 0x5004_C440 as *mut u32;
 const DM_DMACTIVE: u32 = 1 << 0;
 const DM_NDMRESET: u32 = 1 << 1;
 
-// ── Pins (issue #1158's table; order is Nordic's). ──
-/// The six card pads on P2: `(pin, role)` — D3, CLK, D0, D2, D1, CMD.
+/// The six card pads on P2, in order: D3, CLK, D0, D2, D1, CMD.
 const SD_PADS: [usize; 6] = [0, 1, 2, 3, 4, 5];
-/// The two pads time-shared with the display's B0/B1 — internal pull-ups in storage mode.
+/// The two pads time-shared with the display's B0/B1; they get internal pull-ups in storage mode.
 const SHARED_PADS: [usize; 2] = [0, 4];
 
-// ── Clocks. See the module doc's 64 MHz note — every value is legal at half rate too. ──
+// Clocks. See the module doc's 64 MHz note: every value is legal at half rate too.
 const CLK_INIT_HZ: u32 = 400_000;
-/// Default Speed — the only data clock here (no CMD6 High-Speed switch in the bootloader).
+/// Default Speed, the only data clock here.
 const CLK_DS_HZ: u32 = 21_333_333;
-/// Firmware retries per transaction (the app's number).
+/// Firmware retries per transaction.
 const NUM_RETRIES: u32 = 3;
 
-// ── Deadlines, in milliseconds of the 64 MHz DWT clock. Generous on purpose: their job is to
-//    turn a wedge into a reported error, and none is ever hit in normal operation. ──
+// Deadlines, in milliseconds of the 64 MHz DWT clock. They are generous on purpose: their job
+// is to turn a wedge into a reported error, and none is ever hit in normal operation.
 const CYC_PER_MS: u32 = 64_000;
 const BARRIER_MS: u32 = 50;
 const BOOT_MS: u32 = 500;
@@ -134,21 +124,19 @@ const CMD_MS: u32 = 500;
 const STATUS_MS: u32 = 250;
 const READ_MS: u32 = 2_000;
 const POWERUP_MS: u32 = 1_500;
-/// Card power-up settle before the first CMD0 (the app's 10 ms).
+/// Card power-up settle before the first CMD0.
 const CARD_SETTLE_MS: u32 = 10;
-/// ACMD41 poll interval.
 const POWERUP_POLL_MS: u32 = 10;
 /// CMD8 deliver-and-abort: how long the card's R7 gets to reach the wire.
 const CMD8_DELIVER_US: u32 = 3_000;
-/// Completion-poll re-check slice, ~5 µs at 64 MHz — keeps the M33 off the SRAM bus the FLPR is
-/// DMA-ing across (the app driver's reasoning, halved for the halved clock).
+/// Completion-poll re-check slice, ~5 µs at 64 MHz. It keeps the M33 off the SRAM bus that the
+/// FLPR is DMA-ing across.
 const WAIT_SLICE_CYCLES: u32 = 320;
 
-/// SD bytes per block.
 pub const BLOCK_BYTES: usize = 512;
 /// `CURRENT_STATE` in an R1: the transfer state.
 const CARD_STATE_TRAN: u8 = 4;
-/// R1 error bits — the app driver's mask, derivation comments and all (see it before editing).
+/// R1 error bits. The app driver's copy of this mask carries the derivation; read it first.
 const R1_ERROR_MASK: u32 = (1 << 31)
     | (1 << 30)
     | (1 << 29)
@@ -164,8 +152,7 @@ const R1_ERROR_MASK: u32 = (1 << 31)
     | (1 << 16)
     | (1 << 15);
 
-/// Why a storage operation failed. Returned, never panicked or hung on; the payloads exist for
-/// the `rtt` diagnostics and cost a handful of bytes.
+/// Why a storage operation failed. Always returned, never panicked or hung on.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "rtt", derive(defmt::Format))]
 pub enum SemmcError {
@@ -173,7 +160,7 @@ pub enum SemmcError {
     Barrier,
     /// The image never stamped ready after a boot.
     NoBoot,
-    /// No completion within the deadline (the firmware has been warm-rebooted before this returns).
+    /// No completion within the deadline; the firmware is warm-rebooted before this returns.
     Timeout,
     /// `EVENTS_ABORTED`, payload = the firmware's `STATUS` word.
     Aborted(u32),
@@ -183,12 +170,9 @@ pub enum SemmcError {
     CardBusy,
     /// Card identification did not complete — no card, or a broken bus.
     NoCard,
-    /// CCS = 0: a byte-addressed SDSC card (the armer-side stack rejects these too).
+    /// CCS = 0: a byte-addressed SDSC card.
     UnsupportedCard,
 }
-
-// ── DWT-cycle deadlines. CYCCNT is enabled by main before any of this runs (and main refuses to
-//    build the card at all if the counter isn't ticking, so "bounded" stays true). ──
 
 #[inline(always)]
 fn now() -> u32 {
@@ -196,7 +180,7 @@ fn now() -> u32 {
 }
 
 /// A wrap-safe deadline: `expired` once `now` has advanced past the end mark. All deadlines here
-/// are ≤ 2 s = 128 M cycles, far inside the i32 half-range the comparison needs.
+/// are at most 2 s (128 M cycles), far inside the i32 half-range the comparison needs.
 struct Deadline(u32);
 
 impl Deadline {
@@ -217,10 +201,10 @@ fn delay_ms(ms: u32) {
     delay_us(ms.saturating_mul(1_000));
 }
 
-/// Validate the armer-staged blob (`OBCU_Spec.md` §3.4): the CRC frame, then the image's own
-/// metadata — magic, header version, REGIF, not self-boot, the sEMMC id, and that it fits the
-/// execution carve. `None` = the carve does not hold a bootable sEMMC image; the caller owns what
-/// that means per decision (abandon an untouched `Armed`, park a `Rollback`).
+/// Validate the armer-staged blob: the CRC frame, then the image's own metadata (magic, header
+/// version, REGIF, not self-boot, the sEMMC id, and that it fits the execution carve). `None`
+/// means the carve holds no bootable sEMMC image; the caller owns what that means for its
+/// decision (abandon an untouched `Armed`, park a `Rollback`).
 pub fn staged_blob() -> Option<(&'static [u8], SpImageGeometry)> {
     // SAFETY: the linker reserves the SEMMC_STAGE region; RRAM is memory-mapped, always readable,
     // and nothing writes it while the bootloader runs.
@@ -230,30 +214,28 @@ pub fn staged_blob() -> Option<(&'static [u8], SpImageGeometry)> {
     Some((blob, geom))
 }
 
-// ═════════════════════════════ the bootloader's card handle ═════════════════════════════
-
 /// The sEMMC host, bootloader shape: one instance owns the FLPR from construction to
 /// [`shutdown`](Self::shutdown). Init + absolute block reads, nothing else.
 pub struct BootSemmc {
-    /// The staged image (validated flash bytes — `recover`'s re-copy source, always present).
+    /// The validated staged image in flash, which is `recover`'s re-copy source.
     blob: &'static [u8],
-    /// VRI base = carve base + the *staged metadata's* VRI offset (never a pinned constant).
+    /// VRI base = carve base + the staged metadata's VRI offset, never a pinned constant.
     vri_base: usize,
-    /// Bytes to reserve + zero at a cold boot (code + exec/data + VRI, from the metadata).
+    /// Bytes to reserve and zero at a cold boot: code, exec/data, and VRI, from the metadata.
     image_bytes: usize,
     clk_hz: u32,
     bus_width: u32,
     num_retries: u32,
-    /// Barrier handshake counter (only equality with the firmware's echo matters).
+    /// Barrier handshake counter; only equality with the firmware's echo matters.
     counter: u32,
     rca: u32,
     ready: bool,
 }
 
 impl BootSemmc {
-    /// Build the handle from a [`staged_blob`] result. Touches nothing yet — call
-    /// [`try_init`](Self::try_init) until it succeeds (the caller owns the retry/backoff policy,
-    /// exactly as with the SPI transport this replaces).
+    /// Build the handle from a [`staged_blob`] result. It touches nothing yet: call
+    /// [`try_init`](Self::try_init) until it succeeds. The caller owns the retry and backoff
+    /// policy.
     pub fn new(blob: &'static [u8], geom: SpImageGeometry) -> BootSemmc {
         BootSemmc {
             blob,
@@ -268,10 +250,10 @@ impl BootSemmc {
         }
     }
 
-    /// One full bring-up attempt: park the hart, pads → storage, cold-boot the staged image,
-    /// power it on, settle, run card identification to 4-bit Default Speed, and probe-read block
-    /// 0 so the whole data path is proven before the engine trusts it. `false` = no card / a
-    /// failed step — retry later; every failure path has already parked or recovered the FLPR.
+    /// One full bring-up attempt: park the hart, switch the pads to storage, cold-boot the
+    /// staged image, power it on, settle, run card identification to 4-bit Default Speed, and
+    /// probe-read block 0 so the whole data path is proven before the engine trusts it. `false`
+    /// means retry later; every failure path has already parked or recovered the FLPR.
     pub fn try_init(&mut self) -> bool {
         self.ready = false;
         park_hart();
@@ -290,15 +272,15 @@ impl BootSemmc {
         self.enable()?;
         delay_ms(CARD_SETTLE_MS);
         self.init_card()?;
-        // The probe: one real block through the real path (also what `num_bytes` did for SPI).
+        // The probe: one real block through the real path.
         let mut probe = AlignedBlock([0; BLOCK_BYTES]);
         self.read_one(0, &mut probe)
     }
 
-    /// Read `out.len() / 512` whole blocks starting at absolute block `start` — the engine's
-    /// `read_blocks` (`out` is always a non-zero multiple of 512). CMD17/CMD18 straight into the
-    /// caller's buffer when it is 32-bit aligned (the firmware's DMA requirement); the engine's
-    /// mid-buffer slices bounce per-block through an aligned scratch.
+    /// Read `out.len() / 512` whole blocks starting at absolute block `start`; `out` is always a
+    /// non-zero multiple of 512. CMD17 or CMD18 reads straight into the caller's buffer when it
+    /// is 32-bit aligned, which the firmware's DMA requires. Unaligned slices bounce per block
+    /// through an aligned scratch.
     pub fn read_blocks(&mut self, start: u32, out: &mut [u8]) -> Result<(), SemmcError> {
         if !self.ready {
             return Err(SemmcError::NoCard);
@@ -326,10 +308,9 @@ impl BootSemmc {
         reset_pads();
     }
 
-    // ── boot / recovery ──────────────────────────────────────────────────────────────────────
-
-    /// Boot (or re-boot) the firmware: park, optionally re-copy the staged image into the carve,
-    /// zero the VRI, `ENABLE`, `INITPC`, run, wait for the ready stamp (firmware clears `ENABLE`).
+    /// Boot or re-boot the firmware: park, optionally re-copy the staged image into the carve,
+    /// zero the VRI, `ENABLE`, `INITPC`, run, then wait for the ready stamp, which the firmware
+    /// makes by clearing `ENABLE`.
     fn boot_firmware(&mut self, copy_image: bool) -> Result<(), SemmcError> {
         park_hart();
         let base = ram_base();
@@ -362,7 +343,7 @@ impl BootSemmc {
         Ok(())
     }
 
-    /// **Law 1** — after a boot the firmware is initialised, not powered on: `ENABLE = 1` + `__ASB`.
+    /// Law 1: after a boot the firmware is initialised, not powered on: `ENABLE = 1` plus `__ASB`.
     fn enable(&mut self) -> Result<(), SemmcError> {
         vri_write(self.vri_base, VRI_ENABLE, 1);
         let r = self.barrier(T_ACTION);
@@ -372,9 +353,9 @@ impl BootSemmc {
         r
     }
 
-    /// Wedge recovery: stop barrier, warm re-boot (image resident), power on; if even that fails,
-    /// re-copy the image from the stage carve (flash — always present, unlike the app slot). The
-    /// card is untouched and keeps its RCA/bus state, so the caller simply retries.
+    /// Wedge recovery: stop barrier, warm re-boot with the image resident, power on. If even
+    /// that fails, re-copy the image from the stage carve, which is always present. The card is
+    /// untouched and keeps its RCA and bus state, so the caller simply retries.
     fn recover(&mut self) {
         let _ = self.barrier(T_STOP);
         if self.boot_firmware(false).is_err() && self.boot_firmware(true).is_err() {
@@ -384,8 +365,6 @@ impl BootSemmc {
         }
         let _ = self.enable();
     }
-
-    // ── the barrier + one command ────────────────────────────────────────────────────────────
 
     /// One `__XSBx` barrier (~2.2 µs): counter into `SPSYNC.AUX[0]`, trigger, spin for the echo.
     fn barrier(&mut self, task: usize) -> Result<(), SemmcError> {
@@ -402,9 +381,9 @@ impl BootSemmc {
         Ok(())
     }
 
-    /// A barrier on the command path, with the recovery a failed one has earned (a failed barrier
-    /// = a wedged firmware; a warm reboot costs ~600 µs against a 50 ms timeout). `recover` uses
-    /// the raw [`barrier`](Self::barrier) so this cannot recurse.
+    /// A barrier on the command path, with the recovery a failed one has earned: a failed
+    /// barrier means a wedged firmware, and a warm reboot costs ~600 µs against a 50 ms timeout.
+    /// `recover` uses the raw [`barrier`](Self::barrier), so this cannot recurse.
     fn barrier_or_recover(&mut self, task: usize) -> Result<(), SemmcError> {
         match self.barrier(task) {
             Ok(()) => Ok(()),
@@ -415,7 +394,7 @@ impl BootSemmc {
         }
     }
 
-    /// **Law 2** — close the transaction: `CONFIG.READYTOTRANSFER = 0` **plus** the `__ASB` ack.
+    /// Law 2: close the transaction with `CONFIG.READYTOTRANSFER = 0` plus the `__ASB` ack.
     fn close_transaction(&mut self) -> Result<(), SemmcError> {
         vri_write(self.vri_base, VRI_CFG_READYTOTRANSFER, 0);
         self.barrier_or_recover(T_ACTION)
@@ -451,8 +430,8 @@ impl BootSemmc {
         Ok(())
     }
 
-    /// Wait for the transfer to end and close the transaction (law 2) either way. A pure bounded
-    /// poll — see the module doc; the interrupt fast path of the app's version does not exist here.
+    /// Wait for the transfer to end and close the transaction (law 2) either way. It is a pure
+    /// bounded poll; the interrupt fast path of the app's version does not exist here.
     fn wait_completion(&mut self, deadline_ms: u32) -> Result<(), SemmcError> {
         let deadline = Deadline::after_ms(deadline_ms);
         loop {
@@ -478,7 +457,6 @@ impl BootSemmc {
                 self.recover();
                 return Err(SemmcError::Timeout);
             }
-            // A bounded slice keeps the M33 off the SRAM bus the FLPR is DMA-ing across.
             cortex_m::asm::delay(WAIT_SLICE_CYCLES);
         }
     }
@@ -509,18 +487,16 @@ impl BootSemmc {
         self.cmd(idx, arg, resp, PROC_PROCESS, None, CMD_MS)
     }
 
-    /// CMD13 → `(raw R1, CURRENT_STATE)` — also the read path's response fetch (the firmware
-    /// cannot process a response and a data phase at once, so reads run `PROC_IGNORE` + this).
+    /// CMD13 to `(raw R1, CURRENT_STATE)`. The read path fetches its response here too, because
+    /// the firmware cannot process a response and a data phase at once, so reads run `PROC_IGNORE`.
     fn card_status(&mut self) -> Result<(u32, u8), SemmcError> {
         let r = self.cmd(13, self.rca << 16, RESP_R1, PROC_PROCESS, None, STATUS_MS)?;
         Ok((r[0], ((r[0] >> 9) & 0xF) as u8))
     }
 
-    // ── card identification ──────────────────────────────────────────────────────────────────
-
-    /// **The CMD8 workaround** — the app driver's deliver-and-abort, verbatim (its doc has the
-    /// story): send `SEND_IF_COND`, give the R7 3 ms to reach the wire (which is all ACMD41's HCS
-    /// handling needs), abandon the host-side wait via `__SSB`, ack, continue.
+    /// The CMD8 workaround, the app driver's deliver-and-abort verbatim (its doc has the story):
+    /// send `SEND_IF_COND`, give the R7 3 ms to reach the wire, which is all ACMD41's HCS
+    /// handling needs, abandon the host-side wait with `__SSB`, ack, and continue.
     fn cmd8_deliver_abort(&mut self) -> Result<(), SemmcError> {
         // A future blob with a fixed index table would simply complete this; try that first.
         if let Ok(r) = self.cmd(8, 0x1AA, RESP_R1, PROC_PROCESS, None, 100) {
@@ -551,15 +527,15 @@ impl BootSemmc {
         Ok(())
     }
 
-    /// Power-on to ready: CMD0 ×2 → CMD8 → ACMD41(HCS) → CMD2 → CMD3 → CMD7 → ACMD6 4-bit,
-    /// Default Speed. No CMD9, no CMD6 — see the module doc.
+    /// Power-on to ready: CMD0 twice, CMD8, ACMD41(HCS), CMD2, CMD3, CMD7, ACMD6 4-bit, Default
+    /// Speed. No CMD9 and no CMD6; see the module doc.
     fn init_card(&mut self) -> Result<(), SemmcError> {
         self.rca = 0;
         self.bus_width = 1;
         self.clk_hz = CLK_INIT_HZ;
         self.num_retries = NUM_RETRIES;
 
-        // CMD0 twice — the card may miss the first while its supply settles (no response to say so).
+        // CMD0 twice: the card may miss the first while its supply settles, with no response to say so.
         let mut idle = false;
         for _ in 0..2 {
             idle |= self.cmd(0, 0, RESP_NONE, PROC_PROCESS, None, CMD_MS).is_ok();
@@ -570,7 +546,7 @@ impl BootSemmc {
 
         self.cmd8_deliver_abort()?;
 
-        // ACMD41 until powered up; HCS for block addressing, 0xFF8000 = the full voltage window.
+        // ACMD41 until powered up; HCS for block addressing, 0xFF8000 is the full voltage window.
         let deadline = Deadline::after_ms(POWERUP_MS);
         let ocr = loop {
             match self.acmd(41, 0x4030_0000 | 0x00FF_8000, RESP_R3) {
@@ -602,10 +578,8 @@ impl BootSemmc {
         Ok(())
     }
 
-    // ── transfers ────────────────────────────────────────────────────────────────────────────
-
-    /// Best-effort STOP_TRANSMISSION after any failed data command — the host recovery path
-    /// cannot repair a *card* left streaming in `data`.
+    /// Best-effort STOP_TRANSMISSION after a failed data command. The host recovery path cannot
+    /// repair a card left streaming in `data`.
     fn stop_transmission(&mut self) {
         let _ = self.cmd(12, 0, RESP_R1B, PROC_PROCESS, None, CMD_MS);
     }
@@ -619,7 +593,7 @@ impl BootSemmc {
         self.check_after_transfer()
     }
 
-    /// The aligned read path: CMD17 for one block, CMD18 + CMD12 for more.
+    /// The aligned read path: CMD17 for one block, CMD18 plus CMD12 for more.
     fn read_span(&mut self, lba: u32, out: &mut [u8]) -> Result<(), SemmcError> {
         let n = (out.len() / BLOCK_BYTES) as u32;
         let data = Some((out.as_mut_ptr() as u32, BLOCK_BYTES as u32, n));
@@ -629,8 +603,8 @@ impl BootSemmc {
                 return Err(e);
             }
         } else {
-            // A failed CMD18 leaves the *card* streaming — the timeout path recovers the host,
-            // not the card — so STOP_TRANSMISSION goes out either way.
+            // A failed CMD18 leaves the card streaming, and the timeout path recovers the host,
+            // not the card, so STOP_TRANSMISSION goes out either way.
             let r = self.cmd(18, lba, RESP_R1, PROC_IGNORE, data, READ_MS);
             let stop = self.cmd(12, 0, RESP_R1B, PROC_PROCESS, None, CMD_MS);
             r?;
@@ -649,8 +623,6 @@ impl BootSemmc {
     }
 }
 
-// ── VRI + VPR primitives ──
-
 #[inline(always)]
 fn vri_read(base: usize, off: usize) -> u32 {
     // SAFETY: the VRI page is inside the carve — RAM the linker does not hand to the M33, no Rust
@@ -664,8 +636,8 @@ fn vri_write(base: usize, off: usize, v: u32) {
     unsafe { ((base + off) as *mut u32).write_volatile(v) }
 }
 
-/// Stop the FLPR hart whatever it is doing — `CPURUN = 0` alone does NOT stop a running VPR core;
-/// the pulsed `ndmreset` through the Debug Module is the guarantee (Nordic's `nrf_semmc_uninit`).
+/// Stop the FLPR hart whatever it is doing. `CPURUN = 0` alone does NOT stop a running VPR core;
+/// the pulsed `ndmreset` through the Debug Module is the guarantee.
 fn park_hart() {
     // SAFETY: fixed VPR00 MMIO; parking the coprocessor cannot corrupt M33 state.
     unsafe {
@@ -687,9 +659,9 @@ fn cfg_pad(pin: usize, dir: Dir, input: Input, pull: Pull, drive: Drive, ctrl: C
     });
 }
 
-/// Storage-mode pads (#1158's measured table): all six card pads VPR-controlled, input
-/// disconnected, E-drive; internal pull-ups on D3/D1 only (the other four carry external
-/// resistors); the high-speed pad bias the app also sets.
+/// Storage-mode pads: all six card pads VPR-controlled, input disconnected, E-drive; internal
+/// pull-ups on D3/D1 only, because the other four carry external resistors; plus the high-speed
+/// pad bias the app also sets.
 fn configure_storage_pads() {
     for pin in SD_PADS {
         let pull = if SHARED_PADS.contains(&pin) { Pull::Pullup } else { Pull::Disabled };
@@ -698,15 +670,15 @@ fn configure_storage_pads() {
     pac::GPIOHSPADCTRL_S.bias().modify(|w| w.set_hsbias(2));
 }
 
-/// Reset the six card pads to their power-on shape (input, disconnected, GPIO, standard drive) —
-/// the handoff courtesy before the jump, so the app's bring-up starts from what reset would give.
+/// Reset the six card pads to their power-on shape (input, disconnected, GPIO, standard drive),
+/// so the app's bring-up starts from what reset would have given it.
 fn reset_pads() {
     for pin in SD_PADS {
         cfg_pad(pin, Dir::Input, Input::Disconnect, Pull::Disabled, Drive::S, Ctrlsel::Gpio);
     }
 }
 
-/// Response landing zone — four documented words, doubled as insurance (the app's shape).
+/// Response landing zone: four documented words, doubled as insurance (the app's shape).
 #[repr(C, align(4))]
 struct RespRaw([u32; 8]);
 static mut RESP_RAW: RespRaw = RespRaw([0; 8]);

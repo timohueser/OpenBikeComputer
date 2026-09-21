@@ -1,40 +1,29 @@
 /**
- * §5.2's USB binding v5 framing: the aligned records that carry protocol-v4 frames over a byte pipe.
+ * The USB binding's framing: the aligned records that carry protocol-v4 frames over a byte pipe.
  *
- * [`FLAT_Store_Protocol.md`](../../../../../specs/FLAT_Store_Protocol.md) §5.2 gives USB two bulk
- * endpoint pairs and one rule for both: *each record is `record_length u32`, exactly that many frame
- * bytes, then zero padding to a four-byte boundary*. Everything interesting about this file follows
- * from the sentence after it —
- * **packet boundaries carry no protocol meaning; a record may span packets** — because that is
- * precisely the property a naive reader gets wrong.
+ * Each record is `record_length u32`, exactly that many frame bytes, then zero padding to a
+ * four-byte boundary. Everything interesting here follows from the rule after it: packet boundaries
+ * carry no protocol meaning, and **a record may span packets**. An 8,208-byte device-to-host record
+ * spans seventeen 512-byte packets on a high-speed endpoint, and no packet carries a length telling
+ * the reader which one ends the record. So {@link RecordChannel} keeps a buffer and re-reads its own
+ * prefix, and {@link frameRecord} is the only thing that ever writes one.
  *
- * The v1 envelope this replaces assumed one USB transfer was one frame, so a control message that
- * reached the endpoint's max packet size was a protocol error the host refused to send. Under v4 a
- * 8,208-byte device→host record spans seventeen 512-byte packets on a high-speed endpoint, and there is no
- * length in a packet to tell the reader which one ends the record. So {@link RecordChannel} keeps a
- * buffer and re-reads its own prefix, and {@link frameRecord} is the only thing that ever writes
- * one.
+ * The ceilings are fixed here rather than negotiated, because the protocol has no capability
+ * discovery and USB offers nothing to derive one from. A device-to-host record above
+ * {@link MAX_DEVICE_RECORD} is a framing error the reader refuses: believing an absurd length would
+ * park the read loop forever on bytes that are never coming.
  *
- * ## Ceilings (§5.2, "Record ceilings are a constant of this binding")
- *
- * Fixed here rather than negotiated, because §3 has no capability discovery and USB offers nothing
- * to derive a ceiling from. A device→host record above {@link MAX_DEVICE_RECORD} is a framing error
- * the reader refuses rather than a large frame it tries to assemble: believing an absurd length
- * would park the read loop forever on bytes that are never coming.
- *
- * ## What this file is not
- *
- * It does not know what a frame means. A control record and a stream record are the same shape here
- * and differ only in the ceiling the channel was built with, which is why one reader serves both.
- * Interpretation is `protocol.ts`'s, and correlation is `client.ts`'s.
+ * This file does not know what a frame means. A control record and a stream record are the same
+ * shape and differ only in the ceiling the channel was built with, which is why one reader serves
+ * both. Interpretation is `protocol.ts`'s, and correlation is `client.ts`'s.
  */
 
 import { PipeError, throwIfAborted, type BytePipe } from "./pipe";
 
-/** The USB-binding version advertised before a record is exchanged (§5.2). */
+/** The USB-binding version advertised before a record is exchanged. */
 export const USB_BINDING_MAJOR = 5;
 
-/** The four-byte length prefix every record carries (§5.2). */
+/** The four-byte length prefix every record carries. */
 export const RECORD_PREFIX_LEN = 4;
 
 /** The word alignment guaranteed for every prefix, frame, and following record. */
@@ -45,29 +34,25 @@ export function paddedRecordLen(frameLen: number): number {
     return Math.ceil(frameLen / RECORD_ALIGNMENT) * RECORD_ALIGNMENT;
 }
 
-/**
- * Device → host, either channel: §3.8's 16-byte stream frame plus 8,192 payload bytes.
- */
+/** Device → host, either channel: a 16-byte stream frame plus 8,192 payload bytes. */
 export const MAX_DEVICE_RECORD = 8208;
 
 /** Host → device, stream channel: the same number, so a client frames both directions alike. */
 export const MAX_HOST_STREAM_RECORD = 8208;
 
 /**
- * Host → device, control channel. §3's largest request is the 100-byte `PUT`; the device sizes this
- * buffer to the protocol rather than to the ceiling, and a longer control record is `invalidFrame`
- * with detail `length`.
+ * Host → device, control channel. The largest request is the 100-byte `PUT`; the device sizes this
+ * buffer to the protocol rather than to the ceiling, and a longer control record is `invalidFrame`.
  */
 export const MAX_HOST_CONTROL_RECORD = 256;
 
 /**
- * The largest payload a stream record may carry (§5.2's closing rule).
+ * The largest payload a stream record may carry.
  *
- * A client MUST NOT exceed it, and §3.8 already makes a length above the link's ceiling terminate
- * the transfer — so a client that got this wrong would not be sending slightly-too-large records,
- * it would be killing every upload. Full records of exactly this many bytes are what the device
- * writes to the card in one go, which is why the upload loop sends them rather than something
- * rounder.
+ * A client MUST NOT exceed it, and a length above the link's ceiling terminates the transfer — so a
+ * client that got this wrong would be killing every upload rather than sending slightly-too-large
+ * records. Full records of exactly this many bytes are what the device writes to the card in one
+ * go, which is why the upload loop sends them rather than something rounder.
  */
 export const MAX_STREAM_PAYLOAD = MAX_HOST_STREAM_RECORD - 16;
 
@@ -79,7 +64,7 @@ export class RecordError extends Error {
     }
 }
 
-/** Prefix and pad `frame` according to USB binding v5. The whole of §5.2's host-side framing. */
+/** Prefix and pad `frame`. The whole of the binding's host-side framing. */
 export function frameRecord(frame: Uint8Array): Uint8Array {
     if (frame.length === 0 || frame.length > 0xffffffff) {
         throw new RecordError(`a record carries 1..=4294967295 frame bytes, this one has ${frame.length}.`);
@@ -106,16 +91,15 @@ export class RecordChannel {
     /**
      * Both ceilings measure the **frame**, not the frame plus its prefix.
      *
-     * §5.2's table is stated in the frame's own terms — "§3.8's 16-byte stream frame plus 8,192
-     * payload bytes" is 8,208 — and the prefix/padding are the binding's own overhead on top. A
-     * ceiling that counted them would refuse the largest legal record by exactly four bytes, which
-     * is the one number this protocol is built around.
+     * The table is stated in the frame's own terms — a 16-byte stream frame plus 8,192 payload bytes
+     * is 8,208 — and the prefix and padding are the binding's own overhead on top. A ceiling that
+     * counted them would refuse the largest legal record by exactly four bytes.
      */
     constructor(
         private readonly pipe: BytePipe,
-        /** Ceiling on a frame this side **sends** (§5.2's host → device row). */
+        /** Ceiling on a frame this side **sends**. */
         private readonly sendCeiling: number,
-        /** Ceiling on a frame this side **accepts** (§5.2's device → host row). */
+        /** Ceiling on a frame this side **accepts**. */
         private readonly receiveCeiling: number = MAX_DEVICE_RECORD,
     ) {}
 
@@ -150,9 +134,9 @@ export class RecordChannel {
                         (this.pending[2] << 16) |
                         (this.pending[3] << 24)) >>>
                     0;
-                // §5.2: "A zero, out-of-range, truncated or overrun record length is `invalidFrame`
-                // and resets that record stream." A host that kept reading past one would be
-                // assembling frames out of the middle of somebody else's record.
+                // A zero, out-of-range, truncated or overrun record length resets that record
+                // stream. A host that kept reading past one would be assembling frames out of the
+                // middle of somebody else's record.
                 if (length === 0) throw new RecordError("the device sent a zero-length record.");
                 if (length > this.receiveCeiling) {
                     throw new RecordError(
@@ -190,28 +174,26 @@ export class RecordChannel {
     }
 }
 
-// --- §5.2.1's EP0 payload ---------------------------------------------------------
-//
-// Not a record and not a §3 frame, and here anyway: both halves of this file are the *USB binding*
-// rather than the protocol. §5.2 gives all of the bulk pairs to §3, so USB's equivalent of BLE's
-// separately-addressed control characteristics is EP0, where every USB device's identity already
-// lives. Putting this codec in `protocol.ts` would put a transport fact inside the file whose whole
-// claim is that its bytes are identical on both links.
+// Not a record and not a protocol frame, and here anyway: both halves of this file are the *USB
+// binding* rather than the protocol. All the bulk pairs go to the protocol, so USB's equivalent of
+// BLE's separately-addressed control characteristics is EP0, where every USB device's identity
+// already lives. Putting this codec in `protocol.ts` would put a transport fact inside the file
+// whose whole claim is that its bytes are identical on both links.
 
-/** The vendor request number §5.2.1 registers: `GET_DEVICE_INFO`. */
+/** The vendor request number registered for `GET_DEVICE_INFO`. */
 export const GET_DEVICE_INFO = 0x20;
 
-/** The payload ceiling §5.2.1 states: three strings of at most 48 bytes, each with a length byte. */
+/** The payload ceiling: three strings of at most 48 bytes, each with a length byte. */
 export const DEVICE_INFO_MAX = 192;
 
 /**
- * The three strings §5.2.1's payload carries, in its order.
+ * The three strings the EP0 payload carries, in its order.
  *
  * The firmware revision is the load-bearing one — it is what "an update is available" compares
  * against, and the running image's version lives there and nowhere else.
  */
 export interface DeviceInfo {
-    /** e.g. `0.4.0+abc1234` — the running image, after a confirmed DFU the new one. */
+    /** e.g. `0.4.0+abc1234` — the running image. */
     firmwareRevision: string;
     /** e.g. `obc-lm20-r1`. */
     hardwareRevision: string;
@@ -235,7 +217,7 @@ export function encodeDeviceInfo(info: DeviceInfo): Uint8Array {
     return out;
 }
 
-/** Read §5.2.1's payload. A short transfer that stops inside a string is a malformed answer. */
+/** Read the EP0 payload. A short transfer that stops inside a string is a malformed answer. */
 export function decodeDeviceInfo(data: Uint8Array): DeviceInfo {
     const decoder = new TextDecoder();
     const strings: string[] = [];

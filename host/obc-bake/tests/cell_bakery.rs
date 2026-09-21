@@ -1,13 +1,13 @@
-//! The cell bake's acceptance criteria (#1020), all of them offline.
+//! The cell bake's acceptance criteria, all of them offline.
 //!
-//! Nothing here touches the network: extracts and `.poly` files come from a
-//! [`LocalExtracts`] root, and the cutter is driven over a **synthetic ingest** rather
-//! than a PBF — the real `obc_pack::cut::cut_ingested`, so every cell these tests
-//! inspect is a genuine OBCM file with a genuine header, but with a fixture that can
-//! be placed exactly on the grid lines the assertions are about.
+//! Nothing here touches the network: extracts and `.poly` files come from a [`LocalExtracts`] root,
+//! and the cutter is driven over a synthetic ingest rather than a PBF, through the real
+//! `obc_pack::cut::cut_ingested` — so every cell these tests inspect is a genuine OBCM file with a
+//! genuine header, but with a fixture that can be placed exactly on the grid lines the assertions
+//! are about.
 //!
-//! The geography is chosen so the ownership rule has something to own. Two regions,
-//! `west` and `east`, meet **inside** cell column `j = 1053`:
+//! The geography is chosen so the ownership rule has something to own. Two regions, `west` and
+//! `east`, meet inside cell column `j = 1053`:
 //!
 //! ```text
 //!   j:      1051     1052     1053     1054     1055
@@ -18,9 +18,8 @@
 //!                                ↑ the co-baked seam
 //! ```
 //!
-//! so `18/1204/1052` is canonical from `west` alone, `18/1204/1054` from `east` alone,
-//! and `18/1204/1053` **only when both are baked together** — which is exactly the D3
-//! property the whole plan-grouping machinery exists to produce.
+//! so `18/1204/1052` is canonical from `west` alone, `18/1204/1054` from `east` alone, and
+//! `18/1204/1053` only when both are baked together.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -47,8 +46,8 @@ const SNAPSHOT: &str = "2026-07-28";
 const BASE_URL: &str = "https://maps.example/cells";
 const GENERATED_AT: &str = "2026-07-30T00:00:00Z";
 
-/// A three-level ladder with no simplification, and a `_meta` block so the bakery can
-/// load it as the schema: the config every cell in these tests is cut with.
+/// A three-level ladder with no simplification, and a `_meta` block so the bakery can load it as
+/// the schema: the config every cell in these tests is cut with.
 const SCHEMA_JSON: &str = r#"{
     "_meta": {
         "id": "testschema",
@@ -70,10 +69,10 @@ const SCHEMA_JSON: &str = r#"{
     "routing": {"min_component_edges": 4}
 }"#;
 
-/// A **skin** over that schema, shaped the way the shipped ones are: the same feature
-/// types in the same document order (which is what fixes the style ids), carrying only
-/// presentation. No ladder, no `min_lod`, no routing — those are schema data, and a
-/// skin that restated them would be claiming to change bytes it is stamped on top of.
+/// A skin over that schema, shaped the way the shipped ones are: the same feature types in the
+/// same document order, which is what fixes the style ids, carrying only presentation. No ladder,
+/// no `min_lod`, no routing — those are schema data, and a skin that restated them would be
+/// claiming to change bytes it is stamped on top of.
 const SKIN_JSON: &str = r#"{
     "_meta": {
         "id": "testskin",
@@ -88,15 +87,13 @@ const SKIN_JSON: &str = r#"{
     "marker": {"color": "0xF800"}
 }"#;
 
-/// One geometry band and one core band, both `2^18` — the smallest table that still
-/// satisfies `OBCA_Spec.md` §1.2's partition rule and §5.1's role rules, and it keeps
-/// two bands on one cell size, which is where the path-collision trap lives.
+/// One geometry band and one core band, both `2^18` — the smallest table that still satisfies the
+/// partition and role rules, and it keeps two bands on one cell size, which is where the
+/// path-collision trap lives.
 const BANDS_JSON: &str = r#"{"bands": [
     {"id": "coarse",  "cell_log2": 18, "lods": [0, 1, 2], "role": "coarse"},
     {"id": "network", "cell_log2": 18, "lods": [], "sections": ["nav", "poi"], "role": "core"}
 ]}"#;
-
-// --- the fixture geography --------------------------------------------------------
 
 /// `west`'s polygon: from inside column 1051 to the middle of column 1053, and from
 /// inside row 1203 to inside row 1205.
@@ -115,18 +112,15 @@ fn regions_toml() -> &'static str {
     "regions = [\n  { id = \"europe/west\", name = \"West\" },\n  { id = \"europe/east\", name = \"East\" },\n]\n"
 }
 
-// --- the cutter -------------------------------------------------------------------
-
 /// Cuts the real cutter over a synthetic ingest.
 ///
-/// Real, because everything downstream of the cut — the header bbox check, the reader
-/// round-trip, the catalog generator's own `bbox == id` law — is only meaningful
-/// against bytes a cutter actually produced. Synthetic, because a PBF cannot be placed
-/// on a grid line by hand.
+/// Real, because everything downstream of the cut — the header bbox check, the reader round-trip,
+/// the catalog generator's own `bbox == id` law — is only meaningful against bytes a cutter
+/// actually produced. Synthetic, because a PBF cannot be placed on a grid line by hand.
 struct FixtureCutter {
     calls: AtomicUsize,
-    /// Every `(sorted source ids, sorted cell ids)` this cutter was asked for — the
-    /// plan grouping, observed from the outside.
+    /// Every `(sorted source ids, sorted cell ids)` this cutter was asked for — the plan grouping,
+    /// observed from the outside.
     plans: Mutex<Vec<(Vec<String>, Vec<String>)>>,
     /// Whether each run was handed a crop box.
     cropped: Mutex<Vec<bool>>,
@@ -172,8 +166,8 @@ fn deg(udeg: i64) -> f64 {
     udeg as f64 / 1e6
 }
 
-/// An extract spanning every cell the fixture regions touch: one lake over the whole
-/// area, one road across row 1204, and a POI per column.
+/// An extract spanning every cell the fixture regions touch: one lake over the whole area, one road
+/// across row 1204, and a POI per column.
 fn fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
     let style = |key: &str, value: &str| {
         cfg.get_style(&std::collections::HashMap::from([(key, value)])).expect("styled feature type").id
@@ -196,8 +190,8 @@ fn fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
             geom: Geom::Line((0..=24).map(|k| (deg(lon0 + k * (lon1 - lon0) / 24), deg(47_300_000))).collect()),
         },
     ];
-    // One long road across the whole area: every cell of row 1204 gets nav content,
-    // and every column boundary gets a deterministic boundary junction.
+    // One long road across the whole area: every cell of row 1204 gets nav content, and every
+    // column boundary gets a deterministic boundary junction.
     let ways = vec![RoutableWay {
         node_ids: (0..=24).collect(),
         coords: (0..=24).map(|k| ((lon0 + k * (lon1 - lon0) / 24) as i32, 47_300_000i32)).collect(),
@@ -227,8 +221,6 @@ fn fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
         ways,
     )
 }
-
-// --- the harness ------------------------------------------------------------------
 
 struct Fixture {
     dir: PathBuf,
@@ -277,9 +269,8 @@ impl Fixture {
                 bands: BandTable::parse(BANDS_JSON).expect("band table"),
                 schema_id: "testschema".into(),
                 schema_revision: 1,
-                // Whatever `terrain_bake` has already put in this tree — the same discovery the
-                // CLI does, so the recorded coupling (`OBCC_Spec.md` §13.4) is exercised rather
-                // than hand-wired.
+                // Whatever `terrain_bake` has already put in this tree — the same discovery the CLI
+                // does, so the recorded coupling is exercised rather than hand-wired.
                 terrain: obc_bake::terrain::in_tree(&self.tree).expect("the tree's terrain, if any"),
                 landmarks: self.landmarks.clone(),
                 peaks: None,
@@ -387,8 +378,6 @@ fn statuses(summary: &CellRunSummary) -> BTreeMap<String, CellStatus> {
     summary.plans.iter().flat_map(|p| p.cells.iter().map(|c| (format!("{} [{}]", c.id, c.band), c.status))).collect()
 }
 
-// --- the terrain artifact class (#1071) -------------------------------------------
-
 #[test]
 fn landmark_input_changes_invalidate_cell_cache() {
     let mut f = fixture_dirs("landmark-cache");
@@ -424,8 +413,8 @@ fn landmark_input_changes_invalidate_cell_cache() {
 }
 
 /// The fixture's terrain pairing. `2^19 / 2^15` makes a cell exactly one tile — a 512-byte block
-/// instead of the 2 MiB a real `2^19 / 2^9` cell is — and it is deliberately **not** either band's
-/// `2^18`, so nothing in these tests can pass by accidentally keying terrain off a band.
+/// instead of the 2 MiB a real cell is — and it is deliberately not either band's `2^18`, so
+/// nothing in these tests can pass by accidentally keying terrain off a band.
 const TERRAIN_POSTING_LOG2: u8 = 15;
 const TERRAIN_CELL_LOG2: u8 = 19;
 const TERRAIN_DATASET_VERSION: &str = "2021-1";
@@ -441,7 +430,7 @@ fn terrain_doc(revision: u32, dataset_version: &str) -> TerrainDoc {
         cell_log2: TERRAIN_CELL_LOG2,
         revision,
         // The credit comes from `obc-dem`'s own `const` and is never retyped, here or anywhere:
-        // this assertion is the whole reason the bakery reaches for the library rather than a CLI.
+        // this assertion is why the bakery reaches for the library rather than a CLI.
         attribution: obc_elevation::COPERNICUS_ATTRIBUTION.into(),
         // The run fills this from the cutter's own archive, so what a caller passes is ignored.
         references: Vec::new(),
@@ -472,8 +461,7 @@ fn fake_reference_entry() -> obc_pack::catalog::ReferenceEntry {
 /// A DEM that answers every cell with a constant surface, except one square of open water.
 ///
 /// The rasterising itself is `obc-dem`'s contract and is pinned by its own digest tests; what this
-/// stage owes is the selection, the skip key, the known-empty bookkeeping and the tree wiring, and
-/// none of that needs a GeoTIFF.
+/// stage owes is the selection, the skip key, the known-empty bookkeeping and the tree wiring.
 struct FakeDem {
     /// Varies the bytes so a re-bake at a new revision produces genuinely different objects.
     fill: u8,
@@ -509,7 +497,7 @@ impl FakeDem {
 impl TerrainCutter for FakeDem {
     fn recipe(&self) -> String {
         // `fill` is this fake's whole rasterising recipe, so it belongs in the string the skip key
-        // hashes — exactly as the real cutter's source set and crest rule version do. A fake that
+        // hashes, exactly as the real cutter's source set and crest rule version do. A fake that
         // changed its bytes without saying so would only re-bake by accident.
         format!("fake dem fill={}", self.fill)
     }
@@ -538,9 +526,9 @@ impl TerrainCutter for FakeDem {
             return Ok(Vec::new());
         }
         // The cell's own tile, and the ring tile only when the mirror holds it — which is what
-        // `ReferenceArchive::held_digests` does, and what makes completing a mirror move the key
-        // and re-bake exactly the short cells. A fake that reported a shortfall without it would
-        // leave the tree refusing for ever.
+        // `ReferenceArchive::held_digests` does, and what makes completing a mirror move the key and
+        // re-bake exactly the short cells. A fake that reported a shortfall without it would leave
+        // the tree refusing for ever.
         let mut digests = vec![format!("{ci}/{cj}=own")];
         if self.short.is_none() {
             digests.push("4809/4222=ring".into());
@@ -557,8 +545,8 @@ fn terrain_dir(tree: &Path) -> PathBuf {
     tree.join("cells").join("terrain")
 }
 
-/// Every terrain object in the tree, by path → digest. Comparing two of these is the "was anything
-/// re-published?" question asked of the bytes rather than of a log line.
+/// Every terrain object in the tree, by path → digest. Comparing two of these asks "was anything
+/// re-published?" of the bytes rather than of a log line.
 fn terrain_digests(tree: &Path) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     let Ok(rows) = std::fs::read_dir(terrain_dir(tree)) else { return out };
@@ -599,7 +587,7 @@ fn obcm_digests(tree: &Path) -> BTreeMap<String, String> {
 /// The whole round trip: bake terrain, bake cells against it, generate the catalog, and verify.
 ///
 /// Terrain first because the cell bake records which revision it sampled — the one direction the
-/// two tracks are coupled in (`OBCC_Spec.md` §13.4), and the order a real bakery runs them in.
+/// two tracks are coupled in, and the order a real bakery runs them in.
 #[test]
 fn a_terrain_bake_publishes_cells_ocean_runs_and_a_priced_region_selection() {
     let f = fixture_dirs("terrain-roundtrip");
@@ -615,7 +603,7 @@ fn a_terrain_bake_publishes_cells_ocean_runs_and_a_priced_region_selection() {
     let generated = f.catalog();
     let root = &generated.root;
 
-    // §13.1 — the block, and the pinned digest-keyed index.
+    // The block, and the pinned digest-keyed index.
     let terrain = root.terrain.as_ref().expect("the catalog publishes terrain");
     assert_eq!(terrain.terrain_revision, 1);
     assert_eq!(terrain.dataset_id, "copernicus-glo-30");
@@ -625,8 +613,8 @@ fn a_terrain_bake_publishes_cells_ocean_runs_and_a_priced_region_selection() {
         obc_elevation::COPERNICUS_ATTRIBUTION,
         "§13.5: the credit comes from obc-elevation's const"
     );
-    // §13.1/§13.5 — the reference models the cells' crest lifts came from travel with the map, per
-    // cell in the sidecar and once in the block. The wording is the archive's, not this crate's.
+    // The reference models the cells' crest lifts came from travel with the map, per cell in the
+    // sidecar and once in the block. The wording is the archive's, not this crate's.
     let sidecar: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(terrain_dir(&f.tree).join("0601").join("0525.obcd.json")).expect("the sidecar"),
     )
@@ -650,7 +638,7 @@ fn a_terrain_bake_publishes_cells_ocean_runs_and_a_priced_region_selection() {
     assert_eq!(doc.known_empty.len(), 1);
     assert_eq!((doc.known_empty[0].start.as_str(), doc.known_empty[0].end.as_str()), (TERRAIN_OCEAN, TERRAIN_OCEAN));
 
-    // §13.3 — a region's satellite lists its terrain ids, and the root prices them separately.
+    // A region's satellite lists its terrain ids, and the root prices them separately.
     let region = root.regions.iter().find(|r| r.id == "europe/west").expect("west");
     let footprint = region.terrain.expect("a priced terrain footprint");
     assert!(footprint.cell_count > 0 && footprint.bytes > 0);
@@ -661,7 +649,7 @@ fn a_terrain_bake_publishes_cells_ocean_runs_and_a_priced_region_selection() {
     assert!(!cells.terrain.is_empty());
     assert!(cells.terrain.windows(2).all(|w| w[0] < w[1]), "sorted: {:?}", cells.terrain);
 
-    // §13.4 — the coupling, recorded from the cells' own sidecars, and consistent here.
+    // The coupling, recorded from the cells' own sidecars, and consistent here.
     assert_eq!(root.network_terrain_revision, Some(1));
     assert!(generated.warnings.is_empty(), "{:?}", generated.warnings);
 
@@ -694,8 +682,8 @@ fn a_terrain_bake_publishes_cells_ocean_runs_and_a_priced_region_selection() {
     assert!(keys.contains(&"terrain.json"), "{keys:?}");
 }
 
-/// A cell short of a reference tile the index names is **refused**, because this stage publishes:
-/// it would be lifted on one side of that tile's edge and not the other, which is a step in the
+/// A cell short of a reference tile the index names is refused, because this stage publishes: it
+/// would be lifted on one side of that tile's edge and not the other, which is a step in the
 /// contours and the route profile that no ground has. `--allow-short-reference` publishes it anyway
 /// and says so, and a tree that took the escape hatch publishes nothing silently.
 #[test]
@@ -705,19 +693,19 @@ fn a_cell_short_of_its_reference_tiles_is_refused_unless_the_operator_allows_it(
     assert!(error.contains("5 terrain cell(s) read reference tiles"), "the refusal sizes it: {error}");
     assert!(error.contains("4809/4222") && error.contains("19/0601/0525"), "…names a tile and a cell: {error}");
     assert!(error.contains("--allow-short-reference"), "…and the way out: {error}");
-    // The bbox is the union of the cells' **windows**, longitude first, ready to paste: the mirror
-    // tool pads a box by one tile, which is nothing like a cell's overhang at 2^19.
+    // The bbox is the union of the cells' windows, longitude first, ready to paste: the mirror tool
+    // pads a box by one tile, which is nothing like a cell's overhang at 2^19.
     assert!(
         error.contains("--bbox 8.257536,46.727168,8.323072,46.792704"),
         "…and the box to mirror, copy-pasteable: {error}"
     );
     // What it baked before it refused is described by the tree, or nothing could explain the cells
-    // now on disk. Nothing is *selectable* yet: the region wiring is past the refusal.
+    // now on disk. Nothing is selectable yet: the region wiring is past the refusal.
     assert!(f.tree.join("terrain.json").is_file(), "the refused run still states what it baked");
     assert!(terrain_dir(&f.tree).join(".known-empty.json").is_file());
 
-    // A second run reaches the same verdict from the recorded state, without rasterising: this is
-    // the whole point of keeping the shortfall in the cell's state rather than only in the run.
+    // A second run reaches the same verdict from the recorded state, without rasterising, which is
+    // why the shortfall is kept in the cell's state rather than only in the run.
     let again = f.try_terrain_bake(&FakeDem::short_mirror(1), 1, false).expect_err("the verdict is recorded");
     assert!(again.contains("5 terrain cell(s) read reference tiles"), "{again}");
 
@@ -732,16 +720,16 @@ fn a_cell_short_of_its_reference_tiles_is_refused_unless_the_operator_allows_it(
     assert!(fixed.warnings.is_empty(), "{:?}", fixed.warnings);
 }
 
-/// §13.2 makes a reference archive change a terrain revision bump. That bump must **re-stamp**
-/// every cell rather than re-rasterise it, or the per-cell digests would decide nothing on the one
-/// workflow they exist for — a Swiss archive release would rewrite the whole store.
+/// A reference archive change is a terrain revision bump, and that bump must re-stamp every cell
+/// rather than re-rasterise it, or the per-cell digests would decide nothing on the one workflow
+/// they exist for — a Swiss archive release would rewrite the whole store.
 #[test]
 fn a_revision_bump_restamps_every_sidecar_and_rasterises_nothing() {
     let f = fixture_dirs("terrain-revision-restamp");
     f.terrain_bake(&FakeDem::lifted(1), 1);
     f.bake(&FixtureCutter::new(), &[], SNAPSHOT, false);
-    // The artifacts alone: the sidecars beside them are the store's identity and are *meant* to
-    // move, which is the other half of this test.
+    // The artifacts alone: the sidecars beside them are the store's identity and are meant to move,
+    // which is the other half of this test.
     let artifacts = |tree: &Path| -> BTreeMap<String, String> {
         terrain_digests(tree).into_iter().filter(|(path, _)| path.ends_with(".obcd")).collect()
     };
@@ -756,8 +744,8 @@ fn a_revision_bump_restamps_every_sidecar_and_rasterises_nothing() {
     );
     assert_eq!(artifacts(&f.tree), before, "…and moves no terrain byte");
 
-    // The sidecars are the store's identity, so those *do* move — every one of them, or §13.2's
-    // lockstep would fail in the generator.
+    // The sidecars are the store's identity, so those do move — every one of them, or the lockstep
+    // would fail in the generator.
     for row in std::fs::read_dir(terrain_dir(&f.tree)).expect("the terrain dir").flatten() {
         if !row.path().is_dir() {
             continue;
@@ -772,17 +760,17 @@ fn a_revision_bump_restamps_every_sidecar_and_rasterises_nothing() {
             }
         }
     }
-    // Which means §13.2's lockstep still holds at the new revision: a sidecar the re-stamp missed
-    // would make the generator refuse the whole tree.
+    // Which means the lockstep still holds at the new revision: a sidecar the re-stamp missed would
+    // make the generator refuse the whole tree.
     let generated =
         obc_pack::catalog::generate(&f.tree, &obc_pack::catalog::CatalogOptions::new(BASE_URL, GENERATED_AT))
             .expect("a re-stamped tree generates");
     assert_eq!(generated.root.terrain.expect("terrain").terrain_revision, 2);
 }
 
-/// **Independence pin (b), at the bakery**: a terrain re-bake re-publishes no OBCM object, and the
-/// guard names the network band stale — with both revisions in the message, because "something is
-/// stale" is not an actionable thing to read at 2 a.m.
+/// A terrain re-bake re-publishes no OBCM object, and the guard names the network band stale — with
+/// both revisions in the message, because "something is stale" is not an actionable thing to read
+/// at 2 a.m.
 #[test]
 fn a_terrain_rebake_leaves_the_obcm_store_alone_and_the_guard_flags_the_network_band() {
     let f = fixture_dirs("terrain-rebake");
@@ -807,9 +795,8 @@ fn a_terrain_rebake_leaves_the_obcm_store_alone_and_the_guard_flags_the_network_
     assert!(text.contains("obc-bake bake"), "…and what to do: {text}");
 
     // Re-cutting the cells against the new terrain is what clears it — and it really does re-cut,
-    // because the terrain revision is part of the pack key. (The bytes are unchanged here only
-    // because this fixture's cutter is a synthetic ingest that samples no terrain; in a real bake
-    // the ascents move, which is exactly why the key includes the revision.)
+    // because the terrain revision is part of the pack key. The bytes are unchanged here only
+    // because this fixture's cutter is a synthetic ingest that samples no terrain.
     let summary = f.bake(&FixtureCutter::new(), &[], SNAPSHOT, false);
     assert!(statuses(&summary).values().all(|s| *s == CellStatus::Cut), "{}", summary.render());
     let guard = obc_bake::guard::check_cell_store(&f.tree).expect("guard");
@@ -817,8 +804,7 @@ fn a_terrain_rebake_leaves_the_obcm_store_alone_and_the_guard_flags_the_network_
     assert_eq!(f.catalog().root.network_terrain_revision, Some(2));
 }
 
-/// **Independence pin (a), at the bakery**: a schema-revision bump re-cuts every OBCM cell and
-/// re-publishes not one terrain object.
+/// A schema-revision bump re-cuts every OBCM cell and re-publishes not one terrain object.
 #[test]
 fn a_schema_revision_bump_rebakes_no_terrain_object() {
     let f = fixture_dirs("terrain-schema-bump");
@@ -828,10 +814,9 @@ fn a_schema_revision_bump_rebakes_no_terrain_object() {
     let terrain_before = terrain_digests(&f.tree);
     assert!(!terrain_before.is_empty());
 
-    // Revision 2: OBCA principle 5's whole-store cutover. The known-empty state is stamped with
-    // the schema revision it was established at, so it is reset by the bump — which is itself the
-    // asymmetry this test is about: the *schema*-scoped local state resets, and the
-    // terrain-scoped one does not.
+    // Revision 2: the whole-store cutover. The known-empty state is stamped with the schema
+    // revision it was established at, so it is reset by the bump — which is itself the asymmetry
+    // this test is about, since the terrain-scoped state is not.
     for band in ["coarse", "network"] {
         let _ = std::fs::remove_file(f.tree.join("cells").join(band).join(".known-empty.json"));
     }
@@ -880,10 +865,8 @@ fn a_store_that_mixes_terrain_revisions_is_rejected() {
     assert!(error.contains("lockstep within its own track"), "{error}");
 }
 
-// --- the tests --------------------------------------------------------------------
-
-/// The ownership rule, observed from outside the bakery: three plans, keyed by source
-/// set, with the seam column owned by the pair.
+/// The ownership rule, observed from outside the bakery: three plans, keyed by source set, with the
+/// seam column owned by the pair.
 #[test]
 fn co_baked_neighbours_share_one_plan_for_the_cells_they_straddle() {
     let f = fixture_dirs("plans");
@@ -906,15 +889,15 @@ fn co_baked_neighbours_share_one_plan_for_the_cells_they_straddle() {
     assert!(east.iter().all(|id| !id.ends_with("/1053")), "{east:?}");
     assert_eq!(west.len() + east.len() + both.len(), 15, "every touched cell is planned exactly once");
 
-    // EVERY plan crops to its supercell square — single-extract plans included. An
-    // uncropped interior plan ingests its whole extract once per bucket, which is the
-    // whole-country memory peak the run-span split exists to prevent.
+    // Every plan crops to its supercell square, single-extract plans included. An uncropped
+    // interior plan ingests its whole extract once per bucket, which is the whole-country memory
+    // peak the run-span split exists to prevent.
     let cropped = cutter.cropped.lock().unwrap().clone();
     assert!(cropped.iter().all(|c| *c), "every plan crops: {cropped:?}");
 }
 
-/// D3, the property the plan grouping exists for: a border cell is canonical only when
-/// its whole square is covered by the sources it was cut from.
+/// A border cell is canonical only when its whole square is covered by the sources it was cut
+/// from — the property the plan grouping exists for.
 #[test]
 fn a_seam_cell_is_partial_alone_and_canonical_co_baked() {
     let alone = fixture_dirs("partial-alone");
@@ -933,7 +916,7 @@ fn a_seam_cell_is_partial_alone_and_canonical_co_baked() {
     // A cell the coverage's northern edge crosses is still partial, co-bake or not.
     assert!(both.partial("coarse", "18/1205/1053"), "the row the border crosses is not covered");
 
-    // The sidecar names every source, sorted, with its snapshot — §11.6's provenance.
+    // The sidecar names every source, sorted, with its snapshot.
     let sources = both.sidecar("coarse", SEAM_CELL)["sources"].clone();
     assert_eq!(
         sources,
@@ -945,8 +928,7 @@ fn a_seam_cell_is_partial_alone_and_canonical_co_baked() {
     assert_eq!(both.sidecar("coarse", WEST_CORE)["sources"].as_array().map(Vec::len), Some(1));
 }
 
-/// The incremental property, at plan granularity: nothing is ingested when nothing
-/// changed.
+/// The incremental property, at plan granularity: nothing is ingested when nothing changed.
 #[test]
 fn an_unchanged_rerun_cuts_nothing_and_a_force_cuts_everything() {
     let f = fixture_dirs("idempotent");
@@ -978,7 +960,7 @@ fn an_unchanged_rerun_cuts_nothing_and_a_force_cuts_everything() {
     let forced = f.bake(&cutter, &[], SNAPSHOT, true);
     assert_eq!(cutter.calls.load(Ordering::SeqCst), 6, "--force re-cuts every plan");
     assert!(statuses(&forced).values().all(|s| *s == CellStatus::Cut), "{:?}", statuses(&forced));
-    // Determinism (OBCA §3.2): the same sources cut the same cell to the same bytes.
+    // Determinism: the same sources cut the same cell to the same bytes.
     for (id, bytes) in &before {
         let mut p = id.split('/');
         let (_, i, j) = (p.next(), p.next().unwrap(), p.next().unwrap());
@@ -990,9 +972,9 @@ fn an_unchanged_rerun_cuts_nothing_and_a_force_cuts_everything() {
     }
 }
 
-/// A curated bake may target the same tree after a planet bake. Its real artifacts
-/// replace any earlier proof that those cells were empty; leaving both claims in the
-/// store would make the catalog deliberately unpublishable.
+/// A curated bake may target the same tree after a planet bake. Its real artifacts replace any
+/// earlier proof that those cells were empty; leaving both claims in the store would make the
+/// catalog deliberately unpublishable.
 #[test]
 fn a_curated_bake_clears_overlapping_known_empty_claims() {
     let f = fixture_dirs("curated-replaces-empty");
@@ -1022,8 +1004,8 @@ fn a_curated_bake_clears_overlapping_known_empty_claims() {
     assert!(f.catalog().root.cell_index.iter().all(|band| band.known_empty_count == 0));
 }
 
-/// A re-dated but byte-identical extract publishes the new date and re-cuts nothing —
-/// the bakery's two-key design, at cell granularity.
+/// A re-dated but byte-identical extract publishes the new date and re-cuts nothing — the bakery's
+/// two-key design, at cell granularity.
 #[test]
 fn a_redated_but_identical_extract_refreshes_the_sidecar_and_cuts_nothing() {
     let f = fixture_dirs("redate");
@@ -1041,7 +1023,7 @@ fn a_redated_but_identical_extract_refreshes_the_sidecar_and_cuts_nothing() {
     assert_eq!(sidecar["built_at"], built_at, "built_at describes when the bytes were cut, and they were not");
 }
 
-/// D3's other half: a narrower bake must never take coverage away.
+/// A narrower bake must never take coverage away.
 #[test]
 fn a_canonical_cell_is_never_replaced_by_a_partial_one() {
     let f = fixture_dirs("no-downgrade");
@@ -1051,8 +1033,8 @@ fn a_canonical_cell_is_never_replaced_by_a_partial_one() {
     let canonical = std::fs::read(f.tree.join("cells/coarse/1204/1053.obcm")).unwrap();
     let calls = cutter.calls.load(Ordering::SeqCst);
 
-    // Now bake west alone. Its plan owns the seam cell, its sources no longer cover
-    // it, and the cell it would write is thinner than the one already published.
+    // Now bake west alone. Its plan owns the seam cell, its sources no longer cover it, and the
+    // cell it would write is thinner than the one already published.
     let summary = f.bake(&cutter, &["europe/west"], SNAPSHOT, false);
     assert!(summary.ok(), "{}", summary.render());
     let seam = statuses(&summary);
@@ -1060,22 +1042,20 @@ fn a_canonical_cell_is_never_replaced_by_a_partial_one() {
     assert_eq!(seam.get(&format!("{SEAM_CELL} [network]")), Some(&CellStatus::KeptCanonical));
     assert!(!f.partial("coarse", SEAM_CELL), "the published cell is still the canonical one");
     assert_eq!(std::fs::read(f.tree.join("cells/coarse/1204/1053.obcm")).unwrap(), canonical, "byte-for-byte");
-    // A real run: the seam column was ingested again (its source set shrank, so its
-    // recipe changed) and refused at the install gate rather than never attempted.
+    // A real run: the seam column was ingested again, because its source set shrank and so its
+    // recipe changed, and refused at the install gate rather than never attempted.
     assert_eq!(cutter.calls.load(Ordering::SeqCst), calls + 1, "one plan re-cut — the seam column's");
-    // The cells west already owned alone are untouched: their recipe did not change,
-    // which is the same skip the incremental test pins.
+    // The cells west already owned alone are untouched: their recipe did not change, which is the
+    // same skip the incremental test pins.
     assert_eq!(seam.get(&format!("{WEST_CORE} [coarse]")), Some(&CellStatus::Unchanged));
 }
 
-/// A skin that is not a skin over the schema stops the run **before** the first
-/// extract is fetched (#1036).
+/// A skin that is not a skin over the schema stops the run before the first extract is fetched.
 ///
-/// The generator would refuse the finished tree anyway, so what this buys is the
-/// moment of failure: without it a DACH bake spends hours cutting cells and then ends
-/// with a tree that has no catalog. The mismatch below is the shape epic #1016 D2
-/// retired `high-detail` for — a document that styles a feature type the schema does
-/// not have is a different *schema*, and the answer is a revision and a re-bake.
+/// The generator would refuse the finished tree anyway, so what this buys is the moment of failure:
+/// without it a DACH bake spends hours cutting cells and then ends with a tree that has no catalog.
+/// A document that styles a feature type the schema does not have is a different schema, and the
+/// answer is a revision and a re-bake.
 #[test]
 fn a_skin_that_does_not_fit_the_schema_refuses_the_bake_before_any_cutting() {
     let f = fixture_dirs("skin-mismatch");
@@ -1118,13 +1098,12 @@ fn a_skin_that_does_not_fit_the_schema_refuses_the_bake_before_any_cutting() {
     assert!(!f.tree.exists(), "not even a tree");
 }
 
-/// A skin carrying **schema** keys is refused too, before any cutting, naming them.
+/// A skin carrying schema keys is refused too, before any cutting, naming them.
 ///
-/// `check_skin` cannot catch this: a parsed config that omits `lods` and one that
-/// restates the defaults are the same value. So the document's text is checked, and
-/// the alternative — quietly dropping the keys — is the failure worth avoiding: the
-/// skin's author would go on believing their document changes a ladder that was fixed
-/// when the cells were cut.
+/// `check_skin` cannot catch this: a parsed config that omits `lods` and one that restates the
+/// defaults are the same value. So the document's text is checked, and the alternative — quietly
+/// dropping the keys — would leave the skin's author believing their document changes a ladder that
+/// was fixed when the cells were cut.
 #[test]
 fn a_skin_carrying_schema_data_refuses_the_bake_before_any_cutting() {
     let f = fixture_dirs("skin-schema-keys");
@@ -1170,13 +1149,10 @@ fn a_skin_carrying_schema_data_refuses_the_bake_before_any_cutting() {
     assert_eq!(cutter.calls.load(Ordering::SeqCst), 0, "and nothing was cut");
 }
 
-/// `--schema-id` and the document's `_meta.id` are one fact stated twice, so they are
-/// **checked against each other** rather than one overwriting the other.
-///
-/// The old behaviour stamped the flag into the tree's copy of the document, which made
-/// the disagreement unobservable: a typo in `--schema-id` published the bikepacking
-/// schema's cells under some other name, and a store's id is the identity a rider's
-/// already-downloaded cells get matched against.
+/// `--schema-id` and the document's `_meta.id` are one fact stated twice, so they are checked
+/// against each other rather than one overwriting the other. Stamping the flag into the tree's copy
+/// would make a disagreement unobservable: a typo would publish one schema's cells under another's
+/// name, and a store's id is the identity a rider's already-downloaded cells get matched against.
 #[test]
 fn a_schema_id_that_disagrees_with_the_document_is_refused_not_overwritten() {
     let f = fixture_dirs("schema-id");
@@ -1207,12 +1183,11 @@ fn a_schema_id_that_disagrees_with_the_document_is_refused_not_overwritten() {
     assert!(!f.tree.join(obc_bake::presets::SCHEMA_DOC).exists(), "and no document was written claiming the wrong id");
 }
 
-/// A skin dropped from the run is **pruned** from a pre-existing tree.
+/// A skin dropped from the run is pruned from a pre-existing tree.
 ///
-/// The generator publishes whatever it finds in `skins/`, so a leftover from an
-/// earlier bake would be offered to riders as a current look over a store it may no
-/// longer fit — and narrowing `--skin` is exactly how an operator says "not that one
-/// any more". The directory and the catalog must not be able to disagree.
+/// The generator publishes whatever it finds in `skins/`, so a leftover from an earlier bake would
+/// be offered to riders as a current look over a store it may no longer fit — and narrowing
+/// `--skin` is exactly how an operator says "not that one any more".
 #[test]
 fn a_skin_the_run_no_longer_publishes_is_pruned_from_the_tree() {
     let f = fixture_dirs("skin-prune");
@@ -1277,9 +1252,9 @@ fn the_tree_generates_a_catalog_that_verifies() {
     assert_eq!(root.cell_index.len(), 2, "one index per band");
     assert!(root.cell_index.iter().all(|b| b.cell_count == 15), "{:?}", root.cell_index);
     assert_eq!(root.skins.len(), 1);
-    // The published skin is the presentation-only document the bake copied in, and its
-    // styles line up one-for-one with the schema's id assignment (§11.4) — which is
-    // what lets an assembler stamp `skins[k].styles` straight into the style table.
+    // The published skin is the presentation-only document the bake copied in, and its styles line
+    // up one-for-one with the schema's id assignment, which is what lets an assembler stamp
+    // `skins[k].styles` straight into the style table.
     let skin = &root.skins[0];
     assert_eq!(skin.id, "testskin");
     assert_eq!(
@@ -1294,9 +1269,9 @@ fn the_tree_generates_a_catalog_that_verifies() {
     assert_eq!(west.name, "West");
     assert_eq!(west.cell_count.values().copied().collect::<Vec<u32>>(), vec![9, 9], "nine cells per band");
     assert_eq!(west.bytes_by_band.values().sum::<u64>(), west.bytes, "the per-file projection adds up (§5.7)");
-    // Two of West's nine cells per band are canonical: the one it covers alone, and the
-    // seam cell the co-bake completed — which is the epic's saving made visible, since
-    // that cell is the *same* cell East's selection names.
+    // Two of West's nine cells per band are canonical: the one it covers alone, and the seam cell
+    // the co-bake completed — which is the saving made visible, since that cell is the same cell
+    // East's selection names.
     assert_eq!(west.partial_cell_count_by_band.values().sum::<u32>(), 14, "18 cells, 4 of them canonical");
     assert_eq!(west.partial_cell_count_by_band.values().copied().collect::<Vec<_>>(), vec![7, 7]);
     let east = root.regions.iter().find(|r| r.id == "europe/east").expect("east");
@@ -1316,8 +1291,8 @@ fn the_tree_generates_a_catalog_that_verifies() {
     assert_eq!(report.sampled, 30, "sample = 1 opens every cell with the real reader");
     assert_eq!(report.regions, 2);
 
-    // Every cell's header bbox is its own grid square — the law §11.6 stores no bbox
-    // for, checked here through the file the catalog published.
+    // Every cell's header bbox is its own grid square — the law the catalog stores no bbox for,
+    // checked here through the file it published.
     for band in ["coarse", "network"] {
         for id in f.cell_ids(band) {
             let cell = CellId::parse(&id).expect("canonical id");
@@ -1360,8 +1335,8 @@ fn a_mixed_revision_store_fails_the_guard() {
     assert!(err.contains("schema revision"), "{err}");
 }
 
-/// A satellite that does not match the digest the root pinned MUST be rejected —
-/// `OBCC_Spec.md` §9's all-or-nothing guarantee, per document.
+/// A satellite that does not match the digest the root pinned must be rejected: the catalog's
+/// all-or-nothing guarantee, per document.
 #[test]
 fn a_tampered_satellite_fails_verification() {
     let f = fixture_dirs("satellite");
@@ -1379,8 +1354,8 @@ fn a_tampered_satellite_fails_verification() {
     assert!(report.problems.iter().any(|p| p.contains("cells/coarse/index.json")), "{:?}", report.problems);
 }
 
-/// A same-length rewrite between generation and upload must not be placed under
-/// the digest-addressed key the root already chose.
+/// A same-length rewrite between generation and upload must not be placed under the
+/// digest-addressed key the root already chose.
 #[test]
 fn publish_plan_rejects_a_pin_changed_after_generation() {
     let f = fixture_dirs("publish-race");
@@ -1409,8 +1384,8 @@ fn publish_plan_rejects_a_pin_changed_after_generation() {
     );
 }
 
-/// A cell tree publishes root-last — the satellites are
-/// ordinary objects and must all be fetchable before the document naming them is.
+/// A cell tree publishes root-last: the satellites are ordinary objects and must all be fetchable
+/// before the document naming them is.
 #[test]
 fn a_cell_tree_publishes_its_root_last() {
     let f = fixture_dirs("publish");

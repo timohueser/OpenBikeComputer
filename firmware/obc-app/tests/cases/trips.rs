@@ -1,6 +1,6 @@
-//! Trip grouping (epic #526, TR2): resolving a host trip's stage route ids against the resident
-//! route catalog into filed folders — the filed/unfiled partition, dangling refs, order, overflow,
-//! and re-resolution across a route rescan.
+//! Trip grouping: resolving a host trip's stage route ids against the resident route catalog into
+//! filed folders — the filed/unfiled partition, dangling refs, order, overflow, and re-resolution
+//! across a route rescan.
 
 use obc_app::{App, AppState, RouteSummary, TripInput, MAX_TRIPS};
 use obc_map_scene::BBox;
@@ -50,7 +50,7 @@ fn filed_vs_unfiled_partition() {
     assert!(app.route_filed(0));
     assert!(app.route_filed(1));
     assert!(!app.route_filed(2));
-    // The flat catalog still holds all three (the flat menu is untouched until TR3).
+    // The flat catalog still holds all three.
     assert_eq!(app.routes().len(), 3);
 }
 

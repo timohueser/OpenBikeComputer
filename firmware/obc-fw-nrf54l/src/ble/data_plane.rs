@@ -7,11 +7,11 @@ use super::gatt::Server;
 use super::lifecycle::HOST_OP_TIMEOUT;
 use super::state::battery;
 
-/// One host notify, [`HOST_OP_TIMEOUT`]-bounded so a peer that stops draining its ATT queue can't stall
-/// a plane's task past the link's supervision timeout — the structural backstop beneath the hardware
-/// watchdog (see `lifecycle`'s watchdog policy; #277/A9). A timeout or error is logged and abandoned:
-/// the caller's state machine moves on, since a lost notification is the app's to recover by re-reading,
-/// never a reason to wedge the link.
+/// One host notify, [`HOST_OP_TIMEOUT`]-bounded, so a peer that stops draining its ATT queue cannot
+/// stall a plane's task past the link's supervision timeout — the structural backstop beneath the
+/// hardware watchdog (see `lifecycle`'s watchdog policy). A timeout or error is logged and
+/// abandoned: a lost notification is the app's to recover by re-reading, never a reason to wedge the
+/// link.
 pub(crate) async fn notify_bounded(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,
@@ -33,9 +33,8 @@ pub(crate) async fn notify_bounded(
 }
 
 /// Push the BAS battery level to a subscribed central: seed on connect, then re-notify on a slow
-/// cadence. The value comes from the `FuelGauge` seam via [`super::state::publish_battery`] (the status
-/// plane owns the gauge; the stub is constant today). Never returns; cancelled by `select` in `run` on
-/// disconnect.
+/// cadence. The value comes from the fuel-gauge seam through [`super::state::battery`], and the stub
+/// is constant today. Never returns; `run`'s `select` cancels it on disconnect.
 pub(crate) async fn battery_task(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,

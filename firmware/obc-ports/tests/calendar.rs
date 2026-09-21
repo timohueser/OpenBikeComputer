@@ -9,11 +9,10 @@ fn calendar_arithmetic_has_no_app_editor_year_policy() {
     assert_eq!(previous, DateTime { year: 2019, month: 12, day: 31, hour: 23, minute: 45 });
 }
 
-/// The calendar arithmetic runs over Unix seconds, so it saturates at that window's edges rather
-/// than wrapping into a nonsense year. Both edges are far outside the app's own 2020–2099 clamp.
+/// The calendar arithmetic runs over Unix seconds, so it saturates at that window's edges instead
+/// of wrapping into a nonsense year. Both edges are far outside the app's own 2020–2099 clamp.
 #[test]
 fn calendar_arithmetic_saturates_at_the_epoch_window() {
-    // The floor: the epoch itself, shifted back, stays put.
     let epoch = DateTime { year: 1970, month: 1, day: 1, hour: 0, minute: 0 };
     assert_eq!(epoch.with_offset(-60), epoch, "no date exists below the epoch to roll back to");
     assert_eq!(epoch.add_minutes(60), DateTime { hour: 1, ..epoch }, "forward from the floor is normal");

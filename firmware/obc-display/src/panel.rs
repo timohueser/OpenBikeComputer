@@ -1,63 +1,60 @@
-//! [`Band`] — a frame-absolute draw view of one band (or window) of the frame — plus the
+//! [`Band`], a frame-absolute draw view of one band or window of the frame, plus the
 //! [`composite_overlay_window`] overlay helper.
 //!
-//! A frame — or a partial overlay window — is reformatted a **band** (a few rows) at a time. Each
-//! board's presenter backend owns the push to glass (the FLPR/LS021B7DD02 packs device-64 to the
-//! source-line wire bytes; the simulator expands to RGB565). This module supplies the board-agnostic
-//! pieces they share.
+//! A frame, or a partial overlay window, is reformatted a band of a few rows at a time. Each
+//! board's presenter backend owns the push to glass; this module supplies the pieces they share.
 //!
-//! [`Band`] makes "render the whole frame, band at a time" invisible to the drawing code: it wraps
-//! one band's scratch slice as a [`Framebuffer565`] with the band's `y0` baked in, yet reports the
-//! **full frame** size. A whole-frame generator (the app's render entry point)
-//! draws in absolute coordinates; [`Band`] shifts each draw up by `y0` and clips away whatever falls
-//! outside this band's rows, so the frame reassembles seam-free with the generator none the wiser.
+//! [`Band`] makes "render the whole frame, band at a time" invisible to the drawing code: it
+//! wraps one band's scratch slice as a [`Framebuffer565`] with the band's `y0` baked in, yet
+//! reports the full frame size. A whole-frame generator draws in absolute coordinates, and
+//! [`Band`] shifts each draw up by `y0` and clips away whatever falls outside this band's rows,
+//! so the frame reassembles seam-free.
 
 use embedded_graphics::{pixelcolor::Rgb565, prelude::*, primitives::Rectangle};
 
 use crate::framebuffer::{device64_to_rgb565, Framebuffer565};
 
-/// A frame-absolute [`DrawTarget`] view of one band's scratch slice — or any rectangular **window**
+/// A frame-absolute [`DrawTarget`] view of one band's scratch slice, or of any rectangular window
 /// of the frame.
 ///
-/// Wraps the scratch as a [`Framebuffer565`] sized to just this window (`w × rows`), but **reports
-/// the full frame size** ([`OriginDimensions`]) and **offsets every draw by `(-x0, -y0)`**. So a
-/// generator laying out the whole frame lands its pixels for this window in the scratch and has the
-/// rest clipped away.
+/// It wraps the scratch as a [`Framebuffer565`] sized to just this window, but reports the full
+/// frame size and offsets every draw by `(-x0, -y0)`, so a generator laying out the whole frame
+/// lands its pixels for this window in the scratch and has the rest clipped away.
 ///
-/// A **full-width band** ([`new`](Band::new)) is the common present-loop case. A **narrow window**
-/// ([`new_window`](Band::new_window)) lets a backend re-push just a sub-rectangle — the nRF's
-/// composite-on-push hold bulge re-fills only the right-edge columns it touches.
+/// A full-width band ([`new`](Band::new)) is the common present-loop case. A narrow window
+/// ([`new_window`](Band::new_window)) lets a backend re-push just a sub-rectangle, which is how
+/// the hold bulge re-fills only the right-edge columns it touches.
 pub struct Band<'a> {
     /// The window's own RGB565 buffer, `w × rows`. Draws land here in window-local coords.
     fb: Framebuffer565<'a>,
-    /// This window's first frame column — subtracted from every incoming `x` so absolute coords
-    /// map into the window (columns outside `[0, w)` clip in `fb`).
+    /// This window's first frame column, subtracted from every incoming `x`; columns outside
+    /// `[0, w)` clip in `fb`.
     x0: i32,
-    /// This window's first frame row — subtracted from every incoming `y` (rows outside `[0, rows)`
-    /// clip in `fb`).
+    /// This window's first frame row, subtracted from every incoming `y`; rows outside
+    /// `[0, rows)` clip in `fb`.
     y0: i32,
     /// The full frame size, reported to the generator so its layout spans the whole panel.
     frame: Size,
 }
 
 impl<'a> Band<'a> {
-    /// View `scratch` (this band's `frame.width × rows` RGB565 pixels) as the full-width frame band
-    /// at `y0`. Panics if `scratch` is shorter than `frame.width * rows` (a backend wiring bug).
+    /// View `scratch` as the full-width frame band at `y0`. Panics if `scratch` is shorter than
+    /// `frame.width * rows`, which is a backend wiring bug.
     pub fn new(scratch: &'a mut [u16], frame: Size, y0: u16, rows: u16) -> Self {
         Self::new_window(scratch, frame, 0, y0, frame.width as u16, rows)
     }
 
-    /// View `scratch` (`w × rows` RGB565 pixels) as the frame window at `(x0, y0)`, sized `w × rows`,
-    /// reporting the full `frame`. Frame-absolute draws land offset by `(-x0, -y0)` and anything
-    /// outside the window clips. Panics if `scratch` is shorter than `w * rows`.
+    /// View `scratch` as the frame window at `(x0, y0)`, sized `w × rows`, reporting the full
+    /// `frame`. Frame-absolute draws land offset by `(-x0, -y0)` and anything outside the window
+    /// clips. Panics if `scratch` is shorter than `w * rows`.
     pub fn new_window(scratch: &'a mut [u16], frame: Size, x0: u16, y0: u16, w: u16, rows: u16) -> Self {
         Self { fb: Framebuffer565::new(scratch, w as u32, rows as u32), x0: x0 as i32, y0: y0 as i32, frame }
     }
 }
 
 impl OriginDimensions for Band<'_> {
-    /// The full frame — so a generator sizing itself off `bounding_box()` lays out the whole
-    /// panel, not just this window.
+    /// The full frame, so a generator sizing itself off `bounding_box()` lays out the whole panel
+    /// rather than just this window.
     fn size(&self) -> Size {
         self.frame
     }
@@ -76,33 +73,29 @@ impl DrawTarget for Band<'_> {
         self.fb.draw_iter(pixels.into_iter().map(move |Pixel(p, c)| Pixel(Point::new(p.x - x0, p.y - y0), c)))
     }
 
-    /// Offset the fill rectangle into window-local space; the inner framebuffer intersects it with
-    /// the window's bounds, so a rect spanning rows/columns outside this window fills only its slice
-    /// (this is the renderer's hot path — a per-row `fill`, kept fast by forwarding straight to
-    /// `RawFb`).
+    /// Offset the fill rectangle into window-local space. The inner framebuffer intersects it
+    /// with the window's bounds, so a rect spanning rows or columns outside this window fills
+    /// only its slice. This is the renderer's hot path, so it forwards straight to `RawFb`.
     fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
         let shifted = Rectangle::new(Point::new(area.top_left.x - self.x0, area.top_left.y - self.y0), area.size);
         self.fb.fill_solid(&shifted, color)
     }
 
-    /// Clear *this window's* pixels to `color`. The generator calls it once per frame (per band);
-    /// the pixels it doesn't subsequently draw stay this colour, matching the full-frame clear.
+    /// Clear this window's pixels to `color`. The generator calls it once per band, and the
+    /// pixels it does not draw afterwards stay this colour, matching the full-frame clear.
     fn clear(&mut self, color: Self::Color) -> Result<(), Self::Error> {
         self.fb.clear(color)
     }
 }
 
-/// Composite a transient overlay over the **clean RGB222 framebuffer backdrop** into `scratch` — the
-/// one piece of the partial-update path byte-for-byte identical on every banded backend.
+/// Composite a transient overlay over the clean RGB222 framebuffer backdrop into `scratch`: the
+/// one piece of the partial-update path that is byte-for-byte identical on every banded backend.
 ///
-/// Fills `scratch[..w * rows]` with the framebuffer window `[x0, x0+w) × [y0, y0+rows)` expanded
-/// device-64 → RGB565 ([`device64_to_rgb565`]), then runs `draw_overlay` over it through a
-/// frame-absolute [`Band::new_window`]. `fb` (the resident clean map, the source of truth) is
-/// **never** written, so the overlay costs no map re-render to clear again.
+/// It fills `scratch[..w * rows]` with the framebuffer window expanded device-64 to RGB565, then
+/// runs `draw_overlay` over it through a frame-absolute [`Band::new_window`]. `fb`, the resident
+/// clean map, is never written, so the overlay costs no map re-render to clear again.
 ///
-/// `fb` is the resident device-64 (`0b00_RR_GG_BB`) plane, `frame` its full size, `window` the dirty
-/// rectangle within it. Panics if `scratch` is shorter than `window`'s area or the window runs past
-/// `frame`.
+/// Panics if `scratch` is shorter than `window`'s area, or if the window runs past `frame`.
 pub fn composite_overlay_window(
     fb: &[u8],
     frame: Size,
@@ -150,8 +143,8 @@ mod tests {
     }
 
     /// A narrow [`Band::new_window`] reports the whole frame but writes only its own sub-rect: a
-    /// frame-absolute fill straddling the window's bounds lands offset by `(-x0, -y0)` and clips to
-    /// the window — the path the nRF composite-on-push bulge re-pushes its right-edge columns by.
+    /// frame-absolute fill straddling the window's bounds lands offset by `(-x0, -y0)` and clips
+    /// to the window.
     #[test]
     fn window_reports_full_frame_offsets_xy_and_clips() {
         // Frame 8×8; window covers cols [4,8) × rows [2,6) (x0=4,y0=2,w=4,rows=4), scratch = 4×4.
@@ -169,16 +162,15 @@ mod tests {
         assert_eq!(at(3, 3), 0xF800, "frame (7,5) → window-local (3,3), last in-window pixel");
     }
 
-    /// The load-bearing property: drawing a whole-frame generator band-by-band reconstructs the
-    /// exact image a single full-frame draw produces — i.e. no band seams. Renders the same
-    /// generator into a 4×8 full framebuffer and into two 4-row bands, and asserts byte-equality.
+    /// The load-bearing property: drawing a whole-frame generator band by band reconstructs the
+    /// exact image a single full-frame draw produces, with no band seams.
     #[test]
     fn bands_reconstruct_full_frame() {
         const W: u32 = 4;
         const H: u32 = 8;
 
-        // A whole-frame generator that sizes off the target and draws in absolute coords: clear,
-        // then paint each row a distinct colour — so a y-offset bug or a seam shows as a mismatch.
+        // A whole-frame generator that sizes off the target and draws in absolute coordinates:
+        // clear, then paint each row a distinct colour, so a y-offset bug or a seam shows up.
         fn gen<D: DrawTarget<Color = Rgb565>>(t: &mut D) {
             t.clear(rgb(0x1234)).ok();
             let size = t.bounding_box().size;
@@ -210,8 +202,8 @@ mod tests {
         assert_eq!(full, assembled, "banded render must be byte-identical to the full-frame render");
     }
 
-    /// [`composite_overlay_window`] fills the scratch with the clean framebuffer window expanded to
-    /// RGB565, then lets the drawer paint over it in frame-absolute coords — and never touches `fb`.
+    /// [`composite_overlay_window`] fills the scratch with the clean framebuffer window expanded
+    /// to RGB565, lets the drawer paint over it in frame-absolute coords, and never touches `fb`.
     #[test]
     fn composite_overlay_reads_backdrop_then_draws_over_it() {
         // Frame 8×8; every fb pixel a distinct device-64 byte (its index, masked to 6 bits).

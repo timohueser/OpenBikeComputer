@@ -16,32 +16,15 @@ use obc_formats::obcm::{
 };
 use obc_map_scene::{cos_lat, ground_dist_m_cl, BBox, M_PER_DEG};
 
-/// Upper bound on the nav `chunk_size` the reader accepts (spec §8.1), and the byte size of one
-/// [`NavTileCache`] slot. v9 pins the wire value to exactly [`NAV_CHUNK_SIZE`] (512), so this equals
-/// it: the cache holds whole 512 B chunks and `NavTileCache::chunk`'s `debug_assert` guards that
-/// no larger chunk is ever routed through a slot.
+/// Upper bound on the nav `chunk_size` the reader accepts, and the size of one [`NavTileCache`]
+/// slot. The wire value is pinned to [`NAV_CHUNK_SIZE`].
 pub const NAV_MAX_CHUNK_BYTES: usize = NAV_CHUNK_SIZE;
 
-/// Every byte [`Reader::nav_edge`] is allowed to put on the stack: **one** §8.4 chunk.
+/// Every byte [`Reader::nav_edge`] may put on the stack: one edge chunk.
 ///
-/// This is a budget rather than an alias so that a regression has to argue with a name. `nav_edge`
-/// is the one edge-resolve site with no caller-owned [`NavTileCache`] — it resolves a single id,
-/// once, from a `&self` that any task may hold — and that is exactly what makes reaching for a
-/// cache there so easy and so expensive: `NavTileCache` is 24,852 B (pinned in
-/// `nav/cache.rs`) against a device stack of roughly 36 KB, so one `NavTileCache::new()` in this
-/// frame spends about two thirds of the task's stack to hold a 512-byte read. It shipped that way
-/// in the v14 rewrite and #1422's review caught it.
-///
-/// **What the assertions below do, and what they do not.** They pin *this constant* — that the
-/// budget is one chunk and stays an order of magnitude under a `NavTileCache`. That catches the
-/// budget drifting upward until it is a cache by another name.
-///
-/// They cannot see inside [`Reader::nav_edge`]. Adding a `NavTileCache::new()` to that function
-/// while leaving this constant at 512 passes both, because a `const` assertion is not a frame-size
-/// analysis and Rust gives us no way to write one here. The real guard against *that* is the
-/// board's measured `residual_stack` in `firmware/tools/resource_baseline.json`, which is a
-/// whole-task figure rather than a per-function one — so this constant is a drift pin, and the
-/// review of the function body is what keeps the body honest.
+/// A budget rather than an alias, so a regression has to argue with a name. `nav_edge` is the one
+/// edge-resolve site with no caller-owned [`NavTileCache`], and a `NavTileCache` is 24,852 B
+/// against a device stack of roughly 36 KB. The board's measured `residual_stack` guards the body.
 pub const NAV_EDGE_STACK_BUDGET: usize = NAV_CHUNK_SIZE;
 const _: () = assert!(NAV_EDGE_STACK_BUDGET == NAV_CHUNK_SIZE, "nav_edge holds exactly one §8.4 chunk");
 const _: () = assert!(
@@ -49,46 +32,38 @@ const _: () = assert!(
     "nav_edge's stack budget must stay an order of magnitude under a NavTileCache, or it has become one"
 );
 
-/// The parsed nav directory (spec §8.1) — the graph's **entire resident state** (the quadtree and
-/// every record stream on demand). Empty graph (`node_count == 0`) ⇒ no walk, exactly like an
-/// empty POI category. Parse-only in R2: [`Reader::for_each_nav_node`] walks the node quadtree and
-/// [`Reader::nav_edge`] fetches one polyline; the A* over them is R3 (#465).
+/// The parsed nav directory: the graph's entire resident state, because the quadtree and every
+/// record stream on demand. An empty graph starts no walk.
 #[derive(Debug, Clone, Copy)]
 pub struct NavDirectory {
-    /// Byte offset to the node quadtree index (§8.2 — the §4 encoding over the global bbox).
+    /// Byte offset to the node quadtree index.
     pub index_offset: u64,
     /// Number of `uint32` nodes in the index; `0` ⇒ the map has no routable graph.
     pub node_count: usize,
-    /// Number of node data chunks (they begin at `index_offset + node_count * 4`, the §3/§4
-    /// convention).
+    /// Number of node data chunks; they begin at `index_offset + node_count * 4`.
     pub chunk_count: usize,
-    /// Byte offset of the edge pool (§8.4).
+    /// Byte offset of the edge pool.
     pub edge_pool_offset: u64,
     /// Number of `chunk_size`-byte chunks in the edge pool.
     pub edge_chunk_count: usize,
-    /// Fixed capacity (bytes) of every nav chunk — node chunks and edge-pool chunks alike. v9 pins
-    /// this to [`NAV_CHUNK_SIZE`] (512); `parse_nav_directory` rejects any other value.
+    /// Fixed capacity in bytes of every nav chunk. `parse_nav_directory` rejects any other value.
     pub chunk_size: usize,
-    /// Absolute byte offset of the §8.6 profile table (written immediately after this directory).
+    /// Absolute byte offset of the profile table, written immediately after this directory.
     pub profile_table_offset: u64,
-    /// Number of 56-byte profile records at `profile_table_offset` (1..=8; parse rejects otherwise).
+    /// Number of 56-byte profile records at `profile_table_offset` (1..=8).
     pub profile_count: usize,
-    /// Byte offset to the v13 §8.7 snap-anchor quadtree index.
+    /// Byte offset to the snap-anchor quadtree index.
     pub snap_index_offset: u64,
     /// Number of `uint32` nodes in the snap-anchor quadtree; `0` means no interior anchors.
     pub snap_node_count: usize,
     /// Number of fixed-size snap-anchor data chunks following that index.
     pub snap_chunk_count: usize,
-    /// This file's offset unit (§1.1), retained for the `align_up` step that places the node and
-    /// snap chunks behind their indexes.
+    /// This file's offset unit, for the `align_up` that places the chunks behind their indexes.
     pub scale: OffsetScale,
 }
 
 impl NavDirectory {
-    /// The directory a reader with no graph of its own reports — every offset zero and
-    /// `node_count == 0`, so [`NavDirectory::is_empty`] is true and no walk starts. It is what a
-    /// **volume-set shard** reader answers: the nav graph lives in the core file alone (`OBCA_Spec`
-    /// §5.1), and the core's offsets mean nothing against a shard's bytes.
+    /// The directory a reader with no graph of its own reports: every offset zero, so no walk starts.
     pub const EMPTY: NavDirectory = NavDirectory {
         index_offset: 0,
         node_count: 0,
@@ -110,27 +85,25 @@ impl NavDirectory {
         self.node_count == 0
     }
 
-    /// Byte offset where the node data chunks begin (right after the index), or `None` on
-    /// `u64` overflow (a corrupt directory) — see `index_end`.
+    /// Byte offset where the node data chunks begin, or `None` on overflow from a corrupt directory.
     #[inline]
     pub fn data_start(&self) -> Option<u64> {
         aligned_index_end(self.scale, self.index_offset, self.node_count)
     }
 
-    /// Byte range `[start, end)` of node chunk `chunk_id`, or `None` if out of range / on
-    /// overflow. See [`fixed_chunk_range`]; the nav chunk size is directory-wide (§8.1).
+    /// Byte range `[start, end)` of node chunk `chunk_id`, or `None` if out of range or on overflow.
     #[inline]
     fn chunk_range(&self, chunk_id: u32) -> Option<(u64, u64)> {
         fixed_chunk_range(self.data_start(), self.chunk_count, self.chunk_size, chunk_id)
     }
 
-    /// Byte offset where v13's snap-anchor chunks begin (right after their quadtree index).
+    /// Byte offset where the snap-anchor chunks begin, right after their quadtree index.
     #[inline]
     pub fn snap_data_start(&self) -> Option<u64> {
         aligned_index_end(self.scale, self.snap_index_offset, self.snap_node_count)
     }
 
-    /// Byte range of one v13 snap-anchor chunk.
+    /// Byte range of one snap-anchor chunk.
     #[inline]
     fn snap_chunk_range(&self, chunk_id: u32) -> Option<(u64, u64)> {
         fixed_chunk_range(self.snap_data_start(), self.snap_chunk_count, self.chunk_size, chunk_id)
@@ -165,11 +138,9 @@ impl QuadIndex for NavSnapIndex {
     }
 }
 
-/// One §8.6 routing profile resident in [`super::MapTables`]: a display name plus the two multiplier
-/// tables (`u8` fixed-point 1/16, indexed by way-kind's highway class 0..=31 / surface class
-/// 0..=7; `16` = 1.0×, `0` = forbidden). N3 selects one by index and weights each edge by
-/// [`MapProfile::multiplier`]. Parsed by `parse_nav_profiles`, which clamps any non-zero byte
-/// below 16 up to 16 (defensive — the packer already enforces the admissibility invariant).
+/// One routing profile resident in [`super::MapTables`]: a display name plus the two multiplier
+/// tables (`u8` fixed-point 1/16, where `16` is 1.0× and `0` is forbidden). `parse_nav_profiles`
+/// clamps any non-zero byte below 16 up to 16, the admissibility invariant the packer enforces.
 #[derive(Debug, Clone, Copy)]
 pub struct MapProfile {
     /// Raw name field (0xFF-padded); read via [`MapProfile::name`].
@@ -180,8 +151,7 @@ pub struct MapProfile {
     pub highway: [u8; 32],
     /// Multiplier per surface class (3-bit index). Same encoding.
     pub surface: [u8; 8],
-    /// Flat-metres-equivalent charged per metre of a neighbor entry's `Ascent M` (§8.6, v12).
-    /// `0` = climb-blind, which is what a map packed before terrain existed decodes to.
+    /// Flat-metres-equivalent charged per metre of a neighbor entry's `Ascent M`; `0` is climb-blind.
     climb_weight: u8,
 }
 
@@ -192,21 +162,16 @@ impl MapProfile {
         core::str::from_utf8(&self.name[..self.name_len]).unwrap_or("")
     }
 
-    /// The profile's climb weight (§8.6, v12): flat metres charged per metre of ascent. `0` means
-    /// climb-blind — the router costs the edge by ground length alone, exactly as v11 did.
-    ///
-    /// The term it feeds is **additive and non-negative**: weighted cost is
-    /// `(cost_m × effective) >> 4 + ascent_m × climb_weight`, saturating. Descent can never make an
-    /// edge cheaper than its profile-weighted ground length, which is what keeps the great-circle
-    /// heuristic admissible (EL6 is the router side; the reader only serves the number).
+    /// The profile's climb weight: flat metres charged per metre of ascent, `0` for climb-blind.
+    /// The term is additive and non-negative, so descent can never make an edge cheaper than its
+    /// profile-weighted ground length, which is what keeps the great-circle heuristic admissible.
     #[inline]
     pub fn climb_weight(&self) -> u8 {
         self.climb_weight
     }
 
-    /// Effective edge-weight multiplier for a packed `way_kind` byte, in 1/16 fixed-point:
-    /// `(highway[kind & 31] × surface[kind >> 5]) >> 4` (u32 math). `None` if either class is
-    /// forbidden (a `0` byte) — the edge is not routable under this profile (§8.6).
+    /// Effective edge-weight multiplier for a packed `way_kind` byte, in 1/16 fixed-point. `None`
+    /// if either class is forbidden, which means the edge is not routable under this profile.
     #[inline]
     pub fn multiplier(&self, way_kind: u8) -> Option<u32> {
         let mh = self.highway[(way_kind & 0x1F) as usize] as u32;
@@ -219,11 +184,9 @@ impl MapProfile {
     }
 }
 
-/// One adjacency entry of a decoded §8.3 junction record. Coordinates are absolute microdegrees,
-/// **reconstructed** from the record's own coord + the stored `i16` deltas; `edge_id` addresses the
-/// §8.4 edge pool ([`Reader::nav_edge`]); `cost_m` is the edge's raw ground length in meters (the
-/// unweighted distance — N3 weights it by profile at relaxation); `way_kind` is N1's packed class
-/// byte, the input to profile weighting.
+/// One adjacency entry of a decoded junction record. Coordinates are absolute microdegrees,
+/// reconstructed from the record's own coord plus the stored `i16` deltas, and `cost_m` is the
+/// edge's raw unweighted ground length in metres.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NavNeighbor {
     pub id: u32,
@@ -232,14 +195,13 @@ pub struct NavNeighbor {
     pub edge_id: u32,
     pub cost_m: u32,
     pub way_kind: u8,
-    /// Integrated climb (m) of riding this edge **from the record's node toward this neighbor**
-    /// (§8.3, v12). **Directional**: the opposite entry of the same edge carries that direction's
-    /// ascent, i.e. this direction's descent — the one field of an adjacency entry that legitimately
-    /// differs between the two sides. `0` everywhere on a map packed without terrain.
+    /// Integrated climb in metres of riding this edge from the record's node toward this
+    /// neighbor. Directional: it is the one adjacency field that legitimately differs between the
+    /// two sides.
     pub ascent_m: u16,
 }
 
-/// One exact position along a §8.4 edge polyline. `segment` names the forward `a → b` segment and
+/// One exact position along an edge polyline. `segment` names the forward `a → b` segment and
 /// `fraction` is its 0..=65535 interpolation parameter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NavEdgePosition {
@@ -248,8 +210,8 @@ pub struct NavEdgePosition {
     pub coord: (i32, i32),
 }
 
-/// A projected candidate before its graph endpoints are resolved. Keeping endpoint lookup out of
-/// the candidate scan means only the winning edge pays the two point-quadtree queries.
+/// A projected candidate before its graph endpoints are resolved, so only the winning edge pays
+/// the two point-quadtree queries.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NavEdgeCandidate {
     pub edge_id: u32,
@@ -271,8 +233,8 @@ pub struct NavEdgeEndpoint {
     pub position: NavEdgePosition,
 }
 
-/// A winning exact edge projection, connected to its two real graph endpoints. Directional ascent
-/// is carried so the virtual partial edges use the same climb-aware cost model as ordinary A* arcs.
+/// A winning exact edge projection with its two real graph endpoints. Directional ascent is
+/// carried, so the virtual partial edges use the same climb-aware cost model as ordinary arcs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NavEdgeSnap {
     pub edge_id: u32,
@@ -308,9 +270,8 @@ fn candidate_beats(new: &NavEdgeCandidate, old: &NavEdgeCandidate) -> bool {
     new.distance_m < old.distance_m || (new.distance_m == old.distance_m && new.edge_id < old.edge_id)
 }
 
-/// One §8.3 junction record, borrowed from the chunk scratch for a single
-/// [`Reader::for_each_nav_node`] callback. Neighbor entries decode lazily through
-/// [`NavNodeRef::neighbors`] — A* relaxes them straight off the record with no intermediate copy.
+/// One junction record, borrowed from the chunk scratch for a single callback. Neighbor entries
+/// decode lazily, so A* relaxes them straight off the record with no intermediate copy.
 #[derive(Debug, Clone, Copy)]
 pub struct NavNodeRef<'a> {
     /// Absolute microdegrees.
@@ -324,16 +285,15 @@ pub struct NavNodeRef<'a> {
 }
 
 impl<'a> NavNodeRef<'a> {
-    /// This junction's degree (0..=254; the packer caps it far lower, spec §8.3).
+    /// This junction's degree; the packer caps it far lower.
     #[inline]
     pub fn degree(&self) -> usize {
         self.neighbors.len() / NAV_NEIGHBOR_LEN
     }
 
     /// Iterate the adjacency entries in record order. Each neighbor's absolute coord is
-    /// reconstructed as `record coord + i16 delta` (cast-free `from_le_bytes` on the slice — the
-    /// #501 alignment rule); `cost_m` widens from the `u16` wire value; `way_kind` is a raw byte;
-    /// `ascent_m` is the v12 directional climb at [`NAV_NEIGHBOR_ASCENT_OFF`].
+    /// reconstructed as `record coord + i16 delta` through `from_le_bytes` on the slice, never a
+    /// typed view.
     #[inline]
     pub fn neighbors(&self) -> impl Iterator<Item = NavNeighbor> + 'a {
         let (base_lat, base_lon) = (self.lat, self.lon);
@@ -350,42 +310,31 @@ impl<'a> NavNodeRef<'a> {
 }
 
 impl<'a> Reader<'a> {
-    /// The parsed nav directory (spec §8.1). Always present in v9; `is_empty()` for a map with no
-    /// routable ways.
-    ///
-    /// It used to answer [`NavDirectory::EMPTY`] on a volume-set shard, because a shard reader
-    /// borrowed the **core's** tables and this directory's offsets would then have described the
-    /// core file against the shard's bytes. One file, one set of tables, one graph (FS7.5, #1420) —
-    /// there is no longer a reader whose `tables` are not its `src`'s, so the guard has nothing to
-    /// guard against and every nav, POI and hours accessor below simply answers.
+    /// The parsed nav directory. Always present; `is_empty()` for a map with no routable ways.
     #[inline]
     pub fn nav_directory(&self) -> &NavDirectory {
         &self.tables.nav
     }
 
-    /// The map's §8.6 routing profiles (1..=8, always present even for an empty graph). N5 exposes
-    /// their names on the device; N3 selects one by index and weights edges by
-    /// [`MapProfile::multiplier`].
+    /// The map's routing profiles (1..=8, always present, even for an empty graph). A caller
+    /// selects one by index and weights edges by [`MapProfile::multiplier`].
     #[inline]
     pub fn nav_profiles(&self) -> &[MapProfile] {
         &self.tables.profiles
     }
 
-    /// Visit every §8.3 junction record whose quadtree leaf overlaps `view`, in quadtree order —
-    /// the R3 A* spatial-refetch primitive: settling a node is one descent to its coord's leaf
-    /// (a degenerate one-point `view`) + one chunk read + this decode. Parse-only here: no
-    /// traversal state, no ordering beyond the walk.
+    /// Visit every junction record whose quadtree leaf overlaps `view`, in quadtree order: the A*
+    /// spatial-refetch primitive.
     ///
-    /// `scratch` is the caller-owned chunk buffer and must hold at least the directory's
-    /// `chunk_size` bytes (≤ [`NAV_MAX_CHUNK_BYTES`], enforced at parse) — `Err(Error::TooShort)`
-    /// otherwise. R3/R4 point this at their graph-tile cache slot; tests pass a stack array. An
-    /// empty graph visits nothing. A truncated record ends that chunk cleanly; source or
-    /// index-cache failures return a typed [`Error`] rather than being mistaken for an empty leaf.
+    /// `scratch` is the caller-owned chunk buffer and must hold the directory's `chunk_size`
+    /// bytes, or this returns `Err(Error::TooShort)`. A truncated record ends that chunk cleanly;
+    /// source or index-cache failures return a typed [`Error`] rather than looking like an empty
+    /// leaf.
     ///
     /// # Reentrancy
     ///
-    /// Like [`Reader::nearest_pois`], the quadtree walk streams through the internal index cache;
-    /// legal re-entry returns [`Error::CacheBusy`].
+    /// The walk streams through the internal index cache; legal re-entry returns
+    /// [`Error::CacheBusy`].
     pub fn for_each_nav_node(
         &self,
         view: &BBox,
@@ -425,20 +374,13 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
-    /// Resolve a §8.4 `Edge Id` — a packed `(chunk_index, ordinal)` pair since v14 — to the
-    /// 512-byte chunk holding the record and the record's byte position inside it.
+    /// Resolve an `Edge Id`, a packed `(chunk_index, ordinal)` pair, to the chunk that holds the
+    /// record and the record's byte position inside it.
     ///
-    /// The `ordinal` is the record's **position** within its chunk, not a byte offset into it, so
-    /// this reads the one chunk and walks `ordinal` records from its first byte, taking each
-    /// record's length from its own `Pt Count`. That walk is
-    /// [`nav_edge_record_range`](obc_formats::obcm::nav_edge_record_range), transcribed from the
-    /// spec and applied `ordinal + 1` times, so the intermediate records are bounds-checked exactly
-    /// as the target is. There is **no extra I/O**: the chunk that holds the record is the chunk
-    /// that holds every record before it, which is the whole reason the ordinal is *within a chunk*
-    /// and not within the pool.
-    ///
-    /// A refused id is a malformed map, not an absent edge — but this is a reader on a card that
-    /// ages, so every caller degrades to "no geometry" rather than panicking.
+    /// The `ordinal` is a position within the chunk, not a byte offset, so this reads the one
+    /// chunk and walks `ordinal` records from its first byte. There is no extra I/O: the chunk
+    /// that holds the record holds every record before it. A refused id is a malformed map, but
+    /// every caller degrades to "no geometry" rather than panicking.
     fn nav_edge_record<'t>(&self, tiles: &'t mut NavTileCache, edge_id: u32) -> Option<(&'t [u8], usize)> {
         let chunk_start = self.nav_edge_chunk_start(edge_id)?;
         let chunk = tiles.chunk(self.src, chunk_start, NAV_CHUNK_SIZE)?;
@@ -446,12 +388,8 @@ impl<'a> Reader<'a> {
         Some((chunk, start))
     }
 
-    /// The absolute file offset of the chunk holding `edge_id`'s record — the half of the §8.4
-    /// resolve that does not care *how* the chunk is read.
-    ///
-    /// Split out so the two readers below can differ in exactly one line: the router's sites
-    /// already own a [`NavTileCache`] and go through its working set, while [`Reader::nav_edge`]
-    /// reads into 512 bytes of its own stack.
+    /// The absolute file offset of the chunk holding `edge_id`'s record, split out so the two
+    /// readers below differ in one line: a cache working set against 512 bytes of stack.
     fn nav_edge_chunk_start(&self, edge_id: u32) -> Option<u64> {
         let dir = self.nav_directory();
         let cs = dir.chunk_size;
@@ -469,13 +407,9 @@ impl<'a> Reader<'a> {
         Some(chunk_start)
     }
 
-    /// [`Reader::nav_edge_record`] with the chunk read straight into a caller-owned 512-byte
-    /// buffer instead of through a [`NavTileCache`] working set.
-    ///
-    /// This exists because the cache is **24,852 bytes** and `nav_edge` has no business owning
-    /// one: it reads exactly one chunk, once, and never comes back for a neighbour. Materialising
-    /// a cache to hold a single 512-byte read put two thirds of the device's ~36 KB stack into one
-    /// frame — see the pin below.
+    /// [`Reader::nav_edge_record`] with the chunk read into a caller-owned 512-byte buffer instead
+    /// of through a [`NavTileCache`], which is 24,852 bytes and would put two thirds of the
+    /// device's stack into one frame for a single read.
     fn nav_edge_record_uncached<'b>(
         &self,
         buf: &'b mut [u8; NAV_CHUNK_SIZE],
@@ -494,28 +428,19 @@ impl<'a> Reader<'a> {
         Some((chunk[within + 6] >> 5, rd_u16(chunk, within + 4) & 0x8000 != 0))
     }
 
-    /// Fetch one §8.4 edge polyline by its `edge_id` (a packed `(chunk, ordinal)` pair since v14),
-    /// decoding anchor + deltas into `points` as the crate's `(lon, lat)` µdeg pairs. Returns the
-    /// edge's `length_m`. R3 calls this only at OBCR emit, stitching the came-from chain's geometry.
+    /// Fetch one edge polyline by its `edge_id`, decoding the anchor and deltas into `points` as
+    /// `(lon, lat)` µdeg pairs. Returns the edge's `length_m`.
     ///
-    /// `None` for an empty graph, an id whose chunk or ordinal the §8.4 walk refuses, a read
-    /// failure, or a polyline exceeding `P` — a corrupt id degrades to "no geometry", never a
-    /// panic. No cache is touched, so (like [`Reader::poi_hours`]) this is safe to call from
-    /// anywhere; it holds one 512-byte chunk on the stack, which is both what the ordinal walk
-    /// needs and *fewer* source reads than v13's windowed delta stream, since the deltas were
-    /// always inside the chunk the head came from.
-    ///
-    /// The sentence above is now true. Between the v14 rewrite and #1422's review it was not: the
-    /// body built a [`NavTileCache`] to perform that one read, so the frame was
-    /// [`NAV_EDGE_STACK_BUDGET`] + 24,852 B on a device with about 36 KB of stack — 174× v13's
-    /// frame, in a `no_std` crate, for a single 512-byte chunk.
+    /// `None` for an empty graph, an id the walk refuses, a read failure, or a polyline longer
+    /// than `P`. No cache is touched, so this is safe to call from anywhere; it holds one chunk on
+    /// the stack, which is what the ordinal walk needs.
     pub fn nav_edge<const P: usize>(&self, edge_id: u32, points: &mut Vec<(i32, i32), P>) -> Option<u32> {
         points.clear();
         let mut chunk_buf = [0u8; NAV_EDGE_STACK_BUDGET];
         let (chunk, within) = self.nav_edge_record_uncached(&mut chunk_buf, edge_id)?;
         let length_m = rd_u32(chunk, within);
         let pt_count = (rd_u16(chunk, within + 4) & 0x7fff) as usize;
-        // byte 6 is `way_kind` (§8.4); the anchor sits behind it, at 7 (lat) / 11 (lon).
+        // Byte 6 is `way_kind`; the anchor sits behind it, at 7 (lat) and 11 (lon).
         let anchor_lat = rd_i32(chunk, within + 7);
         let anchor_lon = rd_i32(chunk, within + 11);
         // The walk already refused `Pt Count < 2` and any record claiming bytes past its chunk.
@@ -534,12 +459,9 @@ impl<'a> Reader<'a> {
     }
 
     /// [`Reader::for_each_nav_node`] with the chunk read routed through a caller-owned
-    /// [`NavTileCache`] instead of a bare scratch — the router's settle primitive (#465). A*'s
-    /// spatial re-fetch settles one node at a time (a degenerate one-point `view`). It does **not**
-    /// walk a single advancing neighborhood: the heap pops the globally best-`f` node, so successive
-    /// settles scatter across the frontier's several live quadtree leaves. The route-private
-    /// navigation-cache working set keeps those leaves resident so the per-settle re-fetch mostly
-    /// hits. Same decode, same corrupt-input posture, same reentrancy rule as the uncached walk.
+    /// [`NavTileCache`]: the router's settle primitive. A* pops the globally best node, so
+    /// successive settles scatter across the frontier's live leaves and the working set keeps them
+    /// resident. Same decode and reentrancy rule as the uncached walk.
     pub fn for_each_nav_node_cached(
         &self,
         view: &BBox,
@@ -600,12 +522,9 @@ impl<'a> Reader<'a> {
         self.nav_edge_candidate_cached(view, tiles, p, max_distance_m, true)
     }
 
-    /// Find the nearest exact edge projection among (a) edges incident to graph nodes in `view`
-    /// and (b) edges named by v13 interior anchors in `view`. The two indexes together are the
-    /// completeness argument: endpoints cover short edges; long edges have interior anchors no
-    /// farther than 300 m apart. Endpoint graph ids are deliberately resolved only after the
-    /// lookup windows have selected a winner; see
-    /// [`resolve_nav_edge_candidate_cached`](Self::resolve_nav_edge_candidate_cached).
+    /// Find the nearest exact edge projection among edges incident to graph nodes in `view` and
+    /// edges named by interior anchors in `view`. Together the two indexes are the completeness
+    /// argument: endpoints cover short edges, and a long edge has anchors at most 300 m apart.
     #[inline(never)] // keep the one 512-byte node-chunk copy in this bounded snap-only frame
     pub fn nearest_nav_edge_candidate_cached(
         &self,
@@ -634,9 +553,8 @@ impl<'a> Reader<'a> {
         let mut ambiguous = false;
         let mut read_error = None;
 
-        // First the ordinary node tree: this supplies every short edge and also helps long edges
-        // near a junction. Copy each chunk before edge-pool reads are allowed to evict its cache
-        // slot.
+        // First the ordinary node tree, which supplies every short edge. Copy each chunk before
+        // edge-pool reads can evict its cache slot.
         self.walk_nav_leaves(&dir, 0, self.bbox, view, 0, tiles, &mut |tiles, cid, _node| {
             if read_error.is_some() {
                 return;
@@ -685,7 +603,7 @@ impl<'a> Reader<'a> {
         .map_err(Error::from)?;
 
         // Then the sparse long-edge anchors. Leaves may share chunks, so filter by the absolute
-        // record coordinate; repeated edge ids are harmless and normally hit the edge cache.
+        // record coordinate.
         if dir.snap_node_count > 0 && read_error.is_none() {
             let index = NavSnapIndex { index_offset: dir.snap_index_offset, node_count: dir.snap_node_count };
             self.walk_nav_leaves(&index, 0, self.bbox, view, 0, tiles, &mut |tiles, cid, _node| {
@@ -740,9 +658,8 @@ impl<'a> Reader<'a> {
         Ok(if require_unique && ambiguous { None } else { best })
     }
 
-    /// Resolve the winning candidate's endpoint ids and directional ascents through two degenerate
-    /// node-tree queries. Only this winner pays the lookups; all rejected candidates needed only
-    /// their edge-pool geometry.
+    /// Resolve the winning candidate's endpoint ids and directional ascents through two
+    /// degenerate node-tree queries. Only the winner pays the lookups.
     pub fn resolve_nav_edge_candidate_cached(
         &self,
         candidate: NavEdgeCandidate,
@@ -928,11 +845,9 @@ impl<'a> Reader<'a> {
         })
     }
 
-    /// Route-private §8.2 walk. Unlike the renderer/POI [`Reader::walk_leaves`] path, node words are
-    /// served from [`NavTileCache`]'s sixteen-window working set, so thousands of point descents do
-    /// not churn the seven render-index windows. The callback receives the same mutable cache only
-    /// after the node-word borrow has ended, allowing a leaf to fetch its graph chunk without nested
-    /// mutable borrows.
+    /// Route-private node walk. Node words are served from [`NavTileCache`]'s sixteen windows, so
+    /// thousands of point descents do not churn the seven render-index windows. The callback gets
+    /// the mutable cache only after the node-word borrow has ended.
     #[allow(clippy::too_many_arguments)]
     fn walk_nav_leaves<F: FnMut(&mut NavTileCache, u32, BBox)>(
         &self,
@@ -972,19 +887,14 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
-    /// Fetch one §8.4 edge polyline **oriented to begin at `start`** (a `(lon, lat)` µdeg node
-    /// coord), streaming each point through `emit` and returning the edge's `length_m`. Edge
-    /// records run `a → b`; the router traverses them either way, so this picks the direction by
-    /// matching `start` against the record's endpoints (node coords and polyline endpoints are
-    /// bit-identical by the packer's construction) and reverses on the fly when the hop runs
-    /// `b → a` — no caller-side point buffer, however long the polyline.
+    /// Fetch one edge polyline oriented to begin at `start`, streaming each point through `emit`
+    /// and returning the edge's `length_m`.
     ///
-    /// The record's whole containing chunk comes through `tiles` (the §8.4 no-straddle contract
-    /// keeps a record inside one chunk): consecutive path edges usually share a pool chunk, and a
-    /// resident chunk makes the reversed decode free — the deltas are summed forward once for the
-    /// `b` endpoint, then walked backward subtracting. `None` for an out-of-pool / misaligned id,
-    /// a record matching neither endpoint, or a read failure — a corrupt id degrades to "no
-    /// geometry", never a panic, mirroring [`Reader::nav_edge`].
+    /// Edge records run `a → b` and the router traverses them either way, so this picks the
+    /// direction by matching `start` against the record's endpoints, which the packer makes
+    /// bit-identical to the node coords, and reverses on the fly. A resident chunk makes the
+    /// reversed decode free. `None` for an out-of-pool id, a record matching neither endpoint, or
+    /// a read failure.
     pub fn nav_edge_oriented(
         &self,
         tiles: &mut NavTileCache,
@@ -1000,7 +910,7 @@ impl<'a> Reader<'a> {
         let (chunk, within) = self.nav_edge_record(tiles, edge_id)?;
         let length_m = rd_u32(chunk, within);
         let pt_count = (rd_u16(chunk, within + 4) & 0x7fff) as usize;
-        // byte within+6 is `way_kind` (§8.4); the anchor sits behind it, at +7 (lat) / +11 (lon).
+        // Byte +6 is `way_kind`; the anchor sits behind it, at +7 (lat) and +11 (lon).
         let anchor = (rd_i32(chunk, within + 11), rd_i32(chunk, within + 7)); // (lon, lat)
         if pt_count == 0 {
             return None;
@@ -1041,20 +951,14 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Decode one nav node chunk's §8.3 records, handing each to `visit`. Records are back-to-back;
-/// the `degree` byte at record offset 12 is `0xFF` in the `0xFF` padding, ending the walk (the POI
-/// sentinel trick — the padding's first byte always lands on a would-be degree slot). A record
-/// whose declared neighbors run past the chunk is corrupt: stop cleanly, decode nothing further.
+/// Decode one nav node chunk's records, handing each to `visit`. Records are back-to-back and the
+/// `degree` byte reads `0xFF` in the padding, which ends the walk. A record whose neighbors run
+/// past the chunk is corrupt: stop cleanly and decode nothing more.
 ///
-/// **Byte-wise by contract — never a typed view.** The record stride is 13 + 17·degree bytes
-/// (both odd in v12), so records — and every multi-byte field in them — sit at **odd offsets**
-/// inside the chunk by design; all decoding goes through the `rd_*` `from_le_bytes`-on-`&[u8]`
-/// helpers.
-/// Two guards keep it that way (PR #501's on-glass HardFault dossier): the board build compiles
-/// with `+strict-align` (the ARM backend fused even these byte-wise decodes into an
-/// alignment-trapping `ldrd` under fat LTO — see `obc-fw-nrf54l/.cargo/config.toml`), and the
-/// obc-route nav suite runs clean under **Miri** (`cargo +nightly miri test -p obc-route --test
-/// nav`), which fails loudly if a typed view over these bytes ever creeps in.
+/// Byte-wise by contract, never a typed view: the record stride is odd, so fields sit at odd
+/// offsets by design. The board build compiles with `+strict-align`, because the ARM backend fused
+/// byte-wise decodes into an alignment-trapping `ldrd` under fat LTO, and the nav suite runs under
+/// Miri.
 fn decode_nav_chunk(chunk: &[u8], visit: &mut impl FnMut(NavNodeRef)) {
     let mut off = 0usize;
     while off + NAV_NODE_FIXED_LEN <= chunk.len() {
@@ -1076,20 +980,17 @@ fn decode_nav_chunk(chunk: &[u8], visit: &mut impl FnMut(NavNodeRef)) {
     }
 }
 
-/// Parse the current v13 nav directory (spec §8.1) at `offset` from `src` (file is `total` bytes).
-/// Parse-only: validates the directory scalars, the node index + chunk region, the edge-pool
-/// region, and the profile-table region lie in-file, but walks/decodes nothing (the profiles
-/// themselves are read by [`parse_nav_profiles`]). The section is always present, so `offset`
-/// at/past EOF, a `chunk_size` other than the pinned 512, a `profile_count` outside `1..=8`, or any
-/// out-of-file region is a corrupt/old file ⇒ [`Error::BadOffset`] (distinct from the v8 file's
-/// [`Error::BadVersion`]). Every offset/length product is checked (32-bit target).
+/// Parse the nav directory at `offset`. Parse-only: it validates that the directory scalars, the
+/// node index and chunk region, the edge pool and the profile table lie in file. An `offset` at or
+/// past EOF, a `chunk_size` other than 512, a `profile_count` outside `1..=8`, or any out-of-file
+/// region is [`Error::BadOffset`], with every product checked for the 32-bit target.
 pub(super) fn parse_nav_directory(
     src: &dyn ByteSource,
     scale: OffsetScale,
     offset: u64,
     total: u64,
 ) -> Result<NavDirectory, Error> {
-    // The lowest byte a scaled offset in this file can name past the header (§1.2).
+    // The lowest byte a scaled offset in this file can name past the header.
     let floor = scale.align_up(HEADER_LEN as u64).ok_or(Error::BadOffset)?;
     if offset < floor || offset.checked_add(NAV_DIR_LEN as u64).is_none_or(|end| end > total) {
         return Err(Error::BadOffset);
@@ -1110,18 +1011,16 @@ pub(super) fn parse_nav_directory(
         snap_chunk_count: rd_u32(&d, 36) as usize,
         scale,
     };
-    // The nav chunk size is pinned to 512 (§8.1) — a v8 file, or any other value, is rejected. This
-    // is a distinct error from the header's version check, so an old file and a mis-sized current
-    // one are told apart.
+    // The nav chunk size is pinned to 512, and this is a distinct error from the version check, so
+    // an old file and a mis-sized current one are told apart.
     if dir.chunk_size != NAV_CHUNK_SIZE {
         return Err(Error::BadOffset);
     }
-    // The profile table is always present with 1..=8 records (§8.6) — a zero or oversize count is a
-    // malformed file, not a degraded one.
+    // The profile table is always present with 1..=8 records, so a bad count is malformed.
     if dir.profile_count == 0 || dir.profile_count > NAV_MAX_PROFILES {
         return Err(Error::BadOffset);
     }
-    // Profile-table region (56 B × count) at `profile_table_offset` must lie in-file.
+    // The profile-table region (56 B × count) must lie in file.
     if dir.profile_table_offset < floor {
         return Err(Error::BadOffset);
     }
@@ -1132,8 +1031,8 @@ pub(super) fn parse_nav_directory(
     if profile_end > total {
         return Err(Error::BadOffset);
     }
-    // Node index + chunk region: like an empty POI category, an empty graph only needs its
-    // (zero-length) offsets in-file; a populated one the whole region.
+    // Node index and chunk region: an empty graph needs only its zero-length offsets in file, a
+    // populated one the whole region.
     if dir.node_count > 0 {
         let region_end = dir
             .data_start()
@@ -1147,10 +1046,8 @@ pub(super) fn parse_nav_directory(
     } else if dir.index_offset > total {
         return Err(Error::BadOffset);
     }
-    // Edge pool region. `Edge Chunk Count` is capped at `2^27` since v14 (§8.1/§8.4): past that
-    // no `Edge Id` could name the chunks, so the tail would be bytes the directory claims and no
-    // id reaches — the same posture the flat store takes toward an extent count its index cannot
-    // name.
+    // Edge pool region, capped at `2^27` chunks: past that no `Edge Id` could name them, so the
+    // tail would be bytes the directory claims and no id reaches.
     if dir.edge_pool_offset < floor || dir.edge_chunk_count as u64 > NAV_EDGE_MAX_CHUNKS {
         return Err(Error::BadOffset);
     }
@@ -1161,8 +1058,8 @@ pub(super) fn parse_nav_directory(
     if pool_end > total {
         return Err(Error::BadOffset);
     }
-    // v13 snap-anchor index + chunks. An empty anchor index is legal (a graph whose every edge is
-    // short); a populated one follows the same fixed-chunk bounds contract as the node index.
+    // Snap-anchor index and chunks. An empty anchor index is legal; a populated one follows the
+    // same bounds contract as the node index.
     if dir.snap_node_count > 0 {
         let region_end = dir
             .snap_data_start()
@@ -1179,12 +1076,9 @@ pub(super) fn parse_nav_directory(
     Ok(dir)
 }
 
-/// Parse the §8.6 profile table into `MapTables`: `dir.profile_count` (1..=8, already range-checked
-/// by [`parse_nav_directory`]) consecutive 56-byte records at `dir.profile_table_offset`. Each
-/// record's name field is `0xFF`-padded UTF-8; the two multiplier tables are copied verbatim except
-/// that any **non-zero byte below 16 is clamped up to 16** — the admissibility invariant the packer
-/// enforces, re-applied here so a hand-forged file can't hand N3 an inadmissible weight. A read
-/// failure or out-of-file record is a corrupt file ⇒ [`Error::BadOffset`].
+/// Parse the profile table into `MapTables`. Each record's name field is `0xFF`-padded UTF-8, and
+/// the multiplier tables are copied verbatim except that a non-zero byte below 16 is clamped up to
+/// 16, so a hand-forged file cannot hand the router an inadmissible weight.
 pub(super) fn parse_nav_profiles(
     src: &dyn ByteSource,
     dir: &NavDirectory,
@@ -1199,7 +1093,7 @@ pub(super) fn parse_nav_profiles(
         src.read_at(off, &mut buf).map_err(Error::Source)?;
         let mut name = [0u8; NAV_PROFILE_NAME_LEN];
         name.copy_from_slice(&buf[0..NAV_PROFILE_NAME_LEN]);
-        // Name length = bytes up to the first 0xFF pad (the §7/§8 name convention).
+        // Name length = bytes up to the first 0xFF pad.
         let name_len = name.iter().position(|&b| b == CHUNK_END).unwrap_or(NAV_PROFILE_NAME_LEN);
         let mut highway = [0u8; 32];
         highway.copy_from_slice(&buf[12..44]);
@@ -1210,8 +1104,8 @@ pub(super) fn parse_nav_profiles(
                 *m = 16; // clamp an inadmissible weight up to 1.0× (defensive; the packer forbids it)
             }
         }
-        // The v12 climb weight needs no clamp: every `u8` is admissible because the term it feeds is
-        // additive and non-negative (§8.6). The three reserved bytes behind it are ignored.
+        // The climb weight needs no clamp: every `u8` is admissible, because the term it feeds is
+        // additive and non-negative.
         let climb_weight = buf[NAV_PROFILE_CLIMB_WEIGHT_OFF];
         // `push` can't fail: the loop runs `profile_count ≤ NAV_MAX_PROFILES` times (checked above).
         let _ = out.push(MapProfile { name, name_len, highway, surface, climb_weight });

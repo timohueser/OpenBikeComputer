@@ -16,7 +16,7 @@ pub const POINT_RECORD_LEN: usize = 7;
 pub const NAME_CAP: usize = 48;
 pub const WAYPOINT_LEN: usize = 80;
 pub const WAYPOINT_NAME_CAP: usize = 24;
-/// First byte of a waypoint record's name field (§4).
+/// First byte of a waypoint record's name field.
 pub const WAYPOINT_NAME_OFF: usize = 20;
 pub const ELEVATION_NONE: i16 = i16::MIN;
 pub const FLAG_UNRESOLVED_AVOIDANCE: u8 = 1;
@@ -28,8 +28,8 @@ pub const VISIT_DESCRIPTOR_VERSION: u8 = 1;
 pub const VISIT_DESCRIPTOR_LEN: usize = 80;
 pub const FACTS_POLICY: u16 = 1;
 pub const WAYPOINT_ELE_NONE: i16 = i16::MIN;
-/// The waypoint category byte for "no category" — the diamond every hand-placed waypoint renders
-/// as. `1..=6` are the OBCM §7.4 `PoiCategory` wire ids; any other value reads as generic.
+/// The waypoint category byte for "no category", the diamond every hand-placed waypoint renders
+/// as. `1..=6` are the OBCM `PoiCategory` wire ids; any other value reads as generic.
 pub const WAYPOINT_CATEGORY_GENERIC: u8 = 0;
 
 pub const fn is_supported_version(version: u8) -> bool {

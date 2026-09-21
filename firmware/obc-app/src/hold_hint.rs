@@ -1,17 +1,15 @@
-//! The global long-press hint — an on-screen "frame bulge" surfacing the device's central hold
-//! gestures. [`App`](crate::app::App) folds each frame's hold-progress into
-//! [`HoldHints`] and draws it on top of the screen stack.
+//! The global long-press hint: an on-screen frame bulge that surfaces the device's central hold
+//! gestures. [`App`](crate::app::App) folds each frame's hold-progress into [`HoldHints`] and draws
+//! it on top of the screen stack.
 //!
-//! Per control a black hump swells inward from the screen edge nearest its physical button,
-//! so it reads as the black bezel *bulging into* the display. The hump has a
-//! **fixed base width** along the edge ([`Style::base_half`]) and only its inward *depth* tracks the
-//! hold. Its silhouette is a flat-topped bump — a [`Style::flat_half`]-wide flat shelf with quartic
-//! shoulders easing into the edge — rasterized as edge-perpendicular strips. A completed hold
-//! **pops** (a quick deeper lunge that eases back out); an early release retracts it.
+//! Per control a black hump swells inward from the screen edge nearest its physical button, so it
+//! reads as the black bezel bulging into the display. The hump has a fixed base width along the
+//! edge and only its inward depth tracks the hold. A completed hold pops with a quick deeper lunge;
+//! an early release retracts it.
 //!
-//! Drawn in [`palette::HUD`] (the near-black frame colour), so it needs no alpha and renders on the
-//! real 8-color panel. Select vs. Back is told apart by *position*, not colour; relocating a bulge
-//! is a one-line edit to its [`Style::anchor`].
+//! It is drawn in [`palette::HUD`], so it needs no alpha on the real 8-colour panel. Select and
+//! Back are told apart by position, not colour, so relocating a bulge is a one-line edit to its
+//! [`Style::anchor`].
 
 use embedded_graphics::{draw_target::DrawTarget, primitives::Rectangle};
 use obc_render::{rect, Canvas, Surface};
@@ -56,9 +54,8 @@ struct Place {
 }
 
 impl Place {
-    /// One rasterizer strip: a 1px-wide slice `along_off` from the centre that pokes
-    /// `depth` px inward from the edge. The bulge is the union of these across the
-    /// fixed base width.
+    /// One rasterizer strip: a 1px-wide slice `along_off` from the centre that pokes `depth` px
+    /// inward from the edge. The bulge is the union of these across the fixed base width.
     fn strip(&self, along_off: i32, depth: i32) -> Rectangle {
         let x = if self.outer == 0 { 0 } else { self.outer - depth };
         rect(x, self.cc + along_off, depth, 1)
@@ -118,9 +115,8 @@ impl Hint {
         self.prev = progress;
     }
 
-    /// Whether this hint has something to draw at `now`: a bulge charging past the dead zone, or a
-    /// pop / retract still in flight. Mirrors the [`draw`](Hint::draw) decision exactly, so a host
-    /// repaints the overlay precisely when — and only when — it would change a pixel.
+    /// Whether this hint has something to draw at `now`. It mirrors the [`draw`](Hint::draw)
+    /// decision exactly, so a host repaints the overlay only when it would change a pixel.
     fn active(&self, now: u32) -> bool {
         match self.anim {
             Anim::Pop { t0 } => frac(now, t0, POP_MS) < 1.0,
@@ -141,8 +137,8 @@ impl Hint {
                 if e >= 1.0 {
                     return;
                 }
-                // Fast lunge past the charge depth to the overshoot, then ease back
-                // out to nothing — a snap inward rather than a symmetric pulse.
+                // A fast lunge past the charge depth, then an ease back out: a snap inward rather
+                // than a symmetric pulse.
                 let depth = if e < POP_ATTACK {
                     charge_depth + (pop_depth - charge_depth) * (e / POP_ATTACK)
                 } else {
@@ -194,14 +190,12 @@ fn bulge(cv: &mut impl Surface, place: &Place, depth: f32, base_half: i32, flat_
     }
 }
 
-/// Per-control look: where the bulge sits and its size along the edge. Relocating or
-/// resizing a bulge is a one-line change to one of the [`SELECT`] / [`BACK`]
-/// constants below.
+/// Per-control look: where the bulge sits and its size along the edge.
 #[derive(Clone, Copy)]
 struct Style {
     anchor: Anchor,
-    /// Half the base width (px) along the edge — the hump spans `2 * base_half`
-    /// regardless of depth, so size along the edge and inward depth are independent.
+    /// Half the base width (px) along the edge, so size along the edge and inward depth are
+    /// independent.
     base_half: i32,
     /// Half the flat *top* width (px): strips within `±flat_half` sit at full depth (a flat shelf),
     /// and the quartic shoulder eases to zero across the remaining `base_half - flat_half` per side.
@@ -220,10 +214,6 @@ const BACK: Style = Style { anchor: Anchor { pos: 0.65, left: false }, ..SELECT 
 const UP: Style = Style { anchor: Anchor { left: true, ..SELECT.anchor }, ..SELECT };
 
 /// The global long-press overlay. The Assistant chord shares one hint at Up and Select.
-///
-/// [`App`](crate::app::App) feeds each frame's hold-progress and long-press firings
-/// through [`update`](HoldHints::update), then [`draw`](HoldHints::draw)s this on top
-/// of the screen stack.
 pub struct HoldHints {
     select: Hint,
     back: Hint,
@@ -247,16 +237,14 @@ impl HoldHints {
         self.back.update(now, back.0, back.1);
     }
 
-    /// Whether either hint has live content at `now` — a bulge charging, popping, or
-    /// retracting. `false` exactly when [`draw`](HoldHints::draw) would paint nothing,
-    /// so a host can leave the overlay layer untouched while it's quiet.
+    /// Whether either hint has live content at `now`. `false` exactly when
+    /// [`draw`](HoldHints::draw) would paint nothing, so a host can leave the overlay untouched.
     pub fn active(&self, now: u32) -> bool {
         self.select.active(now) || self.back.active(now)
     }
 
-    /// The bounding **rows** `[y0, y0 + rows)` of every hint live at `now` — the dirty region a
-    /// partial-overlay host re-presents, so it re-pushes only the active bulge's rows instead of the
-    /// whole hint band. `None` exactly when [`active`](HoldHints::active) is `false`.
+    /// The bounding rows `[y0, y0 + rows)` of every hint live at `now`: the dirty region a
+    /// partial-overlay host re-presents. `None` exactly when [`active`](HoldHints::active) is false.
     pub fn active_rows(&self, now: u32, w: i32, h: i32) -> Option<(u16, u16)> {
         let span = |hint: &Hint, style: &Style| -> Option<(i32, i32)> {
             if !hint.active(now) {
@@ -320,7 +308,7 @@ mod tests {
         assert!(is_idle(&h), "still just charging before the threshold");
         h.update(150, 0.0, true); // long-press fires (progress already cleared)
         assert!(is_pop(&h));
-        h.update(150 + POP_MS, 0.0, false); // pop runs its course
+        h.update(150 + POP_MS, 0.0, false);
         assert!(is_idle(&h));
     }
 
@@ -344,20 +332,16 @@ mod tests {
 
     #[test]
     fn active_tracks_the_whole_charge_pop_retract_lifecycle() {
-        // Uncharged → nothing to draw.
         let mut h = Hint::new();
         h.update(0, 0.0, false);
         assert!(!h.active(0), "an idle, uncharged hint draws nothing");
 
-        // Inside the dead zone a press still draws nothing.
         h.update(10, DEAD - 0.01, false);
         assert!(!h.active(10), "a charge inside the dead zone stays quiet");
 
-        // Charging past the dead zone → the bulge is live.
         h.update(20, DEAD + 0.01, false);
         assert!(h.active(20), "charging past the dead zone shows a bulge");
 
-        // The hold fires → a pop is in flight for POP_MS, then quiet again.
         h.update(30, 0.0, true);
         assert!(h.active(30), "the confirm pop is live the frame it fires");
         assert!(h.active(30 + POP_MS - 1), "still live mid-pop");
