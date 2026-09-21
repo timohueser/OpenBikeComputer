@@ -245,6 +245,7 @@ class Ingest(ArchiveCase):
         self.assertGreater(int((data == 1000).sum()), 0)  # and left the rest with `es`
         self.assertEqual(int((data == 900).sum()) + int((data == 1000).sum()), covered)
         self.assertEqual(self.index()["tiles"], {tile: "nl"})  # the best contributor
+        self.assertEqual(self.index()["contributors"], {tile: ["nl", "es"]})  # best first
         self.assertEqual(sorted(self.index()["sources"]), ["es", "nl"])  # both attributions travel
         for key in ("es", "nl"):
             manifest = json.loads((self.archive / "sources" / f"{key}.json").read_text(encoding="utf-8"))
@@ -254,6 +255,34 @@ class Ingest(ArchiveCase):
         with rasterio.open(path) as src:
             again = src.read(1)
         self.assertTrue((again == data).all())
+
+    def test_a_source_whose_every_pixel_is_overwritten_loses_the_tile(self):
+        """A better source over the whole tile takes it, and the manifest says so."""
+
+        ingest.SOURCES.update({"nl": local_source("nl"), "es": local_source("es")})
+        self.addCleanup(lambda: [ingest.SOURCES.pop(key) for key in ("nl", "es")])
+        coarse = source_raster(self.inputs / "coarse.tif", np.full((SIDE, SIDE), 1000.0, dtype="float32"))
+        fine = self.root / "fine"
+        fine.mkdir()
+        source_raster(fine / "fine.tif", np.full((SIDE, SIDE), 900.0, dtype="float32"))
+
+        self.ingest("es", coarse)
+        self.ingest("nl", fine / "fine.tif", inputs=fine)
+        tile, _ = self.only_tile()
+        self.assertEqual(self.index()["contributors"], {tile: ["nl"]})
+        self.assertEqual(sorted(self.index()["sources"]), ["nl"])
+        es = json.loads((self.archive / "sources" / "es.json").read_text(encoding="utf-8"))
+        self.assertEqual(es["tiles"], [])
+
+    def test_a_tile_no_manifest_holds_is_refused(self):
+        """A run cut short leaves tiles behind; the next run must not merge into them blind."""
+
+        raster = source_raster(self.inputs / "tower.tif", plateau_with_tower())
+        self.ingest("ch", raster)
+        for manifest in (self.archive / "sources").glob("*.json"):
+            manifest.unlink()
+        self.assertEqual(ingest.main(["ingest", "ch", "--bbox", bbox_of(raster),
+                                      "--archive", str(self.archive), "--input", str(self.inputs)]), 1)
 
     def test_voids_arrive_as_nodata_whatever_the_source_calls_them(self):
         """A float32 NaN, an integer sentinel and the float maximum are all one void."""
@@ -348,6 +377,16 @@ class Check(ArchiveCase):
         wanted = hashlib.sha256(pixels.astype("<i2").tobytes()).hexdigest()
         self.assertEqual(self.index()["sha256"][tile], wanted)
 
+    def test_index_refuses_a_manifest_without_the_datum(self):
+        path = self.archive / "sources" / "ch.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        del manifest["vertical_datum"]
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        with self.assertRaises(ingest.Refuse) as caught:
+            ingest.rebuild_index(self.archive)
+        self.assertIn("sources/ch.json", str(caught.exception))
+        self.assertIn("vertical_datum", str(caught.exception))
+
     def test_check_names_a_file_that_is_not_a_tile_id(self):
         stray = self.archive / "16" / "nine" / "0001.tif"
         stray.parent.mkdir(parents=True)
@@ -400,6 +439,7 @@ class RcloneSeam(ArchiveCase):
         "sources": {"es": {"product": "MDT05", "attribution": "© IGN", "licence": "CC BY 4.0",
                            "fetched": "2026-01-01"}},
         "tiles": {"0100/0200": "es"},
+        "contributors": {"0100/0200": ["es"]},
         "sha256": {"0100/0200": "aa" * 32},
     }
 
@@ -448,6 +488,23 @@ class RcloneSeam(ArchiveCase):
         self.assertEqual(ingest.main(["publish", "--archive", str(self.archive)]), 0)
         self.assertEqual([argv[0] for argv, _ in self.calls], ["copy", "lsf", "copy"])
         self.assertEqual(self.uploaded["tiles"], self.index()["tiles"])
+
+    def test_a_secondary_contributor_survives_the_next_publish(self):
+        """The published index keeps every contributor's attribution, not only the best."""
+
+        tile = next(iter(self.index()["tiles"]))
+        published = {
+            **self.PUBLISHED,
+            "sources": {**self.PUBLISHED["sources"], "ch": self.index()["sources"]["ch"]},
+            "tiles": {**self.PUBLISHED["tiles"], tile: "nl"},
+            "contributors": {**self.PUBLISHED["contributors"], tile: ["nl", "ch"]},
+            "sha256": {**self.PUBLISHED["sha256"], tile: "bb" * 32},
+        }
+        # This archive holds the tile with `ch` alone, R2 says `nl` is better in it.
+        merged = ingest.merge_index(published, self.index())
+        self.assertEqual(sorted(merged["sources"]), ["ch", "es"])  # `es` holds another tile
+        merged_again = ingest.merge_index(merged, self.index())
+        self.assertEqual(sorted(merged_again["sources"]), ["ch", "es"])
 
     def test_this_archive_wins_a_tile_r2_also_holds(self):
         mine = next(iter(self.index()["tiles"]))
