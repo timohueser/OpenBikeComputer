@@ -1,24 +1,19 @@
-// Adapters between the v2 cell model and the things a map component draws
-// (#1038). Everything here is arithmetic over `outline.ts` / `grid.ts` results —
-// no Leaflet, no DOM — so the decisions a drawing embodies (which band an
-// outline is drawn from, what counts as "one patch") are testable without a
-// browser.
+// Adapters between the cell model and the things a map component draws. Everything
+// here is arithmetic over `outline.ts` and `grid.ts` results — no Leaflet, no DOM — so
+// the decisions a drawing embodies are testable without a browser.
 
 import { parseCellId, type CellId, type UBox } from "../catalog/grid";
 import type { Catalog } from "../catalog/manifest";
 import { coverageRings, mergeCellRects, type RingPoint } from "../catalog/outline";
 
 /**
- * The band whose cells *are* "the selection's coverage" on screen — the finest
- * detail band.
+ * The band whose cells *are* "the selection's coverage" on screen — the finest detail
+ * band.
  *
- * §8 U1 draws "the actual coverage outline of the current selection", and the
- * selection covers ground precisely at the fine bands and generously at the
- * coarse one (the covering context cells ride along silently, §8's coarse-band
- * decision — drawing them would show a country-sized halo nobody chose). The
- * network band shares the fine band's cell size by design, so the finest
- * geometry band is the honest outline for everything the rider will actually
- * see drawn on glass.
+ * The selection covers ground precisely at the fine bands and generously at the coarse
+ * one, where the covering context cells ride along silently: drawing them would show a
+ * country-sized halo nobody chose. The network band shares the fine band's cell size by
+ * design, so the finest geometry band is the honest outline.
  */
 export function detailBandId(catalog: Catalog): string {
     const geometry = catalog.schema.bands.filter((b) => b.lods.length > 0 && b.role !== "coarse");
@@ -32,11 +27,10 @@ export function parseCells(ids: readonly string[]): CellId[] {
 }
 
 /**
- * {@link mergeCellRects} over a set that may span cell sizes — the hole set
- * does, now that holes are drawn from every band (#1041 A5), and the merge
- * itself takes cells of one size. One merge per size; the rectangles of
- * different sizes may overlap on the ground, which for a hatch is simply the
- * same warning twice in the same place.
+ * {@link mergeCellRects} over a set that may span cell sizes — the hole set does, and
+ * the merge itself takes cells of one size. One merge per size; the rectangles of
+ * different sizes may overlap on the ground, which for a hatch is the same warning twice
+ * in the same place.
  */
 export function mergeMixedCellRects(ids: readonly string[]): UBox[] {
     const bySize = new Map<number, CellId[]>();
@@ -49,20 +43,16 @@ export function mergeMixedCellRects(ids: readonly string[]): UBox[] {
 }
 
 /**
- * The cells of `candidates` that touch a cell of `holes` — edge or corner —
- * on the same-size lattice.
+ * The cells of `candidates` that touch a cell of `holes` — edge or corner — on the
+ * same-size lattice.
  *
- * This is #1041 A9's decided hatch rule for partial detail cells: a partial
- * cell is only *news* where it abuts a hole, because there the detail visibly
- * stops and bare backdrop begins. A partial cell along the outline with
- * nothing missing beside it is border-overhang normality (#1025 measured most
- * fine-band border cells partial for every real extract), and hatching it
- * would re-impose exactly the noise tax §8 U1 rejected. Corner adjacency
- * counts: a diagonal staircase step reads as "next to the hole" on screen.
+ * A partial cell is only *news* where it abuts a hole, because there the detail visibly
+ * stops and bare backdrop begins. A partial cell along the outline with nothing missing
+ * beside it is border-overhang normality, and hatching it would re-impose a noise tax.
+ * Corner adjacency counts: a diagonal staircase step reads as "next to the hole".
  *
- * Both arguments are detail-band cells, so one size: adjacency is judged on
- * the candidates' own lattice, and ids of any other size in `holes` are
- * ignored rather than approximated across lattices.
+ * Both arguments are detail-band cells, so one size: ids of any other size in `holes`
+ * are ignored rather than approximated across lattices.
  */
 export function cellsTouchingHoles(candidates: readonly string[], holes: readonly string[]): string[] {
     if (candidates.length === 0 || holes.length === 0) return [];
@@ -98,10 +88,9 @@ function signedArea(ring: RingPoint[]): number {
 }
 
 /**
- * How many disjoint patches a cell set forms — the number the corridor panel
- * turns into "1 gap between routes" (patches − 1). Outer rings wind
- * counter-clockwise and holes clockwise (`coverageRings`' contract), so patches
- * are exactly the positive-area rings.
+ * How many disjoint patches a cell set forms — the number the corridor panel turns into
+ * "1 gap between routes" (patches − 1). Outer rings wind counter-clockwise and holes
+ * clockwise, so patches are exactly the positive-area rings.
  */
 export function patchCount(cells: Iterable<CellId>): number {
     return coverageRings(cells).filter((ring) => signedArea(ring) > 0).length;

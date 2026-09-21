@@ -1,49 +1,35 @@
 /**
- * The `UPDATE.BIN` container header, read in the browser (`OBCU_Spec.md` §1).
+ * The `UPDATE.BIN` container header, read in the browser.
  *
- * The page checks an update image before it spends minutes pushing it down a cable, and before the
- * device spends its own time scanning a file it will reject. Everything here is the spec's own
- * decode rule, not a second opinion about it: bad magic, a header version other than `1`, or a
- * header CRC that does not match bytes `0..60` means "not a valid container", and the raw image's
- * CRC-32 is checked **separately** against the bytes that follow — which is exactly what the
- * device-side armer does before it arms anything.
+ * The page checks an update image before it spends minutes pushing it down a cable. Everything here
+ * is the spec's own decode rule: bad magic, a header version other than `1`, or a header CRC that
+ * does not match bytes `0..60` means "not a valid container", and the raw image's CRC-32 is checked
+ * **separately** against the bytes that follow, exactly as the device-side armer does.
  *
- * This is a *pre-flight*, and deliberately not a substitute for any device-side check. #728's DFU
- * work turns on verify-before-erase happening on the device, over the bytes actually on the card;
- * a browser that validated a file and then uploaded it corrupted would still be caught there. What
- * the pre-flight buys is the difference between "that file isn't a firmware update" in a second and
- * the same answer after a transfer.
+ * This is a *pre-flight*, deliberately not a substitute for any device-side check. What it buys is
+ * the difference between "that file isn't a firmware update" in a second and the same answer after
+ * a transfer.
  *
- * **OBCU v2 (#997) — the signature is the device's business, the trailer is ours.** A signed
- * container is the header, the image, and a 64-byte Ed25519 trailer past `64 + imageLen`
- * (`OBCU_Spec.md` §1.3). This page does **not** verify that signature: the trusted key lives in the
- * firmware, not in a web page, and a browser-side "valid" would mean nothing the device didn't
- * re-establish anyway. What it must do is *carry the trailer intact* — the container it announces and
- * uploads has to be the whole file, or the device receives a file whose signature it cannot find and
- * refuses it as truncated. It also refuses an **unsigned** container up front, because the device
- * will (§1.4) and finding that out before the transfer is the entire point of a pre-flight.
+ * **The signature is the device's business; the trailer is ours.** A signed container is the header,
+ * the image, and a 64-byte Ed25519 trailer. This page does not verify that signature — the trusted
+ * key lives in the firmware — but it must *carry the trailer intact*, or the device receives a file
+ * whose signature it cannot find and refuses it as truncated. It also refuses an **unsigned**
+ * container up front, because the device will.
  */
 
 import { Crc32 } from "../usb/crc32";
 import { viewOf } from "../usb/protocol";
 
-/** The fixed container header (§1.1). */
+/** The fixed container header. */
 export const OBCU_HEADER_LEN = 64;
 
-/** The only header version readers accept (§1.1 — a version change is a hard reject). */
+/** The only header version readers accept: a version change is a hard reject. */
 const OBCU_HEADER_VERSION = 1;
 
-/**
- * The app-slot ceiling on the raw image (§1.1), and the container ceiling that follows from it.
- *
- * The L15 DK's number. The LM20's larger slot is a "future mechanical bump" per the spec, and this
- * page is not where that decision gets made — a device announces its own reject if the two ever
- * disagree, which is why the check here is a courtesy rather than the gate.
- */
-/** `sig_scheme` (§1.1, header bytes 48..50): 0 = unsigned/v1, 1 = Ed25519/v2. */
+/** `sig_scheme` (header bytes 48..50): 0 = unsigned, 1 = Ed25519. */
 const OBCU_SIG_SCHEME_NONE = 0;
 const OBCU_SIG_SCHEME_ED25519 = 1;
-/** Bytes of the Ed25519 signature trailer (§1.3). */
+/** Bytes of the Ed25519 signature trailer. */
 export const OBCU_SIG_LEN = 64;
 
 const OBCU_MAX_IMAGE_LEN = 1_480_000;
@@ -57,11 +43,11 @@ export interface UpdateImage {
     /** Bytes of raw image following the header. */
     readonly imageLen: number;
     readonly imageCrc32: number;
-    /** `1` for an Ed25519-signed v2 container (§1.1). */
+    /** `1` for an Ed25519-signed container. */
     readonly sigScheme: number;
     /** Bytes of signature trailer after the image — `64` for Ed25519, `0` unsigned. */
     readonly sigLen: number;
-    /** `64 + imageLen + sigLen` — what the `fwImage` transfer announces (§7.6). */
+    /** `64 + imageLen + sigLen` — what the transfer announces. */
     readonly containerLen: number;
 }
 
@@ -85,13 +71,12 @@ export class FirmwareFileError extends Error {
 }
 
 /**
- * Decode and fully verify an update container (everything but the signature itself — see the module
- * note).
+ * Decode and fully verify an update container, everything but the signature itself.
  *
  * Returns the container **exactly as it will be sent**: `64 + imageLen + sigLen` bytes, with any
  * trailing slack past that dropped. The signature trailer is part of the container and must survive
- * the trip; only FAT/download slack beyond it is dropped, because announcing bytes the device ignores
- * would make the transfer length disagree with the file for no benefit.
+ * the trip; only FAT or download slack beyond it is dropped, because announcing bytes the device
+ * ignores would make the transfer length disagree with the file for no benefit.
  */
 export function readUpdateImage(bytes: Uint8Array): { image: UpdateImage; container: Uint8Array } {
     if (bytes.length < OBCU_HEADER_LEN) {
@@ -124,9 +109,9 @@ export function readUpdateImage(bytes: Uint8Array): { image: UpdateImage; contai
             `That image is ${imageLen} bytes; the device's update slot holds ${OBCU_MAX_IMAGE_LEN}.`,
         );
     }
-    // §1.1: the scheme marker in v1's reserved bytes. §1.4: the device installs signed containers
-    // only, so an unsigned one is refused here rather than after the upload. This page cannot check
-    // the signature — the key is in the firmware — but it must know the trailer is there and send it.
+    // The device installs signed containers only, so an unsigned one is refused here rather than
+    // after the upload. This page cannot check the signature — the key is in the firmware — but it
+    // must know the trailer is there and send it.
     const sigScheme = view.getUint16(48, true);
     const sigLen = view.getUint16(50, true);
     if (sigScheme !== OBCU_SIG_SCHEME_ED25519 || sigLen !== OBCU_SIG_LEN) {
