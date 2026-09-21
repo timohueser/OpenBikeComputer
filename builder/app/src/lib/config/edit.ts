@@ -102,11 +102,9 @@ export function removeCategory(config: PackConfig, cat: string): string[] {
     return keys;
 }
 
-// --- export / import ---------------------------------------------------------
-
 /**
- * An exported file is a bare, CLI-usable packer config (the packer ignores
- * `_meta` and `disabled`) carrying provenance for re-import.
+ * An exported file is a bare, CLI-usable packer config (the packer ignores `_meta`
+ * and `disabled`) carrying provenance for re-import.
  */
 export function exportFile(env: WorkingEnvelope): string {
     const out: Record<string, unknown> = {

@@ -10,12 +10,12 @@ export class CatalogFormatError extends Error {
 
 export type Obj = Record<string, unknown>;
 
-/** Kebab id, as `OBCC_Spec.md` spells every id it constrains. */
+/** Kebab id, as the catalog spec spells every id it constrains. */
 export const KEBAB = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 /** Slash-separated region / extract id. */
 export const PATH_ID = /^[a-z0-9]+(-[a-z0-9]+)*(\/[a-z0-9]+(-[a-z0-9]+)*)*$/;
 export const SHA256 = /^[0-9a-f]{64}$/;
-/** §5: exactly one spelling — twenty characters, `Z`, no fractional seconds. */
+/** Exactly one spelling — twenty characters, `Z`, no fractional seconds. */
 export const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 export const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -63,14 +63,13 @@ export function bool(o: Obj, key: string, where: string): boolean {
 }
 
 /**
- * A URL field, under §3's rule: absolute `https://…`/`http://…`, or
- * root-relative `/…`.
+ * A URL field: absolute `https://…`/`http://…`, or root-relative `/…`.
  *
- * One implementation for every document that carries one — the root's satellite
- * refs, a region's `cells_url`, and every cell artifact in a band index — because
- * A second spelling of that rule is a second chance to accept a relative path. Resolution
- * itself is the client's, never a parser's: a parser reaching for a base URL
- * would be making up a fact the document does not contain.
+ * One implementation for every document that carries one — the root's satellite refs,
+ * a region's `cells_url`, and every cell artifact in a band index — because a second
+ * spelling of that rule is a second chance to accept a relative path. Resolution itself
+ * is the client's, never a parser's: a parser reaching for a base URL would be making up
+ * a fact the document does not contain.
  */
 export function urlStr(o: Obj, key: string, where: string): string {
     const v = str(o, key, where);
@@ -105,7 +104,7 @@ export function optionalStr(o: Obj, key: string, where: string, pattern?: RegExp
     return str(o, key, where, pattern);
 }
 
-/** A calendar date that exists — §5 rejects `2026-02-30` and `2023-02-29`. */
+/** A calendar date that exists: `2026-02-30` and `2023-02-29` are rejected. */
 export function realDate(spelling: string, where: string): void {
     const [y, m, d] = spelling.slice(0, 10).split("-").map(Number);
     const probe = new Date(Date.UTC(y, m - 1, d));
@@ -114,16 +113,16 @@ export function realDate(spelling: string, where: string): void {
     }
 }
 
-/** A §5 timestamp: the one spelling, and a date that exists. */
+/** A timestamp: the one spelling, and a date that exists. */
 export function instant(o: Obj, key: string, where: string): string {
     const v = str(o, key, where, INSTANT);
     realDate(v, `${where}.${key}`);
     return v;
 }
 
-/** Whole body in, parsed tree out. The seam OBCC §9 draws: a document is read
- *  entire and parsed as one JSON value, because JSON is self-delimiting and no
- *  proper prefix of a valid document parses. Nothing incremental, ever. */
+/** Whole body in, parsed tree out. A document is read entire and parsed as one JSON
+ *  value, because JSON is self-delimiting and no proper prefix of a valid document
+ *  parses. Nothing incremental, ever. */
 export function json(body: string, where: string): unknown {
     try {
         return JSON.parse(body);

@@ -1,18 +1,16 @@
 /**
- * The desktop host's ride library (E2, #912): `lib/device/library.ts`'s {@link RideLibrary} over six
- * Tauri commands.
+ * The desktop host's ride library: `lib/device/library.ts`'s {@link RideLibrary} over six Tauri
+ * commands.
  *
- * Deliberately thin. Everything that decides whether this feature is correct — what is fetched,
- * what is deduped, what is acked and *when* — is in `lib/device/library.ts`, over this interface,
- * where it is tested against a fake that is not a mock of these calls. What lives here is the
- * translation between the app's shapes and `serde`'s, and one decision worth stating:
+ * Deliberately thin. Everything that decides whether this feature is correct is in
+ * `lib/device/library.ts`, over this interface, where it is tested against a fake that is not a mock
+ * of these calls. What lives here is the translation between the app's shapes and `serde`'s, and one
+ * decision worth stating:
  *
  * **`import()` is awaited for its timing, not just its value.** The Rust side writes the ride
- * object, the GPX and the index, fsyncing each (and the directory entry), and only then resolves.
- * The ack that follows is therefore an ack of bytes that are on the disk. Nothing here may be made
- * "fire and forget" for responsiveness — that would turn a durability predicate into an optimistic
- * one, which is the single way this feature can lose a rider's ride (`obc-ble-interface-spec.md`
- * §4.4).
+ * object, the GPX and the index, fsyncing each and the directory entry, and only then resolves.
+ * Nothing here may be made "fire and forget" for responsiveness — that would turn a durability
+ * predicate into an optimistic one, which is the single way this feature can lose a rider's ride.
  */
 
 import { desktop, type RideIndexEntry } from "./invoke";
@@ -22,10 +20,10 @@ import type { LibraryRide, LibraryView, RideImport, RideLibrary } from "../devic
  * `RideIndexEntry` → `LibraryRide`.
  *
  * Convert the JSON decimal ObjectId to bigint. The wire carries `rideFile`/`gpxFile` as *basenames*
- * plus the joined absolute paths, because a basename is what the index stores (the GPX folder can
- * move) and a path is what `reveal()` needs — and joining them in JavaScript would have to guess a
- * path separator. Since the GPX-only split the two paths point at different roots: `ridePath` into
- * the internal archive under app data, `gpxPath` into the visible folder.
+ * plus the joined absolute paths, because a basename is what the index stores — the GPX folder can
+ * move — and a path is what `reveal()` needs, and joining them in JavaScript would have to guess a
+ * path separator. The two paths point at different roots: `ridePath` into the internal archive under
+ * app data, `gpxPath` into the visible folder.
  */
 function toRide(entry: RideIndexEntry): LibraryRide {
     return {
@@ -75,20 +73,16 @@ export function openRideLibrary(): RideLibrary {
                 crc32: ride.crc32,
                 track: ride.track.map((p) => [p[0], p[1]] as [number, number]),
                 // The one place this host pays the JSON tax on binary. A ride object is hundreds of
-                // kilobytes — two to three orders of magnitude below the map transfers that forced
-                // `usb_send_file`'s raw path — and it is written exactly once per ride, behind a
-                // transfer that already took longer than the encode will.
+                // kilobytes, written exactly once per ride, behind a transfer that already took
+                // longer than the encode will.
                 object: Array.from(ride.object),
                 gpx: ride.gpx,
             });
             return { ride: toRide(landed.ride), imported: landed.imported };
         },
 
-        // There is no `durableIds` any more. It existed to build the list of rides a pull would
-        // acknowledge to the device, and `FLAT_Store_Protocol.md` §5.2.2 retires that command from
-        // the cable — a possession ack changes no object, so it keeps the BLE surface it had. The
-        // Rust `rides_ack_set` command it called is now unreferenced from this host; removing it is
-        // a Rust change this slice does not make.
+        // USB carries no possession acknowledgement: it changes no object, so it keeps the BLE
+        // surface it had.
 
         async readObject(key: string): Promise<Uint8Array> {
             return new Uint8Array(await desktop.ridesRead(key));
