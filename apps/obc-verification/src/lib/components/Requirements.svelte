@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import type { Revision, Requirement, Catalog, CoverageProposalReview, ProblemAt } from '$lib/types';
+  import type { Revision, Requirement, Catalog, CoverageProposalReview, ProblemAt, RequirementSuggestionReview } from '$lib/types';
   import { ApiError, api, clone, date, message } from './api';
   import { parseRequirements, formatRequirements } from './markdown-requirements';
   import Markdown from './Markdown.svelte';
@@ -13,6 +13,7 @@
   import CoverageEditor from './CoverageEditor.svelte';
   import CoverageBadge from './CoverageBadge.svelte';
   import CoverageProposal from './CoverageProposal.svelte';
+  import Suggestions from './Suggestions.svelte';
   import { coverageDefinition, coverageSummary, linkEvidence, planBlank, planProblem } from '$lib/coverage';
   export let revision: Revision;
   export let catalog: Catalog;
@@ -34,6 +35,10 @@
   let history: Revision[] | null = null;
   let historical: Revision | null = null;
   let coverageProposals: CoverageProposalReview[] = [];
+  let suggestions: RequirementSuggestionReview[] = [];
+  let suggestionsOpen = false;
+  /** The suggestion whose body the panel shows. */
+  let expandedSuggestion = '';
   let rejecting = false;
   let deleting = false;
   let deleted: { requirement: Requirement; index: number }[] = [];
@@ -56,6 +61,9 @@
     return { name, requirements: list, active: inGate.length, covered: inGate.filter(r => coverageSummary(r).state === 'covered').length, expanded: !!query || !!open[name] };
   });
   $: pendingPlans = coverageProposals.filter(p => p.status === 'pending' && !accepted.includes(p.id));
+  $: openSuggestions = suggestions.filter(s => s.status === 'open');
+  /** Open suggestions for an existing requirement. A new requirement has none to mark. */
+  $: changeSuggestions = openSuggestions.filter(s => s.requirementId);
   /** Requirements with a proposal to approve, in sidebar order. */
   $: reviewQueue = requirements.filter(r => pendingPlans.some(p => p.requirementId === r.id)).map(r => r.id);
   $: reviewable = !coverageEditing && requirement ? pendingPlans.find(p => p.requirementId === requirement.id) : undefined;
@@ -215,13 +223,13 @@
       const approvals = accepted.length;
       revision = saved; requirements = clone(saved.requirements); accepted = []; deleted = []; deleting = false; edit = false; onsaved(saved);
       notice = `Revision r${saved.id} saved${approvals ? ` with ${approvals} ${approvals === 1 ? 'approval' : 'approvals'}` : ''}. Existing candidates keep their original revision.`;
-      await loadProposals();
+      await loadProposals(); await loadSuggestions();
     } catch (e) { fail(e); } finally { busy = false; }
   }
   async function refresh() {
     if (dirty && !confirm(accepted.length ? `Discard this draft? ${accepted.length} approved ${accepted.length === 1 ? 'proposal stays' : 'proposals stay'} pending.` : 'Discard this draft and load the latest saved revision?')) return;
     busy = true; error = '';
-    try { const versions = await api<Revision[]>('/api/revisions'); const latest = versions.sort((a,b) => b.id - a.id)[0]; if (latest) { revision = latest; requirements = clone(latest.requirements); query = ''; if (!requirements.some(r => r.id === selected)) selected = requirements[0]?.id || ''; coverageEditing = false; edit = false; accepted = []; deleted = []; deleting = false; onsaved(latest); reveal(selected); } await loadProposals(); }
+    try { const versions = await api<Revision[]>('/api/revisions'); const latest = versions.sort((a,b) => b.id - a.id)[0]; if (latest) { revision = latest; requirements = clone(latest.requirements); query = ''; if (!requirements.some(r => r.id === selected)) selected = requirements[0]?.id || ''; coverageEditing = false; edit = false; accepted = []; deleted = []; deleting = false; onsaved(latest); reveal(selected); } await loadProposals(); await loadSuggestions(); }
     catch (e) { fail(e); } finally { busy = false; }
   }
   async function refreshCatalog() {
@@ -232,7 +240,18 @@
   async function loadProposals() {
     coverageProposals = await api<CoverageProposalReview[]>('/api/coverage-proposals');
   }
-  onMount(() => { loadProposals().catch(e => { error = message(e); }); });
+  async function loadSuggestions() {
+    suggestions = await api<RequirementSuggestionReview[]>('/api/requirement-suggestions');
+  }
+  onMount(() => { Promise.all([loadProposals(), loadSuggestions()]).catch(e => { error = message(e); }); });
+  /** Accepting is the owner's acknowledgment that the requirement is written; neither answer touches the draft. */
+  async function decideSuggestion(id: string, accept: boolean, feedback = '') {
+    if (busy) return false;
+    busy = true; error = '';
+    try { await api(`/api/requirement-suggestions/${id}`, 'POST', { accept, ...(feedback ? { feedback } : {}) }); return true; }
+    catch (e) { fail(e); return false; }
+    finally { busy = false; await loadSuggestions().catch(() => { /* Keep the decision error. */ }); }
+  }
   /**
    * Approving applies the proposal's plan and procedures to the draft. Nothing is recorded until the
    * revision is saved, so a round of reviews is one revision instead of one per proposal.
@@ -271,7 +290,7 @@
   }
 </script>
 <svelte:window on:keydown={(event) => { if (edit) editorKeys(event); else reviewKeys(event); }} />
-<div class="page-heading row"><div><div class="eyebrow">Product verification</div><h1>Requirements</h1><p class="muted">What the product must do, and the tests that show it does.</p></div><div class="actions"><details class="menu"><summary class="button">More ▾</summary><div class="menu-list"><label class="menu-item">Import Markdown…<input class="visually-hidden" type="file" accept=".md,.markdown,text/markdown,text/plain" disabled={busy} on:change={importMarkdown} /></label><button class="menu-item" on:click={exportMarkdown}>Export Markdown</button><button class="menu-item" on:click={() => manageGroups = !manageGroups}>Manage groups</button><button class="menu-item" on:click={showHistory}>Revision history</button></div></details>{#if reviewQueue.length}<button class="review-queue" disabled={busy} title="Go to the next requirement with a proposal to review" on:click={nextReview}><span class="review-count">{reviewQueue.length}</span>{reviewQueue.length === 1 ? 'proposal to review' : 'proposals to review'}</button>{/if}<button class="primary" disabled={busy} on:click={create}>+ Requirement</button></div></div>
+<div class="page-heading row"><div><div class="eyebrow">Product verification</div><h1>Requirements</h1><p class="muted">What the product must do, and the tests that show it does.</p></div><div class="actions"><details class="menu"><summary class="button">More ▾</summary><div class="menu-list"><label class="menu-item">Import Markdown…<input class="visually-hidden" type="file" accept=".md,.markdown,text/markdown,text/plain" disabled={busy} on:change={importMarkdown} /></label><button class="menu-item" on:click={exportMarkdown}>Export Markdown</button><button class="menu-item" on:click={() => manageGroups = !manageGroups}>Manage groups</button><button class="menu-item" on:click={showHistory}>Revision history</button></div></details>{#if reviewQueue.length}<button class="review-queue" disabled={busy} title="Go to the next requirement with a proposal to review" on:click={nextReview}><span class="review-count">{reviewQueue.length}</span>{reviewQueue.length === 1 ? 'proposal to review' : 'proposals to review'}</button>{/if}{#if openSuggestions.length || suggestionsOpen}<button class="suggest-toggle" aria-pressed={suggestionsOpen} disabled={busy} title="What agents suggest; you write the requirement" on:click={() => suggestionsOpen = !suggestionsOpen}><span class="review-count">{openSuggestions.length}</span>Suggestions</button>{/if}<button class="primary" disabled={busy} on:click={create}>+ Requirement</button></div></div>
 {#if error}<div class="alert error" role="alert"><span class="grow">{error}</span>{#if errorAt?.requirementId && requirements.some(r => r.id === errorAt?.requirementId)}<button class="text-button" disabled={busy} on:click={showProblem}>Show {errorAt.requirementId}{errorAt.criterion ? ` · criterion ${errorAt.criterion}` : ''}</button>{/if}<button class="text-button" disabled={busy} on:click={refresh}>Reload saved revision</button></div>{/if}
 {#if notice}<div class="alert success" role="status">{notice}</div>{/if}
 {#if deleted.length}<div class="alert warning" role="status">Deleted {deleted[deleted.length - 1].requirement.id} from this draft. Save revision to apply. <button class="text-button" disabled={busy} on:click={restoreRequirement}>Undo deletion</button></div>{/if}
@@ -293,12 +312,12 @@
     </div>{/if}
   </section>
 {/if}
-<div class="workbench"><aside><div class="sidebar-scroll">
+<div class="workbench" class:with-suggestions={suggestionsOpen}><aside><div class="sidebar-scroll">
   <label class="search-label">Find a requirement<input type="search" value={query} on:input={(event) => setQuery(event.currentTarget.value)} placeholder="ID, title, text, or group…" /></label>
   <div class="muted small sidebar-caption">{query ? `${filtered.length} of ${requirements.length} match` : `${covered} of ${active.length} covered${reviewQueue.length ? ` · ${reviewQueue.length} to review` : ''}`} · r{revision.id}</div>
   {#each sections as section (section.name)}
     <button type="button" class="group-heading" aria-expanded={section.expanded} on:click={() => open = { ...open, [section.name]: !section.expanded }}><span class="chevron" aria-hidden="true">{section.expanded ? '▾' : '▸'}</span><span class="group-name">{section.name || 'Ungrouped'}</span>{#if section.active}<span class="group-count">{section.covered} of {section.active} covered</span>{/if}</button>
-    {#if section.expanded}{#each section.requirements as r (r.id)}<button id={'entry-' + r.id} class="entry" class:selected={selected === r.id} on:click={() => select(r.id)}><span class="eyebrow">{r.id}</span><strong>{r.title || 'Untitled requirement'}</strong><span class="entry-status"><CoverageBadge requirement={r} />{#if reviewQueue.includes(r.id)}<span class="entry-flag proposal">proposal</span>{/if}</span><RequirementLabels requirement={r} /></button>{/each}{/if}
+    {#if section.expanded}{#each section.requirements as r (r.id)}<button id={'entry-' + r.id} class="entry" class:selected={selected === r.id} on:click={() => select(r.id)}><span class="eyebrow">{r.id}</span><strong>{r.title || 'Untitled requirement'}</strong><span class="entry-status"><CoverageBadge requirement={r} />{#if reviewQueue.includes(r.id)}<span class="entry-flag proposal">proposal</span>{/if}{#if changeSuggestions.some(s => s.requirementId === r.id)}<span class="entry-flag suggestion">suggestion</span>{/if}</span><RequirementLabels requirement={r} /></button>{/each}{/if}
   {:else}<p class="muted small">{requirements.length ? 'No matching requirements.' : 'Start with one important product promise, or import a Markdown draft.'}</p>{/each}
 </div></aside>
 <section class="detail">
@@ -307,7 +326,9 @@
   {#if edit}<div class="section"><label>Title<input id="requirement-title" bind:this={titleField} bind:value={requirement.title} on:input={() => requirements = [...requirements]} placeholder="A clear product promise" /></label><ProseCheck text={requirement.title} language="plaintext" field={titleField} onfix={setTitle} /><GroupPicker label="Group" hint="Optional" value={requirement.group || ''} {groups} disabled={busy} onchange={setGroup} /><MarkdownField label="Requirement" bind:value={requirement.statement} on:input={() => requirements = [...requirements]} /><div class="section"><h3>Labels</h3><RequirementLabels {requirement} editable disabled={busy} onchange={update} /><p class="small muted">Click a label to apply or remove it. An incomplete definition blocks publication and cannot be excepted. Implementation needed blocks publication unless an administrator accepts a candidate exception. Excluded requirements stay visible outside release verification. Existing candidates never change.</p></div><div class="row"><div class="actions"><button on:click={() => edit = false}>Done editing</button><button class="primary" disabled={busy} title="Ctrl+Enter or ⌘+Enter" on:click={create}>Done, add next</button></div><div class="actions"><span class="small muted">Position in group</span><button class="text-button" disabled={busy} on:click={() => move(-1)}>↑ Move up</button><button class="text-button" disabled={busy} on:click={() => move(1)}>↓ Move down</button><button class="text-button danger" disabled={busy} on:click={() => deleting = !deleting}>Delete requirement</button></div></div>
     {#if deleting}<div class="alert warning"><strong>Delete {requirement.id} · {requirement.title || 'Untitled requirement'}?</strong><p>This removes the requirement and its {requirement.tests.length} tests from the draft. Save revision to apply. Existing revisions and release candidates stay unchanged.</p><div class="actions"><button class="danger" disabled={busy} on:click={removeRequirement}>Delete from draft</button><button on:click={() => deleting = false}>Keep requirement</button></div></div>{/if}
   </div>
-  {:else}<h2 class="requirement-title">{requirement.title || 'Untitled requirement'}</h2><div class="requirement-statement"><Markdown text={requirement.statement} /></div>{/if}
+  {:else}<h2 class="requirement-title">{requirement.title || 'Untitled requirement'}</h2><div class="requirement-statement"><Markdown text={requirement.statement} /></div>
+    {@const suggested = changeSuggestions.filter(s => s.requirementId === requirement.id)}
+    {#if suggested.length}<div class="on-req">{suggested.length} suggested {suggested.length === 1 ? 'change' : 'changes'} · <button on:click={() => { suggestionsOpen = true; expandedSuggestion = suggested[0].id; }}>Show in Suggestions</button></div>{/if}{/if}
   {@const saved = revision.requirements.find(r => r.id === requirement.id)}
   {@const changed = !saved || coverageDefinition(saved) !== coverageDefinition(requirement)}
   {@const plans = pendingPlans.filter(p => p.requirementId === requirement.id)}
@@ -327,6 +348,15 @@
     {/if}
   </section>
 {:else}<div class="empty"><h2>{requirements.length ? 'No matching requirements' : 'Make the important promises explicit.'}</h2><p class="muted">{requirements.length ? 'Clear your search or choose another group.' : 'Write a measurable requirement, then define the checks that provide evidence. You can also import a Markdown draft.'}</p><button class="primary" disabled={busy} on:click={create}>Create requirement</button></div>{/if}
-</section></div>
+</section>
+{#if suggestionsOpen}<Suggestions {suggestions} {requirements} revisionId={revision.id} {busy} bind:expanded={expandedSuggestion} onselect={select} onclose={() => suggestionsOpen = false} ondecide={decideSuggestion} />{/if}</div>
 {#if dirty}<div class="savebar row"><span class="small">{dirty ? 'You have unsaved changes' : `Saved revision r${revision.id}`}{#if accepted.length}<strong> · {accepted.length} approved {accepted.length === 1 ? 'proposal' : 'proposals'}</strong>{/if} <span class="muted">· Candidates use saved revisions only.</span></span><div class="actions">{#if dirty}<button disabled={busy} on:click={refresh}>Discard draft</button>{/if}<button class="primary" disabled={busy || !dirty || procedureOpen} on:click={save}>{busy ? 'Saving…' : 'Save revision'}</button></div></div>{/if}
-<style>.alert .grow { flex: 1; min-width: 200px; }</style>
+<style>
+  .alert .grow { flex: 1; min-width: 200px; }
+  .workbench.with-suggestions { grid-template-columns: 240px minmax(0, 1fr) 360px; }
+  .on-req { display: inline-flex; align-items: center; gap: 8px; margin-top: 14px; padding: 6px 10px; font-size: 12px; color: var(--slate-strong); background: var(--slate-bg); border: 1px solid var(--slate-line); border-radius: 6px; }
+  .on-req button { padding: 2px 0; font-size: 12px; font-weight: 600; color: var(--slate); background: transparent; border-color: transparent; text-decoration: underline; text-underline-offset: 3px; }
+  @media (max-width: 1100px) { .workbench.with-suggestions { grid-template-columns: 210px minmax(0, 1fr) 320px; } }
+  @media (max-width: 900px) { .workbench.with-suggestions { grid-template-columns: minmax(0, 1fr) 320px; } .workbench.with-suggestions aside { display: none; } }
+  @media (max-width: 650px) { .workbench.with-suggestions { grid-template-columns: 1fr; } }
+</style>
