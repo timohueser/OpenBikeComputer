@@ -176,6 +176,10 @@ describe("pricing a region from the root (OBCC §6)", () => {
         const ledger = ledgerForRegion(exampleCatalog, exampleCatalog.regions[0]);
         expect(ledger.terrain?.attribution).toBe(exampleCatalog.terrain!.attribution);
         expect(ledger.terrain?.attribution).toMatch(/Copernicus/);
+        // §13.5 covers every listed reference too, so the ledger carries them all
+        // the way to the card rather than leaving them in the root document.
+        expect(ledger.terrain?.references).toEqual(exampleCatalog.terrain!.references);
+        expect(ledger.terrain?.references.map((r) => r.attribution)).toContain("© swisstopo");
     });
 
     it("prices a terrain-less catalog with no elevation line at all (§13)", () => {
