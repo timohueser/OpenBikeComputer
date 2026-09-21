@@ -1,10 +1,8 @@
-//! Merging the POI section and the hours pool
-//! ([`OBCA_Spec.md`](../../../specs/OBCA_Spec.md) §4.5).
+//! Merging the POI section and the hours pool.
 //!
-//! POI records carry **absolute** coordinates (`OBCM_Spec.md` §7.3), so unlike geometry they cannot
-//! be relocated — the theorem says nothing about them (§2.4). They are therefore re-collected,
-//! de-duplicated, re-binned into fresh per-category quadtrees over the assembly bbox, and their
-//! hours pool rebuilt with every `HoursRef` remapped.
+//! POI records carry absolute coordinates, so unlike geometry they cannot be relocated. They are
+//! re-collected, de-duplicated, re-binned into fresh per-category quadtrees over the assembly bbox,
+//! and their hours pool rebuilt with every `HoursRef` remapped.
 //!
 //! Records are 64 bytes and a whole country holds a few tens of thousands, so this is the cheap
 //! rebuild. The expensive one is the nav graph next door.
@@ -23,7 +21,7 @@ use crate::input::Cell;
 use crate::qtree::{self, Point};
 use crate::{Error, Result};
 
-/// Directory length: count byte + shared chunk size + one entry per category + the v7 pool fields.
+/// Directory length: count byte + shared chunk size + one entry per category + the pool fields.
 pub const POI_DIR_LEN: usize = 1 + 2 + POI_CATEGORY_COUNT as usize * POI_CAT_ENTRY_LEN + 4 + 2;
 
 fn directory_len(categories: usize) -> usize {
@@ -36,7 +34,7 @@ pub struct MergedPoi {
     pub lat: i32,
     pub lon: i32,
     pub subtype: u8,
-    /// Bytes 9..34 of the source record (`Name Len` + the 24-byte name), copied verbatim so the
+    /// Bytes 9..34 of the source record (`Name Len` plus the 24-byte name), copied verbatim so the
     /// assembler never re-folds a name.
     name: [u8; 25],
     /// Service hours reference, or the original signed summit height.
@@ -59,8 +57,8 @@ impl Point for MergedPoi {
 pub struct MergedPois {
     pub pois: Vec<MergedPoi>,
     pub pool: Vec<[u8; POI_HOURS_BLOB_LEN]>,
-    /// Records dropped as duplicates. Only operator error can produce one (§3.6 gives each POI
-    /// exactly one cell), so a non-zero count is worth reporting.
+    /// Records dropped as duplicates. Only operator error can produce one, since each POI has
+    /// exactly one cell, so a non-zero count is worth reporting.
     pub duplicates: usize,
 }
 
@@ -92,15 +90,15 @@ fn has_hours(subtype: u8) -> bool {
 }
 
 /// Collect every POI record from `cells`, deduplicate by `(lat, lon, subtype)`, and rebuild the
-/// hours pool with `HoursRef` remapped (§4.5.1–§4.5.3).
+/// hours pool with `HoursRef` remapped.
 ///
-/// Pool order is content-derived (blob bytes ascending), not first-seen, so two assemblies of the
-/// same cells produce the same bytes whatever order the cells arrived in.
+/// Pool order is content-derived, by blob bytes ascending, rather than first-seen, so two
+/// assemblies of the same cells produce the same bytes whatever order the cells arrived in.
 pub fn merge(cells: &[&Cell<'_>]) -> Result<MergedPois> {
     /// One deduplicated record's payload: its name bytes and the hours blob it referenced.
     type Payload = ([u8; 25], Option<[u8; POI_HOURS_BLOB_LEN]>, u16, i32, i32, u8, obc_formats::obcm::PoiMetadata);
-    // (lat, lon, subtype) → payload. A BTreeMap keeps the output ordered by the §4.5.5 key without a
-    // separate sort.
+    // (lat, lon, subtype) → payload. A BTreeMap keeps the output ordered by the record key without
+    // a separate sort.
     let mut by_key: BTreeMap<obc_formats::obcm::SourceId, Payload> = BTreeMap::new();
     let mut duplicates = 0usize;
 
@@ -187,7 +185,7 @@ pub fn merge(cells: &[&Cell<'_>]) -> Result<MergedPois> {
     Ok(MergedPois { pois, pool, duplicates })
 }
 
-/// Read one cell's hours pool (`OBCM_Spec.md` §7.5).
+/// Read one cell's hours pool.
 pub(crate) fn read_hours_pool(cell: &Cell<'_>) -> Result<Vec<[u8; POI_HOURS_BLOB_LEN]>> {
     let count = cell.pois.hours_pool_count;
     if count == 0 {
@@ -206,15 +204,15 @@ struct Block {
     chunk_count: u32,
 }
 
-/// The §7 section, **already laid out** — everything but the absolute offsets, so a shard's size is
+/// The POI section, already laid out — everything but the absolute offsets, so a shard's size is
 /// known before its header is written.
 pub struct PoiSection {
     blocks: Vec<Block>,
     pool: Vec<[u8; POI_HOURS_BLOB_LEN]>,
     len: usize,
-    /// Records the chunk-capacity guard refused (§7.3). Only co-located POIs past the quadtree's
-    /// recursion floor can produce one, and dedup makes that effectively impossible — but a drop is
-    /// data loss, so it is counted and surfaced rather than truncated into the chunk.
+    /// Records the chunk-capacity guard refused. Only co-located POIs past the quadtree's recursion
+    /// floor can produce one, and dedup makes that effectively impossible — but a drop is data loss,
+    /// so it is counted and surfaced rather than truncated into the chunk.
     dropped: usize,
 }
 
@@ -239,9 +237,9 @@ impl PoiSection {
     }
 }
 
-/// Bin the merged POIs into fresh per-category quadtrees over the **assembly** bbox and chunk them
-/// at the directory's shared `Chunk Size` (§4.5.4). Records inside a chunk come out ordered by
-/// `(lat, lon, subtype)` — the merge's own key — so the output is deterministic (§4.5.5).
+/// Bin the merged POIs into fresh per-category quadtrees over the assembly bbox and chunk them at
+/// the directory's shared `Chunk Size`. Records inside a chunk come out ordered by the merge's own
+/// `(lat, lon, subtype)` key, so the output is deterministic.
 pub fn layout(merged: &MergedPois, global_bbox: UBox) -> Result<PoiSection> {
     let mut category_ids: Vec<_> = obc_formats::obcm::PoiCategory::ALL.iter().map(|c| c.id()).collect();
     if merged.pois.iter().any(|p| p.subtype == SUMMIT_SUBTYPE_ID) {
@@ -278,22 +276,21 @@ pub fn layout(merged: &MergedPois, global_bbox: UBox) -> Result<PoiSection> {
         return Err(Error::Capacity(format!("{dropped} POIs exceed the spatial leaf capacity")));
     }
     let mut section = PoiSection { blocks, pool: merged.pool.clone(), len: 0, dropped };
-    // The section's own length, measured by *laying it out* over a cursor that discards its bytes —
-    // the same walk the write runs, so the size a shard is planned against and the size it turns out
-    // to be cannot be two numbers.
+    // The section's own length, measured by laying it out over a cursor that discards its bytes —
+    // the same walk the write runs, so the size a shard is planned against and the size it turns
+    // out to be cannot be two numbers.
     //
     // Byte `0` is as good a base as any: the section begins on a unit boundary wherever it lands,
     // every structure inside it is placed at the next boundary past the one before, and 512 is a
-    // multiple of `U` at every legal scale (§1.1) — so no gap here depends on the absolute offset,
-    // which is the property the planner needs and used to have to be told.
+    // multiple of `U` at every legal scale — so no gap here depends on the absolute offset.
     section.len =
         place(0, |w| walk(&section, &vec![0u8; directory_len(section.blocks.len())], w).map(|_| w.at()))? as usize;
     Ok(section)
 }
 
 /// Write the section through `w`, wherever the cursor already is: directory, then each category's
-/// index + chunks, then the hours pool — with §1.2's `0xFF` filler wherever a scaled offset has to
-/// name what comes next.
+/// index and chunks, then the hours pool, with `0xFF` filler wherever a scaled offset has to name
+/// what comes next.
 pub fn emit(section: &PoiSection, w: &mut MapWriter<'_>) -> Result<()> {
     let start = w.at();
     let dir = place(start, |p| walk(section, &vec![0u8; directory_len(section.blocks.len())], p))?.encode()?;
@@ -302,7 +299,7 @@ pub fn emit(section: &PoiSection, w: &mut MapWriter<'_>) -> Result<()> {
     Ok(())
 }
 
-/// The §7.1 directory's contents, as a walk of the payload behind it resolved them.
+/// The directory's contents, as a walk of the payload behind it resolved them.
 struct Directory {
     entries: Vec<(u8, u32, u32, u32)>,
     hours_pool_offset: u64,
@@ -327,16 +324,16 @@ impl Directory {
     }
 }
 
-/// The one layout §7 has, and the one place its boundaries are.
+/// The one layout the POI section has, and the one place its boundaries are.
 ///
-/// The directory states offsets into the payload behind it, so this is run **twice**: once over a
-/// cursor that keeps nothing but its position, with a placeholder directory, to resolve them, and
-/// once with the real directory to write. Two runs of one walk, so nothing is staged and no
-/// projection can disagree with an emission.
+/// The directory states offsets into the payload behind it, so this runs twice: once over a cursor
+/// that keeps nothing but its position, with a placeholder directory, to resolve them, and once
+/// with the real directory to write. Two runs of one walk, so nothing is staged and no projection
+/// can disagree with an emission.
 ///
-/// Every category gets a directory entry, empty or not — a map with no POIs writes seven empty entries
-/// and never a zero offset (§7.1). An empty category's `Index Offset` still points at where its
-/// zero-length index would start, so it is a boundary too.
+/// Every category gets a directory entry, empty or not, and never a zero offset. An empty
+/// category's `Index Offset` still points at where its zero-length index would start, so it is a
+/// boundary too.
 fn walk(section: &PoiSection, directory: &[u8], w: &mut MapWriter<'_>) -> Result<Directory> {
     debug_assert_eq!(directory.len(), directory_len(section.blocks.len()));
     debug_assert_eq!(w.at(), crate::emit::align_up(w.at()), "the POI section starts on a boundary");
@@ -346,13 +343,13 @@ fn walk(section: &PoiSection, directory: &[u8], w: &mut MapWriter<'_>) -> Result
     for b in &section.blocks {
         entries.push((b.cat_id, scaled(w.begin_section()?)?, b.node_count, b.chunk_count));
         w.put(&b.index)?;
-        // §7.1's one rounding step: a category's chunks begin at
+        // The one rounding step: a category's chunks begin at
         // `align_up(Index Offset * U + Index Node Count * 4, U)`.
         w.begin_section()?;
         w.put(&b.chunks)?;
     }
     // The chunk runs are whole 512-byte strides from an aligned start, so the cursor is already a
-    // boundary here and this gap is empty in practice — written from the rule rather than from that
+    // boundary here and this gap is empty in practice. Written from the rule rather than from that
     // observation, because the rule is what the reader resolves.
     let hours_pool_offset = w.begin_section()?;
     w.put(&(section.pool.len() as u16).to_le_bytes())?;
@@ -364,7 +361,7 @@ fn walk(section: &PoiSection, directory: &[u8], w: &mut MapWriter<'_>) -> Result
     Ok(Directory { entries, hours_pool_offset, pool_blobs: section.pool.len() })
 }
 
-/// The 64-byte §7.3 record. Name bytes travel verbatim from the source record; only `HoursRef` is
+/// The 64-byte POI record. Name bytes travel verbatim from the source record; only `HoursRef` is
 /// new.
 fn pack_record(p: &MergedPoi) -> [u8; POI_RECORD_LEN] {
     let mut rec = [CHUNK_END; POI_RECORD_LEN];
@@ -377,7 +374,7 @@ fn pack_record(p: &MergedPoi) -> [u8; POI_RECORD_LEN] {
     rec
 }
 
-/// The section a shard with no POIs writes: seven empty categories and an empty pool (§5.1/§7.1).
+/// The section a shard with no POIs writes: seven empty categories and an empty pool.
 pub fn empty_layout(global_bbox: UBox) -> Result<PoiSection> {
     layout(&MergedPois { pois: Vec::new(), pool: Vec::new(), duplicates: 0 }, global_bbox)
 }
@@ -386,8 +383,8 @@ pub fn empty_layout(global_bbox: UBox) -> Result<PoiSection> {
 mod tests {
     use super::*;
 
-    /// The section as one `Vec` — the shape these pins want, which the writer itself no longer has
-    /// (it streams into whatever cursor the map's write hands it).
+    /// The section as one `Vec` — the shape these pins want, which the writer itself does not have,
+    /// because it streams into whatever cursor the map's write hands it.
     fn serialize(section: &PoiSection, at: usize) -> Vec<u8> {
         let mut bytes = Vec::new();
         {
@@ -458,13 +455,13 @@ mod tests {
         assert_eq!(services.summit_bytes(), 0);
     }
 
-    /// The section a shard with no POIs writes, at a unit-aligned offset — the seven empty entries,
-    /// and v14's filler.
+    /// The section a shard with no POIs writes, at a unit-aligned offset: the seven empty entries
+    /// and the filler.
     ///
-    /// The **gap** assertions are the point of the second half. Every directory field here would
-    /// read correctly with the `0xFF` run written as zeros, or written one byte short and the
-    /// hours pool one byte early — the offsets are self-consistent either way — so the pin has to
-    /// name the fill byte and the run's exact length, or it passes on a file no reader agrees with.
+    /// The gap assertions are the point of the second half. Every directory field here would read
+    /// correctly with the `0xFF` run written as zeros, or written one byte short and the hours pool
+    /// one byte early — the offsets are self-consistent either way — so the pin names the fill byte
+    /// and the run's exact length.
     #[test]
     fn an_empty_section_is_a_full_directory_with_its_filler() {
         const AT: usize = 96; // a unit boundary, which is all a section offset may be
@@ -486,7 +483,6 @@ mod tests {
         assert_eq!(pool_off, dir_end);
         assert_eq!(u16::from_le_bytes(bytes[POI_DIR_LEN - 2..POI_DIR_LEN].try_into().unwrap()), 0);
 
-        // --- the gaps, as bytes ---
         // 87 bytes of directory, then filler to the boundary the offsets above name.
         assert_eq!(POI_DIR_LEN, 100, "the §7.1 directory is the width every gap here is measured from");
         let dir_gap = dir_end - AT - POI_DIR_LEN;

@@ -80,9 +80,8 @@ def download_cell(entry: dict, dest: Path) -> tuple[str, int]:
     got = hashlib.sha256(raw).hexdigest()
     if got != want:
         raise SystemExit(f"error: {entry['url']} hashes to {got}, the catalog says {want}")
-    # Write through a temporary so an interrupted run never leaves a short file that a later
-    # resume would have to distrust — the digest check above would catch it, but only after
-    # re-hashing gigabytes.
+    # Write through a temporary so an interrupted run never leaves a short file that a later resume
+    # would have to distrust.
     tmp = dest.with_suffix(dest.suffix + ".part")
     tmp.write_bytes(raw)
     os.replace(tmp, dest)
@@ -171,7 +170,7 @@ def main() -> int:
     }
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "cells.json").write_text(json.dumps(sidecar, indent=2) + "\n")
-    # An OBCC v2 root, which is one of the two shapes `Schema::parse` accepts.
+    # A catalog root, which is one of the two shapes `Schema::parse` accepts.
     (args.out / "schema.json").write_text(json.dumps({"schema": schema}, indent=2) + "\n")
 
     skins = catalog.get("skins", [])

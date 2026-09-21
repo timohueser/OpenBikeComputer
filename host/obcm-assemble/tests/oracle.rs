@@ -1,24 +1,19 @@
-//! **The differential oracle** — #1024's acceptance bar, and the tripwire the epic asked for.
-//!
-//! One synthetic extract, packed two ways over the *same* snapped bbox:
+//! The differential oracle: one synthetic extract, packed two ways over the same snapped bbox.
 //!
 //! - `pack(X)` — the monolithic path, through the real packer: one quadtree per LOD over the whole
 //!   box, one nav graph, one POI section.
 //! - `assemble(cut(X))` — the cell path: the real cutter writes per-band cell artifacts, and this
 //!   crate grafts them back together.
 //!
-//! The two files have *different bytes on purpose* (different quadtrees, different chunk layout,
-//! different node ids), so the comparison is at the level a rider can see:
+//! The two files have different bytes on purpose, so the comparison is at the level a rider can
+//! see. The real renderer draws both into the real device framebuffer across a matrix of viewports,
+//! including ones straddling a cell seam and ones at a zoom-band transition, and the frames must
+//! agree; the real A\* plans between endpoint pairs whose straight line crosses a seam, and the two
+//! maps must agree on success and on length.
 //!
-//! 1. **Pixels.** The real renderer draws both into the real device framebuffer across a matrix of
-//!    viewports — including ones straddling a cell seam and ones sitting exactly at a zoom-band
-//!    transition — and the frames must agree.
-//! 2. **Routes.** The real A\* plans between endpoint pairs whose straight line crosses a seam, and
-//!    the two maps must agree on success and on length.
-//!
-//! What the oracle is *for*: a mis-relocated index node, a chunk base off by one, a seam junction
-//! that failed to unify, an island pruned that should not have been — every one of those shows up
-//! here as a pixel or a route that moved, in a test that says which.
+//! A mis-relocated index node, a chunk base off by one, a seam junction that failed to unify, an
+//! island pruned that should not have been — every one shows up here as a pixel or a route that
+//! moved, in a test that says which.
 
 use obc_elevation::NullElevation;
 use std::path::{Path, PathBuf};
@@ -53,9 +48,7 @@ use obcm_assemble::{assemble, CellInput, MemorySource, MemoryStore, NoClock, Opt
 #[path = "support/landmarks.rs"]
 mod landmark_fixture;
 
-// --- the fixture ------------------------------------------------------------------------------
-
-/// The `2^18` lon line between cells `j = 1052` and `j = 1053` — OBCA §7's worked-example seam.
+/// The `2^18` lon line between cells `j = 1052` and `j = 1053` — the spec's worked-example seam.
 const SEAM: i64 = 7_602_176;
 /// The next `2^18` lon line east, which is simultaneously a `2^19` line.
 const SEAM_E: i64 = 7_864_320;
@@ -64,16 +57,16 @@ const SEAM_N: i64 = 47_448_064;
 /// A latitude comfortably inside cell row 1204.
 const LAT: i64 = 47_300_000;
 
-/// A three-level ladder with **no simplification and no culling**: the cutter's clipped vertices are
-/// then exactly the crossing coordinates, so any pixel difference is a real one rather than a
-/// tolerance artefact. `chunk_size` is deliberately small so the quadtrees genuinely subdivide and
-/// the graft has real subtrees to relocate.
-/// `highway.path` is deliberately **dashed with a `color2`**: the two OBCM style-record flag bits
-/// (`0x04` / `0x08`) plus the trailing `uint16` are the part of §4.7's stamp a plain style never
-/// exercises, and a skin that lost them would ship a map whose lines are all solid. The feature that
-/// uses it is placed strictly inside one cell, because dash **phase** is one of the two cosmetic
-/// costs OBCA §2.4 books against cutting at a cell boundary — a dashed line across a seam would
-/// legitimately differ between the two paths and turn the pixel oracle into a fuzz test.
+/// A three-level ladder with no simplification and no culling, so the cutter's clipped vertices are
+/// exactly the crossing coordinates and any pixel difference is a real one rather than a tolerance
+/// artefact. `chunk_size` is deliberately small so the quadtrees genuinely subdivide and the graft
+/// has real subtrees to relocate.
+///
+/// `highway.path` is deliberately dashed with a `color2`: the two style-record flag bits plus the
+/// trailing `uint16` are the part of the stamp a plain style never exercises, and a skin that lost
+/// them would ship a map whose lines are all solid. The feature that uses it is placed strictly
+/// inside one cell, because dash phase is one of the two cosmetic costs of cutting at a cell
+/// boundary — a dashed line across a seam would legitimately differ between the two paths.
 const CONFIG: &str = r#"{
     "lods": [
         {"max_mpp": null, "simplify": 0},
@@ -138,11 +131,10 @@ fn rect(style_id: u8, min_lod: usize, lat0: i64, lon0: i64, lat1: i64, lon1: i64
     }
 }
 
-/// A polygon **with a hole** — the `FEATURE_FLAG_HOLES` path of `OBCM_Spec.md` §6, which is the one
-/// feature shape whose chunk bytes carry a ring table. It is copied verbatim like everything else,
-/// so what this proves is that the graft never has to understand it; but a hole is also the shape a
-/// clip at a cell edge most easily gets wrong, so the fixture has to contain one for the "every
-/// feature of every chunk decodes" half of §4.8 to mean anything.
+/// A polygon with a hole — the one feature shape whose chunk bytes carry a ring table. It is copied
+/// verbatim like everything else, so what this proves is that the graft never has to understand it;
+/// but a hole is also the shape a clip at a cell edge most easily gets wrong, so the fixture has to
+/// contain one for "every feature of every chunk decodes" to mean anything.
 fn rect_with_hole(
     style_id: u8,
     min_lod: usize,
@@ -162,7 +154,7 @@ fn rect_with_hole(
 }
 
 /// A routable way from explicit `(osm node id, (lat, lon))` vertices. The ids are explicit because
-/// the packer's graph builder identifies a junction by **OSM node id**: two ways meeting at one
+/// the packer's graph builder identifies a junction by OSM node id: two ways meeting at one
 /// coordinate but naming different ids are not connected, and a fixture that got that wrong would
 /// test the router's failure mode rather than the assembler's seams.
 fn way(kind: u8, pts: &[(i64, (i64, i64))]) -> RoutableWay {
@@ -193,8 +185,8 @@ fn poi(subtype: u8, lat: i64, lon: i64, name: &str) -> Poi {
     }
 }
 
-/// A POI **with opening hours**, so the §4.5.3 pool rebuild has something to rebuild. `HoursRef` is
-/// a file-local pool index — the one POI field that cannot travel verbatim — so a fixture with no
+/// A POI with opening hours, so the pool rebuild has something to rebuild. `HoursRef` is a
+/// file-local pool index — the one POI field that cannot travel verbatim — so a fixture with no
 /// hours leaves the whole remap untested.
 fn poi_with_hours(subtype: u8, lat: i64, lon: i64, name: &str, hours: &str) -> Poi {
     Poi {
@@ -223,17 +215,17 @@ fn fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
         // Features wholly inside one cell: they must be written untouched, in that cell only.
         rect(water, 0, LAT - 60_000, SEAM + 90_000, LAT - 20_000, SEAM + 150_000),
         line(residential, 1, &[(LAT - 10_000, SEAM + 20_000), (LAT + 10_000, SEAM + 70_000)]),
-        // The **four-cell corner** at (SEAM_N, SEAM): a diagonal line through it and a pond
-        // straddling it, so the graft's worst case has something to draw.
+        // The four-cell corner at (SEAM_N, SEAM): a diagonal line through it and a pond straddling
+        // it, so the graft's worst case has something to draw.
         line(residential, 1, &[(SEAM_N - 30_000, SEAM - 30_000), (SEAM_N + 30_000, SEAM + 30_000)]),
         rect(water, 0, SEAM_N - 12_000, SEAM - 12_000, SEAM_N + 12_000, SEAM + 12_000),
-        // A ring-shaped lake (polygon **with a hole**) straddling the first seam, so the clip and
-        // the verify pass both meet the `FEATURE_FLAG_HOLES` shape.
+        // A ring-shaped lake (a polygon with a hole) straddling the first seam, so the clip and the
+        // verify pass both meet the ring-table shape.
         rect_with_hole(water, 0, (LAT + 80_000, SEAM - 50_000, LAT + 140_000, SEAM + 50_000), 15_000),
         // …and one wholly inside the eastern cell, so a hole survives the graft uncut as well.
         rect_with_hole(forest, 1, (LAT - 140_000, SEAM + 40_000, LAT - 80_000, SEAM + 140_000), 12_000),
-        // The dashed / `color2` style, strictly inside one cell (dash phase across a seam is a
-        // documented §2.4 cosmetic difference and would make the pixel oracle a fuzz test).
+        // The dashed / `color2` style, strictly inside one cell: dash phase across a seam is a
+        // documented cosmetic difference and would make the pixel oracle a fuzz test.
         line(path, 1, &[(LAT + 100_000, SEAM + 90_000), (LAT + 130_000, SEAM + 150_000)]),
     ];
     // A grid of small tracks: enough features that the fine LOD's quadtree really subdivides.
@@ -260,21 +252,21 @@ fn fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
                 (8, (SEAM_N + 60_000, SEAM + 40_000)),
             ],
         ),
-        // A tiny interior islet: strictly inside one cell and below the threshold, so the **bake**
-        // prunes it — §3.5 lets a cutter prune only what is strictly interior.
+        // A tiny interior islet: strictly inside one cell and below the threshold, so the bake
+        // prunes it — a cutter may prune only what is strictly interior.
         way(7, &[(90, (LAT - 90_000, SEAM + 120_000)), (91, (LAT - 89_000, SEAM + 121_000))]),
-        // …and one that **crosses a cell boundary**, which is exactly what §3.5 forbids a bake from
-        // pruning (the piece on the other side might connect to the rest of the world). It reaches
-        // the assembler alive, in two cells, and §4.6.4 is the pass that must drop it — over the
-        // *merged* graph, where the threshold finally means what it says. Nothing else in this
-        // fixture exercises that pass, because everything else is one big component.
+        // …and one that crosses a cell boundary, which a bake may not prune, because the piece on
+        // the other side might connect to the rest of the world. It reaches the assembler alive, in
+        // two cells, and the merge's island prune is what must drop it — over the merged graph,
+        // where the threshold finally means what it says. Nothing else in this fixture exercises
+        // that pass.
         way(7, &[(92, (LAT - 60_000, SEAM - 20_000)), (93, (LAT - 60_000, SEAM + 20_000))]),
     ];
     let pois = vec![
         poi(1, LAT, SEAM - 20_000, "West water"),
-        // Two POIs in **different cells sharing one schedule**, plus a third with its own: the
-        // rebuilt pool must therefore hold exactly two blobs and remap three `HoursRef`s across a
-        // seam (§4.5.3), which is the case a single-cell fixture cannot produce.
+        // Two POIs in different cells sharing one schedule, plus a third with its own: the rebuilt
+        // pool must hold exactly two blobs and remap three `HoursRef`s across a seam, which a
+        // single-cell fixture cannot produce.
         poi_with_hours(5, LAT + 5_000, SEAM + 15_000, "East camp", "Mo-Fr 08:00-18:00"),
         poi_with_hours(5, LAT + 5_000, SEAM - 15_000, "West camp", "Mo-Fr 08:00-18:00"),
         poi_with_hours(13, LAT + 25_000, SEAM_E + 10_000, "Far shop", "Mo-Sa 09:00-12:00,14:00-19:00"),
@@ -289,8 +281,8 @@ fn fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
     )
 }
 
-/// The **uncut** fixture: the same kinds of feature, placed so that nothing crosses a cell edge and
-/// no quadtree in either file has to subdivide. It is the control for the pixel oracle — with no
+/// The uncut fixture: the same kinds of feature, placed so that nothing crosses a cell edge and no
+/// quadtree in either file has to subdivide. It is the control for the pixel oracle — with no
 /// geometry cut, the two files must agree bit for bit, so any difference there is the graft's fault
 /// and not the rasteriser's.
 fn uncut_fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
@@ -325,8 +317,6 @@ fn uncut_scenes() -> Vec<(&'static str, (i32, i32), f32, f32)> {
     ]
 }
 
-// --- the two paths ----------------------------------------------------------------------------
-
 /// A scratch directory for one test's cell tree.
 fn scratch(name: &str) -> PathBuf {
     obcm_testkit::scratch::scratch_dir("obcm-assemble-oracle", name)
@@ -348,8 +338,8 @@ fn cut_with(dir: &Path, cfg: &Config, ing: &Ingested, ways: &[RoutableWay], band
 }
 
 /// `pack(X)`: the monolithic path over an explicit global bbox — the same stages
-/// [`obc_pack::pipeline`] runs, minus the `.pbf` ingest (the fixture is already ingested) and minus
-/// land (the fixture has no coastline).
+/// [`obc_pack::pipeline`] runs, minus the `.pbf` ingest and minus land, neither of which this
+/// fixture has.
 fn monolithic(cfg: &Config, ing: &Ingested, ways: &[RoutableWay], bbox: (i64, i64, i64, i64)) -> Vec<u8> {
     let (graph, _) = obc_pack::nav::build_graph_with(ways, cfg.routing.min_component_edges);
     let lods: Vec<LodLayer> = cfg
@@ -409,13 +399,12 @@ fn schema_with(cfg: &Config, band_json: &str) -> Schema {
     }
 }
 
-/// A skin that reproduces the config's own styling **exactly**, so the two files differ in layout
-/// and never in presentation — otherwise a pixel comparison would only be measuring the skin.
+/// A skin that reproduces the config's own styling exactly, so the two files differ in layout and
+/// never in presentation. Otherwise a pixel comparison would only be measuring the skin.
 fn skin(cfg: &Config) -> Skin {
-    // §4.7 makes the *order* the skin author's responsibility — the engine refuses a table whose ids
-    // do not ascend rather than silently re-sorting one. `Config::styles()` walks a `HashMap`, so a
-    // document generated from it has to be put in order here, exactly as a hand-written skin would
-    // already be.
+    // The order is the skin author's responsibility: the engine refuses a table whose ids do not
+    // ascend rather than silently re-sorting one. `Config::styles()` walks a `HashMap`, so a
+    // document generated from it has to be put in order here.
     let mut cfg_styles = cfg.styles();
     cfg_styles.sort_by_key(|s| s.id);
     let styles = cfg_styles
@@ -449,8 +438,8 @@ fn assembled(dir: &Path, cfg: &Config, summary: &CutSummary) -> (Vec<u8>, Memory
     (bytes, store)
 }
 
-/// Run the engine over a cut tree with explicit options — the shared driver behind the oracle, the
-/// volume-set test, and the refusal tests.
+/// Run the engine over a cut tree with explicit options — the shared driver behind the oracle and
+/// the refusal tests.
 fn assemble_with(
     dir: &Path,
     cfg: &Config,
@@ -484,15 +473,15 @@ fn assemble_bands(
     Ok((out, store))
 }
 
-/// The packer's `CellId` and the engine's are two spellings of one normative id (see the engine's
-/// `grid` module docs). Converting through the canonical text is also the cheapest proof they agree.
+/// The packer's `CellId` and the engine's are two spellings of one normative id. Converting through
+/// the canonical text is also the cheapest proof they agree.
 fn to_engine_cell(id: obc_pack::grid::CellId) -> CellId {
     CellId::parse(&id.to_string()).expect("the two CellId spellings round-trip through the canonical id")
 }
 
 /// The assembly bbox both paths are built over: the minimal grid-aligned power-of-two box covering
-/// every cell the cutter wrote (OBCA §4.2). The monolithic pack is handed the *same* box, so the two
-/// maps cover identical ground and a pixel difference can only come from the graft.
+/// every cell the cutter wrote. The monolithic pack is handed the same box, so the two maps cover
+/// identical ground and a pixel difference can only come from the graft.
 fn snapped_box(summary: &CutSummary) -> (i64, i64, i64, i64) {
     let ids: Vec<CellId> = summary.cells.iter().map(|c| to_engine_cell(c.id)).collect();
     assembly_box(&ids, 20).expect("an aligned box").ubox()
@@ -523,8 +512,6 @@ fn both_of(name: &str, cfg: &Config, ing: &Ingested, ways: &[RoutableWay]) -> Bo
     let (grafted, store) = assembled(&dir, cfg, &summary);
     (packed, grafted, store, bbox)
 }
-
-// --- (a) the pixel oracle ---------------------------------------------------------------------
 
 const WIDTH: u32 = obc_display::ls021::FRAME_W as u32;
 const HEIGHT: u32 = obc_display::ls021::FRAME_H as u32;
@@ -563,8 +550,8 @@ fn backdrop_color(map: &[u8]) -> u16 {
 /// The viewport matrix. Every scene names what it is there to catch.
 fn scenes() -> Vec<(&'static str, (i32, i32), f32, f32)> {
     vec![
-        // Straddling the worked-example lon seam, at three zooms — the cell boundary is vertically
-        // through the middle of the frame.
+        // Straddling the worked-example lon seam, at three zooms, so the cell boundary runs
+        // vertically through the middle of the frame.
         ("seam-lon-street", (SEAM as i32, LAT as i32), 2.0, 0.0),
         ("seam-lon-mid", (SEAM as i32, LAT as i32), 10.0, 0.0),
         ("seam-lon-rot", (SEAM as i32, LAT as i32), 6.0, 35.0),
@@ -573,13 +560,12 @@ fn scenes() -> Vec<(&'static str, (i32, i32), f32, f32)> {
         // The corner where four fine cells meet — the graft's worst case.
         ("seam-corner", (SEAM as i32, SEAM_N as i32), 8.0, 0.0),
         // Zoom-band transitions: exactly at, just under and just over each ladder threshold, so the
-        // LOD the renderer selects flips between the coarse band (its own cell size!) and the fine
-        // one across the pair.
+        // LOD the renderer selects flips between the coarse band and the fine one across the pair.
         ("band-20-under", (SEAM as i32, LAT as i32), 19.9, 0.0),
         ("band-20-over", (SEAM as i32, LAT as i32), 20.1, 0.0),
         ("band-4-under", (SEAM as i32, LAT as i32), 3.9, 0.0),
         ("band-4-over", (SEAM as i32, LAT as i32), 4.1, 0.0),
-        // Cell interiors, where nothing should be interesting — and a wide overview that pulls in
+        // Cell interiors, where nothing should be interesting, and a wide overview that pulls in
         // every cell of the coarse band at once.
         ("interior-west", (SEAM as i32 - 40_000, LAT as i32), 3.0, 0.0),
         ("interior-east", (SEAM as i32 + 60_000, LAT as i32), 3.0, 0.0),
@@ -587,15 +573,15 @@ fn scenes() -> Vec<(&'static str, (i32, i32), f32, f32)> {
     ]
 }
 
-/// How two frames differ. The *shape* of the difference is the point: a comparison that only counts
+/// How two frames differ. The shape of the difference is the point: a comparison that only counts
 /// pixels cannot tell a one-pixel boundary shift from a feature drawn in the wrong place, and those
-/// are exactly the two outcomes this oracle has to keep apart.
+/// are the two outcomes this oracle has to keep apart.
 struct Diff {
     count: usize,
     /// Every distinct `(packed colour, assembled colour)` pair, with its count.
     pairs: std::collections::BTreeMap<(u16, u16), usize>,
-    /// Differing pixels where the other frame's colour is **not** present in the 8-neighbourhood —
-    /// i.e. a boundary that did not merely move by a pixel. That is what a graft bug looks like.
+    /// Differing pixels where the other frame's colour is not present in the 8-neighbourhood — a
+    /// boundary that did not merely move by a pixel, which is what a graft bug looks like.
     non_edge: usize,
 }
 
@@ -624,13 +610,12 @@ fn diff(a: &[u16], b: &[u16]) -> Diff {
     out
 }
 
-/// (a) **Pixel equivalence, where it is achievable: exactly.**
+/// Pixel equivalence, where it is achievable: exactly.
 ///
-/// This fixture is built so that **no feature crosses a cell edge** — every polygon and every line
-/// sits inside one `2^18` cell — so the two maps carry the same geometry with the same vertices,
-/// differently addressed, and the graft must be invisible: every frame is bit-identical, at every
-/// zoom, north-up and rotated. A single differing pixel here is a graft bug, not a rasteriser
-/// artefact.
+/// This fixture is built so that no feature crosses a cell edge, so the two maps carry the same
+/// geometry with the same vertices, differently addressed, and the graft must be invisible: every
+/// frame is bit-identical, at every zoom, north-up and rotated. A single differing pixel here is a
+/// graft bug, not a rasteriser artefact.
 #[test]
 fn rendering_is_pixel_identical_where_no_feature_is_cut() {
     let (packed, grafted, _, _) = both_uncut("uncut");
@@ -667,7 +652,7 @@ fn app_frame(source: &dyn ByteSource, center: (i32, i32), mpp: f32) -> (Vec<u8>,
     (frame.as_rgba().to_vec(), stats)
 }
 
-/// (a) **Through the card, all the way into an application frame.**
+/// Through the card, all the way into an application frame.
 ///
 /// The two tests above hand the assembled bytes straight to the renderer. This one takes the same
 /// bytes the way the device does: import them into a flat store, mount the committed object as a
@@ -676,10 +661,8 @@ fn app_frame(source: &dyn ByteSource, center: (i32, i32), mpp: f32) -> (Vec<u8>,
 /// really have been read, and the frame must contain map features — a blank screen would pass a
 /// bare "the buffer is not empty" check.
 ///
-/// The viewport is `uncut_scenes()`'s `west-street`, 2 m/px over the western cell. Almost all of
-/// this synthetic fixture's ground is backdrop, so the viewport has to sit where there is geometry:
-/// this one is centred on the western lake with the primary road through it, and the test above
-/// already asserts that it draws more than backdrop.
+/// Almost all of this synthetic fixture's ground is backdrop, so the viewport sits where there is
+/// geometry: centred on the western lake with the primary road through it.
 #[test]
 fn an_assembled_map_renders_through_the_card_into_an_app_frame() {
     let (_, grafted, _, _) = both_uncut("app-frame");
@@ -705,29 +688,27 @@ fn an_assembled_map_renders_through_the_card_into_an_app_frame() {
     );
 }
 
-/// (a) **Pixel equivalence across seams: identical, or a one-pixel edge shift — and nothing else.**
+/// Pixel equivalence across seams: identical, or a one-pixel edge shift, and nothing else.
 ///
-/// Most of the matrix comes out bit-identical (the count at the bottom pins how much), and the rest
-/// differs in a way this test *characterises* rather than tolerates. The mechanism is in the
-/// **renderer**, not in the graft, and it is worth stating exactly, because "pixel-identical
-/// everywhere" was the goal going in:
+/// Most of the matrix comes out bit-identical — the count at the bottom pins how much — and the
+/// rest differs in a way this test characterises rather than tolerates. The mechanism is in the
+/// renderer, not in the graft:
 ///
-/// - Cutting a cell inserts a vertex on the cell edge and splits the feature there, so the assembled
-///   map strokes two polylines where the monolithic map strokes one.
-/// - `obc-render`'s stroker simplifies each polyline **in screen space** (`SIMPLIFY_EPS_PX`, ¾ px)
-///   and lays a round join/cap disc at each run's two ends. Neither operation is distributive over
-///   splitting a polyline: two halves simplified separately, each with its own end cap, can put a
-///   stroke edge one pixel off where the joined line put it. Rotated views show it along the whole
-///   stroke; north-up ones usually only at the seam pixel itself.
-/// - The monolithic packer splits features at **its** quadtree-leaf boundaries for the same reason,
-///   so this is a property of *where geometry was cut*, which OBCA §2.4 already books as a cosmetic
-///   cost of cutting at cell boundaries — alongside dash phase, the other one, which this fixture
-///   avoids by using no dashed style (a dashed line would legitimately differ along the seam).
+/// - Cutting a cell inserts a vertex on the cell edge and splits the feature there, so the
+///   assembled map strokes two polylines where the monolithic map strokes one.
+/// - `obc-render`'s stroker simplifies each polyline in screen space and lays a round join/cap disc
+///   at each run's two ends. Neither operation is distributive over splitting a polyline: two
+///   halves simplified separately, each with its own end cap, can put a stroke edge one pixel off
+///   where the joined line put it. Rotated views show it along the whole stroke; north-up ones
+///   usually only at the seam pixel itself.
+/// - The monolithic packer splits features at its own quadtree-leaf boundaries for the same reason,
+///   so this is a property of where geometry was cut, which is a documented cosmetic cost of
+///   cutting at cell boundaries.
 ///
-/// So the assertion is the bound that matters rather than a fuzz factor: **every differing pixel is
-/// a boundary that moved by at most one pixel** — the colour each frame draws there is present in the
-/// other frame's 8-neighbourhood. A feature drawn in the wrong place, drawn twice, or not drawn at
-/// all fails that immediately, which is precisely the class of bug a graft can have.
+/// So the assertion is a bound rather than a fuzz factor: every differing pixel is a boundary that
+/// moved by at most one pixel, meaning the colour each frame draws there is present in the other
+/// frame's 8-neighbourhood. A feature drawn in the wrong place, drawn twice, or not drawn at all
+/// fails that immediately.
 #[test]
 fn rendering_across_seams_differs_only_by_a_one_pixel_edge_shift() {
     let (packed, grafted, _, _) = both("pixels");
@@ -761,8 +742,8 @@ fn rendering_across_seams_differs_only_by_a_one_pixel_edge_shift() {
         );
         shifted.push(format!("{name}: {} px, pairs {:?}", d.count, d.pairs));
     }
-    // Pin how much of the matrix is exact, so a change that blurs a currently-identical scene has to
-    // be looked at rather than absorbed.
+    // Pin how much of the matrix is exact, so a change that blurs a currently-identical scene has
+    // to be looked at rather than absorbed.
     assert!(
         exact >= 8,
         "only {exact} of {} scenes are pixel-identical (expected ≥ 8); the shifted ones were:\n  {}",
@@ -770,8 +751,6 @@ fn rendering_across_seams_differs_only_by_a_one_pixel_edge_shift() {
         shifted.join("\n  ")
     );
 }
-
-// --- (b) the route oracle ---------------------------------------------------------------------
 
 #[derive(Default)]
 struct VecSink(Vec<u8>);
@@ -802,13 +781,13 @@ fn route(map: &[u8], from: (i32, i32), to: (i32, i32)) -> Option<u32> {
         .map(|stats| stats.total_distance_m)
 }
 
-/// (b) **Route equivalence.** Endpoint pairs whose straight line crosses one or two cell seams must
-/// route in both maps, and to the same length.
+/// Route equivalence. Endpoint pairs whose straight line crosses one or two cell seams must route
+/// in both maps, and to the same length.
 ///
-/// The tolerance is not a fudge factor, it is the splice: cutting a way at a cell edge splits an
-/// edge into pieces whose `Length M` is re-measured over each sub-polyline (`OBCM_Spec.md` §8.4), so
-/// a merged route's total can differ from the monolithic one by the rounding of one metre per split.
-/// The bound below is that, generously: 1 % or 5 m, whichever is larger.
+/// The tolerance is the splice, not a fudge factor: cutting a way at a cell edge splits an edge
+/// into pieces whose `Length M` is re-measured over each sub-polyline, so a merged route's total
+/// can differ by the rounding of one metre per split. The bound below is 1 % or 5 m, whichever is
+/// larger.
 #[test]
 fn routes_across_cell_seams_agree_with_the_monolithic_pack() {
     let (packed, grafted, _, _) = both("routes");
@@ -836,14 +815,14 @@ fn routes_across_cell_seams_agree_with_the_monolithic_pack() {
         match (a, b) {
             (Some(a), Some(b)) => {
                 routed += 1;
-                // The tolerance is the splice, not a fudge factor (see the doc comment).
+                // The tolerance is the splice (see the doc comment).
                 let tolerance = (a as f64 * 0.01).max(5.0);
                 assert!(
                     (a as f64 - b as f64).abs() <= tolerance,
                     "{what}: pack(X) routes {a} m but assemble(cut(X)) routes {b} m (tolerance {tolerance:.1} m)"
                 );
             }
-            // Agreeing that there is no route is also equivalence — but a suite where nothing routes
+            // Agreeing that there is no route is also equivalence, but a suite where nothing routes
             // proves nothing, which the count below guards.
             (None, None) => {}
             (a, b) => panic!("{what}: the two maps disagree on routability — pack {a:?}, assemble {b:?}"),
@@ -853,8 +832,8 @@ fn routes_across_cell_seams_agree_with_the_monolithic_pack() {
 }
 
 /// The seam property itself, stated as a graph fact rather than as a route: the two cells either
-/// side of a seam materialise the *same* junction coordinate, and after assembly that coordinate is
-/// one node, not two (OBCA §3.4/§4.6.2).
+/// side of a seam materialise the same junction coordinate, and after assembly that coordinate is
+/// one node, not two.
 #[test]
 fn boundary_junctions_unify_into_one_node() {
     let (_, grafted, _, _) = both("junctions");
@@ -887,13 +866,12 @@ fn boundary_junctions_unify_into_one_node() {
     assert!(on_seam.iter().any(|n| n.3 >= 2), "the unified seam junction must join both sides: {on_seam:?}");
 }
 
-/// **The scratch is returned.** Since #1116 D4 the merged graph outlives the merge — the §8.2 index,
-/// the §8.3 records, the placement plan and the edge-pool plan stay on the scratch seam until the
-/// last shard that could name them has been written *and* verified, which is what lets the section be
-/// streamed instead of buffered. That makes "who deletes them" a real question with exactly one right
-/// answer, and a wrong one is invisible in the output: the map is correct and the working area fills.
-///
-/// So this runs a whole assembly through an observable store and asserts it ends empty.
+/// The scratch is returned. The merged graph outlives the merge — the node index, the junction
+/// records, the placement plan and the edge-pool plan stay on the scratch seam until the last shard
+/// that could name them has been written and verified, which is what lets the section be streamed
+/// instead of buffered. A wrong answer about who deletes them is invisible in the output: the map
+/// is correct and the working area fills. So this runs a whole assembly through an observable store
+/// and asserts it ends empty.
 #[test]
 fn an_assembly_hands_its_whole_scratch_back() {
     use obcm_assemble::{assemble_full, MemoryScratch};
@@ -945,13 +923,12 @@ fn sha256(bytes: &[u8]) -> Vec<u8> {
     h.finalize().to_vec()
 }
 
-/// The POI and hours halves of §4.5: every POI of every cell survives the merge exactly once, the
-/// assembly's POI set equals the monolithic pack's, and — the half the name promised — every
-/// **schedule** does too.
+/// The POI and hours halves of the merge: every POI of every cell survives exactly once, the
+/// assembly's POI set equals the monolithic pack's, and so does every schedule.
 ///
 /// `HoursRef` is a file-local pool index, so it is the one POI field that cannot travel verbatim:
-/// §4.5.3 rebuilds the pool from the distinct 29-byte blobs and remaps every reference. The fixture
-/// puts one schedule on two POIs in *different cells* and a second on a third, so the rebuilt pool
+/// the pool is rebuilt from the distinct 29-byte blobs and every reference remapped. The fixture
+/// puts one schedule on two POIs in different cells and a second on a third, so the rebuilt pool
 /// must hold exactly two blobs — a merge that kept per-cell pools, or that failed to deduplicate
 /// them, produces the right POIs with the wrong hours.
 #[test]
@@ -969,8 +946,8 @@ fn pois_and_hours_survive_the_merge() {
             let mut found: heapless::Vec<obc_reader::Poi, { obc_reader::MAX_POI_RESULTS }> = heapless::Vec::new();
             reader.nearest_pois(cat, (SEAM as i32, LAT as i32), &mut found).expect("the POI query runs");
             out.extend(found.iter().map(|p| {
-                // The pool index itself is *expected* to differ between the two files; the schedule
-                // it resolves to is not. Comparing the resolved value is the whole point.
+                // The pool index itself is expected to differ between the two files; the schedule it
+                // resolves to is not.
                 let hours = reader.poi_hours(p.hours_ref).map(|h| {
                     let mut v: Vec<u8> = vec![h.flags()];
                     for d in 0..7u8 {
@@ -1021,22 +998,20 @@ fn pois_and_hours_survive_the_merge() {
     assert_eq!(reader.poi_directory().hours_pool_count, 2, "two distinct schedules over three POIs (§4.5.3)");
 }
 
-/// The engine restates OBCA's grid arithmetic because it may not depend on the packer (libGEOS is a
-/// native dependency and the engine compiles for wasm). This is the drift guard the restatement is
-/// only acceptable with: both copies must agree, cell for cell.
+/// The engine restates the grid arithmetic because it may not depend on the packer, which carries
+/// libGEOS while the engine compiles for wasm. This is the drift guard the restatement is only
+/// acceptable with: both copies must agree, cell for cell.
 #[test]
 fn the_engine_and_the_packer_agree_on_the_grid() {
     use obcm_assemble::grid::{quad_children, quad_mid, GRID_ORIGIN, MAX_CELL_LOG2, MIN_CELL_LOG2};
 
-    // **Every** permitted cell size, not the three the fixture happens to use: the drift this guards
-    // against is a rounding step, and a rounding step is most likely to show up at the ends of the
-    // range — the smallest size (where the indices are largest) and the largest (where a cell spans
-    // an eighth of the world).
+    // Every permitted cell size, not the three the fixture happens to use: the drift this guards
+    // against is a rounding step, which is most likely to show up at the ends of the range.
     assert_eq!((MIN_CELL_LOG2, MAX_CELL_LOG2), (obc_pack::grid::MIN_CELL_LOG2, obc_pack::grid::MAX_CELL_LOG2));
     assert_eq!(GRID_ORIGIN, obc_pack::grid::GRID_ORIGIN);
-    // …and the third copy: the OBCT terrain raster sits on this same grid (`OBCT_Spec.md` §1.1) but
-    // is read by a no_std crate that cannot depend on either host copy, so `obc-formats` restates
-    // the origin and the cell-size range. Same drift guard, same reason.
+    // …and the third copy: the OBCT terrain raster sits on this same grid but is read by a no_std
+    // crate that cannot depend on either host copy, so `obc-formats` restates the origin and the
+    // cell-size range.
     assert_eq!(GRID_ORIGIN, obc_formats::obct::GRID_ORIGIN as i64);
     assert_eq!(obcm_assemble::grid::WORLD_SIDE, obc_formats::obct::WORLD_SIDE as i64);
     assert_eq!(
@@ -1075,7 +1050,7 @@ fn the_engine_and_the_packer_agree_on_the_grid() {
         }
     }
 
-    // The **quadtree midpoint** is the other half of the alignment theorem: the engine's fresh upper
+    // The quadtree midpoint is the other half of the alignment theorem: the engine's fresh upper
     // tree and the packer's own trees must split at the same integer, or a depth-`d` node stops
     // being a cell. Checked at the negative origin too, where a truncating division drifts.
     for (min, max) in [
@@ -1110,18 +1085,10 @@ fn the_engine_and_the_packer_agree_on_the_grid() {
     }
 }
 
-// --- the spliced terrain region (OBCM §1.3) ----------------------------------------------------
-
-/// **`MapTables::terrain()` finally has a producer, and this is it end to end.**
-///
-/// Assemble the fixture *with* a raster, then read an elevation back the way a device does: parse
-/// the map's header, take the §1.3 window it names, hand that to the real `TerrainReader`, and
-/// sample it. Nothing here reaches into the assembler's internals — the only input to the read side
-/// is the finished file, which is the whole point of a region pointer.
-///
-/// The reader half of §1.3 has been real and tested since v14 landed, but its only producer was
-/// `obcm-testkit`'s `splice_terrain`, a test helper writing bytes by hand. A format whose writer is
-/// a test fixture is a format with one opinion about itself; this closes that.
+/// Assemble the fixture with a raster, then read an elevation back the way a device does: parse the
+/// map's header, take the terrain window it names, hand that to the real `TerrainReader`, and sample
+/// it. Nothing here reaches into the assembler's internals — the only input to the read side is the
+/// finished file, which is the whole point of a region pointer.
 #[test]
 fn a_spliced_raster_is_readable_through_the_headers_window() {
     use obc_elevation::{TerrainReader, TileCache};
@@ -1172,7 +1139,7 @@ fn a_spliced_raster_is_readable_through_the_headers_window() {
         (out, store.map.0)
     };
 
-    // --- without a raster: §1.3's unambiguous absence. ---
+    // Without a raster: the unambiguous absence.
     let (plain, plain_bytes) = run(inputs(), None);
     assert!(plain.terrain.is_none(), "no raster was handed over");
     let src = SliceSource(&plain_bytes);
@@ -1183,10 +1150,10 @@ fn a_spliced_raster_is_readable_through_the_headers_window() {
     );
     assert_eq!(&plain_bytes[41..49], &[0u8; 8], "…which is both header fields written zero");
 
-    // --- with one: build a published cell covering the assembly square, at a lattice that tiles it
-    //     exactly (a `2^(cell-4)` posting is 16 samples an edge, OBCT §4.5). ---
-    // A cell no larger than the schema's `S_MAX`, which is what the assembly corner is snapped to
-    // (§4.2) — the terrain grid is a second lattice, and only cells at or below `S_MAX` tile the box.
+    // With one: build a published cell covering the assembly square, at a lattice that tiles it
+    // exactly. The cell is no larger than the schema's `S_MAX`, which is what the assembly corner
+    // is snapped to — the terrain grid is a second lattice, and only cells at or below `S_MAX` tile
+    // the box.
     let cell_log2 = 19u8;
     assert!(u32::from(cell_log2) <= plain.assembly_box.span_log2);
     let params = TerrainParams { posting_log2: cell_log2 - 4, cell_log2 };
@@ -1196,7 +1163,7 @@ fn a_spliced_raster_is_readable_through_the_headers_window() {
         ((plain.assembly_box.min_lon - GRID_ORIGIN) / side) as u32,
     );
     // A ramp rather than a constant: a block copied to the wrong offset, or a window off by a unit,
-    // reads as *some* elevation either way — only varying data can tell the difference.
+    // reads as some elevation either way — only varying data can tell the difference.
     let block_len = obc_formats::obct::cell_block_len(params.posting_log2, params.cell_log2).expect("a legal pairing");
     let mut raster = vec![0u8; block_len as usize];
     for (k, sample) in raster.as_chunks_mut::<2>().0.iter_mut().enumerate() {
@@ -1256,8 +1223,8 @@ fn a_spliced_raster_is_readable_through_the_headers_window() {
     let per_axis = 1u16 << (plain.assembly_box.span_log2 - u32::from(cell_log2));
     assert_eq!((reader.header().cell_rows, reader.header().cell_cols), (per_axis, per_axis));
     assert_eq!((reader.header().cell_min_i, reader.header().cell_min_j), (ci, cj));
-    // Sample inside the one square that actually has a block — the corner cell. The rest of the
-    // rectangle is directory `0`, which is how a selection wider than its coverage is published.
+    // Sample inside the one square that has a block — the corner cell. The rest of the rectangle is
+    // directory `0`, which is how a selection wider than its coverage is published.
     let mut cache: TileCache<4> = TileCache::new();
     let (lat, lon) = (plain.assembly_box.min_lat + side / 2, plain.assembly_box.min_lon + side / 2);
     let sampled = reader.sample(&mut cache, lat as i32, lon as i32).expect("a sample inside the present cell");
@@ -1286,8 +1253,8 @@ fn a_spliced_raster_is_readable_through_the_headers_window() {
     assert_eq!(surface_reader.header().flags, obc_formats::obct::SURFACE_FLAG | obc_formats::obct::CELL_INDEX_FLAG);
     assert_eq!(surface_reader.sample(&mut TileCache::<4>::new(), lat as i32, lon as i32), Some(sampled));
 
-    // Splicing moved no other offset (§1.3's reason for putting terrain last): the map with a raster
-    // is the map without one, byte for byte, up to the nav section's end.
+    // Splicing moved no other offset, which is why terrain sits last: the map with a raster is the
+    // map without one, byte for byte, up to the nav section's end.
     assert_eq!(
         &with_bytes[obc_formats::obcm::HEADER_LEN..plain_bytes.len()],
         &plain_bytes[obc_formats::obcm::HEADER_LEN..],
@@ -1295,8 +1262,6 @@ fn a_spliced_raster_is_readable_through_the_headers_window() {
     );
     assert_eq!(&with_bytes[..41], &plain_bytes[..41], "and every header field before the pair is unmoved");
 }
-
-// --- input refusals and the degenerate selections (§4.1) ---------------------------------------
 
 /// Everything a `CellInput` needs, owned, so a test can reorder, duplicate or corrupt the list.
 struct Loaded {
@@ -1368,9 +1333,9 @@ fn the_degenerate_selections_behave() {
     let all: Vec<usize> = (0..loaded.cells.len()).collect();
     let opts = Options { accept_partial: true, accept_holes: true, ..Default::default() };
 
-    // A cell listed twice. Geometry would survive it (the graft keys cells by grid slot), but the
-    // nav merge mints fresh ids per copy, so the interior graph would silently double — and §4.8
-    // would verify the result as correct.
+    // A cell listed twice. Geometry would survive it, because the graft keys cells by grid slot,
+    // but the nav merge mints fresh ids per copy, so the interior graph would silently double — and
+    // verify would accept the result.
     let mut twice = all.clone();
     twice.push(loaded.index_of("network"));
     let err = format!("{}", loaded.assemble(&cfg, &twice, &opts).expect_err("a duplicate cell must be refused"));
@@ -1405,7 +1370,7 @@ fn the_degenerate_selections_behave() {
     }
 
     // A band the schema does not name: refused before a byte is read, because the band is what
-    // decides which LODs and sections a cell contributes (§3.1 — the bytes cannot say).
+    // decides which LODs and sections a cell contributes and the bytes cannot say.
     let mut store = MemoryStore::default();
     let bogus =
         vec![CellInput { id: loaded.cells[one].0, band: "not-a-band".into(), src: &loaded.bytes[one], partial: false }];
@@ -1417,8 +1382,8 @@ fn the_degenerate_selections_behave() {
     assert!(err.contains("is not in the schema"), "got: {err}");
 }
 
-/// The malformed-cell paths. A cell is an **input**, not this crate's own output, so every one of
-/// these is reachable from a corrupt download or a bad bake — and each must come out as
+/// The malformed-cell paths. A cell is an input, not this crate's own output, so every one of these
+/// is reachable from a corrupt download or a bad bake — and each must come out as
 /// [`obcm_assemble::Error::Format`] naming the cell, never as a panic, a wrapped index, or a map
 /// that quietly draws the wrong thing.
 #[test]
@@ -1463,11 +1428,10 @@ fn a_malformed_cell_is_a_format_error() {
     });
     assert!(err.contains("not a readable OBCM"), "got: {err}");
 
-    // 2. A header bbox that is not the cell's grid square — the fact the whole graft rests on
-    //    (§3.1), and the one the alignment theorem cannot survive being wrong about.
-    //    `Max Lat` is bytes 13..17 (`OBCM_Spec.md` §1); nudging its low byte keeps the file
-    //    parseable and every other invariant intact, so the grid-square check is the only thing
-    //    standing between this cell and a mis-aligned graft.
+    // 2. A header bbox that is not the cell's grid square — the fact the whole graft rests on.
+    //    `Max Lat` is bytes 13..17; nudging its low byte keeps the file parseable and every other
+    //    invariant intact, so the grid-square check is the only thing standing between this cell
+    //    and a mis-aligned graft.
     let err = broken(&|b, _| {
         b[13] = b[13].wrapping_add(1);
         true
@@ -1475,7 +1439,7 @@ fn a_malformed_cell_is_a_format_error() {
     assert!(err.contains("is not its grid square"), "got: {err}");
 
     // 3. A leaf index word naming a chunk the cell does not have. Relocated blindly it would point
-    //    into the *next* cell's chunks — geometry from somewhere else, drawn without complaint.
+    //    into the next cell's chunks — geometry from somewhere else, drawn without complaint.
     let err = broken(&|b, lod| {
         let Some(word) = (0..lod.node_count).map(|k| lod.index_offset as usize + k * 4).find(|&at| {
             let v = u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
@@ -1502,11 +1466,11 @@ fn a_malformed_cell_is_a_format_error() {
     });
     assert!(err.contains("children start at"), "got: {err}");
 
-    // 5. An offset table pair that spans more than the chunk capacity — §5.1's own bound,
-    //    re-checked on the way in because a copied violation would poison the assembly (§4.4.4).
+    // 5. An offset table pair that spans more than the chunk capacity, re-checked on the way in
+    //    because a copied violation would poison the assembly.
     let err = broken(&|b, lod| {
-        // The *last* entry is the region's byte total, which the reader itself validates, so break
-        // an interior pair instead — one the reader accepts and only §4.4.4 catches.
+        // The last entry is the region's byte total, which the reader itself validates, so break an
+        // interior pair instead — one the reader accepts and only the graft catches.
         if lod.chunk_count < 2 {
             return false;
         }
@@ -1525,21 +1489,21 @@ fn a_malformed_cell_is_a_format_error() {
     assert!(err.contains("offsets[0]"), "got: {err}");
 }
 
-/// §4.7's stamp, end to end: the skin's values — including the two style-record flag bits and the trailing
-/// `color2` — are what the assembled file's style table carries, at the schema's own ids.
+/// The skin stamp, end to end: the skin's values, including the two style-record flag bits and the
+/// trailing `color2`, are what the assembled file's style table carries, at the schema's own ids.
 #[test]
 fn the_skin_is_stamped_onto_the_output() {
     let (packed, grafted, _, _) = both("skin");
     let table = |map: &[u8]| -> Vec<u8> {
-        // Through the file's own `Offset Scale` (§1.1): since v14 `Style Offset` counts units, and
-        // reading it as bytes lands inside the header rather than obviously outside the file.
+        // Through the file's own `Offset Scale`: `Style Offset` counts units, and reading it as
+        // bytes lands inside the header rather than obviously outside the file.
         let style_offset =
             obcm_assemble::emit::header_style_offset(map).expect("the map states its style offset") as usize;
         let count = map[style_offset] as usize;
         map[style_offset..style_offset + 1 + count * obc_formats::obcm::STYLE_RECORD_LEN].to_vec()
     };
-    // The skin reproduces the config's styling exactly, so the two tables must be byte-identical —
-    // which is also what makes the pixel oracle a comparison of *layout* and nothing else.
+    // The skin reproduces the config's styling exactly, so the two tables must be byte-identical,
+    // which is also what makes the pixel oracle a comparison of layout and nothing else.
     assert_eq!(table(&grafted), table(&packed), "the stamped style table must equal the packer's");
     // The dashed / `color2` record specifically: both flag bits set and the second colour present.
     let cfg = config();
@@ -1559,9 +1523,9 @@ fn the_skin_is_stamped_onto_the_output() {
     assert_eq!(flags & obc_formats::obcm::STYLE_PRIORITY_MASK, 1, "priority 2 ⇒ bits 0-1 = 1");
 }
 
-/// What the §4.6 merge reports about itself, asserted rather than printed. The seam count and the
-/// island prune are the two numbers that say the merge did its job: a graph that unified nothing
-/// has severed every road at a cell edge, and one that pruned nothing never ran §4.6.4 at all.
+/// What the nav merge reports about itself, asserted rather than printed. The seam count and the
+/// island prune are the two numbers that say the merge did its job: a graph that unified nothing has
+/// severed every road at a cell edge, and one that pruned nothing never ran the prune at all.
 #[test]
 fn the_merge_reports_the_seams_it_unified_and_the_islands_it_pruned() {
     let cfg = config();
@@ -1580,12 +1544,11 @@ fn the_merge_reports_the_seams_it_unified_and_the_islands_it_pruned() {
         nav.nodes + nav.pruned_nodes,
         "every cell record is unified, kept or pruned"
     );
-    // The islet way is strictly interior and below `min_component_edges`, so §4.6.4 must drop it —
-    // at merge time, over the *merged* graph, which is the only place the threshold means what it
-    // says (§3.5 defers it from the bake).
+    // The islet way is strictly interior and below `min_component_edges`, so the merge must drop it
+    // — over the merged graph, which is the only place the threshold means what it says.
     assert!(nav.pruned_nodes > 0, "the seam-crossing islet must be pruned at merge time: {nav:?}");
     assert_eq!((nav.components_found, nav.components_kept), (2, 1), "the islet is the second component");
-    // The §4.8.5 report is taken *before* the prune, so the islet still counts against it here…
+    // The reachability report is taken before the prune, so the islet still counts against it…
     assert!(nav.largest_component_permille > 850, "the through network dominates the merged graph: {nav:?}");
     // …and the shard that was actually written is one connected component, which is what a rider
     // gets. A broken seam would show up as a much smaller number in exactly this field.
@@ -1595,8 +1558,8 @@ fn the_merge_reports_the_seams_it_unified_and_the_islands_it_pruned() {
 }
 
 /// The graft's own arithmetic, seen from outside: a hole in the middle of a band's coverage is an
-/// **empty leaf**, not a missing subtree — the map still parses, still verifies, and the surviving
-/// cells' chunks are all still there.
+/// empty leaf, not a missing subtree. The map still parses, still verifies, and the surviving cells'
+/// chunks are all still there.
 #[test]
 fn a_hole_becomes_an_empty_leaf_and_the_rest_still_grafts() {
     let cfg = config();
@@ -1636,7 +1599,7 @@ fn a_hole_becomes_an_empty_leaf_and_the_rest_still_grafts() {
     assert_eq!(with.len(), without.len(), "the ladder is unchanged");
     assert!(with.iter().zip(&without).any(|(a, b)| a > b), "the dropped cell's chunks are gone: {with:?} {without:?}");
     assert!(with.iter().zip(&without).all(|(a, b)| a >= b), "…and nothing else was invented: {with:?} {without:?}");
-    // The §4.8 verify ran over the holed map and decoded every remaining feature.
+    // The verify pass ran over the holed map and decoded every remaining feature.
     assert!(out.verify.as_ref().expect("verified").features > 0);
 }
 
@@ -1654,7 +1617,7 @@ fn the_assembler_refuses_what_the_spec_says_it_must() {
     let err = assemble_with(&dir, &cfg, &full, &strict).expect_err("a partial cell must be refused");
     assert!(format!("{err}").contains("partial"), "got: {err}");
 
-    // A hole: drop one fine cell from the selection. The assembly is still *legal* (empty leaves),
+    // A hole: drop one fine cell from the selection. The assembly is still legal, as empty leaves,
     // but only if the caller said so.
     let mut holed = full.clone();
     let victim = holed.cells.iter().position(|c| c.band == "fine").expect("a fine cell");

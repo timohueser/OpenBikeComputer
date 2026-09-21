@@ -1,70 +1,47 @@
-//! `obcm-assemble` — the **cell assembly engine**: baked OBCA grid cells in, **one** `.obcm` out.
+//! `obcm-assemble` — the cell assembly engine: baked OBCA grid cells in, one `.obcm` out.
 //!
-//! The contract this crate implements is [`OBCA_Spec.md`](../../../specs/OBCA_Spec.md), and the
-//! spec's §4 is the acceptance bar rather than a design sketch. In one paragraph: because the cell
-//! grid is a power-of-two µdeg lattice and an OBCM quadtree subdivides its header bbox at integer
-//! floor-midpoints, a grid-aligned assembly bbox subdivides *onto* cell boundaries — so at one depth
-//! the assembly's quadtree nodes **are** the cells, and each cell's subtree grafts in with its chunk
-//! bytes copied verbatim (§2). What cannot be copied is everything addressed absolutely or
-//! file-locally: the POIs, the hours pool, and the whole navigation graph (§2.4). Those are rebuilt.
+//! The contract this crate implements is [`OBCA_Spec.md`](../../../specs/OBCA_Spec.md). In one
+//! paragraph: because the cell grid is a power-of-two µdeg lattice and an OBCM quadtree subdivides
+//! its header bbox at integer floor-midpoints, a grid-aligned assembly bbox subdivides onto cell
+//! boundaries — so at one depth the assembly's quadtree nodes are the cells, and each cell's
+//! subtree grafts in with its chunk bytes copied verbatim. What cannot be copied is everything
+//! addressed absolutely or file-locally: the POIs, the hours pool, and the navigation graph. Those
+//! are rebuilt.
 //!
-//! # Shape of the crate
-//!
-//! - The **engine is GEOS-free and target-neutral**. It reads through
-//!   [`obc_formats::io::ByteSource`] and writes through a [`MapStore`], so it has no filesystem,
-//!   no native dependency, and nothing that stops it compiling for `wasm32-unknown-unknown` — which
-//!   CI guards, because P4 runs exactly this code in a browser tab.
-//! - The **CLI** (`src/main.rs`) is a thin native driver: it opens files, implements the store over
-//!   them, and prints. It owns every `std::fs` call in the crate.
-//! - The **oracle** (`tests/oracle.rs`) is the acceptance bar of #1024: `pack(X)` versus
-//!   `assemble(cut(X))` over the same snapped bbox, compared as *pixels* through the real renderer
-//!   and as *routes* through the real A\*.
+//! The engine is GEOS-free and target-neutral. It reads through [`obc_formats::io::ByteSource`] and
+//! writes through a [`MapStore`], so it has no filesystem and nothing that stops it compiling for
+//! `wasm32-unknown-unknown` — which CI guards, because the builder runs exactly this code in a
+//! browser tab. The CLI (`src/main.rs`) is a thin native driver and owns every `std::fs` call in
+//! the crate. The oracle (`tests/oracle.rs`) compares `pack(X)` against `assemble(cut(X))` over the
+//! same snapped bbox, as pixels through the real renderer and as routes through the real A\*.
 //!
 //! # Order of operations
 //!
-//! 1. Open every cell through the real reader and refuse the §4.1 disagreements.
-//! 2. Snap the assembly bbox (§4.2) — never shrink it afterwards.
-//! 3. Rebuild the POI section (§4.5) and the nav graph (§4.6). Both are sized here, which is what
-//!    lets every later offset be computed instead of back-patched.
+//! 1. Open every cell through the real reader and refuse the preconditions it fails.
+//! 2. Snap the assembly bbox, and never shrink it afterwards.
+//! 3. Rebuild the POI section and the nav graph. Both are sized here, which is what lets every
+//!    later offset be computed instead of back-patched.
 //! 4. Prepare the raster, if the catalog published one — every terrain cell checked and placed, and
-//!    the §1.3 region's length settled, because the header states it and the header goes out first.
+//!    the terrain region's length settled, because the header states it and goes out first.
 //! 5. Plan the map: one file, the full ladder, the two rebuilt sections and the spliced raster.
-//! 6. Write it, then verify it through the real reader (§4.8) — including the terrain region, read
-//!    back through the §1.3 window the header now names.
+//! 6. Write it, then verify it through the real reader, including the terrain region read back
+//!    through the window the header now names.
 //!
-//! # One file
+//! # Which half of the size rule lives here
 //!
-//! It used to be a *set*: an OBCS manifest plus 1..N OBCM shards partitioned by band role, because
-//! FAT32 capped a file at `4 GiB − 1` and OBCM's own offsets were `uint32`. Both walls are gone (the
-//! flat store, and v14's scaled offsets), so the roles, the tiling, the manifest, the binding and
-//! the half-bound refusal are all gone with them, and the raster that used to be a fourth file is
-//! spliced into the map's tail (`OBCM_Spec.md` §1.3). What survives from §5 is the *projection*:
-//! every byte is computable before it is written, which is what the ceiling is applied to.
+//! The spec's safety property names two actors, and the split is worth stating because half of it
+//! reads like an obligation this code is shirking:
 //!
-//! # Which half of §5.7 lives here
-//!
-//! §5.7 is the design's safety property and it names **two** actors. This crate is only one of them,
-//! and the split is worth stating because half of that section reads like an obligation this code is
-//! shirking:
-//!
-//! - **The consumer** MUST project the map *before the download*, from the catalog's published
-//!   per-cell and per-band `bytes`, apply the schema's pessimistic per-cell overhead budget, and
-//!   refuse a selection it cannot store. **None of that can happen here.** The assembler is handed
-//!   cells that have already been fetched; by the time it can compute anything, the download it was
-//!   supposed to prevent has happened. Those MUSTs belong to whatever holds the catalog — the
-//!   builder, #1028. What changed with the set is that the consumer now checks **one** number
-//!   against the card's free space rather than several against a ceiling.
-//! - **The assembler** MUST fail rather than emit an over-size file and MUST NOT "solve" one by
-//!   dropping coverage. That is [`emit::fits_ceiling`], reached from the plan and again from the
-//!   write, [`Summary::warnings`], and §4.8's re-assertion of the file's actual size.
-//!
-//! So the projection is bounded at both ends, by two programs: refused before the fetch by the
-//! catalog consumer, and re-asserted before the write here.
+//! - The consumer projects the map before the download, from the catalog's published per-cell and
+//!   per-band `bytes`, and refuses a selection it cannot store. None of that can happen here: the
+//!   assembler is handed cells that have already been fetched. Those duties belong to whatever
+//!   holds the catalog.
+//! - The assembler fails rather than emits an over-size file, and never "solves" one by dropping
+//!   coverage. That is [`emit::fits_ceiling`], reached from the plan and again from the write,
+//!   [`Summary::warnings`], and the verify pass's re-assertion of the file's actual size.
 // A `debug_assert!` whose arguments have side effects is a release-build hole: the macro does not
 // evaluate them at all, so a `w.begin_section()?` tucked inside one silently stops writing filler
-// in every shipping build while every debug test still passes. That is not hypothetical — it is
-// what FS7.5-writer's review round introduced and the release packer caught. This lint is the
-// guard, and `-D warnings` in CI makes it a refusal.
+// in every shipping build while every debug test still passes.
 #![warn(clippy::debug_assert_with_mut_call)]
 
 use std::collections::HashMap;
@@ -112,22 +89,21 @@ use input::Cell;
 /// a [`Error::Capacity`] is coverage to reduce, and a [`Error::Verify`] is a bug in here.
 #[derive(Debug)]
 pub enum Error {
-    /// A §4.1 precondition: mixed schemas, an unaccepted hole, an unaccepted partial cell.
+    /// A precondition: mixed schemas, an unaccepted hole, an unaccepted partial cell.
     Input(String),
     /// A cell that does not honour the format or the cell contract.
     Format(String),
     /// A ceiling: the per-file interior [`FILE_CEILING`], the `HoursRef` pool, the `uint32` index
-    /// space (§5.7).
+    /// space.
     Capacity(String),
-    /// The §4.8 verify pass rejected the output. A failure here aborts the whole assembly — a
-    /// partially written map is not a degraded one, it is an unmountable one.
+    /// The verify pass rejected the output. A failure here aborts the whole assembly: a partially
+    /// written map is not a degraded one, it is an unmountable one.
     Verify(String),
     /// The byte source or sink failed.
     Io(obc_formats::io::Error),
-    /// The host's [`ScratchStore`] failed — the merge could not spill, or could not read back what
-    /// it spilled. Its own class rather than an [`Error::Io`] because it says something different to
-    /// a caller: the *inputs* and the *output* are fine, the working area is not (no room, no
-    /// permission, a quota), and the message names which.
+    /// The host's [`ScratchStore`] failed. Its own class rather than an [`Error::Io`] because it
+    /// says something different to a caller: the inputs and the output are fine, the working area
+    /// is not.
     Scratch(String),
 }
 
@@ -148,9 +124,8 @@ impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// A monotonic microsecond clock. The engine never calls `std::time` itself: `Instant` is not
-/// available on `wasm32-unknown-unknown`, and phase timings are the epic's watch item, so the host
-/// supplies the clock and the engine reports the split.
+/// A monotonic microsecond clock. The engine never calls `std::time` itself, because `Instant` is
+/// not available on `wasm32-unknown-unknown`, so the host supplies the clock.
 pub trait Clock {
     fn now_us(&self) -> u64;
     /// Optional navigation subphase attribution; does not change assembly behavior.
@@ -166,19 +141,16 @@ impl Clock for NoClock {
     }
 }
 
-/// How many bytes accumulate before [`MapStore::write`] is called — the write-combining
-/// buffer in the shard loop. 1 MiB: big enough that a per-call cost of tens of microseconds (the
-/// wasm host's OPFS crossing) disappears into the stream, small enough to be noise against the
-/// engine's memory budget.
+/// How many bytes accumulate before [`MapStore::write`] is called. 1 MiB: big enough that a
+/// per-call cost of tens of microseconds, which is what the wasm host's OPFS crossing is,
+/// disappears into the stream, and small enough to be noise against the engine's memory budget.
 const SINK_COMBINE: usize = 1024 * 1024;
 
-/// Where the map's bytes go: opened once, streamed into, sealed, then read back for the §4.8
-/// verify.
+/// Where the map's bytes go: opened once, streamed into, sealed, then read back for the verify
+/// pass.
 ///
-/// It used to be a *set* store, with a shard index threaded through every method and a manifest
-/// written last as the atomicity token. There is one file now, so there is no index to thread, and
-/// the atomicity that trick was faking belongs to whatever the host commits into — the flat store's
-/// commit, or a browser save the rider either completes or does not.
+/// Atomicity belongs to whatever the host commits into — the flat store's commit, or a browser save
+/// the rider either completes or does not.
 pub trait MapStore {
     /// Open the map for streaming writes.
     fn begin(&mut self) -> Result<()>;
@@ -231,34 +203,26 @@ impl MapStore for MemoryStore {
 /// What an assembly can be told to do differently.
 #[derive(Clone, Debug)]
 pub struct Options {
-    /// Proceed although a selected cell is missing — the resulting hole is legal (empty leaves), but
-    /// never silent (§4.1).
+    /// Proceed although a selected cell is missing. The resulting hole is legal, as empty leaves,
+    /// but never silent.
     pub accept_holes: bool,
-    /// Proceed although a cell is `partial` (§3.7).
+    /// Proceed although a cell is `partial`.
     pub accept_partial: bool,
-    /// Skip the §4.8 verify pass. The spec makes verification a **precondition of writing a map**,
-    /// so this exists only to measure the phase split in a benchmark; a map written with it must not
-    /// be handed to a device.
+    /// Skip the verify pass. Verification is a precondition of writing a map, so this exists only
+    /// to measure the phase split in a benchmark; a map written with it must not reach a device.
     pub skip_verify: bool,
-    /// The most memory the §4.6 merge's sorted passes may hold at once, in bytes (#1116 D2).
+    /// The most memory the merge's sorted passes may hold at once, in bytes.
     ///
-    /// It is the **budget, not the footprint**: a merge whose node stream is smaller than this never
-    /// spills at all, and one that is larger generates runs of exactly this size and merges them
-    /// back. Either way the answer is the same bytes — `the_merge_is_the_same_map_at_every_budget`
-    /// pins that, and the CLI's `--merge-budget-bytes` is how a real region is re-checked at a
-    /// budget it does not fit in.
-    ///
-    /// A host that is rationed (a browser tab) sets it from what it is allowed to use; the default
-    /// is deliberately modest, because the merge's *other* structures are still resident alongside
-    /// it and the sort is not where a country-scale assembly should spend its heap.
+    /// It is the budget, not the footprint: a merge whose node stream is smaller than this never
+    /// spills, and one that is larger generates runs of exactly this size and merges them back.
+    /// Either way the answer is the same bytes, which
+    /// `the_merge_is_the_same_map_at_every_budget` pins.
     pub merge_budget_bytes: usize,
 }
 
-/// [`Options::merge_budget_bytes`]'s default: 64 MiB.
-///
-/// A state-sized bake's whole node stream is about that (3.0 M nodes × 16 B on baden-württemberg),
-/// so the common case sorts in one run and touches the scratch seam only for the stream itself,
-/// while a country-scale one spills in bounded pieces instead of asking for gigabytes.
+/// [`Options::merge_budget_bytes`]'s default: 64 MiB, which is about a state-sized bake's whole
+/// node stream, so the common case sorts in one run while a country-scale one spills in bounded
+/// pieces instead of asking for gigabytes.
 pub const DEFAULT_MERGE_BUDGET: usize = 64 << 20;
 
 impl Default for Options {
@@ -272,15 +236,15 @@ impl Default for Options {
     }
 }
 
-/// Phase timings and counters — the split the epic's P3 watch item asked for: how much of an
-/// assembly is copy-bound geometry and how much is the nav rewrite.
+/// Phase timings and counters: how much of an assembly is copy-bound geometry, and how much is the
+/// nav rewrite.
 #[derive(Clone, Debug, Default)]
 pub struct Stats {
     pub cells: usize,
     pub open_us: u64,
     pub poi_us: u64,
-    /// Reading, unifying, pruning, renumbering and re-emitting the graph (§4.6) — the assembler's
-    /// one O(rewrite) component.
+    /// Reading, unifying, pruning, renumbering and re-emitting the graph — the assembler's one
+    /// O(rewrite) component.
     pub nav_us: u64,
     pub plan_us: u64,
     /// Writing every shard, which is where the verbatim geometry copy happens.
@@ -290,7 +254,7 @@ pub struct Stats {
     pub nav: NavStats,
     pub poi_records: usize,
     pub poi_duplicates: usize,
-    /// POI records the §7.3 chunk-capacity guard refused (see [`NavStats::dropped_nodes`]).
+    /// POI records the chunk-capacity guard refused (see [`NavStats::dropped_nodes`]).
     pub poi_dropped: usize,
     /// Bytes of geometry copied verbatim — the copy-bound half of the split.
     pub geometry_bytes: u64,
@@ -298,28 +262,26 @@ pub struct Stats {
     pub poi_section_bytes: u64,
 }
 
-/// The terrain half of an assembly (EL4): the store's lattice and the downloaded cells.
+/// The terrain half of an assembly: the store's lattice and the downloaded cells.
 ///
-/// It is a separate argument rather than another [`MapStore`] method because the raster is not a
-/// *stage* of the map's emission that a host could interleave — it is an input, checked and placed
-/// before the header is written, and then streamed into the tail like any other region
-/// (`OBCM_Spec.md` §1.3). The sink it used to carry died with the file it used to be.
+/// A separate argument rather than another [`MapStore`] method, because the raster is not a stage
+/// of the map's emission that a host could interleave: it is an input, checked and placed before
+/// the header is written, then streamed into the tail like any other region.
 pub struct TerrainJob<'a> {
-    /// `OBCC_Spec.md` §13.1's `posting_log2` / `cell_log2`, verbatim from the catalog.
+    /// The lattice's `posting_log2` and `cell_log2`, verbatim from the catalog.
     pub params: TerrainParams,
-    /// The downloaded cells. Known-empty squares are simply absent — an absent cell and an
-    /// all-`NODATA` one answer identically (`OBCT_Spec.md` §4.3), which is §13.6's whole point.
+    /// The downloaded cells. Known-empty squares are simply absent: an absent cell and an
+    /// all-`NODATA` one answer identically.
     pub cells: Vec<TerrainCellInput<'a>>,
 }
 
 /// The spliced raster, as the caller sees it.
 ///
 /// There is no digest here and that is deliberate: the raster is a run of bytes inside the map, and
-/// the map has one identity ([`Summary::sha256`]). See [`terrain`]'s module header for why the
-/// separate `terrain` record's SHA-256 was not replaced by a subrange digest.
+/// the map has one identity ([`Summary::sha256`]).
 #[derive(Clone, Copy, Debug)]
 pub struct TerrainSummary {
-    /// The OBCT container's exact length, before §1.3's round-up to a unit boundary.
+    /// The OBCT container's exact length, before the round-up to a unit boundary.
     pub bytes: u64,
     /// Cells with a block in the region.
     pub cells: usize,
@@ -334,23 +296,21 @@ pub struct Summary {
     /// The whole file, raster included.
     pub bytes: u64,
     pub sha256: [u8; 32],
-    /// The §4.8 report, or `None` under [`Options::skip_verify`].
+    /// The verify report, or `None` under [`Options::skip_verify`].
     pub verify: Option<VerifyReport>,
     /// The map's terrain region, or `None` when the assembly carries no raster — an ordinary,
-    /// complete map whose profiles are flat (`OBCC_Spec.md` §13).
+    /// complete map whose profiles are flat.
     pub terrain: Option<TerrainSummary>,
     pub stats: Stats,
-    /// Everything the spec says a producer SHOULD *report* rather than refuse: §5.7's headroom
-    /// warning, §4.5.2's dropped duplicate POIs, `OBCM_Spec.md` §8.3's degree-cap truncations, and a
-    /// chunk-capacity drop from either quadtree.
+    /// Everything a producer reports rather than refuses: the headroom warning, dropped duplicate
+    /// POIs, degree-cap truncations, and a chunk-capacity drop from either quadtree.
     ///
-    /// The engine has no stderr — it runs in a browser tab — so a warning is a value it returns and
-    /// the host decides what to do with. A caller that ignores this field ships the same bytes; a
-    /// caller that prints it tells the rider what the spec wanted them told.
+    /// The engine has no stderr, because it runs in a browser tab, so a warning is a value it
+    /// returns and the host decides what to do with it.
     pub warnings: Vec<String>,
 }
 
-/// Assemble `cells` into one map file (§4).
+/// Assemble `cells` into one map file.
 pub fn assemble(
     cells: Vec<CellInput<'_>>,
     schema: &Schema,
@@ -364,9 +324,8 @@ pub fn assemble(
 
 /// The scratch a caller that has not supplied one gets: [`MemoryScratch`].
 ///
-/// It keeps the small API small, and it is honest about what it costs — a spill held in RAM is the
-/// residency the spill exists to remove, so a host that is rationed should hand in its own (the CLI
-/// hands in temp files) rather than take this.
+/// A spill held in RAM is the residency the spill exists to remove, so a host that is rationed
+/// should hand in its own; the CLI hands in temp files.
 // The same eight things `assemble_full` takes, minus the seam this supplies.
 #[allow(clippy::too_many_arguments)]
 fn assemble_with_default_scratch(
@@ -400,19 +359,17 @@ pub fn assemble_with_known_empty(
     assemble_with_default_scratch(cells, known_empty, None, schema, skin, opts, store, clock)
 }
 
-/// Assemble the map, with the raster spliced in if there is one (EL4 #1072, `OBCM_Spec.md` §1.3).
+/// Assemble the map, with the raster spliced in if there is one.
 ///
-/// The raster is **prepared before the layout and emitted inside the write**, which is the only
-/// order §1.3 admits: the region's offset and length live in the header, and the header is the first
-/// thing written. A terrain failure therefore aborts before a byte goes out rather than leaving a
-/// half-elevated file behind.
+/// The raster is prepared before the layout and emitted inside the write, which is the only order
+/// the format admits: the region's offset and length live in the header, and the header is the
+/// first thing written. A terrain failure therefore aborts before a byte goes out rather than
+/// leaving a half-elevated file behind.
 ///
-/// `scratch` is where the §4.6 merge spills the passes it may not hold in memory (#1116 D2) — the
-/// third host seam, alongside the store and the clock, and the reason the engine can sort a
-/// country-scale graph without a filesystem of its own. [`assemble`] and
-/// [`assemble_with_known_empty`] supply a [`MemoryScratch`] for callers that have nowhere to put it.
-// One assembly is exactly these nine things; a struct would restate the signature (see
-// `build_map` for the same call).
+/// `scratch` is where the merge spills the passes it may not hold in memory — the third host seam,
+/// alongside the store and the clock, and the reason the engine can sort a country-scale graph
+/// without a filesystem of its own.
+// One assembly is exactly these nine things; a struct would restate the signature.
 #[allow(clippy::too_many_arguments)]
 pub fn assemble_full(
     cells: Vec<CellInput<'_>>,
@@ -430,7 +387,7 @@ pub fn assemble_full(
     let styles = skin.resolve(schema).map_err(Error::Input)?;
     let mut warnings: Vec<String> = Vec::new();
 
-    // --- 1. Open every cell through the real reader, and refuse the §4.1 disagreements. ---
+    // 1. Open every cell through the real reader, and refuse the disagreements.
     let cache = obc_reader::MapCache::new_boxed();
     let mut open: Vec<Cell<'_>> = Vec::with_capacity(cells.len());
     for c in cells {
@@ -473,19 +430,19 @@ pub fn assemble_full(
     }
     let t_open = clock.now_us();
 
-    // Coverage sanity (§4.1): a missing cell inside the selection is legal and produces empty
-    // leaves, but the caller has to have said so.
+    // A missing cell inside the selection is legal and produces empty leaves, but the caller has
+    // to have said so.
     let profile_table = cells[0].profile_table.clone();
     let chunk_size = pick_chunk_size(schema, &cells)?;
 
-    // --- 2. The assembly bbox: the minimal grid-aligned power-of-two box (§4.2). ---
+    // 2. The assembly bbox: the minimal grid-aligned power-of-two box.
     let ids: Vec<CellId> = coverage.iter().map(|(_, id)| *id).collect();
     let assembly = grid::assembly_box(&ids, schema.s_max_log2()).map_err(Error::Input)?;
     if !opts.accept_holes {
         check_no_holes(schema, &coverage)?;
     }
 
-    // --- 3. The two rebuilds. POIs are cheap; the nav graph is the assembler's real work. ---
+    // 3. The two rebuilds. POIs are cheap; the nav graph is the assembler's real work.
     let core_band = schema.core_band().expect("validated: exactly one core band");
     let core_cells: Vec<&Cell<'_>> = cells.iter().filter(|c| c.band == core_band.id).collect();
     let mut merged_pois = poi::merge(&core_cells)?;
@@ -504,12 +461,9 @@ pub fn assemble_full(
     )?;
     let t_nav = clock.now_us();
 
-    // --- 4. The raster, prepared before anything is laid out. ---
-    //
-    // §1.3's region pointer is a **header** field, so the map cannot be laid out until the raster's
-    // length is known, and the length is not known until every cell has been checked and placed.
-    // That ordering is why this runs here rather than beside the write: a bad terrain cell must
-    // abort the assembly before the header commits to a region that will not be there.
+    // 4. The raster, prepared before anything is laid out. Its region pointer is a header field,
+    // so the map cannot be laid out until every cell has been checked and placed: a bad terrain
+    // cell must abort before the header commits to a region that will not be there.
     let terrain_region = match &terrain {
         None => None,
         Some(job) => {
@@ -518,13 +472,13 @@ pub fn assemble_full(
             Some(terrain::TerrainRegion::prepare(plan, &job.cells)?)
         }
     };
-    // The raster answers to the same wall as everything else now, and is refused at plan time for
-    // the same reason: a region this engine cannot address is one it must not start writing.
+    // The raster answers to the same wall as everything else: a region this engine cannot address
+    // is one it must not start writing.
     if let Some(region) = &terrain_region {
         emit::fits_ceiling(region.bytes(), "the terrain region")?;
     }
 
-    // --- 5. Plan the map. ---
+    // 5. Plan the map.
     let style_len = emit::pack_style_table(&styles).len();
     let poi_len = poi_section.section_len();
     let nav_projection = merged_nav.projection(&profile_table);
@@ -555,7 +509,7 @@ pub fn assemble_full(
         ..Default::default()
     };
 
-    // Everything the spec says to report rather than refuse (§4.5.2, §5.7, `OBCM_Spec.md` §8.3).
+    // Everything a producer reports rather than refuses.
     if stats.poi_duplicates > 0 {
         warnings.push(format!(
             "{} POI record(s) were dropped as duplicates of a source identity already seen. §3.6 gives each POI \
@@ -588,17 +542,15 @@ pub fn assemble_full(
             plan.bytes
         ));
     }
-    // --- 6. Write the one file, then read it back through the real reader (§4.8). ---
+    // 6. Write the one file, then read it back through the real reader.
     let t0 = clock.now_us();
     store.begin()?;
     let (bytes, digest) = {
-        // Write-combining, because the emitters hand this sink records of tens of bytes — §8.2
-        // chunks, pool records, pad runs — millions of times at country scale. A native file absorbs
-        // that at a microsecond a call; the wasm host's every call is an OPFS crossing at tens of
-        // them, which turned a measured 25 s native Switzerland into a projected hour in a tab.
-        // Combining *here* keeps every MapStore dumb and the byte stream identical; the flush sits
-        // before `seal` because the wasm sink's append cursor is the truncation point seal pins the
-        // file's length to.
+        // Write-combining, because the emitters hand this sink records of tens of bytes millions of
+        // times at country scale. A native file absorbs that at a microsecond a call; the wasm
+        // host's every call is an OPFS crossing at tens of them. Combining here keeps every
+        // MapStore dumb and the byte stream identical, and the flush sits before `seal` because the
+        // wasm sink's append cursor is the truncation point seal pins the file's length to.
         let mut pending: Vec<u8> = Vec::with_capacity(SINK_COMBINE);
         let mut sink = |buf: &[u8]| -> Result<()> {
             if buf.len() >= SINK_COMBINE {
@@ -654,8 +606,8 @@ pub fn assemble_full(
             )));
         }
         let report = verify::verify_map(src, plan.box_, scratch, opts.merge_budget_bytes)?;
-        // §4.8 on the raster, through the §1.3 window the header now names — so what is checked is
-        // the region a *device* will resolve, not a file the assembler happens to still have open.
+        // Verify the raster through the window the header now names, so what is checked is the
+        // region a device will resolve, not a file the assembler happens to still have open.
         if let Some(region) = &terrain_region {
             let window = verify::terrain_window(src)?;
             region.verify(&window)?;
@@ -713,16 +665,14 @@ fn pick_chunk_size(schema: &Schema, cells: &[Cell<'_>]) -> Result<usize> {
     }
 }
 
-/// §4.1: every band's coverage must be the cells whose square intersects the selection. The
-/// assembler cannot know the caller's selection polygon, so it applies the checkable half — a band
-/// that covers strictly less ground than the selection's finest cells do has a hole in it, and a
-/// hole must be accepted, never discovered.
+/// Every band's coverage must be the cells whose square intersects the selection. The assembler
+/// cannot know the caller's selection polygon, so it applies the checkable half: a band that covers
+/// strictly less ground than the selection's finest cells do has a hole in it, and a hole must be
+/// accepted, never discovered.
 ///
-/// The footprint is every cell of **every** band at the smallest cell size in the table, not one
-/// band picked from among them. At the v1 table `fine` and `network` share `2^18`, so "the finest
-/// band" is a tie that `max_by_key` would resolve by table position — which decides *which* of two
-/// under-covered bands gets reported, and can let the other one's hole through. Taking their union
-/// removes the tie-break and checks strictly more.
+/// The footprint is every cell of every band at the smallest cell size in the table. Two bands can
+/// share that size, so picking one of them would decide which of two under-covered bands gets
+/// reported and could let the other one's hole through.
 fn check_no_holes(schema: &Schema, coverage: &[(String, CellId)]) -> Result<()> {
     let Some(finest_log2) = schema.bands.iter().map(|b| b.cell_log2).min() else { return Ok(()) };
     let footprint: Vec<CellId> = {
@@ -755,12 +705,6 @@ fn check_no_holes(schema: &Schema, coverage: &[(String, CellId)]) -> Result<()> 
 
 /// Plan the map: the full ladder in one file, sized from the graft plans and the three rebuilt
 /// pieces.
-///
-/// This used to be a *set* planner — a single-file fast path, and behind it a core shard carrying
-/// the nav graph and POIs, one coarse shard spanning the assembly, and a recursive quadtree split of
-/// the geometry role into as many shards as a target size demanded, with a role-completeness check
-/// and a 32-shard cap. All of it existed to work around two 4 GiB ceilings. Both are gone, so what
-/// is left is the thing the fast path already did: build one plan, over every LOD.
 fn plan_map(
     schema: &Schema,
     cells: &[Cell<'_>],
@@ -777,18 +721,14 @@ fn plan_map(
     plan.landmark_bytes = landmark_bytes;
     plan.peak_bytes = peak_bytes;
     plan.bytes = emit::projected_bytes(&plan, style_len, poi_len, nav_projection)?;
-    // **The gate is the refusal.** Taking this path means "this file may be written", and what a
-    // file has to clear is `emit::fits_ceiling` and nothing else. Open-coding the comparison here
-    // read identically and was how FS7.5-seam's `single_file` bug survived review: a site that said
-    // `FILE_CEILING` while the writable wall was smaller. There is one wall now, which removes the
-    // *class* of that bug rather than merely its instance — but the routing stays, because the
-    // property worth keeping is "one comparison in the crate", not "the two constants happen to be
-    // equal today".
+    // The gate is the refusal: what a file has to clear is `emit::fits_ceiling` and nothing else.
+    // The property worth keeping is one comparison in the crate, not two constants that happen to
+    // be equal today.
     emit::fits_ceiling(plan.bytes, "the map")?;
     Ok(plan)
 }
 
-/// Build the map's plan: a graft plan per ladder level (§3.1).
+/// Build the map's plan: a graft plan per ladder level.
 fn build_map(
     schema: &Schema,
     cells: &[Cell<'_>],
