@@ -1,14 +1,13 @@
 import SwiftUI
 
-/// **Disconnected Banner / inline banners** (§9, NEW) — the slim tinted strip
-/// below the top bar. Amber tone for out-of-range (S4), warning tone for
-/// sync-interrupted (H10), with an optional inline action ("Resume").
-/// Reconnection is silent — the banner just disappears.
+/// The slim tinted strip below the top bar. Amber for out of range, warning red for
+/// an interrupted sync, with an optional inline action. Reconnection is silent: the
+/// banner just disappears.
 public struct OBCInlineBanner: View {
     public enum Tone {
-        /// Out-of-range / informational (amber).
+        /// Out of range, or informational.
         case amber
-        /// Interrupted / failed (warning red).
+        /// Interrupted or failed.
         case warning
 
         var accent: Color {
@@ -82,8 +81,7 @@ public struct OBCInlineBanner: View {
     }
 }
 
-/// **Toast** (§9, NEW) — the transient ink capsule ("You're up to date…", H9):
-/// ink background, parchment text, amber check. Presented via `.obcToast`.
+/// A transient ink capsule with parchment text, presented through `.obcToast`.
 public struct OBCToast: View {
     let systemImage: String
     let message: String
@@ -112,8 +110,8 @@ public struct OBCToast: View {
 }
 
 public extension View {
-    /// Overlays a transient `OBCToast` at the top edge; auto-dismisses after
-    /// `duration` (design: a quiet ~2s, then back to idle).
+    /// Overlays a transient `OBCToast` at the top edge; it auto-dismisses after
+    /// `duration`.
     func obcToast(
         isPresented: Binding<Bool>,
         systemImage: String = "checkmark",

@@ -3,15 +3,10 @@ import Testing
 import OBCDomain
 @testable import OBCTransport
 
-/// The app half of the shared OBCU pin: `specs/vectors/update-container-v2.bin` (the
-/// signed container a release publishes) and `update-container-v1.bin` (unsigned — the
-/// shape the device refuses, and the other half of the §1.2 offset-compatibility pin).
-/// The same bytes `obc-dfu` decodes in `cargo test -p obc-dfu --test vectors` and
-/// `obc-vectors` regenerates. A drift on either side goes red, so the files are the
-/// firmware↔app contract for the update container (`OBCU_Spec.md` §1 / spec §7.6).
+/// The app half of the shared OBCU pin: the signed container a release publishes
+/// (`specs/vectors/update-container-v2.bin`) and the unsigned shape the device refuses
+/// (`update-container-v1.bin`). `obc-vectors` regenerates them; a drift on either side goes red.
 struct OBCUHeaderTests {
-    /// `specs/vectors/`, resolved from this file's location
-    /// (companion-ios/Packages/OBCKit/Tests/OBCTransportTests/…).
     private static let vectorsDir = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent() // OBCTransportTests
         .deletingLastPathComponent() // Tests
@@ -45,9 +40,8 @@ struct OBCUHeaderTests {
         #expect(CRC32.checksum(container.prefix(OBCUHeader.headerCRCLength)) == 0x53AF_7E37)
     }
 
-    /// §1.2, from the app's side: a v2 header still reads as header-version `1`, and every
-    /// field this decoder looks at is byte-identical to the v1 fixture's. That is the
-    /// property that lets a bootloader flashed before v2 existed install a v2 image.
+    /// A v2 header still reads as header-version 1, and every field this decoder looks at is
+    /// byte-identical to the v1 fixture's. That is what lets an older bootloader install a v2 image.
     @Test func readsEveryV1FieldIdenticallyFromBothContainers() throws {
         let v1 = try fixture("update-container-v1.bin")
         let v2 = try fixture("update-container-v2.bin")
@@ -61,7 +55,7 @@ struct OBCUHeaderTests {
         #expect(Array(v1.prefix(48)) == Array(v2.prefix(48)))
         #expect(h1.sigScheme == OBCUHeader.sigSchemeNone)
         #expect(h2.sigScheme == OBCUHeader.sigSchemeEd25519)
-        // And the image sits at the same offset in both.
+        // The image sits at the same offset in both.
         let imageV1 = v1[(v1.startIndex + OBCUHeader.length)...]
         let imageV2 = v2[(v2.startIndex + OBCUHeader.length) ..< (v2.startIndex + OBCUHeader.length + 128)]
         #expect(Array(imageV1) == Array(imageV2))
@@ -108,8 +102,7 @@ struct OBCUHeaderTests {
         // Drop the last 10 image bytes: the header says 128, the body is now short.
         let short = container.prefix(container.count - 10)
         #expect(throws: FirmwareImageError.truncated) { try StagedFirmware.validate(Data(short)) }
-        // The whole trailer missing is the same verdict — a v1-length file whose header
-        // promises a signature (the regression that a naive `64 + image_len` trim causes).
+        // A file whose header promises a signature but ends at `64 + image_len` is truncated too.
         let noTrailer = container.prefix(OBCUHeader.length + 128)
         #expect(throws: FirmwareImageError.truncated) { try StagedFirmware.validate(Data(noTrailer)) }
     }
@@ -118,18 +111,16 @@ struct OBCUHeaderTests {
         #expect(throws: FirmwareImageError.tooSmall) { try StagedFirmware.validate(Data(count: 32)) }
     }
 
-    /// §1.4: the device installs signed containers only, so the picker refuses an unsigned
-    /// one rather than spending a transfer on a file that will be refused on arrival.
+    /// The device installs signed containers only, so the picker refuses an unsigned one rather
+    /// than spending a transfer on it.
     @Test func rejectsAnUnsignedContainer() throws {
         let v1 = try fixture("update-container-v1.bin")
         #expect(OBCUHeader.decode(v1.prefix(OBCUHeader.length)) != nil, "it still *decodes*")
         #expect(throws: FirmwareImageError.unsigned) { try StagedFirmware.validate(v1) }
     }
 
-    /// Trailing bytes past `64 + image_len + sig_len` are FAT-cluster slack, not an error
-    /// (`OBCU_Spec.md` §1.1; the firmware armer accepts `file_len >= container_len`).
-    /// The container is trimmed to exactly the container length — the signature trailer is
-    /// **kept**, only the slack past it is dropped (DR5, #733; #997).
+    /// Trailing bytes past `64 + image_len + sig_len` are FAT-cluster slack, not an error. The
+    /// container is trimmed to the exact container length; the signature trailer stays.
     @Test func acceptsTrailingSlackAndTrimsToExactLength() throws {
         let container = try fixture("update-container-v2.bin")
         var padded = container
@@ -137,15 +128,13 @@ struct OBCUHeaderTests {
         #expect(padded.count == 256 + 512)
 
         let staged = try StagedFirmware.validate(padded)
-        // Validates despite the slack, and the staged container is trimmed back to exactly
-        // header + image + signature (256) — the transfer never streams the 512 slack bytes.
+        // The transfer never streams the 512 slack bytes.
         #expect(staged.imageByteCount == 128)
         #expect(staged.byteCount == 256)
         #expect(staged.container == container)
     }
 
-    /// The `installFw` reply-code mapping (spec §4.3 → §4.4): each `commandResult`
-    /// status maps to exactly one request outcome.
+    /// Each `commandResult` status maps to exactly one install outcome.
     @Test(arguments: [
         (CommandResult.Status.ok, FirmwareInstallResult.accepted),
         (.notFound, .noStaged),

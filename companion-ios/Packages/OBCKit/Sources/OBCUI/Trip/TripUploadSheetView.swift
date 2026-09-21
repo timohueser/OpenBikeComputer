@@ -2,11 +2,10 @@ import SwiftUI
 import OBCDomain
 import OBCTransport
 
-/// The **whole-trip upload sheet** (TR8) — the queued mode of the upload sheet
-/// (design F/F₂), presented over the trip page. It's the single-route sheet with
-/// a "Stage X of Y — <name>" header over the per-transfer bar, and a
-/// skipped/committed tally in the done state. Interruption and cancel read the
-/// same as a single upload (uploads restart, not resume).
+/// The whole-trip upload sheet: the queued mode of the upload sheet, presented over
+/// the trip page. It is the single-route sheet with a "Stage X of Y" header over the
+/// per-transfer bar, and a skipped and committed tally in the done state. Interruption
+/// and cancel read the same as a single upload: uploads restart, they do not resume.
 public struct TripUploadSheetView: View {
     private let model: TripUploadModel
     @Environment(\.dismiss) private var dismiss
@@ -47,7 +46,7 @@ public struct TripUploadSheetView: View {
         case .failed: 320
         }
     }
-    // MARK: F — uploading (queued)
+    // MARK: Uploading the queue
 
     @ViewBuilder
     private func progressContent(interrupted: Bool) -> some View {
@@ -115,7 +114,7 @@ public struct TripUploadSheetView: View {
         }
     }
 
-    // MARK: F₂ — done (with the tally)
+    // MARK: Done, with the tally
 
     private var doneContent: some View {
         VStack(spacing: 0) {
@@ -156,7 +155,7 @@ public struct TripUploadSheetView: View {
         .frame(maxWidth: .infinity)
     }
 
-    // MARK: Failed (precheck deficit, or a device reject mid-queue)
+    // MARK: Failed, from a precheck deficit or a device reject mid-queue
 
     private var failedContent: some View {
         VStack(spacing: 0) {

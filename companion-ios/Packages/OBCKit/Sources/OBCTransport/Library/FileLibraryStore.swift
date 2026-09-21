@@ -55,21 +55,20 @@ public struct FileLibraryStore: LibraryStore, Sendable {
         writeSourceSidecar(record.sourceFileData, named: record.sourceFileName, in: dir)
     }
 
-    /// Persist the byte-exact original import file as the `source.<ext>` sidecar.
-    /// A **replace-import** reuses the record's id, so the sidecar already exists
-    /// and may carry both different bytes *and* a different extension (GPX→TCX) —
-    /// rewrite when the content changed and sweep any stale-extension sidecar, so
-    /// `plannedRoutes()` never reads the old file (or an empty `Data()`). A plain
-    /// rename keeps the same bytes, so the multi-MB write is still skipped.
+    /// Persist the byte-exact original import file as the `source.<ext>` sidecar. A replace-import
+    /// reuses the record's id, so the sidecar already exists and may carry both different bytes and
+    /// a different extension. Rewrite when the content changed, and sweep any stale-extension
+    /// sidecar, so a later read never picks up the old file. A plain rename keeps the same bytes,
+    /// so the multi-MB write is still skipped.
     private func writeSourceSidecar(_ data: Data, named fileName: String, in dir: URL) {
         let targetName = Self.sourceName(for: fileName)
         let target = dir.appendingPathComponent(targetName)
-        // Drop any earlier sidecar under a different extension (a format change).
+        // Drop any earlier sidecar under a different extension, after a format change.
         for url in contents(of: dir)
         where url.lastPathComponent.hasPrefix("source.") && url.lastPathComponent != targetName {
             try? FileManager.default.removeItem(at: url)
         }
-        // Only touch the file when it's missing or its bytes actually changed.
+        // Only touch the file when it is missing or its bytes actually changed.
         if (try? Data(contentsOf: target)) != data {
             try? data.write(to: target, options: .atomic)
         }
@@ -78,7 +77,7 @@ public struct FileLibraryStore: LibraryStore, Sendable {
     public func deletePlannedRoute(_ id: RouteID) {
         try? FileManager.default.removeItem(
             at: plannedDir.appendingPathComponent(Self.fileSafe(id.rawValue), isDirectory: true))
-        // Prune the route from any trip that held it (a trip left empty dissolves).
+        // Prune the route from any trip that held it; a trip left empty dissolves.
         for var trip in storedTripRecords() where trip.stageIDs.contains(id) {
             trip.stageIDs.removeAll { $0 == id }
             if trip.stageIDs.isEmpty {
@@ -96,8 +95,8 @@ public struct FileLibraryStore: LibraryStore, Sendable {
         return storedTripRecords()
             .compactMap { trip -> TripRecord? in
                 var trip = trip
-                // Drop dangling stage ids (a route record gone out from under the
-                // trip); a trip with nothing resolvable left is dropped.
+                // Drop dangling stage ids, where a route record went out from under the trip. A
+                // trip with nothing resolvable left is dropped.
                 trip.stageIDs = trip.stageIDs.filter(alive.contains)
                 return trip.stageIDs.isEmpty ? nil : trip
             }
@@ -106,8 +105,8 @@ public struct FileLibraryStore: LibraryStore, Sendable {
 
     public func saveTrip(_ record: TripRecord) {
         writeTrip(record)
-        // Invariant: a RouteID lives in ≤ 1 trip — strip the saved trip's stages
-        // from every other stored trip; one thereby emptied dissolves.
+        // Invariant: a RouteID lives in at most one trip. Strip the saved trip's stages from every
+        // other stored trip; one thereby emptied dissolves.
         let claimed = Set(record.stageIDs)
         for var other in storedTripRecords() where other.id != record.id {
             let kept = other.stageIDs.filter { !claimed.contains($0) }
@@ -125,8 +124,8 @@ public struct FileLibraryStore: LibraryStore, Sendable {
         removeTripFile(id)
     }
 
-    /// Every stored trip, unpruned (the raw on-disk view the invariant + prune
-    /// logic operate on; `trips()` is the pruned public read).
+    /// Every stored trip, unpruned: the raw on-disk view the invariant and prune logic operate on.
+    /// `trips()` is the pruned public read.
     private func storedTripRecords() -> [TripRecord] {
         contents(of: tripsDir).compactMap { url -> TripRecord? in
             guard url.pathExtension == "json",
@@ -136,9 +135,8 @@ public struct FileLibraryStore: LibraryStore, Sendable {
         }
     }
 
-    /// The set of planned-route ids currently on disk — read from each
-    /// `route.json` (no source-sidecar load), the alive-set the trip read prunes
-    /// dangling stages against.
+    /// The planned-route ids currently on disk, read without loading the source sidecars. The
+    /// alive set the trip read prunes dangling stages against.
     private func existingRouteIDs() -> Set<RouteID> {
         Set(
             contents(of: plannedDir).compactMap { dir -> RouteID? in
@@ -361,9 +359,9 @@ public struct FileLibraryStore: LibraryStore, Sendable {
     private static let schemaVersion = 1
     /// The summary manifest and complete canonical point records share one version.
     private static let rideSchemaVersion = 3
-    /// Trips version independently of planned routes (the `rideSchemaVersion`
-    /// precedent) — used on **both** the write and the read side, so a future
-    /// planned-route bump can't silently stop stored trips from loading.
+    /// Trips version independently of planned routes, and the version is used on both the write
+    /// and the read side, so a future planned-route bump cannot silently stop stored trips from
+    /// loading.
     fileprivate static let tripSchemaVersion = 1
 
     private var plannedDir: URL { directory.appendingPathComponent("planned", isDirectory: true) }
@@ -409,9 +407,9 @@ public struct FileLibraryStore: LibraryStore, Sendable {
         return try? decoder.decode(T.self, from: data)
     }
 
-    /// Small metadata files stay pretty-printed (diffable, debuggable); the bulky
-    /// points file passes `[.sortedKeys]` alone — compact is roughly a third of
-    /// the pretty size on a real tracklog.
+    /// Small metadata files stay pretty-printed, so they are diffable and debuggable. The bulky
+    /// points file passes `[.sortedKeys]` alone: compact is roughly a third of the pretty size on
+    /// a real tracklog.
     private func write<T: Encodable>(
         _ value: T, to url: URL,
         formatting: JSONEncoder.OutputFormatting = [.prettyPrinted, .sortedKeys]
@@ -430,29 +428,27 @@ public struct FileLibraryStore: LibraryStore, Sendable {
     }
 }
 
-// MARK: - On-disk schema (planned v1, rides v3)
-
-// DTOs, not Codable on the domain types: the file shape is pinned here, so a
-// domain refactor can't silently re-shape saved libraries.
+// MARK: - On-disk schema
+//
+// DTOs, not `Codable` on the domain types: the file shape is pinned here, so a domain refactor
+// cannot silently re-shape saved libraries.
 
 private struct PlannedRouteFile: Codable {
     var version: Int
     var summary: RouteSummaryDTO
     var route: ImportedRouteDTO
     var sourceFileName: String
-    /// The device object id this route is stored under, `nil` when not on the
-    /// device. Optional-decoded, so a pre-B13 file (which lacked it) loads as
-    /// "not uploaded" and self-heals on the next upload/reconcile. Stays a bare
-    /// `UInt64` on disk (the domain's `DeviceObjectID` wraps it at the
-    /// boundary) — no schema bump for #359.
+    /// The device object id this route is stored under, nil when not on the device.
+    /// Optional-decoded, so a file without it loads as "not uploaded" and self-heals on the next
+    /// upload or reconcile. It stays a bare `UInt64` on disk; the domain type wraps it.
     var deviceObjectID: UInt64?
     /// A device link needs its object id, serial, and store identity.
     /// Incomplete links remain unbound until content reconciliation.
     var deviceSerial: String?
     var deviceStoreID: String?
-    /// The committed upload payload's CRC-32 (the `OnDeviceState` fingerprint).
-    /// Optional-decoded: a pre-fingerprint file loads as "content unknown",
-    /// which reads as outdated and self-heals on the next upload.
+    /// The committed upload payload's CRC-32, the device-copy fingerprint. Optional-decoded: a
+    /// file without it loads as "content unknown", which reads as outdated and self-heals on the
+    /// next upload.
     var uploadedCRC32: UInt32?
     var addedAt: Date
 
@@ -489,19 +485,14 @@ private struct PlannedRouteFile: Codable {
     }
 }
 
-/// `trips/<id>.json` (trip schema v1) — a trip's metadata: its name and the
-/// ordered stage route ids. Additive schema (a pre-trips library simply has no
-/// `trips/` dir, so `trips()` reads zero — no migration). Stage ordering is the
-/// file's, i.e. the domain's `stageIDs`, source of truth.
+/// A trip's metadata: its name and the ordered stage route ids. The schema is additive, so a
+/// library with no `trips/` directory simply reads zero trips. Stage ordering is the file's.
 ///
-/// The device link persists exactly the way `PlannedRouteFile`'s does:
-/// `deviceObjectID`/`deviceSerial`/`deviceStoreID` as separate optional
-/// fields, **all-or-nothing on read** — a partial/flat link (id without
-/// serial/store identity) decodes as **no link at all** (#769: the link is only real
-/// when all three parts are present, so it can never light a badge or drive a
-/// replace-by-id against the wrong device or era). The id stays a bare `UInt64`
-/// on disk (the domain's `DeviceObjectID` wraps it at the boundary); link +
-/// fingerprint optional-decoded so a not-yet-uploaded trip loads clean.
+/// The device link persists exactly the way a planned route's does: the object id, serial and
+/// store identity as separate optional fields, all-or-nothing on read. A partial link decodes as
+/// no link at all, so it can never light a badge or drive a replace-by-id against the wrong device
+/// or era. The id stays a bare `UInt64` on disk, and the link and fingerprint are optional-decoded
+/// so a not-yet-uploaded trip loads clean.
 private struct TripFile: Codable {
     var version: Int
     var id: String
@@ -590,13 +581,12 @@ private struct RouteSummaryDTO: Codable {
 }
 
 private struct TrackPreviewDTO: Codable {
-    /// `[x, y]` pairs in unit space — compact for the ~256-point polylines.
+    /// `[x, y]` pairs in unit space, compact for the short preview polylines.
     var points: [[Double]]
     var aspectRatio: Double
-    /// `[lat, lon]` pairs, index-aligned with `points` — the source geography the
-    /// MapKit basemap preview draws (#294). Optional-decoded: a pre-#294 file
-    /// lacked it, so it loads with no coordinates and the preview falls back to
-    /// the grid until the record is re-saved.
+    /// `[lat, lon]` pairs, index-aligned with `points`: the source geography the basemap preview
+    /// draws. Optional-decoded, so a file without it loads with no coordinates and the preview
+    /// falls back to the grid until the record is re-saved.
     var coordinates: [[Double]]?
 
     init(_ preview: TrackPreview) {
@@ -662,10 +652,9 @@ private struct WaypointDTO: Codable {
     var distanceAlongMeters: Double
     var lat: Double
     var lon: Double
-    /// The §7.4 category wire id (`0`/absent = generic) and the signed lateral
-    /// offset, both **optional** so a library written before OBCR v3 still decodes
-    /// — an older record simply reads back generic and on-route, and re-uploading
-    /// it re-derives nothing (the import is where those are fixed).
+    /// The category wire id, where 0 or absent is generic, and the signed lateral offset. Both are
+    /// optional, so an older library still decodes: such a record reads back generic and on-route,
+    /// and the import is where those are fixed.
     var category: UInt8?
     var lateralOffsetMeters: Double?
     var provenance: WaypointProvenance?
@@ -766,9 +755,8 @@ private struct RideSummaryDTO: Codable {
     var averageSpeedMps: Double
     var climbMeters: Double
     var preview: TrackPreviewDTO?
-    // Per-ride BLE-sensor summary (ride object v3 footer) — optional, so a
-    // pre-#707 `summary.json` (written without these keys) still decodes with
-    // every field nil.
+    // The per-ride sensor summary is optional, so a `summary.json` written without these keys
+    // still decodes with every field nil.
     var avgHeartRate: Int?
     var maxHeartRate: Int?
     var avgCadence: Int?
@@ -809,8 +797,8 @@ private struct SyncedRidesFile: Codable {
     var ids: [String]
 }
 
-/// `trashed-rides.json` — the Recently Deleted set (#292): which ride ids are
-/// in the trash and when each landed there (the retention purge's clock).
+/// The Recently Deleted set: which ride ids are in the trash, and when each landed there, which
+/// is the retention purge's clock.
 private struct TrashedRidesFile: Codable {
     struct Entry: Codable {
         var id: String

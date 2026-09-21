@@ -1,9 +1,8 @@
 import XCTest
 
-/// The epic's central invariant, enforced (B1 acceptance: "zero CoreBluetooth
-/// references outside `BLETransport`"). No iOS CI runs yet, so this lives as a
-/// `swift test` guard — the moment any iOS CI is wired, it enforces the seam. It
-/// scans source files on disk rather than symbols so it also catches comments/docs.
+/// The seam invariant: zero CoreBluetooth references outside `BLETransport`. It runs under
+/// `swift test` and scans source files on disk rather than symbols, so it also catches comments
+/// and docs.
 final class CoreBluetoothSeamTests: XCTestCase {
     private let needle = ["import", "CoreBluetooth"].joined(separator: " ")
 
@@ -44,7 +43,7 @@ final class CoreBluetoothSeamTests: XCTestCase {
     }
 
     private func packageRoot() -> URL {
-        // .../Packages/OBCKit/Tests/OBCTransportTests/CoreBluetoothSeamTests.swift → OBCKit
+        // Up three levels from this file to OBCKit.
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -52,7 +51,7 @@ final class CoreBluetoothSeamTests: XCTestCase {
     }
 
     private func companionRoot() -> URL {
-        // OBCKit → Packages → companion-ios
+        // Up two levels from OBCKit to companion-ios.
         packageRoot().deletingLastPathComponent().deletingLastPathComponent()
     }
 }

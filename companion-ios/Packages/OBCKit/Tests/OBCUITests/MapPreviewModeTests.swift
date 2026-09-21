@@ -2,9 +2,9 @@ import XCTest
 import OBCTransport
 @testable import OBCUI
 
-/// The basemap-or-grid decision (#294), extracted from the view so it's testable
-/// without a simulator (the issue's rule). The map only shows with both a network
-/// path and real geometry; every other combination is the intended grid fallback.
+/// The basemap-or-grid decision, extracted from the view so it is testable without a simulator.
+/// The map shows only with both a network path and real geometry; every other combination is the
+/// intended grid fallback.
 final class MapPreviewModeTests: XCTestCase {
     func testMapOnlyWhenOnlineAndHasCoordinates() {
         XCTAssertEqual(MapPreviewMode.resolve(isOnline: true, hasCoordinates: true), .map)

@@ -1,9 +1,9 @@
 import XCTest
 import OBCTransport
 
-/// The reachability seam behind the MapKit basemap (#294). Only `ConstantReachability`
-/// is host-testable (the `NWPathMonitor` conformer needs a real network stack);
-/// it's the one that also backs the `-OBCNetwork` launch override.
+/// The reachability seam behind the MapKit basemap. Only `ConstantReachability` is host-testable;
+/// the `NWPathMonitor` conformer needs a real network stack. It also backs the `-OBCNetwork`
+/// launch override.
 final class ReachabilityTests: XCTestCase {
     func testConstantReachabilityReplaysItsValue() async {
         for value in [true, false] {

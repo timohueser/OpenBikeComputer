@@ -2,10 +2,8 @@ import XCTest
 import OBCDomain
 import OBCTransport
 
-/// B1S acceptance, store-side: the file-backed library round-trips the
-/// canonical models across instances (= app relaunches), keeps the original
-/// import bytes byte-exact, and the synced-ride set survives both a ride
-/// delete and a relaunch (idempotent re-sync, H9).
+/// The file-backed library store: the canonical models round-trip across instances (that is,
+/// app relaunches), import bytes stay byte-exact, and the synced-ride set survives a delete.
 final class LibraryStoreTests: XCTestCase {
     private func pointsURL(in directory: URL, id: String) throws -> URL {
         let ride = directory.appendingPathComponent("rides/\(id)")
@@ -82,7 +80,7 @@ final class LibraryStoreTests: XCTestCase {
         return (FileLibraryStore(directory: dir), dir)
     }
 
-    // MARK: Planned routes — the H4 "survives relaunch" core
+    // MARK: Planned routes
 
     func testPlannedRouteRoundTripsAcrossInstances() {
         let (store, dir) = makeFileStore()
@@ -96,8 +94,7 @@ final class LibraryStoreTests: XCTestCase {
         let relaunched = FileLibraryStore(directory: dir).plannedRoutes()
         XCTAssertEqual(relaunched, [newer, older], "newest first, every field intact")
         XCTAssertEqual(relaunched.first?.sourceFileData, newer.sourceFileData, "original bytes byte-exact")
-        // The basemap coordinates (#294) survive the round-trip — else a
-        // relaunched route would silently drop to the grid preview.
+        // Without the preview coordinates a relaunched route drops to the grid preview.
         XCTAssertEqual(
             relaunched.first?.summary.trackPreview?.coordinates,
             newer.summary.trackPreview?.coordinates
@@ -110,9 +107,8 @@ final class LibraryStoreTests: XCTestCase {
         var record = makeRecord()
         store.savePlannedRoute(record)
 
-        record.summary.name = "Schwarzwald Day 2"   // H12 rename
-        // A later upload lands on device object 7 — under the connected
-        // device's (serial, epoch) scope (#769).
+        record.summary.name = "Schwarzwald Day 2"
+        // A later upload lands on device object 7, under the connected device's scope.
         record.deviceLink = DeviceRouteLink(serial: "OBC-24-000317", storeID: "0000000000000000000000000000002a", objectID: DeviceObjectID(7))
         store.savePlannedRoute(record)
 
@@ -122,8 +118,7 @@ final class LibraryStoreTests: XCTestCase {
     }
 
     func testReplaceImportRewritesSourceSidecar() {
-        // A re-import reuses the id, so the sidecar already exists — the new bytes
-        // must land, not be silently dropped (the old bug kept the stale file).
+        // A re-import reuses the id, so the sidecar already exists: the new bytes must replace it.
         let (store, dir) = makeFileStore()
         store.savePlannedRoute(makeRecord(sourceFileName: "trip.gpx",
                                           sourceFileData: Data("<gpx>v1</gpx>".utf8)))
@@ -136,9 +131,8 @@ final class LibraryStoreTests: XCTestCase {
     }
 
     func testReplaceImportWithFormatChangeSweepsStaleSidecar() {
-        // GPX→TCX changes the sidecar's extension: the new bytes must be readable
-        // and the old-extension sidecar swept, so `plannedRoutes()` can't read the
-        // stale file (whichever `sourceFileName` names).
+        // A format change moves the sidecar's extension. The old-extension file must be swept,
+        // or `plannedRoutes()` can read the stale one.
         let (store, dir) = makeFileStore()
         store.savePlannedRoute(makeRecord(sourceFileName: "trip.gpx",
                                           sourceFileData: Data("<gpx>from gpx</gpx>".utf8)))
@@ -147,7 +141,6 @@ final class LibraryStoreTests: XCTestCase {
 
         let reloaded = FileLibraryStore(directory: dir).plannedRoutes()
         XCTAssertEqual(reloaded.first?.sourceFileData, Data("<tcx>from tcx</tcx>".utf8))
-        // Exactly one sidecar on disk — the stale source.gpx is gone.
         let recordDir = dir.appendingPathComponent("planned/imported-1")
         let sidecars = ((try? FileManager.default.contentsOfDirectory(atPath: recordDir.path)) ?? [])
             .filter { $0.hasPrefix("source.") }
@@ -161,7 +154,6 @@ final class LibraryStoreTests: XCTestCase {
         store.deletePlannedRoute(record.id)
 
         XCTAssertTrue(store.plannedRoutes().isEmpty)
-        // Nothing left behind on disk either — the source sidecar goes with it.
         let planned = dir.appendingPathComponent("planned")
         let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: planned.path)) ?? []
         XCTAssertTrue(leftovers.isEmpty)
@@ -177,16 +169,12 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(FileLibraryStore(directory: dir).plannedRoutes().count, 1)
     }
 
-    // MARK: v1 on-disk compatibility (#359 — no schema bump; #769 — flat links)
+    // MARK: v1 on-disk compatibility
 
     func testV1LibraryFileDecodesWithItsFlatLinkUnclaimed() throws {
-        // A `route.json` written by the pre-#359 store (checked in verbatim,
-        // generated by that code): the record loads untouched — but its
-        // **flat** device link (a bare object id with no serial/epoch, #769)
-        // decodes as *no link at all*: it fails the validity predicate by
-        // construction, so it can never light a badge or drive a
-        // replace-by-id upload against whatever device happens to be
-        // connected. V6's CRC adoption is what re-links such records.
+        // A `route.json` fixture with no scope fields: the record loads untouched, but its flat
+        // device link (a bare object id) decodes as no link at all. It can never light a badge or
+        // drive a replace-by-id upload against whatever device happens to be connected.
         let (store, dir) = makeFileStore()
         let fixture = try XCTUnwrap(Bundle.module.url(
             forResource: "planned-route-v1", withExtension: "json", subdirectory: "Fixtures"))
@@ -202,8 +190,7 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(loaded.route.waypoints.count, 1)
         XCTAssertEqual(loaded.addedAt, Date(timeIntervalSince1970: 1_000))
 
-        // …and the schema version stays 1 across a re-save (#359's rule: the
-        // scope fields are additive, optional-decoded — no bump).
+        // The schema version stays 1 across a re-save: the scope fields are additive and optional.
         store.savePlannedRoute(loaded)
         let json = try XCTUnwrap(try JSONSerialization.jsonObject(
             with: Data(contentsOf: recordDir.appendingPathComponent("route.json"))) as? [String: Any])
@@ -211,7 +198,6 @@ final class LibraryStoreTests: XCTestCase {
     }
 
     func testScopedLinkRoundTripsThroughDisk() throws {
-        // The full store identity survives a relaunch.
         let (store, dir) = makeFileStore()
         var record = makeRecord()
         record.deviceLink = DeviceRouteLink(
@@ -235,7 +221,7 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertNil(store.plannedRoutes().first?.deviceLink)
 
     }
-    // MARK: Rides + the synced set (H9/H10) — split summary/points (#360)
+    // MARK: Rides and the synced set
 
     func testRideSummariesRoundTripNewestFirst() throws {
         let (store, dir) = makeFileStore()
@@ -244,7 +230,6 @@ final class LibraryStoreTests: XCTestCase {
         try store.saveRide(older)
         try store.saveRide(newer)
 
-        // A second instance over the same directory = the app relaunched.
         let summaries = FileLibraryStore(directory: dir).rideSummaries()
         XCTAssertEqual(summaries, [newer.summary, older.summary], "newest first, every field intact")
         XCTAssertEqual(
@@ -263,9 +248,8 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertNil(store.ridePoints(RideID("never-synced")), "an unknown id has no tracklog")
     }
 
-    /// The #360 point: listing summaries must not read — let alone decode — the
-    /// points files. A deliberately corrupt points file proves it (correctness
-    /// beats a flaky timing assert).
+    /// Listing summaries must not read, let alone decode, the points files. A deliberately
+    /// corrupt points file proves it without a flaky timing assert.
     func testRideSummariesNeverDecodeThePointsFiles() throws {
         let (store, dir) = makeFileStore()
         let ride = makeRide()
@@ -279,9 +263,8 @@ final class LibraryStoreTests: XCTestCase {
                      "the corrupt points read degrades to summary-only, not a crash")
     }
 
-    /// Loose perf pin, shape not stopwatch: a big library's summaries all load
-    /// while **every** points file is unreadable — the only way that passes is
-    /// if `rideSummaries()` never touches them.
+    /// A big library lists while every points file is unreadable: the only way that passes is if
+    /// `rideSummaries()` never touches them.
     func testABigLibraryListsWithoutTouchingAnyPointsFile() throws {
         let (store, dir) = makeFileStore()
         for index in 0..<200 {
@@ -294,7 +277,6 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(store.rideSummaries().count, 200)
     }
 
-    /// A saved ride remains browsable when its points file is missing.
     func testMissingPointsFileKeepsTheSummaryRow() throws {
         let (store, dir) = makeFileStore()
         let ride = makeRide()
@@ -306,8 +288,6 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertNil(store.ridePoints(ride.id))
     }
 
-    /// H12 for rides: a rename persists through the summary-only write — the
-    /// tracklog file's bytes stay byte-identical (never re-encoded).
     func testSaveRideSummaryUpdatesTheRowWithoutRewritingPoints() throws {
         let (store, dir) = makeFileStore()
         let ride = makeRide()
@@ -404,8 +384,7 @@ final class LibraryStoreTests: XCTestCase {
 
         let relaunched = FileLibraryStore(directory: dir)
         XCTAssertTrue(relaunched.rideSummaries().isEmpty)
-        // The idempotence marker outlives the ride — a deleted ride must not
-        // come back as "new" on the next sync.
+        // The marker outlives the ride: a deleted ride must not come back as new on the next sync.
         XCTAssertEqual(relaunched.syncedRideIDs(), [ride.id])
     }
 
@@ -416,8 +395,7 @@ final class LibraryStoreTests: XCTestCase {
         store.markRideDeleted(ride.id)
         store.deleteRide(ride.id)
 
-        // The tombstone is what keeps the device's copy (still on its SD card)
-        // out of the merged list after a relaunch.
+        // The tombstone keeps the device's copy out of the merged list after a relaunch.
         XCTAssertEqual(FileLibraryStore(directory: dir).deletedRideIDs(), [ride.id])
     }
 
@@ -434,15 +412,13 @@ final class LibraryStoreTests: XCTestCase {
 
         let relaunched = FileLibraryStore(directory: dir)
         XCTAssertEqual(relaunched.trashedRideIDs(), [kept.id: trashedAt])
-        // Trash is a mark, not a move — the stored files stay readable, which
-        // is what makes Recover instant (#292).
+        // Trash is a mark, not a move: the files stay readable, which makes Recover instant.
         XCTAssertEqual(Set(relaunched.rideSummaries().map(\.id)), [kept.id, recovered.id])
         XCTAssertEqual(relaunched.ridePoints(kept.id), kept.points)
     }
 
     func testAwkwardIDsStayDistinctOnDisk() throws {
-        // Device ride ids are firmware-owned strings — path separators and
-        // near-collisions must not merge records.
+        // Device ride ids are firmware-owned strings: path separators must not merge records.
         let (store, dir) = makeFileStore()
         let a = makeRide(id: "rides/2026-07-01 08:12")
         let b = makeRide(id: "rides_2026-07-01 08:12", name: "Twin")

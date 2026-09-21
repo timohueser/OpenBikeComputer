@@ -3,49 +3,27 @@ import Observation
 import OBCDomain
 import OBCTransport
 
-/// The launch branch + first-run pairing flow (B2, design screens A · D1–D5 ·
-/// H7 · H8). One `@Observable` state machine the host view renders:
+/// The launch branch and the first-run pairing flow, as one `@Observable` state machine the
+/// host view renders; `Phase` below lists the screens.
 ///
-/// ```
-/// start() ─ bonded? ──yes──► connecting (A) ── link up ⊻ hard fail ──► main
-///              │                  │ grace expired (device silent)
-///              │                  ▼
-///              │            connectFailed ── Try again ──► connecting (A)
-///              │                  └─ Go to routes ──► main (S4 banner story)
-///              no
-///              ▼
-///          pairIntro (D1) ─ startPairing ─► scanning (D2) ── found ─► row tap
-///              ▲                              │    │                     │
-///              └── help ── pairFailed (D5) ◄──┘    └► radioBlocked    pairing (D3)
-///                              ▲   │ retry              (H7/H8)         │
-///                              └───┘                                  paired (D4) ─► main
-/// ```
-///
-/// Depends only on `DeviceLink` + `BondStore` (the golden rule). Pairing is a
-/// two-phase connect (#297): `startPairing` runs the un-gated `discover()` (surfaces
-/// the D2 row), and the row tap runs the gated `authenticate()` — the op that raises
-/// the system passkey sheet once the firmware requires encryption (A8), so the sheet
-/// lands in the D3 beat, not on D2. The mock resolves both through `MockControl`'s
-/// radio/pairing gates. "Have we bonded before" comes from the `BondStore`, never a
-/// CoreBluetooth detour.
+/// Depends only on `DeviceLink` and `BondStore`. Pairing is a two-phase connect: `startPairing`
+/// runs the un-gated `discover()`, which surfaces the device row, and the row tap runs the gated
+/// `authenticate()`, the op that raises the system passkey sheet. The sheet therefore lands in
+/// the pairing beat, not on the scanning screen. "Have we bonded before" comes from the
+/// `BondStore`, never from a CoreBluetooth detour.
 @MainActor @Observable
 public final class LaunchFlowModel {
-    /// Why pairing failed — selects the D5 copy variant.
+    /// Why pairing failed; it selects the copy variant.
     public enum PairingFailure: Equatable, Sendable {
         /// Scan ended without finding the device (`DeviceError.deviceNotFound`).
         case timeout
-        /// Found it, but pairing/connection didn't complete. Covers both a
-        /// declined / wrong passkey **and** the device refusing because it's
-        /// already bonded to another phone (#455): the device suppresses its
-        /// passkey and drops the link, and no distinguishable SMP reason reaches
-        /// the app — CoreBluetooth reports only a generic pairing/connection
-        /// failure (spec §8, `OBCProtocol.md`). So this one case carries the
-        /// combined copy that names the already-paired possibility without
-        /// asserting it (#461).
+        /// Found it, but pairing did not complete. Covers a declined or wrong passkey and a
+        /// device that refuses because it is already bonded to another phone: the device
+        /// suppresses its passkey and drops the link, and no distinguishable reason reaches the
+        /// app, so this one case carries the combined copy.
         case rejected
 
-        /// D5 headline for this failure. Lives on the model (not the view) so the
-        /// copy is testable without a rendered SwiftUI hierarchy.
+        /// The headline for this failure. On the model, so the copy is testable without a view.
         public var title: String {
             switch self {
             case .timeout: "Couldn't find your OBC"
@@ -53,12 +31,9 @@ public final class LaunchFlowModel {
             }
         }
 
-        /// D5 body copy. For `.rejected` this is deliberately *combined*: it can't
-        /// tell a declined passkey from an already-bonded refusal (they arrive
-        /// identically over the wire), so it offers both recoveries without
-        /// claiming which one happened — retry the passkey, or, if the device is
-        /// already paired to another phone, clear that bond first with Forget
-        /// phone on the device.
+        /// The body copy. For `.rejected` it is deliberately combined: a declined passkey and an
+        /// already-bonded refusal arrive identically over the wire, so it offers both recoveries
+        /// without claiming which one happened.
         public var reason: String {
             switch self {
             case .timeout:
@@ -69,23 +44,22 @@ public final class LaunchFlowModel {
         }
     }
 
-    /// Why the radio is unusable — H8 (off) vs the post-denial H7 state.
+    /// Why the radio is unusable.
     public enum RadioBlock: Equatable, Sendable {
         case off
         case denied
     }
 
-    /// The device row that slides into the D2 scanning screen.
+    /// The device row that slides into the scanning screen.
     public struct DiscoveredDevice: Equatable, Sendable {
-        /// The clean device name ("Trailhead") — what D4 greets with and what
-        /// the bond record stores.
+        /// The clean device name, which the greeting shows and the bond record stores.
         public var name: String
 
         public init(name: String) {
             self.name = name
         }
 
-        /// What the device advertises ("OBC-Trailhead"), per the design's row.
+        /// What the device advertises.
         public var advertisedName: String {
             name.hasPrefix("OBC-") ? name : "OBC-\(name)"
         }
@@ -93,44 +67,36 @@ public final class LaunchFlowModel {
 
     /// The screen being shown. The host view switches over this exhaustively.
     public enum Phase: Equatable, Sendable {
-        /// Pre-`start()` blank (parchment) — reads as the launch screen.
+        /// Pre-`start()` blank; it reads as the launch screen.
         case idle
-        /// A — bonded, quietly reconnecting. Resolves to `.main` (link up, or a
-        /// hard connect failure that degrades) or `.connectFailed` (grace
-        /// expired with the device silent — asleep / out of range).
+        /// Bonded and quietly reconnecting. Resolves to `.main`, or to `.connectFailed` when the
+        /// grace expires with the device silent.
         case connecting(deviceName: String)
-        /// A-timeout — the bonded device didn't answer within the grace window.
-        /// Try again re-enters A; Go to routes lands on main (the background
-        /// attempt keeps listening either way).
+        /// The bonded device did not answer within the grace window. The background attempt
+        /// keeps listening either way.
         case connectFailed(deviceName: String)
-        /// D1 — the friendly pairing prompt.
         case pairIntro
-        /// D2 — scanning; the row slides in when `discovered` is non-nil.
+        /// Scanning; the row slides in when `discovered` is non-nil.
         case scanning(discovered: DiscoveredDevice?)
-        /// D3 — the beat while the (system) pairing completes.
+        /// The beat while the system pairing completes.
         case pairing
-        /// D4 — success.
         case paired(deviceName: String)
-        /// D5 — calm timeout / failure with retry.
         case pairFailed(PairingFailure)
-        /// H8 / H7-denied — the radio is off or Bluetooth access was denied.
+        /// The radio is off, or Bluetooth access was denied.
         case radioBlocked(RadioBlock)
-        /// Hand over to the main screen (B3; a placeholder until it lands).
+        /// Hand over to the main screen.
         case main
     }
 
-    /// Flow pacing — injectable so the model tests run in milliseconds.
+    /// Flow pacing, injectable so the model tests run in milliseconds.
     public struct Timing: Sendable {
-        /// How long the A state may hold before it resolves ("never a blocking
-        /// full-screen spinner"): the link coming up lands on main, expiry on
-        /// the connect-failed screen — while the connect attempt keeps trying
-        /// in the background.
+        /// How long the connecting state may hold before it resolves: never a blocking
+        /// full-screen spinner. The connect attempt keeps trying in the background either way.
         public var connectGrace: Duration
-        /// The D2 scan window; expiry is the D5 "we scanned for 30 seconds" copy.
+        /// The scan window; expiry drives the "we scanned for 30 seconds" copy.
         public var scanTimeout: Duration
-        /// The minimum D3 dwell after the gated `authenticate()` resolves, so the
-        /// "pairing…" beat is perceptible even when the mock authenticates instantly
-        /// (the real passkey sheet's own dwell already exceeds it).
+        /// The minimum dwell after the gated `authenticate()` resolves, so the pairing beat is
+        /// perceptible even when the mock authenticates instantly.
         public var pairingBeat: Duration
 
         public init(
@@ -170,7 +136,7 @@ public final class LaunchFlowModel {
 
     // MARK: The launch branch
 
-    /// Check the bond and branch (call once, from the host's `.task`).
+    /// Check the bond and branch. Call once.
     public func start() {
         guard phase == .idle else { return }
         if let bond = bondStore.load() {
@@ -183,10 +149,9 @@ public final class LaunchFlowModel {
     private func beginBondedConnect(_ bond: BondRecord) {
         phase = .connecting(deviceName: bond.deviceName)
         flowTask = Task { [transport, timing] in
-            // The state stream replays the latest value — already connected (or
-            // degraded but known) means there is nothing to wait for, and out
-            // of range means the transport's own reconnect loop is already on
-            // it (no fresh attempt).
+            // The state stream replays its latest value: already connected, or degraded but
+            // known, means there is nothing to wait for, and out of range means the transport's
+            // own reconnect loop is already on it.
             var current: ConnectionState?
             for await state in transport.state { current = state; break }
             if current == .connected || current == .outOfRange {
@@ -194,25 +159,19 @@ public final class LaunchFlowModel {
                 return
             }
             startConnectAttemptIfNeeded()
-            // Watch for the link under the grace cap. The connect attempt runs
-            // unstructured (`connectAttempt`) because the real transport's
-            // `connect()` is not cancellation-responsive while it scans for an
-            // absent device: racing it *inside* a task group wedged the group's
-            // implicit drain, holding A on screen forever.
+            // Watch for the link under the grace cap. The connect attempt runs unstructured,
+            // because the real `connect()` is not cancellation-responsive while it scans for an
+            // absent device: racing it inside a task group wedged the group's implicit drain.
             let connected = await Self.linkCameUp(transport.state, within: timing.connectGrace)
             guard !Task.isCancelled else { return }
             phase = connected ? .main : .connectFailed(deviceName: bond.deviceName)
         }
     }
 
-    /// The background bonded-connect attempt — started at most once. While the
-    /// device is out of reach the transport keeps scanning (its reconnect
-    /// contract), so "Try again" re-watches this same attempt under a fresh
-    /// grace window rather than stacking scans. When the attempt resolves it
-    /// finishes a still-waiting A / connect-failed screen: success means the
-    /// link is up; a hard failure (radio off/denied, connect refused) degrades
-    /// to main — the library never locks, and the S4 banner owns the
-    /// degraded-link story.
+    /// The background bonded-connect attempt, started at most once. While the device is out of
+    /// reach the transport keeps scanning, so "Try again" re-watches this same attempt under a
+    /// fresh grace window instead of stacking scans. When it resolves it finishes a still-waiting
+    /// screen: a hard failure degrades to main, because the library never locks.
     private func startConnectAttemptIfNeeded() {
         guard connectAttempt == nil else { return }
         connectAttempt = Task { [transport, weak self] in
@@ -230,8 +189,7 @@ public final class LaunchFlowModel {
     }
 
     /// Whether `states` reports `.connected` within `grace`. Both children are
-    /// cancellation-responsive (stream iteration + sleep), so the group's
-    /// implicit drain cannot wedge.
+    /// cancellation-responsive, so the group's implicit drain cannot wedge.
     private static func linkCameUp(
         _ states: AsyncStream<ConnectionState>,
         within grace: Duration
@@ -251,8 +209,8 @@ public final class LaunchFlowModel {
         }
     }
 
-    /// Connect-failed "Try again": back to A under a fresh grace window. The
-    /// bond vanishing underneath (a raced forget) falls back to the D1 prompt.
+    /// "Try again": back to connecting under a fresh grace window. A bond that vanished
+    /// underneath, from a raced forget, falls back to the pairing prompt.
     public func retryConnect() {
         guard let bond = bondStore.load() else {
             phase = .pairIntro
@@ -264,11 +222,9 @@ public final class LaunchFlowModel {
 
     // MARK: The pairing flow
 
-    /// D1 "Start pairing" (also D5 "Try again"): scan + discover the **un-gated**
-    /// surface under the 30-second window, then surface the found device as the D2
-    /// row. Crucially this is `discover()`, not `connect()` — touching a gated
-    /// characteristic (which raises the LESC passkey sheet) is deferred to the row
-    /// tap so the sheet lands in the D3 beat, not here on D2 (#297).
+    /// Scan and discover the un-gated surface under the scan window, then show the found device
+    /// as a row. This is `discover()`, not `connect()`: touching a gated characteristic raises
+    /// the passkey sheet, and that is deferred to the row tap.
     public func startPairing() {
         flowTask?.cancel()
         phase = .scanning(discovered: nil)
@@ -277,8 +233,7 @@ public final class LaunchFlowModel {
                 try await Self.withScanWindow(timing.scanTimeout) {
                     try await transport.discover()
                 }
-                // Link discovered (un-gated) → the device exists; let the row slide
-                // in and wait for the rider's tap.
+                // The device exists; let the row slide in and wait for the rider's tap.
                 let name = (try? await transport.deviceInfo().name) ?? "OBC"
                 guard !Task.isCancelled else { return }
                 phase = .scanning(discovered: DiscoveredDevice(name: name))
@@ -289,10 +244,9 @@ public final class LaunchFlowModel {
         }
     }
 
-    /// D2 row tap: run the gated `authenticate()` — the operation that raises the
-    /// system passkey sheet on the real path (A8), now landing inside the D3
-    /// "pairing…" beat that's already on screen (#297). On success record the bond
-    /// and celebrate; a decline drops to D5.
+    /// The row tap: run the gated `authenticate()`, the operation that raises the system passkey
+    /// sheet, inside the pairing beat that is already on screen. On success record the bond and
+    /// celebrate; a decline drops to the failure screen.
     public func confirmPairing() {
         guard case .scanning(.some(let device)) = phase else { return }
         phase = .pairing
@@ -304,9 +258,7 @@ public final class LaunchFlowModel {
                 phase = Self.failurePhase(for: error)
                 return
             }
-            // A minimum D3 dwell so success doesn't snap straight to D4 (the mock
-            // authenticates instantly; the real passkey sheet's own dwell already
-            // exceeds this).
+            // A minimum dwell, so success does not snap straight to the greeting.
             try? await Task.sleep(for: timing.pairingBeat)
             guard !Task.isCancelled else { return }
             bondStore.save(BondRecord(deviceName: device.name))
@@ -314,23 +266,20 @@ public final class LaunchFlowModel {
         }
     }
 
-    /// D4 "Go to routes".
     public func finishPairing() {
         phase = .main
     }
 
-    /// D5 "Try again" — loops back to scanning.
     public func retryPairing() {
         startPairing()
     }
 
-    /// D5 "Pairing help" — back to the D1 steps.
     public func showPairingHelp() {
         flowTask?.cancel()
         phase = .pairIntro
     }
 
-    /// D2 "Cancel": stop the scan (or drop a half-open link) and step back.
+    /// Stop the scan, or drop a half-open link, and step back.
     public func cancelScanning() {
         flowTask?.cancel()
         flowTask = Task { [transport] in
@@ -339,17 +288,15 @@ public final class LaunchFlowModel {
         phase = .pairIntro
     }
 
-    /// H8/H7 and connect-failed secondary action — the library never locks
-    /// (S-state law). A still-running connect attempt keeps listening, so the
-    /// link comes up on its own once the device is nearby.
+    /// The library never locks. A still-running connect attempt keeps listening, so the link
+    /// comes up on its own once the device is nearby.
     public func browseLibrary() {
         flowTask?.cancel()
         phase = .main
     }
 
-    /// H2 (Settings → Forget device): the bond record is already cleared and
-    /// the link dropped by the Settings flow — cancel anything in flight and
-    /// return to the D1 pairing prompt.
+    /// The bond record is already cleared and the link dropped by the Settings flow; cancel
+    /// anything in flight and return to the pairing prompt.
     public func forgetDevice() {
         flowTask?.cancel()
         connectAttempt?.cancel()  // its completion must not touch the phase now
@@ -359,9 +306,7 @@ public final class LaunchFlowModel {
 
     // MARK: Helpers
 
-    /// Run `connect` under the scan window; expiry throws `deviceNotFound`
-    /// (the D5 timeout copy). Note the real transport's scan keeps running
-    /// after a cancel today — stopping it early is A8 bring-up polish.
+    /// Run `connect` under the scan window; expiry throws `deviceNotFound`.
     private static func withScanWindow(
         _ window: Duration,
         _ connect: @escaping @Sendable () async throws -> Void
@@ -372,8 +317,7 @@ public final class LaunchFlowModel {
                 try await Task.sleep(for: window)
                 throw DeviceError.deviceNotFound
             }
-            // First child to finish decides; the loser's error (if any) is
-            // discarded with the group.
+            // First child to finish decides; the loser's error is discarded with the group.
             try await group.next()
             group.cancelAll()
         }
@@ -388,7 +332,7 @@ public final class LaunchFlowModel {
         case DeviceError.deviceNotFound:
             return .pairFailed(.timeout)
         case DeviceError.pairingFailed:
-            // Declined / wrong passkey, or the encrypted link was refused (A8).
+            // Declined or wrong passkey, or the encrypted link was refused.
             return .pairFailed(.rejected)
         default:
             return .pairFailed(.rejected)

@@ -26,8 +26,8 @@ import OBCTransport
         #expect(DeviceRouteLink(scope: scope, objectID: DeviceObjectID(7)).matches(scope))
     }
 
-    /// The serial rides last so a serial containing the separator needs no
-    /// escaping — the encoding stays injective.
+    /// The serial rides last, so a serial containing the separator needs no escaping and the
+    /// encoding stays injective.
     @Test func serialContainingColonsRoundTrips() {
         let odd = LibraryScope(serial: "OBC:rev:B:00 17", storeID: "00000000000000000000000000000007")
         let id = RideID(deviceObjectID: DeviceObjectID(3), scope: odd)
@@ -59,10 +59,8 @@ import OBCTransport
 
     // MARK: The era matrix (key validity)
 
-    /// Device wiped, app kept: the same object ids come back under a fresh
-    /// StoreId — every old key stops matching (no suppression of the new era's
-    /// rides, no resurrection *into* the new era's sets), and the old entries
-    /// stay browsable under their old keys.
+    /// Device wiped, app kept: the same object ids come back under a fresh StoreId. Every old key
+    /// stops matching, and the old entries stay browsable under their old keys.
     @Test func deviceWipedAppKept() {
         let oldEra = deviceA
         let newEra = LibraryScope(serial: deviceA.serial, storeID: "2222222222222222222222220bc00001")
@@ -84,18 +82,16 @@ import OBCTransport
         #expect(library.rideSummaries().map(\.id) == [oldID])
     }
 
-    /// App reinstalled, device kept: rides land under the exact same
-    /// (serial, StoreId, id) keys the lost library used — identity is derived
-    /// from the device, so nothing app-local is needed to reproduce it.
+    /// App reinstalled, device kept: identity comes from the device, so rides land under the
+    /// exact same keys the lost library used.
     @Test func appReinstallDeviceKept() {
         let mintedBeforeReinstall = RideID(deviceObjectID: DeviceObjectID(7), scope: deviceA)
         let mintedAfterReinstall = RideID(deviceObjectID: DeviceObjectID(7), scope: deviceA)
         #expect(mintedBeforeReinstall == mintedAfterReinstall)
     }
 
-    /// Serial switch (the DK ↔ LM20 pair): the same object id on two devices
-    /// is two distinct keys — no shared rows, no cross-device suppression,
-    /// device B's tombstones say nothing about device A.
+    /// The same object id on two devices is two distinct keys: no shared rows, and one device's
+    /// tombstones say nothing about the other.
     @Test func serialSwitchHasNoCrossTalk() {
         let dk = LibraryScope(serial: "OBC-DK-000001", storeID: "00000000000000000000000000000001")
         let lm20 = LibraryScope(serial: "OBC-24-000317", storeID: "00000000000000000000000000000001")

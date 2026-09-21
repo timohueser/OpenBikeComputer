@@ -4,14 +4,13 @@ import OBCMock
 import OBCTransport
 @testable import OBCUI
 
-/// B2 acceptance, host-side: the launch/pairing state machine driven through
-/// `MockTransport` scenarios — every design branch (A, D1–D5, H7, H8) plus the
-/// non-blocking guarantees (out of range → main; a silent device caps the A
-/// grace onto connect-failed, never a forever-spinner).
+/// The launch and pairing state machine driven through `MockTransport` scenarios: every design
+/// branch, plus the non-blocking guarantees (out of range lands on main; a silent device caps the
+/// grace window onto connect-failed instead of spinning forever).
 @MainActor
 final class LaunchFlowModelTests: XCTestCase {
-    /// Short pacing so the machine's timers fire in test time, but with enough
-    /// slack that they never race a healthy mock op.
+    /// Short pacing so the timers fire in test time, with enough slack that they never race a
+    /// healthy mock op.
     private static let fastTiming = LaunchFlowModel.Timing(
         connectGrace: .seconds(2),
         scanTimeout: .seconds(2),
@@ -40,7 +39,6 @@ final class LaunchFlowModelTests: XCTestCase {
         XCTAssertEqual(model.phase, .pairIntro)
     }
 
-    /// H2 (B8): forgetting the device drops the flow back to the D1 prompt.
     func testForgetDeviceReturnsToPairIntro() async throws {
         let (model, _) = makeModel(.happyPath)
         model.start()
@@ -69,7 +67,7 @@ final class LaunchFlowModelTests: XCTestCase {
         let (model, control) = makeModel(.outOfRange)
         model.start()
         try await waitFor("main", timeout: .seconds(5)) { model.phase == .main }
-        // No connect attempt — the degraded link is the S4 banner's story.
+        // No connect attempt: the degraded link is the banner's story.
         XCTAssertEqual(control.connection, .outOfRange)
     }
 
@@ -81,9 +79,6 @@ final class LaunchFlowModelTests: XCTestCase {
         try await waitFor("main", timeout: .seconds(5)) { model.phase == .main }
     }
 
-    /// The device never answers (asleep / out of range): the grace window
-    /// expires onto the connect-failed screen — never a forever-spinner — and
-    /// "Go to routes" still reaches the library.
     func testConnectGraceExpiryShowsConnectFailedAndRoutesStayReachable() async throws {
         let (model, control) = makeModel(
             .happyPath,
@@ -100,8 +95,6 @@ final class LaunchFlowModelTests: XCTestCase {
         XCTAssertEqual(model.phase, .main)
     }
 
-    /// Connect-failed "Try again" re-enters A; with the device now answering,
-    /// the retry lands on main.
     func testRetryConnectFromConnectFailedLandsOnMainOnceReachable() async throws {
         let (model, control) = makeModel(
             .happyPath,
@@ -118,9 +111,6 @@ final class LaunchFlowModelTests: XCTestCase {
         try await waitFor("main after retry", timeout: .seconds(5)) { model.phase == .main }
     }
 
-    /// The background attempt outliving the grace window still counts: when the
-    /// link comes up while the connect-failed screen is showing, the flow
-    /// advances to main on its own.
     func testLateConnectWhileOnConnectFailedAdvancesToMain() async throws {
         let (model, control) = makeModel(
             .happyPath,
@@ -174,8 +164,7 @@ final class LaunchFlowModelTests: XCTestCase {
         try await waitFor("D5 again", timeout: .seconds(5)) { model.phase == .pairFailed(.timeout) }
     }
 
-    /// #297: a declined passkey is a *gated* failure, so it surfaces on the row tap
-    /// (`confirmPairing`), not during the un-gated scan — the D2 row appears first.
+    /// A declined passkey is a gated failure: it surfaces on the row tap, not during the scan.
     func testPairingRejectedShowsD5RejectedVariant() async throws {
         let (model, _) = makeModel(.pairingRejected)
         model.start()
@@ -188,13 +177,9 @@ final class LaunchFlowModelTests: XCTestCase {
         try await waitFor("D5 rejected", timeout: .seconds(5)) { model.phase == .pairFailed(.rejected) }
     }
 
-    /// #461: an **already-bonded** refusal is indistinguishable on the wire from a
-    /// declined passkey (spec §8 / `OBCProtocol.md`) — the device suppresses its
-    /// passkey and drops the link, and CoreBluetooth surfaces only a generic
-    /// `DeviceError.pairingFailed`. So there is nothing to classify: it must land
-    /// on the *same* `.pairFailed(.rejected)` screen the declined passkey does,
-    /// which is why that one screen carries the combined copy. This pins that the
-    /// generic transport pairing failure maps to `.rejected` (not a new case).
+    /// An already-bonded refusal is indistinguishable on the wire from a declined passkey: the
+    /// device drops the link and CoreBluetooth surfaces a generic `DeviceError.pairingFailed`. It
+    /// lands on the same `.pairFailed(.rejected)` screen, whose copy covers both.
     func testGenericPairingFailureLandsOnRejectedForBondedCase() async throws {
         let (model, _) = makeModel(.pairingRejected)
         model.start()
@@ -208,17 +193,13 @@ final class LaunchFlowModelTests: XCTestCase {
         }
     }
 
-    // MARK: D5 copy (#461)
+    // MARK: The rejected-pairing copy
 
-    /// The `.rejected` screen's copy is *combined*: it must name the
-    /// already-paired possibility and its recovery (Forget phone on the device)
-    /// **without asserting** which failure happened, while still offering the
-    /// passkey retry. Copy lives on the model so it's testable without rendering.
+    /// The `.rejected` copy must offer the passkey retry and name the already-paired possibility
+    /// with its recovery, without asserting which failure happened.
     func testRejectedCopyCoversBothPasskeyAndAlreadyBonded() {
         let reason = LaunchFlowModel.PairingFailure.rejected.reason
 
-        // Doesn't assert a single cause — offers the passkey retry AND names the
-        // already-paired possibility conditionally ("If … / If …").
         XCTAssertTrue(reason.contains("passkey"), "must mention the passkey path")
         XCTAssertTrue(
             reason.localizedCaseInsensitiveContains("already paired to another phone"),
@@ -229,7 +210,6 @@ final class LaunchFlowModelTests: XCTestCase {
             "must present both as possibilities, not assert one"
         )
 
-        // Names the concrete bonded-case recovery (#455): Forget phone on the device.
         XCTAssertTrue(
             reason.contains("Forget phone"),
             "must point at Forget phone as the re-pair recovery"
@@ -238,8 +218,6 @@ final class LaunchFlowModelTests: XCTestCase {
         XCTAssertEqual(LaunchFlowModel.PairingFailure.rejected.title, "Pairing didn't finish")
     }
 
-    /// The timeout variant is untouched — still its own scan copy, distinct from
-    /// the rejected combined copy.
     func testTimeoutCopyUnchanged() {
         let timeout = LaunchFlowModel.PairingFailure.timeout
         XCTAssertEqual(timeout.title, "Couldn't find your OBC")
@@ -292,7 +270,7 @@ final class LaunchFlowModelTests: XCTestCase {
         try await waitFor("discovered row", timeout: .seconds(5)) {
             model.phase == .scanning(discovered: .init(name: "Trailhead"))
         }
-        model.confirmPairing()  // #297: the decline lands on the gated row tap
+        model.confirmPairing()  // the decline lands on the gated row tap
         try await waitFor("D5", timeout: .seconds(5)) { model.phase == .pairFailed(.rejected) }
 
         model.showPairingHelp()

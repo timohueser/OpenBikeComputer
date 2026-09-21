@@ -1,9 +1,8 @@
 import XCTest
 
-/// B2 acceptance on the simulator: each pairing scenario drives its design
-/// screens end to end through the real UI. (The same branches are host-tested
-/// against the state machine in `LaunchFlowModelTests`; this proves the wiring
-/// launch-arg → scenario → screens.)
+/// Each pairing scenario drives its screens end to end through the real UI. The same branches are
+/// host-tested against the state machine in `LaunchFlowModelTests`; this proves the wiring from
+/// launch argument to scenario to screens.
 final class PairingFlowTests: XCTestCase {
     override func setUp() {
         super.setUp()
@@ -18,8 +17,7 @@ final class PairingFlowTests: XCTestCase {
         return app
     }
 
-    /// Keep a named screenshot in the result bundle — the visual record of each
-    /// design screen (export with `xcresulttool export attachments`).
+    /// Keep a named screenshot in the result bundle: the visual record of each design screen.
     @MainActor
     private func snap(_ app: XCUIApplication, _ name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
@@ -28,7 +26,7 @@ final class PairingFlowTests: XCTestCase {
         add(attachment)
     }
 
-    /// noDevice: D1 → D2 (row slides in) → D3/D4 → main.
+    /// The intro, the scan with the row sliding in, the pairing beat, then the main screen.
     @MainActor
     func testFirstRunPairingHappyPath() {
         let app = launch(scenario: "noDevice")
@@ -49,7 +47,7 @@ final class PairingFlowTests: XCTestCase {
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10), "main missing after pairing")
     }
 
-    /// pairingTimeout: D2 resolves to D5; Try again loops back through scanning.
+    /// A scan timeout resolves to the failure screen; Try again loops back through scanning.
     @MainActor
     func testPairingTimeoutShowsD5AndRetryLoops() {
         let app = launch(scenario: "pairingTimeout")
@@ -73,8 +71,8 @@ final class PairingFlowTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["pair.introTitle"].waitForExistence(timeout: 10))
         app.buttons["pair.start"].tap()
 
-        // #297: the row appears first (un-gated discovery); the passkey (gated) only
-        // fires on the row tap, so D5 rejected surfaces after confirming, not before.
+        // The row appears first, from un-gated discovery. The passkey is gated and only fires on
+        // the row tap, so a rejection surfaces after confirming, not before.
         let row = app.buttons["pair.deviceRow"]
         XCTAssertTrue(row.waitForExistence(timeout: 10), "D2 discovered row missing")
         row.tap()
@@ -84,7 +82,7 @@ final class PairingFlowTests: XCTestCase {
         XCTAssertEqual(failed.label, "Pairing didn't finish")
     }
 
-    /// bluetoothOff: H8 — and the library never locks.
+    /// Bluetooth off has its own screen, and the library never locks.
     @MainActor
     func testBluetoothOffShowsH8AndLibraryStaysReachable() {
         let app = launch(scenario: "bluetoothOff")
@@ -114,7 +112,7 @@ final class PairingFlowTests: XCTestCase {
         XCTAssertEqual(title.label, "Allow Bluetooth access")
     }
 
-    /// Bonded launch: straight to main — no pairing prompt, no error.
+    /// A bonded launch goes straight to the main screen: no pairing prompt, no error.
     @MainActor
     func testBondedLaunchLandsOnMain() {
         let app = launch(scenario: "happyPath")
@@ -122,7 +120,7 @@ final class PairingFlowTests: XCTestCase {
         XCTAssertFalse(app.staticTexts["pair.introTitle"].exists)
     }
 
-    /// Bonded + out of range: main with the S4 banner, never an error screen.
+    /// Bonded and out of range: the main screen with its banner, never an error screen.
     @MainActor
     func testOutOfRangeLandsOnMainWithDisconnectedBanner() {
         let app = launch(scenario: "outOfRange")
@@ -133,8 +131,8 @@ final class PairingFlowTests: XCTestCase {
         snap(app, "S4-main-out-of-range")
     }
 
-    /// Bonded but the link is down at launch: the A state resolves to main
-    /// within the grace window (mock connect succeeds well inside it).
+    /// Bonded but with the link down at launch: the connecting state resolves to the main screen
+    /// within the grace window.
     @MainActor
     func testBondedColdLaunchResolvesToMain() {
         let app = XCUIApplication()
@@ -143,22 +141,21 @@ final class PairingFlowTests: XCTestCase {
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 15))
     }
 
-    /// Bonded but the device never answers (asleep / out of range): the A
-    /// grace window expires onto the connect-failed screen — never a
-    /// forever-spinner — and Go to routes still reaches the library.
+    /// Bonded but the device never answers: the grace window expires onto the connect-failed
+    /// screen, never a forever-spinner, and the secondary action still reaches the library.
     @MainActor
     func testDeviceUnreachableTimesOutToConnectFailedAndRoutesStayReachable() {
         let app = launch(scenario: "deviceUnreachable")
 
         XCTAssertTrue(app.staticTexts["launch.connectingTitle"].waitForExistence(timeout: 10), "A state missing")
-        // The default 8 s connect grace must expire onto the timeout screen.
+        // The default connect grace must expire onto the timeout screen.
         let title = app.staticTexts["launch.connectFailedTitle"]
         XCTAssertTrue(title.waitForExistence(timeout: 15), "connect-failed screen missing")
         XCTAssertEqual(title.label, "Can't reach Trailhead")
         XCTAssertTrue(app.buttons["launch.tryAgain"].exists)
         snap(app, "A-timeout-connect-failed")
 
-        // Try again re-enters A, and the still-silent device times out again.
+        // Try again re-enters the connecting state, and the still-silent device times out again.
         app.buttons["launch.tryAgain"].tap()
         XCTAssertTrue(app.staticTexts["launch.connectingTitle"].waitForExistence(timeout: 10), "retry must re-enter A")
         XCTAssertTrue(title.waitForExistence(timeout: 15), "second timeout missing")
