@@ -1,11 +1,9 @@
-//! Persistent device settings + their byte codec.
+//! Persistent device settings and their byte codec.
 //!
-//! [`Settings`] is the small POD the settings screens edit and the host persists across a reboot.
-//! It is `Copy + PartialEq`, so [`App::apply_gesture`](crate::App::apply_gesture) detects a change
-//! with a single comparison and flags a save. The byte codec ([`encode`]/[`decode`]) is a
-//! versioned, CRC-checked, fixed-length blob shared by **both** stores (sim file, firmware RRAM
-//! region — see [`SettingsStore`](obc_ports::SettingsStore)), so a blank or corrupt read falls
-//! back to [`Settings::default`] rather than loading garbage.
+//! [`Settings`] is `Copy + PartialEq`, so a single comparison detects a rider edit and flags a
+//! save. The codec ([`encode`]/[`decode`]) is a versioned, CRC-checked, fixed-length blob shared by
+//! the sim file store and the firmware RRAM store; a blank or corrupt read falls back to
+//! [`Settings::default`].
 
 use crate::i18n::{t, Msg};
 use crate::screen::BRIGHTNESS_MAX;
@@ -15,20 +13,12 @@ use crate::stat_fields::StatFieldList;
 
 pub(crate) use obc_ports::DateTime;
 
-/// First year accepted by the settings codec and Date & Time editor.
 pub const DATETIME_MIN_YEAR: u16 = 2020;
-/// Last year accepted by the settings codec and Date & Time editor.
 pub const DATETIME_MAX_YEAR: u16 = 2099;
 
-/// App-owned persisted-value policy for the dependency-neutral [`DateTime`].
-///
-/// Calendar arithmetic (`add_minutes`, UTC offsets, leap years) stays inherent on `DateTime` in
-/// `obc-ports`; [`sanitize`](DateTimeEditorExt::sanitize) is available when this trait is in scope
-/// because its storage range (2020–2099) is a choice specific to OpenBikeComputer. (Manual
-/// date/time editing — and its per-field wrapping steppers — was removed in #641; only `sanitize`
-/// remains, applied after a settings decode.)
+/// The storage range this project imposes on the dependency-neutral [`DateTime`]. Calendar
+/// arithmetic stays inherent on `DateTime` in `obc-ports`; only the 2020–2099 range is ours.
 pub trait DateTimeEditorExt {
-    /// Force every field into the range accepted by the settings codec.
     fn sanitize(&mut self);
 }
 
@@ -56,17 +46,14 @@ fn clamp_app_year(date: DateTime) -> DateTime {
     }
 }
 
-/// Advance a live app clock while retaining the settings model's bounded year behavior.
 pub(crate) fn add_minutes_bounded(date: DateTime, mins: u32) -> DateTime {
     clamp_app_year(date.add_minutes(mins))
 }
 
-/// Apply the user's UTC offset while retaining the settings model's bounded year behavior.
 fn with_offset_bounded(date: DateTime, offset: i16) -> DateTime {
     clamp_app_year(date.with_offset(offset))
 }
 
-/// The localized three-letter month name for a dependency-neutral calendar value.
 pub(crate) fn month_name(date: DateTime, lang: Language) -> &'static str {
     const MONTHS: [Msg; 12] = [
         Msg::MonthJan,
@@ -88,25 +75,18 @@ pub(crate) fn month_name(date: DateTime, lang: Language) -> &'static str {
 setting_enum! {
     /// Measurement system for the ride readouts. Re-captions and re-scales the
     /// [`Statistics`](crate::screen) tiles and the off-route distance.
-    ///
-    /// [`name`](Units::name) is word-bearing, so it routes through the catalog (epic #602); the
-    /// symbol captions ([`speed_label`](Units::speed_label) and friends) stay
-    /// language-independent.
     pub enum Units {
-        /// km / km·h⁻¹ / m — the default.
         Metric = 0, key Msg::UnitsMetric;
-        /// mi / mi·h⁻¹ / ft.
         Imperial = 1, key Msg::UnitsImperial;
     }
     default Metric;
 }
 
-/// The device-name byte cap — the BLE Config name field (matches the OBCR route-name cap).
+/// The device-name byte cap, shared with the BLE Config name field.
 pub const DEVICE_NAME_MAX: usize = 48;
 
-/// The user-facing device name. A fixed inline buffer so [`Settings`] stays `Copy`; **empty means
-/// "factory name"** — the BLE edge substitutes its serial-derived `OBC-XXXX` — so a fresh device
-/// needs no name stored and a rename can be cleared back to factory by writing an empty name.
+/// The user-facing device name. A fixed inline buffer so [`Settings`] stays `Copy`. An empty name
+/// means the factory name: the BLE edge substitutes its serial-derived `OBC-XXXX`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceName {
     len: u8,
@@ -120,11 +100,9 @@ impl Default for DeviceName {
 }
 
 impl DeviceName {
-    /// The factory-name sentinel (see the type doc).
     pub const EMPTY: DeviceName = DeviceName { len: 0, bytes: [0; DEVICE_NAME_MAX] };
 
-    /// Store `name`, truncated to the byte cap **on a char boundary** (never mid-UTF-8) —
-    /// lossy by design, hence not the std `FromStr` shape.
+    /// Store `name`, truncated to the byte cap on a char boundary, never mid-UTF-8.
     pub fn from_str_lossy(name: &str) -> DeviceName {
         let mut end = name.len().min(DEVICE_NAME_MAX);
         while end > 0 && !name.is_char_boundary(end) {
@@ -136,9 +114,8 @@ impl DeviceName {
         n
     }
 
-    /// Rebuild from stored bytes (the codec's decode path): over-long or invalid-UTF-8 input —
-    /// a corrupt or foreign blob that still passed the CRC — sanitises to [`Self::EMPTY`]
-    /// (factory name), never to garbage the BLE edge would advertise.
+    /// Rebuild from stored bytes. Over-long or invalid-UTF-8 input sanitises to [`Self::EMPTY`],
+    /// never to garbage the BLE edge would advertise.
     pub fn from_bytes(bytes: &[u8]) -> DeviceName {
         if bytes.len() > DEVICE_NAME_MAX || core::str::from_utf8(bytes).is_err() {
             return Self::EMPTY;
@@ -149,33 +126,26 @@ impl DeviceName {
         n
     }
 
-    /// The stored name — `""` means factory.
     pub fn as_str(&self) -> &str {
         // Every constructor stored validated UTF-8, so this cannot fail.
         core::str::from_utf8(&self.bytes[..self.len as usize]).unwrap_or("")
     }
 
-    /// True when no user name is stored (the BLE edge advertises the factory name).
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 }
 
-/// Miles per kilometre — the distance/speed conversion factor (also mi·h⁻¹ per km·h⁻¹).
 pub const MI_PER_KM: f32 = 0.621_371;
-/// Feet per metre — the elevation/climb conversion factor.
 pub const FT_PER_M: f32 = 3.280_84;
-/// Feet in a mile — the cross-over from a "NNNft" to a "NNmi" off-route readout.
 pub const FT_PER_MI: u32 = 5280;
 
 impl Units {
-    /// Whether imperial units are selected (the conversions below are no-ops otherwise).
     #[inline]
     pub const fn is_imperial(self) -> bool {
         matches!(self, Units::Imperial)
     }
 
-    /// Convert a distance in km to the selected unit (km or mi).
     #[inline]
     pub fn dist(self, km: f32) -> f32 {
         if self.is_imperial() {
@@ -185,7 +155,6 @@ impl Units {
         }
     }
 
-    /// Convert a speed in km·h⁻¹ to the selected unit (km·h⁻¹ or mi·h⁻¹).
     #[inline]
     pub fn speed(self, kmh: f32) -> f32 {
         if self.is_imperial() {
@@ -195,7 +164,6 @@ impl Units {
         }
     }
 
-    /// Convert an elevation/climb in metres to the selected unit (m or ft).
     #[inline]
     pub fn elev(self, m: f32) -> f32 {
         if self.is_imperial() {
@@ -205,7 +173,6 @@ impl Units {
         }
     }
 
-    /// Speed-tile caption (`KPH` / `MPH`).
     #[inline]
     pub const fn speed_label(self) -> &'static str {
         if self.is_imperial() {
@@ -215,7 +182,6 @@ impl Units {
         }
     }
 
-    /// Distance-tile caption prefix (`KM` / `MI`).
     #[inline]
     pub const fn dist_label(self) -> &'static str {
         if self.is_imperial() {
@@ -225,7 +191,6 @@ impl Units {
         }
     }
 
-    /// Elevation readout suffix (`m` / `ft`).
     #[inline]
     pub const fn elev_label(self) -> &'static str {
         if self.is_imperial() {
@@ -237,31 +202,20 @@ impl Units {
 }
 
 setting_enum! {
-    /// How the Climb screen (epic #506) is reached. A device-only setting (the Stats settings screen
-    /// cycles it), persisted in the settings codec next to [`ble_enabled`](Settings::ble_enabled).
-    ///
-    /// The discriminants are a **stable on-disk contract** — appended, never renumbered — so a stored
-    /// byte always decodes to the same mode (an unknown byte sanitises to the default, [`Auto`]).
-    ///
-    /// [`Auto`]: ClimbMode::Auto
+    /// How the Climb screen is reached. The Stats settings screen cycles it.
     pub enum ClimbMode {
-        /// The Climb screen is disabled: it's kept out of the Back-cycle entirely (Map ↔ Statistics
-        /// only) and never auto-shown.
+        /// Kept out of the Back-cycle entirely and never auto-shown.
         Off = 0, key Msg::ClimbModeOff;
-        /// The Climb screen is in the Back-cycle when a climb is active, but the device never switches
-        /// to it on its own — the rider reaches it by cycling Back.
+        /// In the Back-cycle while a climb is active; the device never switches to it on its own.
         Manual = 1, key Msg::ClimbModeManual;
-        /// The Climb screen is in the Back-cycle **and** the device auto-switches to it on climb entry
-        /// (from a riding view) and auto-returns to the Map on the crest — the headline behavior.
+        /// In the Back-cycle, and the device switches to it on climb entry and back to the Map on
+        /// the crest.
         Auto = 2, key Msg::ClimbModeAuto;
     }
-    /// **Auto** out of the box — the climb panel is self-discovering (it shows itself on the first
-    /// climb). Easily changed here if a quieter default is wanted.
     default Auto;
 }
 
 impl ClimbMode {
-    /// Whether the Climb screen belongs in the Back-cycle at all — false only for [`Off`](ClimbMode::Off).
     #[inline]
     pub const fn is_on(self) -> bool {
         !matches!(self, ClimbMode::Off)
@@ -269,61 +223,43 @@ impl ClimbMode {
 }
 
 setting_enum! {
-    /// Whether — and when — the Map's bottom-centre **waypoint chip** (epic #523) is shown: the calm
-    /// `◆ NAME  <dist>` pill counting the along-route distance to the next named waypoint ahead. A
-    /// device-only setting (the Stats settings screen cycles it), persisted in the codec next to
-    /// [`climb_mode`](Settings::climb_mode).
-    ///
-    /// The discriminants are a **stable on-disk contract** — appended, never renumbered — so a stored
-    /// byte always decodes to the same mode (an unknown byte sanitises to the default, [`Approach`]).
-    ///
-    /// [`Approach`]: WaypointMode::Approach
+    /// Whether, and when, the Map's bottom-centre waypoint chip is shown: the `◆ NAME  <dist>` pill
+    /// counting the along-route distance to the next named waypoint ahead.
     pub enum WaypointMode {
-        /// The chip is never shown — the silencer for routes carrying junk/artifact waypoints from a
-        /// planner's GPX export (a whole route of them can be muted here).
+        /// Never shown — the silencer for routes carrying junk waypoints from a planner's export.
         Off = 0, key Msg::WaypointModeOff;
-        /// The chip appears only as the next waypoint nears — within the approach radius
-        /// (`WAYPOINT_APPROACH_M`, 500 m) ahead — counting the distance down, so a stop is noticed
-        /// without standing chrome. **The default** (discoverability won over the conservative `Off`).
+        /// Shown only within the approach radius (`WAYPOINT_APPROACH_M`, 500 m) ahead.
         Approach = 1, key Msg::WaypointModeApproach;
-        /// The chip is shown whenever a named waypoint lies ahead (subject to the shared
-        /// no-fix / off-route / pan suppression), reading the along-route distance to it.
+        /// Shown whenever a named waypoint lies ahead, subject to the shared no-fix, off-route and
+        /// pan suppression.
         Always = 2, key Msg::WaypointModeAlways;
     }
-    /// **Approach** out of the box — the calm middle ground: the chip surfaces as a waypoint nears
-    /// (so the feature is self-discovering) but stays down the rest of the time. Locked 2026-07-08.
     default Approach;
 }
 
 setting_enum! {
+    /// Which sources feed the Up-ahead timeline.
     pub enum UpAheadSource {
-        /// Custom waypoints **and** route-corridor map POIs — the merged timeline the epic designed.
-        /// **The default**: the merge is the feature.
+        /// Custom waypoints and route-corridor map POIs.
         Both = 0, key Msg::UpAheadSourceBoth;
-        /// The rider's own GPX waypoints only. The corridor query is never armed under this value, so
-        /// the map `Reader` is never built for it either — the list costs exactly what the old waypoint
-        /// list cost.
+        /// The rider's own GPX waypoints only. The corridor query is never armed under this value,
+        /// so the map `Reader` is never built for it either.
         WaypointsOnly = 1, key Msg::UpAheadSourceWaypoints;
-        /// Route-corridor map POIs only. The documented trade: the waypoint plan leaves the timeline
-        /// entirely (it stays on the map and in the stats panel) — for riders who treat a planner's
-        /// exported waypoints as clutter.
+        /// Route-corridor map POIs only. The waypoint plan leaves the timeline entirely; it stays
+        /// on the map and in the stats panel.
         MapPoisOnly = 2, key Msg::UpAheadSourceMapPois;
     }
-    /// **Both** out of the box — one list answering "what's coming up on my route?" is the whole
-    /// point of the timeline; the single-source values are the pressure valves.
     default Both;
 }
 
 impl UpAheadSource {
-    /// Whether custom route waypoints feed the list under this value.
     #[inline]
     pub const fn shows_waypoints(self) -> bool {
         matches!(self, UpAheadSource::Both | UpAheadSource::WaypointsOnly)
     }
 
-    /// Whether route-corridor map POIs feed the list under this value. Also the **arming** answer:
-    /// `false` means no [`CorridorKey`](crate::corridor::CorridorKey) is ever declared, so the query
-    /// never runs (see [`WhatsNextScreen`](crate::screen::WhatsNextScreen)).
+    /// Whether route-corridor map POIs feed the list. Also the arming answer: `false` means no
+    /// [`CorridorKey`](crate::corridor::CorridorKey) is ever declared, so the query never runs.
     #[inline]
     pub const fn shows_pois(self) -> bool {
         matches!(self, UpAheadSource::Both | UpAheadSource::MapPoisOnly)
@@ -331,71 +267,40 @@ impl UpAheadSource {
 }
 
 setting_enum! {
-    /// How long the UI sits idle (no user input) before it navigates itself back to where it belongs —
-    /// the Home root when not tracking a ride, the Map when a ride is running (see
-    /// [`App::apply_idle_return`](crate::App::apply_idle_return)). A device-only setting, cycled by the
-    /// Power settings screen's value picker and persisted in the codec next to
-    /// [`climb_mode`](Settings::climb_mode).
+    /// How long the UI sits idle before it navigates itself back to where it belongs: the Home root
+    /// when not tracking a ride, the Map when a ride is running. The Power settings screen picks it.
     ///
-    /// `Never` is a word; the durations are unit-glued numbers, catalogued whole so a language can
-    /// localize the `s`/`min` grain if it ever needs to.
-    ///
-    /// The discriminants are a **stable on-disk contract** — appended, never renumbered — so a stored
-    /// byte always decodes to the same value (an unknown byte sanitises to the default, [`S30`]).
-    ///
-    /// [`S30`]: IdleReturn::S30
+    /// The durations are unit-glued numbers, catalogued whole so a language can localize the
+    /// `s`/`min` grain.
     pub enum IdleReturn {
-        /// 15 seconds.
         S15 = 0, key Msg::IdleS15, Some(15_000);
-        /// 30 seconds — the default.
         S30 = 1, key Msg::IdleS30, Some(30_000);
-        /// 1 minute.
         M1 = 2, key Msg::IdleM1, Some(60_000);
-        /// 5 minutes.
         M5 = 3, key Msg::IdleM5, Some(300_000);
-        /// Never — the idle-return mechanism is disabled entirely.
         Never = 4, key Msg::IdleNever, None;
     }
-    /// **30 s** out of the box — long enough not to yank an attentive rider mid-glance, short enough
-    /// that a device left in a menu drifts back to a useful screen on its own.
     default S30;
-    /// The idle timeout in millis, or `None` for [`Never`](IdleReturn::Never) (the mechanism is
-    /// off). `None` also disables the idle wake, so a parked device isn't woken to no purpose.
+    /// The idle timeout in millis; `None` for [`Never`](IdleReturn::Never), which also disables the
+    /// idle wake, so a parked device is not woken to no purpose.
     payload timeout_ms: Option<u32>;
 }
 
 setting_enum! {
-    /// The UI language (epic #602). A device-only setting, cycled by the Language settings screen's
-    /// value picker and persisted in the codec next to [`waypoint_mode`](Settings::waypoint_mode).
+    /// The UI language.
     ///
-    /// Each value's [`name`](Language::name) is its **endonym** (its own name for itself), so the
-    /// picker row reads to a speaker who can't yet read the current UI language — which is also why
-    /// this is the one settings enum whose labels are literals rather than catalog keys. The
-    /// accented forms (`Français` / `Español`) render via the Latin font extension (#601).
+    /// Each value's [`name`](Language::name) is its endonym, so the picker row reads to a speaker
+    /// who cannot yet read the current UI language. That is why this is the one settings enum whose
+    /// labels are literals and not catalog keys.
     ///
     /// [`COUNT`](Language::COUNT) is the number of columns the i18n catalog must ship: a static
-    /// assertion in [`i18n`](crate::i18n) ties `TABLE`'s column count to it, so the "index never
-    /// panics" contract of [`t`](crate::i18n::t) is compiler-enforced — a fifth variant added
-    /// without a fifth `{lang}.toml` column fails the build instead of panicking on the first draw
-    /// (#614). Because the picker only ever selects out of [`ALL`](Language::ALL),
-    /// [`Settings::language`](crate::Settings::language) is always in range.
-    ///
-    /// The discriminants are a **stable on-disk contract** — appended, never renumbered — so a stored
-    /// byte always decodes to the same language (an unknown byte sanitises to the default, [`En`]).
-    ///
-    /// [`En`]: Language::En
+    /// assertion in [`i18n`](crate::i18n) ties the table's column count to it, so a new variant
+    /// without its `{lang}.toml` column fails the build instead of panicking on the first draw.
     pub enum Language {
-        /// English — the default.
         En = 0, text "English";
-        /// German.
         De = 1, text "Deutsch";
-        /// French.
         Fr = 2, text "Français";
-        /// Spanish.
         Es = 3, text "Español";
     }
-    /// **English** out of the box — the language every string is authored in; the other three are
-    /// opt-in once the catalog lands.
     default En;
 }
 
@@ -410,52 +315,43 @@ impl Language {
     }
 }
 
-/// UTC-offset stepper bounds + granularity (minutes). 15-minute steps cover the real-world
-/// `:30` / `:45` zones (India +5:30, Nepal +5:45) over the −12:00…+14:00 span.
+/// UTC-offset stepper bounds and granularity in minutes. 15-minute steps cover the real `:30` and
+/// `:45` zones over the −12:00…+14:00 span.
 pub const UTC_OFFSET_MIN: i16 = -12 * 60;
 pub const UTC_OFFSET_MAX: i16 = 14 * 60;
 pub const UTC_OFFSET_STEP: i16 = 15;
 
-/// GPS-fix-interval stepper bounds (seconds). The step itself *adapts* (1 s up to 10 s, then
-/// 5 s) — see [`PowerScreen`](crate::screen) — so a long interval is a few steps, not dozens.
+/// GPS-fix-interval stepper bounds in seconds.
 pub const FIX_INTERVAL_MIN: u16 = 1;
 pub const FIX_INTERVAL_MAX: u16 = 120;
 
-/// Stats-grid page auto-cycle period stepper bounds (seconds). With the elevation chart keeping
-/// Up/Down and Select-`hold` for itself, a second page is only reachable by the auto-cycle — so there's no "off",
-/// the minimum is a brisk-but-readable 2 s.
+/// Stats-grid page auto-cycle bounds in seconds. There is no "off" value: the auto-cycle is the
+/// only way to reach a second page, so the minimum is a brisk-but-readable 2 s.
 pub const STAT_CYCLE_MIN: u16 = 2;
 pub const STAT_CYCLE_MAX: u16 = 20;
-/// Default auto-cycle period — only matters once a rider pins more than one page of fields.
 pub const STAT_CYCLE_DEFAULT: u16 = 5;
 
-/// The fixed sensor-slot count (BLE sensors epic #707): one saved sensor per quantity — index
-/// **0 HR · 1 Power · 2 Cadence**. The slot index *is* the kind, so the kind isn't stored.
+/// One saved sensor per quantity: index 0 HR, 1 Power, 2 Cadence. The slot index is the kind, so
+/// the kind is not stored.
 pub const SENSOR_SLOTS: usize = 3;
 
-/// A saved BLE sensor (SE7, epic #707) for one quantity slot: the stored advertising address the
-/// board's central manager reconnects by (auto-reconnect across a reboot). The slot index carries the
-/// kind (HR / power / cadence), so only the address is stored; there is **no name or bond** — v1
-/// sensors are open GATT servers connected by address (locked: no sensor SMP). `Copy + Eq` so the
-/// whole [`Settings`] stays `Copy + Eq` and the one-`==` settings-dirty check still holds.
+/// A saved BLE sensor for one quantity slot: the advertising address the board's central manager
+/// reconnects by across a reboot. There is no name and no bond; these sensors are open GATT servers
+/// connected by address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SavedSensor {
-    /// Whether this slot holds a saved sensor. `false` = empty (the address is then unused zeros),
-    /// which is a fresh device's state and what an older-blob reset decodes to.
+    /// Whether this slot holds a saved sensor. `false` leaves the address as unused zeros.
     pub present: bool,
-    /// The advertiser address kind: `0` = public, `1` = random. Kept so the manager reconnects by the
-    /// *same* address kind — a static-random watch (a broadcast Garmin) advertises `RANDOM`.
+    /// The advertiser address kind: `0` public, `1` random. The manager must reconnect by the same
+    /// kind — a static-random watch advertises `RANDOM`.
     pub addr_kind: u8,
     /// The 6-byte advertising address, little-endian as the wire carries it.
     pub addr: [u8; 6],
 }
 
 impl SavedSensor {
-    /// The empty slot (no sensor saved) — the per-slot default.
     pub const EMPTY: SavedSensor = SavedSensor { present: false, addr_kind: 0, addr: [0; 6] };
 
-    /// A present slot for `addr` of kind `addr_kind` (`0` public / `1` random) — the Sensors screen's
-    /// pair write.
     pub const fn saved(addr_kind: u8, addr: [u8; 6]) -> SavedSensor {
         SavedSensor { present: true, addr_kind, addr }
     }
@@ -479,116 +375,59 @@ impl FindResults {
 
 settings_table! {
     /// The whole persisted settings set. Plain old data — `Copy` + `Eq`, no floats — so a
-    /// before/after `==` flags a save and the codec is a trivial field-by-field pack.
+    /// before/after `==` flags a save and the codec is a field-by-field pack.
     ///
-    /// One row per persisted field, in **blob order** — which is therefore also the declaration
-    /// order, and the order [`encode`] writes. Everything the blob needs of a field is on its row;
-    /// the `settings_table!` declaration below carries the four markers a row may take.
+    /// One row per persisted field, in blob order, which is also the order [`encode`] writes.
+    /// Everything the blob needs of a field is on its row.
     pub struct Settings {
-        /// Metric or imperial readouts.
         units: Units = Units::Metric, since(19), ble_writable;
         /// A rider or phone has set the local UTC offset. GPS time alone does not establish it.
         local_offset_known: bool = false, since(19);
-        /// The last time source's **UTC** set-point — the anchor a GPS fix (or, after epic #638 S2, a
-        /// BLE `setClock`) stamps. Manual editing was removed in #641: the only writers are those two
-        /// trusted sources, so this is always UTC and [`local_clock`](Settings::local_clock) always
-        /// folds in [`utc_offset_min`](Settings::utc_offset_min). Persisted so it seeds the boot display
-        /// clock — display-only until re-stamped this boot (see
-        /// [`App::clock_trusted`](crate::App::clock_trusted)).
+        /// The last time source's UTC set-point, stamped by a GPS fix or a BLE `setClock`. Only
+        /// those two trusted sources write it, so it is always UTC and
+        /// [`local_clock`](Settings::local_clock) always folds in
+        /// [`utc_offset_min`](Settings::utc_offset_min). Persisted so it seeds the boot display
+        /// clock, which stays display-only until re-stamped this boot.
         clock: DateTime = DateTime::DEFAULT, since(19), sanitize_with(DateTimeEditorExt::sanitize);
         /// Local time's offset from UTC, in minutes (`+02:00` → `120`).
         utc_offset_min: i16 = 0, since(19), range(UTC_OFFSET_MIN, UTC_OFFSET_MAX);
-        /// Seconds between GPS fixes (the Power screen's interval).
         fix_interval_s: u16 = 1, since(19), range(FIX_INTERVAL_MIN, FIX_INTERVAL_MAX);
-        /// GPS low-power mode (the Power screen's toggle).
+        /// GPS low-power mode.
         power_saver: bool = false, since(19);
-        /// The rider's ordered Statistics-grid field selection (the Stat Fields screen edits it).
+        /// The rider's ordered Statistics-grid field selection.
         stat_fields: StatFieldList = StatFieldList::DEFAULT, since(19);
         /// Seconds the Statistics grid dwells on each page before auto-cycling to the next.
         stat_cycle_s: u16 = STAT_CYCLE_DEFAULT, since(19), range(STAT_CYCLE_MIN, STAT_CYCLE_MAX);
-        /// The user-facing device name (empty = factory `OBC-XXXX`). Written by the companion app over
-        /// BLE, not any on-device screen — it lives here so the one settings blob persists it.
+        /// The user-facing device name; empty means the factory `OBC-XXXX`. Written by the companion
+        /// app over BLE, not by any on-device screen.
         device_name: DeviceName = DeviceName::EMPTY, since(19), ble_writable;
-        /// The Bluetooth radio switch (the Bluetooth screen's toggle, epic #447 P8). Off = stop
-        /// advertising + drop any live connection; on = the normal advertising lifecycle. **Device-only**
-        /// — deliberately *not* one of the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields)
-        /// pulls across (a phone must never be able to switch the radio out from under the rider, and
-        /// couldn't turn it back on). Default **on**.
+        /// The Bluetooth radio switch. Off stops advertising and drops any live connection. It is
+        /// device-only because a phone that switched the radio off could not switch it back on.
         ble_enabled: bool = true, since(19);
-        /// How the Climb screen (epic #506) is reached — Off / Manual / Auto (the Stats settings screen
-        /// cycles it). **Device-only**, like [`ble_enabled`](Settings::ble_enabled): deliberately *not*
-        /// one of the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls across.
-        /// Default **Auto** — the climb panel auto-shows on the first climb.
         climb_mode: ClimbMode = ClimbMode::Auto, since(19);
-        /// How long the UI sits idle before it navigates itself back to where it belongs (Home when not
-        /// tracking, the Map mid-ride). **Device-only**, like [`climb_mode`](Settings::climb_mode):
-        /// deliberately *not* one of the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields)
-        /// pulls across. Default **30 s**; [`Never`](IdleReturn::Never) disables it entirely.
         idle_return: IdleReturn = IdleReturn::S30, since(19);
-        /// Show the small floating `HH:MM` clock on the Map (the map display sheet's toggle).
-        /// **Device-only**, like [`climb_mode`](Settings::climb_mode): deliberately *not* one of the
-        /// BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls across. Default
-        /// **on**.
+        /// Show the small floating `HH:MM` clock on the Map.
         map_clock: bool = true, since(19);
-        /// Show the scale bar at the Map's bottom-left (the map display sheet's toggle).
-        /// **Device-only**, like [`map_clock`](Settings::map_clock). Default **on**.
         map_scale_bar: bool = true, since(19);
-        /// The rider's selected routing profile, an **index** into the loaded map's §8.6 profile table
-        /// (N2/N5, epic #533). The create-route sheet's bike-type editor steps it through the map's profile *names*;
-        /// the planner is constructed with it ([`NavPlanner::new`](obc_route::NavPlanner)). Stored as a
-        /// bare `u8` because the profile table is the map's, not the device's: a map with fewer profiles
-        /// than this index falls back to profile 0 **at plan time** (guaranteed in the router, N3) and the
-        /// UI renders profile 0's name for it so the rider isn't lied to (see
-        /// [`NavProfiles`](crate::NavProfiles)). Not range-clamped on decode for that reason — the value
-        /// only means anything against a map. **Device-only** (a bike type is picked on the device), so
-        /// [`adopt_ble_fields`](Settings::adopt_ble_fields) never pulls it across. Default **0**.
+        /// An index into the loaded map's profile table, not a device-side enum: a map with fewer
+        /// profiles than this index falls back to profile 0 at plan time, and the UI renders profile
+        /// 0's name so the rider is not lied to. Never range-clamped on decode for that reason — the
+        /// value only means anything against a map.
         bike_profile_idx: u8 = 0, since(19);
-        /// Whether — and when — the Map's bottom-centre waypoint chip appears (epic #523, the Stats
-        /// settings screen cycles it). **Device-only**, like [`climb_mode`](Settings::climb_mode):
-        /// deliberately *not* one of the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields)
-        /// pulls across — a BLE Config write must never flip the rider's on-glass chrome. Default
-        /// **Approach** (the chip surfaces only as a waypoint nears).
         waypoint_mode: WaypointMode = WaypointMode::Approach, since(19);
-        /// The UI language (epic #602, the Language settings screen cycles it). **Device-only**, like
-        /// [`climb_mode`](Settings::climb_mode): deliberately *not* one of the BLE-writable fields
-        /// [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls across — the phone never repicks the
-        /// rider's on-device language. Default **English**; every user-facing string is looked up in
-        /// this language via [`t`](crate::i18n::t) at draw time.
         language: Language = Language::En, since(19);
-        /// The saved BLE sensors (SE7, epic #707), one slot per quantity — index **0 HR · 1 Power ·
-        /// 2 Cadence**. An empty slot ([`SavedSensor::present`] `== false`) is "no sensor saved". Written
-        /// by the Sensors settings screen on pair/forget; the board's central manager reconnects to a
-        /// present slot's address whenever the radio is on. **Device-only**, like
-        /// [`ble_enabled`](Settings::ble_enabled): never pulled across by
-        /// [`adopt_ble_fields`](Settings::adopt_ble_fields) — a phone can't repick the rider's sensors.
-        /// Default: all three slots empty.
+        /// One slot per quantity; an empty slot is "no sensor saved". Written by the Sensors screen
+        /// on pair and forget; the board's central manager reconnects to a present slot's address
+        /// whenever the radio is on.
         saved_sensors: [SavedSensor; SENSOR_SLOTS] = [SavedSensor::EMPTY; SENSOR_SLOTS], since(19);
-        /// Which sources feed the **"Up ahead" timeline** (epic #946, U4, the Ride settings screen
-        /// cycles it): both, custom waypoints only, or map POIs only. **Device-only**, like
-        /// [`climb_mode`](Settings::climb_mode) — a phone must never repick what the rider's own device
-        /// shows, so [`adopt_ble_fields`](Settings::adopt_ble_fields) never pulls it across. Default
-        /// **Both**; the scope is the Up-ahead list *only* (see [`UpAheadSource`]).
         up_ahead_source: UpAheadSource = UpAheadSource::Both, since(19);
-        /// Draw the map's **terrain layer** — today the E3 contour lines (the map display sheet's
-        /// toggle). **Device-only**, like [`map_clock`](Settings::map_clock): deliberately *not* one of
-        /// the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls across.
-        /// Default **on** — the point of the setting is to *see* contours without hunting for a switch.
-        /// Off drops every terrain-layer style from the renderer's collect pass (the Map screen
-        /// restates this switch as `RenderConfig::terrain_layer` each frame), so the geometry is never
-        /// decoded.
+        /// Draw the map's terrain layer, today the contour lines. Off drops every terrain-layer
+        /// style from the renderer's collect pass, so the geometry is never decoded — but contours
+        /// share cells with everything else, so off neither shrinks the map on the card nor avoids a
+        /// chunk read. It hides the ink, not the bytes; it is not a performance control.
         ///
-        /// **It hides the ink, not the bytes and not the I/O.** Contours are interleaved with everything
-        /// else in the same `mid`/`fine` cells, so switching them off does not shrink the map on the card
-        /// and does not avoid a single chunk read. The #1088 measurement — riding-zoom chunk reads
-        /// roughly doubling, 5.9 → 10.9 kB per frame, ≈ +11 ms per uncached frame on the ~460 kB/s SD
-        /// path — is a cost of *packing* contours, not of drawing them, and this toggle does not recover
-        /// it. "Off" is not a performance control.
-        ///
-        /// **Provisional (#1096).** Contours are a judgement call no mockup settles, so this switch
-        /// exists only so the #1097 ride review can put both states on the same glass on the same ride.
-        /// It is **expected to be removed**: if contours win the toggle goes and they are simply on; if
-        /// they lose the whole feature goes. Built as the cheapest honest switch, not a settled
-        /// preference — don't grow migration concerns around it.
+        /// Provisional: the switch exists to judge contours on glass, and is expected to be removed
+        /// whichever way that judgement goes.
         map_contours: bool = true, since(19);
         brightness: u8 = BRIGHTNESS_MAX, since(19), range(0, BRIGHTNESS_MAX);
         /// Find a Place search filter, shared by all categories and the paged browser.
@@ -606,34 +445,29 @@ settings_table! {
 
     pub fn adopt_ble_fields;
 
-    /// Clamp every field into its valid range — applied after a decode (see [`decode`]). One line
-    /// per `range` / `sanitize_with` row; a field with neither marker is deliberately never
-    /// clamped, and its doc says why. The `stat_fields` selection is sanitised by
-    /// [`StatFieldList::decode`] as it is parsed.
+    /// Clamp every field into its valid range, applied after a decode. One line per `range` or
+    /// `sanitize_with` row; a field with neither marker is deliberately never clamped, and its doc
+    /// says why.
     fn sanitize;
 
     /// Pack [`Settings`] into its fixed [`ENCODED_LEN`]-byte blob: a version byte, the little-endian
-    /// fields, then a trailing CRC. The inverse of [`decode`]; shared verbatim by the sim file store
-    /// and the device RRAM store so one round-trip test covers both.
+    /// fields, then a trailing CRC.
     pub fn encode;
 
-    /// Decode a blob written by [`encode`] at **any supported version** — every field the stored
-    /// version declared is read, and the fields appended after it take their declared defaults. A
-    /// firmware update that appends a setting therefore keeps the rider's units, clock anchor, stat
-    /// grid, device name and paired sensors instead of resetting all of them.
+    /// Decode a blob written by [`encode`] at any supported version: every field the stored version
+    /// declared is read, and the fields appended after it take their declared defaults, so a
+    /// firmware update that appends a setting keeps the rider's values.
     ///
     /// `None` — the host then falls back to [`Settings::default`] — if the version is outside
     /// [`MIN_SUPPORTED`]`..=`[`VERSION`], if the blob is shorter than that version's
     /// [`encoded_len`], or if the CRC over that version's payload fails. Bytes past its encoded
     /// length are ignored, which is what makes the board's fixed-`SLOT_LEN` read work after a bump.
-    /// The decoded value is range-sanitised, so a `Some` is always a usable [`Settings`].
     pub fn decode;
 }
 
-/// The in-memory footprint, pinned. [`Settings`] is copied whole (the live `App` copy, the board's
-/// Config cache, the `.rodata` [`DEFAULT`](Settings::DEFAULT) image), so a field that silently
-/// widens the struct widens every one of those — this makes the growth an explicit decision.
-///
+/// The in-memory footprint, pinned. [`Settings`] is copied whole into the live `App`, the board's
+/// Config cache and the `.rodata` [`DEFAULT`](Settings::DEFAULT) image, so a field that widens the
+/// struct widens every one of those.
 const _: () = assert!(core::mem::size_of::<Settings>() == 118, "Settings grew — was that deliberate?");
 
 impl Settings {
@@ -646,37 +480,32 @@ impl Settings {
         }
     }
 
-    /// The **local** wall-clock set-point the device shows: the UTC [`clock`](Settings::clock)
-    /// anchor shifted into local time by [`utc_offset_min`](Settings::utc_offset_min) (via a
-    /// calendar offset operation, so a shift across midnight rolls the date too). Manual editing was
-    /// removed in #641, so the anchor is always UTC and the offset always applies.
+    /// The local wall-clock set-point the device shows: the UTC [`clock`](Settings::clock) anchor
+    /// shifted by [`utc_offset_min`](Settings::utc_offset_min), so a shift across midnight rolls
+    /// the date too.
     pub fn local_clock(&self) -> DateTime {
         with_offset_bounded(self.clock, self.utc_offset_min)
     }
 }
 
-/// Current settings layout version.
 pub const VERSION: u8 = 22;
 
-/// Settings use the current layout. Other versions reset to defaults.
+/// The oldest layout [`decode`] accepts. An older blob resets to defaults.
 pub const MIN_SUPPORTED: u8 = 19;
 
-/// The encoded length of a `payload`-byte payload: the CRC-covered bytes + a 2-byte CRC, **rounded
-/// up to the device RRAM's 16-byte write line** (the firmware store writes whole 128-bit lines) —
-/// so a codec bump never needs the device store re-padded, the RRAM store reads a known span, and
-/// the file store needs no length framing. Bytes past the CRC are unused zero padding.
+/// The encoded length of a `payload`-byte payload: the CRC-covered bytes plus a 2-byte CRC, rounded
+/// up to the device RRAM's 16-byte write line. Bytes past the CRC are unused zero padding.
 ///
 /// A function rather than only [`ENCODED_LEN`] because [`decode`] applies the same rounding to the
-/// **stored** version's payload: after a bump the simulator hands it a shorter file and the board
-/// hands it a longer fixed-`SLOT_LEN` read, and one rule covers both.
+/// stored version's payload.
 pub const fn encoded_len(payload: usize) -> usize {
     (payload + 2).div_ceil(16) * 16
 }
 
-/// Fixed encoded length of a blob written by *this* version.
+/// Fixed encoded length of a blob written by the current version.
 pub const ENCODED_LEN: usize = encoded_len(PAYLOAD_LEN);
 
-/// Payload size before the trailing CRC. The CRC follows immediately at this offset.
+/// Payload size before the trailing CRC, which follows immediately at this offset.
 const PAYLOAD_LEN: usize = off::END;
 
 // Literal byte offsets pin the current settings layout.
@@ -713,11 +542,9 @@ mod tests {
     use super::*;
     use crate::settings_table::SAVED_SENSOR_LEN;
 
-    /// `Settings::DEFAULT` (the const the board's `.rodata` store image is built from, #1197)
-    /// names every per-type default variant literally — pin each against its type's own
-    /// `Default`, so a retuned default can't silently fork the two. **Every** field whose type
-    /// has its own `Default` belongs here, including the ones the const spells as a plain literal
-    /// (`Units`, `DeviceName`, `SavedSensor`): those are exactly the ones that fork silently.
+    /// `Settings::DEFAULT` names every per-type default variant literally, so pin each against its
+    /// type's own `Default`. Every field whose type has a `Default` belongs here, above all the
+    /// ones the const spells as a plain literal: those are the ones that fork silently.
     #[test]
     fn const_default_matches_every_field_default() {
         let d = Settings::DEFAULT;
@@ -737,13 +564,12 @@ mod tests {
         assert_eq!(d, Settings::default());
     }
 
-    /// A settings value with **every** field pushed off its default — including a customised,
-    /// reordered stat-field selection with a two-span tile. Shared by the round-trip test and the
-    /// golden blobs below, so the two always speak about the same bytes.
+    /// A settings value with every field pushed off its default. Shared by the round-trip test and
+    /// the golden blobs below, so the two always speak about the same bytes.
     fn every_field_set() -> Settings {
         let mut stat_fields = StatFieldList::default();
-        stat_fields.remove(0); // drop a default tile…
-        assert!(stat_fields.push(crate::stat_fields::StatField::Clock)); // …and pin the wide clock
+        stat_fields.remove(0);
+        assert!(stat_fields.push(crate::stat_fields::StatField::Clock));
         Settings {
             units: Units::Imperial,
             local_offset_known: false,
@@ -780,28 +606,23 @@ mod tests {
         }
     }
 
-    /// Re-stamp the CRC over a doctored blob, so what [`decode`] sees is a **valid** blob whose
-    /// payload is wrong — the shape every "an out-of-range stored byte sanitises" case needs.
+    /// Re-stamp the CRC over a doctored blob, so [`decode`] sees a valid blob whose payload is
+    /// wrong.
     fn re_stamp_crc(b: &mut [u8; ENCODED_LEN]) {
         let crc = crate::store_meta::crc16(&b[0..PAYLOAD_LEN]);
         b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
     }
 
-    /// A non-default settings value — including a customised, reordered field selection with a
-    /// two-span tile — round-trips through the codec byte-for-byte.
     #[test]
     fn codec_round_trips() {
         let s = every_field_set();
         assert_eq!(decode(&encode(&s)), Some(s));
     }
 
-    /// One table over **every declared field**, replacing the twelve copied per-field codec tests
-    /// (#1506): the `every_field_set` fixture moves every row off its default, that value
-    /// round-trips through the codec, and `adopt_ble_fields` pulls across exactly the
-    /// `ble_writable` rows — leaving every other field device-only. The per-field walk is
-    /// generated from the table itself ([`Settings::assert_field_table`]), so a new row is covered
-    /// the moment it is declared, with no test to copy, and a fixture that forgets it fails here
-    /// by name.
+    /// One table over every declared field: the fixture moves every row off its default, that
+    /// value round-trips through the codec, and `adopt_ble_fields` pulls across exactly the
+    /// `ble_writable` rows. The per-field walk is generated from the table itself, so a new row is
+    /// covered the moment it is declared.
     #[test]
     fn every_declared_field_round_trips_and_keeps_its_ble_split() {
         let base = Settings::DEFAULT;
@@ -810,28 +631,26 @@ mod tests {
 
         let mut adopted = base;
         adopted.adopt_ble_fields(&other);
-        // Hand-written, like the offset literals: the three fields the phone owns (BLE Config
-        // §7.3). Deriving this from the table's own `ble_writable` markers would restate the token
-        // that generates `adopt_ble_fields` and could never fail — so a marker added to a
-        // device-only row, or dropped from one of these three, fails here by field name.
+        // Hand-written, like the offset literals: the fields the phone owns. Deriving this from the
+        // table's own `ble_writable` markers would restate the token that generates
+        // `adopt_ble_fields` and could never fail.
         Settings::assert_field_table(&base, &other, &adopted, &["units", "device_name"]);
     }
 
     #[test]
     fn decode_sanitises_an_unknown_enum_byte_through_the_blob() {
-        // And once for the v18 `brightness` row, whose `range` marker is the only thing standing
-        // between a corrupt byte and a panel driven at a level the port never offered. It clamps
-        // **up**, not down: the safe direction for a light is bright.
+        // The `brightness` row's `range` marker is the only thing between a corrupt byte and a
+        // panel driven at a level the port never offered. It clamps up, not down: the safe
+        // direction for a light is bright.
         let mut b = encode(&Settings { brightness: 0, ..Settings::default() });
         b[off::brightness] = 200;
         re_stamp_crc(&mut b);
         assert_eq!(decode(&b).unwrap().brightness, BRIGHTNESS_MAX, "an out-of-range level clamps to the brightest");
     }
 
-    /// The routing-profile index is stored **verbatim** — never range-clamped on decode, because
-    /// an index past the loaded map's profile count is a live-map concern (resolved to profile 0
-    /// at plan time, N3) and not a codec one. This is the field the table deliberately gives no
-    /// `range` marker, so the absence is what this test guards.
+    /// The routing-profile index is stored verbatim, never range-clamped on decode: an index past
+    /// the loaded map's profile count is resolved at plan time, not by the codec. The absence of a
+    /// `range` marker is what this guards.
     #[test]
     fn bike_profile_idx_is_never_clamped() {
         for idx in [0u8, 1, 3, 7, 200] {
@@ -840,8 +659,6 @@ mod tests {
         }
     }
 
-    /// A stored flag is set or clear, never "corrupt": **any** non-zero byte reads as on — the
-    /// `bool` codec's rule, kept from the per-field toggle tests the table replaced.
     #[test]
     fn a_bool_field_reads_any_non_zero_byte_as_on() {
         let mut b = encode(&Settings { map_contours: false, ..Settings::default() });
@@ -850,10 +667,9 @@ mod tests {
         assert!(decode(&b).expect("valid CRC").map_contours, "any non-zero byte reads as on");
     }
 
-    /// The saved-sensor block's decode tolerances and its migration case, kept from the codec test
-    /// the table replaced: an absent slot ignores stray bytes, a corrupt `addr_kind` normalises to
-    /// random, and an older blob is version-rejected → the host falls back to defaults (the
-    /// rejects-to-default contract, no in-place upgrade).
+    /// The saved-sensor block's decode tolerances: an absent slot ignores stray bytes, a corrupt
+    /// `addr_kind` normalises to random, and a blob below the version floor is rejected, so the
+    /// host falls back to defaults rather than upgrading in place.
     #[test]
     fn saved_sensors_decode_tolerances_and_migration() {
         let s = Settings {
@@ -865,8 +681,7 @@ mod tests {
             ..Settings::default()
         };
 
-        // An absent slot decodes to EMPTY even if stray address bytes sit in its region (present == 0
-        // wins — no garbage address leaks into a "not set" slot).
+        // An absent slot decodes to EMPTY even if stray address bytes sit in its region.
         let mut b = encode(&s);
         let slot = off::saved_sensors + SAVED_SENSOR_LEN; // the (empty) Power slot (index 1)
         b[slot] = 0; // present = false
@@ -875,25 +690,22 @@ mod tests {
         re_stamp_crc(&mut b);
         assert_eq!(decode(&b).unwrap().saved_sensors[1], SavedSensor::EMPTY, "an absent slot ignores stray bytes");
 
-        // A corrupt-but-CRC-valid `addr_kind` past 1 normalises to random (`!= 0`) — the board's own
-        // reading, so a bit-flip never mis-picks the address kind.
+        // An `addr_kind` past 1 normalises to random, matching how the board reads it.
         let mut b = encode(&s);
         b[off::saved_sensors + 1] = 200;
         re_stamp_crc(&mut b);
         assert_eq!(decode(&b).unwrap().saved_sensors[0].addr_kind, 1, "an out-of-range addr_kind reads as random");
 
-        // Migration: a v10 blob (the previous layout, before saved_sensors) is version-rejected → the
-        // host falls back to defaults, so every slot reads empty — the rejects-to-default contract
-        // (no in-place upgrade), exactly like every prior codec bump.
+        // A blob below the version floor is rejected, so the host falls back to defaults.
         let mut old = encode(&s);
         old[0] = 10;
         re_stamp_crc(&mut old);
         assert_eq!(decode(&old), None, "a v10 blob is rejected → host uses defaults, sensors empty");
     }
 
-    /// One table over all seven `setting_enum!` types: every declared byte round-trips through
-    /// `from_byte` at its table position, and any byte past the last discriminant clamps to the
-    /// default. The macro is one implementation — tested once, here, rather than seven times.
+    /// One table over every `setting_enum!` type: each declared byte round-trips through
+    /// `from_byte` at its table position, and a byte past the last discriminant clamps to the
+    /// default. The macro is one implementation, so it is tested once here.
     #[test]
     fn every_setting_enum_round_trips_its_bytes_and_clamps_the_rest() {
         macro_rules! check {
@@ -917,9 +729,8 @@ mod tests {
         check!(Language);
     }
 
-    /// The three values and the source predicates that drive both the list composition and the
-    /// corridor arming: the ring cycles Both → Waypoints → Map POIs → Both, and exactly one value
-    /// asks for **no** corridor query at all.
+    /// The ring cycles Both → Waypoints → Map POIs → Both, and exactly one value asks for no
+    /// corridor query at all.
     #[test]
     fn up_ahead_source_cycles_and_scopes_the_two_sources() {
         assert_eq!(UpAheadSource::Both.cycled(), UpAheadSource::WaypointsOnly);
@@ -940,7 +751,6 @@ mod tests {
         assert!(!decode(&encode(&Settings::default())).unwrap().local_offset_known);
     }
 
-    /// The picker's timeout mapping + the left/right walk order (wrapping at both ends).
     #[test]
     fn idle_return_timeout_and_stepping() {
         assert_eq!(IdleReturn::S15.timeout_ms(), Some(15_000));
@@ -949,34 +759,29 @@ mod tests {
         assert_eq!(IdleReturn::M5.timeout_ms(), Some(300_000));
         assert_eq!(IdleReturn::Never.timeout_ms(), None, "Never disables the mechanism");
 
-        // Right walks toward Never, wrapping back to the shortest; left is the mirror.
         assert_eq!(IdleReturn::S15.stepped(1), IdleReturn::S30);
         assert_eq!(IdleReturn::M5.stepped(1), IdleReturn::Never);
         assert_eq!(IdleReturn::Never.stepped(1), IdleReturn::S15, "wraps past Never");
         assert_eq!(IdleReturn::S15.stepped(-1), IdleReturn::Never, "wraps past the start");
     }
 
-    /// The picker's left/right walk order (wrapping at both ends) and the press cycle.
     #[test]
     fn language_stepping_and_cycling() {
         assert_eq!(Language::ALL.map(Language::article_code), obc_formats::articles::LANGUAGES);
-        // Right walks En → De → Fr → Es, wrapping back to English; left is the mirror.
         assert_eq!(Language::En.stepped(1), Language::De);
         assert_eq!(Language::Es.stepped(1), Language::En, "wraps past the last language");
         assert_eq!(Language::En.stepped(-1), Language::Es, "wraps past the start");
         assert_eq!(Language::En.stepped(2), Language::Fr, "multi-step flicks compound");
-        // Press cycles one forward, exactly like a single right step.
         assert_eq!(Language::Fr.cycled(), Language::Es);
         assert_eq!(Language::Es.cycled(), Language::En, "the press ring wraps");
-        // The endonyms, in order.
         assert_eq!(Language::En.name(), "English");
         assert_eq!(Language::De.name(), "Deutsch");
         assert_eq!(Language::Fr.name(), "Français");
         assert_eq!(Language::Es.name(), "Español");
     }
 
-    /// The v3 device-name tail: set → truncate on a char boundary at the 48-byte cap, and a
-    /// corrupt stored name (bad UTF-8 or an impossible length) sanitises to factory, not garbage.
+    /// The device name truncates on a char boundary at the byte cap, and a corrupt stored name
+    /// sanitises to factory, not garbage.
     #[test]
     fn device_name_codec_and_sanitising() {
         // 47 ASCII bytes + 'ü' (2 bytes) crosses the cap mid-char → truncates to the boundary.
@@ -991,7 +796,6 @@ mod tests {
         let s = Settings { device_name: name, ..Settings::default() };
         assert_eq!(decode(&encode(&s)), Some(s));
 
-        // Corrupt the stored name to invalid UTF-8, re-stamp the CRC: decode sanitises to factory.
         let mut b = encode(&s);
         b[off::device_name + 1] = 0xFF;
         re_stamp_crc(&mut b);
@@ -1005,33 +809,29 @@ mod tests {
         assert!(decode(&b).unwrap().device_name.is_empty());
     }
 
-    /// The v2 tail sanitises on decode: an out-of-range cycle period is clamped, and an unknown
-    /// field discriminant (a stale/newer writer) is dropped rather than loaded as a garbage tile.
+    /// An out-of-range cycle period is clamped on decode, and an unknown field discriminant is
+    /// dropped rather than loaded as a garbage tile.
     #[test]
     fn codec_sanitises_stat_tail() {
         let mut s = Settings { stat_cycle_s: 9999, ..Settings::default() };
         let mut b = encode(&s);
-        // Corrupt a stored discriminant to an unknown value, then re-stamp the CRC so only the
-        // payload (not the framing) is "wrong" — decode must still reject the bad tile.
+        // Re-stamp the CRC so only the payload, not the framing, is wrong.
         b[off::stat_fields + 1] = 250;
         re_stamp_crc(&mut b);
         let got = decode(&b).expect("valid CRC → Some, just sanitised");
         assert!(got.stat_cycle_s <= STAT_CYCLE_MAX, "the cycle period is clamped into range");
         assert_eq!(got.stat_fields.len(), s.stat_fields.len() - 1, "the unknown discriminant is dropped");
-        // The default selection (minus the dropped head) decodes in order.
         s.stat_fields.remove(0);
         assert_eq!(got.stat_fields.as_slice(), s.stat_fields.as_slice());
     }
 
-    /// The default round-trips too (the blank-store-falls-back path still produces a clean read).
     #[test]
     fn codec_round_trips_default() {
         let s = Settings::default();
         assert_eq!(decode(&encode(&s)), Some(s));
     }
 
-    /// A corrupt CRC, a blank region, a short slice, and a wrong version all decode to `None`
-    /// (→ the host uses `Settings::default`), never a half-parsed value.
+    /// A rejected blob decodes to `None`, never to a half-parsed value.
     #[test]
     fn codec_rejects_bad_blobs() {
         let mut b = encode(&Settings::default());
@@ -1041,36 +841,31 @@ mod tests {
         assert_eq!(decode(&[0xFF; ENCODED_LEN]), None, "an erased (all-ones) region is rejected");
         assert_eq!(decode(&encode(&Settings::default())[..ENCODED_LEN - 1]), None, "a short slice is rejected");
         let mut wrong = encode(&Settings::default());
-        wrong[0] = VERSION + 1; // bump version, fix the CRC so only the version differs
+        wrong[0] = VERSION + 1; // re-stamped below, so only the version differs
         re_stamp_crc(&mut wrong);
         assert_eq!(decode(&wrong), None, "a future version is rejected");
         let mut below = encode(&Settings::default());
-        below[0] = MIN_SUPPORTED - 1; // a version below the floor, CRC re-stamped so only it differs
+        below[0] = MIN_SUPPORTED - 1;
         re_stamp_crc(&mut below);
         assert_eq!(decode(&below), None, "a version below the supported floor is rejected");
     }
 
-    /// A miniature settings table, declared for one purpose: **tail-defaulting**, which the real
-    /// table cannot exercise — it has exactly one supported version, so nothing in it is ever
-    /// defaulted. Four rows across three versions, one composite among them. Its blobs and its
-    /// expectations are hand-written; nothing here is derived from the table it tests, and unlike
-    /// the real ladder ("whatever versions happened to ship") this v1/v2/v3 case never changes.
+    /// A miniature settings table for tail-defaulting, which the real table cannot exercise: it
+    /// has exactly one supported version, so nothing in it is ever defaulted. Four rows across
+    /// three versions, with hand-written blobs and hand-written expectations.
     mod mini {
-        #![allow(dead_code)] // `adopt_ble_fields` and `Mini::DEFAULT` are generated, not exercised
+        #![allow(dead_code)] // generated for every table, not exercised here
 
         use crate::settings::{encoded_len, SavedSensor, SENSOR_SLOTS};
         use crate::settings_table::settings_table;
 
-        /// The newest layout `encode` writes, as the real table's `VERSION` is.
         pub const VERSION: u8 = 3;
-        /// Every version here is supported — this table's whole point is the ladder below the top.
         pub const MIN_SUPPORTED: u8 = 1;
         const PAYLOAD_LEN: usize = off::END;
         pub const ENCODED_LEN: usize = encoded_len(PAYLOAD_LEN);
 
-        // The layout in literals, as at the real declaration: v1 is 3 payload bytes (encoded 16),
-        // v2 is 5 (encoded 16), v3 is 29 (encoded 32) — so the versions straddle a write line and
-        // the encoded length really is version-relative.
+        // The layout in literals, as at the real declaration. The versions straddle a write line,
+        // so the encoded length really is version-relative.
         const _: () = {
             assert!(payload_len(1) == 3 && encoded_len(payload_len(1)) == 16);
             assert!(payload_len(2) == 5 && encoded_len(payload_len(2)) == 16);
@@ -1078,36 +873,27 @@ mod tests {
         };
 
         settings_table! {
-            /// Four fields, appended one version at a time.
+            /// Four fields, appended one version at a time, with one composite among them.
             pub struct Mini {
-                /// A scalar from v1.
                 a: u8 = 7, since(1);
-                /// A flag from v1.
                 b: bool = true, since(1), ble_writable;
-                /// A clamped scalar appended at v2.
                 c: u16 = 500, since(2), range(10, 1000);
-                /// A 24-byte composite appended at v3.
                 d: [SavedSensor; SENSOR_SLOTS] = [SavedSensor::EMPTY; SENSOR_SLOTS], since(3);
             }
 
-            /// The factory value.
             pub const DEFAULT;
 
-            /// Generated for every table; unused here.
             pub fn adopt_ble_fields;
 
-            /// Clamps `c`.
             fn sanitize;
 
-            /// Writes the v3 layout.
             pub fn encode;
 
-            /// Reads v1, v2 or v3.
             pub fn decode;
         }
 
-        /// Stamp the CRC of a hand-written blob over its own `plen` bytes. Everything but the two
-        /// CRC bytes is written by hand — a hand-computed CRC would test arithmetic, not framing.
+        /// Stamp the CRC of a hand-written blob over its own `plen` bytes. A hand-computed CRC
+        /// would test arithmetic, not framing.
         pub fn stamped<const N: usize>(mut b: [u8; N], plen: usize) -> [u8; N] {
             let crc = crate::store_meta::crc16(&b[0..plen]);
             b[plen..plen + 2].copy_from_slice(&crc.to_le_bytes());
@@ -1120,10 +906,9 @@ mod tests {
         }
     }
 
-    /// The headline behaviour this codec exists for: a blob written by an older version decodes on this
-    /// firmware, field-precisely, with the fields that version did not have taking their **declared
-    /// defaults** — instead of the whole value being thrown away. Proven per version on the
-    /// miniature table, against hand-written blobs and hand-written expectations.
+    /// A blob written by an older version decodes field-precisely on this firmware, with the fields
+    /// that version did not have taking their declared defaults instead of the whole value being
+    /// thrown away.
     #[test]
     fn an_older_versions_blob_decodes_with_its_tail_defaulted() {
         use mini::Mini;
@@ -1165,9 +950,9 @@ mod tests {
         assert_eq!(mini::decode(&mini::encode(&full)), Some(full), "and round-trips through its own encode");
     }
 
-    /// Length and CRC are relative to the **stored** version, not the running one — the property
-    /// that makes the simulator's shorter file and the board's longer fixed-`SLOT_LEN` read both
-    /// work after a version bump, without weakening any rejection.
+    /// Length and CRC are relative to the stored version, not the running one. That is what makes
+    /// the simulator's shorter file and the board's longer fixed-`SLOT_LEN` read both work after a
+    /// version bump, without weakening any rejection.
     #[test]
     fn the_framing_checks_follow_the_stored_version() {
         let v1 = mini::v1_blob();
@@ -1195,15 +980,14 @@ mod tests {
         assert_eq!(mini::decode(&mini::stamped(ancient, 3)), None, "a version below the floor is still rejected");
     }
 
-    /// A valid-CRC blob carrying an out-of-range field is sanitised on decode, not trusted.
     #[test]
     fn decode_sanitises_out_of_range_fields() {
         let mut s = Settings::default();
         s.clock.month = 13;
         s.clock.day = 99;
         s.fix_interval_s = 9999;
-        // `encode` already stamps a correct CRC over the whole (bogus-but-in-layout) payload, so the
-        // blob is valid-CRC; `decode` must accept it and sanitise the out-of-range fields.
+        // `encode` stamps a correct CRC over the bogus-but-in-layout payload, so the blob is valid
+        // and `decode` must accept it and sanitise.
         let b = encode(&s);
         let got = decode(&b).expect("valid CRC → Some, just sanitised");
         assert!((1..=12).contains(&got.clock.month));
@@ -1211,8 +995,6 @@ mod tests {
         assert!(got.fix_interval_s <= FIX_INTERVAL_MAX);
     }
 
-    /// `from_unix` is the exact inverse of `to_unix` (minute granularity) across epoch, a leap day,
-    /// and a modern date — the Rides screen dates a ride off this.
     #[test]
     fn datetime_from_unix_inverts_to_unix() {
         for dt in [
@@ -1228,8 +1010,6 @@ mod tests {
         assert_eq!((d.year, d.month, d.day, d.hour, d.minute), (1970, 1, 1, 0, 0));
     }
 
-    /// February's day count follows the leap rule (checked directly, and through `sanitize`, which
-    /// re-pins an impossible Feb 31 to the month's real length).
     #[test]
     fn datetime_month_length_is_leap_aware() {
         assert_eq!(DateTime::month_len(2024, 2), 29, "2024 is a leap year");
@@ -1245,131 +1025,105 @@ mod tests {
         assert_eq!(common.day, 28, "Feb 31 in a common year re-pins to Feb 28");
     }
 
-    /// `add_minutes` carries across every boundary a live app clock deliberately advances through:
-    /// minute → hour → day → month → year, and through the leap-day specifically.
+    /// `add_minutes` carries across every boundary a live app clock advances through: minute, hour,
+    /// day, month, year, and the leap day.
     #[test]
     fn datetime_add_minutes_carries_across_fields() {
         let base = DateTime { year: 2025, month: 6, day: 29, hour: 14, minute: 40 };
-        // Within the minute field.
         assert_eq!(base.add_minutes(5).minute, 45);
-        // Minute → hour carry (40 + 25 = 65 → 15, hour +1).
         let h = base.add_minutes(25);
         assert_eq!((h.hour, h.minute), (15, 5));
-        // Minute → hour → day carry: 23:59 + 1 = next day 00:00.
         let midnight = DateTime { year: 2025, month: 6, day: 29, hour: 23, minute: 59 };
         let d = midnight.add_minutes(1);
         assert_eq!((d.day, d.hour, d.minute), (30, 0, 0), "23:59 + 1 rolls into the next day");
-        // Day → month carry: Jun 30 23:00 + 2 h → Jul 1 01:00 (June has 30 days).
         let m = DateTime { year: 2025, month: 6, day: 30, hour: 23, minute: 0 }.add_minutes(120);
         assert_eq!((m.month, m.day, m.hour), (7, 1, 1), "end of June rolls into July");
-        // Month → year carry: Dec 31 23:59 + 1 → Jan 1 of the next year.
         let y = DateTime { year: 2025, month: 12, day: 31, hour: 23, minute: 59 }.add_minutes(1);
         assert_eq!((y.year, y.month, y.day, y.hour, y.minute), (2026, 1, 1, 0, 0), "new year");
-        // Zero is identity on an already-sane stamp.
         assert_eq!(base.add_minutes(0), base, "a zero advance changes nothing");
     }
 
-    /// Multi-day, multi-month and multi-year advances land where an independent calendar
-    /// (`datetime.timedelta`) puts them — the cases that separate a correct bulk carry from a
-    /// day-at-a-time walk that quietly loses a leap day or a month length.
+    /// Long advances land where an independent calendar (`datetime.timedelta`) puts them — the
+    /// cases that separate a correct bulk carry from a day-at-a-time walk that loses a leap day.
     #[test]
     fn datetime_add_minutes_matches_reference_over_long_advances() {
         let f = |d: DateTime| (d.year, d.month, d.day, d.hour, d.minute);
-        // 400 days from New Year's Day 2025: across a year boundary into a common-year February.
         let a = DateTime { year: 2025, month: 1, day: 1, hour: 0, minute: 0 }.add_minutes(400 * 24 * 60);
         assert_eq!(f(a), (2026, 2, 5, 0, 0), "400 days from 2025-01-01");
-        // 366 days from a leap day: 2024 → 2025 has no Feb 29 to land on.
         let b = DateTime { year: 2024, month: 2, day: 29, hour: 12, minute: 0 }.add_minutes(366 * 24 * 60);
         assert_eq!(f(b), (2025, 3, 1, 12, 0), "366 days from the 2024 leap day");
-        // ~700 days in one call, with a minute-of-day carry on top.
         let c = DateTime { year: 2025, month: 6, day: 29, hour: 14, minute: 40 }.add_minutes(1_000_000);
         assert_eq!(f(c), (2027, 5, 25, 1, 20), "a million minutes");
-        // The century rule both ways: 2100 is not a leap year, 2000 is.
         let d = DateTime { year: 2100, month: 2, day: 28, hour: 0, minute: 0 }.add_minutes(24 * 60);
         assert_eq!(f(d), (2100, 3, 1, 0, 0), "2100 is div-by-100-not-400: no Feb 29");
         let e = DateTime { year: 2000, month: 2, day: 28, hour: 0, minute: 0 }.add_minutes(24 * 60);
         assert_eq!(f(e), (2000, 2, 29, 0, 0), "2000 is div-by-400: Feb 29 exists");
-        // Advancing in two steps is the same as advancing in one (the carry is associative).
         let base = DateTime { year: 2025, month: 6, day: 29, hour: 14, minute: 40 };
         assert_eq!(base.add_minutes(5_000).add_minutes(7_777), base.add_minutes(12_777), "split == whole");
     }
 
-    /// February's length is taken from the year the advance *lands* in, so a leap-year Feb 28 + 1
-    /// day is Feb 29 while a common-year one is Mar 1.
+    /// February's length is taken from the year the advance lands in.
     #[test]
     fn datetime_add_minutes_is_leap_aware() {
         let leap = DateTime { year: 2024, month: 2, day: 28, hour: 0, minute: 0 }.add_minutes(24 * 60);
         assert_eq!((leap.month, leap.day), (2, 29), "2024 has a Feb 29 to land on");
         let common = DateTime { year: 2025, month: 2, day: 28, hour: 0, minute: 0 }.add_minutes(24 * 60);
         assert_eq!((common.month, common.day), (3, 1), "2025 skips straight to March");
-        // A multi-day advance that *crosses* Feb 29 counts it: Feb 27 2024 + 3 days = Mar 1.
         let across = DateTime { year: 2024, month: 2, day: 27, hour: 0, minute: 0 }.add_minutes(3 * 24 * 60);
         assert_eq!((across.month, across.day), (3, 1), "the leap day is one of the three crossed");
     }
 
-    /// `with_offset` shifts a stamp by a signed minute offset, rolling the *date* in either
-    /// direction when the shift crosses midnight (the GPS UTC-anchor → local-time conversion).
+    /// The GPS UTC-anchor to local-time conversion: a signed minute offset rolls the date in
+    /// either direction when the shift crosses midnight.
     #[test]
     fn datetime_with_offset_rolls_the_date_both_ways() {
         let base = DateTime { year: 2025, month: 6, day: 29, hour: 23, minute: 30 };
         assert_eq!(base.with_offset(0), base, "a zero offset is identity");
-        let within = base.with_offset(15); // still the same day
+        let within = base.with_offset(15);
         assert_eq!((within.day, within.hour, within.minute), (29, 23, 45));
-        let next = base.with_offset(60); // 23:30 + 01:00 → 00:30 the next day
+        let next = base.with_offset(60);
         assert_eq!((next.day, next.hour, next.minute), (30, 0, 30), "forward across midnight rolls the day");
         let early = DateTime { year: 2025, month: 6, day: 29, hour: 0, minute: 30 };
-        let prev = early.with_offset(-45); // 00:30 − 00:45 → 23:45 the previous day (a :45 zone)
+        let prev = early.with_offset(-45);
         assert_eq!((prev.day, prev.hour, prev.minute), (28, 23, 45), "backward across midnight rolls back");
-        // A backward roll across a month boundary borrows the previous month's length.
         let month_edge = DateTime { year: 2025, month: 7, day: 1, hour: 0, minute: 0 };
-        let back = month_edge.with_offset(-60); // → Jun 30 23:00
+        let back = month_edge.with_offset(-60);
         assert_eq!((back.month, back.day, back.hour), (6, 30, 23), "the borrow steps into June (30 days)");
     }
 
-    /// The offset's hard edges: a backward roll across a year boundary and across a leap day, and
-    /// the widest real zones (UTC+14 / UTC−12), which move the date by a whole day each way.
+    /// The offset's hard edges: year and leap-day boundaries, and the widest real zones.
     #[test]
     fn datetime_with_offset_crosses_year_and_leap_boundaries() {
         let f = |d: DateTime| (d.year, d.month, d.day, d.hour, d.minute);
-        // Backward past midnight on New Year's Day: the year borrows too.
         let ny = DateTime { year: 2025, month: 1, day: 1, hour: 0, minute: 15 }.with_offset(-30);
         assert_eq!(f(ny), (2024, 12, 31, 23, 45), "New Year's Day − 30 min is New Year's Eve");
-        // Backward into a leap day, and into the common-year Feb 28 for contrast.
         let leap = DateTime { year: 2024, month: 3, day: 1, hour: 0, minute: 30 }.with_offset(-60);
         assert_eq!(f(leap), (2024, 2, 29, 23, 30), "March 1 2024 borrows from Feb 29");
         let common = DateTime { year: 2025, month: 3, day: 1, hour: 0, minute: 0 }.with_offset(-1);
         assert_eq!(f(common), (2025, 2, 28, 23, 59), "March 1 2025 borrows from Feb 28");
-        // Forward past midnight on New Year's Eve.
         let nye = DateTime { year: 2025, month: 12, day: 31, hour: 23, minute: 59 }.with_offset(1);
         assert_eq!(f(nye), (2026, 1, 1, 0, 0), "New Year's Eve + 1 min is New Year's Day");
-        // The extreme zones: UTC+14 and UTC−12 from mid-morning both change the date.
         let mid = DateTime { year: 2025, month: 6, day: 29, hour: 10, minute: 0 };
         assert_eq!(f(mid.with_offset(14 * 60)), (2025, 6, 30, 0, 0), "UTC+14 pushes into tomorrow");
         assert_eq!(f(mid.with_offset(-12 * 60)), (2025, 6, 28, 22, 0), "UTC−12 pulls into yesterday");
-        // Applying an offset and its negation is a round trip, in both directions and at an edge.
         for offset in [1i16, -1, 60, -60, 840, -720, 1439, -1439] {
             assert_eq!(mid.with_offset(offset).with_offset(-offset), mid, "round trip at {offset}");
             assert_eq!(ny.with_offset(offset).with_offset(-offset), ny, "round trip at {offset} from {ny:?}");
         }
     }
 
-    /// `add_minutes` is defensive against an unsanitised stamp: a day past the month length doesn't
-    /// underflow the unsigned day-walk (a debug panic / garbage day), and a huge advance saturates
-    /// at the end of `MAX_YEAR` rather than rolling to year 2100+.
+    /// `add_minutes` is defensive against an unsanitised stamp: a day past the month length must
+    /// not underflow the unsigned day-walk.
     #[test]
     fn add_minutes_guards_bad_input_and_saturates_the_year() {
-        // Day 99 in a 30-day month: clamped, not underflowed — and no panic.
         let bad = DateTime { year: 2025, month: 6, day: 99, hour: 0, minute: 0 };
         assert!((1..=30).contains(&bad.add_minutes(0).day), "an over-long day is re-pinned into the month");
-        // Near the top of the range + two years of minutes pins at the last representable day.
         let near_max = DateTime { year: DATETIME_MAX_YEAR, month: 12, day: 31, hour: 12, minute: 0 };
         let sat = add_minutes_bounded(near_max, 2 * 365 * 24 * 60);
         assert_eq!(sat.year, DATETIME_MAX_YEAR, "the app clock never climbs past its maximum year");
         assert_eq!((sat.month, sat.day), (12, 31), "it saturates at Dec 31 rather than rolling over");
     }
 
-    /// `local_clock` always applies the UTC offset — the anchor is UTC (manual editing was removed
-    /// in #641), so local = anchor + offset, and a zero offset leaves it verbatim.
     #[test]
     fn local_clock_applies_the_utc_offset() {
         let clock = DateTime { year: 2025, month: 6, day: 29, hour: 12, minute: 0 };
@@ -1381,8 +1135,7 @@ mod tests {
         assert_eq!((plus2.clock.hour, plus2.clock.minute), (12, 0), "the stored UTC anchor itself did not move");
     }
 
-    /// `to_unix` against independently-computed references (`date -u +%s`), including the
-    /// leap-day and year-boundary edges the era arithmetic has to carry.
+    /// `to_unix` against references computed independently with `date -u +%s`.
     #[test]
     fn to_unix_matches_reference_timestamps() {
         let dt = |year, month, day, hour, minute| DateTime { year, month, day, hour, minute };
@@ -1393,7 +1146,6 @@ mod tests {
         assert_eq!(dt(2099, 12, 31, 23, 59).to_unix(), 4_102_444_740, "the top of the range fits u32");
     }
 
-    /// The unit conversions are no-ops for metric and the right scale for imperial.
     #[test]
     fn unit_conversions() {
         assert_eq!(Units::Metric.dist(10.0), 10.0);
@@ -1406,19 +1158,11 @@ mod tests {
         assert_eq!(Units::Imperial.cycled(), Units::Metric);
     }
 
-    // ==================== settings coherence (#456) ====================
-    //
     // The board firmware double-caches settings: the ride loop holds the live `App` copy, the BLE
-    // `ObjectStore` holds a Config-read cache, and the RRAM blob (encode/decode below) is the
-    // single source of truth behind both. These tests model that store with a byte buffer and
-    // exercise the two coherence operations the board wires up:
-    //   - `apply_config` (BLE write): sets units + name in the store cache and persists to RRAM;
-    //   - the ride loop's *reload-before-save*: `adopt_ble_fields` from the fresh RRAM blob into the
-    //     app copy, so the app's change-detection save can't clobber the phone's write;
-    //   - the object-store *cache refresh*: reload the whole cache from RRAM so a Config read after
-    //     an on-device change serves fresh values.
-    // Modelling the store as the actual codec buffer keeps the test honest: it's the same bytes the
-    // RRAM/file stores round-trip.
+    // `ObjectStore` holds a Config-read cache, and the RRAM blob is the source of truth behind
+    // both. These tests model that store with the codec's own byte buffer and exercise the
+    // coherence operations: a BLE write persists to RRAM, the ride loop reloads BLE fields before
+    // its save, and the object store refreshes its cache from RRAM before a Config read.
 
     /// A minimal stand-in for the persistent RRAM/file store: the one canonical settings blob.
     struct FakeStore {
@@ -1436,7 +1180,6 @@ mod tests {
         }
     }
 
-    /// `adopt_ble_fields` pulls only units + name across, leaving every on-device-only field alone.
     #[test]
     fn adopt_ble_fields_is_narrow() {
         let mut app = Settings {
@@ -1449,7 +1192,7 @@ mod tests {
         let ble = Settings {
             units: Units::Imperial,
             device_name: DeviceName::from_str_lossy("Timo's OBC"),
-            // These would be *wrong* to adopt — the phone never writes them.
+            // Wrong to adopt: the phone never writes these.
             fix_interval_s: 1,
             power_saver: false,
             ..Settings::default()
@@ -1462,20 +1205,17 @@ mod tests {
         assert_eq!(app.clock.year, 2030, "the clock is device-only → untouched");
     }
 
-    /// Direction 1 — phone → device, *with the clobber regression*: a BLE Config write lands, then
-    /// the app runs its change-detection save. Without the reload the app would write its stale
-    /// units back over the phone's; with the reload-before-save the phone's units survive.
+    /// Phone to device: a BLE Config write lands, then the app runs its change-detection save.
+    /// With the reload before that save, the phone's values survive.
     #[test]
     fn ble_write_then_app_save_keeps_ble_values() {
-        // Boot: everyone metric, no name. The app also has a device-only edit pending (say a
-        // fix-interval change) that its next save must persist.
         let boot = Settings::default();
         let mut store = FakeStore::new(&boot);
         let mut app = boot;
-        app.fix_interval_s = 9; // a pending on-device edit the app will save this frame
-        app.ble_enabled = false; // and a pending radio-off toggle (device-only, like the interval)
+        app.fix_interval_s = 9; // a pending on-device edit
+        app.ble_enabled = false; // and a pending device-only toggle
 
-        // Phone writes units=imperial + a rename. `apply_config`: object-store cache + RRAM.
+        // The phone writes units and a rename into the object-store cache and RRAM.
         let mut objstore = store.load();
         objstore.adopt_ble_fields(&Settings {
             units: Units::Imperial,
@@ -1484,10 +1224,8 @@ mod tests {
         });
         store.save(&objstore);
 
-        // The ride loop sees the settings-changed signal and reloads BLE fields into the app copy
-        // *before* its change-detection save.
+        // The ride loop reloads BLE fields into the app copy before its change-detection save.
         app.adopt_ble_fields(&store.load());
-        // Now the app saves (its own dirty edit flushed on leaving the settings screen).
         store.save(&app);
 
         let persisted = store.load();
@@ -1497,15 +1235,13 @@ mod tests {
         assert!(!persisted.ble_enabled, "the radio-off toggle survives the coherence path (device-only)");
     }
 
-    /// The clobber *without* the fix, pinned as the exact bug #456 removes: if the app saves its
-    /// stale copy without reloading, it overwrites the phone's write. (Guards against a future
-    /// refactor dropping the reload.)
+    /// Without the reload, the app's stale copy overwrites the phone's write. Pinned so a refactor
+    /// that drops the reload fails here.
     #[test]
     fn app_save_without_reload_would_clobber() {
         let mut store = FakeStore::new(&Settings::default());
-        let app = Settings::default(); // still metric, no name
+        let app = Settings::default();
 
-        // Phone writes imperial + a name.
         let mut objstore = store.load();
         objstore.adopt_ble_fields(&Settings {
             units: Units::Imperial,
@@ -1514,40 +1250,35 @@ mod tests {
         });
         store.save(&objstore);
 
-        // App saves its stale copy *without* the reload — this is the pre-fix behaviour.
+        // The app saves its stale copy without the reload.
         store.save(&app);
         let clobbered = store.load();
         assert_eq!(clobbered.units, Units::Metric, "the bug: the app's stale metric clobbers the phone's imperial");
         assert!(clobbered.device_name.is_empty(), "and the phone's rename is lost");
     }
 
-    /// Direction 2 — device → phone: units change on-device (app copy + RRAM), then a Config read
-    /// must serve fresh values. The object-store cache is refreshed from RRAM before the read.
+    /// Device to phone: units change on-device, then a Config read must serve fresh values.
     #[test]
     fn app_change_then_ble_read_serves_fresh() {
-        let boot = Settings::default(); // metric
+        let boot = Settings::default();
         let mut store = FakeStore::new(&boot);
         // The BLE object-store cache, seeded at boot.
         let mut objstore_cache = store.load();
         assert_eq!(objstore_cache.units, Units::Metric);
 
-        // On-device: the rider flips to imperial. The ride loop persists the app copy to RRAM.
+        // The rider flips to imperial and the ride loop persists the app copy to RRAM.
         let mut app = boot;
         app.units = Units::Imperial;
         store.save(&app);
 
-        // A Config read arrives. The object-store refreshes its cache from RRAM first (the fix),
-        // so it serves the fresh value rather than the stale boot cache.
+        // The object store refreshes its cache from RRAM before serving the read.
         objstore_cache = store.load();
         assert_eq!(objstore_cache.units, Units::Imperial, "the Config read serves the on-device change, no reboot");
     }
 }
 
-// ==================== the Settings domain protocol (#1436) ====================
-//
-// SettingsMachine owns the dirty revision, the debounce, the retry and the stale-ack rule that
-// [`SettingsMachine`] holds since #1397 S2. The platform executor writes **one** revision and says
-// what happened;
+// The settings domain protocol. [`SettingsMachine`] owns the dirty revision, the debounce, the
+// retry and the stale-ack rule. The platform executor writes one revision and says what happened;
 // it decides nothing about when a write is owed or whether an old answer still counts.
 
 use crate::device_core::{OperationToken, SettingsTag};
@@ -1565,14 +1296,12 @@ pub enum SettingsIntent {
 /// Persist the current settings revision. Values are read from resident settings at execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsEffect {
-    /// Write the live settings to durable storage as `revision`. The values themselves are read
-    /// from the resident [`Settings`] under the snapshot-at-execute rule — no settings copy ever
-    /// rides the effect.
+    /// Write the live settings to durable storage as `revision`. The values are read from the
+    /// resident [`Settings`] at execution; no settings copy ever rides the effect.
     PersistRevision { token: OperationToken<SettingsTag>, revision: u16 },
 }
 
 impl SettingsEffect {
-    /// The operation this effect belongs to.
     pub fn token(&self) -> OperationToken<SettingsTag> {
         match self {
             SettingsEffect::PersistRevision { token, .. } => *token,
@@ -1580,24 +1309,21 @@ impl SettingsEffect {
     }
 }
 
-/// The result of one [`SettingsEffect`]. The typed
-/// failure reuses [`SettingsSaveError`](obc_ports::SettingsSaveError) — the port already names
-/// every way a settings write can fail, and a second vocabulary for the same thing would only
-/// drift.
+/// The result of one [`SettingsEffect`]. The typed failure reuses
+/// [`SettingsSaveError`](obc_ports::SettingsSaveError), because the port already names every way a
+/// settings write can fail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsOutcome {
-    /// `revision` of the preferences blob reached durable storage.
+    /// `revision` reached durable storage.
     Persisted { token: OperationToken<SettingsTag>, revision: u16 },
-    /// The preferences write for `revision` failed; the value stays live in RAM and the revision
-    /// stays owed.
+    /// The write for `revision` failed; the value stays live in RAM and the revision stays owed.
     PersistFailed { token: OperationToken<SettingsTag>, revision: u16, error: obc_ports::SettingsSaveError },
-    /// The executor abandoned the preferences write without completing it — a platform with no
-    /// durable store says so here instead of leaving the handshake parked forever.
+    /// The executor abandoned the write. A platform with no durable store says so here instead of
+    /// leaving the handshake parked forever.
     Cancelled { token: OperationToken<SettingsTag> },
 }
 
 impl SettingsOutcome {
-    /// The operation this outcome answers.
     pub fn token(&self) -> OperationToken<SettingsTag> {
         match self {
             SettingsOutcome::Persisted { token, .. }
@@ -1612,32 +1338,26 @@ const _: () = assert!(core::mem::size_of::<SettingsIntent>() <= 4, "a revision o
 const _: () = assert!(core::mem::size_of::<SettingsEffect>() <= 8, "a token and a revision");
 const _: () = assert!(core::mem::size_of::<SettingsOutcome>() <= 8, "a token, a revision and a reason");
 
-/// Bounded backoff before a failed settings persist may re-emit (map-plane millis, #810). Fixed and
-/// coarse: a persist failure is rare (an RRAM/file write error), the value stays live in RAM
-/// meanwhile, and the retry only re-emits on a frame that runs for another reason — so this paces
-/// retries without ever scheduling an idle wake.
+/// Bounded backoff before a failed settings persist may re-emit, in map-plane millis. The retry
+/// only re-emits on a frame that runs for another reason, so it never schedules an idle wake.
 pub(crate) const SETTINGS_RETRY_BACKOFF_MS: u32 = 2_000;
 
-/// Wrap-safe "deadline reached" in the persist-backoff's **u16** millisecond space (the low 16 bits
-/// of map-plane millis): true while `now` sits in the half-window at or past `deadline`. The u16
-/// domain wraps every 65.5 s, so a frame gap longer than ~32.7 s can park a due retry in the "not
-/// yet" half and slide it by up to one wrap — bounded, harmless for a rare failure path, and the
-/// price of keeping the deadline to two resident bytes (#792 rule 2).
+/// Wrap-safe "deadline reached" in the backoff's u16 millisecond space: true while `now` sits in
+/// the half-window at or past `deadline`. The u16 domain wraps every 65.5 s, so a frame gap longer
+/// than about 32.7 s can slide a due retry by up to one wrap. That is the price of keeping the
+/// deadline to two resident bytes.
 fn retry_deadline_reached(now: u16, deadline: u16) -> bool {
     now.wrapping_sub(deadline) < 0x8000
 }
 
-/// Where the settings-persistence handshake is (#810).
-///
-/// Deliberately **fieldless** (one byte): the Backoff deadline lives in the sibling
-/// [`SettingsMachine::retry_at_ms`] field (meaningful only in Backoff), so this byte packs into an
-/// existing padding hole instead of an 8-byte payload-carrying enum.
+/// Where the settings-persistence handshake is. Fieldless, so it packs into an existing padding
+/// hole: the Backoff deadline lives in the sibling [`SettingsMachine::retry_at_ms`] field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum PersistState {
     /// The live settings are persisted at the current revision.
     #[default]
     Clean,
-    /// An edit changed the live settings; a save is owed once the rider leaves the settings subtree.
+    /// A save is owed once the rider leaves the settings subtree.
     Dirty,
     /// A write was emitted for the current revision and awaits its answer.
     Awaiting,
@@ -1648,38 +1368,25 @@ enum PersistState {
 /// The settings domain's persistence machine: the dirty revision, the subtree debounce, the retry
 /// backoff and the stale-answer rule.
 ///
-/// Editing is live in RAM the instant it happens; *persisting* it is an acknowledged, retryable
-/// cross-boundary conversation keyed by the monotonic [`revision`](SettingsMachine::revision).
-///
-/// - **Clean** — persisted. An edit → **Dirty** (and bumps the revision).
-/// - **Dirty** — a save is owed. Once outside the subtree, the next effect writes it → **Awaiting**.
-/// - **Awaiting** — emitted and waiting; **not re-emitted** (no RRAM spam under a slow executor). A
-///   matching success → **Clean**; a matching failure → **Backoff**. An edit here → **Dirty**
-///   (supersede: the new revision re-emits, and the older answer no longer matches). An executor
-///   that takes the write but never answers (the web demo has no durable store) parks here
-///   terminally — by design: edits stay live in RAM and keep superseding, and nothing re-emits.
-/// - **Backoff** — the last write failed; re-emits only once the deadline is reached. An edit →
-///   **Dirty**, so a fresh revision skips the wait.
-///
-/// The revision is the supersede guard: an answer is honoured only when it equals the current one.
-/// `u16` monotonic (wrapping) — a false match would need exactly 65,536 edits between an emit and
-/// its answer, and only one revision is ever Awaiting.
+/// Editing is live in RAM the instant it happens; persisting it is an acknowledged, retryable
+/// conversation keyed by the monotonic [`revision`](SettingsMachine::revision). An in-flight write
+/// is never re-emitted, so an executor that takes the write and never answers parks instead of
+/// spamming the store, while edits stay live in RAM and keep superseding. An answer is honoured
+/// only while its revision is still the current one.
 #[derive(Debug, Default)]
 pub(crate) struct SettingsMachine {
-    /// The operation token for the write an executor is running.
     ops: crate::device_core::TokenSource<crate::device_core::SettingsTag>,
-    /// The revision of the live settings, bumped by every edit whose before/after compare finds a
-    /// change. Starts `0`, re-zeroed when the boot value is seeded.
+    /// Bumped by every edit whose before/after compare finds a change. Re-zeroed when the boot
+    /// value is seeded.
     revision: u16,
-    /// The [`Backoff`](PersistState::Backoff) retry deadline — the **low 16 bits** of map-plane
-    /// millis. Meaningful only while [`persist`](SettingsMachine::persist) is Backoff.
+    /// The Backoff retry deadline: the low 16 bits of map-plane millis.
     retry_at_ms: u16,
-    /// Where the handshake is.
     persist: PersistState,
 }
 
 impl SettingsMachine {
-    /// The boot state: Clean at revision 0 — the boot value came from the store or the default.
+    /// The boot state: Clean at revision 0, because the boot value came from the store or the
+    /// default.
     pub(crate) const fn new() -> Self {
         SettingsMachine {
             ops: crate::device_core::TokenSource::new(),
@@ -1689,11 +1396,9 @@ impl SettingsMachine {
         }
     }
 
-    /// Admit one settings intent.
-    ///
-    /// [`Changed`](SettingsIntent::Changed) from *any* prior state supersedes an in-flight or
-    /// backing-off older revision: the new content re-emits, and the older answer, when it lands,
-    /// no longer matches the revision and is ignored (#810).
+    /// Admit one settings intent. A [`Changed`](SettingsIntent::Changed) from any prior state
+    /// supersedes an in-flight or backing-off older revision: the new content re-emits, and the
+    /// older answer no longer matches when it lands.
     pub(crate) fn admit_intent(&mut self, intent: SettingsIntent) {
         match intent {
             SettingsIntent::Changed { revision } => {
@@ -1712,17 +1417,15 @@ impl SettingsMachine {
         self.admit_intent(SettingsIntent::Changed { revision });
     }
 
-    /// The boot value was just seeded from the store (or the default): it is already persisted, so
-    /// reset to Clean at revision 0. Any pending edit is discarded — seeding is a boot/reload
-    /// operation, not a rider edit.
+    /// The boot value was seeded from the store or the default, so it is already persisted: reset
+    /// to Clean at revision 0. A pending edit is discarded, because seeding is not a rider edit.
     pub(crate) fn note_seeded(&mut self) {
         self.revision = 0;
         self.persist = PersistState::Clean;
     }
 
-    /// Whether a write is owed **and** may be emitted now: the value is dirty, the rider has left
-    /// the settings subtree, and we are neither already awaiting an answer nor inside a failed-write
-    /// backoff window.
+    /// Whether a write is owed and may be emitted now: the value is dirty, the rider has left the
+    /// settings subtree, and no answer or backoff window is outstanding.
     pub(crate) fn wants_write(&self, in_settings_subtree: bool, now_ms: u32) -> bool {
         if in_settings_subtree {
             return false;
@@ -1744,12 +1447,11 @@ impl SettingsMachine {
         Some(SettingsEffect::PersistRevision { token, revision })
     }
 
-    /// Consume the answer to a write. Returns `true` when the write **failed** and the rider must
-    /// be told — the one part of this the domain cannot do itself.
+    /// Consume the answer to a write. Returns `true` when the write failed and the rider must be
+    /// told, which is the one part of this the domain cannot do itself.
     ///
-    /// Both guards are checked, and they are independent: the token rejects a superseded
-    /// *operation*, the revision rejects a stale *value*. A stale answer leaves the newer content
-    /// pending either way.
+    /// The two guards are independent: the token rejects a superseded operation, the revision
+    /// rejects a stale value. A stale answer leaves the newer content pending either way.
     pub(crate) fn apply_outcome(&mut self, outcome: SettingsOutcome, now_ms: u32) -> bool {
         if !self.ops.is_current(outcome.token()) {
             return false;
@@ -1761,8 +1463,7 @@ impl SettingsMachine {
                 false
             }
             SettingsOutcome::PersistFailed { revision, .. } => self.note_persist_failed(revision, now_ms),
-            // A platform with no durable store says so here instead of parking the handshake
-            // forever. The value stays dirty and retryable; nothing is claimed to have been written.
+            // The value stays dirty and retryable; nothing is claimed to have been written.
             SettingsOutcome::Cancelled { .. } => {
                 if self.persist == PersistState::Awaiting {
                     self.persist = PersistState::Dirty;
@@ -1772,12 +1473,8 @@ impl SettingsMachine {
         }
     }
 
-    /// `revision` reached durable storage. Clear to Clean **only** while it is still the latest — a
+    /// `revision` reached durable storage. Clear to Clean only while it is still the latest: a
     /// newer edit has already moved the machine back to Dirty, and that content stays pending.
-    ///
-    /// The revision is the whole guard here, because the legacy protocol carries no token: an
-    /// answer to a write nobody made cannot be distinguished from a stale one, and both leave the
-    /// live value exactly where it is.
     pub(crate) fn note_persisted(&mut self, revision: u16) {
         if self.persist == PersistState::Awaiting && revision == self.revision {
             self.persist = PersistState::Clean;
@@ -1787,10 +1484,8 @@ impl SettingsMachine {
     /// The write for `revision` failed. Keep it dirty and re-arm the bounded backoff, but only
     /// while it is still the in-flight latest.
     ///
-    /// **Always returns `true`:** the rider is told a save failed whatever the revision guard says,
-    /// which is what the legacy handler did and the honest thing to show — a write *did* fail. The
-    /// guard decides only whether that revision stays retryable; a stale failure leaves the newer
-    /// content pending exactly as it was and re-arms nothing.
+    /// Always returns `true`: a write did fail, so the rider is told whatever the revision guard
+    /// says. The guard decides only whether that revision stays retryable.
     pub(crate) fn note_persist_failed(&mut self, revision: u16, now_ms: u32) -> bool {
         if self.persist == PersistState::Awaiting && revision == self.revision {
             self.retry_at_ms = (now_ms as u16).wrapping_add(SETTINGS_RETRY_BACKOFF_MS as u16);
@@ -1799,15 +1494,14 @@ impl SettingsMachine {
         true
     }
 
-    /// Test hook: arm a pending save without driving a real edit, standing in for a settings-screen
-    /// edit the drain/gating tests do not replay.
+    /// Test hook: arm a pending save without driving a real edit.
     #[cfg(test)]
     pub(crate) fn arm_save(&mut self) {
         self.note_edited();
     }
 
-    /// Whether nothing at all is owed: Clean at revision 0 — the [`new`](SettingsMachine::new)
-    /// state. The destructure is exhaustive, so a field added here must state its empty value too.
+    /// Whether nothing is owed: Clean at revision 0. The destructure is exhaustive, so a field
+    /// added here must state its empty value too.
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         let SettingsMachine { ops, revision, retry_at_ms, persist } = self;
@@ -1815,7 +1509,7 @@ impl SettingsMachine {
     }
 }
 
-// Layout tripwire: a revision, a deadline, a phase and a generation — never a `Settings`.
+// Layout tripwire: a revision, a deadline, a phase and a generation, never a `Settings`.
 const _: () = assert!(core::mem::size_of::<SettingsMachine>() <= 12, "the handshake, not the values");
 
 #[cfg(test)]
@@ -1823,8 +1517,7 @@ mod settings_machine_tests {
     use super::*;
     use obc_ports::SettingsSaveError;
 
-    /// The token a write went out under, so a test can answer the operation the machine is actually
-    /// holding.
+    /// The token a write went out under, so a test can answer the operation the machine holds.
     fn emit(
         machine: &mut SettingsMachine,
         now_ms: u32,
@@ -1834,8 +1527,8 @@ mod settings_machine_tests {
         }
     }
 
-    /// The debounce: nothing is written while the rider is still inside the settings subtree — they
-    /// are mid-edit — and exactly one write goes out when they leave.
+    /// The debounce: nothing is written while the rider is mid-edit inside the settings subtree,
+    /// and exactly one write goes out when they leave.
     #[test]
     fn no_write_leaves_while_the_rider_is_inside_the_settings_subtree() {
         let mut machine = SettingsMachine::new();
@@ -1848,9 +1541,8 @@ mod settings_machine_tests {
         assert!(machine.next_effect(false, 400).is_none(), "awaiting an answer — never re-emitted");
     }
 
-    /// **#810.** A stale ack — one for a revision a newer edit has already superseded — must not
-    /// clear the newer content. The revision is the guard, and it is checked independently of the
-    /// token: the legacy protocol carries no token at all.
+    /// A stale ack, for a revision a newer edit has already superseded, must not clear the newer
+    /// content. The revision is the guard, checked independently of the token.
     #[test]
     fn a_stale_ack_does_not_clear_the_newer_state() {
         let mut machine = SettingsMachine::new();
@@ -1866,8 +1558,6 @@ mod settings_machine_tests {
         assert!(!machine.wants_write(false, 300), "the matching ack is what clears it");
     }
 
-    /// A failed write keeps the revision dirty, backs off, and retries **once** the window elapses —
-    /// never before it, and never in a loop.
     #[test]
     fn a_failed_write_backs_off_and_retries_once() {
         let mut machine = SettingsMachine::new();
@@ -1883,9 +1573,8 @@ mod settings_machine_tests {
         assert!(machine.next_effect(false, 1_000 + 4 * SETTINGS_RETRY_BACKOFF_MS).is_none(), "one retry in flight");
     }
 
-    /// A platform that takes the write and never answers (the web demo has no durable store) parks
-    /// — by design. Edits stay live in RAM and keep superseding, and nothing re-emits into a store
-    /// that will not answer.
+    /// A platform that takes the write and never answers parks by design: edits stay live in RAM
+    /// and keep superseding, and nothing re-emits into a store that will not answer.
     #[test]
     fn an_executor_that_never_answers_parks_without_re_emitting() {
         let mut machine = SettingsMachine::new();
@@ -1895,18 +1584,15 @@ mod settings_machine_tests {
             assert!(machine.next_effect(false, ms).is_none(), "no RRAM spam under a silent executor");
         }
 
-        // …and a `Cancelled` answer is how such a platform says so honestly: the value stays dirty
-        // and retryable rather than parked forever.
+        // A `Cancelled` answer is how such a platform says so: the value stays dirty and retryable.
         machine.note_edited();
         let (token, _) = emit(&mut machine, 2_000_000);
         assert!(!machine.apply_outcome(SettingsOutcome::Cancelled { token }, 2_000_000));
         assert!(machine.wants_write(false, 2_000_001), "the write is owed again");
     }
 
-    /// The rider is told a save failed even when the failure is for a superseded revision — a write
-    /// did fail, and hiding it would be the quieter lie. What the revision guard decides is only
-    /// whether *that* revision stays retryable: a stale failure re-arms nothing, so the newer
-    /// content is still owed immediately rather than parked behind a backoff it never earned.
+    /// The rider is told a save failed even when the failure is for a superseded revision. A stale
+    /// failure re-arms nothing, so the newer content is owed at once rather than after a backoff.
     #[test]
     fn a_stale_failure_is_still_shown_but_re_arms_nothing() {
         let mut machine = SettingsMachine::new();
@@ -1919,8 +1605,8 @@ mod settings_machine_tests {
         assert_eq!(emit(&mut machine, 100).1, 2);
     }
 
-    /// The token and the revision are independent guards: an answer to a *superseded operation* is
-    /// refused before its revision is even looked at.
+    /// An answer to a superseded operation is refused on its token, before its revision is looked
+    /// at.
     #[test]
     fn a_superseded_operation_is_refused_on_its_token() {
         let mut machine = SettingsMachine::new();

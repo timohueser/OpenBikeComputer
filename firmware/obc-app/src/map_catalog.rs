@@ -30,7 +30,6 @@ mod tests {
             crate::BootFault::BadMap,
             "an incomplete listing over an apparently empty catalog is MAP UNREADABLE, not NO MAP"
         );
-        // And it never flips the answer the other way.
         assert_eq!(flat_boot_fault(4, false), crate::BootFault::BadMap);
     }
 }
