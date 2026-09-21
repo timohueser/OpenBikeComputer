@@ -23,6 +23,11 @@ delete scenarios settle only because the domain ordered the read.
 
 from __future__ import annotations
 
+# `obc governs` reads these two names. GOVERNS is the scope this guard actually walks;
+# RULE is the one sentence it enforces.
+GOVERNS = ['**/*.rs', '**/*.py']
+RULE = 'Only CatalogMachine orders a re-read of the object store.'
+
 import re
 from pathlib import Path
 
