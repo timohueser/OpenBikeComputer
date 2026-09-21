@@ -73,11 +73,11 @@ fn dist(a: Point, b: Point) -> f32 {
     libm::sqrtf(dx * dx + dy * dy)
 }
 
-/// The `cos²θ` threshold below which a `weight`-px thick stroke's bare butt-join is within ½ px of
-/// a round joint, so the vertex needs no round-join disc in [`flush_run`]. Butt ends meet at the
-/// vertex; on the outer side of a turn `θ` that leaves a notch ~`r·sin(θ/2)` deep (`r = weight/2`).
-/// Sub-pixel means `sin(θ/2) ≤ 1/weight`, so the cut-off cosine is `1 − 2·(1/weight)²` — returned
-/// squared for the magnitude-folded test. At weight 11 that's a ~10° cut-off.
+/// The `cos²θ` threshold below which a `weight`-px thick stroke's bare butt join is within ½ px
+/// of a round joint, so the vertex needs no disc in [`flush_run`]. Butt ends meet at the vertex,
+/// and on the outer side of a turn `θ` that leaves a notch about `r·sin(θ/2)` deep, with
+/// `r = weight/2`. Sub-pixel means `sin(θ/2) ≤ 1/weight`, so the cut-off cosine is
+/// `1 − 2·(1/weight)²`, returned squared for the magnitude-folded test.
 #[inline]
 fn joint_disc_cos2(weight: u32) -> f32 {
     let sin_half = (1.0 / weight as f32).min(1.0); // ½px ÷ (weight/2)
@@ -103,9 +103,9 @@ fn turn_is_sharp(a: Point, b: Point, c: Point, cos2: f32) -> bool {
     dot * dot < cos2 * (ux * ux + uy * uy) * (vx * vx + vy * vy)
 }
 
-/// Screen-space simplification tolerance (px) for [`Stroker::stroke`]. **Subpixel** by design: big
-/// enough to fold away the integer-projection staircase (≤ ½ px) and same-pixel vertex pile-ups,
-/// but under 1 px so the stroked line never shifts a visible pixel.
+/// Screen-space simplification tolerance in px for [`Stroker::stroke`]. Subpixel by design: big
+/// enough to fold away the integer-projection staircase and same-pixel vertex pile-ups, under
+/// 1 px so the stroked line never shifts a visible pixel.
 const SIMPLIFY_EPS_PX: f32 = 0.75;
 
 /// True when `p` lies within `eps` px (perpendicular) of the line through `a` and `b` — the
@@ -157,25 +157,23 @@ where
     }
 }
 
-/// One stroke operation's invariants + scratch, borrowed for the duration of a single polyline
-/// stroke. `run` accumulates the current visible segment run. Bundling these keeps the pipeline's
-/// helpers argument-light and gives the per-stroke state (v6 dashes, road casing) a home. The thick
-/// segment fill needs no scanline-crossing scratch — [`fill_convex_quad`] scan-converts each quad
-/// from a fixed stack edge record — so the stroker no longer borrows [`crate::DrawScratch::xs`].
+/// One stroke operation's invariants and scratch, borrowed for a single polyline stroke. `run`
+/// accumulates the current visible segment run. The thick segment fill scan-converts each quad
+/// from a fixed stack edge record, so the stroker needs no scanline-crossing scratch.
 pub(crate) struct Stroker<'a, D: DrawTarget> {
     target: &'a mut D,
     run: &'a mut Vec<Point, MAX_SCREEN_POINTS>,
     color: D::Color,
     /// Stroke width in px, already `.max(1)`-clamped by [`Stroker::new`].
     weight: u32,
-    /// How each flushed run rasterises. [`LineStyle::Solid`] by default, so [`Stroker::stroke`] is
-    /// byte-for-byte unchanged; [`Stroker::stroke_dashed`] and [`Stroker::stroke_ticked`] set it.
+    /// How each flushed run rasterises. [`LineStyle::Solid`] by default;
+    /// [`Stroker::stroke_dashed`] and [`Stroker::stroke_ticked`] set it.
     line: LineStyle,
     /// View rectangle grown by the stroke width ([`Stroker::new`]), as `(xmin, ymin, xmax, ymax)`.
     clip: (f32, f32, f32, f32),
-    /// Arc length (px) walked from this polyline's **first vertex**, counting the parts the view
-    /// clip threw away. Anchoring the dash / tick rhythm to the feature instead of to wherever it
-    /// happens to cross the screen edge is what holds the pattern still while the camera pans.
+    /// Arc length in px walked from this polyline's first vertex, counting the parts the view
+    /// clip threw away. Anchoring the dash or tick rhythm to the feature rather than to the
+    /// screen edge is what holds the pattern still while the camera pans.
     arc: f32,
     /// [`Stroker::arc`] at the current run's first point — the phase its dashes or ticks open with.
     run_arc: f32,
@@ -203,16 +201,15 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
     }
 
     /// Clip a projected overlay polyline to the view and stroke the on-screen runs
-    /// ([`Stroker::flush_run`]). Clipping first (Cohen–Sutherland, into the grown clip rectangle)
-    /// means the stroker only pays for the visible part — vital when the route/breadcrumb is ~96%
-    /// off-screen at riding zoom. The line splits into separate runs where it crosses the view,
-    /// each stroked on its own.
+    /// ([`Stroker::flush_run`]). Clipping first means the stroker only pays for the visible part,
+    /// which matters when the route or breadcrumb is almost all off-screen at riding zoom. The
+    /// line splits into separate runs where it crosses the view, each stroked on its own.
     ///
-    /// Points are first **simplified in screen space** ([`simplify`] at [`SIMPLIFY_EPS_PX`]) — a
-    /// subpixel dedup folding away the integer-projection staircase and same-pixel pile-ups without
-    /// moving the line a visible pixel, handing the stroker far fewer segments and joints.
+    /// Points are simplified in screen space first ([`simplify`] at [`SIMPLIFY_EPS_PX`]), a
+    /// subpixel dedup that hands the stroker far fewer segments and joints without moving the
+    /// line a visible pixel.
     ///
-    /// Returns the count of **on-screen vertices actually stroked** (after simplify + view clip).
+    /// Returns the count of on-screen vertices actually stroked.
     pub(crate) fn stroke<I>(&mut self, points: I) -> usize
     where
         I: IntoIterator<Item = Point>,
@@ -231,11 +228,10 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
         drawn
     }
 
-    /// Like [`Stroker::stroke`] but rasterises the on-screen runs as **dashes** ([`walk_dashes`]):
-    /// the whole simplify → clip → run-accumulation pipeline is reused unchanged (so off-screen
-    /// dashes cost nothing — clip-before-dash), and only [`Stroker::flush_run`] diverges once the
-    /// `dashed` flag is set. Each run opens on the phase its start point reached along the feature
-    /// ([`Stroker::arc`]), so the dashes hold their ground positions while the camera pans.
+    /// Like [`Stroker::stroke`], but rasterises the on-screen runs as dashes ([`walk_dashes`]).
+    /// The whole simplify, clip and run pipeline is reused, so off-screen dashes cost nothing and
+    /// only [`Stroker::flush_run`] diverges. Each run opens on the phase its start point reached
+    /// along the feature, so the dashes hold their ground positions while the camera pans.
     pub(crate) fn stroke_dashed<I>(&mut self, points: I) -> usize
     where
         I: IntoIterator<Item = Point>,
@@ -244,9 +240,8 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
         self.stroke(points)
     }
 
-    /// Like [`Stroker::stroke`] but rasterises each run as a solid stroke carrying regular
-    /// perpendicular **ticks** ([`walk_ticks`]) — the cableway and lift mark. It reuses the same
-    /// simplify → clip → run pipeline, so off-screen ticks cost nothing, and the tick phase is
+    /// Like [`Stroker::stroke`], but rasterises each run as a solid stroke carrying regular
+    /// perpendicular ticks ([`walk_ticks`]), the cableway and lift mark. The tick phase is
     /// anchored to the feature's arc exactly as the dash phase is.
     pub(crate) fn stroke_ticked<I>(&mut self, points: I) -> usize
     where
@@ -257,14 +252,11 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
     }
 
     /// Clip one committed segment `a`→`b` to the view and append it to the current run, flushing
-    /// where the line is discontinuous (segment off-screen, or it doesn't continue the last run).
-    ///
-    /// Returns how many **on-screen vertices** this segment contributed (0 if wholly clipped out)
-    /// — `c1` always, plus `c0` when it (re)starts a run.
+    /// where the line is discontinuous. Returns how many on-screen vertices this segment
+    /// contributed: `c1` always, plus `c0` when it restarts a run.
     fn stroke_seg(&mut self, a: Point, b: Point) -> usize {
         let (xmin, ymin, xmax, ymax) = self.clip;
-        // Only a dashed or ticked stroke has a phase to anchor; a solid one skips the arc's `sqrt`
-        // entirely, so the common case costs exactly what it did before.
+        // Only a dashed or ticked stroke has a phase to anchor; a solid one skips the arc's `sqrt`.
         let patterned = self.line != LineStyle::Solid;
         let drawn = match clip_segment(a, b, xmin, ymin, xmax, ymax) {
             None => {
@@ -290,8 +282,8 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
                 drawn
             }
         };
-        // Every segment advances the feature's arc, on-screen or not — that is what keeps the
-        // dash / tick phase anchored to the line rather than to the view.
+        // Every segment advances the feature's arc, on-screen or not, which is what keeps the
+        // dash and tick phase anchored to the line rather than to the view.
         if patterned {
             self.arc += dist(a, b);
         }
@@ -300,14 +292,12 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
 
     /// Rasterise the accumulated run, then clear it for the next.
     ///
-    /// A **1 px** stroke goes through embedded-graphics' `Polyline` — a thin Bresenham line, and
-    /// the one width the span path can't do (a zero-width rectangle has no scanline crossings).
-    /// **Everything ≥ 2 px** is laid down as **spans**: a filled rectangle per segment
-    /// ([`Stroker::fill_thick_segment`]) plus a round-join/cap disc ([`Stroker::fill_disc`]) at the
-    /// two run ends (always — they round the cap and, at a chunk seam, close the butt gap to the
-    /// next feature) and at every interior vertex bending sharply enough to show a notch
-    /// ([`turn_is_sharp`]). Both go through the coalesced `fill_solid`. eg's thick `Polyline` +
-    /// `Circle` path measured ~10× a span stroke even at 2 px, so the split sits at 1 px, not 2.
+    /// A 1 px stroke goes through embedded-graphics' `Polyline`, a thin Bresenham line, and the
+    /// one width the span path cannot do, because a zero-width rectangle has no scanline
+    /// crossings. Everything from 2 px up is laid down as spans: a filled rectangle per segment,
+    /// plus a round join or cap disc at the two run ends and at every interior vertex that bends
+    /// sharply enough to show a notch. The eg thick `Polyline` and `Circle` path measured about
+    /// ten times a span stroke even at 2 px, so the split sits at 1 px.
     fn flush_run(&mut self) {
         if self.run.len() >= 2 {
             if self.line == LineStyle::Dashed {
@@ -330,9 +320,9 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
                     .into_styled(PrimitiveStyle::with_stroke(self.color, self.weight))
                     .draw(self.target);
             } else {
-                // Body half-width is the integer disc radius, not `weight/2` — so rectangle and disc come
-                // out the same thickness (disc never narrower than the body it caps), and an odd `weight`
-                // lands on its nominal width instead of a px fatter.
+                // The body half-width is the integer disc radius, not `weight/2`, so the
+                // rectangle and the disc come out the same thickness and an odd `weight` lands on
+                // its nominal width.
                 let r = (self.weight / 2) as i32;
                 let hw = r as f32;
                 for i in 0..self.run.len() - 1 {
@@ -351,19 +341,17 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
         }
     }
 
-    /// Rasterise the accumulated run as **screen-space dashes** in `self.color` ([`walk_dashes`],
-    /// `on == off == `[`dash_len`]). Reuses everything up to here unchanged (simplify → clip → run),
-    /// so a dashed line is *cheaper* than a solid one — off-screen dashes are already clipped away
-    /// and no run is walked twice. The on-intervals emit with **butt ends, no joint/cap discs**:
-    /// dashes are short and straight, so the notch a disc would fill is invisible, and skipping them
-    /// halves the fill cost and keeps the stripe edges crisp. Called only from [`Stroker::flush_run`]
-    /// (run length already `>= 2`); `flush_run` clears the run afterwards.
+    /// Rasterise the accumulated run as screen-space dashes ([`walk_dashes`], with
+    /// `on == off ==` [`dash_len`]). The on-intervals emit with butt ends and no joint or cap
+    /// discs: dashes are short and straight, so the notch a disc would fill is invisible, and
+    /// skipping them halves the fill cost and keeps the stripe edges crisp. Called only from
+    /// [`Stroker::flush_run`], which clears the run afterwards.
     fn flush_run_dashed(&mut self) {
         let dash = dash_len(self.weight);
         let hw = (self.weight / 2) as f32;
         let weight = self.weight;
-        // Reborrow disjoint fields so `walk_dashes` may read `run` while the emit closure writes the
-        // target — the closure captures locals, never `self`.
+        // Reborrow disjoint fields so `walk_dashes` may read `run` while the emit closure writes
+        // the target; the closure captures locals, never `self`.
         let target = &mut *self.target;
         let color = self.color;
         let (w, h) = (self.w, self.h);
@@ -379,11 +367,10 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
         });
     }
 
-    /// Rasterise the accumulated run as a solid stroke plus regular perpendicular **ticks** — the
-    /// cableway mark. The body goes through [`Stroker::flush_run_solid`] unchanged, then
-    /// [`walk_ticks`] walks the same run and each tick is stroked across the line's own normal.
-    /// Shape, not colour, is what separates this from the other thin dashed lines, so it stays
-    /// legible next to a contour of any hue. Called only from [`Stroker::flush_run`].
+    /// Rasterise the accumulated run as a solid stroke plus regular perpendicular ticks, the
+    /// cableway mark. The body goes through [`Stroker::flush_run_solid`], then [`walk_ticks`]
+    /// walks the same run and each tick is stroked across the line's own normal. Shape, not
+    /// colour, separates this from the other thin dashed lines.
     fn flush_run_ticked(&mut self) {
         self.flush_run_solid();
         let (spacing, arm) = tick_geometry(self.weight);
@@ -407,17 +394,15 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
         });
     }
 
-    /// Lay down one segment of a thick stroke as a filled rectangle (swept ±`hw` px along its
-    /// perpendicular). Thin wrapper over [`fill_butt_quad`], sharing the quad math with the dash
-    /// path. A zero-length segment is left to the joint/cap disc.
+    /// Lay down one segment of a thick stroke as a filled rectangle, swept ±`hw` px along its
+    /// perpendicular. A zero-length segment is left to the joint or cap disc.
     fn fill_thick_segment(&mut self, a: Point, b: Point, hw: f32) {
         fill_butt_quad(self.target, a, b, hw, self.color, self.w, self.h);
     }
 
-    /// Fill a solid disc of radius `r` px at `(cx, cy)` as horizontal spans — one
-    /// [`fill_solid`](DrawTarget::fill_solid) per row (`hw = √(r² − dy²)`), not embedded-graphics'
-    /// per-pixel `Circle`. Rounds the thick stroke's joints and caps. Rows off top/bottom skipped;
-    /// `fill_solid` clips x.
+    /// Fill a solid disc of radius `r` px at `(cx, cy)` as horizontal spans, one
+    /// [`fill_solid`](DrawTarget::fill_solid) per row (`hw = √(r² − dy²)`), rather than
+    /// embedded-graphics' per-pixel `Circle`. It rounds the thick stroke's joints and caps.
     fn fill_disc(&mut self, cx: i32, cy: i32, r: i32) {
         if r < 1 {
             return;
@@ -436,10 +421,10 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
     }
 }
 
-/// The rounded four-point quad a thick-stroke segment `a`→`b` sweeps: the endpoints offset ±`hw` px
-/// along the segment's perpendicular, each corner snapped to integer pixels by [`round_pt`]. `None`
-/// for a zero-length segment (nothing to sweep). Split out of [`fill_butt_quad`] so the differential
-/// test harness can rasterise the *exact* reachable geometry through both fillers.
+/// The four-point quad a thick-stroke segment `a`→`b` sweeps: the endpoints offset ±`hw` px along
+/// the segment's perpendicular, each corner snapped to integer pixels by [`round_pt`]. `None` for
+/// a zero-length segment. Split out of [`fill_butt_quad`] so the differential test harness can
+/// rasterise the exact reachable geometry through both fillers.
 fn butt_quad(a: Point, b: Point, hw: f32) -> Option<[Point; 4]> {
     let (ax, ay, bx, by) = (a.x as f32, a.y as f32, b.x as f32, b.y as f32);
     let (dx, dy) = (bx - ax, by - ay);
@@ -456,12 +441,10 @@ fn butt_quad(a: Point, b: Point, hw: f32) -> Option<[Point; 4]> {
     ])
 }
 
-/// Lay down one thick-stroke segment as a filled rectangle (swept ±`hw` px along its perpendicular)
-/// via [`fill_convex_quad`] — the convex-quad specialization of the even-odd filler (exactly two
-/// crossings per row). **Butt ends** (no end caps): both the solid stroke's per-segment fill
-/// ([`Stroker::fill_thick_segment`], which caps via separate joint discs) and the dash path reuse
-/// this. A zero-length segment draws nothing. Spans round **outward** (see [`fill_convex_quad`]), so
-/// adjacent quads overlap by ≤1 px, no hairline crack.
+/// Lay down one thick-stroke segment as a filled rectangle through [`fill_convex_quad`], the
+/// convex-quad specialization of the even-odd filler with exactly two crossings per row. Butt
+/// ends, no caps: the solid stroke caps with separate joint discs and the dash path wants none.
+/// Spans round outward, so adjacent quads overlap by at most 1 px and leave no hairline crack.
 fn fill_butt_quad<D>(target: &mut D, a: Point, b: Point, hw: f32, color: D::Color, w: i32, h: i32)
 where
     D: DrawTarget,
@@ -471,35 +454,30 @@ where
     }
 }
 
-/// Dash on/off length in screen px for a `weight`-px dashed stroke (`on == off`). **Screen-space,
-/// with no per-style config knob** — the locked epic decision (#556). It's a pure function of the
-/// stroke's *rendered* px width, so a dashed line's rhythm tracks its own thickness: since that width
-/// now ramps with zoom (`weight` is scaled by [`crate::width_scale`] before it reaches here), the dash
-/// period ramps with it — a railway zoomed in gets proportionally longer dashes, not fine
-/// cross-hatching. Scales gently with weight (thicker stripe ⇒ longer dashes) and clamps to a legible
-/// 4–12 px. The exact numbers are a by-eye call; tune here, see epic #556.
+/// Dash on and off length in screen px for a `weight`-px dashed stroke. Screen-space, with no
+/// per-style knob: it is a pure function of the stroke's rendered px width, and that width ramps
+/// with zoom, so a railway zoomed in gets proportionally longer dashes rather than fine
+/// cross-hatching. It scales gently with weight and clamps to a legible 4 to 12 px. The exact
+/// numbers are a by-eye call.
 fn dash_len(weight: u32) -> f32 {
     (3 * weight).clamp(4, 12) as f32
 }
 
-/// Tick spacing and arm half-length in screen px for a `weight`-px ticked stroke. Screen-space and
-/// with no per-style knob, exactly like [`dash_len`], so the rhythm tracks the stroke's own rendered
-/// width. The arm is short and the spacing four times it, which is what reads as a cableway rather
-/// than as a fat dash. The arm clamps so a thick stroke does not grow whiskers; the spacing follows
-/// it and needs no clamp of its own. The numbers are a by-eye call; tune here.
+/// Tick spacing and arm half-length in screen px for a `weight`-px ticked stroke. Screen-space
+/// with no per-style knob, exactly like [`dash_len`], so the rhythm tracks the rendered width.
+/// The arm is short and the spacing four times it, which is what reads as a cableway rather than
+/// a fat dash. The arm clamps so a thick stroke does not grow whiskers. By-eye numbers.
 fn tick_geometry(weight: u32) -> (f32, f32) {
     let arm = (weight + 1).clamp(2, 4) as f32;
     (4.0 * arm, arm)
 }
 
-/// Walk an already-clipped, screen-space polyline `run` and emit one **tick** every `spacing` px of
-/// arc length as a `(centre, unit direction)` pair. Phase accumulates across the run's segments, so
-/// the ticks stay evenly spaced through a bend. `arc0` is the run's start position along the whole
-/// feature ([`Stroker::arc`]): marks land at `spacing / 2` plus whole spacings from the feature's
-/// first vertex, so a run starting mid-feature picks the rhythm up where it left off, and a run
-/// starting at the feature's own start still gets its first mark half a spacing in. The direction
-/// is the segment's own, which the caller turns into the normal; the pure arc-length math lives
-/// here so it can be unit-tested apart from any draw target.
+/// Walk an already-clipped screen-space polyline `run` and emit one tick every `spacing` px of
+/// arc length, as a `(centre, unit direction)` pair. Phase accumulates across the run's segments,
+/// so the ticks stay evenly spaced through a bend. `arc0` is the run's start position along the
+/// whole feature: marks land at `spacing / 2` plus whole spacings from the feature's first
+/// vertex, so a run starting mid-feature picks the rhythm up where it left off. The pure
+/// arc-length math lives here so it can be tested apart from any draw target.
 fn walk_ticks<F>(run: &[Point], spacing: f32, arc0: f32, mut emit: F)
 where
     F: FnMut((f32, f32), (f32, f32)),
@@ -524,13 +502,11 @@ where
     }
 }
 
-/// Walk an already-clipped, screen-space polyline `run` and emit each **"on" dash interval** as a
-/// `(start, end)` point pair to `emit`, using `on == off == dash` px of **arc length**. The phase
-/// accumulates across the run's segments (so dashes read continuously through a bend) and opens at
-/// `arc0`, the run's start position along the whole feature ([`Stroker::arc`]), so a run that
-/// re-enters the view resumes the feature's rhythm instead of restarting. An on-interval that
-/// spans a vertex is emitted as two pieces (one per segment); the pure arc-length math lives here so
-/// it can be unit-tested apart from any draw target.
+/// Walk an already-clipped screen-space polyline `run` and emit each "on" dash interval as a
+/// `(start, end)` point pair, using `on == off == dash` px of arc length. The phase accumulates
+/// across the run's segments, so dashes read continuously through a bend, and opens at `arc0`,
+/// the run's start position along the whole feature, so a run that re-enters the view resumes the
+/// rhythm. An on-interval spanning a vertex is emitted as two pieces, one per segment.
 fn walk_dashes<F>(run: &[Point], dash: f32, arc0: f32, mut emit: F)
 where
     F: FnMut(Point, Point),
@@ -549,9 +525,8 @@ where
         let mut t = 0.0_f32; // distance along this segment
         while t < len {
             let on = phase < dash;
-            // Distance to the next on/off boundary, clamped to what's left of the segment. Always
-            // > 0 (phase ∈ [0, period), so both `dash - phase` and `period - phase` are positive),
-            // so `t` strictly advances — no stall.
+            // Distance to the next on/off boundary, clamped to what is left of the segment.
+            // Always > 0, because phase ∈ [0, period), so `t` strictly advances and cannot stall.
             let remain = if on { dash - phase } else { period - phase };
             let step = remain.min(len - t);
             if on {
@@ -568,18 +543,17 @@ where
     }
 }
 
-/// Stroke one already-projected map line (its exterior ring) — the draw phase's `Kind::Line` arm,
-/// and the single point where per-feature line styling branches on the resolved scene style
-/// (`dashed` + optional device-quantized `color2`):
+/// Stroke one already-projected map line (its exterior ring): the draw phase's `Kind::Line` arm,
+/// and the one place where per-feature line styling branches on the resolved scene style.
 ///
-/// - **solid, no `color2`** → today's single stroke, byte-for-byte unchanged (the zero-cost path).
-/// - **solid + `color2`** → still a single solid stroke here; casing is a separate finest-LOD pass
-///   (#559), so `draw_line` itself never double-strokes for casing.
-/// - **dashed, no `color2`** → dashes in `color`, transparent gaps (admin borders).
-/// - **dashed + `color2`** → **railway stripe**: a full solid base in `color2`, then dashes in
-///   `color` on top → alternating segments.
+/// - solid, no `color2`: a single stroke.
+/// - solid with `color2`: still a single solid stroke here, because casing is a separate
+///   finest-LOD pass.
+/// - dashed, no `color2`: dashes in `color`, transparent gaps.
+/// - dashed with `color2`: the railway stripe, a solid base in `color2` with dashes in `color`
+///   over it.
 ///
-/// Uses the same view-clipped stroke as the route/breadcrumb overlays.
+/// Uses the same view-clipped stroke as the route and breadcrumb overlays.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_line<D>(
     target: &mut D,
@@ -595,7 +569,7 @@ pub(crate) fn draw_line<D>(
 {
     let (w, h) = (vp.w as i32, vp.h as i32);
     match (line, color2) {
-        // Solid (with or without color2 — casing is #559's job, not draw_line's). Unchanged path.
+        // Solid, with or without color2: casing is a separate pass.
         (LineStyle::Solid, _) => {
             Stroker::new(target, screen, color, weight, w, h).stroke(pts.iter().map(|p| p.point()));
         }
@@ -725,9 +699,8 @@ mod tests {
         assert_eq!(dirs[0], (1.0, 0.0), "along the first segment");
         assert_eq!(dirs[4], (0.0, 1.0), "and along the second");
 
-        // A run entering mid-feature resumes that rhythm rather than restarting at half a spacing:
-        // marks stay on the feature's arc 4, 12, 20, 28, … grid, so entering at arc 22 puts the
-        // next one 6 px in (arc 28).
+        // A run entering mid-feature resumes that rhythm rather than restarting at half a
+        // spacing, so entering at arc 22 puts the next mark 6 px in, at arc 28.
         let mut at: Vec<(i32, i32), 8> = Vec::new();
         walk_ticks(&[Point::new(0, 0), Point::new(20, 0)], spacing, 22.0, |c, _| {
             at.push((c.0 as i32, c.1 as i32)).expect("the run holds few enough ticks");
@@ -804,20 +777,18 @@ mod tests {
         assert_eq!(out[1], Point::new(10, 0), "the corner is kept");
     }
 
-    // ---- convex-quad fill differential harness (#850) --------------------------------------------
-    //
-    // The specialized [`fill_convex_quad`] must produce a framebuffer **byte-for-byte identical** to
-    // the general even-odd [`fill_polygon`] for every quad the stroker can actually hand it. These
-    // tests rasterise the *exact* reachable geometry (via [`butt_quad`], the same helper
-    // `fill_butt_quad` uses) plus hand-built degenerates through both fillers and compare the pixels.
+    // The specialized [`fill_convex_quad`] must produce a framebuffer byte-for-byte identical to
+    // the general even-odd [`fill_polygon`] for every quad the stroker can hand it. These tests
+    // rasterise the exact reachable geometry, plus hand-built degenerates, through both fillers
+    // and compare the pixels.
 
     const GW: i32 = 44;
     const GH: i32 = 40;
     const GN: usize = (GW * GH) as usize;
 
-    /// A tiny fixed-size 1-bpp framebuffer that records exactly which pixels each filler paints.
-    /// Both fillers reach pixels only through [`DrawTarget::fill_solid`]; `draw_iter` is implemented
-    /// for completeness so the comparison can never silently miss a code path.
+    /// A tiny fixed-size 1-bpp framebuffer recording exactly which pixels each filler paints.
+    /// Both fillers reach pixels only through [`DrawTarget::fill_solid`]; `draw_iter` is
+    /// implemented too, so the comparison cannot silently miss a code path.
     struct Grid {
         px: [u8; GN],
     }
@@ -872,10 +843,9 @@ mod tests {
 
     #[test]
     fn convex_quad_fill_matches_even_odd_on_a_reachable_grid() {
-        // A deterministic grid of segment endpoints — negative, zero, mid-screen, the last column
-        // (GW-1 = 43), the edge (44), and beyond — crossed with the reachable half-width range
-        // (weight/2 for weights 2..=11, plus half-integers). Every produced quad is what the stroker
-        // would sweep, so a mismatch here is a real pixel drift, not a synthetic one.
+        // A deterministic grid of segment endpoints — negative, zero, mid-screen, the last
+        // column, the edge and beyond — crossed with the reachable half-width range. Every quad
+        // it produces is one the stroker would sweep, so a mismatch is a real pixel drift.
         let coords = [-6, -1, 0, 1, 7, 20, 33, 43, 44, 50];
         let hws = [1.0f32, 1.5, 2.0, 2.5, 3.0, 4.0, 5.5];
         let mut checked = 0usize;
@@ -902,9 +872,8 @@ mod tests {
 
     #[test]
     fn convex_quad_fill_matches_even_odd_on_pseudo_random_quads() {
-        // A linear-congruential stream of endpoints ranging well outside every screen edge and widths
-        // up to ~10 px, to shake out one-pixel deltas and shallow near-horizontal/near-vertical quads
-        // the fixed grid might miss.
+        // A linear-congruential stream of endpoints well outside every screen edge, with widths
+        // up to about 10 px, to shake out one-pixel deltas and shallow quads the grid misses.
         let mut state: u32 = 0x1234_5678;
         let mut next = || {
             state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
@@ -926,9 +895,8 @@ mod tests {
 
     #[test]
     fn convex_quad_fill_matches_even_odd_on_degenerate_quads() {
-        // Hand-built quads `round_pt` can collapse a stroke into — plus non-convex/self-intersecting
-        // shapes that force the >2-crossing even-odd fallback — must still match the general filler
-        // exactly. (The bowtie is not reachable from `butt_quad`; it is here to exercise that branch.)
+        // Hand-built quads `round_pt` can collapse a stroke into, plus non-convex and
+        // self-intersecting shapes that force the more-than-two-crossings even-odd fallback.
         let quads: &[[Point; 4]] = &[
             [Point::new(5, 5), Point::new(5, 5), Point::new(5, 5), Point::new(5, 5)], // zero-area point
             [Point::new(2, 2), Point::new(10, 2), Point::new(10, 2), Point::new(2, 2)], // collinear line
@@ -946,8 +914,6 @@ mod tests {
         }
     }
 
-    // ---- pan stability (#1894) -------------------------------------------------------------------
-
     /// Stroke `pts` through the real [`Stroker`] into a [`Grid`], styled as `line`.
     fn stroked(pts: &[Point], line: LineStyle) -> Grid {
         let mut grid = Grid::new();
@@ -963,13 +929,11 @@ mod tests {
 
     /// A camera pan translates every projected vertex by the same amount, so a dashed or ticked
     /// line must keep painting the same ground positions. These lines run well past both side
-    /// edges — the case whose phase used to belong to the clip re-entry point and so slid along the
-    /// line as the view moved across it.
+    /// edges, the case whose phase would otherwise slide along the line as the view moves.
     ///
-    /// The clip entry is rounded to a pixel before its arc is measured, so the phase carries up to
-    /// ~½ px of rounding error that differs between frames. These geometries (axis-aligned and 45°)
-    /// have exact entry arcs, which is what lets this assert pixel equality; a general slope keeps
-    /// a sub-pixel residual, far below the period a re-entry used to cost.
+    /// The clip entry is rounded to a pixel before its arc is measured, so the phase carries up
+    /// to half a pixel of rounding error that differs between frames. These geometries have exact
+    /// entry arcs, which is what lets this assert pixel equality.
     #[test]
     fn a_pan_does_not_slide_the_pattern_along_the_line() {
         let cases: [&[Point]; 3] = [
