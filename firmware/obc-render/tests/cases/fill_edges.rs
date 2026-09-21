@@ -1,11 +1,10 @@
 //! Edge-case coverage for the renderer's polygon fill, frame-buffer saturation, marker cull
 //! boundary and text clipping.
 //!
-//! `priority.rs` covers the happy-path stub-select priority ordering and span saturation; `stroke.rs` the thick
-//! line. This drives a polygon that straddles a screen edge or sits wholly off-screen, the
-//! degenerate (sub-2-point) ring skip, the `MAX_FRAME_POINTS` drop trigger (distinct from the span
-//! one), the marker's 16-px cull boundary, and text running off the buffer edge — each through the
-//! real public entry point against a recording `DrawTarget`.
+//! `priority.rs` covers the happy-path priority ordering and span saturation, `stroke.rs` the
+//! thick line. This drives a polygon that straddles a screen edge or sits wholly off-screen, the
+//! degenerate ring skip, the `MAX_FRAME_POINTS` drop trigger, the marker's cull boundary, and
+//! text running off the buffer edge, each through the real public entry point.
 
 use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::*;
@@ -42,38 +41,32 @@ fn render_into(buf: &mut Buf, bytes: &[u8], vp: &Viewport) -> obc_render::Render
     RenderScratch::new().render(buf, &reader, vp, Rgb888::BLACK, RenderConfig::default(), green565)
 }
 
-/// A polygon straddling the **top** edge of the screen: its upper half projects above y=0. The fill
-/// clamps `ymin` to 0 and must paint the on-screen lower half while never writing a pixel at y<0
-/// (the clamp is what keeps the scanline loop in range). Asserts the top buffer row is painted and
-/// an interior row is filled.
+/// A polygon straddling the top edge of the screen: the fill clamps `ymin` to 0 and must paint the
+/// on-screen lower half while never writing a pixel at y<0.
 #[test]
 fn polygon_straddling_top_edge_clamps_and_fills_visible_part() {
-    // A big square spanning lon/lat so that, with the camera near its top, the square's top is above
-    // the screen and its bottom is on-screen. Style is priority 1 so it always draws.
+    // A big square placed so that, with the camera near its top, its top is above the screen.
     let styles: &[Style] = &[(1, 0, FILL_565, 1, 1, false, None)];
     // (0,0)->(1000,0)->(1000,1000)->(0,1000): a 1000-µdeg square (16-bit deltas).
     let square = pack_poly16(1, 0, 0, &[(1000, 0), (0, 1000), (-1000, 0)]);
     let bytes = one_chunk_map((0, 0, 2000, 2000), styles, square, 4096);
 
-    // Camera at the square's center with a zoom that makes the 1000-µdeg square (300 px tall at
-    // 0.3 px/µdeg) overflow the 200-px screen top and bottom — so the square's top edge projects
-    // above y=0 and `fill_polygon` clamps ymin to 0. The top buffer row falls inside the square.
+    // Camera at the square's centre, zoomed so the square overflows the screen top and bottom, so
+    // its top edge projects above y=0 and the fill clamps ymin to 0.
     let vp = Viewport::new(200.0, 200.0, 500, 500, 0.3);
     let mut buf = Buf::new(200, 200);
     render_into(&mut buf, &bytes, &vp);
 
-    // The fill reaches the very top row (the square extends above the screen, clamped to y=0)…
+    // The fill reaches the very top row…
     assert!((0..200).any(|x| buf.get(x, 0) == GREEN), "the clamped top row is filled");
     // …and a row well inside is filled too.
     assert!((0..200).any(|x| buf.get(x, 100) == GREEN), "an interior row is filled");
     assert!(buf.count(GREEN) > 1000, "a large on-screen area is painted");
 }
 
-/// A polygon projecting **entirely off-screen** must paint nothing: after clamping, `ymin > ymax`
-/// and `fill_polygon` early-returns. The feature passes the per-feature bbox cull (it overlaps the
-/// wide visible bbox) yet projects fully off the framebuffer. Asserts zero fill pixels while
-/// confirming the feature was collected — so the early-return, not the cull, produced the empty
-/// screen.
+/// A polygon projecting entirely off-screen must paint nothing: after clamping, `ymin > ymax` and
+/// the fill early-returns. The feature still passes the per-feature bbox cull, so the empty screen
+/// is the early-return and not the cull.
 #[test]
 fn polygon_entirely_offscreen_fills_nothing() {
     let styles: &[Style] = &[(1, 0, FILL_565, 1, 1, false, None)];
@@ -81,23 +74,19 @@ fn polygon_entirely_offscreen_fills_nothing() {
     let tri = pack_poly(1, 50, 50, &[(20, 0), (0, 20)]);
     let bytes = one_chunk_map((0, 0, 100_000, 100_000), styles, tri, 4096);
 
-    // Aim the camera far from the triangle but keep the triangle inside the (wide) visible bbox so
-    // it survives the bbox cull and reaches fill_polygon — which then clamps it off-screen.
-    // At a low zoom the visible bbox is huge; place the camera so the triangle projects past the
-    // right/bottom edge.
+    // Aim the camera far from the triangle but keep it inside the wide visible bbox, so it
+    // survives the cull and reaches the fill, which then clamps it off-screen.
     let vp = Viewport::new(200.0, 200.0, 50_000, 50_000, 0.0008);
     let mut buf = Buf::new(200, 200);
     let stats = render_into(&mut buf, &bytes, &vp);
 
     assert_eq!(buf.count(GREEN), 0, "an off-screen polygon paints nothing");
-    // It WAS collected (overlapped the visible bbox) — so the empty screen is the fill's
-    // off-screen clamp/early-return, not the upstream cull dropping it.
+    // It was collected, so the empty screen is the fill's clamp and not the upstream cull.
     assert!(stats.features_drawn >= 1, "the feature passed the bbox cull and was collected");
 }
 
-/// A degenerate polygon ring with fewer than 2 vertices (a single point) must fill nothing: both
-/// the `len < 2` ring skip and the `xs.len() < 2` row skip drop it. LOD simplification can legally
-/// emit a 1-point "polygon"; it must paint zero pixels, not a stray dot or a panic.
+/// A degenerate polygon ring with fewer than 2 vertices must fill nothing: both the ring skip and
+/// the row skip drop it. LOD simplification can legally emit a 1-point polygon.
 #[test]
 fn single_point_polygon_fills_nothing() {
     let styles: &[Style] = &[(1, 0, FILL_565, 1, 1, false, None)];
@@ -111,14 +100,13 @@ fn single_point_polygon_fills_nothing() {
     assert_eq!(buf.count(GREEN), 0, "a single-point polygon fills no pixels");
 }
 
-/// A correctly encoded hole affects only its own ring. This closes the PR #1299 pipeline trace at
-/// the renderer: if the reader receives no serializer-invented anchor bridge, scanline filling does
-/// not create a triangular ground gap between the exterior anchor and a distant clearing.
+/// A correctly encoded hole affects only its own ring: scanline filling must not create a
+/// triangular ground gap between the exterior anchor and a distant clearing.
 #[test]
 fn polygon_hole_does_not_cut_an_anchor_to_hole_wedge() {
     let styles: &[Style] = &[(1, 0, FILL_565, 1, 1, false, None)];
-    // Exterior: (100,100)..(200,200). Hole: (130,130)..(170,170). Hole deltas start
-    // at the feature anchor as the wire format requires, but contain no bridge vertices.
+    // Exterior (100,100)..(200,200) with a hole (130,130)..(170,170). The hole's deltas start at
+    // the feature anchor as the wire format requires, with no bridge vertices.
     let polygon =
         pack_poly_hole(1, 100, 100, &[(100, 0), (0, 100), (-100, 0)], &[(30, 30), (40, 0), (0, 40), (-40, 0)]);
     let bytes = one_chunk_map((0, 0, 300, 300), styles, polygon, 4096);
@@ -126,8 +114,7 @@ fn polygon_hole_does_not_cut_an_anchor_to_hole_wedge() {
     let mut buf = Buf::new(200, 200);
     render_into(&mut buf, &bytes, &vp);
 
-    // North-up, unit zoom: the camera (150,150) is screen (100,100), longitude grows right and
-    // latitude grows up.
+    // North-up, unit zoom: the camera is screen (100,100), longitude right and latitude up.
     let pixel_at = |lon, lat| buf.get(100 + lon - 150, 100 - (lat - 150));
     assert_eq!(pixel_at(150, 150), Rgb888::BLACK, "the actual hole stays transparent");
     assert_eq!(pixel_at(115, 115), GREEN, "coverage near the exterior anchor remains filled");
@@ -135,8 +122,8 @@ fn polygon_hole_does_not_cut_an_anchor_to_hole_wedge() {
     assert_eq!(pixel_at(185, 185), GREEN, "coverage beyond the hole remains filled");
 }
 
-/// A zero-area (collinear) polygon — three vertices all on one horizontal line — encloses no
-/// region, so every scanline finds <2 crossings and the row is skipped. It must paint nothing.
+/// A zero-area collinear polygon encloses no region, so every scanline finds fewer than two
+/// crossings and the row is skipped.
 #[test]
 fn zero_area_collinear_polygon_fills_nothing() {
     let styles: &[Style] = &[(1, 0, FILL_565, 1, 1, false, None)];
@@ -150,32 +137,26 @@ fn zero_area_collinear_polygon_fills_nothing() {
     assert_eq!(buf.count(GREEN), 0, "a zero-area collinear polygon fills no pixels");
 }
 
-/// A drop trigger distinct from the span one (priority.rs): when a few **huge-point** features
-/// arrive, `frame_points` fills before the span buffer and the capacity check
-/// `frame_points.capacity() - frame_points.len() < pts.len()` drops the feature even though `spans`
-/// has room. A high-priority feature must still survive while low-priority big ones are dropped for
-/// lack of point room.
+/// A drop trigger distinct from the span one: when a few huge-point features arrive, `frame_points`
+/// fills before the span buffer and the capacity check drops the feature even though `spans` has
+/// room. A high-priority feature must still survive.
 ///
-/// The premise is **derived from the cap, not restated beside it**: the blob is sized so that
-/// exactly `BLOBS` of them plus the 4-point high-priority square consume the point budget, one more
-/// blob cannot, and `point_utilization` lands on 1.0 — far past anything the span or ring buffers
-/// could explain. `const` asserts hold that shape, so moving `MAX_FRAME_POINTS` (as this PR's review
-/// round did, 6,400 → 6,208 → 9,440 → 16,323) re-sizes the blob instead of quietly demoting the test to a
-/// non-saturating one. Eight blobs keep each one below the independent per-feature decode cap while
-/// still filling the larger frame budget.
+/// The premise is derived from the cap rather than restated beside it: the blob is sized so
+/// exactly `BLOBS` of them plus the high-priority square consume the point budget, one more cannot,
+/// and `point_utilization` lands on 1.0. The `const` asserts hold that shape, so moving
+/// `MAX_FRAME_POINTS` re-sizes the blob instead of quietly demoting the test.
 #[test]
 fn frame_points_saturate_before_spans_and_priority_still_wins() {
-    /// How many blobs the budget must admit — several, so "a few pack in before saturation" is a
-    /// real claim and not a single-feature edge case.
+    /// How many blobs the budget must admit: several, so "a few pack in before saturation" is a
+    /// real claim.
     const BLOBS: usize = 8;
-    /// The high-priority square's vertex count. Priority 1, so `select()` charges it first.
+    /// The high-priority square's vertex count; `select()` charges it first.
     const HI_PTS: usize = 4;
-    /// Points per blob: divide the budget evenly. The fixture below makes each an alternating sharp
-    /// corner, so the renderer's lossless projected-collinear compaction cannot erase the pressure
-    /// this test is meant to exercise.
+    /// Points per blob. The fixture makes each an alternating sharp corner, so the renderer's
+    /// lossless collinear compaction cannot erase the pressure this test exercises.
     const BLOB_PTS: usize = (MAX_FRAME_POINTS - HI_PTS) / BLOBS;
     // The premise, asserted: `BLOBS` fit beside the square and one more does not, so the point
-    // check — not the span or ring check — is provably what drops the rest.
+    // check is provably what drops the rest.
     const _: () = assert!(HI_PTS + BLOBS * BLOB_PTS <= MAX_FRAME_POINTS, "the premised blobs must fit");
     const _: () = assert!(HI_PTS + (BLOBS + 1) * BLOB_PTS > MAX_FRAME_POINTS, "one more blob must not fit");
     // A blob must also survive per-feature decode to reach the frame buffer at all.
@@ -185,10 +166,8 @@ fn frame_points_saturate_before_spans_and_priority_still_wins() {
     const HIGH_565: u16 = 0xF800; // red, priority 1
     let styles: &[Style] = &[(1, 0, LOW_565, 1, 4, false, None), (2, 1, HIGH_565, 1, 1, false, None)];
 
-    // A low-priority "blob": a `BLOB_PTS`-vertex sawtooth. Alternating 30-screen-pixel turns make
-    // every vertex a real projected corner; using a densely sampled straight rectangle here would
-    // test the compactor instead, which deliberately folds those redundant points away before the
-    // frame budget. The 16-bit deltas and slowly increasing y remain inside the leaf quadrant.
+    // A low-priority blob: a sawtooth whose alternating turns make every vertex a real projected
+    // corner. A densely sampled straight rectangle would test the compactor instead.
     let big_blob = |style: u8| -> Vec<u8> {
         let mut deltas: Vec<(i16, i16)> = Vec::with_capacity(BLOB_PTS - 1);
         for index in 0..BLOB_PTS - 1 {
@@ -196,19 +175,14 @@ fn frame_points_saturate_before_spans_and_priority_still_wins() {
         }
         pack_poly16(style, 10, 10, &deltas)
     };
-    // The high-priority feature: a solid 10000-µdeg red square (16-bit deltas) so it unmistakably
-    // fills pixels (≈30 px across at the test zoom) yet fits inside its 25000-µdeg quadrant. Far
-    // fewer points, so it isn't what saturates the buffer — it just has to survive because the
-    // priority-1 pass collects it before the bulk.
+    // The high-priority feature: a solid square that unmistakably fills pixels yet fits inside its
+    // quadrant. Far fewer points, so it is not what saturates the buffer.
     let hi_square = pack_poly16(2, 10, 10, &[(10_000, 0), (0, 10_000), (-10_000, 0)]);
 
-    // A complete depth-2 quadtree: root branch (node 0, children 1..4), four sub-branches
-    // (nodes 1..4) whose children are the 16 leaves (nodes 5..20). One feature per leaf, each
-    // anchored at its own quadrant's (10,10) so it sits inside that quadrant and (at a whole-map
-    // zoom) on-screen. Leaves 0..6 carry low-priority blobs — 7 × `BLOB_PTS`, already well past
-    // `MAX_FRAME_POINTS`, so the point buffer overflows; leaf 7 carries the high-priority square;
-    // leaves 8..15 carry more low-priority blobs, all dropped, keeping the buffer pinned full so
-    // the saturation is unambiguous.
+    // A complete depth-2 quadtree with one feature per leaf, each anchored inside its own
+    // quadrant. Leaves 0..6 carry low-priority blobs, already well past `MAX_FRAME_POINTS`, leaf 7
+    // carries the high-priority square, and leaves 8..15 carry more blobs, all dropped, which
+    // keeps the buffer pinned full.
     const BRANCH: u32 = 0x8000_0000;
     let mut index = vec![BRANCH | 1, BRANCH | 5, BRANCH | 9, BRANCH | 13, BRANCH | 17];
     for leaf in 0..16u32 {
@@ -236,7 +210,7 @@ fn frame_points_saturate_before_spans_and_priority_still_wins() {
         &[LodSpec { max_mpp: f32::INFINITY, index, chunks, chunk_size: cs }],
     );
 
-    // Whole-map view: a low zoom so all 16 quadrant-leaves (and their features) are on-screen.
+    // Whole-map view, so all 16 quadrant leaves are on-screen.
     let vp = Viewport::new(200.0, 200.0, 50_000, 50_000, 0.0019);
     let mut buf = Buf::new(200, 200);
     let cache = MapCache::new();
@@ -247,30 +221,25 @@ fn frame_points_saturate_before_spans_and_priority_still_wins() {
 
     // The point buffer saturated and dropped features…
     assert!(stats.features_dropped > 0, "the point buffer must saturate and drop features");
-    // …but the *span* buffer was nowhere near full (proving the point check, not the span check,
-    // was the drop trigger — the distinct path from priority.rs).
+    // …but the span buffer was nowhere near full, which is the distinct path from priority.rs.
     assert!(stats.features_drawn < MAX_SPANS, "spans were not the limiting buffer");
-    // Nor the ring buffer: a handful of single-ring features cannot approach the ring cap, which on
-    // busy real frames is the ceiling — here it is not, and that is the point.
+    // Nor the ring buffer, which on busy real frames is the ceiling and here is not.
     assert!(stats.ring_utilization < 0.1, "rings were not the limiting buffer (util {})", stats.ring_utilization);
-    // `BLOBS` blobs plus the square consume the budget to within a few points, so utilization lands
-    // just under 1.0 — the point buffer is unambiguously what filled.
+    // The blobs plus the square consume the budget to within a few points.
     assert_eq!(stats.features_drawn, BLOBS + 1, "exactly the premised blobs plus the square are admitted");
     assert!(stats.point_utilization > 0.75, "frame_points is the saturated buffer (util {})", stats.point_utilization);
 
-    // The high-priority red square (priority 1, collected first) survived the saturation and
-    // painted, even though enough low-priority points to overflow the buffer were packed around it.
+    // The high-priority square survived the saturation and painted.
     let red = green565(HIGH_565);
     assert!(buf.count(red) > 20, "the high-priority feature survives point-buffer saturation");
 }
 
-/// `offscreen_anchor_is_culled` (marker.rs) tests a fix *far* off-screen. This pins the cull
-/// boundary itself: an anchor just *outside* the screen but within the 16-px `MARGIN` must still
-/// draw (clipped), while one past the margin is culled — checked from both sides.
+/// This pins the marker cull boundary itself: an anchor just outside the screen but within the
+/// 16-px margin must still draw, clipped, while one past the margin is culled.
 #[test]
 fn marker_within_margin_draws_past_margin_culls() {
-    // 1 px per microdegree, camera at origin → screen center (100,100); the right edge x=200 is at
-    // lon = +100 µdeg. An anchor at lon = +106 is 6 px past the edge: inside the 16-px margin.
+    // 1 px per microdegree, camera at origin, so the right edge is at lon +100 µdeg. An anchor at
+    // +106 is 6 px past the edge, inside the margin.
     let vp = Viewport::new(200.0, 200.0, 0, 0, 1.0);
 
     let mut inside = Buf::new(200, 200);
@@ -283,9 +252,7 @@ fn marker_within_margin_draws_past_margin_culls() {
     assert_eq!(outside.count(RED), 0, "an anchor past MARGIN is culled");
 }
 
-/// Text drawn partly off-screen must paint only the on-screen part and never panic. A long string
-/// starting near the right edge (so it runs off): some ink lands and every painted pixel is within
-/// the buffer.
+/// Text drawn partly off-screen must paint only the on-screen part and never panic.
 #[test]
 fn text_off_the_right_edge_is_clipped_not_overflowed() {
     // Off the right edge: anchor near the right, a string longer than the remaining width.
@@ -293,8 +260,7 @@ fn text_off_the_right_edge_is_clipped_not_overflowed() {
     draw_text(&mut b, "LONGER", Point::new(36, 4), Font::Body, TextAlign::Left, RED);
     let painted = b.count(RED);
     assert!(painted > 0, "the on-screen head of the string is drawn");
-    // Every painted pixel is inside the buffer (the recording target clips; this confirms no write
-    // escaped the bounds the way a raw index would).
+    // Every painted pixel is inside the buffer, so no write escaped the bounds.
     for y in 0..b.h {
         for x in 0..b.w {
             if b.get(x, y) == RED {
@@ -304,8 +270,8 @@ fn text_off_the_right_edge_is_clipped_not_overflowed() {
     }
 }
 
-/// Text starting at **negative x**: the left half of the first glyph is off-screen; only the part
-/// at x≥0 is recorded. This guards the negative-origin clip path text never otherwise takes.
+/// Text starting at negative x: only the part at x>=0 is recorded. This guards the negative-origin
+/// clip path text never otherwise takes.
 #[test]
 fn text_at_negative_x_clips_the_left_half() {
     let mut b = Buf::new(48, 24);
