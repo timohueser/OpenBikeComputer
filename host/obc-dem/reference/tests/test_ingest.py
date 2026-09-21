@@ -264,9 +264,9 @@ class Check(ArchiveCase):
 class RcloneSeam(ArchiveCase):
     """The publish and mirror plans, with rclone replaced by a recorder.
 
-    rclone is not a test dependency, so the tests hold the two things this tool owns: the
-    order the objects reach R2 in, and the fact that the secret travels in the child's
-    environment and never in argv.
+    rclone is not a test dependency, so the tests hold the three things this tool owns: the
+    order the objects reach R2 in, the fact that a publish only ever adds, and the fact that
+    the secret travels in the child's environment and never in argv.
     """
 
     def setUp(self):
@@ -285,21 +285,59 @@ class RcloneSeam(ArchiveCase):
         ingest.run_rclone = self.record
         self.addCleanup(lambda: setattr(ingest, "run_rclone", real))
 
+    #: What the fake R2 already holds: another region's tile, from another source.
+    PUBLISHED = {
+        "schema": 1, "step_log2": 6, "tile_log2": 16,
+        "sources": {"es": {"product": "MDT05", "attribution": "© IGN", "licence": "CC BY 4.0",
+                           "fetched": "2026-01-01"}},
+        "tiles": {"0100/0200": "es"},
+        "sha256": {"0100/0200": "aa" * 32},
+    }
+
     def record(self, argv, env):
         self.calls.append((argv, env))
         if argv[0] == "copyto":  # the mirror reads the index it just pulled
             Path(argv[2]).write_text((self.archive / "index.json").read_text(encoding="utf-8"), encoding="utf-8")
+        if "--include" in argv:  # the publish pulls the index that is already on R2
+            Path(argv[2], "index.json").write_text(json.dumps(self.PUBLISHED), encoding="utf-8")
+        elif argv[0] == "copy" and argv[1].endswith("index.json"):
+            self.uploaded = json.loads(Path(argv[1]).read_text(encoding="utf-8"))
         if "--files-from" in argv:
             self.listing = Path(argv[argv.index("--files-from") + 1]).read_text(encoding="utf-8").split()
 
-    def test_publish_sends_the_index_last(self):
+    def test_publish_adds_the_tiles_and_sends_a_merged_index_last(self):
+        """Nothing is deleted, and the index that goes up names R2's tiles as well as ours."""
+
         self.assertEqual(ingest.main(["publish", "--archive", str(self.archive)]), 0)
-        first, second = (argv for argv, _ in self.calls)
-        self.assertEqual(first[:2], ["sync", str(self.archive)])
-        self.assertIn("--exclude", first)
-        self.assertEqual(first[first.index("--exclude") + 1], "/index.json")
-        self.assertEqual(second[:2], ["copy", str(self.archive / "index.json")])
-        self.assertTrue(all(argv[2].endswith("reference/v1") for argv in (first, second)), self.calls)
+        upload, fetch, publish = (argv for argv, _ in self.calls)
+        self.assertEqual([argv[0] for argv in (upload, fetch, publish)], ["copy", "copy", "copy"])
+        self.assertNotIn("--delete", [word for argv, _ in self.calls for word in argv])
+
+        self.assertEqual(upload[1:3], [str(self.archive), "OBCR2:maps/obc/reference/v1"])
+        self.assertEqual(upload[upload.index("--exclude") + 1], "/index.json")
+        self.assertEqual(fetch[1], "OBCR2:maps/obc/reference/v1")  # the index R2 already has
+        self.assertEqual(publish[2], "OBCR2:maps/obc/reference/v1")
+        self.assertTrue(publish[1].endswith("index.json"), publish)
+        self.assertNotEqual(Path(publish[1]).parent, self.archive)  # the merge is not the local index
+
+        mine = next(iter(self.index()["tiles"]))
+        self.assertEqual(self.uploaded["tiles"], {"0100/0200": "es", mine: "ch"})
+        self.assertEqual(sorted(self.uploaded["sources"]), ["ch", "es"])
+        self.assertEqual(sorted(self.uploaded["sha256"]), sorted(self.uploaded["tiles"]))
+        self.assertEqual(self.uploaded["sha256"][mine], self.index()["sha256"][mine])
+
+    def test_this_archive_wins_a_tile_r2_also_holds(self):
+        mine = next(iter(self.index()["tiles"]))
+        published = {**self.PUBLISHED, "tiles": {**self.PUBLISHED["tiles"], mine: "es"},
+                     "sha256": {**self.PUBLISHED["sha256"], mine: "bb" * 32}}
+        merged = ingest.merge_index(published, self.index())
+        self.assertEqual(merged["tiles"][mine], "ch")
+        self.assertEqual(merged["sha256"][mine], self.index()["sha256"][mine])
+
+    def test_a_published_index_of_another_contract_is_refused(self):
+        with self.assertRaises(ingest.Refuse):
+            ingest.merge_index({**self.PUBLISHED, "step_log2": 5}, self.index())
+        self.assertEqual(ingest.merge_index(None, self.index()), self.index())
 
     def test_the_secret_is_in_the_environment_only(self):
         ingest.main(["publish", "--archive", str(self.archive)])

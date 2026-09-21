@@ -519,18 +519,45 @@ def run_rclone(argv: list[str], env: dict[str, str]) -> None:
         raise Refuse(f"rclone {argv[0]} failed with status {exc.returncode}") from exc
 
 
-def publish_plan(root: Path, remote: Remote) -> list[list[str]]:
-    """Tiles and manifests first, `index.json` last.
+def publish_plan(root: Path, remote: Remote, staging: Path) -> list[list[str]]:
+    """The three rclone calls of a publish, in order. `merge_index` runs between 2 and 3.
 
-    The index is the only file a consumer reads before it knows what exists, so it becomes
-    visible last. `--checksum` makes a re-run idempotent: a tile whose bytes are already
-    there is skipped whatever its timestamp says.
+    Every call is `copy`, so a publish only ever adds: an archive of one box cannot delete
+    another region's tiles. The index is the only file a consumer reads before it knows
+    what exists, so it goes last, and it goes up as the merge of what is already on R2
+    with this archive. `--checksum` makes a re-run idempotent: a tile whose bytes are
+    already there is skipped whatever its timestamp says.
     """
 
     return [
-        ["sync", str(root), remote.path, "--checksum", "--exclude", "/index.json"],
-        ["copy", str(root / "index.json"), remote.path, "--checksum"],
+        ["copy", str(root), remote.path, "--checksum", "--exclude", "/index.json"],
+        ["copy", remote.path, str(staging), "--include", "/index.json"],
+        ["copy", str(staging / "index.json"), remote.path, "--checksum"],
     ]
+
+
+def merge_index(published: dict | None, local: dict) -> dict:
+    """The index to publish: what is on R2, plus this archive, this archive winning.
+
+    A publish adds tiles, so the index it uploads must describe every tile on R2 and not
+    only the box that was ingested last. Where both hold a tile, this archive wins: its
+    bytes are the ones the first call just uploaded.
+    """
+
+    if not published:
+        return local
+    if (published.get("schema"), published.get("step_log2"), published.get("tile_log2")) != (1, 6, 16):
+        raise Refuse("the index on R2 is not this contract, so publish refuses to merge with it")
+    tiles = dict(sorted({**published.get("tiles", {}), **local.get("tiles", {})}.items()))
+    digests = dict(sorted({**published.get("sha256", {}), **local.get("sha256", {})}.items()))
+    sources = {**published.get("sources", {}), **local.get("sources", {})}
+    held = set(tiles.values())
+    return {
+        **local,
+        "sources": {key: sources[key] for key in sorted(sources) if key in held},
+        "tiles": tiles,
+        "sha256": digests,
+    }
 
 
 def mirror_plan(root: Path, remote: Remote, listing: Path) -> list[str]:
@@ -653,12 +680,22 @@ def tile_problems(path: Path, ti: int, tj: int) -> list[str]:
 
 def command_publish(args) -> int:
     root = Path(args.archive)
-    read_index(root)
+    local = read_index(root)
     remote = r2_remote()
-    for argv in publish_plan(root, remote):
-        print(f"  rclone {' '.join(argv)}")
-        run_rclone(argv, remote.env)
-    print(f"published {root} to {remote.path}")
+    with tempfile.TemporaryDirectory() as directory:
+        staging = Path(directory)
+        upload, fetch, publish = publish_plan(root, remote, staging)
+        for argv in (upload, fetch):
+            print(f"  rclone {' '.join(argv)}")
+            run_rclone(argv, remote.env)
+        published = staging / "index.json"
+        merged = merge_index(json.loads(published.read_text(encoding="utf-8")) if published.is_file() else None, local)
+        published.write_text(
+            json.dumps(merged, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        print(f"  rclone {' '.join(publish)}")
+        run_rclone(publish, remote.env)
+    print(f"published {len(local['tiles'])} tile(s) to {remote.path}; the index names {len(merged['tiles'])}")
     return 0
 
 
