@@ -160,15 +160,27 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--check", action="store_true", help="fail on a violation (the CI gate)")
-    group.add_argument("--update", action="store_true", help="record files that shrank")
+    group.add_argument(
+        "--update", nargs="*", metavar="PATH",
+        help="with no path, record every file that shrank; with a path, re-record that file "
+             "at its current size even if it grew, which makes raising a budget a visible diff",
+    )
     group.add_argument("--report", action="store_true", help="print the current sizes")
     args = parser.parse_args()
 
     found = corpus()
     base = json.loads(BASELINE.read_text()) if BASELINE.exists() else {}
 
-    if args.update:
-        merged = {f: min(c, base.get(f, c)) for f, (_, c) in found.items()}
+    if args.update is not None:
+        deliberate = set(args.update)
+        unknown = deliberate - found.keys()
+        if unknown:
+            print("prose: not a budgeted file: " + ", ".join(sorted(unknown)))
+            return 1
+        merged = {
+            f: c if f in deliberate else min(c, base.get(f, c))
+            for f, (_, c) in found.items()
+        }
         BASELINE.write_text(json.dumps(dict(sorted(merged.items())), indent=2) + "\n")
         print(f"prose baseline: {len(merged)} files recorded")
         return 0
