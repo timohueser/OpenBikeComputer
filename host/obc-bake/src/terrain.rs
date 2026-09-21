@@ -34,6 +34,21 @@
 //! the independence claim, and [`terrain_key_ignores_the_obcm_store`] is the test that keeps it
 //! true.
 //!
+//! That key is then finished **per cell** with the digests of the reference archive tiles that
+//! cell's crest-lift rule reads — its own tiles and the one-tile ring its halo reaches. A Swiss
+//! archive update therefore re-bakes the Swiss cells and leaves Norway alone. The key names the
+//! tiles the bake will read and nothing else: a tile the index promises and the mirror does not hold
+//! contributes no digest, so a cell baked without it is pinned to that fact and re-bakes when the
+//! tile arrives.
+//!
+//! # A reference archive change is a terrain revision bump
+//!
+//! A new archive release moves baked samples, exactly as a new DEM release does. So it is a terrain
+//! revision bump (`OBCC_Spec.md` §13.2), and §13.4 turns that into a nav re-bake, because the
+//! router's per-edge ascents were integrated from the surface that moved. The skip key makes the
+//! re-bake cheap — only the cells the changed tiles reach — but the revision is a decision an
+//! operator states with `--terrain-revision`, not one this stage infers.
+//!
 //! [`terrain_key_ignores_the_obcm_store`]: tests::terrain_key_ignores_the_obcm_store
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -49,7 +64,7 @@ use crate::source::ExtractSource;
 use crate::util::write_json;
 
 /// Bumped when a change in this stage alters published terrain bytes for unchanged inputs.
-pub const TERRAIN_RECIPE_VERSION: u32 = 1;
+pub const TERRAIN_RECIPE_VERSION: u32 = 2;
 
 /// The tree's terrain declaration, beside `schema.json` and deliberately not inside it.
 pub const TERRAIN_DOC: &str = "terrain.json";
@@ -74,6 +89,22 @@ pub struct TerrainDoc {
     pub revision: u32,
     /// The source licence's required credit, verbatim (`OBCC_Spec.md` §13.5).
     pub attribution: String,
+    /// Every reference source the run's archive declares, sorted by key (`OBCC_Spec.md` §13.1).
+    ///
+    /// The archive is the only place the wording lives, so the stage copies it into the tree and the
+    /// catalog generator credits the ones a published cell actually used.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<ReferenceSource>,
+}
+
+/// One reference source as a published map must credit it (`OBCC_Spec.md` §13.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReferenceSource {
+    pub key: String,
+    pub product: String,
+    pub attribution: String,
+    pub licence: String,
 }
 
 /// The per-cell sidecar the catalog generator reads.
@@ -83,6 +114,10 @@ struct TerrainCellSidecar {
     terrain_revision: u32,
     dataset_version: String,
     built_at: String,
+    /// Keys of the reference sources this cell's crest lifts are derived from, sorted; empty when
+    /// the cell has no lift. This is what makes the catalog's credit list the sources that were
+    /// **used** rather than the ones the archive happened to hold.
+    reference_sources: Vec<String>,
 }
 
 /// The local, unpublished record of what was baked and from what key.
@@ -184,13 +219,38 @@ fn validate_doc(doc: &TerrainDoc) -> Result<(), String> {
 pub trait TerrainCutter {
     /// Identifies the rasterising recipe in the skip key.
     fn recipe(&self) -> String;
-    /// One cell's OBCT block, or `None` when every sample is `NODATA` — which is not an error but a
-    /// fact about the ground, and the thing the known-empty runs exist to publish.
-    fn bake_cell(&self, ci: u32, cj: u32, posting_log2: u8, cell_log2: u8) -> Result<Option<Vec<u8>>, String>;
+    /// One cell's OBCT block and the reference sources it used.
+    fn bake_cell(&self, ci: u32, cj: u32, posting_log2: u8, cell_log2: u8) -> Result<TerrainCell, String>;
+    /// The reference archive tiles this cell's rule reads, as `"<ti>/<tj>=<sha256>"` in the window's
+    /// own order — the per-cell half of the skip key. Empty when the cutter has no reference.
+    fn reference_digests(&self, _ci: u32, _cj: u32, _posting_log2: u8, _cell_log2: u8) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
+    /// Every reference source the cutter can credit, sorted by key, for `terrain.json`.
+    fn reference_credits(&self) -> Vec<ReferenceSource> {
+        Vec::new()
+    }
 }
 
-/// The real cutter: `obc-dem`'s own [`bake_cell`](obc_dem::bake::bake_cell) over a directory of
-/// source DEM tiles.
+/// What rasterising one cell produced.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TerrainCell {
+    /// The block, or `None` when every sample is `NODATA` — which is not an error but a fact about
+    /// the ground, and the thing the known-empty runs exist to publish.
+    pub block: Option<Vec<u8>>,
+    /// Keys of the reference sources the cell's crest lifts are derived from, sorted.
+    pub reference_sources: Vec<String>,
+    /// Tiles the reference index named for this cell's window that the mirror does not hold.
+    ///
+    /// Not an error. A published cell can overhang the box an operator mirrored by most of its own
+    /// side, so this is the ordinary shape of a mirror's edge — but the cell's lifts are short by
+    /// those tiles, so the run says so, and the skip key records that they were missing rather than
+    /// what they hold. Completing the mirror therefore re-bakes exactly these cells.
+    pub absent_reference_tiles: Vec<(u32, u32)>,
+}
+
+/// The real cutter: `obc-dem`'s own surface bake over a directory of source DEM tiles, with the
+/// crest lifts of a reference archive mirror folded into the height it reads.
 ///
 /// Linked rather than shelled out, for the reason the cell bakery links the packer: the pure
 /// function is right there, and a subprocess would put a flat `19_0600_0527.obcd` naming scheme
@@ -198,19 +258,28 @@ pub trait TerrainCutter {
 pub struct DemCutter {
     sources: PathBuf,
     mosaic: obc_dem::geotiff::DemMosaic,
+    /// A local mirror of the reference archive, or `None` for a Copernicus-only bake.
+    reference: Option<obc_dem::reference::ReferenceArchive>,
 }
 
 impl DemCutter {
-    /// Open every GeoTIFF under `sources`. Eager, so a bad source directory fails before the first
-    /// cell rather than in the middle of a run.
-    pub fn open(sources: &Path) -> Result<DemCutter, String> {
+    /// Open every GeoTIFF under `sources`, and the reference archive at `reference` when there is
+    /// one. Eager, so a bad source directory or a mirror with no index fails before the first cell
+    /// rather than in the middle of a run.
+    pub fn open(sources: &Path, reference: Option<&Path>) -> Result<DemCutter, String> {
         let mosaic = obc_dem::geotiff::DemMosaic::open_dir(sources)?;
-        Ok(DemCutter { sources: sources.to_path_buf(), mosaic })
+        let reference = reference.map(obc_dem::reference::ReferenceArchive::open).transpose()?;
+        Ok(DemCutter { sources: sources.to_path_buf(), mosaic, reference })
     }
 
     /// Source tiles opened.
     pub fn tiles(&self) -> usize {
         self.mosaic.len()
+    }
+
+    /// Reference tiles the archive's index names, or `None` when the bake has no reference.
+    pub fn reference_tiles(&self) -> Option<usize> {
+        self.reference.as_ref().map(obc_dem::reference::ReferenceArchive::len)
     }
 }
 
@@ -218,16 +287,42 @@ impl TerrainCutter for DemCutter {
     fn recipe(&self) -> String {
         // The tile *set* is not in the recipe: the cells it produces are, through their digests,
         // and a source directory that grew a tile outside the coverage must not re-bake the world.
+        // The reference root is not in it either, for the same reason — the archive's content
+        // reaches the key per cell, through the digests of the tiles that cell reads, so moving a
+        // mirror to another directory is not a re-bake.
         format!("obc-dem surface-v3 tiles={} from={}", self.mosaic.len(), self.sources.display())
     }
 
-    fn bake_cell(&self, ci: u32, cj: u32, posting_log2: u8, cell_log2: u8) -> Result<Option<Vec<u8>>, String> {
-        obc_dem::surface::bake_cell(ci, cj, posting_log2, cell_log2, |lat, lon| {
-            self.mosaic
-                .height(f64::from(lat) / 1e6, f64::from(lon) / 1e6)
-                .map(obc_dem::bake::quantise)
-                .unwrap_or(obc_formats::obct::NODATA)
-        })
+    fn bake_cell(&self, ci: u32, cj: u32, posting_log2: u8, cell_log2: u8) -> Result<TerrainCell, String> {
+        // One lift map per cell, from `obc-dem`'s own rule, composed into the height by `obc-dem`'s
+        // own sampler: this cell must be the same surface `obc-dem bake --reference` produces for
+        // the same square.
+        let lift = obc_dem::bake::cell_lift(&self.mosaic, ci, cj, posting_log2, cell_log2, self.reference.as_ref())?;
+        let reference_sources = lift.map.as_ref().map(|map| map.sources().to_vec()).unwrap_or_default();
+        let height = obc_dem::bake::lifted_sampler(&self.mosaic, lift.map.as_ref());
+        let block = obc_dem::surface::bake_cell(ci, cj, posting_log2, cell_log2, height)?;
+        Ok(TerrainCell { block, reference_sources, absent_reference_tiles: lift.absent_tiles })
+    }
+
+    fn reference_digests(&self, ci: u32, cj: u32, posting_log2: u8, cell_log2: u8) -> Result<Vec<String>, String> {
+        let Some(archive) = &self.reference else { return Ok(Vec::new()) };
+        let window = obc_dem::crest::cell_window(ci, cj, posting_log2, cell_log2).ok_or_else(|| {
+            format!("posting 2^{posting_log2} µdeg with cell 2^{cell_log2} µdeg is not a pairing OBCT permits")
+        })?;
+        Ok(archive.held_digests(window).into_iter().map(|(ti, tj, sha256)| format!("{ti}/{tj}={sha256}")).collect())
+    }
+
+    fn reference_credits(&self) -> Vec<ReferenceSource> {
+        self.reference
+            .iter()
+            .flat_map(|archive| archive.credits())
+            .map(|credit| ReferenceSource {
+                key: credit.key.clone(),
+                product: credit.product.clone(),
+                attribution: credit.attribution.clone(),
+                licence: credit.licence.clone(),
+            })
+            .collect()
     }
 }
 
@@ -373,15 +468,30 @@ impl TerrainBakery<'_> {
 
         let mut empties = TerrainEmpties::load(&self.opts.out, doc.revision, u32::from(doc.cell_log2))?;
         let mut outcomes = Vec::new();
+        let mut absent_tiles = BTreeSet::new();
         for (index, cell) in wanted.iter().enumerate() {
-            let outcome = self.bake_one(*cell, &key, &built_at, &mut empties)?;
+            let outcome = self.bake_one(*cell, &key, &built_at, &mut empties, &mut absent_tiles)?;
             if index % 64 == 0 || outcome.status == TerrainCellStatus::Baked {
                 progress.log(format!("  [{}/{}] {} {:?}", index + 1, wanted.len(), outcome.id, outcome.status));
             }
             outcomes.push(outcome);
         }
+        if let Some(first) = absent_tiles.iter().next() {
+            let warning = format!(
+                "the reference index names {} tile(s) the mirror does not hold, starting at {}/{} — those cells were \
+                 baked without their lifts. Mirror the whole box (`ingest.py mirror`) and re-run to get them.",
+                absent_tiles.len(),
+                first.0,
+                first.1
+            );
+            progress.warn(format!("  {warning}"));
+            warnings.push(warning);
+        }
         empties.write(&self.opts.out, doc.revision)?;
-        write_json(&self.opts.out.join(TERRAIN_DOC), doc)?;
+        // The archive is the only place a reference source's wording lives, so what the tree
+        // declares is what this run's cutter could credit, not what an operator typed.
+        let published = TerrainDoc { references: self.cutter.reference_credits(), ..doc.clone() };
+        write_json(&self.opts.out.join(TERRAIN_DOC), &published)?;
 
         let mut regions = Vec::new();
         for (id, poly, cells) in &selections {
@@ -404,11 +514,14 @@ impl TerrainBakery<'_> {
         })
     }
 
-    /// Everything that can change a terrain cell's **bytes**, hashed into one key.
+    /// Everything that can change **any** terrain cell's bytes, hashed into one key — the base
+    /// every cell's own key is finished from.
     ///
     /// The OBCM store is absent from this expression on purpose (module docs). So is the region
     /// list: a cell is a pure function of its own square and the source, so baking one more country
-    /// must not re-bake the cells the previous run already published.
+    /// must not re-bake the cells the previous run already published. The reference archive is
+    /// absent for the same reason, one step finer: it reaches the key per cell, through
+    /// [`cell_key`](Self::cell_key), so a Swiss archive update leaves Norway's cells alone.
     fn terrain_key(&self) -> String {
         let doc = &self.opts.doc;
         crate::hash::text(&format!(
@@ -423,16 +536,31 @@ impl TerrainBakery<'_> {
         ))
     }
 
+    /// One cell's whole key: the run's base, finished with the digests of the reference archive
+    /// tiles this cell's crest-lift rule reads.
+    ///
+    /// The digests are the archive's own, over each tile's pixels, so two GDAL builds that deflate
+    /// the same heights differently do not re-bake a thing. A tile the index names and the mirror
+    /// does not hold contributes nothing, which is the honest key for a cell that was baked without
+    /// it: when the tile arrives the key moves and the cell is baked again.
+    fn cell_key(&self, base: &str, ci: u32, cj: u32) -> Result<String, String> {
+        let doc = &self.opts.doc;
+        let digests = self.cutter.reference_digests(ci, cj, doc.posting_log2, doc.cell_log2)?;
+        Ok(crate::hash::text(&format!("{base}\nreference={}\n", digests.join(","))))
+    }
+
     fn bake_one(
         &self,
         cell: CellId,
-        key: &str,
+        base_key: &str,
         built_at: &str,
         empties: &mut TerrainEmpties,
+        absent_tiles: &mut BTreeSet<(u32, u32)>,
     ) -> Result<TerrainCellOutcome, String> {
         let doc = &self.opts.doc;
         let (artifact, sidecar_path, state_path) = paths(&self.opts.out, cell);
         let (ci, cj) = indices(cell)?;
+        let key = &self.cell_key(base_key, ci, cj)?;
 
         if !self.opts.force {
             if let Some(state) = read_current(&artifact, &sidecar_path, &state_path, key)? {
@@ -448,8 +576,9 @@ impl TerrainBakery<'_> {
             }
         }
 
-        let block = self.cutter.bake_cell(ci, cj, doc.posting_log2, doc.cell_log2)?;
-        let Some(block) = block else {
+        let baked = self.cutter.bake_cell(ci, cj, doc.posting_log2, doc.cell_log2)?;
+        absent_tiles.extend(baked.absent_reference_tiles);
+        let Some(block) = baked.block else {
             // No object at all: §13.1's known-empty run says the square is canonically void, which
             // is a different statement from "not published".
             for path in [&artifact, &sidecar_path, &state_path] {
@@ -467,6 +596,7 @@ impl TerrainBakery<'_> {
             terrain_revision: doc.revision,
             dataset_version: doc.dataset_version.clone(),
             built_at: built_at.to_string(),
+            reference_sources: baked.reference_sources,
         };
         write_json(&sidecar_path, &sidecar)?;
         write_json(&state_path, &TerrainCellState { terrain_key: key.to_string(), sha256, bytes, sidecar })?;
@@ -672,31 +802,67 @@ mod tests {
             cell_log2: 19,
             revision: 1,
             attribution: obc_elevation::COPERNICUS_ATTRIBUTION.into(),
+            references: Vec::new(),
         }
     }
 
+    /// A cutter with no reference: every cell is void and no archive tile is named.
     struct NoCutter;
     impl TerrainCutter for NoCutter {
         fn recipe(&self) -> String {
             "test".into()
         }
-        fn bake_cell(&self, _: u32, _: u32, _: u8, _: u8) -> Result<Option<Vec<u8>>, String> {
-            Ok(None)
+        fn bake_cell(&self, _: u32, _: u32, _: u8, _: u8) -> Result<TerrainCell, String> {
+            Ok(TerrainCell::default())
+        }
+    }
+
+    /// A cutter whose archive holds one tile per cell, so a digest can be changed under one cell and
+    /// its neighbours left alone. `window` is the cells whose key the tile at `(ci, cj)` reaches.
+    struct OneTilePerCell<'a> {
+        digest: &'a dyn Fn(u32, u32) -> String,
+    }
+
+    impl TerrainCutter for OneTilePerCell<'_> {
+        fn recipe(&self) -> String {
+            "test".into()
+        }
+        fn bake_cell(&self, _: u32, _: u32, _: u8, _: u8) -> Result<TerrainCell, String> {
+            Ok(TerrainCell::default())
+        }
+        fn reference_digests(&self, ci: u32, cj: u32, _: u8, _: u8) -> Result<Vec<String>, String> {
+            // The cell's own tile and the ring of eight around it: the shape of a real window, at
+            // one tile per cell instead of a hundred.
+            Ok((ci - 1..=ci + 1)
+                .flat_map(|ti| (cj - 1..=cj + 1).map(move |tj| (ti, tj)))
+                .map(|(ti, tj)| format!("{ti}/{tj}={}", (self.digest)(ti, tj)))
+                .collect())
+        }
+    }
+
+    /// A source that is never fetched from: every test here stops at the key.
+    fn extracts() -> crate::source::GeofabrikExtracts {
+        crate::source::GeofabrikExtracts::new(
+            crate::source::GeofabrikExtracts::DEFAULT_BASE_URL,
+            Path::new("/nonexistent"),
+        )
+    }
+
+    fn bakery<'a>(
+        cutter: &'a dyn TerrainCutter,
+        source: &'a crate::source::GeofabrikExtracts,
+        doc: TerrainDoc,
+    ) -> TerrainBakery<'a> {
+        TerrainBakery {
+            regions: &[],
+            source,
+            cutter,
+            opts: TerrainBakeOptions { out: PathBuf::from("/nonexistent"), doc, force: false },
         }
     }
 
     fn key_for(doc: TerrainDoc) -> String {
-        let regions: Vec<Region> = Vec::new();
-        TerrainBakery {
-            regions: &regions,
-            source: &crate::source::GeofabrikExtracts::new(
-                crate::source::GeofabrikExtracts::DEFAULT_BASE_URL,
-                Path::new("/nonexistent"),
-            ),
-            cutter: &NoCutter,
-            opts: TerrainBakeOptions { out: PathBuf::from("/nonexistent"), doc, force: false },
-        }
-        .terrain_key()
+        bakery(&NoCutter, &extracts(), doc).terrain_key()
     }
 
     /// The headline property of the whole issue, at the level where it is cheapest to check: the
@@ -731,6 +897,41 @@ mod tests {
         for forbidden in ["obcm", "schema", "band"] {
             assert!(!text.contains(forbidden), "`{forbidden}` must not be in the terrain key: {text}");
         }
+    }
+
+    /// A reference archive update re-bakes the cells whose window holds a changed tile, and **only**
+    /// those. This is the whole reason the digests finish the key per cell instead of joining the run's
+    /// key: a Swiss archive release must not re-bake Norway, and it must not miss a Swiss cell whose
+    /// halo alone reaches the changed tile.
+    #[test]
+    fn a_changed_tile_digest_moves_exactly_the_cells_whose_window_holds_it() {
+        let base = key_for(doc());
+        let source = extracts();
+        let before = |ti: u32, tj: u32| format!("{ti:032}{tj:032}");
+        let changed = (10u32, 10u32);
+        let after = |ti: u32, tj: u32| if (ti, tj) == changed { "f".repeat(64) } else { before(ti, tj) };
+        let key = |digest: &dyn Fn(u32, u32) -> String, ci: u32, cj: u32| {
+            bakery(&OneTilePerCell { digest }, &source, doc()).cell_key(&base, ci, cj).unwrap()
+        };
+
+        for ci in 8u32..=12 {
+            for cj in 8u32..=12 {
+                // The window of this fixture's cell is its own tile plus the ring of eight, so the
+                // changed tile reaches the nine cells around it and no other.
+                let reaches = ci.abs_diff(changed.0) <= 1 && cj.abs_diff(changed.1) <= 1;
+                let moved = key(&before, ci, cj) != key(&after, ci, cj);
+                assert_eq!(moved, reaches, "cell {ci}/{cj} re-bakes: {moved}, window holds the tile: {reaches}");
+            }
+        }
+        // And every key is the cell's own: two cells with different windows never share one.
+        assert_ne!(key(&before, 10, 10), key(&before, 10, 11));
+        // A cutter with no reference leaves the base alone but for the empty digest list, so a tree
+        // baked without one is still keyed by one expression rather than two.
+        assert_eq!(
+            bakery(&NoCutter, &source, doc()).cell_key(&base, 10, 10).unwrap(),
+            bakery(&NoCutter, &source, doc()).cell_key(&base, 99, 99).unwrap(),
+            "with no reference a cell's key does not depend on which cell it is"
+        );
     }
 
     /// The published runs are the compact, merged shape `OBCC_Spec.md` §13.1 requires — and a

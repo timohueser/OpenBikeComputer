@@ -787,6 +787,16 @@
           "type": "string",
           "minLength": 1
         },
+        "references": {
+          "description": "Every finer reference model a published cell's crest lifts are derived from (§13.1). Absent when no cell used one, which is the common case. §13.5's obligation covers each entry exactly as it covers `attribution`.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/ReferenceEntry"
+          }
+        },
         "cell_index": {
           "description": "The single pinned terrain cell index.",
           "$ref": "#/$defs/TerrainIndexRef"
@@ -800,6 +810,34 @@
         "terrain_revision",
         "attribution",
         "cell_index"
+      ]
+    },
+    "ReferenceEntry": {
+      "description": "One reference elevation model a terrain cell's crest lifts came from (§13.1). The wording is the archive's, copied through the bakery unchanged: only the archive knows what a national mapping agency requires, and a consumer that displays terrain credits every entry here beside `attribution`.",
+      "type": "object",
+      "properties": {
+        "key": {
+          "description": "The archive's source key, e.g. `ch`.",
+          "type": "string"
+        },
+        "product": {
+          "description": "The product it is, e.g. `swissALTI3D 2 m`.",
+          "type": "string"
+        },
+        "attribution": {
+          "description": "The credit the licence requires, verbatim.",
+          "type": "string"
+        },
+        "licence": {
+          "description": "The licence the product is published under.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "product",
+        "attribution",
+        "licence"
       ]
     },
     "TerrainIndexRef": {

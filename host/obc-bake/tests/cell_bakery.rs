@@ -31,7 +31,9 @@ use obc_bake::cells::{CellBakeOptions, CellBakery, CellCutter, CellRunSummary, C
 use obc_bake::presets::StyleDoc;
 use obc_bake::regions::Region;
 use obc_bake::source::LocalExtracts;
-use obc_bake::terrain::{TerrainBakeOptions, TerrainBakery, TerrainCutter, TerrainDoc, TerrainRunSummary};
+use obc_bake::terrain::{
+    ReferenceSource, TerrainBakeOptions, TerrainBakery, TerrainCell, TerrainCutter, TerrainDoc, TerrainRunSummary,
+};
 use obc_pack::config::Config;
 use obc_pack::cut::{CutOptions, CutSummary};
 use obc_pack::geom::Geom;
@@ -431,6 +433,29 @@ fn terrain_doc(revision: u32, dataset_version: &str) -> TerrainDoc {
         // The credit comes from `obc-dem`'s own `const` and is never retyped, here or anywhere:
         // this assertion is the whole reason the bakery reaches for the library rather than a CLI.
         attribution: obc_elevation::COPERNICUS_ATTRIBUTION.into(),
+        // The run fills this from the cutter's own archive, so what a caller passes is ignored.
+        references: Vec::new(),
+    }
+}
+
+/// The reference source `FakeDem::lifted` credits — one national model, as an archive states it.
+fn fake_reference() -> ReferenceSource {
+    ReferenceSource {
+        key: "ch".into(),
+        product: "swissALTI3D 2 m".into(),
+        attribution: "© swisstopo".into(),
+        licence: "Open data, attribution required".into(),
+    }
+}
+
+/// The same source as the catalog must publish it.
+fn fake_reference_entry() -> obc_pack::catalog::ReferenceEntry {
+    let source = fake_reference();
+    obc_pack::catalog::ReferenceEntry {
+        key: source.key,
+        product: source.product,
+        attribution: source.attribution,
+        licence: source.licence,
     }
 }
 
@@ -442,6 +467,20 @@ fn terrain_doc(revision: u32, dataset_version: &str) -> TerrainDoc {
 struct FakeDem {
     /// Varies the bytes so a re-bake at a new revision produces genuinely different objects.
     fill: u8,
+    /// The reference sources every cell it bakes is derived from.
+    reference: Vec<ReferenceSource>,
+}
+
+impl FakeDem {
+    /// Copernicus alone: no reference archive, so no cell credits one.
+    fn plain(fill: u8) -> FakeDem {
+        FakeDem { fill, reference: Vec::new() }
+    }
+
+    /// With a reference archive whose lifts every cell uses.
+    fn lifted(fill: u8) -> FakeDem {
+        FakeDem { fill, reference: vec![fake_reference()] }
+    }
 }
 
 impl TerrainCutter for FakeDem {
@@ -449,17 +488,27 @@ impl TerrainCutter for FakeDem {
         "fake dem".into()
     }
 
-    fn bake_cell(&self, ci: u32, cj: u32, posting_log2: u8, cell_log2: u8) -> Result<Option<Vec<u8>>, String> {
+    fn bake_cell(&self, ci: u32, cj: u32, posting_log2: u8, cell_log2: u8) -> Result<TerrainCell, String> {
         let len = obc_formats::obct::cell_block_len(posting_log2, cell_log2).expect("a pairing OBCT permits") as usize;
         let width = obc_pack::grid::id_width(u32::from(cell_log2));
         let id = format!("{cell_log2}/{ci:0width$}/{cj:0width$}");
         if id == TERRAIN_OCEAN {
-            return Ok(None);
+            return Ok(TerrainCell::default());
         }
         // A plausible little surface: whole metres, little-endian, never the NODATA sentinel.
-        Ok(Some(
-            (0..len / 2).flat_map(|k| (((k as i16) % 700) + i16::from(self.fill)).to_le_bytes()).collect::<Vec<u8>>(),
-        ))
+        Ok(TerrainCell {
+            block: Some(
+                (0..len / 2)
+                    .flat_map(|k| (((k as i16) % 700) + i16::from(self.fill)).to_le_bytes())
+                    .collect::<Vec<u8>>(),
+            ),
+            reference_sources: self.reference.iter().map(|r| r.key.clone()).collect(),
+            absent_reference_tiles: Vec::new(),
+        })
+    }
+
+    fn reference_credits(&self) -> Vec<ReferenceSource> {
+        self.reference.clone()
     }
 }
 
@@ -513,7 +562,7 @@ fn obcm_digests(tree: &Path) -> BTreeMap<String, String> {
 #[test]
 fn a_terrain_bake_publishes_cells_ocean_runs_and_a_priced_region_selection() {
     let f = fixture_dirs("terrain-roundtrip");
-    let summary = f.terrain_bake(&FakeDem { fill: 1 }, 1);
+    let summary = f.terrain_bake(&FakeDem::lifted(1), 1);
     assert_eq!(summary.terrain_revision, 1);
     // Six squares cover the fixture's two rectangles at 2^19; one of them is open water.
     assert_eq!(summary.cells.len(), 6, "{}", summary.render());
@@ -535,6 +584,16 @@ fn a_terrain_bake_publishes_cells_ocean_runs_and_a_priced_region_selection() {
         obc_elevation::COPERNICUS_ATTRIBUTION,
         "§13.5: the credit comes from obc-elevation's const"
     );
+    // §13.1/§13.5 — the reference models the cells' crest lifts came from travel with the map, per
+    // cell in the sidecar and once in the block. The wording is the archive's, not this crate's.
+    let sidecar: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(terrain_dir(&f.tree).join("0601").join("0525.obcd.json")).expect("the sidecar"),
+    )
+    .expect("parses");
+    assert_eq!(sidecar["reference_sources"], serde_json::json!(["ch"]));
+    assert_eq!(terrain.references.as_deref(), Some(&[fake_reference_entry()][..]));
+    let license = obc_pack::catalog::license_txt(root);
+    assert!(license.contains("© swisstopo"), "the notice reaches LICENSE.txt too:\n{license}");
     assert_eq!((terrain.cell_index.cell_count, terrain.cell_index.known_empty_count), (5, 1));
     assert!(terrain.cell_index.url.contains(&terrain.cell_index.sha256), "the index is addressed by its own digest");
 
@@ -600,14 +659,14 @@ fn a_terrain_bake_publishes_cells_ocean_runs_and_a_priced_region_selection() {
 #[test]
 fn a_terrain_rebake_leaves_the_obcm_store_alone_and_the_guard_flags_the_network_band() {
     let f = fixture_dirs("terrain-rebake");
-    f.terrain_bake(&FakeDem { fill: 1 }, 1);
+    f.terrain_bake(&FakeDem::plain(1), 1);
     f.bake(&FixtureCutter::new(), &[], SNAPSHOT, false);
     let obcm_before = obcm_digests(&f.tree);
     let terrain_before = terrain_digests(&f.tree);
     assert!(obc_bake::guard::check_cell_store(&f.tree).expect("guard").ok());
 
     // The DEM was re-released: a new terrain revision, new bytes, nothing else touched.
-    let summary = f.terrain_bake(&FakeDem { fill: 9 }, 2);
+    let summary = f.terrain_bake(&FakeDem::plain(9), 2);
     assert_eq!(summary.terrain_revision, 2);
     assert_ne!(terrain_digests(&f.tree), terrain_before, "the terrain store really did move");
     assert_eq!(obcm_digests(&f.tree), obcm_before, "a terrain re-bake must not rewrite one OBCM cell");
@@ -636,7 +695,7 @@ fn a_terrain_rebake_leaves_the_obcm_store_alone_and_the_guard_flags_the_network_
 #[test]
 fn a_schema_revision_bump_rebakes_no_terrain_object() {
     let f = fixture_dirs("terrain-schema-bump");
-    f.terrain_bake(&FakeDem { fill: 1 }, 1);
+    f.terrain_bake(&FakeDem::plain(1), 1);
     f.bake(&FixtureCutter::new(), &[], SNAPSHOT, false);
     let obcm_before = obcm_digests(&f.tree);
     let terrain_before = terrain_digests(&f.tree);
@@ -663,7 +722,7 @@ fn a_schema_revision_bump_rebakes_no_terrain_object() {
     assert_eq!(generated.root.terrain.as_ref().expect("terrain").terrain_revision, 1);
 
     // Re-running the terrain stage after all that is a no-op: nothing it keys on changed.
-    let again = f.terrain_bake(&FakeDem { fill: 1 }, 1);
+    let again = f.terrain_bake(&FakeDem::plain(1), 1);
     assert!(
         again.cells.iter().all(|c| c.status != obc_bake::terrain::TerrainCellStatus::Baked),
         "a schema bump must not make the terrain stage re-rasterise: {}",
@@ -676,7 +735,7 @@ fn a_schema_revision_bump_rebakes_no_terrain_object() {
 #[test]
 fn a_store_that_mixes_terrain_revisions_is_rejected() {
     let f = fixture_dirs("terrain-mixed");
-    f.terrain_bake(&FakeDem { fill: 1 }, 1);
+    f.terrain_bake(&FakeDem::plain(1), 1);
     f.bake(&FixtureCutter::new(), &[], SNAPSHOT, false);
 
     // One cell left behind by an interrupted re-bake.
