@@ -361,7 +361,8 @@ impl HostStore {
     /// The card is initialized under a temporary sibling and published by a rename, so the
     /// card name never names an incomplete card. When this returns the bytes and the name
     /// are both durable. A crash before the rename leaves no card name and one temporary
-    /// sibling; a failure leaves neither.
+    /// sibling. If the rename lands and the directory barrier then fails, the card keeps its
+    /// name and creation still reports the failure.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn create_file(path: impl AsRef<std::path::Path>) -> Result<Self, ImportError> {
         let path = path.as_ref();
@@ -572,8 +573,24 @@ impl HostStore {
 /// replaces a file. A rename is durable only after the directory entry reaches storage.
 #[cfg(unix)]
 fn publish(temporary: tempfile::TempPath, path: &std::path::Path, parent: &std::path::Path) -> io::Result<()> {
-    temporary.persist_noclobber(path).map_err(|error| error.error)?;
+    if let Err(refused) = temporary.persist_noclobber(path) {
+        // exFAT and many network mounts do not implement an exclusive rename. macOS reports
+        // `ENOTSUP`, which `ErrorKind` leaves uncategorized, so anything but an occupied
+        // name falls back to a reserved name.
+        if refused.error.kind() == io::ErrorKind::AlreadyExists {
+            return Err(refused.error);
+        }
+        reserve_and_rename(refused.path, path)?;
+    }
     std::fs::File::open(parent)?.sync_all()
+}
+
+/// Publish where an exclusive rename is unavailable. The exclusive create holds the name
+/// against every other owner, and the plain rename replaces that reservation with the card.
+#[cfg(unix)]
+fn reserve_and_rename(temporary: tempfile::TempPath, path: &std::path::Path) -> io::Result<()> {
+    std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+    temporary.persist(path).map_err(|error| error.error)
 }
 
 /// Windows cannot sync a directory. `MOVEFILE_WRITE_THROUGH` returns only once the move

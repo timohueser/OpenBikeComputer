@@ -48,7 +48,6 @@ fn absent_terrain_is_distinct_from_unsupported_or_invalid_terrain() {
     assert!(matches!(FlatElevation::open(&map), Err(Error::BadOffset)));
 }
 
-#[cfg(unix)]
 #[test]
 fn persisted_terrain_reopens_and_owns_exact_revisions_until_last_drop() {
     let dir = tempfile::tempdir().unwrap();
@@ -88,7 +87,6 @@ fn persisted_terrain_reopens_and_owns_exact_revisions_until_last_drop() {
     assert!(HostStore::open_file(&card).is_ok());
 }
 
-#[cfg(unix)]
 #[test]
 fn unreadable_card_never_becomes_a_height_or_successful_mount() {
     let dir = tempfile::tempdir().unwrap();
