@@ -976,13 +976,13 @@ screens! {
     /// The System menu: a thin nav list opening Units, Date & Time, Language, Firmware, About and
     /// Reset.
     System(SystemScreen) => Caps::settings(),
-    /// The device-info ledger and the "Install update from card" door into the sideload flow.
+    /// The device-info ledger and the "Install update" door into the update flow.
     Firmware(FirmwareScreen) => Caps::settings(),
     /// The credits page: OpenStreetMap and ODbL, Copernicus, and the firmware's licence and source
     /// pointer. Read-only, scrolled by line.
     About(AboutScreen) => Caps::settings(),
     Reset(ResetScreen) => Caps::settings().hold_fill(),
-    /// The "Checking card..." wait while the board validates `UPDATE.BIN`. The board's answer
+    /// The "Checking update..." wait while the board validates the staged package. The answer
     /// replaces it with the confirm screen or an error card.
     DfuCheck(DfuCheckScreen) => Caps::modal().timed(),
     /// The install confirm: installed and update versions, the no-undo and same-version warnings,

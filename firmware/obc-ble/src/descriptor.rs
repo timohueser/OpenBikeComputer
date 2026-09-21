@@ -18,7 +18,7 @@ pub enum ObjectType {
     /// Reserved on the CoC — Config crosses GATT whole-blob.
     ConfigBlob = 3,
     Diagnostics = 4,
-    /// A complete `UPDATE.BIN` OBCU container, app to device, upload only. The transfer layer sees
+    /// A complete OBCU update container, app to device, upload only. The transfer layer sees
     /// opaque bytes; installing it is the separate, confirmed `installFw` command.
     FwImage = 5,
     RouteList = 6,

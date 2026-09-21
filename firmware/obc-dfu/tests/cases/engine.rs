@@ -62,8 +62,8 @@ impl MockIo {
         }
     }
 
-    /// Lays `bytes` across `extents`, with slack in the final block, as a FAT file sits in its
-    /// cluster chain.
+    /// Lays `bytes` across `extents`, with slack in the final block, as an object sits in the
+    /// extents it owns.
     fn load_file(&mut self, bytes: &[u8], extents: &[Extent]) {
         let mut off = 0usize;
         for e in extents {
@@ -185,7 +185,7 @@ fn image(len: usize) -> Vec<u8> {
     (0..len).map(|i| (i as u32).wrapping_mul(2654435761).to_le_bytes()[1]).collect()
 }
 
-/// The extent chain covers the whole file, header included, as the armer resolves `UPDATE.BIN`.
+/// The extent chain covers the whole object, header included, as the armer resolves a package.
 fn stage(img: &[u8], version: &str, extents: &[Extent]) -> (Vec<u8>, StagedRef) {
     let header = ImageHeader::new(img, version);
     let mut file = header.encode().to_vec();

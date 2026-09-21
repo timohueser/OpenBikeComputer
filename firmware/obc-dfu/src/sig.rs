@@ -102,8 +102,8 @@ const fn nibble(c: u8) -> u8 {
 }
 
 /// The committed test key, used by the host tests, the spec vector, and the simulator's synthetic
-/// `UPDATE.BIN`. It is not behind a feature, because the armer's key must stay a parameter. Nothing
-/// in the firmware's arm path names this module.
+/// package. It is not behind a feature, because the armer's key must stay a parameter. Nothing in
+/// the firmware's arm path names this module.
 pub mod test_key {
     use super::{hex32, PublicKey, SEED_LEN};
 

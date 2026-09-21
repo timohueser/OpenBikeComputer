@@ -522,18 +522,18 @@ map_data = "Map data"
 elevation = "Elevation"
 firmware = "Firmware"
 
-# --- Firmware page (device info ledger + the SD-sideload install action) ---
+# --- Firmware page (device info ledger + the install action) ---
 [firmware]
 title = "FIRMWARE"
-install_update = "Install update from card"
+install_update = "Install update"
 recording = "Recording"
 version = "Firmware"
 map = "Map"
 card_free = "Card free"
 
-# --- Firmware update (sideload) flow: check / confirm / progress / error / toast ---
+# --- Firmware update flow: check / confirm / progress / error / toast ---
 [dfu]
-checking = "Checking card..."
+checking = "Checking update..."
 installed = "Installed"
 staged = "Update"
 confirm_title = "INSTALL UPDATE"
@@ -551,15 +551,15 @@ failed_title = "UPDATE FAILED"
 failed_not_started = "The update was never started."
 failed_reverted = "The previous firmware is still installed."
 title = "UPDATE"
-not_found = "No UPDATE.BIN on the card."
+not_found = "No update has been sent yet."
 unreadable = "Could not read the update file."
 damaged = "The update file is damaged."
 too_large = "The update file is too large for this device."
-fragmented = "The update file is too fragmented. Delete UPDATE.BIN and copy it to the card again."
+fragmented = "The update is too fragmented. Send it again."
 untrusted = "This update file is not signed for this device."
 install_recording = "Finish and save your ride before installing an update."
 install_pending_save = "A ride is still being saved. Try again in a moment."
-install_no_card = "No card found. Insert the card and try again."
+install_no_card = "The card is not ready. Try again."
 install_snapshot_failed = "Could not save a rollback copy to the card. Update not installed."
 install_state_write = "Could not prepare the update. Nothing was changed."
 
