@@ -21,6 +21,9 @@ manifest copies, raw source hashes, all 11 recorded OSM identities, and the four
 and article revisions. Source changes require a new immutable package. No acquisition command
 runs during map generation.
 
+The `fixtures.assistant-places` manual suite checks the place queries against these sources; see
+[place query validation](PLACES-VALIDATION.md).
+
 ## Offline maps
 
 Build the shipping tools once while Cargo dependencies are available, then use cached inputs:
@@ -204,7 +207,7 @@ tools/obc sim assistant-forward-rejoin
 tools/obc sim assistant-loop-crossing
 ```
 
-The [integrated handoff](../../../docs/assets/ride-assistant/implementation/final-handoff.md) links
-normal-menu acceptance, the complete Swiss Visit and saved recording, a real Easier alternative,
-resource measurements, and the country census. Physical-device acceptance remains pending.
+[Issue #1734](https://github.com/timohueser/OpenBikeComputer/issues/1734) links normal-menu
+acceptance, the complete Swiss Visit and saved recording, a real Easier alternative, resource
+measurements, and the country census. Physical-device acceptance remains pending.
 Package verification alone does not establish runtime acceptance.

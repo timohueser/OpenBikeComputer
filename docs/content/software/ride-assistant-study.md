@@ -172,8 +172,9 @@ The earlier [wireframes](../../assets/ride-assistant/README.md) remain as the de
 
 ## Implementation plan
 
-The [reviewed epic and child specifications](../../assets/ride-assistant/implementation/README.md)
-define the production work for Find a place, What's next, Landmarks and Easier route. The plan
-keeps the other questions as placeholders and removes Next town. It requires real offline inputs,
-shared route acceptance and visits, deterministic landmark content, and focused simulator evidence.
-The four questions use production data and navigation. Physical-device acceptance remains pending.
+The [epic](https://github.com/timohueser/OpenBikeComputer/issues/1734) defines the production
+work for Find a place, What's next, Landmarks and Easier route. The plan keeps the other questions
+as placeholders and removes Next town. It requires real offline inputs, shared route acceptance and
+visits, deterministic landmark content, and focused simulator evidence. The four questions use
+production data and navigation. Physical-device acceptance remains pending; the
+[device checklist](../../assets/ride-assistant/implementation/device-test-checklist.md) lists it.

@@ -1,7 +1,0 @@
-{
-  "phase": "resupply",
-  "input": "24.636873 [INFO ] input: Press on FindPlace (obc_fw_nrf54l obc-fw-nrf54l/src/ride.rs:2713)",
-  "frame": "31.742338 [INFO ] map frame: render 520398 us + push 43241 us | lod 10 | feat 451/663 | chunks 15 | map-cache 0 hit / 15 miss (obc_fw_nrf54l obc-fw-nrf54l/src/ride.rs:3285)",
-  "seconds": 7.105465,
-  "completed": true
-}

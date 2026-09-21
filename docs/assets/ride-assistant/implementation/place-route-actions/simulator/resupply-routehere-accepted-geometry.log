@@ -1,6 +1,0 @@
-store StoreId([248, 123, 95, 10, 185, 237, 125, 187, 123, 44, 77, 37, 164, 233, 89, 137]); sequence 16; checkpoint Some(NavigatorCheckpoint { route: PayloadFingerprint { object: 9, revision: 1, length: 393, crc: 99124720 }, original: None, progress_m: 0, occurrence: 0, lon: 8194551, lat: 46723126, phase: Following, unresolved_avoidance: false, lower_m: 0, upper_m: 1045 })
-route 2 revision 1 bytes 1366 candidate false total_m 6526 vertices 167 visit None
-  name "meiringen-loop-dem" flags EntryFlags(0) first Some(RoutePoint { lon: 8184359, lat: 46727505, ele: 596, surface: 0, elevation_incomplete: false }) last Some(RoutePoint { lon: 8184359, lat: 46727505, ele: 596, surface: 0, elevation_incomplete: false })
-route 9 revision 1 bytes 393 candidate true total_m 1045 vertices 28 visit None
-  name "Route to place" flags EntryFlags(8) first Some(RoutePoint { lon: 8194551, lat: 46723126, ele: 602, surface: 0, elevation_incomplete: false }) last Some(RoutePoint { lon: 8185145, lat: 46728646, ele: 597, surface: 0, elevation_incomplete: false })
-visit_candidates 0
