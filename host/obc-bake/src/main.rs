@@ -56,6 +56,7 @@ usage:
         --peaks FILE         embed compiled peak peaks.json and its photos
         --dem-sources DIR    source DEM GeoTIFFs for it (default: fetched into <cache>/dem)
         --reference DIR      reference archive mirror for the terrain stage's crest lifts
+        --allow-short-reference  publish a cell the mirror is short of tiles for
 
       A bake runs the terrain stage FIRST, automatically: contours are traced and the
       nav graph's ascents integrated from the terrain in the tree, so a bake without
@@ -78,7 +79,10 @@ usage:
                                 crest, the baked samples carry the finer model's height
                                 (OBCT_Spec.md §9), each cell records the sources it used, and
                                 their credits reach the catalog. A reference change is a
-                                terrain revision bump (OBCC_Spec.md §13.2).
+                                terrain revision bump (OBCC_Spec.md §13.2). A cell the
+                                mirror is short of tiles for is REFUSED: it would be
+                                lifted on one side of a coverage edge and not the other.
+        --allow-short-reference publish such a cell anyway, and warn
         --regions FILE          curated region list
         --base-url URL          catalog object base
         --generated-at TS       pin the catalog's generated_at
@@ -186,7 +190,7 @@ fn run_regions(args: &[String]) -> Result<(), String> {
 fn run_bake(args: &[String]) -> Result<(), String> {
     let (flags, positional) = Flags::parse(
         args,
-        &["force", "no-land", "fail-fast", "all", "no-terrain"],
+        &["force", "no-land", "fail-fast", "all", "no-terrain", "allow-short-reference"],
         &[
             "out",
             "schema-id",
@@ -305,7 +309,12 @@ fn run_cell_bake(
             regions: &regions,
             source: source.as_ref(),
             cutter: &dem,
-            opts: obc_bake::terrain::TerrainBakeOptions { out: out.clone(), doc, force: false },
+            opts: obc_bake::terrain::TerrainBakeOptions {
+                out: out.clone(),
+                doc,
+                force: false,
+                allow_short_reference: flags.has("allow-short-reference"),
+            },
         }
         .run(&obc_pack::progress::Progress::stdout())?;
         print!("{}", summary.render());
@@ -511,7 +520,7 @@ fn report_reference(cutter: &obc_bake::terrain::DemCutter, root: Option<&Path>) 
 fn run_terrain(args: &[String]) -> Result<(), String> {
     let (flags, positional) = Flags::parse(
         args,
-        &["force"],
+        &["force", "allow-short-reference"],
         &[
             "out",
             "sources",
@@ -582,7 +591,12 @@ fn run_terrain(args: &[String]) -> Result<(), String> {
         regions: &regions,
         source: source.as_ref(),
         cutter: &cutter,
-        opts: obc_bake::terrain::TerrainBakeOptions { out: out.clone(), doc, force: flags.has("force") },
+        opts: obc_bake::terrain::TerrainBakeOptions {
+            out: out.clone(),
+            doc,
+            force: flags.has("force"),
+            allow_short_reference: flags.has("allow-short-reference"),
+        },
     }
     .run(&obc_pack::progress::Progress::stdout())?;
     print!("{}", summary.render());

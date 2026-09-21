@@ -300,8 +300,18 @@ obc-bake terrain --reference ref/ …      # the curated coverage, into a publis
 
 Mirror the box the *cells* cover, not the box a rider rides: a published terrain cell overhangs a
 coverage polygon by up to its own side, and a tile the index names and the mirror lacks costs that
-cell its lifts. The bake says how many tiles were missing and the cell's skip key records that they
-were, so completing the mirror re-bakes exactly those cells and nothing else.
+cell its lifts on one side of that tile's edge only.
+
+The two bakers answer a short mirror differently, because they publish differently:
+
+- `obc-dem bake` **warns** and names the tiles. A one-box bake is a thing an operator is looking at.
+- `obc-bake terrain` **refuses** the cell, naming it, the count and the first missing id. It
+  publishes objects a rider downloads, and a cell lifted on one side of a coverage edge has a step
+  in its contours and its route profile that no ground has. `--allow-short-reference` publishes it
+  anyway and puts the same text in the run's warnings.
+
+Either way the cell's skip key records the tiles the bake could read, so completing the mirror
+re-bakes exactly the short cells and nothing else.
 
 `mirror` pulls `index.json` first, then the tiles of the box and its one-tile halo, and nothing else. A
 tile the archive does not hold is counted and named in the summary, not an error: a box that reaches
