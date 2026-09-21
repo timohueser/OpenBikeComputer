@@ -865,9 +865,11 @@ ready *args:
     _run python3 "$OBC_TOOLS/ready.py" "$@"
 
 # `obc req SYS-003` prints one requirement with its criteria numbered. Also `list`, `proposal ID`,
-# `tests QUERY`, `changed --since rN`, and `propose plan.json` (check it with --check first).
-# Needs the agent token file; see tools/req.py.
-# Read and write the verification console. Args: SYS-nnn | list | proposal ID | tests QUERY | changed --since rN | propose plan.json
+# `tests QUERY`, `changed --since rN`, `propose plan.json` for a coverage plan, and
+# `suggest file.json` for a requirement that does not exist yet or no longer describes the
+# product. `suggestions` lists the open ones; `--decided` shows the owner's answer. Check
+# `propose` and `suggest` with --check first. Needs the agent token file; see tools/req.py.
+# Read and write the verification console. Args: SYS-nnn | list | proposal ID | tests QUERY | changed --since rN | propose plan.json | suggest file.json | suggestions
 [group('agent')]
 req *args:
     #!/usr/bin/env bash
