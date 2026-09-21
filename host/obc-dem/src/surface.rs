@@ -17,20 +17,7 @@ pub fn bake_cell(
     cj: u32,
     posting_log2: u8,
     cell_log2: u8,
-    height: impl FnMut(i32, i32) -> i16,
-) -> Result<Option<Vec<u8>>, String> {
-    bake_cell_with_crest(ci, cj, posting_log2, cell_log2, height, None)
-}
-
-/// As [`bake_cell`], with §9's lifts folded into the maxima and error codes. The height tiles stay
-/// native — §8.1 requires that — so only the bounds a panorama reads describe the lifted surface.
-pub fn bake_cell_with_crest(
-    ci: u32,
-    cj: u32,
-    posting_log2: u8,
-    cell_log2: u8,
     mut height: impl FnMut(i32, i32) -> i16,
-    crest: Option<&crate::crest::CrestBlock>,
 ) -> Result<Option<Vec<u8>>, String> {
     let layout = SurfaceLayout::new(posting_log2, cell_log2).ok_or("surface layout exceeds OBCT limits")?;
     let origin_y = i64::from(GRID_ORIGIN) + (i64::from(ci) << cell_log2);
@@ -46,10 +33,7 @@ pub fn bake_cell_with_crest(
                 let lat = origin_y + ((y as i64) << level.posting_log2);
                 let lon = origin_x + ((x as i64) << level.posting_log2);
                 let value = height(lat as i32, lon as i32);
-                // The pyramid and the bounds describe the panorama surface; the tiles below keep
-                // the native sample, which is what every other elevation consumer reads.
-                let lift = crest.map_or(0, |c| c.lift(index, y as u32, x as u32));
-                grid.push(if value == NODATA { value } else { value.saturating_add(lift) });
+                grid.push(value);
                 if y < side && x < side {
                     any |= index == 0 && value != NODATA;
                     let at = level.offset as usize
@@ -123,27 +107,16 @@ fn approximation(grid: &[i16], stride: usize, y: usize, x: usize, width: usize) 
 }
 
 /// Convert an existing terrain container without changing any native sample.
-pub fn convert<W: Write + Seek>(bytes: &[u8], out: W) -> Result<(), String> {
-    convert_with_reference(bytes, out, None)
-}
-
-/// As [`convert`], adding §9 crest planes wherever `reference` — a finer DEM in the same
-/// geographic frame, sampled by degrees — says the lattice loses a crest. Cells the reference does
-/// not cover come out byte-identical to [`convert`]'s, which is what lets national coverage stop at
-/// a border.
 ///
-/// The reference arrives as a closure, not as a decoder, because this module is on the assembler's
-/// `default-features = false` path and must not pull the GeoTIFF decoder into a wasm build.
-pub fn convert_with_reference<W: Write + Seek>(
-    bytes: &[u8],
-    out: W,
-    reference: Option<&dyn Fn(f64, f64) -> Option<f64>>,
-) -> Result<(), String> {
+/// Reference-free by construction: §9's lifts are added to the native lattice by the bake, so by
+/// the time a container reaches this function its heights already are the surface every consumer
+/// reads, and the pyramid, the maxima and the error codes describe that one surface.
+pub fn convert<W: Write + Seek>(bytes: &[u8], out: W) -> Result<(), String> {
     let source = SliceSource(bytes);
     let reader = TerrainReader::parse(&source).map_err(|e| format!("invalid source terrain: {e:?}"))?;
     let h = *reader.header();
     let rect = CellRect { min_i: h.cell_min_i, min_j: h.cell_min_j, rows: h.cell_rows, cols: h.cell_cols };
-    let mut writer = ShardWriter::with_crest(out, h.posting_log2, h.cell_log2, rect, true, reference.is_some())?;
+    let mut writer = ShardWriter::with_surface(out, h.posting_log2, h.cell_log2, rect, true)?;
     let span_log2 = h.cell_log2 - h.posting_log2;
     let sample = |lat: i32, lon: i32| -> i16 {
         let Some(y) = i64::from(lat).checked_sub(i64::from(GRID_ORIGIN)).and_then(|v| u32::try_from(v).ok()) else {
@@ -170,10 +143,7 @@ pub fn convert_with_reference<W: Write + Seek>(
         i16::from_le_bytes([bytes[at], bytes[at + 1]])
     };
     for (ci, cj) in rect.cells() {
-        let crest = reference.and_then(|dem| crate::crest::bake_cell(ci, cj, h.posting_log2, h.cell_log2, sample, dem));
-        let block = bake_cell_with_crest(ci, cj, h.posting_log2, h.cell_log2, sample, crest.as_ref())?;
-        let planes = block.as_ref().and(crest.as_ref()).map(|c| c.bytes());
-        writer.push_with_crest(block.as_deref(), planes)?;
+        writer.push(bake_cell(ci, cj, h.posting_log2, h.cell_log2, sample)?.as_deref())?;
     }
     writer.finish()?;
     Ok(())

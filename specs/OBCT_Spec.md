@@ -158,6 +158,12 @@ needs no separate mask plane.
 Whole metres, not decimetres: the raster's own vertical error at a bikepacking posting is metres,
 and a finer unit would be false precision at twice the bytes.
 
+A sample is a **point sample** of the source at the lattice node, with one exception. At a crest
+node the sample MAY instead be the maximum reference ground height inside the node's half-posting
+cell, taken from a finer reference DEM. Section 9 states the rule that selects such a node and
+computes its value. No flag records the exception, because the result is one height lattice either
+way: every consumer reads the sample it finds.
+
 ### 1.3 Posting and cell size are data
 
 `P` and the cell side are **header fields** (§4.2), not constants of this document. The v1 baked
@@ -553,6 +559,11 @@ container for cells and shards with a row-major `uint32` offset directory, and t
 rules of §5. Posting and cell size are header data; compression is not defined and is what the
 reserved `Flags` byte exists for.
 
+**Version 3** (epic #1068 / #1928) — the geographic surface index of section 8: a per-cell height
+pyramid with conservative maxima, smooth-patch error codes and a cross-cell maximum index, for
+arbitrary-viewpoint panoramas. Section 9's crest lifts are a producer rule over section 1's samples
+and add no field, no flag and no block.
+
 ## 8. Version 3: geographic surface index
 
 Version 3 adds terrain data for arbitrary-viewpoint panoramas. It stores no observer position,
@@ -564,8 +575,8 @@ specified below.
 
 The header remains 32 bytes. `Version` MUST be `3`, flag bit 0 MUST be set, and bytes `24..32`
 MUST be zero. Flag bit 1 indicates the cross-cell maximum index in section 8.3. Other flag bits
-MUST be zero. Producers MUST set both bits (`Flags = 3`); readers also accept `Flags = 1`
-without that index. The directory retains one little-endian `uint32` offset per geographic cell.
+MUST be zero, so `Flags` is `1` or `3`. Producers MUST set both bits (`Flags = 3`); readers also
+accept `Flags = 1` without that index. The directory retains one little-endian `uint32` offset per geographic cell.
 Zero means absent. Every present cell MUST start at a multiple of 512 bytes relative to the
 container. The producer MUST pad the header and directory to that boundary with zero bytes.
 When flag bit 1 is set, the cross-cell index starts at that boundary and precedes all cell blocks.
@@ -664,85 +675,95 @@ bytes inside the OBCT prefix and cell blocks are zero padding.
 
 ---
 
-## 9. Version 3 flag bit 2: crest planes
+## 9. Crest lifts (producer rule)
 
-A native posting of `2^9` µdeg cannot hold a rock tower. Measured against 2 m LiDAR at
-Engelberg, the bilinear surface through Copernicus GLO-30 samples runs 100 m below the Hahnen's
-summit, and a panorama drawn from it loses the one feature that makes the mountain
-recognisable. Raising the native lattice is not the answer: §1.3's raster is also the route
-profile, the contour source and the map-referenced altimeter's frame, and those want the
-measured surface, not its upper envelope.
+A native posting of `2^9` µdeg cannot hold a rock tower. Measured against 2 m LiDAR at Engelberg,
+the bilinear surface through Copernicus GLO-30 samples runs 100 m below the Hahnen's summit, and a
+panorama drawn from it loses the one feature that makes the mountain recognisable.
 
-Flag bit 2 therefore adds a **crest block**: a per-cell set of non-negative lifts, one plane per
-§8.1 level, that **only a panorama consumer applies**. Ordinary elevation consumers read §1–§5
-and never see them. The lifts come from a finer reference DEM where the producer has one; a
-container may carry blocks for some cells and not others, because national LiDAR coverage stops
-at borders.
+A **lift** is the answer: at a node where a finer reference DEM says the ground stands far above our
+surface, and the terrain there is convex, the producer raises the sample to the reference ground.
+This is the section 1.2 exception, and it is a producer rule, not a container feature. The lifted
+value is in the sample itself, so section 8's pyramid, maxima, error codes and cross-cell index need
+no reasoning of their own, and Peak View, the contours, the ascent integral, the route profile and
+the map-referenced altimeter all read one surface.
 
-### 9.1 Crest directory
+Copernicus stays the base raster. A national DTM supplies lifts only: it sits below a surface model
+over every forest and town, so it MUST NOT become the base.
 
-When flag bit 2 is set, a crest directory starts at the 512-byte boundary after §8.3's
-cross-cell index, or after the cell directory when flag bit 1 is clear. It holds one
-little-endian `uint32` per geographic cell, in the cell directory's row-major order. Zero means
-the cell has no crest block. Any other value is that block's byte offset from the container
-start and MUST be a multiple of 512. The producer MUST pad the directory to a 512-byte
-boundary. A cell that is absent from the cell directory MUST have a zero crest entry. No cell
-block, crest block or index may overlap another.
+### 9.1 The rule
 
-### 9.2 Crest block
+For each node of the native level, let `node_max` be the maximum reference height inside the node's
+half-posting cell — the square reaching half an interval from the node on both axes.
 
-A crest block holds one plane per §8.1 level, in the same increasing-posting order, each padded
-to a 512-byte boundary. A level's plane holds one unsigned byte per sample of that level, in the
-16×16 tile order of §2, so the plane for level `i` is a quarter of the size of the plane for
-level `i-1`. Byte `L` at a sample means the panorama surface there is
+A node is **selected** when both of these hold:
+
+1. The largest **gap** over the node's cell is more than **10 m**. The gap at a point is the
+   reference height there minus the native bilinear surface there, so the largest gap is
+   `max(reference - surface)` over the cell. This maximum and `node_max` are taken independently and
+   need not occur at the same point: the gap is what makes a node a crest, and `node_max` is the
+   height it is lifted to.
+2. `node_max` exceeds the mean of its four neighbours' `node_max` by more than **3 m**.
+
+The selection is then **dilated by one node**, 8-connected: a node that touches a selected node,
+including at a corner, is lifted too.
+
+The lift at a lifted node is
 
 ```
-native + 2·L   metres,   for a native height that is not NODATA
+lift = max(0, round(node_max) - native)   whole metres
 ```
 
-`L = 0` leaves the sample unchanged, so an all-zero block and an absent block are equivalent and
-a producer SHOULD omit it. A `NODATA` native sample stays `NODATA` whatever `L` says. The two
-metre step is deliberate: the error it adds is a metre, against the tens of metres it corrects.
-`L = 255` is a lift of 510 m and is the maximum the format can express; a producer MUST clamp to
-it and SHOULD report the clamp.
+and the baked sample is `native + lift`. `round` is half away from zero, the rule section 5.2 pins
+for the read side.
 
-A block carries every level, not only the native one, because the renderer changes level with
-distance and a lift that stopped at the native level would show as a step in the skyline where
-a ridge crosses that boundary. The geometric series converges: all levels together cost four
-thirds of the native plane, which for the v1 pairing is 1,398,016 bytes before padding against
-2,097,152 bytes of native heights.
+A node with `NODATA` anywhere in the 3 × 3 native lattice around it MUST NOT be lifted, not even by
+the dilation. There is no bilinear surface there to measure a gap against, so a hole keeps a
+one-node rim of unlifted ground around it rather than a height the rule cannot justify.
 
-Each level's lifts are computed against **that level's own** lattice, not resampled from the
-native one. A coarser lattice under-samples a crest further, so its lifts are larger. This falls
-out of applying §9.4's rule per level and needs no separate rule.
+`node_max` and the gap are sampled on a probe grid the producer chooses. The v1 bakery uses
+32 × 32 sub-samples, centred in the node's cell, which puts the probe step below 2 m at the v1
+posting. This document therefore does **not** promise that two producers agree byte for byte on a
+lifted cell. It promises the identity of section 9.2: where there is no coverage, there is no
+difference.
 
-### 9.3 What a crest plane obliges the producer to do
+Each test earns its place. The gap is measured against the bilinear surface, not against the node,
+because that surface is what a consumer draws. The convexity test is what leaves a steep planar
+slope alone; without it a coarse lattice's honest under-sampling of a 40° face reads as a crest and
+the whole mountain inflates. It is also what leaves a saddle alone, so a pass does not move. The
+one-node dilation is what keeps a lifted crest from alternating with its unlifted neighbours, which
+a panorama shows as a sawtooth along the skyline.
 
-Lifts are non-negative, so the panorama surface is never below the native one. That one property
-keeps the rest of the format sound, and it is why the lift is unsigned.
+Every part of the rule reads only a node's 2-ring of `node_max` values. A producer MUST therefore
+compute a lift from that neighbourhood alone, so that a node on a cell seam gets the same lift
+whichever of the two cells is being baked.
 
-A cell's §8.2 maximum-height nodes and error codes MUST describe the **panorama** surface at
-their own level — that level's heights with that level's lifts applied. Because a lift cannot be
-negative, such a maximum also bounds the unlifted surface, so §8.2's guarantee still holds for a
-consumer that ignores crest blocks: that consumer culls less than it could, never more. The same
-reasoning covers §8.3's cross-cell index.
+### 9.2 Coverage
 
-§8.1 still governs the stored heights: a coarser level selects native lattice posts and a crest
-block does not change them. The lift is applied by the consumer on top of the level it reads,
-which is what keeps the native heights of every level byte-identical to a container without
-crest blocks.
+Reference coverage may stop at any node: national datasets stop at borders. A node the reference
+misses, at itself or at any of the four neighbours a test reads, is not selected. A cell with no
+reference coverage at all MUST be byte-identical to the same cell baked without a reference, and a
+cell with coverage has the same byte length as one without.
 
-### 9.4 What the format does not decide
+At a coverage edge along a border ridge, the step between a lifted and an unlifted node is visible
+in contours and profiles. That is a reason to widen the reference registry, not to soften the rule.
 
-Which samples to lift is a producer choice, like the posting of §1.3. For each level, the v1
-bakery lifts a sample when a reference DEM's maximum within that sample's half-posting cell
-stands more than 10 m above that level's baked bilinear surface **and** the reference is locally
-convex there, then extends the selection by one sample so that a crest is lifted along its whole
-length. The
-convexity test is what keeps a steep planar slope alone; without it a coarse lattice's honest
-under-sampling of a 40° face reads as a crest and the whole mountain inflates. The one-sample
-extension is what keeps a lifted crest from alternating with its unlifted neighbours, which a
-panorama shows as a sawtooth along the skyline.
+### 9.3 What a producer MUST NOT do
 
-A producer MUST NOT use a crest plane to carry a correction that ordinary elevation consumers
-should see. The native raster stays authoritative for elevation, gradient and climb.
+A lift MUST NOT be negative: section 9 raises crests, and a reference that sits below our surface in
+a hollow is not a reason to edit the lattice there. A producer MUST NOT use a lift to carry any
+other correction; a systematic disagreement with the source is a re-bake of the source, not a lift.
+
+There is **no ceiling** on a lift, and a producer MUST NOT cap one. Measured over Engelberg the
+largest lift is 413 m, where Copernicus GLO-30 reads a notch in a rock wall that the 2 m reference
+does not; the reference is the better measurement there, so a clamp would put the error back.
+
+A spike in a reference looks the same from here, though. A producer SHOULD therefore report the
+largest lift of a run, the node it is at, and how many lifts exceed 200 m, so that an operator sees
+a broken reference instead of finding it in a drawn panorama. This is guidance, not a byte
+requirement: nothing in a container records it, and no reader can check it. `obc-dem bake` prints
+it.
+
+A change of reference archive changes the baked samples, so it is a terrain revision bump and hence
+a navigation re-bake (`OBCC_Spec.md` §13.4). The reference DEM keeps its own attribution, which
+MUST travel with every container derived from it.

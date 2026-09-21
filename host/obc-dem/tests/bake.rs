@@ -13,8 +13,9 @@
 mod common;
 
 use common::{Scratch, SyntheticDem, PIXEL_IS_AREA, PIXEL_IS_POINT};
-use obc_dem::bake::{bake_cell, bake_cells, bake_shard, cell_file_name, cell_rect, BakeParams};
+use obc_dem::bake::{bake_cell, bake_cells, bake_shard, cell_file_name, cell_rect, quantise, BakeParams};
 use obc_dem::container::CellRect;
+use obc_dem::crest::LiftMap;
 use obc_dem::geotiff::{DemMosaic, DemTile};
 use obc_dem::BboxUdeg;
 use obc_elevation::grid::{cell_base_sample, cell_of, lattice_coord, locate};
@@ -106,7 +107,7 @@ fn bake_plane_shard(raster_type: u16) -> Vec<u8> {
     let path = plane_source(raster_type).write(scratch.path(), "plane");
     mosaic.push(DemTile::open(&path).unwrap());
     let mut out = std::io::Cursor::new(Vec::new());
-    bake_shard(&mosaic, fixture_params(), &mut out, |_, _, _, _, _| {}).unwrap();
+    bake_shard(&mosaic, fixture_params(), None, &mut out, |_, _, _, _, _| {}).unwrap();
     out.into_inner()
 }
 
@@ -194,11 +195,82 @@ fn a_cell_is_the_same_bytes_alone_as_inside_a_shard() {
     assert_eq!(rect, CellRect { min_i: rect.min_i, min_j: rect.min_j, rows: 3, cols: 3 });
 
     for (slot, (ci, cj)) in rect.cells().enumerate() {
-        let alone = bake_cell(&mosaic, ci, cj, POSTING_LOG2, CELL_LOG2).expect("the plane covers every fixture cell");
+        let alone =
+            bake_cell(&mosaic, ci, cj, POSTING_LOG2, CELL_LOG2, None).expect("the plane covers every fixture cell");
         let offset = u32::from_le_bytes(shard[32 + slot * 4..36 + slot * 4].try_into().unwrap()) as usize;
         assert_ne!(offset, 0, "cell {ci}/{cj} should be present in the shard");
         assert_eq!(&shard[offset..offset + 512], &alone[..], "cell {ci}/{cj} differs between the two bakes");
     }
+}
+
+/// A 120 m cone one posting wide, standing on the node the fixture's first two cells share — the
+/// eastern seam of cell `(0, 0)`, half way up it. Everywhere else the reference **is** the plane, so
+/// §9's rule finds nothing there and only the cells around the seam can move.
+fn seam_cone() -> impl Fn(f64, f64) -> Option<f64> {
+    let (base_lat, base_lon) = base_sample_udeg();
+    let peak_lat = f64::from(base_lat) + 8.0 * 512.0;
+    let peak_lon = f64::from(base_lon) + SPAN as f64 * 512.0;
+    move |lat_deg: f64, lon_deg: f64| {
+        let (lat, lon) = (lat_deg * 1e6, lon_deg * 1e6);
+        let d = ((lat - peak_lat).powi(2) + (lon - peak_lon).powi(2)).sqrt() / 512.0;
+        Some(plane_metres(lat, lon) + (120.0 - 120.0 * d).max(0.0))
+    }
+}
+
+/// A reference is composed **per cell**, so all three ways to bake a cell must still produce one
+/// raster: inside a wide shard, as a file of its own, and through `bake_cell` over a lift map the
+/// caller built itself. The cone stands on a seam, which is where the two cells have to agree about
+/// a node neither of them owns alone.
+///
+/// It also pins the two size claims §9.2 makes: a reference costs no bytes, and a cell with
+/// coverage is the same length as one without.
+#[test]
+fn a_reference_composes_the_same_cell_bytes_in_all_three_bakes() {
+    let scratch = Scratch::new("reference-composition");
+    let path = plane_source(PIXEL_IS_POINT).write(scratch.path(), "plane");
+    let mut mosaic = DemMosaic::default();
+    mosaic.push(DemTile::open(&path).unwrap());
+    let cone = seam_cone();
+    let reference: &dyn Fn(f64, f64) -> Option<f64> = &cone;
+
+    let mut shard = std::io::Cursor::new(Vec::new());
+    bake_shard(&mosaic, fixture_params(), Some(reference), &mut shard, |_, _, _, _, _| {}).unwrap();
+    let shard = shard.into_inner();
+    let plain = bake_plane_shard(PIXEL_IS_POINT);
+    assert_eq!(shard.len(), plain.len(), "a reference costs no bytes");
+    assert_ne!(shard, plain, "a cone on the seam has to move some sample");
+
+    let published = Scratch::new("reference-cells");
+    bake_cells(&mosaic, fixture_params(), Some(reference), published.path(), |_, _, _, _, _| {}).unwrap();
+
+    // The same native sampler the baker composes the lift map over, rebuilt here from the public
+    // pieces — which is the whole claim of `bake_cell`'s `Option<&LiftMap>` argument.
+    let native = |lat: i32, lon: i32| match mosaic.height(f64::from(lat) / 1e6, f64::from(lon) / 1e6) {
+        Some(metres) => quantise(metres),
+        None => NODATA,
+    };
+
+    let rect = cell_rect(fixture_bbox(), POSTING_LOG2, CELL_LOG2).unwrap();
+    let mut moved = 0;
+    for (slot, (ci, cj)) in rect.cells().enumerate() {
+        let lift = LiftMap::bake(ci, cj, POSTING_LOG2, CELL_LOG2, native, reference);
+        let alone = bake_cell(&mosaic, ci, cj, POSTING_LOG2, CELL_LOG2, lift.as_ref())
+            .expect("the plane covers every fixture cell");
+        assert_eq!(alone.len(), 512, "a lifted cell is the same length as a plain one");
+
+        let in_shard = u32::from_le_bytes(shard[32 + slot * 4..36 + slot * 4].try_into().unwrap()) as usize;
+        assert_ne!(in_shard, 0, "cell {ci}/{cj} should be present in the shard");
+        let baked = &shard[in_shard..in_shard + 512];
+        assert_eq!(baked, &alone[..], "cell {ci}/{cj} differs between the shard and the lone bake");
+
+        let file = std::fs::read(published.path().join(cell_file_name(CELL_LOG2, ci, cj))).unwrap();
+        let in_file = u32::from_le_bytes(file[32..36].try_into().unwrap()) as usize;
+        assert_eq!(&file[in_file..in_file + 512], &alone[..], "cell {ci}/{cj} differs between its file and the bake");
+
+        // The plain shard has the same layout, so the same offset names the same square in it.
+        moved += i32::from(baked != &plain[in_shard..in_shard + 512]);
+    }
+    assert!(moved >= 2, "the cone sits on a seam, so both cells either side of it must carry a lift");
 }
 
 /// The seam rule from both sides: two adjacent cells baked **independently** hand the reader a
@@ -253,7 +325,7 @@ fn a_source_void_propagates_all_the_way_to_none() {
     mosaic.push(DemTile::open(&path).unwrap());
 
     let mut out = std::io::Cursor::new(Vec::new());
-    bake_shard(&mosaic, fixture_params(), &mut out, |_, _, _, _, _| {}).unwrap();
+    bake_shard(&mosaic, fixture_params(), None, &mut out, |_, _, _, _, _| {}).unwrap();
     let bytes = out.into_inner();
 
     // The nearest lattice point to the hole is voided — the stencil that produced it had a NaN
@@ -314,7 +386,8 @@ fn cells_with_no_data_at_all_are_absent_rather_than_written() {
         max_lon: base_lon,
     };
     let mut out = std::io::Cursor::new(Vec::new());
-    let report = bake_shard(&mosaic, BakeParams { bbox, ..fixture_params() }, &mut out, |_, _, _, _, _| {}).unwrap();
+    let report =
+        bake_shard(&mosaic, BakeParams { bbox, ..fixture_params() }, None, &mut out, |_, _, _, _, _| {}).unwrap();
     let bytes = out.into_inner();
 
     assert_eq!(report.cells_total, 16, "a 4 × 4 rectangle");
@@ -338,7 +411,7 @@ fn per_cell_files_are_one_by_one_containers_of_the_same_bytes() {
     let mut mosaic = DemMosaic::default();
     mosaic.push(DemTile::open(&path).unwrap());
 
-    let report = bake_cells(&mosaic, fixture_params(), scratch.path(), |_, _, _, _, _| {}).unwrap();
+    let report = bake_cells(&mosaic, fixture_params(), None, scratch.path(), |_, _, _, _, _| {}).unwrap();
     assert_eq!((report.cells_total, report.cells_written), (9, 9));
 
     let rect = cell_rect(fixture_bbox(), POSTING_LOG2, CELL_LOG2).unwrap();
@@ -368,7 +441,7 @@ fn a_lone_cell_clamps_at_its_own_coverage_edge() {
     let path = plane_source(PIXEL_IS_POINT).write(source.path(), "plane");
     let mut mosaic = DemMosaic::default();
     mosaic.push(DemTile::open(&path).unwrap());
-    bake_cells(&mosaic, fixture_params(), scratch.path(), |_, _, _, _, _| {}).unwrap();
+    bake_cells(&mosaic, fixture_params(), None, scratch.path(), |_, _, _, _, _| {}).unwrap();
 
     let rect = cell_rect(fixture_bbox(), POSTING_LOG2, CELL_LOG2).unwrap();
     let (ci, cj) = (rect.min_i, rect.min_j);

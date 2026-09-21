@@ -92,7 +92,7 @@ Thus, all consumers use the same elevation values.
 ## Peak View surface data
 
 The production terrain baker writes a geographic surface index for Peak View.
-Native heights remain unchanged and are stored once. Coarser height levels and conservative
+Heights are stored once and coarser levels select posts from them. Conservative
 maximum-height bounds let the renderer skip hidden terrain. Baked height and gradient error
 bounds also let it draw large smooth patches without visiting each small source cell.
 The extra coarse levels keep those patches' corner reads close together in storage.
@@ -153,9 +153,11 @@ elevation angles take priority where names would overlap; labels keep at least 1
 horizontal space. A chart name that does not fit above its summit is shortened with `..`. The selected peak's name
 appears in the ledger; a name wider than the ledger scrolls there.
 
-The vertical scale is chosen once per observer from the catalogue elevation angles. Shallow
-relief receives a vertical boost up to 2.4× over the base 1.25× scale; steep views keep the base scale. Missing height metadata
-keeps the ordinary scale. Terrain and labels share the projection, while bearings, elevations,
+The window is chosen once per observer from the catalogue elevation angles. Its bottom stays 12°
+below the horizon. Its top grows upward until the highest summit and its label fit, and the
+horizontal field grows with it at the chart's aspect, so one degree is the same number of pixels on
+both axes. Missing height metadata keeps the base window, and a summit below the observer never
+moves the bottom of the frame. Terrain and labels share the projection, while bearings, elevations,
 distances and visibility stay geographic. Turning changes neither the scale nor the horizon
 position. Lighting has a fixed northwest world direction, so turning does not change the shading.
 
@@ -165,19 +167,41 @@ view unavailable. Absent geographic cells are skipped without traversing their i
 
 At the standard posting and cell size, an indexed cell occupies 3,149,824 bytes instead of
 2,097,152 bytes. Terrain itself grows about 50.2%, so a terrain-heavy selection makes the
-complete map measurably larger.
+complete map measurably larger. Crest lifts add no bytes at all.
 
 The normal map bakery writes indexed terrain and named summit records directly. Re-bake all
 published terrain and geometry cells before publication. Catalog generation rejects mixed native
 and indexed terrain blocks. Standalone DEM baking produces native terrain; its surface conversion
-command adds the index without changing native heights.
+command adds the index and changes no height.
 
 The builder uses 57 m postings to 25 km, 114 m postings from 25 to 50 km, and 228 m postings
 from 50 to 100 km. Coarse levels use exact vertices from the
 native grid. A narrow summit can therefore lose apex height; its label anchor follows the same
 sampled surface. Smooth open terrain can merge into large patches. Rough mountain faces require more
 individual cells. Performance must therefore be checked at varied observer positions on the device.
-See [OBCT section 8](src:specs/OBCT_Spec.md) for the byte layout and complete-map size rule.
+See [OBCT section 8](src:specs/OBCT_Spec.md) for the byte layout.
+
+## Crest lifts
+
+A 57 m posting cannot hold a rock tower. At Engelberg the surface through Copernicus GLO-30
+runs 100 m below the summit of the Hahnen, and a panorama drawn from it loses the shape that
+makes the mountain recognisable.
+
+The bakery corrects this with a **crest lift**. Where a finer national elevation model says the
+ground inside a sample's own cell stands more than 10 m above our surface, **and** the ground
+there is convex, the baker raises that sample to the finer model's height. The convexity test is
+what keeps a steep flat face and a mountain pass unchanged: only a crest moves. The lift goes
+into the baked sample, so contours, ascent, the route profile, the altimeter and Peak View all
+read one surface.
+
+Copernicus stays the base model. A national model gives lifts only, because it measures bare
+ground and therefore sits below Copernicus over every forest and town.
+
+Coverage can stop at any sample, so a national model that stops at a border is not a problem.
+A cell with no finer coverage is identical to a cell baked without one.
+
+Each finer model keeps its own attribution, which must travel with the map. A change of finer
+model changes the baked heights, so it is a new terrain revision.
 
 ## One sampling truth
 
