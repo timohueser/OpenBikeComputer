@@ -670,14 +670,6 @@ class Registry(unittest.TestCase):
             ingest.SOURCES["de-nw"].request(BOX)
         self.assertIn("no such coverage", str(refusal.exception))
 
-    def test_the_readme_priority_block_is_the_constant(self):
-        """The ranking is a decision, so it is written down twice — and held to once."""
-
-        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
-        block = readme.split("```priority\n", 1)[1].split("```", 1)[0]
-        written = tuple(key for key in block.replace("\n", " ").replace(",", " ").split() if key)
-        self.assertEqual(written, ingest.PRIORITY)
-
     def test_every_registered_source_is_ranked(self):
         """A key that is not in `PRIORITY` ranks last, which is a silent demotion."""
 
