@@ -1,42 +1,28 @@
 //! Publishing a cell bake tree: cells and satellites first, catalog root last.
 //!
-//! The manifest is the only file a consumer reads before it knows what exists, so
-//! the publish order is the whole contract (`OBCC_Spec.md` §11): every object the
-//! manifest references must be fetchable *before* the manifest that references it
-//! becomes visible. Get that backwards and a rider's browser lists a region whose
-//! bytes are still uploading — a 404 in the middle of a 300 MB download, on a file
-//! the catalog swore was there.
+//! The manifest is the only file a consumer reads before it knows what exists, so the publish order
+//! is the whole contract: every object the manifest references must be fetchable before the
+//! manifest that references it becomes visible. Get that backwards and a rider's browser lists a
+//! region whose bytes are still uploading.
 //!
-//! So a publish is three phases, and the ordering is enforced structurally rather
-//! than by convention: [`plan`] returns the objects with the manifest last by
-//! construction, [`publish`] uploads everything but the manifest, **re-checks every
-//! uploaded object's size at the destination**, and only then replaces the manifest
-//! as one object. A failure anywhere before that last step leaves the previous
-//! manifest — and therefore the previous, complete catalog — exactly as it was.
+//! So a publish is three phases, enforced structurally rather than by convention: [`plan`] returns
+//! the objects with the manifest last by construction, [`publish`] uploads everything but the
+//! manifest, re-checks every uploaded object's size at the destination, and only then replaces the
+//! manifest as one object. A failure anywhere before that last step leaves the previous manifest,
+//! and therefore the previous complete catalog, exactly as it was.
 //!
-//! ## Where the bytes go
+//! [`ObjectStore`] has two implementations. [`DirStore`] copies into a local directory: it is the
+//! dry-run target, the test target, and a real one, since a tree published to a directory can be
+//! served by any static host — so no test in this crate needs a credential. [`RcloneStore`] shells
+//! out to `rclone`, which is the deliberate choice over an S3 SDK: the Rust S3 crates that avoid an
+//! async runtime pull either a C crypto stack or a second HTTP+XML+time dependency set, for a job
+//! that is "PUT about 120 objects, some of them gigabytes", while rclone already does multipart,
+//! retries, resume, checksum-skip and bandwidth limits. The cost is an external binary on the
+//! publishing box.
 //!
-//! [`ObjectStore`] has two implementations, and the split is deliberate:
-//!
-//! - [`DirStore`] copies into a local directory. It is the dry-run target, the test
-//!   target, and a real one — a tree published to a directory can be served by any
-//!   static host, and the tests exercise the identical ordering code the R2 publish
-//!   uses. **No test in this crate needs a credential.**
-//! - [`RcloneStore`] shells out to `rclone`, which is the deliberate choice over an
-//!   S3 SDK. The Rust S3 crates that avoid an async runtime pull either a C crypto
-//!   stack (`aws-lc-rs`) or a second HTTP+XML+time dependency set, for a job that is
-//!   "PUT ~120 objects, some of them gigabytes". rclone already does multipart,
-//!   retries, resume, checksum-skip and bandwidth limits — the properties that
-//!   matter when a full DACH publish is several hundred GB — and it keeps the
-//!   project's dependency graph untouched, which is the same reasoning that keeps
-//!   libGEOS the only native dependency in the packer. The cost is an external
-//!   binary on the publishing box; the bake box already needs 32 GB of RAM, so one
-//!   `apt install rclone` is not the constraint.
-//!
-//! Credentials never appear in a config file, in a log line, **or in argv**: the
-//! remote is defined by `RCLONE_CONFIG_*` variables in the child process's
-//! environment (see [`RcloneStore`]), so nothing secret is visible to `ps` and
-//! there is no connection-string parser to mis-split an `https://` endpoint.
+//! Credentials never appear in a config file, in a log line, or in argv: the remote is defined by
+//! `RCLONE_CONFIG_*` variables in the child process's environment, so nothing secret is visible to
+//! `ps` and there is no connection-string parser to mis-split an `https://` endpoint.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -45,17 +31,15 @@ use obc_pack::catalog::{CatalogOptions, DEFAULT_MANIFEST_NAME};
 
 use crate::util::human_bytes;
 
-/// Cache lifetime for the manifest. `OBCC_Spec.md` §11: at most 60 s, because a
-/// consumer cannot compensate for an over-cached manifest — a fresh bake stays
-/// invisible for as long as the cache says it is.
+/// Cache lifetime for the manifest: at most 60 s, because a consumer cannot compensate for an
+/// over-cached manifest — a fresh bake stays invisible for as long as the cache says it is.
 pub const MANIFEST_CACHE_CONTROL: &str = "public, max-age=60, must-revalidate";
-/// Mutable producer metadata is not referenced by a catalog root, but it keeps a
-/// short TTL so direct inspection never presents an old sidecar as current.
+/// Mutable producer metadata is not referenced by a catalog root, but it keeps a short TTL so
+/// direct inspection never presents an old sidecar as current.
 pub const MUTABLE_CACHE_CONTROL: &str = "public, max-age=3600, must-revalidate";
-/// Every root-referenced object carries its SHA-256 in the published key. Such a key
-/// is immutable: a later root points at a different key, while a browser still using
-/// the previous root can finish against the previous bytes without a mixed-generation
-/// digest failure.
+/// Every root-referenced object carries its SHA-256 in the published key. Such a key is immutable:
+/// a later root points at a different key, while a browser still using the previous root can finish
+/// against the previous bytes without a mixed-generation digest failure.
 pub const PINNED_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
 
 /// Object category, used to select its cache policy.
@@ -71,8 +55,8 @@ pub enum ObjectKind {
 /// One object to upload.
 #[derive(Debug, Clone)]
 pub struct PlannedObject {
-    /// Key relative to the publish root. Pinned content uses the immutable path
-    /// named by the catalog; `path` remains its stable local bake-tree source.
+    /// Key relative to the publish root. Pinned content uses the immutable path named by the
+    /// catalog; `path` remains its stable local bake-tree source.
     pub key: String,
     pub path: PathBuf,
     pub bytes: u64,
@@ -105,8 +89,8 @@ pub trait ObjectStore {
     fn describe(&self) -> String;
     /// Upload `object`. Implementations may skip an identical remote object.
     fn put(&self, object: &PlannedObject) -> Result<(), String>;
-    /// Size of the object at `key`, or `None` if it is not there. Used to prove
-    /// every artifact is fetchable *before* the manifest that references it lands.
+    /// Size of the object at `key`, or `None` if it is not there. Used to prove every artifact is
+    /// fetchable before the manifest that references it lands.
     fn head(&self, key: &str) -> Result<Option<u64>, String>;
 }
 
@@ -132,11 +116,9 @@ pub struct PublishReport {
 
 /// Walk the tree and list every object to publish, manifest last.
 ///
-/// The manifest is appended by this function rather than found in the tree, so
-/// "last" is a property of the plan's construction and not of a sort order someone
-/// could change. Dotfiles are skipped — the bake state files live beside the
-/// artifacts and are local bookkeeping, never published (`OBCC_Spec.md` §2 ignores
-/// them for the same reason).
+/// The manifest is appended by this function rather than found in the tree, so "last" is a property
+/// of the plan's construction and not of a sort order someone could change. Dotfiles are skipped:
+/// the bake state files live beside the artifacts and are local bookkeeping, never published.
 fn collect(
     tree: &Path,
     dir: &Path,
@@ -174,12 +156,10 @@ fn collect(
 
 /// Generate the catalog into a cell tree, then publish it.
 ///
-/// The catalog is a root plus digest-pinned satellites, so the satellites are objects like any other
-/// and land in phase 1, while the root — the only document that claims they exist
-/// with a given digest — is the single object swapped in last. [`plan`] already puts
-/// `catalog.json` last by construction, so the satellites' ordering needs no new
-/// mechanism, only that they are on disk before the plan is built. The generator
-/// writes them there.
+/// The catalog is a root plus digest-pinned satellites, so the satellites are objects like any
+/// other and land in phase 1, while the root — the only document that claims they exist with a
+/// given digest — is the single object swapped in last. [`plan`] already puts `catalog.json` last
+/// by construction, so the satellites need only be on disk before the plan is built.
 pub fn publish(
     tree: &Path,
     store: &dyn ObjectStore,
@@ -187,13 +167,12 @@ pub fn publish(
     publish_opts: PublishOptions,
 ) -> Result<PublishReport, String> {
     crate::planet::check_publishable_tree(tree)?;
-    // Publishing an existing tree is enough to pick up a new preview renderer:
-    // previews contain no cell data, so requiring a multi-hour rebake would only
-    // couple presentation to geometry by accident.
+    // Publishing an existing tree is enough to pick up a new preview renderer: previews contain no
+    // cell data, so requiring a multi-hour rebake would couple presentation to geometry by
+    // accident.
     let seed = obc_pack::catalog::generate(tree, opts)?;
-    // `obc-bake`'s supported production schema owns the canonical Teningen
-    // scene. Keep the lower-level library useful for synthetic/test catalogs;
-    // OBCC deliberately makes previews optional for those producers.
+    // The supported production schema owns the canonical Teningen scene. The lower-level library
+    // stays useful for synthetic and test catalogs, for which previews are optional.
     if seed.root.schema.id == "bikepacking" {
         crate::previews::generate(tree, &seed.root)?;
     }
@@ -312,13 +291,12 @@ fn duration(value: std::time::Duration) -> String {
 
 /// Every object of a generated cell catalog, root last.
 ///
-/// Deliberately a whole-tree walk: a cell tree's
-/// publishable set is `cells/`, `regions/`, `skins/`, `previews/` **and** `schema.json` — the last
-/// of which is not optional, because it is the document the generator reads the
-/// style-id assignment out of and the one a re-generation on another machine needs.
-/// Walking the tree means a future producer document cannot be forgotten here.
-/// Root-referenced cells, previews, and satellites are replaced in that walk by
-/// the digest-addressed keys returned by the generator.
+/// Deliberately a whole-tree walk: a cell tree's publishable set is `cells/`, `regions/`, `skins/`,
+/// `previews/` and `schema.json` — the last of which is not optional, because it is the document
+/// the generator reads the style-id assignment out of and the one a re-generation on another
+/// machine needs. Walking the tree means a future producer document cannot be forgotten here.
+/// Root-referenced cells, previews and satellites are replaced in that walk by the digest-addressed
+/// keys the generator returns.
 pub fn plan(tree: &Path, generated: &obc_pack::catalog::GeneratedCatalog) -> Result<Vec<PlannedObject>, String> {
     let mut objects = Vec::new();
     let skipped: BTreeSet<String> = generated
@@ -346,11 +324,10 @@ pub fn plan(tree: &Path, generated: &obc_pack::catalog::GeneratedCatalog) -> Res
         });
     }
     // The producer records: `schema.json` because the generator reads the style-id assignment out
-    // of it and a re-generation on another machine needs it, and `terrain.json` for exactly the
-    // same reason on the other revision track (`OBCC_Spec.md` §2, §13.1). Neither is root-pinned,
-    // so both keep their stable key and a revalidating cache policy. `LICENSE.txt` rides the same
-    // class: the store's provenance + licence statement (§3.1), stable-keyed because a person, not
-    // a pin, is its consumer — the generator wrote it into the tree just above.
+    // of it and a re-generation on another machine needs it, and `terrain.json` for the same reason
+    // on the other revision track. Neither is root-pinned, so both keep their stable key and a
+    // revalidating cache policy. `LICENSE.txt` rides the same class: the store's provenance and
+    // licence statement, stable-keyed because a person, not a pin, is its consumer.
     for name in ["schema.json", crate::terrain::TERRAIN_DOC, obc_pack::catalog::LICENSE_NAME] {
         let path = tree.join(name);
         if path.is_file() {
@@ -371,9 +348,9 @@ pub fn plan(tree: &Path, generated: &obc_pack::catalog::GeneratedCatalog) -> Res
     Ok(objects)
 }
 
-/// Refuse to upload bytes under a digest-addressed key when the local source was
-/// modified after catalog generation. Length alone is insufficient: an in-place
-/// rewrite can preserve it while changing the digest.
+/// Refuse to upload bytes under a digest-addressed key when the local source was modified after
+/// catalog generation. Length alone is insufficient: an in-place rewrite can preserve it while
+/// changing the digest.
 fn verify_generated_pin(path: &Path, expected_bytes: u64, expected_sha256: &str) -> Result<u64, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let bytes = file.metadata().map_err(|e| format!("{}: {e}", path.display()))?.len();
@@ -390,8 +367,8 @@ fn verify_generated_pin(path: &Path, expected_bytes: u64, expected_sha256: &str)
     Ok(bytes)
 }
 
-/// Publish into a local directory: the dry-run target, the test target, and a real
-/// one for any static host that serves a directory.
+/// Publish into a local directory: the dry-run target, the test target, and a real one for any
+/// static host that serves a directory.
 pub struct DirStore {
     root: PathBuf,
 }
@@ -416,12 +393,12 @@ impl ObjectStore for DirStore {
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
-        // Same temp-then-rename rule the manifest writer uses: a reader of this
-        // directory must never see a half-copied object under its real name.
+        // The same temp-then-rename rule the manifest writer uses: a reader of this directory must
+        // never see a half-copied object under its real name.
         let tmp = dest.with_extension("publish-tmp");
         if let Err(e) = std::fs::copy(&object.path, &tmp) {
-            // A partial copy must not be left behind under any name — the next
-            // publish would find a stray file where a served object belongs.
+            // A partial copy must not be left behind under any name — the next publish would find
+            // a stray file where a served object belongs.
             let _ = std::fs::remove_file(&tmp);
             return Err(format!("{} -> {}: {e}", object.path.display(), tmp.display()));
         }
@@ -438,17 +415,13 @@ impl ObjectStore for DirStore {
     }
 }
 
-/// Publish to S3-compatible object storage (Cloudflare R2) through `rclone`.
+/// Publish to S3-compatible object storage through `rclone`.
 ///
-/// The remote is defined entirely by `RCLONE_CONFIG_OBCR2_*` **environment
-/// variables on the child process** — an ephemeral remote named `obcr2` that
-/// exists only for that invocation. Nothing is written to disk, and nothing
-/// secret rides the argument list. Both halves matter, and this replaced a
-/// connection string that got neither right: argv is `ps`-visible to every
-/// process on the box, and rclone's connection-string parser splits on `:`, so
-/// an unquoted `endpoint=https://…` reached rclone as endpoint `https` — the
-/// first real publish failed on exactly that. Environment variables have no
-/// parser to appease and no process list to leak into.
+/// The remote is defined entirely by `RCLONE_CONFIG_OBCR2_*` environment variables on the child
+/// process — an ephemeral remote named `obcr2` that exists only for that invocation. Nothing is
+/// written to disk, and nothing secret rides the argument list. Both halves matter: argv is
+/// `ps`-visible to every process on the box, and rclone's connection-string parser splits on `:`,
+/// so an unquoted `endpoint=https://…` reaches rclone as endpoint `https`.
 ///
 /// ```text
 /// OBC_R2_ACCOUNT_ID       Cloudflare account id (builds the endpoint)
@@ -461,15 +434,14 @@ impl ObjectStore for DirStore {
 pub struct RcloneStore {
     bucket: String,
     prefix: String,
-    /// Not a credential (it names the account, not a key) — shown in `describe`.
+    /// Not a credential — it names the account, not a key — so `describe` shows it.
     endpoint: String,
-    /// The child's `RCLONE_CONFIG_OBCR2_*` remote definition. The secret lives
-    /// here and nowhere else.
+    /// The child's `RCLONE_CONFIG_OBCR2_*` remote definition. The secret lives here and nowhere
+    /// else.
     envs: Vec<(&'static str, String)>,
-    /// The binary to spawn — always plain `rclone`, resolved on `PATH`, in
-    /// production. It is a field only so the absent-vs-empty test can point it
-    /// at a stub that answers the way one real rclone does; nothing reads it
-    /// from the environment.
+    /// The binary to spawn — always plain `rclone`, resolved on `PATH`, in production. It is a
+    /// field only so the absent-vs-empty test can point it at a stub that answers the way one real
+    /// rclone does; nothing reads it from the environment.
     program: PathBuf,
 }
 
@@ -516,9 +488,9 @@ impl RcloneStore {
             .map_err(|e| format!("rclone: {e} — the publish step needs rclone on PATH (https://rclone.org/install/)"))
     }
 
-    /// Defensive backstop: the secret is not in argv, so rclone's output should
-    /// never contain it — but if a future rclone echoes its environment into an
-    /// error, it must not reach a log through us.
+    /// Defensive backstop: the secret is not in argv, so rclone's output should never contain it —
+    /// but if a future rclone echoes its environment into an error, it must not reach a log through
+    /// us.
     fn redact(&self, text: &str) -> String {
         let secret = self
             .envs
@@ -540,9 +512,9 @@ impl ObjectStore for RcloneStore {
     }
 
     fn put(&self, object: &PlannedObject) -> Result<(), String> {
-        // `copyto` with `--checksum` skips an object whose remote hash already
-        // matches. Digest-addressed keys make this especially cheap: an unchanged
-        // planet cell already exists at exactly its final immutable name.
+        // `copyto` with `--checksum` skips an object whose remote hash already matches.
+        // Digest-addressed keys make this especially cheap: an unchanged planet cell already exists
+        // at exactly its final immutable name.
         let args = vec![
             "copyto".to_string(),
             "--checksum".to_string(),
@@ -576,9 +548,9 @@ impl ObjectStore for RcloneStore {
     }
 }
 
-/// The `count`/`bytes` reading of one `rclone size --json` document, split out
-/// from [`RcloneStore::head`] so the absent-vs-empty distinction is testable
-/// against the exact bytes a real rclone printed, with no process to spawn.
+/// The `count`/`bytes` reading of one `rclone size --json` document, split out from
+/// [`RcloneStore::head`] so the absent-vs-empty distinction is testable against the exact bytes a
+/// real rclone printed, with no process to spawn.
 fn size_json_len(key: &str, stdout: &[u8]) -> Result<Option<u64>, String> {
     let json: serde_json::Value =
         serde_json::from_slice(stdout).map_err(|e| format!("{key}: rclone size --json: {e}"))?;
@@ -592,10 +564,8 @@ fn size_json_len(key: &str, stdout: &[u8]) -> Result<Option<u64>, String> {
     if count <= 0 {
         return Ok(None);
     }
-    // Present, so a length it cannot state is a real failure and not an absence —
-    // the conflation this function replaced, where an unreadable `bytes` returned
-    // the same `None` as "gone", and `None` here licenses nothing less than
-    // refusing the publish.
+    // Present, so a length it cannot state is a real failure and not an absence. `None` here
+    // licenses nothing less than refusing the publish.
     json.get("bytes")
         .and_then(serde_json::Value::as_i64)
         .and_then(|b| u64::try_from(b).ok())
@@ -607,8 +577,8 @@ fn size_json_len(key: &str, stdout: &[u8]) -> Result<Option<u64>, String> {
 mod tests {
     use super::*;
 
-    /// A store as `from_env` would build it, without touching the process
-    /// environment (env vars are process-global and the test runner is parallel).
+    /// A store as `from_env` would build it, without touching the process environment, which is
+    /// process-global while the test runner is parallel.
     fn r2_store(endpoint: &str, secret: &str) -> RcloneStore {
         RcloneStore {
             bucket: "obc-maps".into(),
@@ -698,10 +668,9 @@ mod tests {
 
     #[test]
     fn the_endpoint_rides_the_environment_whole() {
-        // The regression this store's shape exists to prevent: an `https://…`
-        // endpoint in a connection string is split at the colon by rclone's
-        // parser and arrives as endpoint `https`. As an environment value there
-        // is no parser — assert it is carried verbatim, scheme and all.
+        // An `https://…` endpoint in a connection string is split at the colon by rclone's parser
+        // and arrives as endpoint `https`. As an environment value there is no parser, so assert it
+        // is carried verbatim, scheme and all.
         let store = r2_store("https://acct.r2.cloudflarestorage.com", "hunter2");
         let endpoint = store.envs.iter().find(|(k, _)| *k == "RCLONE_CONFIG_OBCR2_ENDPOINT").map(|(_, v)| v.as_str());
         assert_eq!(endpoint, Some("https://acct.r2.cloudflarestorage.com"));
@@ -710,8 +679,8 @@ mod tests {
     #[test]
     fn no_credential_reaches_argv_or_a_log() {
         let store = r2_store("https://acct.r2.cloudflarestorage.com", "hunter2");
-        // The target — the only store-derived string that becomes an argument —
-        // names the ephemeral remote, never a credential.
+        // The target — the only store-derived string that becomes an argument — names the ephemeral
+        // remote, never a credential.
         assert_eq!(store.target("cells/fine/1204/1052.obcm"), "obcr2:obc-maps/cells/fine/1204/1052.obcm");
         // `describe` is printed by the CLI; it carries the bucket and endpoint,
         // and neither key.
@@ -738,8 +707,8 @@ mod tests {
             bytes: 0,
             kind: ObjectKind::Pinned,
         };
-        // §7: the manifest is short-lived. Mutable producer records also revalidate;
-        // root-referenced content is immutable and may be cached for a year.
+        // The manifest is short-lived. Mutable producer records also revalidate; root-referenced
+        // content is immutable and may be cached for a year.
         assert!(manifest.cache_control().contains("max-age=60"));
         assert!(manifest.cache_control().contains("must-revalidate"));
         assert_eq!(manifest.content_type(), "application/json");
@@ -757,24 +726,23 @@ mod tests {
     #[test]
     fn count_not_bytes_tells_an_absent_object_from_an_empty_one() {
         let key = "cells/fine/1204/1052.obcm";
-        // Observed from rclone v1.60.1 on a key that does not exist: exit 0, no stderr.
+        // Observed from rclone on a key that does not exist: exit 0, no stderr.
         assert_eq!(size_json_len(key, br#"{"count":0,"bytes":0,"sizeless":0}"#), Ok(None));
         assert_eq!(size_json_len(key, br#"{"count":1,"bytes":0,"sizeless":0}"#), Ok(Some(0)));
         assert_eq!(size_json_len(key, br#"{"count":1,"bytes":8321,"sizeless":0}"#), Ok(Some(8321)));
 
-        // An rclone that prints no `count` cannot answer the question, so it says
-        // so rather than guessing an absence — the guess is the bug.
+        // An rclone that prints no `count` cannot answer the question, so it says so rather than
+        // guessing an absence.
         let e = size_json_len(key, br#"{"bytes":0}"#).expect_err("no count is not an absence");
         assert!(e.contains("`count`"), "{e}");
         let e = size_json_len(key, b"").expect_err("empty stdout is not an absence");
         assert!(e.contains("rclone size --json"), "{e}");
     }
 
-    /// End to end through the real `head`, against a stub that answers the way
-    /// rclone v1.60.1 does for a missing key: silently, exit 0, `"count":0`. The
-    /// verify loop before the catalog swap is the only reader of this, and it must
-    /// see `None` — "not fetchable after upload" — rather than a phantom 0-byte
-    /// object.
+    /// End to end through the real `head`, against a stub that answers the way rclone does for a
+    /// missing key: silently, exit 0, `"count":0`. The verify loop before the catalog swap is the
+    /// only reader of this, and it must see `None` — not fetchable after upload — rather than a
+    /// phantom 0-byte object.
     #[cfg(unix)]
     #[test]
     fn a_missing_object_heads_as_absent_not_as_zero_bytes() {
@@ -804,8 +772,8 @@ mod tests {
 
         assert_eq!(store.head("cells/present.obcm").expect("head"), Some(8321));
         assert_eq!(store.head("cells/empty.obcm").expect("head empty"), Some(0));
-        // The regression: this used to come back `Some(0)`, so the publish failed
-        // with a length mismatch and the operator was told the wrong thing.
+        // Answering `Some(0)` here fails the publish with a length mismatch and tells the operator
+        // the wrong thing.
         assert_eq!(store.head("cells/never-uploaded.obcm").expect("head absent"), None);
 
         let _ = std::fs::remove_dir_all(&root);
