@@ -1,69 +1,47 @@
-//! `nav.rs` — build an in-memory **routable navigation graph** from the ingested
-//! `highway=*` ways (epic #116 R1 #463; epic #533 N1 #534). The graph is junction
-//! **nodes** joined by undirected **edges** whose polyline interiors carry no
-//! junctions; `serialize.rs`'s `serialize_nav_section` tiles and serializes it into
-//! the OBCM §8 nav-graph section. Nothing here touches the `.obcm` bytes.
+//! Build an in-memory routable navigation graph from the ingested `highway=*` ways: junction nodes
+//! joined by undirected edges whose polyline interiors carry no junctions. `serialize.rs` tiles and
+//! serializes it into the OBCM nav-graph section; nothing here touches the `.obcm` bytes.
 //!
-//! Today highways are render-only geometry with no topology: `ingest.rs` drops OSM
-//! node ids the moment it resolves coordinates. This pass keeps, **for routable ways
-//! only**, each way's node-id sequence so shared ids can be recovered as junctions.
-//! That shared-node join is the whole point — two ways that touch at an OSM node
-//! become adjacent in the graph.
+//! The render path drops OSM node ids the moment it resolves coordinates. This pass keeps, for
+//! routable ways only, each way's node-id sequence, so a node two ways share becomes a junction.
+//! That shared-node join is the whole point.
 //!
-//! The routable-class predicate ([`is_routable`]) and the [`classify`] way-kind are
-//! deliberately **independent of render styling** (a way can be drawn but not
-//! routable, or vice-versa) and **config-free**: the graph is always built with the
-//! same class set, so packing the same extract always yields the same graph. It is
-//! NOT coupled to the style config.
+//! The routable-class predicate ([`is_routable`]) and the [`classify`] way-kind are independent of
+//! render styling and config-free, so packing the same extract always yields the same graph.
+//! [`build_graph`] also classifies way kinds, drops bike-illegal ways, prunes tiny islands, and
+//! splits edges so the serialized `i16` neighbor deltas and `u16` costs hold by construction.
 //!
-//! Four graph-hygiene passes run in [`build_graph`] (epic N1), none of which change
-//! serialized bytes (N2 slims §8 to use them):
-//! 1. **Way-kind classification** — one packed `kind` byte per edge (below).
-//! 2. **Bike legality** — a stricter [`is_routable`] drops ways illegal for bikes.
-//! 3. **Island pruning** — tiny disconnected components are dropped so a rider can't
-//!    snap onto an unroutable islet.
-//! 4. **Edge splits** — edges are split so N2's `i16` neighbor-coord deltas and
-//!    `u16` costs hold *by construction*.
-//!
-//! Coordinates are µdeg `(lon, lat)` — the same grid POIs and the serializer's chunk
-//! coords live on — so edge lengths reuse `obc-reader`'s shared great-circle helper
-//! ([`ground_dist_m`]) and can't drift from the route format's own distances.
+//! Coordinates are µdeg `(lon, lat)` — the grid POIs and the serializer live on — so edge lengths
+//! reuse [`ground_dist_m`] and cannot drift from the route format's own distances.
 
 use std::collections::{HashMap, HashSet};
 
 use obc_elevation::{ElevationSource, ProfileIntegrator};
 use obc_map_scene::ground_dist_m;
 
-/// Dedup key for an edge: the unordered endpoint pair (canonicalized to `min <=
-/// max`), its geometry oriented to match, **and its way-kind**, so a way and its
-/// reverse-order or parallel duplicate hash equal while genuinely distinct parallel
-/// edges — including a cycleway drawn over a road (same geometry, different kind) —
-/// survive as separate edges.
+/// Dedup key for an edge: the unordered endpoint pair (canonicalized to `min <= max`), its geometry
+/// oriented to match, and its way-kind. A way and its reverse-order or parallel duplicate hash
+/// equal, while a cycleway drawn over a road survives as a separate edge.
 type EdgeKey = (u32, u32, Vec<(i32, i32)>, u8);
 
-/// Default island-pruning threshold: keep every connected component with at least
-/// this many edges (plus the single largest, always). `50` is the epic N1 decision
-/// (grimsel's giant is 5 024 nodes; its second-largest is 20). N2 makes it
-/// configurable via `routing.min_component_edges` — the packer threads the config
-/// value through [`build_graph_with`]; [`build_graph`] keeps this default for tests.
+/// Default island-pruning threshold: keep every connected component with at least this many edges,
+/// plus the single largest. The packer threads `routing.min_component_edges` through
+/// [`build_graph_with`] instead; this default is for tests.
 pub const DEFAULT_MIN_COMPONENT_EDGES: usize = 50;
 
-/// Maximum endpoint-to-endpoint lat **or** lon delta (µdeg) an edge may span before
-/// [`build_graph`] splits it. N2 stores each neighbor's coordinate as an `i16` µdeg
-/// delta from the record's own node, so both endpoints of every edge must sit within
-/// `i16` range of each other; `32 000` keeps a safety margin below `i16::MAX`
-/// (32 767). Measured max on grimsel: 90 130 µdeg on one pass road.
+/// Maximum endpoint-to-endpoint lat or lon delta (µdeg) an edge may span before [`build_graph`]
+/// splits it. Each neighbor's coordinate is stored as an `i16` µdeg delta from the record's own
+/// node, so both endpoints of every edge must sit within `i16` range of each other; `32 000` keeps a
+/// margin below `i16::MAX`.
 const MAX_ENDPOINT_DELTA_UDEG: i64 = 32_000;
 
-/// Maximum edge `length_m` before [`build_graph`] splits it. N2 stores each
-/// neighbor's cost as a `u16`; `60 000` keeps a margin below `u16::MAX` (65 535).
+/// Maximum edge `length_m` before [`build_graph`] splits it. A neighbor's cost is a `u16`, and
+/// `60 000` keeps a margin below `u16::MAX`.
 const MAX_EDGE_LEN_M: u32 = 60_000;
 
-/// Canonical highway-class names, indexed by the 5-bit class id (see the canonical table on
-/// [`classify`]). Used by [`format_summary`]'s kinds histogram **and** as the profile config's
-/// class keys (§8.6): a `routing.profiles[*].highway` map is keyed by these exact names, resolved
-/// via [`highway_class_index`]. The single source of truth for both the packed byte and the config
-/// vocabulary — mirrored into `OBCM_Spec.md` §8.6.
+/// Canonical highway-class names, indexed by the 5-bit class id. Also the profile config's class
+/// keys: a `routing.profiles[*].highway` map is keyed by these exact names, resolved via
+/// [`highway_class_index`]. One source of truth for the packed byte and the config vocabulary.
 pub const HIGHWAY_CLASS_NAMES: [&str; 14] = [
     "cycleway",      // 0
     "path",          // 1
@@ -81,32 +59,25 @@ pub const HIGHWAY_CLASS_NAMES: [&str; 14] = [
     "trunk_cycl",    // 13
 ];
 
-/// Canonical surface-class names, indexed by the 3-bit class id (see [`surface_class`]). The other
-/// half of the profile config's class vocabulary — a `routing.profiles[*].surface` map is keyed by
-/// these names, resolved via [`surface_class_index`].
+/// Canonical surface-class names, indexed by the 3-bit class id. The other half of the profile
+/// config's class vocabulary, resolved via [`surface_class_index`].
 pub const SURFACE_CLASS_NAMES: [&str; 8] =
     ["unknown", "paved", "compacted", "gravel", "dirt", "rough", "cobbles", "grass"];
 
-/// Resolve a highway-class name (one of [`HIGHWAY_CLASS_NAMES`]) to its 5-bit class id, or `None`
-/// for an unknown name. The config's profile parser uses this to key its per-class multipliers.
+/// Resolve a highway-class name to its 5-bit class id, or `None` for an unknown name. The config's
+/// profile parser uses this to key its per-class multipliers.
 pub fn highway_class_index(name: &str) -> Option<u8> {
     HIGHWAY_CLASS_NAMES.iter().position(|&n| n == name).map(|i| i as u8)
 }
 
-/// Resolve a surface-class name (one of [`SURFACE_CLASS_NAMES`]) to its 3-bit class id, or `None`.
+/// Resolve a surface-class name to its 3-bit class id, or `None`.
 pub fn surface_class_index(name: &str) -> Option<u8> {
     SURFACE_CLASS_NAMES.iter().position(|&n| n == name).map(|i| i as u8)
 }
 
-/// Map an OSM `highway=*` value to its **highway class** (5-bit, 0..=12). Returns
-/// `None` for a value that carries no class (incl. `motorway`/`motorway_link`, which
-/// are always bike-illegal) — and for `trunk`/`trunk_link`, which [`classify`]
+/// Map an OSM `highway=*` value to its highway class (5-bit). `None` for a value that carries no
+/// class, including `motorway`, which is always bike-illegal, and `trunk`, which [`classify`]
 /// handles separately (class 13, only with `bicycle=yes`).
-///
-/// This is half of the **canonical way-kind table** (locked, epic N1 — the other
-/// half is [`surface_class`]); it is mirrored into `OBCM_Spec.md` §8.6 by N2 and
-/// referenced by profile configs, exactly like the POI subtype table §7.4. Keep it
-/// in ONE place.
 fn highway_class(highway: &str) -> Option<u8> {
     Some(match highway {
         "cycleway" | "cycleway_link" => 0,
@@ -122,15 +93,12 @@ fn highway_class(highway: &str) -> Option<u8> {
         "tertiary" | "tertiary_link" => 10,
         "secondary" | "secondary_link" => 11,
         "primary" | "primary_link" => 12,
-        // `trunk`/`trunk_link` are class 13 but only with `bicycle=yes` — see
-        // `classify`. `motorway`/`motorway_link` and anything else: no class.
+        // `trunk`/`trunk_link` are class 13, but only with `bicycle=yes` — see `classify`.
         _ => return None,
     })
 }
 
-/// Map an OSM `surface=*` value to its **surface class** (3-bit, 0..=7). Absent or
-/// unrecognized ⇒ `0` (unknown). The other half of the canonical way-kind table
-/// (see [`highway_class`]).
+/// Map an OSM `surface=*` value to its surface class (3-bit). Absent or unrecognized gives `0`.
 fn surface_class(surface: Option<&str>) -> u8 {
     match surface {
         Some("paved" | "asphalt" | "concrete" | "paving_stones" | "concrete:plates" | "concrete:lanes") => 1,
@@ -144,55 +112,16 @@ fn surface_class(surface: Option<&str>) -> u8 {
     }
 }
 
-/// Classify a way into its packed **way-kind** byte, or `None` if the way is not
-/// routable (its `highway` maps to no class, or it is bike-illegal — see
-/// [`is_routable`], which is defined as `classify(...).is_some()`).
+/// Classify a way into its packed way-kind byte, or `None` if the way is not routable.
 ///
-/// The byte is `kind = (surface_class << 5) | highway_class`. The two class tables
-/// are **canonical** (locked, epic N1): [`highway_class`] (5 bits) and
-/// [`surface_class`] (3 bits). The device never sees raw tags — N3's profiles weight
-/// edges purely off this byte.
+/// The byte is `kind = (surface_class << 5) | highway_class`, from the canonical [`highway_class`]
+/// and [`surface_class`] tables that `OBCM_Spec.md` mirrors. The device never sees raw tags: a
+/// routing profile weights edges purely off this byte.
 ///
-/// # Highway class (5 bits, 0..=31; 0..=13 assigned, rest reserved)
-///
-/// | id | class | OSM `highway=` |
-/// |----|-------|----------------|
-/// | 0  | cycleway | `cycleway`, `cycleway_link` |
-/// | 1  | path | `path`, `path_link` |
-/// | 2  | track | `track` |
-/// | 3  | footway | `footway`, `pedestrian`, `footway_link` |
-/// | 4  | steps | `steps` |
-/// | 5  | bridleway | `bridleway`, `bridleway_link` |
-/// | 6  | living_street | `living_street`, `living_street_link` |
-/// | 7  | residential | `residential` |
-/// | 8  | service | `service`, `service_link` |
-/// | 9  | unclassified | `unclassified`, `road` |
-/// | 10 | tertiary | `tertiary`, `tertiary_link` |
-/// | 11 | secondary | `secondary`, `secondary_link` |
-/// | 12 | primary | `primary`, `primary_link` |
-/// | 13 | trunk_cycl | `trunk`/`trunk_link` **only when** `bicycle=yes` |
-///
-/// # Surface class (3 bits)
-///
-/// | id | class | OSM `surface=` |
-/// |----|-------|----------------|
-/// | 0  | unknown | absent / unrecognized |
-/// | 1  | paved | `paved`, `asphalt`, `concrete`, `paving_stones`, `concrete:plates`, `concrete:lanes` |
-/// | 2  | compacted | `compacted`, `fine_gravel` |
-/// | 3  | gravel | `gravel`, `pebblestone`, `unpaved` |
-/// | 4  | dirt | `ground`, `dirt`, `earth` |
-/// | 5  | rough | `sand`, `mud` |
-/// | 6  | cobbles | `cobblestone`, `sett`, `unhewn_cobblestone` |
-/// | 7  | grass | `grass`, `grass_paver` |
-///
-/// # Bike legality (locked)
-///
-/// A way is **not** routable (returns `None`) when any hard-exclude applies:
-/// `highway=motorway|motorway_link`; `highway=trunk|trunk_link` **unless**
-/// `bicycle=yes`; `motorroad=yes`; `bicycle=no|use_sidepath`; `access=no|private`.
-/// Everything else — including `footway`/`steps` (legal to *walk* a bike) — is kept;
-/// preference (not legality) is the router's job (N3). `bicycle=dismount` stays
-/// routable with its normal kind.
+/// A way is not routable when any hard-exclude applies: `highway=motorway|motorway_link`;
+/// `highway=trunk|trunk_link` unless `bicycle=yes`; `motorroad=yes`; `bicycle=no|use_sidepath`;
+/// `access=no|private`. Everything else is kept, including `footway` and `steps`, which are legal to
+/// walk a bike along, and `bicycle=dismount`. Preference rather than legality is the router's job.
 pub fn classify<'a, I>(tags: I) -> Option<u8>
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
@@ -226,8 +155,7 @@ where
 
     let highway = highway?;
     let hclass = match highway {
-        // `trunk` is legal for bikes only when explicitly allowed; then it is its own
-        // class (13). Without `bicycle=yes` it is excluded (like `motorway`).
+        // `trunk` is legal for bikes only when explicitly allowed, and is then its own class.
         "trunk" | "trunk_link" => {
             if bicycle == Some("yes") {
                 13
@@ -240,10 +168,8 @@ where
     Some((surface_class(surface) << 5) | hclass)
 }
 
-/// Whether a way is routable for a bike: exactly `classify(tags).is_some()`. Kept as
-/// a named predicate because that is how `ingest.rs` reads it (routability first,
-/// then the kind), and to make the "independent of render styling, config-free"
-/// contract explicit at the call site.
+/// Whether a way is routable for a bike: exactly `classify(tags).is_some()`. A named predicate
+/// because that is how the ingest reads it — routability first, then the kind.
 pub fn is_routable<'a, I>(tags: I) -> bool
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
@@ -251,11 +177,9 @@ where
     classify(tags).is_some()
 }
 
-/// One routable way handed to the graph builder: the OSM node-id sequence, the
-/// matching µdeg `(lon, lat)` coordinates (in way order, parallel to `node_ids`),
-/// and the way's packed [`classify`] `kind`. Kept only for routable ways — the
-/// caller filters via [`is_routable`]/[`classify`] before pushing, so `kind` is
-/// always a real class here.
+/// One routable way handed to the graph builder: the OSM node-id sequence, the matching µdeg
+/// `(lon, lat)` coordinates in way order, and the way's packed [`classify`] `kind`. The caller
+/// filters before pushing, so `kind` is always a real class here.
 #[derive(Debug, Clone)]
 pub struct RoutableWay {
     pub node_ids: Vec<i64>,
@@ -263,22 +187,19 @@ pub struct RoutableWay {
     pub kind: u8,
 }
 
-/// A junction node in the graph: a dense pack-local id (NOT the OSM id — stable only
-/// within one pack run) and its µdeg `(lon, lat)` coordinate. Synthetic degree-2
-/// nodes inserted by the edge-split pass get ids past the real ones, same as the
-/// serializer's long-edge split.
+/// A junction node: a dense pack-local id (not the OSM id, and stable only within one pack run) and
+/// its µdeg `(lon, lat)` coordinate. Synthetic degree-2 nodes from the edge-split pass get ids past
+/// the real ones.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node {
     pub id: u32,
     pub coord: (i32, i32),
 }
 
-/// An undirected edge between two junction nodes. `polyline` is the full geometry
-/// from `a` to `b` **inclusive of both endpoints**, so `polyline.first()` is `a`'s
-/// coord and `polyline.last()` is `b`'s. `length_m` is the summed great-circle length
-/// over that polyline. `kind` is the parent way's [`classify`] byte — every
-/// junction-split and edge-split piece inherits it. `oneway` is deliberately ignored
-/// in v1 (bikes ride both ways).
+/// An undirected edge between two junction nodes. `polyline` runs from `a` to `b` inclusive of both
+/// endpoints, and `length_m` is its summed great-circle length. `kind` is the parent way's
+/// [`classify`] byte, which every split piece inherits. `oneway` is deliberately ignored: bikes ride
+/// both ways.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Edge {
     pub a: u32,
@@ -288,9 +209,8 @@ pub struct Edge {
     pub kind: u8,
 }
 
-/// The assembled routable graph. Adjacency is derivable from `edges` (each edge
-/// contributes both directions); the serializer builds the tiled neighbor lists from
-/// these.
+/// The assembled routable graph. Adjacency is derivable from `edges`, since each contributes both
+/// directions.
 #[derive(Debug, Default)]
 pub struct NavGraph {
     pub nodes: Vec<Node>,
@@ -298,13 +218,12 @@ pub struct NavGraph {
 }
 
 /// Build-time statistics returned alongside the graph, for the pack-log summary
-/// ([`format_summary`]). The island-pruning counts are the whole point of the pass:
-/// a component count near 60 with only a couple kept is the healthy grimsel shape.
+/// ([`format_summary`]).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct NavStats {
     /// Connected components found before pruning.
     pub components_found: usize,
-    /// Components kept (largest + those with ≥ threshold edges).
+    /// Components kept: the largest, plus those at or over the threshold.
     pub components_kept: usize,
     /// Edges dropped with the pruned islands.
     pub edges_dropped: usize,
@@ -317,12 +236,8 @@ impl NavGraph {
     }
 }
 
-/// Great-circle length of a polyline (µdeg points) in meters, rounded to the nearest
-/// integer, saturating into `u32`. Reuses the shared per-segment helper so edge
-/// lengths match the metric the route format and renderer already use; the sum
-/// accumulates in `f64` so a long edge doesn't lose precision to `f32`. Crate-visible:
-/// the serializer re-measures the pieces of a split edge (§8.4), and the graph-level
-/// split below re-measures its pieces too.
+/// Great-circle length of a polyline (µdeg points) in metres, rounded and saturating into `u32`. The
+/// sum accumulates in `f64`, so a long edge does not lose precision to `f32`.
 pub(crate) fn polyline_len_m(pts: &[(i32, i32)]) -> u32 {
     let mut acc = 0.0f64;
     for w in pts.windows(2) {
@@ -331,40 +246,28 @@ pub(crate) fn polyline_len_m(pts: &[(i32, i32)]) -> u32 {
     acc.round().clamp(0.0, u32::MAX as f64) as u32
 }
 
-/// Build the routable graph from the routable ways. Returns the graph plus
-/// build-time [`NavStats`] for the pack-log summary.
+/// Build the routable graph from the routable ways, plus build-time [`NavStats`].
 ///
-/// **Junction detection.** A node is a junction if it is touched by ≥2 routable ways
-/// OR it is a routable way's first/last node (endpoints are always junctions).
-/// Touch-count is by occurrence across all routable ways, so a closed way (first ==
-/// last, e.g. a roundabout) naturally makes that node a junction — intended.
+/// A node is a junction if two or more routable ways touch it, or it is a way's first or last node.
+/// Touch-count is by occurrence across all routable ways, so a closed way such as a roundabout makes
+/// its own node a junction. Each way is then split at every junction it passes through, so edge
+/// interiors hold only non-junction nodes, and each junction gets a dense `u32` id in
+/// first-appearance order. Edges with the same unordered `(a, b)`, identical geometry and the same
+/// [`Edge::kind`] collapse to one; keying on kind keeps a cycleway drawn over a road distinct.
 ///
-/// **Edge split + dedup.** Each way is split at every junction it passes through, so
-/// edge interiors hold only non-junction nodes. Each distinct junction node gets a
-/// dense `u32` id (assignment order = first appearance, stable within the run). Edges
-/// with the same unordered `(a, b)`, identical geometry, AND the same [`Edge::kind`]
-/// (parallel/duplicate OSM ways, or a way retraced by a relation) collapse to one
-/// edge; keying on kind keeps a cycleway drawn over a road distinct from the road.
-///
-/// **Island pruning.** Connected components are computed (union-find over edge
-/// endpoints); the largest component plus every component with ≥
-/// [`DEFAULT_MIN_COMPONENT_EDGES`] edges are kept and the rest dropped, so a rider
-/// can't snap onto an unroutable islet.
-///
-/// **Edge splits for the v9 guarantees.** Any surviving edge whose endpoint-to-
-/// endpoint lat/lon delta exceeds [`MAX_ENDPOINT_DELTA_UDEG`] or whose `length_m`
-/// exceeds [`MAX_EDGE_LEN_M`] is split at a polyline vertex into pieces joined by
-/// synthetic degree-2 nodes (each piece's cost re-measured, so costs sum to the
-/// original) — the same machinery the serializer's long-edge split uses (§8.4), one
-/// level up in the pipeline so N2's slimmed records are valid by construction.
+/// Island pruning keeps the largest component plus every component with at least
+/// [`DEFAULT_MIN_COMPONENT_EDGES`] edges, so a rider cannot snap onto an unroutable islet. Finally
+/// any edge over [`MAX_ENDPOINT_DELTA_UDEG`] or [`MAX_EDGE_LEN_M`] is split at a polyline vertex
+/// into pieces joined by synthetic degree-2 nodes, each piece's cost re-measured, so the serialized
+/// records are valid by construction.
 pub fn build_graph(ways: &[RoutableWay]) -> (NavGraph, NavStats) {
     build_graph_with(ways, DEFAULT_MIN_COMPONENT_EDGES)
 }
 
-/// [`build_graph`] with the island-pruning threshold supplied by the caller — the packer wires
-/// `routing.min_component_edges` here (N2); [`build_graph`] passes [`DEFAULT_MIN_COMPONENT_EDGES`].
+/// [`build_graph`] with the island-pruning threshold supplied by the caller; the packer wires
+/// `routing.min_component_edges` here.
 pub fn build_graph_with(ways: &[RoutableWay], min_component_edges: usize) -> (NavGraph, NavStats) {
-    // --- Pass A: touch-count every node across routable ways. ---
+    // Pass A: touch-count every node across the routable ways.
     let mut touch: HashMap<i64, u32> = HashMap::new();
     for w in ways {
         for &nid in &w.node_ids {
@@ -372,8 +275,7 @@ pub fn build_graph_with(ways: &[RoutableWay], min_component_edges: usize) -> (Na
         }
     }
 
-    // Whether an OSM node id is a junction: touched ≥2 times, or (handled per-way
-    // below) a way endpoint.
+    // A junction: touched twice or more, or (handled per way below) a way endpoint.
     let is_junction = |nid: i64, is_endpoint: bool| is_endpoint || touch.get(&nid).copied().unwrap_or(0) >= 2;
 
     // Dense id assignment for junction OSM nodes, in first-seen order.
@@ -387,7 +289,7 @@ pub fn build_graph_with(ways: &[RoutableWay], min_component_edges: usize) -> (Na
         })
     };
 
-    // --- Pass B: split each way at its junctions into edges. ---
+    // Pass B: split each way at its junctions into edges.
     let mut seen: HashSet<EdgeKey> = HashSet::new();
     let mut edges: Vec<Edge> = Vec::new();
     for w in ways {
@@ -406,10 +308,10 @@ pub fn build_graph_with(ways: &[RoutableWay], min_component_edges: usize) -> (Na
         }
     }
 
-    // --- Pass C: island pruning. ---
+    // Pass C: island pruning.
     let (nodes, edges, stats) = prune_islands(nodes, edges, min_component_edges, None);
 
-    // --- Pass D: split edges to hold N2's i16-delta / u16-cost guarantees. ---
+    // Pass D: split edges so the serialized i16 deltas and u16 costs hold.
     let mut nodes = nodes;
     let mut split: Vec<Edge> = Vec::with_capacity(edges.len());
     for e in edges {
@@ -419,16 +321,12 @@ pub fn build_graph_with(ways: &[RoutableWay], min_component_edges: usize) -> (Na
     (NavGraph { nodes, edges: split }, stats)
 }
 
-// --- the cell cutter's graph (OBCA §3.4/§3.5) --------------------------------------------------
-
-/// A junction's identity inside **one cell**.
+/// A junction's identity inside one cell.
 ///
-/// A whole-extract pack identifies junctions by OSM node id and nothing else. A cell cannot: the
-/// junctions that carry a seam are minted *at the cell edge*, have no OSM id, and must come out
-/// identical in both neighbours — so they are identified by their **coordinate**, which both
-/// neighbours compute with the same integer formula ([`crate::grid::segment_crossing`]). Two ways
-/// leaving the cell at the same point therefore share one boundary junction, exactly as they would
-/// share a real crossroads.
+/// A whole-extract pack identifies junctions by OSM node id. A cell cannot: the junctions that carry
+/// a seam are minted at the cell edge, have no OSM id, and must come out identical in both
+/// neighbours, so they are identified by their coordinate, which both neighbours compute with the
+/// same integer formula ([`crate::grid::segment_crossing`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum JunctionKey {
     /// A real OSM node.
@@ -438,10 +336,8 @@ pub enum JunctionKey {
 }
 
 /// One routable way as a single cell sees it: the run of its polyline that this cell owns, with a
-/// junction key per vertex (parallel to `coords`) and the parent way's `kind`.
-///
-/// The caller ([`crate::cut`]) is responsible for the cutting itself — inserting the boundary
-/// vertices and slicing the way at cell edges — because that is grid work, not graph work.
+/// junction key per vertex (parallel to `coords`) and the parent way's `kind`. The cutting itself is
+/// [`crate::cut`]'s job, because it is grid work, not graph work.
 #[derive(Clone, Debug)]
 pub struct CutRun {
     pub keys: Vec<JunctionKey>,
@@ -450,23 +346,15 @@ pub struct CutRun {
     pub kind: u8,
 }
 
-/// Build a **cell's** routable graph from the runs the cutter carved out of the source ways.
+/// Build a cell's routable graph from the runs the cutter carved out of the source ways.
 ///
-/// Same machinery as [`build_graph_with`] — junction split, dedup, prune, then the v9-bound edge
-/// splits — with the two rules that make a cell's graph assemble correctly (OBCA §3.4/§3.5):
-///
-/// - **`is_junction` is supplied by the caller**, because junction-ness must be classified from the
-///   *source snapshot's* whole way set (plus every vertex on a cell-edge line), never from the ways
-///   that happen to survive inside this cell. A run's first and last vertices are always junctions:
-///   a run ends only where the way leaves the cell (a boundary junction) or where the way itself
-///   ends.
-/// - **`on_boundary` protects components that touch the cell edge from pruning**, so a good road
-///   whose continuation is in the neighbour is never dropped as an island. The real pruning pass
-///   runs at assembly time, over the merged graph, where component sizes are finally true.
-///
-/// Interior synthetic nodes still appear (the split pass mints them, and so does the serializer's
-/// §8.4 split); they are *never* load-bearing at a seam, and nothing here assumes they coincide with
-/// anything in the neighbour.
+/// Same machinery as [`build_graph_with`] — junction split, dedup, prune, then the bounded edge
+/// splits — with two rules that make a cell's graph assemble correctly. `is_junction` is supplied by
+/// the caller, because junction-ness must be classified from the source snapshot's whole way set,
+/// never from the ways that happen to survive inside this cell; a run's first and last vertices are
+/// always junctions. `on_boundary` protects components that touch the cell edge from pruning, so a
+/// good road whose continuation is in the neighbour is never dropped as an island — the real pruning
+/// runs at assembly time, where component sizes are finally true.
 pub fn build_graph_cut(
     runs: &[CutRun],
     min_component_edges: usize,
@@ -511,13 +399,12 @@ pub fn build_graph_cut(
     (NavGraph { nodes, edges: split }, stats)
 }
 
-/// Split out one edge `keys/coords[start..=end]` and push it (deduped). `start`/`end` are
-/// both junctions; the interior nodes between them are not. The edge inherits the
-/// parent way's `kind`.
+/// Split out one edge `keys/coords[start..=end]` and push it, deduped. `start` and `end` are both
+/// junctions; the interior nodes between them are not. The edge inherits the parent way's `kind`.
 ///
-/// Generic over the junction-identity type so the whole-extract build (OSM node ids) and the cell
-/// cutter ([`build_graph_cut`], whose boundary junctions are identified by *coordinate*) share one
-/// dedup + interning path instead of two that can drift.
+/// Generic over the junction-identity type, so the whole-extract build (OSM node ids) and the cell
+/// cutter ([`build_graph_cut`], whose boundary junctions are identified by coordinate) share one
+/// dedup and interning path instead of two that can drift.
 #[allow(clippy::too_many_arguments)]
 fn emit_edge<K: Copy>(
     keys: &[K],
@@ -533,9 +420,9 @@ fn emit_edge<K: Copy>(
     let b = intern(keys[end], coords[end]);
     let polyline: Vec<(i32, i32)> = coords[start..=end].to_vec();
 
-    // Canonicalize for dedup: orient the key by (min,max) endpoint id, reversing the
-    // geometry to match, so a way and its reverse-order duplicate hash equal. Kind is
-    // part of the key so a same-geometry way of a different class is NOT collapsed.
+    // Canonicalize for dedup: orient the key by (min, max) endpoint id, reversing the geometry to
+    // match, so a way and its reverse-order duplicate hash equal. Kind is part of the key, so a
+    // same-geometry way of a different class is not collapsed.
     let (ka, kb, kgeom) = if a <= b {
         (a, b, polyline.clone())
     } else {
@@ -582,18 +469,14 @@ impl UnionFind {
     }
 }
 
-/// Drop tiny disconnected components. Union-find over edge endpoints groups nodes
-/// into components; the **largest** (by node count) plus every component with ≥
-/// `min_component_edges` edges are kept, the rest dropped. Surviving nodes are
-/// re-densified (ids reassigned in original order — an all-kept graph is an
-/// identity remap, so the untouched-topology tests still see id 0 first) and edges
-/// re-pointed at the new ids. Returns the pruned graph plus the [`NavStats`] the log
-/// summary reports (components found / kept / edges dropped).
+/// Drop tiny disconnected components. Union-find over edge endpoints groups nodes into components;
+/// the largest by node count, plus every component with at least `min_component_edges` edges, are
+/// kept. Surviving nodes are re-densified in original order (an all-kept graph is an identity remap)
+/// and edges re-pointed at the new ids.
 ///
-/// `protected`, when given, names coordinates whose component MUST survive whatever its size. It is
-/// how a **cell** bake honours OBCA §3.5: a hard cut at a cell edge leaves fragments that are only
-/// small because their continuation lives in the neighbour, so a cell may prune only components
-/// **strictly interior** to it. Nothing an assembler does can recover bytes a bake never wrote.
+/// `protected`, when given, names coordinates whose component must survive whatever its size. A hard
+/// cut at a cell edge leaves fragments that are only small because their continuation lives in the
+/// neighbour, so a cell may prune only components strictly interior to it.
 fn prune_islands(
     nodes: Vec<Node>,
     edges: Vec<Edge>,
@@ -608,7 +491,7 @@ fn prune_islands(
     for e in &edges {
         uf.union(e.a, e.b);
     }
-    // Resolve each node's / edge's component root once (find needs &mut).
+    // Resolve each node's and edge's component root once (find needs &mut).
     let node_root: Vec<u32> = (0..nodes.len() as u32).map(|i| uf.find(i)).collect();
     let edge_root: Vec<u32> = edges.iter().map(|e| uf.find(e.a)).collect();
 
@@ -622,16 +505,16 @@ fn prune_islands(
     }
     let components_found = node_count.len();
 
-    // Largest by node count; ties broken by edge count, then smallest root id — fully
-    // deterministic regardless of HashMap iteration order.
+    // Largest by node count, ties by edge count then smallest root id, so the choice never depends
+    // on HashMap iteration order.
     let largest = node_count
         .keys()
         .copied()
         .max_by_key(|r| (node_count[r], edge_count.get(r).copied().unwrap_or(0), std::cmp::Reverse(*r)))
         .expect("nonempty graph has ≥1 component");
 
-    // Components holding a protected coordinate (a cell-boundary node — OBCA §3.5) survive
-    // regardless of size; resolved once, up front, so the keep test stays a set lookup.
+    // A component holding a protected coordinate survives regardless of size; resolved up front, so
+    // the keep test stays a set lookup.
     let protected_roots: HashSet<u32> = match protected {
         None => HashSet::new(),
         Some(is_protected) => {
@@ -675,7 +558,7 @@ fn prune_islands(
     (new_nodes, new_edges, NavStats { components_found, components_kept, edges_dropped })
 }
 
-/// Whether an edge exceeds either v9 bound: endpoint-to-endpoint lat/lon delta over
+/// Whether an edge exceeds either bound: endpoint-to-endpoint lat/lon delta over
 /// [`MAX_ENDPOINT_DELTA_UDEG`], or `length_m` over [`MAX_EDGE_LEN_M`].
 fn edge_exceeds_bounds(polyline: &[(i32, i32)], length_m: u32) -> bool {
     let a = polyline[0];
@@ -685,10 +568,9 @@ fn edge_exceeds_bounds(polyline: &[(i32, i32)], length_m: u32) -> bool {
         || length_m > MAX_EDGE_LEN_M
 }
 
-/// The interior vertex (index in `1..len-1`) whose cumulative great-circle length is
-/// nearest half the polyline's total — the "nearest the midpoint" split point,
-/// balancing the two pieces' costs. Always strictly interior, so both pieces have ≥2
-/// points and strictly fewer than the parent (guaranteeing termination).
+/// The interior vertex whose cumulative great-circle length is nearest half the polyline's total,
+/// which balances the two pieces' costs. Always strictly interior, so both pieces have at least two
+/// points and strictly fewer than the parent, which guarantees termination.
 fn midpoint_index(polyline: &[(i32, i32)]) -> usize {
     let mut cum = vec![0.0f64; polyline.len()];
     for i in 1..polyline.len() {
@@ -697,7 +579,6 @@ fn midpoint_index(polyline: &[(i32, i32)]) -> usize {
     let half = cum[polyline.len() - 1] / 2.0;
     let mut best = 1usize;
     let mut best_d = f64::MAX;
-    // Interior vertices only (1..len-1), so both pieces keep ≥ 2 points.
     for (i, &c) in cum.iter().enumerate().take(polyline.len() - 1).skip(1) {
         let d = (c - half).abs();
         if d < best_d {
@@ -708,16 +589,12 @@ fn midpoint_index(polyline: &[(i32, i32)]) -> usize {
     best
 }
 
-/// Split one edge until every piece holds the v9 bounds, pushing the pieces onto
-/// `out`. Each split cuts at the vertex nearest the midpoint ([`midpoint_index`]) and
-/// inserts a synthetic degree-2 junction there (a new dense id past the real ones),
-/// mirroring the serializer's long-edge split (§8.4); each piece's cost is
-/// re-measured so the pieces' costs sum to the original within rounding.
+/// Split one edge until every piece holds the bounds, pushing the pieces onto `out`. Each split cuts
+/// at [`midpoint_index`] and inserts a synthetic degree-2 junction there, and each piece's cost is
+/// re-measured, so the pieces sum to the original within rounding.
 ///
-/// A 2-point edge that still violates a bound (a single OSM segment longer than the
-/// bound with no shape node — vanishingly rare, but must be handled to keep the
-/// guarantee "by construction") gets one interpolated midpoint on the straight line
-/// between its endpoints, then splits there.
+/// A 2-point edge that still violates a bound — a single OSM segment longer than the bound with no
+/// shape node — gets one interpolated midpoint on the straight line between its endpoints first.
 fn split_edge(e: Edge, nodes: &mut Vec<Node>, out: &mut Vec<Edge>) {
     if !edge_exceeds_bounds(&e.polyline, e.length_m) {
         out.push(e);
@@ -745,44 +622,30 @@ fn split_edge(e: Edge, nodes: &mut Vec<Node>, out: &mut Vec<Edge>) {
     split_edge(right, nodes, out);
 }
 
-// --- v12 §8.3 directional ascent (epic #1068 EL5) ---------------------------------------------
-
-/// Longest ground gap (m) the ascent sampler will leave between two elevation samples on an edge.
+/// Longest ground gap (m) the ascent sampler leaves between two elevation samples on an edge.
 ///
-/// The number is a property of the raster, not a taste: OBCT v1 data is posted at `2^9` µdeg
-/// (`OBCT_Spec.md` §1.1), which is ≈ 57 m in latitude and less in longitude at European latitudes.
-/// Stepping at 50 m guarantees **at least one sample per posting cell** along the line, so a
-/// hill between two far-apart OSM shape nodes cannot be stepped over. Sampling much finer would only
-/// re-read the same bilinear surface: below the posting the surface is a plane, and a plane
-/// contributes its endpoints' delta however many times it is sampled.
+/// The number is a property of the raster: OBCT data is posted at `2^9` µdeg, about 57 m in latitude
+/// and less in longitude at European latitudes. Stepping at 50 m guarantees at least one sample per
+/// posting cell, so a hill between two far-apart OSM shape nodes cannot be stepped over. Sampling
+/// finer only re-reads the same bilinear surface.
 pub const ASCENT_SAMPLE_STEP_M: f32 = 50.0;
 
-/// Integrate a nav edge's climb in **both** directions, in metres, saturating into the `u16` the
-/// §8.3 neighbor entry carries. Returns `(a→b, b→a)` for a polyline running `a … b`.
+/// Integrate a nav edge's climb in both directions, in metres, saturating into the `u16` a neighbor
+/// entry carries. Returns `(a->b, b->a)` for a polyline running `a … b`.
 ///
-/// Two directions rather than one plus a sign, because ascent is an **integral**: a pass between two
-/// equal-height junctions has hundreds of metres of climb each way and no net change at all. The
-/// second value is the same line walked backwards, which is why it is the first direction's descent
-/// and not its negation.
+/// Two directions rather than one plus a sign, because ascent is an integral: a pass between two
+/// equal-height junctions has hundreds of metres of climb each way and no net change at all.
 ///
-/// **The sampling rule, which is the part that has to be reproducible.** Every polyline vertex is
-/// sampled, plus interpolated points so that no two consecutive samples are more than
-/// [`ASCENT_SAMPLE_STEP_M`] of ground apart. Interpolation is integer µdeg with round-half-away-
-/// from-zero, and the sub-division of a segment into `k` equal steps is symmetric under reversal
-/// (`round((a(k−t) + bt)/k)` reversed is the same point set), so the forward and backward passes see
-/// **the same sample coordinates in opposite order** — the property that makes `ascent(b→a)` exactly
-/// `descent(a→b)` on covered terrain rather than approximately so.
+/// Every polyline vertex is sampled, plus interpolated points so that no two consecutive samples are
+/// more than [`ASCENT_SAMPLE_STEP_M`] of ground apart. Interpolation is integer µdeg and symmetric
+/// under reversal, so the forward and backward passes see the same sample coordinates in opposite
+/// order — the property that makes `ascent(b->a)` exactly `descent(a->b)` on covered terrain.
 ///
-/// **Dead-band: the shared [`ELE_DEADBAND_M`](obc_elevation::ELE_DEADBAND_M) (3 m), deliberately not
-/// a packer-private one.** The whole point of epic #1068 is that the ascent a route is *costed* by
-/// and the ascent a rider is *shown* are the same number; a different threshold here would make them
-/// incomparable by construction.
-///
-/// **A hole in coverage pauses rather than bridges.** When the source has no height for a sample
-/// (outside coverage, a `NODATA` corner, a failed read) the dead-band's reference is dropped, so the
-/// climb *across* the gap is never booked — the same rule the device's tracking pause uses. With no
-/// terrain at all every sample is `None` and the answer is `(0, 0)`: that is the degrade path, and it
-/// is what makes a map packed without `--terrain` route exactly as v11 did.
+/// The dead-band is the shared [`ELE_DEADBAND_M`](obc_elevation::ELE_DEADBAND_M), not a
+/// packer-private one: the ascent a route is costed by and the ascent a rider is shown have to be
+/// the same number. A sample with no height drops the dead-band's reference rather than bridging it,
+/// so climb across a hole in coverage is never booked. With no terrain at all the answer is
+/// `(0, 0)`, which is the degrade path.
 pub fn integrate_edge_ascent(polyline: &[(i32, i32)], source: &mut dyn ElevationSource) -> (u16, u16) {
     let (forward, backward, _) = integrate_edge_facts(polyline, source);
     (forward, backward)
@@ -836,15 +699,12 @@ fn ascent_along(pts: impl Iterator<Item = (i32, i32)>, source: &mut dyn Elevatio
     (it.ascent_u16(), complete)
 }
 
-/// A **direction-independent** segment length (m), used only to choose how many samples a segment
-/// gets.
+/// A direction-independent segment length (m), used only to choose how many samples a segment gets.
 ///
-/// [`ground_dist_m`] takes its `cos(lat)` from its *first* argument, so it is very slightly
-/// asymmetric — a difference far below a metre, and irrelevant to `length_m`, but enough to make the
-/// forward and backward passes disagree on `steps` for a segment sitting on a rounding boundary, and
-/// therefore to sample two different point sets. Canonicalising the argument order removes the
-/// asymmetry at no cost. Edge `length_m` keeps using [`polyline_len_m`] unchanged — this helper
-/// governs sampling density only, never a distance anyone sees.
+/// [`ground_dist_m`] takes its `cos(lat)` from its first argument, so it is very slightly
+/// asymmetric — far below a metre, but enough to make the forward and backward passes disagree on
+/// `steps` for a segment sitting on a rounding boundary, and therefore sample two different point
+/// sets. Edge `length_m` keeps using [`polyline_len_m`]; this governs sampling density only.
 fn seg_len_m(a: (i32, i32), b: (i32, i32)) -> f32 {
     let (p, q) = if a <= b { (a, b) } else { (b, a) };
     ground_dist_m(p, q)
@@ -853,9 +713,8 @@ fn seg_len_m(a: (i32, i32), b: (i32, i32)) -> f32 {
 /// The point `t/k` of the way from `a` to `b` in integer µdeg, rounded half away from zero.
 ///
 /// Deliberately expressed so that `lerp_udeg(a, b, t, k) == lerp_udeg(b, a, k - t, k)`: the forward
-/// and reverse passes must land on the *same* coordinates or the two directions would sample two
-/// slightly different lines and the `ascent(b→a) == descent(a→b)` identity would only hold to within
-/// a metre or two.
+/// and reverse passes must land on the same coordinates, or the two directions would sample two
+/// slightly different lines.
 fn lerp_udeg(a: (i32, i32), b: (i32, i32), t: u32, k: u32) -> (i32, i32) {
     let one = |a: i32, b: i32| -> i32 {
         let num = a as i64 * (k - t) as i64 + b as i64 * t as i64;
@@ -866,16 +725,9 @@ fn lerp_udeg(a: (i32, i32), b: (i32, i32), t: u32, k: u32) -> (i32, i32) {
     (one(a.0, b.0), one(a.1, b.1))
 }
 
-/// The pack-log nav summary (three lines), alongside the POI counts:
-///
-/// ```text
-/// nav graph: 1234 nodes, 1500 edges, 842.3 km
-/// nav components: 63 found, 2 kept, 175 edges dropped
-/// nav kinds: residential 620, service 410, cycleway 180, ...
-/// ```
-///
-/// The kinds histogram counts edges per highway class (the 5 low bits of
-/// [`Edge::kind`]), most-common first, so a glance shows the graph's character.
+/// The pack-log nav summary: graph totals, component counts, and a histogram of edges per highway
+/// class (the 5 low bits of [`Edge::kind`]), most-common first, so a glance shows the graph's
+/// character.
 pub fn format_summary(g: &NavGraph, stats: &NavStats) -> String {
     let mut hist: HashMap<u8, usize> = HashMap::new();
     for e in &g.edges {
@@ -914,12 +766,11 @@ pub fn format_summary(g: &NavGraph, stats: &NavStats) -> String {
 mod tests {
     use super::*;
 
-    /// Build a `RoutableWay` (kind 0) from `(node_id, lon_udeg, lat_udeg)` triples.
+    /// Build a `RoutableWay` of kind 0 from `(node_id, lon_udeg, lat_udeg)` triples.
     fn way(pts: &[(i64, i32, i32)]) -> RoutableWay {
         way_kind(pts, 0)
     }
 
-    /// Build a `RoutableWay` with an explicit `kind`.
     fn way_kind(pts: &[(i64, i32, i32)], kind: u8) -> RoutableWay {
         RoutableWay {
             node_ids: pts.iter().map(|&(id, ..)| id).collect(),
@@ -932,8 +783,7 @@ mod tests {
         pairs.to_vec()
     }
 
-    /// Every canonical highway-class row maps to its id, both `_link` variants and
-    /// the aliases (`road` → unclassified, `pedestrian` → footway).
+    /// Every canonical highway-class row maps to its id, `_link` variants and aliases included.
     #[test]
     fn classify_highway_rows() {
         let hw = |v| classify(tags(&[("highway", v)])).map(|k| k & 0x1F);
@@ -966,8 +816,7 @@ mod tests {
         assert_eq!(hw("raceway"), None);
     }
 
-    /// Every canonical surface-class row maps into the high 3 bits; unknown/absent
-    /// surface ⇒ class 0. The packed byte is `(surface << 5) | highway`.
+    /// The packed byte is `(surface << 5) | highway`; an unknown or absent surface is class 0.
     #[test]
     fn classify_surface_rows_and_packing() {
         let sfc = |s| classify(tags(&[("highway", "track"), ("surface", s)])).map(|k| k >> 5);
@@ -989,8 +838,7 @@ mod tests {
         assert_eq!(classify(tags(&[("highway", "path"), ("surface", "gravel")])), Some(0x61));
     }
 
-    /// Bike legality (locked): the hard-excludes reject, `trunk+bicycle=yes` becomes
-    /// class 13, `dismount` stays routable.
+    /// The hard-excludes reject, `trunk` plus `bicycle=yes` becomes class 13, `dismount` stays.
     #[test]
     fn classify_bike_legality() {
         // trunk is class 13 ONLY with bicycle=yes; alone it's not routable.
@@ -1017,8 +865,7 @@ mod tests {
         assert!(!is_routable(tags(&[("natural", "water")])));
     }
 
-    /// T-junction: three ways meeting at a shared node → 1 shared junction and 3
-    /// edges. Degree of the shared node is 3.
+    /// Three ways meeting at a shared node: one junction of degree 3, and three edges.
     #[test]
     fn t_junction_three_ways() {
         let center = (100i64, 7_800_000i32, 47_990_000i32);
@@ -1035,7 +882,6 @@ mod tests {
         assert_eq!(degree, 3, "the shared node has degree 3");
     }
 
-    /// 4-way crossing: two ways crossing one shared node → a degree-4 node.
     #[test]
     fn four_way_crossing() {
         let cross = (100i64, 7_800_000i32, 47_990_000i32);
@@ -1051,7 +897,6 @@ mod tests {
         assert_eq!(degree, 4, "the crossing node has degree 4");
     }
 
-    /// Interior shape points stay inside one edge's polyline and are NOT promoted.
     #[test]
     fn interior_shape_points_are_not_junctions() {
         let ways = [way(&[
@@ -1066,7 +911,6 @@ mod tests {
         assert_eq!(g.edges[0].polyline.len(), 4, "the edge keeps all 4 points");
     }
 
-    /// Two identical parallel ways → ONE deduped edge.
     #[test]
     fn identical_parallel_ways_dedup() {
         let pts = [(1i64, 7_800_000i32, 47_990_000i32), (2, 7_810_000, 47_990_000)];
@@ -1075,7 +919,6 @@ mod tests {
         assert_eq!(g.nodes.len(), 2);
     }
 
-    /// A way given in reverse order duplicates the forward way → still ONE edge.
     #[test]
     fn reversed_duplicate_dedup() {
         let fwd = way(&[(1, 7_800_000, 47_990_000), (2, 7_810_000, 47_990_000)]);
@@ -1084,8 +927,7 @@ mod tests {
         assert_eq!(g.edges.len(), 1, "a way and its reverse are the same undirected edge");
     }
 
-    /// Two DISTINCT edges between the same node pair (different interior geometry)
-    /// both survive — the dedup key includes geometry.
+    /// Two distinct edges between the same node pair both survive: the dedup key includes geometry.
     #[test]
     fn distinct_parallel_geometry_kept() {
         let a = way(&[(1, 7_800_000, 47_990_000), (9, 7_805_000, 47_991_000), (2, 7_810_000, 47_990_000)]);
@@ -1094,8 +936,7 @@ mod tests {
         assert_eq!(g.edges.len(), 2, "distinct geometry between the same pair → two edges");
     }
 
-    /// The dedup key includes kind: two identical polylines of DIFFERENT kinds (a
-    /// cycleway drawn over a road) stay as two edges rather than collapsing.
+    /// A cycleway drawn over a road: identical polylines of different kinds stay two edges.
     #[test]
     fn dedup_keys_on_kind() {
         let pts = [(1i64, 7_800_000i32, 47_990_000i32), (2, 7_810_000, 47_990_000)];
@@ -1111,7 +952,6 @@ mod tests {
         assert_eq!(g2.edges.len(), 1, "identical geometry AND kind ⇒ one edge");
     }
 
-    /// `length_m` matches a hand-computed great-circle sum within rounding.
     #[test]
     fn length_matches_great_circle_sum() {
         let ways = [way(&[(1, 7_800_000, 47_990_000), (2, 7_800_000, 48_000_000), (3, 7_800_000, 48_010_000)])];
@@ -1123,8 +963,7 @@ mod tests {
         assert!((got as i64 - expected as i64).abs() <= 2, "length {got} ≈ {expected} within rounding");
     }
 
-    /// A closed way (first == last, no other junction) makes its shared node a
-    /// junction → one self-loop edge.
+    /// A closed way makes its shared node a junction, which gives one self-loop edge.
     #[test]
     fn closed_way_is_a_loop() {
         let ways = [way(&[
@@ -1141,7 +980,6 @@ mod tests {
         assert_eq!(e.polyline.len(), 4, "the loop keeps all four points");
     }
 
-    /// Every edge inherits the parent way's kind through the junction split.
     #[test]
     fn edges_inherit_way_kind() {
         // One way crossing a shared node → two edges, both kind 12 (primary).
@@ -1157,11 +995,8 @@ mod tests {
         assert_eq!(g.edges.iter().filter(|e| e.kind == 0).count(), 2);
     }
 
-    // --- Island pruning ---------------------------------------------------------
-
-    /// Chain of `edges` connected edges as separate 2-node ways, node ids offset by
-    /// `id_base`, laid along a line at `origin` with 1 000-µdeg steps (short — no
-    /// v9 split). Returns the ways.
+    /// Chain of `edges` connected edges as separate 2-node ways, node ids offset by `id_base`, laid
+    /// along a line at `origin` with 1 000-µdeg steps (short, so nothing splits).
     fn chain(id_base: i64, origin: (i32, i32), edges: usize) -> Vec<RoutableWay> {
         (0..edges)
             .map(|i| {
@@ -1172,8 +1007,6 @@ mod tests {
             .collect()
     }
 
-    /// A giant component plus a small islet: with the default threshold the islet is
-    /// dropped and only the giant kept.
     #[test]
     fn island_pruning_drops_small_component() {
         let mut ways = chain(0, (100_000, 100_000), 60); // giant: 60 edges, 61 nodes
@@ -1187,13 +1020,12 @@ mod tests {
         assert_eq!(g.edges.len(), 60);
     }
 
-    /// The threshold is inclusive: a component with exactly `min_component_edges`
-    /// edges is kept; one edge fewer is dropped (unless it is the largest). Exercised
-    /// directly on `prune_islands` with a small threshold.
+    /// The threshold is inclusive: a component with exactly `min_component_edges` edges is kept, one
+    /// edge fewer is dropped unless it is the largest.
     #[test]
     fn island_pruning_threshold_is_inclusive() {
-        // Three disconnected chains with DENSE ids (the precondition build_graph's
-        // interning always satisfies): a giant (9 edges), a 3-edge one, a 2-edge one.
+        // Three disconnected chains with DENSE ids (the precondition build_graph's interning always
+        // satisfies): a giant (9 edges), a 3-edge one, a 2-edge one.
         let mut nodes = Vec::new();
         let mut edges = Vec::new();
         let mut mk = |count: u32, x0: i32| {
@@ -1224,8 +1056,8 @@ mod tests {
         assert!(nodes.iter().enumerate().all(|(i, n)| n.id as usize == i), "node ids stay dense");
     }
 
-    /// A protected coordinate keeps its whole component, however small — the OBCA §3.5 rule a cell
-    /// bake needs, because a fragment at a cell edge is only small until the neighbour is assembled.
+    /// A fragment at a cell edge is only small until the neighbour is assembled, so a protected
+    /// coordinate keeps its whole component however small.
     #[test]
     fn prune_islands_spares_protected_components() {
         let mut nodes = Vec::new();
@@ -1258,15 +1090,12 @@ mod tests {
         assert!(!kept_nodes.iter().any(|n| n.coord.0 == 900_000), "the interior one did not");
     }
 
-    // --- Edge splits for the v9 guarantees --------------------------------------
-
     fn violates(e: &Edge) -> bool {
         edge_exceeds_bounds(&e.polyline, e.length_m)
     }
 
-    /// An edge spanning 70 000 µdeg is split into pieces each within the ±32 000
-    /// endpoint bound, every piece carries the parent kind, the pieces concatenate to
-    /// the original geometry, and their costs sum to the original within rounding.
+    /// An edge spanning 70 000 µdeg splits into pieces inside the endpoint bound, each carrying the
+    /// parent kind, concatenating to the original geometry, with costs summing to the original.
     #[test]
     fn split_long_endpoint_delta() {
         // 71 vertices, 1 000 µdeg apart in lon: endpoint delta 70 000 > 32 000.
@@ -1297,8 +1126,8 @@ mod tests {
         );
     }
 
-    /// A ~70 km edge whose endpoints stay within the delta bound (a hairpin) is split
-    /// until every piece is ≤ 60 000 m; the delta bound is untouched.
+    /// A ~70 km hairpin whose endpoints stay within the delta bound is split until every piece is at
+    /// most 60 000 m; the delta bound is untouched.
     #[test]
     fn split_long_length() {
         // Vertical zigzag: lon drifts slowly (endpoint lon delta small), lat swings
@@ -1327,8 +1156,8 @@ mod tests {
         assert!((piece_sum as i64 - orig_len as i64).abs() <= g.edges.len() as i64, "costs sum to the original");
     }
 
-    /// A 2-point edge past the bound with NO interior vertex to split at gets an
-    /// interpolated midpoint inserted so the guarantee still holds by construction.
+    /// A 2-point edge past the bound with no interior vertex gets an interpolated midpoint, so the
+    /// guarantee still holds by construction.
     #[test]
     fn split_two_point_edge_inserts_midpoint() {
         // Single 90 000-µdeg lon segment, no shape node.
@@ -1349,10 +1178,8 @@ mod tests {
         assert_eq!(concat_pieces(&g, 0, 1).last().copied(), Some(b));
     }
 
-    /// Walk the split pieces from node `a` to node `b` (the graph is a simple chain of
-    /// degree-2 synthetic nodes here) and concatenate their polylines, deduping the
-    /// shared vertex at each join. The next edge at each hop is the incident one whose
-    /// other endpoint isn't where we came from.
+    /// Walk the split pieces from node `a` to node `b` — a simple chain of degree-2 synthetic nodes
+    /// here — and concatenate their polylines, deduping the shared vertex at each join.
     fn concat_pieces(g: &NavGraph, a: u32, b: u32) -> Vec<(i32, i32)> {
         let mut adj: HashMap<u32, Vec<usize>> = HashMap::new();
         for (i, e) in g.edges.iter().enumerate() {
@@ -1390,13 +1217,8 @@ mod tests {
         out
     }
 
-    // --- Corpus-style fixture (grimsel shape) -----------------------------------
-
-    /// The acceptance-criteria corpus check, over a synthetic giant + islets fixture
-    /// (grimsel packs to ≥ 60 components, ~2 kept): the built graph reports the
-    /// expected component stats AND holds the v9 bounds on every edge — asserted, not
-    /// checked by hand. (The shipped `grimsel.obcm` is a v8 pack with no `.pbf`
-    /// source to re-pack, so the property is exercised on this fixture instead.)
+    /// A synthetic giant-plus-islets fixture in the shape of a real pack: the built graph reports
+    /// the expected component stats and holds the split bounds on every edge.
     #[test]
     fn corpus_components_and_split_bounds() {
         let mut ways = Vec::new();
@@ -1433,8 +1255,6 @@ mod tests {
         // The detour actually split (synthetic nodes were inserted past the real ones).
         assert!(g.nodes.len() > 61 + (DEFAULT_MIN_COMPONENT_EDGES + 1), "synthetic split nodes present");
     }
-
-    // --- Summary ----------------------------------------------------------------
 
     #[test]
     fn summary_line_format() {
