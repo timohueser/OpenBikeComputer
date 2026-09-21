@@ -66,7 +66,7 @@ def main() -> int:
             failures.append(f"{DISPATCH}: `{match.group(0)}` inside `remove_object`")
 
     if failures:
-        print("An executor is deciding when the catalog is re-read (#1541):")
+        print("An executor is deciding when the catalog is re-read:")
         print("\n".join(failures))
         print(
             "\nThe re-read belongs to `CatalogMachine`. A completed removal and a failed read both\n"
