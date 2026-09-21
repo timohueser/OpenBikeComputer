@@ -30,44 +30,41 @@ fn lock() -> MutexGuard<'static, ()> {
     LIBRARY_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// The index's filename. Readable JSON on purpose, even though it now lives in app data: it is
-/// still the record a person (or a support thread) can open and read.
+/// The index's filename. It is readable JSON on purpose: it is the record a person can open and
+/// read.
 pub const INDEX_FILE: &str = "index.json";
-/// Bumped only when an older index can no longer be read. An unreadable index is not fatal (see
-/// [`Library::load`]) — it re-imports, it never deletes.
+/// Bumped only when an older index can no longer be read. An unreadable index is not fatal: it
+/// re-imports and never deletes.
 const INDEX_VERSION: u32 = 2;
-/// The stored ride object's extension. Not `.ride`: the suffix is obviously ours and not a GPX.
+/// The stored ride object's extension, chosen so it cannot be mistaken for a GPX.
 const RIDE_EXT: &str = "obcride";
 const GPX_EXT: &str = "gpx";
 
-/// Largest ride object this command will accept, and it is a ceiling rather than an expectation:
-/// the §7.2 object is `31 + name + 18 × points`, so 16 MB is roughly 900 000 points — ten days of
-/// continuous 1 Hz recording. It exists because a Tauri command is a door, not because anything
-/// legitimate approaches it.
+/// Largest ride object this command accepts. It is a ceiling and not an expectation: it is roughly
+/// ten days of continuous recording, and it exists because a Tauri command is a door.
 const MAX_RIDE_BYTES: usize = 16 * 1024 * 1024;
-/// The GPX is the same track as text — five to six times the object. 128 MB keeps the same margin.
+/// The GPX is the same track as text, five to six times the object, so its ceiling keeps the same
+/// margin.
 const MAX_GPX_BYTES: usize = 128 * 1024 * 1024;
-/// Preview tracks are drawn a few hundred pixels wide; more points than this would be index weight
-/// nobody can see. The frontend downsamples to it and this is the enforcement.
+/// Preview tracks are drawn a few hundred pixels wide, so more points than this would be index
+/// weight nobody can see. The frontend downsamples to it and this is the enforcement.
 const MAX_TRACK_POINTS: usize = 512;
 /// Longest filename stem the library will mint, before its extension.
 const MAX_STEM: usize = 64;
 
-/// The pointer file that remembers a relocated library. Lives in the app's config directory rather
-/// than in the library — a folder that names itself could not be found once it moved.
+/// The pointer file that remembers a relocated library. It lives in the app's config directory: a
+/// folder that named itself could not be found once it moved.
 const LOCATION_FILE: &str = "ride-library.json";
 
-// ============================ the records ============================
-
-/// One ride in the library, as `index.json` **stores** it.
+/// One ride in the library, as `index.json` stores it.
 ///
-/// Only facts that stay true: no absolute paths (the GPX folder can move) and no "is the file
-/// there" (a person can delete a GPX in the file manager). Those are [`RideEntry`]'s, recomputed on
-/// every read — an index that insisted otherwise would be the app lying about what it has.
+/// It holds only facts that stay true: no absolute paths, because the GPX folder can move, and no
+/// existence, because a person can delete a GPX in the file manager. Those are [`RideEntry`]'s,
+/// recomputed on every read.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct LibraryRide {
-    /// `serial:storeId:objectId` — minted here, never taken from the caller.
+    /// `serial:storeId:objectId`, minted here and never taken from the caller.
     pub key: String,
     pub serial: String,
     #[serde(deserialize_with = "deserialize_store_id")]
@@ -83,28 +80,26 @@ pub struct LibraryRide {
     pub points: u32,
     /// Length of the stored ride object, bytes.
     pub bytes: u64,
-    /// The device's whole-object CRC-32 of that object — the transfer's own verdict, kept so the
-    /// stored copy can be re-checked without the device.
+    /// The device's whole-object CRC-32, kept so the stored copy can be re-checked without the
+    /// device.
     pub crc32: u32,
-    /// When this app first landed the ride, unix seconds. **Never re-stamped**: a second pull is a
-    /// no-op, matching `synced_at`'s first-ack-wins rule on the device.
+    /// When this app first landed the ride, unix seconds. Never re-stamped, so a second pull is a
+    /// no-op, which matches the first-ack-wins rule on the device.
     pub imported_at: u64,
-    /// Basename of the archived ride object, in the **archive** directory.
+    /// Basename of the archived ride object, in the archive directory.
     pub ride_file: String,
-    /// Basename of the GPX, in the **visible** folder.
+    /// Basename of the GPX, in the visible folder.
     pub gpx_file: String,
-    /// A downsampled `[lat, lon]` track for the list's preview, in degrees. Drawn from the ride's
-    /// own points — there is no other source, and a straight line between two waypoints would be a
-    /// picture of something that did not happen.
+    /// A downsampled `[lat, lon]` track for the list's preview, in degrees, drawn from the ride's
+    /// own points.
     pub track: Vec<[f64; 2]>,
 }
 
-/// One ride as the **UI** reads it: the stored record, plus what only the filesystem can say.
+/// One ride as the UI reads it: the stored record plus what only the filesystem can say.
 ///
-/// The two extra pairs are recomputed on every read and never written down. `present` is the one
-/// that matters — "the archive file exists in the archive directory": a ride whose object is gone
-/// is not a durable copy, so it is not acked and it is pulled again. `gpx_present` is about the
-/// visible folder, and a missing GPX is only a re-export away (the archive is its source).
+/// The two extra pairs are recomputed on every read and never written down. `present` means the
+/// archive file exists: a ride whose object is gone is not a durable copy, so it is not acked and
+/// it is pulled again. A missing GPX is only a re-export away, because the archive is its source.
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct RideEntry {
@@ -116,8 +111,8 @@ pub struct RideEntry {
     pub gpx_present: bool,
 }
 
-/// So an entry reads as the ride it describes (`entry.key`, not `entry.ride.key`). The wrapper adds
-/// facts about the filesystem; it is not a different kind of thing.
+/// So an entry reads as the ride it describes. The wrapper adds facts about the filesystem; it is
+/// not a different kind of thing.
 impl std::ops::Deref for RideEntry {
     type Target = LibraryRide;
 
@@ -145,11 +140,9 @@ pub struct IndexView {
 
 /// One ride, as the pull hands it over. The bytes and the GPX both cross the IPC boundary here.
 ///
-/// A ride object is hundreds of kilobytes and a JSON number array costs about four bytes of text
-/// per byte — which is why maps and firmware images use the raw-body path in [`crate::usb`] and
-/// deliberately not why this one does. A ride is two to three orders of magnitude smaller than the
-/// case that forced that machinery, and the GPX beside it is text anyway; a structured command with
-/// a stated ceiling is the cheaper thing to review.
+/// A ride is orders of magnitude smaller than the maps and firmware images that need the raw-body
+/// path in [`crate::usb`], and the GPX beside it is text, so a structured command with a stated
+/// ceiling is the cheaper thing to review.
 #[derive(Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportRequest {
@@ -163,21 +156,20 @@ pub struct ImportRequest {
     pub distance_m: u32,
     pub moving_time_s: u32,
     pub climb_m: u32,
-    /// Points in the recorded track. From the caller's decode of the object — this crate has no
-    /// ride-object decoder and must not grow one: the codecs live once, in `lib/usb/objects.ts`,
-    /// pinned to `specs/vectors/`. A second decoder here would be a second thing to drift.
+    /// Points in the recorded track, from the caller's decode of the object. This crate has no
+    /// ride-object decoder and must not grow one: the codecs live once, in `lib/usb/objects.ts`.
     pub points: u32,
     pub crc32: u32,
     pub track: Vec<[f64; 2]>,
-    /// The §7.2 ride object exactly as it came off the wire.
+    /// The ride object exactly as it came off the wire.
     pub object: Vec<u8>,
-    /// The GPX 1.1 document, from the same `obc_route::track_to_gpx` the device runs (through the
-    /// wasm bridge). There is no GPX writer in this crate and there must never be one.
+    /// The GPX 1.1 document, from the same `obc_route::track_to_gpx` the device runs. There is no
+    /// GPX writer in this crate and there must never be one.
     pub gpx: String,
 }
 
-/// [`Library::import`]'s answer. `imported` is false when the ride was already in the library — the
-/// idempotent case, and the one that must not re-stamp anything.
+/// [`Library::import`]'s answer. `imported` is false when the ride was already in the library,
+/// which is the idempotent case and must not re-stamp anything.
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Imported {
@@ -187,14 +179,14 @@ pub struct Imported {
 
 /// Where a durable write is interrupted.
 ///
-/// Production constructs a [`Library`] with [`CrashPoint::None`] and there is no way to ask for
-/// anything else from outside this module — the other variants exist so "the ack follows the
-/// fsync" is checked by running the real code with the power cut at a chosen instant.
+/// Production constructs a [`Library`] with [`CrashPoint::None`], and nothing outside this module
+/// can ask for anything else. The other variants exist so the rule that the ack follows the fsync
+/// is checked by running the real code with the power cut at a chosen instant.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CrashPoint {
     #[default]
     None,
-    /// The bytes reached `write()` and the process died before `fsync` — the case that decides
+    /// The bytes reached `write()` and the process died before `fsync`: the case that decides
     /// whether this feature can lose a ride.
     BeforeObjectFsync,
     /// The ride's two files are durable and the process died before the index committed.
@@ -204,13 +196,11 @@ pub enum CrashPoint {
 /// The message a simulated crash returns, so a test can tell it from a real IO error.
 const CRASH_MSG: &str = "simulated power loss";
 
-// ============================ the library ============================
-
 pub struct Library {
     /// The visible, relocatable GPX folder.
     root: PathBuf,
-    /// The internal archive: `index.json` plus the `.obcride` objects. **Not** relocatable — it is
-    /// app data, and it does not move when the rider moves the GPX folder.
+    /// The internal archive: `index.json` plus the ride objects. It is app data, so it does not
+    /// move when the rider moves the GPX folder.
     archive: PathBuf,
     crash: CrashPoint,
 }
@@ -232,11 +222,9 @@ impl Library {
 
     /// The index as it is on disk right now, with existence recomputed per ride.
     ///
-    /// A missing index is an empty library. A **corrupt** index is also an empty library, and that
-    /// is the safe direction rather than a shrug: the worst it costs is re-downloading rides the
-    /// device still holds (the ack is add-only and `synced_at` is first-ack-wins, so nothing is
-    /// disturbed there), while any attempt to salvage a half-parsed index risks writing over the
-    /// files it half-understood.
+    /// A missing index is an empty library, and so is a corrupt one. That is the safe direction:
+    /// the worst it costs is re-downloading rides the device still holds, while salvaging a
+    /// half-parsed index risks writing over the files it half-understood.
     fn load(&self) -> Index {
         read_index(&self.archive.join(INDEX_FILE))
             .unwrap_or_else(|| Index { version: INDEX_VERSION, rides: Vec::new() })
@@ -246,11 +234,10 @@ impl Library {
     fn entry(&self, ride: LibraryRide) -> RideEntry {
         let ride_path = self.archive.join(&ride.ride_file);
         let gpx_path = self.root.join(&ride.gpx_file);
-        // Existence alone is not durability: `present` feeds `durable_ids`, which feeds the ack,
-        // so a truncated or swapped archive file must read as *absent* — the ride is then pulled
-        // again, which is the direction that costs a download instead of a ride. The index's own
-        // `bytes` is the cheap whole-file check (the CRC is there too, but hashing every archive
-        // on every read would make listing a library O(bytes)).
+        // Existence alone is not durability. `present` feeds the ack, so a truncated or swapped
+        // archive file must read as absent: the ride is then pulled again, which costs a download
+        // instead of a ride. The index's own `bytes` is the cheap whole-file check; hashing every
+        // archive on every read would make listing a library cost its size.
         let present = std::fs::metadata(&ride_path).is_ok_and(|m| m.is_file() && m.len() == ride.bytes);
         RideEntry {
             present,
@@ -272,8 +259,8 @@ impl Library {
 
     /// Land one pulled ride durably. Idempotent on its `(serial, store_id, id)` key.
     ///
-    /// Returns only after the ride object, the GPX and the index have each been fsynced. The caller
-    /// may ack **after** this resolves and at no earlier point.
+    /// It returns only after the ride object, the GPX and the index have each been fsynced. The
+    /// caller may ack after this resolves and at no earlier point.
     pub fn import(&self, req: &ImportRequest) -> Result<Imported, String> {
         let _guard = lock();
         if req.serial.is_empty() {
@@ -304,7 +291,7 @@ impl Library {
         let mut index = self.load();
         let key = ride_key(&req.serial, &req.store_id, req.object_id);
 
-        // The idempotent path: everything already here, nothing written, nothing re-stamped.
+        // The idempotent path: everything is already here, so nothing is written or re-stamped.
         if let Some(existing) = index.rides.iter().find(|r| r.key == key) {
             let entry = self.entry(existing.clone());
             if entry.present && entry.gpx_present {
@@ -315,7 +302,7 @@ impl Library {
         let existing = index.rides.iter().position(|r| r.key == key);
         let (ride_file, gpx_file, imported_at) = match existing {
             // A repair: the record survived and a file did not. Keep the names and the original
-            // `imported_at` — this is the same ride arriving again, not a new one.
+            // `imported_at`, because this is the same ride arriving again.
             Some(at) => {
                 let r = &index.rides[at];
                 (r.ride_file.clone(), r.gpx_file.clone(), r.imported_at)
@@ -326,9 +313,8 @@ impl Library {
             }
         };
 
-        // Order is the contract: the lossless object (archive), then the portable GPX (the visible
-        // folder), then the index that claims both. A crash at any point leaves an index that does
-        // not name this ride.
+        // Order is the contract: the lossless object, then the portable GPX, then the index that
+        // claims both. A crash at any point leaves an index that does not name this ride.
         durable_write(&self.archive, &ride_file, &req.object, self.crash_at(CrashPoint::BeforeObjectFsync))
             .map_err(|e| format!("write {}: {e}", self.archive.join(&ride_file).display()))?;
         durable_write(&self.root, &gpx_file, req.gpx.as_bytes(), CrashPoint::None)
@@ -364,7 +350,7 @@ impl Library {
         Ok(Imported { ride: self.entry(ride), imported: existing.is_none() })
     }
 
-    /// The stored ride object of one key — what a re-export reads.
+    /// The stored ride object of one key, which is what a re-export reads.
     pub fn read_object(&self, key: &str) -> Result<Vec<u8>, String> {
         let _guard = lock();
         let ride = self.find(key)?;
@@ -372,9 +358,8 @@ impl Library {
             .map_err(|e| format!("read {}: {e}", self.archive.join(&ride.ride_file).display()))
     }
 
-    /// (Re-)write one ride's GPX durably into the visible folder — the automatic repair for a GPX
-    /// somebody deleted or renamed. The archived object is the source, so this can always be run
-    /// again.
+    /// Write one ride's GPX durably into the visible folder: the repair for a GPX somebody deleted
+    /// or renamed. The archived object is the source, so it can always be run again.
     pub fn write_gpx(&self, key: &str, gpx: &str) -> Result<String, String> {
         let _guard = lock();
         if gpx.is_empty() || gpx.len() > MAX_GPX_BYTES {
@@ -391,8 +376,8 @@ impl Library {
         self.load().rides.into_iter().find(|r| r.key == key).ok_or_else(|| format!("no ride {key} in this library"))
     }
 
-    /// Rewrite the index durably. Its own temp-and-rename, so a crash mid-write leaves the previous
-    /// index whole rather than a truncated one — losing the *last* ride's record, never the rest.
+    /// Rewrite the index durably, through its own temp and rename, so a crash mid-write leaves the
+    /// previous index whole and loses only the last ride's record.
     fn commit(&self, index: &Index) -> Result<(), String> {
         let body = serde_json::to_vec_pretty(index).map_err(|e| format!("encode {INDEX_FILE}: {e}"))?;
         durable_write(&self.archive, INDEX_FILE, &body, CrashPoint::None)
@@ -408,8 +393,8 @@ impl Library {
     }
 }
 
-/// Read and parse an index file; `None` for missing or unreadable (the caller decides what that
-/// means — [`Library::load`] treats both as empty).
+/// Read and parse an index file. `None` means missing or unreadable, and the caller decides what
+/// that means.
 fn read_index(path: &Path) -> Option<Index> {
     let bytes = std::fs::read(path).ok()?;
     match serde_json::from_slice::<Index>(&bytes) {
@@ -422,10 +407,9 @@ fn read_index(path: &Path) -> Option<Index> {
     }
 }
 
-/// Move one file into `dir/name` so that no point of interruption loses it: `rename` where the
-/// filesystem allows (same volume), otherwise copy + fsync + atomic-rename-into-place and only
-/// then unlink the source. The copy path is what makes a cross-filesystem move (app data on one
-/// volume, a relocated folder on another) exactly as safe as the same-volume one.
+/// Move one file into `dir/name` so that no point of interruption loses it: `rename` on the same
+/// volume, otherwise copy, fsync, atomic rename into place, and only then unlink the source. The
+/// copy path makes a cross-filesystem move as safe as a same-volume one.
 fn move_file_durably(source: &Path, dir: &Path, name: &str) -> Result<(), String> {
     if std::fs::rename(source, dir.join(name)).is_ok() {
         return sync_dir(dir).map_err(|e| format!("sync {}: {e}", dir.display()));
@@ -468,23 +452,17 @@ fn deserialize_object_id<'de, D: serde::Deserializer<'de>>(deserializer: D) -> R
     Ok(value)
 }
 
-// ============================ durability ============================
-
 /// Write `bytes` to `dir/name` so that a power cut cannot leave a half-file behind.
 ///
-/// The four steps, and why each one is not optional:
+/// Four steps, none of them optional. The write goes into a `.part` sibling, so the destination
+/// keeps its previous contents for the whole write. `sync_all` puts the bytes and the inode on the
+/// disk; on macOS Rust's std implements it as `F_FULLFSYNC`, which also flushes the drive's own
+/// write cache, where plain `fsync` does not. The `rename` is atomic on every filesystem this app
+/// runs on, so a reader sees the old file or the new one. The directory fsync makes that rename
+/// durable; skipping it is the classic failure where the data survives and the name does not.
 ///
-/// 1. **into a `.part` sibling** — the destination keeps its previous contents (or its absence)
-///    for the whole write;
-/// 2. **`sync_all`** — the bytes and the inode reach the disk. On macOS Rust's std implements this
-///    as `F_FULLFSYNC`, which also flushes the drive's own write cache; plain `fsync` there does
-///    not;
-/// 3. **`rename`** — atomic on every filesystem this app runs on: a reader sees old or new;
-/// 4. **fsync the directory** — makes step 3 durable. Skipping it is the classic failure where the
-///    data survives and the name pointing at it does not.
-///
-/// A real IO failure cleans its `.part` up. A [`CrashPoint`] deliberately does not — the point of
-/// simulating a power cut is to leave exactly the mess a power cut leaves.
+/// A real IO failure cleans its `.part` up. A [`CrashPoint`] does not, because the point of
+/// simulating a power cut is to leave the mess a power cut leaves.
 fn durable_write(dir: &Path, name: &str, bytes: &[u8], crash: CrashPoint) -> io::Result<()> {
     let tmp = dir.join(format!(".{name}.part"));
     let result = write_and_sync(&tmp, bytes, crash);
@@ -509,15 +487,12 @@ fn write_and_sync(tmp: &Path, bytes: &[u8], crash: CrashPoint) -> io::Result<()>
     file.sync_all()
 }
 
-/// fsync the directory entry — i.e. make the rename itself survive a power cut.
+/// fsync the directory entry, so the rename itself survives a power cut.
 ///
-/// **Unix** opens the directory read-only and fsyncs the handle, which is the portable way to do it.
-///
-/// **Windows** has no equivalent and does not need one: `File::open` on a directory fails without
-/// `FILE_FLAG_BACKUP_SEMANTICS`, and NTFS records a rename in its metadata log, which is committed
-/// before `MoveFileEx` returns. The file's own `FlushFileBuffers` (step 2, which `sync_all` is) is
-/// therefore the whole requirement there. This is the "where the platform requires it" clause, and
-/// it is a no-op on exactly one platform for a stated reason rather than everywhere for none.
+/// Unix opens the directory read-only and fsyncs the handle. Windows has no equivalent and does not
+/// need one: `File::open` on a directory fails without `FILE_FLAG_BACKUP_SEMANTICS`, and NTFS
+/// records a rename in its metadata log, which is committed before `MoveFileEx` returns, so the
+/// file's own flush is the whole requirement there.
 #[cfg(unix)]
 fn sync_dir(dir: &Path) -> io::Result<()> {
     File::open(dir)?.sync_all()
@@ -528,13 +503,10 @@ fn sync_dir(_dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-// ============================ naming ============================
-
 /// `YYYY-MM-DD-some-ride-name`, or just the name when the device had no clock.
 ///
-/// The date leads because a folder sorts by name and rides are read in order; the name follows
-/// because the rider chose it. The date is **UTC**, matching the ride object's `start_time` and the
-/// hosted tier's `rideFilename()` — rendering it locally would file a late-evening ride under the
+/// The date leads because a folder sorts by name and rides are read in order. It is UTC, matching
+/// the ride object's `start_time`: rendering it locally would file a late-evening ride under the
 /// wrong day for anyone west of Greenwich.
 fn stem_for(req: &ImportRequest) -> String {
     let name = crate::paths::sanitize_basename(&req.name, "", "ride");
@@ -573,10 +545,10 @@ fn unique_stem(index: &Index, root: &Path, archive: &Path, key: &str, base: &str
         .ok_or_else(|| "no unused ride filename is available".into())
 }
 
-/// `YYYY-MM-DD` in UTC, or `None` for a device whose clock was never set (`start_time == 0`).
+/// `YYYY-MM-DD` in UTC, or `None` for a device whose clock was never set.
 ///
-/// Howard Hinnant's civil-from-days, because a date is fifteen lines and a date library is a
-/// dependency. Valid for every timestamp a `u32` can hold (1970 → 2106).
+/// Civil-from-days arithmetic, because a date is fifteen lines and a date library is a dependency.
+/// Valid for every timestamp a `u32` can hold.
 fn utc_date(start_time: u32) -> Option<String> {
     if start_time == 0 {
         return None;
@@ -599,8 +571,6 @@ fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-// ============================ where the folder is ============================
-
 #[derive(Serialize, Deserialize)]
 struct Location {
     dir: String,
@@ -608,9 +578,8 @@ struct Location {
 
 /// The folder the user relocated the library to, if they did.
 ///
-/// A folder that no longer exists is **not** silently replaced by the default: the app would then
-/// quietly start a second library on an unplugged external drive and report nothing missing. The
-/// caller surfaces it instead.
+/// A folder that no longer exists is not replaced by the default: the app would then start a second
+/// library on an unplugged external drive and report nothing missing. The caller surfaces it.
 pub fn configured(config_dir: &Path) -> Option<PathBuf> {
     let bytes = std::fs::read(config_dir.join(LOCATION_FILE)).ok()?;
     let location: Location = serde_json::from_slice(&bytes).ok()?;
@@ -618,8 +587,8 @@ pub fn configured(config_dir: &Path) -> Option<PathBuf> {
     (!dir.as_os_str().is_empty()).then_some(dir)
 }
 
-/// Remember a relocated library. Durable, because forgetting where the rides went is its own
-/// data-loss story.
+/// Remember a relocated library. Durable, because forgetting where the rides went is its own kind
+/// of data loss.
 pub fn remember(config_dir: &Path, dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(config_dir).map_err(|e| format!("create {}: {e}", config_dir.display()))?;
     let body = serde_json::to_vec_pretty(&Location { dir: dir.display().to_string() })
@@ -628,11 +597,11 @@ pub fn remember(config_dir: &Path, dir: &Path) -> Result<(), String> {
         .map_err(|e| format!("write {}: {e}", config_dir.join(LOCATION_FILE).display()))
 }
 
-/// Move the visible library — the GPX files — to a new folder.
+/// Move the visible library, the GPX files, to a new folder.
 ///
-/// The internal archive stays in app data. Existing destination files are never
-/// replaced. Cross-filesystem moves copy and flush before unlinking the source;
-/// the caller updates the configured location only after success.
+/// The internal archive stays in app data. Existing destination files are never replaced.
+/// Cross-filesystem moves copy and flush before unlinking the source, and the caller updates the
+/// configured location only after success.
 pub fn relocate(from: &Path, to: &Path) -> Result<(), String> {
     let _guard = lock();
     if from == to {
@@ -655,11 +624,10 @@ pub fn relocate(from: &Path, to: &Path) -> Result<(), String> {
         .collect();
     names.sort();
 
-    // Two passes: the first so a collision is discovered before anything has moved (all-or-nothing
-    // for the user), the second re-checked per file because `rename` clobbers and std has no
-    // portable no-clobber rename. The re-check narrows the TOCTOU window to the one rename; a file
-    // another program drops into that window can still lose — documented residual race, and the
-    // library lock already rules out this process racing itself.
+    // Two passes: the first discovers a collision before anything has moved, and the second
+    // re-checks per file, because `rename` clobbers and std has no portable no-clobber rename. The
+    // re-check narrows the race to the one rename; a file another program drops into that window
+    // can still be lost. The library lock rules out this process racing itself.
     for name in &names {
         if to.join(name).exists() {
             return Err(format!("{} already contains a file named {name} — pick another folder", to.display()));
@@ -673,26 +641,16 @@ pub fn relocate(from: &Path, to: &Path) -> Result<(), String> {
     }
     sync_dir(to).map_err(|e| format!("sync {}: {e}", to.display()))?;
     let _ = sync_dir(from);
-    // Best effort: an empty folder left behind is untidy, a failed move is not. A folder that
-    // still holds the rider's other files simply stays.
+    // Best effort: an empty folder left behind is untidy and a failed move is not. A folder that
+    // still holds the rider's other files stays.
     let _ = std::fs::remove_dir(from);
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    /// **The ack set, as a test helper rather than as production surface.**
-    ///
-    /// `Library::durable_ids` used to be a method, and the `rides_ack_set` command was its one
-    /// caller. FS7.5-c3b deleted that command with the rest of the cable's non-object surface
-    /// (`FLAT_Store_Protocol.md` §5.2.2: `ackRides` keeps the BLE control surface it already had),
-    /// which left the method dead — and a dead method kept alive by an `allow(dead_code)` is the
-    /// legacy shim this repo's rules exist to refuse.
-    ///
-    /// What it computed is not dead, though: *which rides are durably on this disk* is the property
-    /// the eight tests below are about, and it is a filter over `view()`'s entries, which is public
-    /// and has real callers. So the filter moves here, the assertions are unchanged, and FS8's ride
-    /// sync (#1390) re-promotes it to production the day something calls it again.
+    /// The ack set, as a test helper: which rides are durably on this disk. It is a filter over
+    /// `view()`'s entries, and the tests below are about that property.
     fn durable_ids(lib: &Library, serial: &str, store_id: u128) -> Vec<u64> {
         let mut ids: Vec<u64> = lib
             .view(false)
@@ -718,8 +676,8 @@ mod tests {
         dir
     }
 
-    /// A library over `<base>/rides` (visible) and `<base>/archive` (internal) — the production
-    /// shape, in a sandbox.
+    /// A library over a visible folder and an internal archive: the production shape, in a
+    /// sandbox.
     fn library(base: &Path) -> Library {
         Library::new(base.join("rides"), base.join("archive"))
     }
@@ -777,8 +735,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// The split itself: the visible folder holds GPX and nothing else; the archive holds the
-    /// object and the index.
+    /// The visible folder holds GPX and nothing else; the archive holds the object and the
+    /// index.
     #[test]
     fn an_import_leaves_only_gpx_in_the_visible_folder() {
         let base = temp("split");
@@ -795,12 +753,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// **Acceptance #2, the one that decides whether this feature can lose a ride.**
-    ///
-    /// The power goes out between `write()` and `fsync()`. The real `import` runs; what is checked
-    /// is what a *restart* then sees, because that is what the ack list is computed from. The ride
-    /// must be absent from `durable_ids` — which is the frontend's ack list — so the device is
-    /// never told, and the next pull fetches the ride again.
+    /// The power goes out between `write()` and `fsync()`. The real `import` runs, and what is
+    /// checked is what a restart then sees, because that is what the ack list is computed from. The
+    /// ride must be absent from it, so the device is never told and the next pull fetches it
+    /// again.
     #[test]
     fn a_crash_between_write_and_fsync_leaves_the_ride_unacked() {
         let base = temp("crash");
@@ -814,8 +770,8 @@ mod tests {
             .expect_err("a crash before fsync must not report success");
         assert!(err.contains(CRASH_MSG), "unexpected failure: {err}");
 
-        // Restart: a brand-new Library over the same folders, reading the same index a relaunched
-        // app would read.
+        // Restart: a new Library over the same folders, reading the index a relaunched app would
+        // read.
         let restarted = library(&base);
         assert_eq!(
             durable_ids(&restarted, "OBC-24-000317", 7),
@@ -828,16 +784,15 @@ mod tests {
         );
         assert_eq!(restarted.load().rides.len(), 1, "the index never learned about the lost ride");
 
-        // …and the next pull, with the power on, lands it and only then makes it ackable.
+        // The next pull, with the power on, lands it and only then makes it ackable.
         library(&base).import(&lost).expect("the retry lands");
         assert_eq!(durable_ids(&library(&base), "OBC-24-000317", 7), vec![1, 2]);
 
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// The other half of the ordering: the files are durable and the *index* never committed. The
-    /// ride is still not ackable — the index is what `durable_ids` reads — and the retry repairs
-    /// the record without minting a second one.
+    /// The other half of the ordering: the files are durable and the index never committed. The
+    /// ride is still not ackable, and the retry repairs the record without minting a second one.
     #[test]
     fn a_crash_before_the_index_commits_also_leaves_the_ride_unacked() {
         let base = temp("crash-index");
@@ -874,7 +829,7 @@ mod tests {
         assert_ne!(old.ride.ride_file, new.ride.ride_file, "and it gets its own file");
         assert_eq!(lib.load().rides.len(), 2);
 
-        // Each era acks only its own ids. The old era's record is archival — it names a ride the
+        // Each era acks only its own ids. The old era's record is archival: it names a ride the
         // device no longer has, and nothing in the new era may claim it.
         assert_eq!(durable_ids(&lib, serial, 0xa1b2c3d4_00000000_00000000_00000000), vec![1]);
         assert_eq!(durable_ids(&lib, serial, 0xa1b2c3d4_00000000_00000000_00000001), vec![1]);
@@ -884,8 +839,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// **Acceptance #4.** What the device is told matches what is on the disk — including after
-    /// something deletes an archive file, which `present` must notice.
+    /// What the device is told matches what is on the disk, including after something deletes an
+    /// archive file, which `present` must notice.
     #[test]
     fn durable_ids_follow_the_filesystem_not_the_index() {
         let base = temp("present");
@@ -936,7 +891,7 @@ mod tests {
 
         assert!(lib.load().rides.is_empty(), "an unreadable index is an empty library");
         assert!(durable_ids(&lib, "S", 1).is_empty(), "and acks nothing — the safe direction");
-        // The files are still there; the next pull re-imports over them.
+        // The files are still there, so the next pull re-imports over them.
         assert!(lib.import(&request("S", 1, 1, "A ride")).expect("re-import").imported);
 
         let _ = std::fs::remove_dir_all(&base);
@@ -1110,8 +1065,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// `present` is not bare existence: a truncated archive file must read as *not durable*, drop
-    /// out of the ack list, and be repaired by the next pull — a re-download, never a wrong ack.
+    /// `present` is not bare existence: a truncated archive file must read as not durable, drop out
+    /// of the ack list, and be repaired by the next pull.
     #[test]
     fn a_truncated_archive_is_not_durable_and_is_repaired() {
         let base = temp("truncated");
@@ -1134,7 +1089,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    // ---------------------------- relocation ----------------------------
+    // Relocation.
 
     #[test]
     fn relocating_moves_the_gpx_files_and_only_them() {
@@ -1154,8 +1109,8 @@ mod tests {
         assert!(moved.entries()[0].gpx_present);
         assert!(!from.exists(), "the old folder is gone once it is empty");
 
-        // Moving into a folder the app has never used works, and a second relocate from an empty
-        // (already-moved) source is a no-op rather than an error.
+        // Moving into a folder the app has never used works, and a second relocate from an already
+        // moved source is a no-op rather than an error.
         relocate(&from, &base.join("third")).expect("nothing to move");
 
         let _ = std::fs::remove_dir_all(&base);
