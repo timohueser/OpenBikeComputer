@@ -1,13 +1,7 @@
-//! Shared helpers for the `obc-route` integration tests.
-//!
-//! The `VecSink` `ByteSink`, the GPX→OBCR `convert` helper, the single-chunk `decode`
-//! helper and the stitched-polyline `route_points` reader were copy-pasted across
-//! `convert.rs`, `format.rs`, `matcher.rs`, `profile.rs`, `track.rs`, `nav.rs` and
-//! `detour.rs`; this module is the single source. Alongside them lives [`build_obcr`],
-//! the hand-rolled OBCR writer the format-contract tests use as an **independent
-//! oracle** — see its own note on why it never calls the production emitter. Not every
-//! test uses every helper, so `#[allow(dead_code)]` keeps the unused-per-binary ones
-//! quiet.
+//! Shared helpers for the `obc-route` integration tests: the `VecSink` `ByteSink`, the GPX to OBCR
+//! `convert` helper, the single-chunk `decode` helper, the stitched-polyline `route_points` reader,
+//! and [`build_obcr`], the hand-rolled OBCR writer the format-contract tests use as an independent
+//! oracle. Not every test uses every helper, so `#[allow(dead_code)]` keeps the unused ones quiet.
 
 #![allow(dead_code)]
 
@@ -17,8 +11,7 @@ use obc_formats::obcr::{
 };
 use obc_route::{RouteIndex, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
 
-/// A `ByteSink` over a growable `Vec` — the host's "write the whole file to RAM"
-/// backing (the device uses a FatFs-backed sink instead).
+/// A `ByteSink` over a growable `Vec`: the host's write-the-whole-file-to-RAM backing.
 #[derive(Default)]
 pub struct VecSink {
     pub buf: Vec<u8>,
@@ -36,7 +29,6 @@ impl ByteSink for VecSink {
     }
 }
 
-/// Convert an in-memory GPX string to `.obcr` bytes via the public converter.
 pub fn convert(name: &str, gpx: &str) -> Vec<u8> {
     let src = SliceSource(gpx.as_bytes());
     let mut sink = VecSink::default();
@@ -44,7 +36,6 @@ pub fn convert(name: &str, gpx: &str) -> Vec<u8> {
     sink.buf
 }
 
-/// Decode chunk `k` of `r` to an owned point vector.
 pub fn decode(r: &RouteReader, k: usize) -> Vec<RoutePoint> {
     let mut out = heapless::Vec::<_, MAX_POINTS_PER_CHUNK>::new();
     r.decode_chunk(k, &mut out).unwrap();
@@ -66,16 +57,12 @@ pub fn route_points(obcr: &[u8]) -> Vec<RoutePoint> {
     pts
 }
 
-// ---------------------------------------------------------------------------------------------
-// The hand-rolled OBCR writer — the format tests' independent oracle.
-//
-// This deliberately does **not** go through `gpx_to_obcr` / `ObcrEmitter`: the converter decides
-// chunk boundaries, decimation and totals itself, and a fixture built with it could only ever
-// prove the reader agrees with the writer. Emitting the bytes here against `OBCR_Spec.md` §1–§4
-// instead pins *both* sides to the spec — if either drifts, these tests break — and lets a test
-// place points in specific chunks with specific cumulative distances, or lie about a field on
-// purpose. Only the fields the reader reads are populated.
-// ---------------------------------------------------------------------------------------------
+// The hand-rolled OBCR writer, the format tests' independent oracle. It deliberately does not go
+// through `gpx_to_obcr`: the converter decides chunk boundaries, decimation and totals itself, so a
+// fixture built with it could only prove that the reader agrees with the writer. Emitting the bytes
+// here against `OBCR_Spec.md` pins both sides to the spec, and lets a test place points in a chosen
+// chunk with chosen cumulative distances, or lie about a field on purpose. Only the fields the
+// reader reads are populated.
 
 /// One chunk to encode: its absolute points (`(lon, lat, ele)`, microdegrees + metres) plus the
 /// cumulative stats stamped at its first point (the values the reader re-anchors to).
@@ -86,13 +73,12 @@ pub struct ChunkIn {
 }
 
 /// A waypoint record to hand-encode: `(dist_along_m, lon, lat, ele, category, name_len,
-/// lateral_offset_m, name_bytes)` — `name_len` is passed explicitly so a test can lie with it.
+/// lateral_offset_m, name_bytes)`. `name_len` is passed explicitly so a test can lie with it.
 pub type WpRec<'a> = (u32, i32, i32, i16, u8, u8, i16, &'a [u8]);
 
-/// Where the chunk-meta index sits relative to the geometry. Both orderings are legal (§1 puts
-/// the two offsets in the header precisely so they can move), and the tests use both: one pins
-/// the index at a known absolute offset so it can corrupt a meta field by hand, the others want
-/// the geometry to start immediately after the header.
+/// Where the chunk-meta index sits relative to the geometry. Both orderings are legal, and the
+/// tests use both: one pins the index at a known absolute offset so it can corrupt a meta field by
+/// hand, the others want the geometry to start right after the header.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum IndexPlacement {
     /// Metas immediately after the 128-byte header, geometry after them.
@@ -101,7 +87,7 @@ pub enum IndexPlacement {
     AfterData,
 }
 
-/// The absolute file byte range a chunk's data region occupies — so a counting `ByteSource` test
+/// The absolute file byte range a chunk's data region occupies, so a counting `ByteSource` test
 /// can name "chunk `k`'s bytes" precisely and prove a skipped chunk was never read.
 #[derive(Clone, Copy)]
 pub struct ChunkExtent {
@@ -118,7 +104,6 @@ pub struct RouteSpec<'a> {
     pub chunks: &'a [ChunkIn],
     /// Header totals `(distance_m, ascent_m, descent_m)`.
     pub totals: (u32, u32, u32),
-    /// Index/geometry ordering — see [`IndexPlacement`].
     pub index: IndexPlacement,
     /// Header start point; defaults to the first chunk's first point.
     pub start: Option<(i32, i32)>,
@@ -128,9 +113,8 @@ pub struct RouteSpec<'a> {
     /// Do consecutive chunks repeat their seam point? When true the header's point count counts
     /// each seam once, the way the converter writes it.
     pub seam_shared: bool,
-    /// The §1.1 waypoint extension: `None` writes the "no table" zeros, `Some(recs)` appends a
-    /// §4 table at the end of the file and points the header at it (`Some(&[])` still writes the
-    /// offset — an empty-but-present table).
+    /// The waypoint extension: `None` writes the "no table" zeros, `Some(recs)` appends a table at
+    /// the end of the file and points the header at it (`Some(&[])` writes an empty table).
     pub waypoints: Option<&'a [WpRec<'a>]>,
 }
 
@@ -150,8 +134,8 @@ impl Default for RouteSpec<'_> {
 }
 
 /// Serialize `spec` into an in-memory `.obcr`, returning the bytes and each chunk's data-region
-/// byte extent. A chunk's body is `(point_count - 1)` fixed 6-byte delta records — the anchor
-/// lives in the chunk-meta, not the body — exactly what `decode_chunk` expects.
+/// byte extent. A chunk's body is `(point_count - 1)` fixed 6-byte delta records: the anchor lives
+/// in the chunk-meta, not the body, which is what `decode_chunk` expects.
 pub fn build_obcr(spec: &RouteSpec) -> (Vec<u8>, Vec<ChunkExtent>) {
     let chunks = spec.chunks;
     assert!(!chunks.is_empty(), "a route needs at least one chunk");
@@ -216,7 +200,7 @@ pub fn build_obcr(spec: &RouteSpec) -> (Vec<u8>, Vec<ChunkExtent>) {
     assert_eq!(metas.len(), metas_len);
     assert_eq!(data.len(), data_len);
 
-    // Header: the 112-byte core plus the §1.1 waypoint extension.
+    // The 112-byte header core plus the waypoint extension.
     let mut h = [0u8; HEADER_FULL_LEN];
     h[0..4].copy_from_slice(b"OBCR");
     h[4] = VERSION;
@@ -258,7 +242,7 @@ pub fn build_obcr(spec: &RouteSpec) -> (Vec<u8>, Vec<ChunkExtent>) {
         }
     }
 
-    // §4 waypoint records, 44 bytes each, at the tail the header now points at.
+    // Waypoint records, 44 bytes each, at the tail the header now points at.
     for &(along, lon, lat, ele, category, name_len, offset, name) in spec.waypoints.unwrap_or(&[]) {
         let mut rec = [0u8; WAYPOINT_LEN];
         put_u32(&mut rec, 0, along);

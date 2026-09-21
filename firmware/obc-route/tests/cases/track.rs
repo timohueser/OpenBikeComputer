@@ -12,14 +12,14 @@ use obc_route::track_to_gpx;
 
 use crate::common::VecSink;
 
-/// A `TrackPoint` with no sensor values — the pre-#707 shape, used where sensors are irrelevant.
+/// A `TrackPoint` with no sensor values, for the tests where sensors are irrelevant.
 fn pt(lon: i32, lat: i32, ele: i16, t_ms: u32, segment_start: bool) -> TrackPoint {
     TrackPoint { lon, lat, ele, t_ms, segment_start, hr: None, cadence: None, power: None }
 }
 
 #[test]
 fn record_roundtrip() {
-    // Mixed present/absent sensor fields, plus the plain no-sensor shape, all round-trip exactly.
+    // Mixed present and absent sensor fields, plus the plain no-sensor shape.
     for p in [
         TrackPoint {
             lon: -7_654_321,
@@ -58,7 +58,7 @@ fn record_roundtrip() {
 }
 
 /// The record is exactly 20 bytes and the sensor tail sits at the documented offsets, with the
-/// sentinels encoding `None`. Pins the sample prefix the v3 ride and clients share.
+/// sentinels encoding `None`. This pins the sample prefix the ride file and its clients share.
 #[test]
 fn record_is_20_bytes_with_sensor_tail() {
     assert_eq!(TRACK_RECORD_LEN, 20);
@@ -123,7 +123,7 @@ fn gpx_coords_and_structure() {
     assert!(gpx.starts_with("<?xml"), "xml prolog");
     assert!(gpx.trim_end().ends_with("</gpx>"), "closes gpx");
     assert!(gpx.contains("<trk><name>Kandel</name>"));
-    // The root element declares the Garmin TrackPointExtension namespace (epic #707).
+    // The root element declares the Garmin TrackPointExtension namespace.
     assert!(gpx.contains("xmlns:gpxtpx=\"http://www.garmin.com/xmlschemas/TrackPointExtension/v1\""));
     // GPX attribute order is lat then lon, fixed 6-decimal degrees.
     assert!(gpx.contains("<trkpt lat=\"47.995000\" lon=\"7.842000\"><ele>300</ele></trkpt>"));
@@ -214,7 +214,7 @@ fn gpx_emits_full_sensor_extensions() {
     );
 }
 
-/// Each element is omitted where its field is absent, but the wrapper still appears when *any*
+/// Each element is omitted where its field is absent, but the wrapper still appears when any
 /// TrackPointExtension field is present. Here only cadence and power are set.
 #[test]
 fn gpx_omits_absent_sensor_elements() {

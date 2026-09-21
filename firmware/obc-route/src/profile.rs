@@ -19,45 +19,39 @@ const NUM_LEVELS: usize = LEVEL_COLS.len();
 /// Cumulative ascent serves the live remaining-climb statistic.
 const ASCENT_COLS: usize = 256;
 
-/// The visible slice of the profile a zoomed/panned view should draw: which pyramid
-/// `level` to read and the fractional `[lo_frac, hi_frac]` route span it covers. Returned
-/// by [`Profile::window`]; the screen maps each chart pixel to a fraction in this span and
-/// reads the band via [`Profile::sample`] at `level`.
+/// The slice of the profile a zoomed view draws: which pyramid level to read and the fractional
+/// route span it covers. The screen maps each chart pixel to a fraction in the span and reads the
+/// band with [`Profile::sample`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Window {
-    /// Pyramid level to sample (0 = finest). Picked so the window holds ≥ the chart's
-    /// pixel width in columns — enough detail without walking more than ~chart-width.
+    /// Pyramid level to sample, 0 being finest. It is picked so the window holds at least the
+    /// chart's pixel width in columns.
     pub level: usize,
-    /// Fractional start of the visible route span (`0.0` = route start).
     pub lo_frac: f32,
-    /// Fractional end of the visible route span (`1.0` = route end).
     pub hi_frac: f32,
 }
 
-/// A route's elevation bands, y-axis range, peak, and cumulative-ascent curve —
-/// everything the Statistics screen draws at any zoom without re-reading the route. Build with
-/// [`RouteReader::elevation_profile`] and cache it.
+/// A route's elevation bands, y-axis range, peak and cumulative-ascent curve: everything the
+/// Statistics screen draws at any zoom without re-reading the route. Build it once and cache it.
 #[derive(Debug, Clone)]
 pub struct Profile {
     /// Base min/max columns. `min > max` marks unknown elevation.
     cols: [(i16, i16); PROFILE_COLS],
-    /// Cumulative route ascent (m) through each column — monotonic non-decreasing,
-    /// normalized so the last column equals the route's total ascent. Computed from the
-    /// per-point elevations at [`ASCENT_COLS`] resolution (not the coarse per-chunk
-    /// samples), so "to climb" is correct even on a route with few chunks.
+    /// Cumulative ascent (m) through each column, non-decreasing and normalized so the last
+    /// column equals the route's total ascent. It comes from the per-point elevations, not the
+    /// coarse per-chunk samples, so "to climb" is correct on a route with few chunks.
     cum_ascent: [u32; ASCENT_COLS],
     grades: [i8; PROFILE_COLS],
-    /// Lowest/highest elevation over the whole route (the y-axis range), from the route
-    /// header. Equal for a perfectly flat route — callers guard the zero-height span.
+    /// The y-axis range, from the route header. The two are equal on a flat route, so callers
+    /// guard the zero-height span.
     pub min_ele_m: i16,
     pub max_ele_m: i16,
-    /// Base-level column of the highest point, for placing the peak label / readout.
+    /// Base-level column of the highest point, for placing the peak label.
     pub peak_col: usize,
 }
 
 impl Profile {
-    /// Empty storage for hosts that build a profile directly into their resident cache.
-    /// [`ride_track_into`] resets every field before filling it.
+    /// Empty storage for a host that builds a profile into its resident cache.
     pub const EMPTY: Self = Profile {
         cols: [(i16::MAX, i16::MIN); PROFILE_COLS],
         cum_ascent: [0; ASCENT_COLS],
@@ -76,27 +70,22 @@ impl Profile {
         self.peak_col = 0;
     }
 
-    /// The base (finest) level's per-column `(min, max)` elevations — always
-    /// [`PROFILE_COLS`] long. The fully-detailed band; zoomed views use [`sample`] /
-    /// [`window`] instead so they can read a coarser level when zoomed out.
-    ///
-    /// [`sample`]: Profile::sample
-    /// [`window`]: Profile::window
+    /// The finest level's per-column `(min, max)` elevations. A zoomed view uses
+    /// [`sample`](Profile::sample) and [`window`](Profile::window) instead, so it can read a
+    /// coarser level.
     #[inline]
     pub fn cols(&self) -> &[(i16, i16)] {
         &self.cols
     }
 
-    /// The `(min, max)` elevation at fractional position `t` along the route
-    /// (`0.0` = start, `1.0` = end) on the **base** level — for the "you are here"
-    /// cursor's readout and the grade window.
+    /// The `(min, max)` elevation at fractional position `t` on the finest level.
     #[inline]
     pub fn at(&self, t: f32) -> (i16, i16) {
         self.sample(0, t)
     }
 
-    /// The `(min, max)` elevation at fractional position `t` on a given pyramid `level`
-    /// — the zoom-aware read the screen uses to draw a [`Window`]'s band column by column.
+    /// The `(min, max)` elevation at fractional position `t` on a pyramid level: the zoom-aware
+    /// read the screen draws a [`Window`] with.
     #[inline]
     pub fn sample(&self, level: usize, t: f32) -> (i16, i16) {
         let level = level.min(NUM_LEVELS - 1);
@@ -120,23 +109,19 @@ impl Profile {
         (grade != i8::MIN).then_some(i32::from(grade))
     }
 
-    /// Peak elevation in meters (the max at [`peak_col`](Profile::peak_col)).
     #[inline]
     pub fn peak_ele_m(&self) -> i16 {
         self.cols[self.peak_col].1
     }
 
-    /// The peak's fractional position along the route (`0.0`–`1.0`) — for placing the
-    /// peak readout relative to the live cursor regardless of zoom.
+    /// The peak's fractional position along the route, for placing its readout at any zoom.
     #[inline]
     pub fn peak_frac(&self) -> f32 {
         self.peak_col as f32 / (PROFILE_COLS - 1) as f32
     }
 
-    /// Cumulative ascent (m) climbed by fractional position `t` along the route
-    /// (`0.0` = start, `1.0` = end) — for "to climb" (`total_ascent - ascent_to`).
-    /// Interpolated at [`ASCENT_COLS`] resolution and normalized so `ascent_to(1.0)` is
-    /// exactly the route's total ascent.
+    /// Cumulative ascent (m) climbed by fractional position `t`. It is normalized so
+    /// `ascent_to(1.0)` is exactly the route's total ascent.
     #[inline]
     pub fn ascent_to(&self, t: f32) -> u32 {
         let last = ASCENT_COLS - 1;
@@ -151,12 +136,8 @@ impl Profile {
         (a + (b - a) * f) as u32
     }
 
-    /// Cumulative ascent (m) climbed by **`dist_m` metres** along a route of `route_total_m` — the
-    /// distance-indexed twin of [`ascent_to`](Self::ascent_to), which every consumer that thinks in
-    /// route metres (matched ride progress, a waypoint's `dist_along_m`, a corridor POI's
-    /// along-route position) wants instead of a fraction it has to derive itself.
-    ///
-    /// A zero-length route has no axis to place `dist_m` on, so it reads `0`.
+    /// The distance-indexed twin of [`ascent_to`](Self::ascent_to), for every consumer that
+    /// thinks in route meters. A zero-length route has no axis, so it reads `0`.
     #[inline]
     pub fn ascent_to_m(&self, dist_m: u32, route_total_m: u32) -> u32 {
         if route_total_m == 0 {
@@ -165,38 +146,29 @@ impl Profile {
         self.ascent_to((dist_m.min(route_total_m) as f32 / route_total_m as f32).clamp(0.0, 1.0))
     }
 
-    /// Ascent (m) still to climb between two along-route distances — `ascent_to_m(to) −
-    /// ascent_to_m(from)`, saturating so a backwards pair reads `0` rather than wrapping.
-    ///
-    /// This is the one "climb between here and there" lookup: the Up-ahead rows' climb-to-go
-    /// (`from` = matched progress, `to` = the entry's `dist_along_m`), the `TO CLIMB` tile and the
-    /// ETA model's ascent-to-go (`to` = `route_total_m`) all read it, so they cannot drift apart.
-    /// Non-increasing in `from` and non-decreasing in `to`, since the curve is monotonic.
+    /// Ascent (m) between two along-route distances, saturating so a backwards pair reads `0`.
+    /// This is the one "climb between here and there" lookup, so the Up-ahead rows, the TO CLIMB
+    /// tile and the ETA model cannot drift apart.
     #[inline]
     pub fn ascent_between_m(&self, from_m: u32, to_m: u32, route_total_m: u32) -> u32 {
         self.ascent_to_m(to_m, route_total_m).saturating_sub(self.ascent_to_m(from_m, route_total_m))
     }
 
-    /// Pick the pyramid [`Window`] to draw for a view centered on `center_frac` at zoom
-    /// factor `zoom` (`1.0` = whole route, larger = closer), into a chart `target_px`
-    /// wide.
+    /// Pick the [`Window`] to draw for a view centered on `center_frac` at zoom factor `zoom`,
+    /// into a chart `target_px` wide.
     ///
-    /// The visible span is `1/zoom` of the route, clamped to stay within `[0, 1]`. The
-    /// level is the **coarsest** one that still puts at least `target_px` columns inside
-    /// that span — so the draw has a source column per pixel without walking more than
-    /// ~`2·target_px`. Pure arithmetic over cached bands: no geometry is read, so
-    /// this is cheap to call per step.
+    /// The level is the coarsest one that still puts at least `target_px` columns inside the
+    /// visible span, so the draw has a source column per pixel without walking much more. It reads
+    /// no geometry, so it is cheap to call per step.
     pub fn window(&self, center_frac: f32, zoom: f32, target_px: u32) -> Window {
         let zoom = zoom.max(1.0);
         let span = (1.0 / zoom).min(1.0);
         let half = span * 0.5;
-        // Clamp the centre so the fixed-width span never runs off either end.
         let lo = (center_frac - half).clamp(0.0, 1.0 - span);
         let hi = (lo + span).min(1.0);
 
-        // Coarsest level first; the first that holds ≥ target_px columns in the span wins
-        // (fewest columns to walk at adequate detail). Falls through to the finest level
-        // when zoomed in past what even the base resolves.
+        // Coarsest level first. It falls through to the finest level when zoomed in past what
+        // the base resolves.
         let mut level = 0;
         for l in (0..NUM_LEVELS).rev() {
             if span * LEVEL_COLS[l] as f32 >= target_px as f32 {
@@ -209,34 +181,29 @@ impl Profile {
 }
 
 impl RouteReader<'_> {
-    /// Build the route's elevation [`Profile`] by streaming every chunk in order and
-    /// bucketing each point into a base-level column by its cumulative distance from the
-    /// start. Coarser levels are merged when sampled.
+    /// Build the route's elevation [`Profile`] by streaming every chunk in order and bucketing
+    /// each point into a base-level column by its cumulative distance. Coarser levels merge when
+    /// sampled.
     ///
     /// Each chunk re-anchors to its stored
-    /// [`cum_distance_m`](crate::ChunkMeta::cum_distance_m) and accumulates per-segment
-    /// distance within the chunk using the same metric the converter did, so column
-    /// placement matches the format's distance exactly and can't drift over a long
-    /// route. O(points), reading each chunk once — cache the result, don't call it per
-    /// frame.
+    /// [`cum_distance_m`](crate::ChunkMeta::cum_distance_m) and uses the same distance metric the
+    /// converter did, so column placement matches the format exactly. Each chunk is read once, so
+    /// cache the result rather than calling this per frame.
     pub fn elevation_profile(&self) -> Profile {
-        // Sentinel for "no point landed here": an empty column has min > max. Only the
-        // base level is filled by the sweep; coarser bands are merged when sampled.
+        // An empty column carries the sentinel `min > max`.
         let mut cols = [(i16::MAX, i16::MIN); PROFILE_COLS];
         let mut gaps = [false; PROFILE_COLS];
         let mut grades = [i8::MIN; PROFILE_COLS];
         let mut previous_sample: Option<(RoutePoint, usize)> = None;
-        // Running dead-banded ascent recorded at the last point of each ascent column
-        // (0 = none yet); carried forward and scaled into `cum_ascent` below.
+        // The running ascent at the last point of each ascent column, carried forward and scaled
+        // into `cum_ascent` below.
         let mut casc = [0f32; ASCENT_COLS];
         let total = self.total_distance_m.max(1) as f64;
         let base_last = PROFILE_COLS - 1;
         let asc_last = ASCENT_COLS - 1;
 
-        // One sweep over the whole route: bucket each point into its distance column,
-        // updating that column's elevation band and the continuous ascent integrator. The
-        // integrator runs *across* chunk seams (a chunk's shared seam point compares equal
-        // to itself, contributing nothing), so it stays one continuous pass.
+        // The integrator runs across chunk seams: a shared seam point compares equal to itself
+        // and contributes nothing, so this stays one continuous pass.
         let mut ascent = DeadBand::<f32>::new();
         let mut buf: Vec<RoutePoint, MAX_POINTS_PER_CHUNK> = Vec::new();
         let n = self.chunks().len();
@@ -244,10 +211,8 @@ impl RouteReader<'_> {
             if self.decode_chunk(k, &mut buf).is_err() {
                 return Profile::EMPTY;
             }
-            // The chunk's first point sits at its cumulative distance; the rest add up
-            // segment by segment from there. Like the converter, accumulate the small
-            // per-segment `f32` distances into an `f64` running total so a long route's
-            // column placement can't drift (the two must match exactly — same metric).
+            // Like the converter, the small per-segment `f32` distances accumulate into an
+            // `f64` total, so a long route's column placement cannot drift.
             let mut dist = self.chunks()[k].cum_distance_m as f64;
             let mut prev: Option<(i32, i32)> = None;
             for p in &buf {
@@ -282,8 +247,8 @@ impl RouteReader<'_> {
                 let slot = &mut cols[col];
                 slot.0 = slot.0.min(p.ele);
                 slot.1 = slot.1.max(p.ele);
-                // Record the running ascent at this column (later points in the same column
-                // overwrite, so it ends on the correct value).
+                // A later point in the same column overwrites this, so the column ends on the
+                // correct value.
                 let acol = ((frac * asc_last as f64) as usize).min(asc_last);
                 if p.elevation_incomplete {
                     ascent.pause();
@@ -307,25 +272,19 @@ impl RouteReader<'_> {
     }
 }
 
-/// Fill a recorded ride's elevation [`Profile`] and preview from one pass over its 20-byte samples.
+/// Fill a recorded ride's elevation [`Profile`] and preview from one pass over its samples.
 ///
-/// The route twin is [`RouteReader::elevation_profile`]; this shares its whole tail (gap-fill,
-/// cumulative ascent, peak) and differs only in the sweep:
-/// - points are the final object's 20-byte records (`lon, lat` in microdegrees, exactly as they
-///   were recorded); the fixed summary footer is not part of the sweep;
-/// - columns bucket by the accumulated segment distance over the **header's** `distance` total
-///   (the one total knowable in a single pass; the tail past it clamps into the last column and
-///   any unreached columns gap-fill);
-/// - the y-range is the sweep's own min/max (the ride header stores none) and the ascent curve
-///   normalizes to the header's `climb` total.
+/// It shares the gap-fill, cumulative ascent and peak of
+/// [`RouteReader::elevation_profile`] and differs only in the sweep: columns bucket by the
+/// accumulated segment distance over the header's own distance total, which is the one total
+/// knowable in a single pass, and the y-range is the sweep's own min and max, because the ride
+/// header stores none.
 ///
-/// Fill the caller's profile and preview together, reading the footer once and each 32-record
-/// block (640 B) once. The preview keeps at most `N` uniformly spaced point indices, including
-/// both endpoints, as `(lon, lat)` microdegrees. No whole-track buffer or by-value profile is
-/// allocated: the board fills its resident profile without growing its task frame.
+/// The preview keeps at most `N` uniformly spaced point indices, both endpoints included. No
+/// whole-track buffer or by-value profile is allocated, so the board fills its resident profile
+/// without growing its task frame.
 ///
-/// On error, the preview is empty and the partially filled profile must not be published.
-/// Rejects what [`RideInfo::read`](crate::RideInfo::read) rejects (bad version, torn length).
+/// On an error the preview is empty and the partly filled profile must not be published.
 pub fn ride_track_into<const N: usize>(
     src: &dyn ByteSource,
     out: &mut Profile,
@@ -339,10 +298,9 @@ pub fn ride_track_into<const N: usize>(
     let keep = N.min(total_points);
     let mut next = 0usize;
 
-    // Build the band **into the result value**, not a separate `cols` scratch: the array is
-    // `PROFILE_COLS × 4 B` and moving a local into the returned `Profile` at the end leaves both
-    // live in the frame at once. Written in place it exists once (the ascent curve stays a local
-    // — it integrates as `f32` and is quantised into the struct's `u32` at the end).
+    // The band is built into the result value, not a `cols` scratch: moving a local into the
+    // result would leave both live in the frame at once. The ascent curve stays a local because
+    // it integrates as `f32` and is quantised at the end.
     out.reset();
     let mut casc = [0f32; ASCENT_COLS];
     let total = info.distance_m.max(1) as f64;
@@ -350,8 +308,8 @@ pub fn ride_track_into<const N: usize>(
     let asc_last = ASCENT_COLS - 1;
     let (mut min_ele, mut max_ele) = (i16::MAX, i16::MIN);
 
-    // One sweep over the point records, a block per read — the distance runs through elevation
-    // gaps (a no-ele point still moves the rider), the ascent integrator only over real samples.
+    // The distance runs through elevation gaps, because a point without a height still moves the
+    // rider; the ascent integrator runs only over real samples.
     let mut ascent = DeadBand::<f32>::new();
     let mut dist = 0f64;
     let mut prev: Option<(i32, i32)> = None;
@@ -373,7 +331,6 @@ pub fn ride_track_into<const N: usize>(
             if preview.len() < keep && done as usize + i == next {
                 let _ = preview.push(p);
                 if preview.len() < keep {
-                    // Uniform point indices, including both endpoints (keep >= 2 here).
                     next = preview.len() * (total_points - 1) / (keep - 1);
                 }
             }
@@ -395,7 +352,7 @@ pub fn ride_track_into<const N: usize>(
         done += n as u32;
     }
 
-    // A ride with no elevation at all (every point the sentinel): a flat zero band, not i16 junk.
+    // A ride with no elevation at all reads as a flat zero band, not as sentinel values.
     if min_ele > max_ele {
         (min_ele, max_ele) = (0, 0);
     }
@@ -407,38 +364,31 @@ pub fn ride_track_into<const N: usize>(
     Ok(())
 }
 
-/// Buckets in the received-route card's mini elevation sparkline (#682): one min–max-normalized
-/// `u8` height per bucket, sampled left-to-right along the route. Small and fixed so the
-/// route-upload seam can carry the whole band by value with the event.
+/// Buckets in the received-route card's mini elevation sparkline: one normalized `u8` height each.
+/// Small and fixed, so the route-upload seam carries the whole band by value with the event.
 pub const SPARKLINE_BUCKETS: usize = 64;
 
-/// Build the received-route card's mini elevation sparkline by streaming the route **once**:
-/// bucket every point into one of [`SPARKLINE_BUCKETS`] distance columns (keeping each column's
-/// peak height), fill any column no point landed in from its neighbour, then min–max-normalize the
-/// columns to `u8`. Returns `None` for a flat range, incomplete elevation, or an unreadable
-/// chunk: this compact band cannot represent a gap.
+/// Build the received-route card's mini elevation sparkline by streaming the route once: bucket
+/// every point into one of [`SPARKLINE_BUCKETS`] distance columns, keeping each column's peak,
+/// fill any empty column from its neighbour, then normalize to `u8`. `None` for a flat range,
+/// incomplete elevation or an unreadable chunk, because this compact band cannot hold a gap.
 ///
-/// Column placement mirrors [`RouteReader::elevation_profile`] (re-anchor each chunk to its
-/// [`cum_distance_m`](crate::ChunkMeta::cum_distance_m), accumulate per-segment distance from
-/// there), so the mini band reads as a coarser copy of the full Route-overview band. `O(points)`,
-/// one pass over the geometry — call it once at commit time on the host, never on the render path.
+/// Column placement matches [`RouteReader::elevation_profile`], so the mini band reads as a
+/// coarser copy of the full one. Call it once at commit time, never on the render path.
 pub fn elevation_sparkline(src: &dyn ByteSource) -> Option<[u8; SPARKLINE_BUCKETS]> {
-    // **Streams the chunk index; never materialises it.** A `RouteIndex` is
-    // `MAX_ROUTE_CHUNKS × 48 B` and is returned by value, so building one here put tens of KB on
-    // the stack to produce this function's 64-byte result (73.7 KB measured on the LM20 at 512
-    // chunks — more than the whole stack region; issue: LM20 retarget, 2026-07-24). Nothing here
-    // needs random access: the walk is strictly forward, one chunk at a time, so it reads each
-    // 48-byte meta straight from the source through the same `parse_chunk_meta` the index build
-    // uses. Resident cost is now the point scratch alone, independent of `MAX_ROUTE_CHUNKS`.
+    // This streams the chunk index and never materialises it. A `RouteIndex` is returned by
+    // value, so building one here would put tens of kB on the stack for a 64-byte result. The
+    // walk is strictly forward, so it reads each meta straight from the source. The resident cost
+    // is the point scratch alone, independent of `MAX_ROUTE_CHUNKS`.
     let h = read_header(src).ok()?;
     let lo = h.min_ele_m as i32;
     let span = h.max_ele_m as i32 - lo;
     if span <= 0 {
-        return None; // flat / no elevation — omit the band
+        return None; // flat or no elevation: omit the band
     }
     let total = h.total_distance_m.max(1) as f64;
     let last = SPARKLINE_BUCKETS - 1;
-    // Peak height per bucket; sentinel `i16::MIN` = "no point landed here" (gap-filled below).
+    // Peak height per bucket. `i16::MIN` marks a bucket no point landed in.
     let mut maxes = [i16::MIN; SPARKLINE_BUCKETS];
     let mut buf: Vec<RoutePoint, MAX_POINTS_PER_CHUNK> = Vec::new();
     let mut meta_bytes = [0u8; CHUNK_META_LEN];
@@ -471,8 +421,8 @@ pub fn elevation_sparkline(src: &dyn ByteSource) -> Option<[u8; SPARKLINE_BUCKET
             }
         }
     }
-    // Carry the last filled height across empty buckets (sparse geometry can skip one), forward
-    // then backward for any leading gap — the profile's gap-fill, one channel.
+    // Carry the last filled height across empty buckets, forward and then backward for a leading
+    // gap: the profile's gap-fill over one channel.
     let mut carry: Option<i16> = None;
     for m in maxes.iter_mut() {
         match carry {
@@ -494,9 +444,9 @@ pub fn elevation_sparkline(src: &dyn ByteSource) -> Option<[u8; SPARKLINE_BUCKET
     Some(out)
 }
 
-/// Turn the per-column running ascent (`casc`, set only where points landed) into a
-/// gap-free, monotonic-non-decreasing cumulative-ascent curve, scaled so the final column
-/// equals the header's exact `total_ascent_m` (so "to climb" reaches 0 at the route's end).
+/// Turn the per-column running ascent, which is set only where points landed, into a gap-free
+/// non-decreasing curve scaled so the final column is exactly `total_ascent_m`. That makes "to
+/// climb" reach 0 at the route end.
 fn cumulative_ascent(casc: &[f32; ASCENT_COLS], total_ascent_m: u32) -> [u32; ASCENT_COLS] {
     let last_col = ASCENT_COLS - 1;
     // Carry the running value across empty columns, keeping the curve non-decreasing.
@@ -506,7 +456,7 @@ fn cumulative_ascent(casc: &[f32; ASCENT_COLS], total_ascent_m: u32) -> [u32; AS
         run = run.max(casc[i]);
         raw[i] = run;
     }
-    // Scale to the header's exact total, then pin the endpoint so rounding can't miss it.
+    // Pin the endpoint after scaling, so rounding cannot miss it.
     let mut cum = [0u32; ASCENT_COLS];
     if raw[last_col] > 0.0 {
         let scale = total_ascent_m as f32 / raw[last_col];
@@ -518,7 +468,6 @@ fn cumulative_ascent(casc: &[f32; ASCENT_COLS], total_ascent_m: u32) -> [u32; AS
     cum
 }
 
-/// The column index of the route's highest point (for placing the peak label).
 fn peak_column(cols: &[(i16, i16)]) -> usize {
     let mut peak_col = 0;
     let mut peak = i16::MIN;
@@ -531,16 +480,13 @@ fn peak_column(cols: &[(i16, i16)]) -> usize {
     peak_col
 }
 
-/// Make `cols` gap-free: each empty column inherits the nearest filled column — forward carry
-/// first, then a backward carry for any leading run of empties the forward pass can't reach. A
-/// column still empty after both falls back to `fallback`, so the buffer is never left holding a
-/// sentinel.
+/// Make `cols` gap-free: each empty column inherits the nearest filled one, forward first and
+/// then backward for a leading run the forward pass cannot reach. A column still empty after both
+/// takes `fallback`, so the buffer never keeps a sentinel.
 ///
-/// Generic over the column payload and its emptiness test, because both elevation buffers want
-/// exactly this carry: the route [`Profile`]'s `(min, max)` band (sentinel `min > max`, falling
-/// back to the header extent so the band still has a shape when a route decodes to nothing) and
-/// the [`ClimbProfile`](crate::climb_profile::ClimbProfile)'s one-sample-per-column scalar
-/// (sentinel [`EMPTY`](crate::climb_profile), falling back to the seg's base).
+/// It is generic over the payload and its emptiness test because both elevation buffers want this
+/// carry: the route [`Profile`]'s band and the
+/// [`ClimbProfile`](crate::climb_profile::ClimbProfile)'s per-column scalar.
 pub(crate) fn fill_gaps<T: Copy>(cols: &mut [T], fallback: T, is_set: impl Fn(&T) -> bool) {
     let mut last: Option<T> = None;
     for c in cols.iter_mut() {
@@ -550,7 +496,7 @@ pub(crate) fn fill_gaps<T: Copy>(cols: &mut [T], fallback: T, is_set: impl Fn(&T
             *c = v;
         }
     }
-    // Backward carry fills columns before the first set one (forward carry can't reach).
+    // The backward carry fills the columns before the first set one.
     let mut next: Option<T> = None;
     for c in cols.iter_mut().rev() {
         if is_set(c) {
@@ -559,7 +505,7 @@ pub(crate) fn fill_gaps<T: Copy>(cols: &mut [T], fallback: T, is_set: impl Fn(&T
             *c = v;
         }
     }
-    // Only reachable when the whole span had no decodable points.
+    // Only reached when the whole span had no decodable points.
     for c in cols.iter_mut() {
         if !is_set(c) {
             *c = fallback;
@@ -567,13 +513,13 @@ pub(crate) fn fill_gaps<T: Copy>(cols: &mut [T], fallback: T, is_set: impl Fn(&T
     }
 }
 
-/// The band buffer's emptiness test: an unwritten column carries the inverted sentinel `min > max`.
+/// An unwritten column carries the inverted sentinel `min > max`.
 fn band_is_set(c: &(i16, i16)) -> bool {
     c.0 <= c.1
 }
 
-/// Normalize a `(min, max)` band fallback so it reads as *set* — the header extent is trusted for
-/// its two values, not for their order.
+/// Normalize a band fallback so it reads as set: the header extent is trusted for its two values,
+/// not for their order.
 fn band_fallback(fallback: (i16, i16)) -> (i16, i16) {
     (fallback.0.min(fallback.1), fallback.0.max(fallback.1))
 }

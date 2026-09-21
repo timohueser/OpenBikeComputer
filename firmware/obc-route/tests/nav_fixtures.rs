@@ -7,26 +7,16 @@ use obc_formats::io::SliceSource;
 use obc_reader::{MapCache, MapTables, NavTileCache, Reader};
 use obc_route::nav::{plan_route, NavScratch};
 
-/// N5's acceptance ride (#538): over the **real re-packed grimsel map** (the sim's committed
-/// asset, shipping the default Road/Gravel/MTB/Touring table), the same endpoints planned under
-/// Road (profile 0) vs MTB (profile 2) produce **different polylines** — the profile weights
-/// genuinely steer the search, end-to-end through the same `plan_route` both hosts call. The raw
-/// lengths differ too (by ~2.8 km — the paved detour Road prefers vs the direct track MTB takes),
-/// so the assert can't pass on emit jitter.
+/// Over the real packed grimsel map, the same endpoints planned under Road (profile 0) and MTB
+/// (profile 2) give different polylines: the profile weights steer the search end to end. The raw
+/// lengths differ by ~2.8 km, so the assert cannot pass on emit jitter.
 ///
-/// The endpoints are a pinned pair from a deterministic sweep of the map's own nav nodes, chosen
-/// **inside the canonical grimsel extract bbox** (`8.15034,46.48261,8.46007,46.72070` — see
-/// `obc-sim/assets/README.md`'s provenance rules; the header bbox is always somewhat wider than
-/// the extract, so pinning against the extract bbox is what survives a re-pack). Verified
-/// divergent on **both** the currently-committed fixture and the canonical re-pack of PR #549
-/// (identical road/mtb lengths, 8 867 m / 6 051 m, on the two packs), so the test stays green
-/// whichever lands first — both plans stay well inside the 1536-node table. A future re-pack
-/// from a newer
-/// OSM snapshot could still move the graph enough to need a re-pin — the sweep in this PR's
-/// description is the recipe.
-// Reads the real grimsel fixture from disk, which Miri's default isolation forbids (and the 6.5 MB
-// parse is glacial under Miri anyway) — skip it there. The UB tripwire this suite exists for is the
-// §8 record decode over the synthetic writer→reader fixtures, which stay in the Miri run.
+/// The endpoints are pinned from a deterministic sweep of the map's own nav nodes, chosen inside
+/// the canonical grimsel extract bbox (`8.15034,46.48261,8.46007,46.72070`). The header bbox is
+/// always wider than the extract, so pinning against the extract bbox is what survives a re-pack.
+/// A re-pack from a newer OSM snapshot can still move the graph enough to need a re-pin.
+// Reads the fixture from disk, which Miri's default isolation forbids, so it is skipped there. The
+// UB tripwire is the record decode over the synthetic fixtures, which stay in the Miri run.
 #[cfg_attr(miri, ignore)]
 #[test]
 fn road_vs_mtb_diverge_over_grimsel() {
@@ -45,12 +35,9 @@ fn road_vs_mtb_diverge_over_grimsel() {
     assert_ne!(road.total_distance_m, mtb.total_distance_m, "the two profiles' picks differ in raw ground length too");
 }
 
-/// The end-to-end article, on the committed fixtures: the Grimsel map's nav graph planned through
-/// the Grimsel **terrain sidecar** (EL2's `grimsel.obcd`, the same file the simulator mounts).
-/// Nothing synthetic — this is the number a rider would see on the Route overview.
-// Reads the committed fixtures from disk, which Miri's default isolation forbids — skip it there,
-// like `road_vs_mtb_diverge_over_grimsel`. (Missed when EL7 landed; the module's standing
-// `cargo +nightly miri test -p obc-route --test nav` aborted on it.)
+/// The Grimsel map's nav graph planned through the Grimsel terrain sidecar, the same file the
+/// simulator mounts. Nothing synthetic: this is the number a rider would see on the Route overview.
+// Reads the committed fixtures from disk, so Miri skips it.
 #[cfg_attr(miri, ignore)]
 #[test]
 fn a_real_grimsel_plan_carries_the_pass_road_profile() {
@@ -72,8 +59,7 @@ fn a_real_grimsel_plan_carries_the_pass_road_profile() {
     let route = plan_route(&r, from, to, "Grimsel", 0, &mut scratch, &mut tiles, &mut terrain, &mut sink)
         .expect("the pass road plans");
 
-    // Alpine valley floor to well up the pass: heights in the hundreds-to-thousands, never the
-    // 0 m a missing fill would leave, and a climb that is real without being absurd.
+    // Alpine ground, never the 0 m a missing fill would leave, and a real but not absurd climb.
     assert!((500..=2_200).contains(&route.min_ele_m), "min {} m is not alpine ground", route.min_ele_m);
     assert!((500..=2_600).contains(&route.max_ele_m), "max {} m is not alpine ground", route.max_ele_m);
     assert!(route.max_ele_m > route.min_ele_m + 100, "a pass road is not flat ({route:?})");
@@ -84,14 +70,11 @@ fn a_real_grimsel_plan_carries_the_pass_road_profile() {
     assert!(hits > misses, "the 4-tile cache serves the walk ({hits} hit / {misses} miss)");
 }
 
-/// **Round-trip parity** — the property the shared dead-band exists for: write a planned route out
-/// as GPX (what any exporter does with the stored points) and re-import it through
-/// [`gpx_to_obcr`](obc_route::gpx_to_obcr); the re-imported route's own climb agrees with the
-/// header the planner wrote. Without the emit-time fill both sides are 0 and the check is vacuous;
-/// with it, the two independently-computed totals have to land on each other.
-///
-/// This route lies wholly inside the terrain coverage. Every exported point must have a
-/// measured height, so the export cannot turn an unknown span into a false elevation sample.
+/// Round-trip parity, the property the shared dead-band exists for: write a planned route out as
+/// GPX and re-import it through [`gpx_to_obcr`](obc_route::gpx_to_obcr). The re-imported climb must
+/// agree with the header the planner wrote. Without the emit-time fill both sides are 0 and the
+/// check is vacuous. This route lies wholly inside the terrain coverage, so every exported point
+/// has a measured height and the export cannot turn an unknown span into a false sample.
 #[cfg_attr(miri, ignore)] // reads the committed fixtures from disk — see the note above
 #[test]
 fn a_planned_route_exported_to_gpx_and_reimported_keeps_its_climb() {
