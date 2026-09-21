@@ -1,28 +1,22 @@
 //! The drawn Peak View skyline against six photographs of the Engelberg mountains.
 //!
-//! This is the only ground truth Peak View has. The owner stood at four positions near Engelberg
-//! and photographed the mountains; each photograph's skyline was registered on the 2 m swissALTI3D
-//! skyline once, and the columns that survived — the bearings where the reference agrees with the
-//! photograph within half a degree — are recorded in the fixture package as
-//! `(bearing, elevation)` pairs on a quarter-degree grid. `fixtures/sources/peak-view/photos/`
-//! holds the same files, and the package README records how they were made.
+//! This is the only ground truth Peak View has. Each photograph's skyline was registered on the 2 m
+//! swissALTI3D skyline once, and the columns that survived — the bearings where the reference
+//! agrees with the photograph within half a degree — are recorded in the fixture package as
+//! `(bearing, elevation)` pairs on a quarter-degree grid. The package README records how they were
+//! made. The test draws the whole panorama with the production [`Builder`] over the package's
+//! terrain shard, at the recorded position, and measures the root-mean-square difference between
+//! the drawn skyline and the photograph's, bearing by bearing.
 //!
-//! The test draws the whole panorama with the production [`Builder`] over the package's terrain
-//! shard, at the recorded position, and measures the root-mean-square difference between the drawn
-//! skyline and the photograph's, bearing by bearing.
+//! The eye comes from the photographs, not from the product: it stands 1.6 m above the swissALTI3D
+//! ground, the height the phone was held at, which the device does not have. So this suite measures
+//! the surface and the traversal over it, and deliberately does not exercise
+//! [`obc_app::peak_view::eye_ground`], which has unit tests of its own.
 //!
-//! **The eye comes from the photographs, not from the product.** It stands 1.6 m above the
-//! swissALTI3D ground at the position — the height the phone was held at, and a measurement the
-//! device does not have. So this suite measures the *surface* and the traversal over it, and it
-//! deliberately does not exercise [`obc_app::peak_view::eye_ground`], whose own rule (a settled
-//! altimeter, else the cell top) has unit tests of its own. Were the eye taken from the container
-//! here, a summit's lifted cell top would raise the observer and lower every distant horizon with
-//! it, and a change in the lift rule would move these numbers twice.
-//!
-//! Each limit is the measured value plus 0.05 degrees. A limit is therefore a **pin**, not an
-//! accuracy target: it holds the surface and the crest lift rule where the photographs say they
-//! are now, and a change that moves either has to say why. The shard's digest is pinned with
-//! them, because a repacked shard would move every number at once and silently.
+//! Each limit is the measured value plus 0.05 degrees, so a limit is a pin rather than an accuracy
+//! target: it holds the surface and the crest lift rule where the photographs say they are, and a
+//! change that moves either has to say why. The shard's digest is pinned with them, because a
+//! repacked shard would move every number at once and silently.
 
 #![cfg(feature = "external-fixtures")]
 
@@ -83,11 +77,10 @@ fn photo(name: &str) -> Photo {
 /// The whole circle, drawn the way the device draws it, and the row terrain reached in each of its
 /// columns.
 ///
-/// `Builder` keeps only the last finished sector's skyline — it sits in the device's panorama
-/// arena and a full circle of rows would spend most of the space that arena has left — so the
-/// circle is collected a sector at a time. One unit of work per `step` is what makes that exact:
-/// a unit finishes at most one sector, and the same call begins the next one over the same
-/// scratch.
+/// `Builder` keeps only the last finished sector's skyline, because it sits in the device's
+/// panorama arena and a full circle of rows would spend most of the space that arena has left, so
+/// the circle is collected a sector at a time. One unit of work per `step` is what makes that
+/// exact: a unit finishes at most one sector, and the same call begins the next one.
 fn draw(terrain: &mut Terrain<'_>, photo: &Photo) -> (PeakViewProfile<'static>, [u8; COLUMNS]) {
     let mut profile = PeakViewProfile::at(photo.lat, photo.lon, photo.eye_m);
     profile.default_heading_q4 = photo.heading_q4;

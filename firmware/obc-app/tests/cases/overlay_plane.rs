@@ -1,10 +1,7 @@
-//! The map / overlay plane split ([`App::render_map`] + [`App::render_overlay`], issue #45). Two
-//! contracts:
-//!
-//! 1. **Compositing isolation** — `render_overlay` over an already-rendered map touches only its own
-//!    pixels (the hold bulge), never clearing or repainting the map.
-//! 2. **Liveness** — `App::overlay_active()` is true exactly across a hold's charge → pop (and an
-//!    early-release retract), so a host repaints the overlay layer only when it would change a pixel.
+//! The map / overlay plane split ([`App::render_map`] + [`App::render_overlay`]). Two contracts:
+//! `render_overlay` over an already-rendered map touches only its own pixels (the hold bulge), and
+//! `App::overlay_active()` is true exactly across a hold's charge, pop and early-release retract,
+//! so a host repaints the overlay layer only when it would change a pixel.
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::screen::palette;
@@ -30,13 +27,12 @@ fn render_overlay_touches_only_overlay_pixels() {
     let (w, h) = (240i32, 320i32);
     let hud = rgb(palette::HUD); // the near-black bulge color
 
-    // Charge Select past the dead zone (300 ms of a 500 ms threshold) so the
-    // overlay has a bulge to draw on the right edge.
+    // Charge Select past the dead zone (300 ms of a 500 ms threshold) so the overlay has a bulge to
+    // draw on the right edge.
     let mut app = App::new(AppState::new(0, 0, 0.05));
     app.handle_input(InputClock(0), &mut keys(&[down(Button::Select)]));
     app.handle_input(InputClock(300), &mut keys(&[]));
 
-    // Render the map, snapshot it, then composite the overlay over the *same* buffer.
     let mut buf = Buf::new(w, h);
     let mut scratch = Box::new(obc_render::RenderScratch::new());
     app.render_map(Some(&mut scratch), &mut buf, &reader, None, w as f32, h as f32, rgb);
@@ -71,7 +67,7 @@ fn render_frame_equals_map_then_overlay() {
     let reader = Reader::new(&src, &tables, &cache);
     let (w, h) = (240i32, 320i32);
 
-    // The thin `render_frame` convenience vs. the explicit `render_map` + `render_overlay` a
+    // The thin `render_frame` convenience against the explicit `render_map` + `render_overlay` a
     // dual-layer host calls. Draw order is preserved, so the results must be byte-identical.
     let make_app = || {
         let mut app = App::new(AppState::new(0, 0, 0.05));
@@ -96,7 +92,6 @@ fn render_frame_equals_map_then_overlay() {
 fn overlay_active_is_true_exactly_across_a_completed_hold() {
     let mut app = App::new(AppState::new(0, 0, 0.05));
 
-    // At rest there is nothing to draw.
     app.handle_input(InputClock(0), &mut keys(&[]));
     assert!(!app.overlay_active(), "no hold ⇒ the overlay is quiet");
 
@@ -105,11 +100,9 @@ fn overlay_active_is_true_exactly_across_a_completed_hold() {
     app.handle_input(InputClock(50), &mut keys(&[]));
     assert!(!app.overlay_active(), "inside the dead zone ⇒ still quiet");
 
-    // Charging past the dead zone ⇒ the bulge is live.
     app.handle_input(InputClock(300), &mut keys(&[]));
     assert!(app.overlay_active(), "charging past the dead zone ⇒ overlay live");
 
-    // The hold crosses its threshold and fires ⇒ the confirm pop is live.
     app.handle_input(InputClock(600), &mut keys(&[]));
     assert!(app.overlay_active(), "the confirm pop is live");
 
@@ -122,7 +115,6 @@ fn overlay_active_is_true_exactly_across_a_completed_hold() {
 fn overlay_active_spans_an_early_release_retract() {
     let mut app = App::new(AppState::new(0, 0, 0.05));
 
-    // Charge past the dead zone, then release before the threshold ⇒ the bulge retracts.
     app.handle_input(InputClock(0), &mut keys(&[down(Button::Select)]));
     app.handle_input(InputClock(300), &mut keys(&[]));
     assert!(app.overlay_active(), "charging ⇒ overlay live");
@@ -135,11 +127,9 @@ fn overlay_active_spans_an_early_release_retract() {
     assert!(!app.overlay_active(), "overlay quiet once the retract finishes");
 }
 
-// --- The optional scratch (#1146 P2) ---
-
-/// The **`None` arm**, which nothing else on the host side reaches: every host renders with a
-/// scratch, while the board hands `None` on every chrome frame — that is the whole point of making
-/// it optional, since a menu frame drawn while a route search owns the arena must still draw.
+/// The `None` arm, which nothing else on the host side reaches: every host renders with a scratch,
+/// while the board hands `None` on every chrome frame, so that a menu frame drawn while a route
+/// search owns the arena still draws.
 #[test]
 fn a_chrome_frame_renders_identically_with_no_scratch_at_all() {
     let bytes = build_min_obcm(0);
@@ -149,7 +139,7 @@ fn a_chrome_frame_renders_identically_with_no_scratch_at_all() {
     let reader = Reader::new(&src, &tables, &cache);
     let (w, h) = (240i32, 320i32);
 
-    // Home (the device's real boot state) is a chrome base: nothing in its draw path touches the
+    // Home, the device's real boot state, is a chrome base: nothing in its draw path touches the
     // render scratch.
     let make = || App::new_idle(AppState::new(0, 0, 0.05));
     assert!(!make().base_draws_map(), "Home draws no map");
@@ -164,10 +154,9 @@ fn a_chrome_frame_renders_identically_with_no_scratch_at_all() {
     assert!(bare.px == lent.px, "a chrome frame must not depend on the host lending its scratch");
 }
 
-/// And the arm's failure half: `None` under a map-drawing base is a **caller bug**, so the map is
-/// skipped rather than invented — loudly in debug (the `debug_assert` in `draw_map_scene`), quietly
-/// on a shipping board, where the frame degrades to its own chrome instead of faulting mid-ride.
-/// Neither half had any coverage, and the release half has none by construction on the board.
+/// The arm's failure half: `None` under a map-drawing base is a caller bug, so the map is skipped
+/// rather than invented — loudly in debug, quietly on a shipping board, where the frame degrades to
+/// its own chrome instead of faulting mid-ride.
 #[test]
 fn a_map_base_without_a_scratch_skips_the_map_instead_of_inventing_one() {
     let bytes = build_min_obcm(0);
@@ -181,9 +170,9 @@ fn a_map_base_without_a_scratch_skips_the_map_instead_of_inventing_one() {
     let mut app = App::new(AppState::new(0, 0, 0.05));
     assert!(app.base_draws_map(), "the riding Map is a map base");
 
-    // The debug assert below is expected, so its backtrace is silenced — but the panic hook is
-    // process-global and this binary now carries every other App test, so the quiet hook is scoped
-    // to this thread and every other thread keeps the hook it had.
+    // The debug assert below is expected, so its backtrace is silenced. The panic hook is
+    // process-global and this binary carries every other App test, so the quiet hook is scoped to
+    // this thread.
     let previous = std::sync::Arc::new(std::panic::take_hook());
     let quiet = std::thread::current().id();
     let others = std::sync::Arc::clone(&previous);
@@ -202,10 +191,9 @@ fn a_map_base_without_a_scratch_skips_the_map_instead_of_inventing_one() {
     #[cfg(debug_assertions)]
     assert!(rendered.is_err(), "a debug build must say so loudly rather than skip in silence");
     if let Ok((buf, stats)) = rendered {
-        // The shipping-board half: no panic, nothing collected, and — because `MapScreen::draw`
-        // gives up with the scene rather than half-drawing it — the target is left exactly as it
-        // was found. On the board that *is* the graceful degradation: the previous frame stays on
-        // the reflective glass, which is what every other transient render failure does too.
+        // The shipping-board half: no panic, nothing collected, and, because `MapScreen::draw`
+        // gives up with the scene rather than half-drawing it, the target is left exactly as it was
+        // found. On the board that is the graceful degradation: the previous frame stays on glass.
         assert_eq!(stats.features_drawn, 0, "nothing may be drawn from a scratch that was not lent");
         assert!(
             buf.px.iter().all(|p| *p == Rgb888::new(0, 0, 0)),

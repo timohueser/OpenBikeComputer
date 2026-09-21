@@ -4,12 +4,8 @@
 //! only when the map, the scale band or the padded region stops covering the view. A frame then
 //! orders the held candidates by [`rank`] and offers them to the shared
 //! [`PointPlacement`](crate::screen::map::placement::PointPlacement), best first, until
-//! [`MAX_LABELS`] are placed.
-//!
-//! [`rank`] holds no camera value, which is the whole stability mechanism: a label that is drawn in
-//! one frame is drawn in the next one unless it leaves the panel, unless its class leaves its scale
-//! band, or unless a better settlement takes its space. Priority decides every frame from scratch;
-//! there is no history and no timer.
+//! [`MAX_LABELS`] are placed. [`rank`] holds no camera value, which is the whole stability
+//! mechanism: priority decides every frame from scratch, with no history and no timer.
 
 use core::cmp::Reverse;
 
@@ -30,31 +26,25 @@ use crate::screen::palette::{INK, PARCHMENT};
 use crate::screen::vocab::marquee::{fit, Fitted};
 
 /// Candidates held over the padded viewport, at 44 bytes each. Nearly three times the label
-/// budget, so a name refused for space gives way to the next one rather than to nothing, while the
-/// whole cache stays inside the device's residual stack margin (see `resource_baseline.json`).
+/// budget, so a name refused for space gives way to the next one rather than to nothing.
 const MAX_CANDIDATES: usize = 16;
 /// Labels drawn in one frame. One constant for every scale.
 const MAX_LABELS: usize = 6;
-/// The face the names are drawn in. A name annotates a place the rider already sees on the map, so
-/// it is set one tier below the chrome it sits among; every metric below follows from this.
+/// The face the names are drawn in: one tier below the chrome a name sits among, because the name
+/// annotates a place the rider already sees. Every metric below follows from this.
 const LABEL_FONT: Font = Font::Caption;
-/// Clear space around a label, in pixels: one glyph cell of [`LABEL_FONT`]. One constant for every
-/// scale.
+/// Clear space around a label, in pixels: one glyph cell of [`LABEL_FONT`].
 const LABEL_MARGIN_PX: i32 = 10;
-/// Characters shown, cut with `..`. A pinned name is never refused for width, so this does not
-/// decide whether a name is drawn; it decides how much of a long name reads, and how much space the
-/// box takes from its neighbours. 14 at the 10 by 20 face is 140 pixels, so two names still cannot
-/// sit side by side on the 240 px panel, while the names a rider meets here read whole.
+/// Characters shown, cut with `..`. A pinned name is never refused for width, so this decides only
+/// how much of a long name reads. 14 at the 10 by 20 face is 140 pixels, so two names still cannot
+/// sit side by side on the 240 px panel.
 const MAX_LABEL_CHARS: usize = 14;
 /// Slack around the panel, so a small pan needs no new query.
 const CANDIDATE_PAD_PX: f32 = 48.0;
 /// The scale band, in metres per pixel, in which each class shows a name: the class, then `min`,
-/// then `max`. One table, and the only place a scale decision is written.
-///
-/// A name appears when the place roughly fits the panel and goes when the place is a dot among too
-/// many others. The 240 px panel is 9.6 km wide at 40 m/px, which is about the size of a city, and
-/// 2.9 km at 12 m/px, which is about the size of a town. Under the minimum the rider is inside the
-/// place and the name only covers the roads it is riding.
+/// then `max`. The only place a scale decision is written. The 240 px panel is 9.6 km wide at
+/// 40 m/px, about the size of a city, and 2.9 km at 12 m/px, about the size of a town. Under the
+/// minimum the rider is inside the place and the name only covers the roads it is riding.
 const CLASS_BANDS: [(SettlementClass, f32, f32); 4] = [
     (SettlementClass::City, 40.0, 600.0),
     (SettlementClass::Town, 12.0, 180.0),
@@ -77,8 +67,7 @@ fn class_mask(mpp: f32) -> u8 {
     mask
 }
 
-/// One held settlement. The reader's record without its source identity, which the overlay never
-/// reads: 44 bytes on the device.
+/// One held settlement: the reader's record without its source identity, 44 bytes on the device.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Candidate {
     lat: i32,
@@ -96,13 +85,12 @@ impl From<Settlement> for Candidate {
 }
 
 /// The priority order, smallest first: class, then the larger population, then the shorter name,
-/// then the position. It holds no camera value, so it does not change while the rider moves, and
-/// the position tail makes the same map give the same order every time.
+/// then the position. It holds no camera value, so it does not change while the rider moves.
 fn rank(c: &Candidate) -> (u8, Reverse<u32>, u8, i32, i32) {
     (c.class as u8, Reverse(c.population), c.name.chars().count() as u8, c.lat, c.lon)
 }
 
-/// What a held candidate set is *for*. A set taken for the same map and the same scale band is the
+/// What a held candidate set is for. A set taken for the same map and the same scale band is the
 /// same set wherever the camera sits inside [`SettlementCache::region`].
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct CacheKey {
@@ -135,9 +123,7 @@ impl SettlementCache {
         self.items.is_empty()
     }
 
-    /// Refill the candidates for `vp` when the held set no longer answers for it.
-    ///
-    /// `enabled` is the overlay's one switch input; it is always on today. A read failure is
+    /// Refill the candidates for `vp` when the held set no longer answers for it. A read failure is
     /// recorded like a successful query, so a map the reader cannot walk is asked once for each
     /// region rather than once per frame.
     pub(crate) fn prepare(&mut self, reader: Option<&Reader>, vp: &Viewport, enabled: bool) {
@@ -176,8 +162,7 @@ fn keep(items: &mut Vec<Candidate, MAX_CANDIDATES>, new: Candidate) {
 }
 
 /// The map box covering the panel grown by [`CANDIDATE_PAD_PX`] on every side. All four padded
-/// corners go in, so a rotated camera is covered for the same reason as
-/// [`Viewport::visible_bbox`].
+/// corners go in, so a rotated camera is covered.
 fn padded_bbox(vp: &Viewport) -> BBox {
     let (p, w, h) = (CANDIDATE_PAD_PX, vp.w, vp.h);
     let corners = [vp.to_map(-p, -p), vp.to_map(w + p, -p), vp.to_map(-p, h + p), vp.to_map(w + p, h + p)];
@@ -206,16 +191,12 @@ pub(crate) fn draw_labels(cv: &mut impl Surface, vp: &Viewport, cache: &Settleme
 
 /// The labels this frame draws, as `(draw point, candidate index)` in the order they were placed.
 ///
-/// A name is pinned to its place: the box is centred on it, both ways, and never moves. A name near
-/// an edge therefore hangs over it and the panel clips what falls outside, rather than sliding in.
-/// The overlap tests use the whole unclipped box, so two names can never overprint and a clipped
-/// name still holds the chrome off. A name that slides while the rider pans looks wrong on a map;
-/// pinning is what makes a name read as part of the place.
-///
-/// A name is dropped when its place is off the panel, or when `place` refuses the box: reserved
-/// chrome, or within [`LABEL_MARGIN_PX`] of a name already placed. The whole set is re-ordered by
-/// [`rank`] every frame, so a lower-priority name never holds a slot a better one needs. A class
-/// past its scale band for *this* camera is skipped, whatever the cache holds.
+/// A name is pinned to its place: the box is centred on it and never moves, so a name near an edge
+/// hangs over it and the panel clips what falls outside. The overlap tests use the whole unclipped
+/// box, so two names never overprint and a clipped name still holds the chrome off. A name is
+/// dropped when its place is off the panel, or when `place` refuses the box. The set is re-ordered
+/// by [`rank`] every frame, so a lower-priority name never holds a slot a better one needs, and a
+/// class past its scale band for this camera is skipped whatever the cache holds.
 fn placements(vp: &Viewport, cache: &SettlementCache, place: &mut PointPlacement) -> Vec<(Point, u8), MAX_LABELS> {
     // The scale limits answer to the camera that draws, which is not always the one the cache was
     // filled for: the browse screens fit a whole route into the panel at a much coarser scale.
@@ -334,7 +315,7 @@ mod tests {
         assert_eq!(class_mask(1.0), 0, "inside a place the name only covers the roads");
         assert_eq!(class_mask(700.0), 0, "past the city limit nothing is named");
 
-        // Both edges of every band: a changed constant has to fail here.
+        // Both edges of every band.
         for (class, min, max) in CLASS_BANDS {
             let bit = 1 << class as u8;
             assert!(class_mask(min) & bit != 0, "{class:?} shows at {min} m/px");
@@ -367,8 +348,8 @@ mod tests {
         assert_eq!(rank(&south), rank(&candidate(SettlementClass::Town, "Aa", 0, 10, 0)), "the order is a function");
     }
 
-    /// An unknown population ranks with a population of zero, which is what the overlay wants: a
-    /// named place the map cannot size loses to one it can.
+    /// An unknown population ranks with a population of zero: a named place the map cannot size
+    /// loses to one it can.
     #[test]
     fn an_unknown_population_ranks_last_inside_its_class() {
         let known = Candidate::from(Settlement {
@@ -390,8 +371,6 @@ mod tests {
         assert_eq!(unknown.population, 0);
         assert!(rank(&known) < rank(&unknown));
     }
-
-    // ---- the cache ----
 
     fn freiburg_map() -> StdVec<u8> {
         build_poi_map(
@@ -511,7 +490,6 @@ mod tests {
         assert_eq!(held, best, "the largest populations are kept, whatever order they arrive in");
     }
 
-    /// The padded region is taken from the four panel corners, so a turned camera is covered.
     #[test]
     fn the_padded_region_covers_a_rotated_view() {
         let vp = Viewport::new_rotated(
@@ -528,8 +506,6 @@ mod tests {
         assert!(region.min_lat < visible.min_lat && region.max_lat > visible.max_lat, "and it is larger");
         assert!(region.min_lon < visible.min_lon && region.max_lon > visible.max_lon);
     }
-
-    // ---- the draw pass ----
 
     /// The class bands answer to the camera that draws. The browse screens fit a route into the
     /// panel at their own coarse scale, with a cache that was filled while riding.
@@ -549,8 +525,6 @@ mod tests {
         assert!(drawn(&far, &cache, &mut open_panel()).is_empty(), "no class is named at 900 m/px");
     }
 
-    /// A name is pinned to its place: it hangs over the edge and the panel clips it, rather than
-    /// sliding in or being refused. A place off the panel still has no name at all.
     #[test]
     fn a_label_at_the_panel_edge_is_clipped_and_one_off_the_panel_is_dropped() {
         let vp = vp_at(CAM, 100.0);
@@ -567,8 +541,8 @@ mod tests {
     }
 
     /// The exact boundary, derived from the constants so it holds whatever face the labels use: two
-    /// names on the same column are centred `separation` px apart, so their boxes leave
-    /// `separation - LABEL_FONT.line_height()` of clear space and [`LABEL_MARGIN_PX`] alone decides.
+    /// names on the same column centred `separation` px apart leave
+    /// `separation - LABEL_FONT.line_height()` of clear space, so [`LABEL_MARGIN_PX`] alone decides.
     #[test]
     fn the_margin_suppresses_a_lower_priority_neighbour() {
         // 30 m/px, where the town band and the village band overlap.
@@ -607,9 +581,9 @@ mod tests {
         assert_eq!(drawn(&vp, &cache, &mut place), ["Clear"]);
     }
 
-    /// The owner's case, on the real `sim-freiburg` map at the camera the simulator opens with:
-    /// the city projects into the bottom-left corner, beside the scale bar. The bar inks a box
-    /// about 33 px tall above the status chip — the corner is not the bar, so the name is drawn.
+    /// On the real `sim-freiburg` map at the camera the simulator opens with, the city projects
+    /// into the bottom-left corner, beside the scale bar. The bar inks a box about 33 px tall above
+    /// the status chip, and the corner is not the bar, so the name is drawn.
     #[test]
     fn a_city_beside_the_scale_bar_is_placed() {
         // `initial_camera` on the fixture: the bbox centre, and the zoom that fits its longitude
@@ -669,10 +643,9 @@ mod tests {
         assert_eq!(drawn(&vp, &cache, &mut open_panel()).len(), MAX_LABELS);
     }
 
-    /// The owner's case, with the real places. East of Emmendingen at 30 m/px the town sits nearer
-    /// the left edge than half its name is wide, which the edge-drop rule refused outright. The name
-    /// is now pinned to the place and the panel clips it. At this face its box is also narrow enough
-    /// to leave Maleck, a village of 400 in the middle of the panel, its own name.
+    /// The real places: east of Emmendingen at 30 m/px the town sits nearer the left edge than half
+    /// its name is wide, so the pinned name hangs over the edge and the panel clips it. At this face
+    /// its box is narrow enough to leave Maleck, a village of 400 mid-panel, its own name.
     #[test]
     fn a_wide_town_name_at_the_edge_is_drawn_and_pinned() {
         let vp = vp_at((7_881_900, 48_121_100), 30.0);
@@ -690,8 +663,6 @@ mod tests {
         assert_eq!(drawn[0].1.x, x, "the name stays pinned to its place and the panel clips it");
     }
 
-    /// Stability: the same candidates under a moved camera keep their labels, and a better
-    /// settlement that enters takes the space of the one it collides with.
     #[test]
     fn labels_keep_their_slots_across_a_pan_until_a_better_one_arrives() {
         let vp = vp_at(CAM, 30.0);
