@@ -7,8 +7,8 @@
 //! drivable without the hardware, and a readout shows render-stats telemetry.
 //!
 //! Wire format (see `obc-platform::debug_link`): host→device `F <lat> <lon> <course|-> <speed|->`,
-//! `A <m>`, `C <deg>`, `H <bpm>` / `P <watts>` / `R <rpm>` (fake BLE sensor injection, epic #707
-//! SE8), `Z <mpp>` (set the map's exact meters-per-pixel — the render-benchmark hook), and input
+//! `A <m>`, `C <deg>`, `H <bpm>` / `P <watts>` / `R <rpm>` (fake BLE sensor injection),
+//! `Z <mpp>` (set the map's exact meters-per-pixel — the render-benchmark hook), and input
 //! injection `K t <n>` / `K s <d|u>` / `K b <d|u>`; device→host
 //! `T <frame_us> <lod> <feat_drawn> <feat_tried> <feat_dropped> <chunks> <hits> <misses> <reads>
 //! <bytes> <collect_us> <read_us> <sort_us> <draw_us> <overlay_us> <mpp_milli>` — the last six are
@@ -16,12 +16,10 @@
 //!
 //! Usage: `obc-usb-host [--gpx FILE] [--port NAME] [--baud N] [--list]`.
 //!
-//! This crate is *only* that bench window: the manual USB control panel plus the telemetry readout.
-//! It moves no map data. Putting a volume set on a device — the `OBCA_Spec.md` §5.3 digest checks
-//! and the §5.4 send order — is implemented once, in the builder's TypeScript control plane
-//! (`builder/app/src/lib/usb/`, which both the browser and the desktop app drive; the desktop's
-//! native `usb::sendfile` moves bytes only) and on the device's receive side. This feeder carries no
-//! second copy of those rules.
+//! This crate is only that bench window: the manual USB control panel plus the telemetry readout.
+//! It moves no map data. Putting a volume set on a device is implemented once, in the builder's
+//! TypeScript control plane and on the device's receive side, and this feeder carries no second
+//! copy of those rules.
 
 use std::collections::HashMap;
 use std::io::{self, Read as _, Write as _};
@@ -34,8 +32,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use obc_ports::{AltimeterSource, Fix, LocationSource};
 // The canonical USB-CDC codec, authored once on the device side, so the two halves of the protocol
-// can't drift: device→host `Telemetry`/`parse_telemetry` + host→device `format_fix` `F`-line
-// encoder. DEFAULT features only, so the pure codec is pulled without embassy-sync.
+// cannot drift. Default features only, so the pure codec is pulled without embassy-sync.
 use obc_platform::debug_link::{format_cadence, format_fix, format_hr, format_power, parse_telemetry, Telemetry};
 use obc_replay::{effort_from_speed, BaroSensor, GpxPlayer, Track};
 use serde::Deserialize;
@@ -364,11 +361,9 @@ struct FeederApp {
     // compass slider (heading the device shows when stopped); `last_sent` throttles `C` lines
     compass_deg: f32,
     last_compass_sent: Option<f32>,
-    // Synthetic BLE sensors (epic #707 SE8): mirror the sim panel — per-quantity enable + slider,
-    // plus one "effort follows speed" switch synthesizing all three from the replayed speed. Sent as
-    // `H`/`P`/`R` at ~1 Hz while enabled, using the canonical `debug_link` encoders so the two halves
-    // can't drift. `last_sensor_sent` throttles to the emit cadence; `last_speed_mps` is the most
-    // recent (multiplier-scaled) fix speed the effort synth reads; `sensor_phase` walks the wobble.
+    // Synthetic BLE sensors, mirroring the sim panel: per-quantity enable and slider, plus one
+    // "effort follows speed" switch synthesizing all three from the replayed speed. Sent as
+    // `H`/`P`/`R` at about 1 Hz while enabled, using the canonical `debug_link` encoders.
     sensors: SensorPanel,
     last_sensor_sent: Option<Instant>,
     last_speed_mps: f32,
@@ -515,11 +510,11 @@ impl FeederApp {
         self.pending.push(format_fix(&fix).to_string());
     }
 
-    /// Emit synthetic `H`/`P`/`R` sensor lines at ~1 Hz while connected and something is enabled.
-    /// Uses the canonical `debug_link` encoders (so the wire format can't drift from the device
-    /// parser). *Effort follows speed* synthesizes all three from the last fix speed with light
-    /// noise; otherwise each quantity is sent from its slider while its toggle is on. Emitting stops
-    /// the moment a toggle goes off, so the device's tile goes stale → `--` (its 5 s gate).
+    /// Emit synthetic `H`/`P`/`R` sensor lines at about 1 Hz while connected and something is
+    /// enabled, through the canonical `debug_link` encoders. "Effort follows speed" synthesizes all
+    /// three from the last fix speed with light noise; otherwise each quantity is sent from its
+    /// slider while its toggle is on. Emitting stops the moment a toggle goes off, so the device's
+    /// tile goes stale.
     fn step_sensors(&mut self) {
         if self.conn.is_none() {
             return;
@@ -634,7 +629,6 @@ impl eframe::App for FeederApp {
             ui.label(egui::RichText::new(&self.status).weak());
             ui.add_space(6.0);
 
-            // --- Serial ---
             full_group(ui, |ui| {
                 ui.label(egui::RichText::new("Serial").strong());
                 ui.horizontal(|ui| {
@@ -656,7 +650,6 @@ impl eframe::App for FeederApp {
             });
             ui.add_space(6.0);
 
-            // --- Fixed GPS location ---
             full_group(ui, |ui| {
                 ui.label(egui::RichText::new("Fixed GPS location").strong());
                 ui.horizontal(|ui| {
@@ -728,7 +721,6 @@ impl eframe::App for FeederApp {
             });
             ui.add_space(6.0);
 
-            // --- GPX replay ---
             full_group(ui, |ui| {
                 ui.label(egui::RichText::new("GPX replay").strong());
                 if ui.button("Load GPX…").clicked() {
@@ -775,7 +767,6 @@ impl eframe::App for FeederApp {
             });
             ui.add_space(6.0);
 
-            // --- Compass (heading when stopped) ---
             full_group(ui, |ui| {
                 ui.label(egui::RichText::new("Compass (heading when stopped)").strong());
                 ui.add(
@@ -784,7 +775,7 @@ impl eframe::App for FeederApp {
             });
             ui.add_space(6.0);
 
-            // --- Synthetic BLE sensors (HR / power / cadence, epic #707 SE8) ---
+            // Synthetic BLE sensors: HR, power and cadence.
             full_group(ui, |ui| {
                 ui.label(egui::RichText::new("Sensors (HR / Power / Cadence)").strong());
                 let s = &mut self.sensors;
@@ -811,7 +802,6 @@ impl eframe::App for FeederApp {
             });
             ui.add_space(6.0);
 
-            // --- Input injection (drive the device's four buttons remotely) ---
             full_group(ui, |ui| {
                 ui.label(egui::RichText::new("Input (Up/Down · Select · Back)").strong());
                 ui.add_enabled_ui(connected, |ui| {
@@ -843,7 +833,6 @@ impl eframe::App for FeederApp {
             });
             ui.add_space(6.0);
 
-            // --- Render-stats telemetry (device → host) ---
             full_group(ui, |ui| {
                 ui.label(egui::RichText::new("Render stats (device → host)").strong());
                 match self.telemetry {
