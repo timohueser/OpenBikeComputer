@@ -2804,6 +2804,7 @@ dependencies = [
  "obc-app",
  "obc-crc",
  "obc-elevation",
+ "obc-file-source",
  "obc-fixtures",
  "obc-formats",
  "obc-link",
