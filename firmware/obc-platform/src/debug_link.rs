@@ -254,7 +254,6 @@ impl LineReader {
 pub struct Telemetry {
     /// Last map-render wall time, microseconds.
     pub frame_us: u32,
-    /// LOD chosen for the last render.
     pub lod: u8,
     /// Features drawn, tried and dropped on scratch overflow, which should be `0`.
     pub feat_drawn: u32,

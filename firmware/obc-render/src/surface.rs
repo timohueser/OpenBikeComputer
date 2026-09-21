@@ -30,10 +30,8 @@ fn points_bbox(pts: &[Point]) -> Rectangle {
 
 /// A drawing surface in the palette-565 vocabulary. [`Canvas`] is the one implementor.
 pub trait Surface {
-    /// Clear the whole target to `color`.
     fn clear(&mut self, color: u16);
 
-    /// Fill a rectangle.
     fn fill(&mut self, area: Rectangle, color: u16);
 
     /// Fill a rounded rectangle (equal corner radius).
@@ -55,7 +53,6 @@ pub trait Surface {
     /// A 1px straight line between two points.
     fn line(&mut self, a: Point, b: Point, color: u16);
 
-    /// A filled triangle.
     fn triangle(&mut self, a: Point, b: Point, c: Point, color: u16);
 
     /// A filled circle of `radius` centered at `center`.

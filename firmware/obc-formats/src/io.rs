@@ -34,7 +34,6 @@ pub trait ByteSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error>;
     /// Total length in bytes.
     fn len(&self) -> u64;
-    /// Whether the source is empty.
     fn is_empty(&self) -> bool {
         self.len() == 0
     }

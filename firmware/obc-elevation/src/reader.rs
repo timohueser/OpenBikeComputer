@@ -41,7 +41,6 @@ pub struct TerrainHeader {
     /// Cell-rectangle extent, at least 1 each. A single cell file is `1 × 1`.
     pub cell_rows: u16,
     pub cell_cols: u16,
-    /// Absolute byte offset of the offset directory.
     pub directory_offset: u32,
 }
 

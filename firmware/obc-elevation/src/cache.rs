@@ -106,7 +106,6 @@ impl<const N: usize> TileCache<N> {
         self.stamps[slot] = 0;
     }
 
-    /// The tile in a slot filled by [`reserve`](Self::reserve).
     pub(crate) fn tile(&self, slot: usize) -> &[u8; TILE_BYTES] {
         &self.tiles[slot]
     }

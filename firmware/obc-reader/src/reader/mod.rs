@@ -114,7 +114,6 @@ pub(crate) struct MapHeader {
     pub marker_color: u16,
     /// The file's offset unit. Every scaled field in the file resolves against this value.
     pub scale: OffsetScale,
-    /// The embedded terrain region, or `None` for a map with no elevation.
     pub terrain: Option<TerrainRegion>,
 }
 
