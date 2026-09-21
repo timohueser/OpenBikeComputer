@@ -25,10 +25,9 @@
 use std::io::{Seek, SeekFrom, Write};
 
 use obc_formats::obct::{
-    cell_block_len, cell_samples_log2, CellIndexLayout, CrestDirectory, CrestLayout, SurfaceLayout, SurfaceLevel,
-    CELL_INDEX_FLAG, CREST_FLAG, DIR_ABSENT, DIR_ENTRY_LEN, HDR_CELL_COLS, HDR_CELL_LOG2, HDR_CELL_MIN_I,
-    HDR_CELL_MIN_J, HDR_CELL_ROWS, HDR_DIRECTORY_OFFSET, HDR_FLAGS, HDR_MAGIC, HDR_POSTING_LOG2, HDR_VERSION,
-    HEADER_LEN, MAGIC, SURFACE_FLAG, SURFACE_VERSION, VERSION,
+    cell_block_len, cell_samples_log2, CellIndexLayout, SurfaceLayout, SurfaceLevel, CELL_INDEX_FLAG, DIR_ABSENT,
+    DIR_ENTRY_LEN, HDR_CELL_COLS, HDR_CELL_LOG2, HDR_CELL_MIN_I, HDR_CELL_MIN_J, HDR_CELL_ROWS, HDR_DIRECTORY_OFFSET,
+    HDR_FLAGS, HDR_MAGIC, HDR_POSTING_LOG2, HDR_VERSION, HEADER_LEN, MAGIC, SURFACE_FLAG, SURFACE_VERSION, VERSION,
 };
 
 use obc_elevation::grid::axis_cells;
@@ -75,10 +74,6 @@ pub struct ShardWriter<W: Write + Seek> {
     cursor: u32,
     cell_index: Option<(CellIndexLayout, SurfaceLevel)>,
     cell_maxima: Vec<i16>,
-    /// §9's directory and block length, when this container carries crest planes.
-    crest: Option<(CrestDirectory, u32)>,
-    /// Crest offsets in slot order, patched at the end beside the cell directory.
-    crest_directory: Vec<u32>,
     rect: CellRect,
 }
 
@@ -116,17 +111,13 @@ fn validate(posting_log2: u8, cell_log2: u8, rect: CellRect) -> Result<u32, Stri
 }
 
 /// The 32-byte OBCT header (`OBCT_Spec.md` §4.2). The one transcription of that table in the tree.
-fn header_bytes(posting_log2: u8, cell_log2: u8, rect: CellRect, surface: bool, crest: bool) -> [u8; HEADER_LEN] {
+fn header_bytes(posting_log2: u8, cell_log2: u8, rect: CellRect, surface: bool) -> [u8; HEADER_LEN] {
     let mut header = [0u8; HEADER_LEN];
     header[HDR_MAGIC..HDR_MAGIC + 4].copy_from_slice(&MAGIC);
     header[HDR_VERSION] = if surface { SURFACE_VERSION } else { VERSION };
     header[HDR_POSTING_LOG2] = posting_log2;
     header[HDR_CELL_LOG2] = cell_log2;
-    header[HDR_FLAGS] = match (surface, crest) {
-        (true, true) => SURFACE_FLAG | CELL_INDEX_FLAG | CREST_FLAG,
-        (true, false) => SURFACE_FLAG | CELL_INDEX_FLAG,
-        _ => 0,
-    };
+    header[HDR_FLAGS] = if surface { SURFACE_FLAG | CELL_INDEX_FLAG } else { 0 };
     header[HDR_CELL_MIN_I..HDR_CELL_MIN_I + 4].copy_from_slice(&rect.min_i.to_le_bytes());
     header[HDR_CELL_MIN_J..HDR_CELL_MIN_J + 4].copy_from_slice(&rect.min_j.to_le_bytes());
     header[HDR_CELL_ROWS..HDR_CELL_ROWS + 2].copy_from_slice(&rect.rows.to_le_bytes());
@@ -164,19 +155,6 @@ pub fn container_prefix_with_surface(
     present: &[bool],
     surface: bool,
 ) -> Result<Vec<u8>, String> {
-    container_prefix_with_crest(posting_log2, cell_log2, rect, present, surface, false)
-}
-
-/// As [`container_prefix_with_surface`], plus §9's crest directory. Crest blocks are interleaved
-/// behind their own cell, so the directory is patched at the end like the cell directory is.
-pub fn container_prefix_with_crest(
-    posting_log2: u8,
-    cell_log2: u8,
-    rect: CellRect,
-    present: &[bool],
-    surface: bool,
-    crest: bool,
-) -> Result<Vec<u8>, String> {
     let native_len = validate(posting_log2, cell_log2, rect)?;
     let block_len = if surface {
         SurfaceLayout::new(posting_log2, cell_log2).ok_or("surface cell exceeds OBCT offsets")?.cell_bytes()
@@ -188,19 +166,12 @@ pub fn container_prefix_with_crest(
         return Err(format!("the presence plan has {} entries for a {slots}-slot rectangle", present.len()));
     }
     let mut out = Vec::with_capacity(HEADER_LEN + slots * DIR_ENTRY_LEN);
-    out.extend_from_slice(&header_bytes(posting_log2, cell_log2, rect, surface, crest));
-    let prefix_bytes = HEADER_LEN + slots * DIR_ENTRY_LEN;
+    out.extend_from_slice(&header_bytes(posting_log2, cell_log2, rect, surface));
     let padded = if surface {
-        let index =
-            CellIndexLayout::new(rect.rows, rect.cols, HEADER_LEN as u32).ok_or("cell index exceeds OBCT offsets")?;
-        if crest {
-            CrestDirectory::new(rect.rows, rect.cols, index.end()).ok_or("crest directory exceeds OBCT offsets")?.end()
-                as usize
-        } else {
-            index.end() as usize
-        }
+        CellIndexLayout::new(rect.rows, rect.cols, HEADER_LEN as u32).ok_or("cell index exceeds OBCT offsets")?.end()
+            as usize
     } else {
-        prefix_bytes
+        HEADER_LEN + slots * DIR_ENTRY_LEN
     };
     let mut cursor = padded as u64;
     for &here in present {
@@ -277,24 +248,11 @@ impl<W: Write + Seek> ShardWriter<W> {
     }
 
     pub fn with_surface(
-        out: W,
-        posting_log2: u8,
-        cell_log2: u8,
-        rect: CellRect,
-        surface: bool,
-    ) -> Result<Self, String> {
-        Self::with_crest(out, posting_log2, cell_log2, rect, surface, false)
-    }
-
-    /// A container that may carry §9 crest planes. Each present cell's plane follows its own
-    /// block, so one streaming pass writes both and the two directories are patched together.
-    pub fn with_crest(
         mut out: W,
         posting_log2: u8,
         cell_log2: u8,
         rect: CellRect,
         surface: bool,
-        crest: bool,
     ) -> Result<Self, String> {
         let native_len = validate(posting_log2, cell_log2, rect)?;
         let block_len = if surface {
@@ -303,7 +261,7 @@ impl<W: Write + Seek> ShardWriter<W> {
             native_len
         };
         let slots = rect.slots() as usize;
-        let prefix = container_prefix_with_crest(posting_log2, cell_log2, rect, &vec![false; slots], surface, crest)?;
+        let prefix = container_prefix_with_surface(posting_log2, cell_log2, rect, &vec![false; slots], surface)?;
         out.write_all(&prefix).map_err(|e| format!("writing OBCT prefix: {e}"))?;
 
         Ok(ShardWriter {
@@ -322,15 +280,6 @@ impl<W: Write + Seek> ShardWriter<W> {
                 None
             },
             cell_maxima: if surface { vec![i16::MAX; slots] } else { Vec::new() },
-            crest: (surface && crest).then(|| {
-                let index = CellIndexLayout::new(rect.rows, rect.cols, HEADER_LEN as u32).expect("validated prefix");
-                let layout = CrestLayout::new(SurfaceLayout::new(posting_log2, cell_log2).expect("validated surface"));
-                (
-                    CrestDirectory::new(rect.rows, rect.cols, index.end()).expect("validated crest directory"),
-                    layout.block_bytes(),
-                )
-            }),
-            crest_directory: if surface && crest { vec![DIR_ABSENT; slots] } else { Vec::new() },
             rect,
         })
     }
@@ -344,31 +293,14 @@ impl<W: Write + Seek> ShardWriter<W> {
     /// absent sentinel — which is how a cell with no data at all is published (spec §4.3), and the
     /// reason a bbox that overhangs coverage costs 4 bytes per uncovered cell rather than 2 MiB.
     pub fn push(&mut self, block: Option<&[u8]>) -> Result<(), String> {
-        self.push_with_crest(block, None)
-    }
-
-    /// As [`push`](Self::push), with the cell's §9 crest planes. A crest block without a cell block
-    /// is refused: a lift describes a native sample, so there has to be one.
-    pub fn push_with_crest(&mut self, block: Option<&[u8]>, crest: Option<&[u8]>) -> Result<(), String> {
         let slot = self.next_slot;
         if slot >= self.directory.len() {
             return Err("more cells offered than the rectangle has slots".to_string());
         }
         self.next_slot += 1;
         let Some(block) = block else {
-            if crest.is_some() {
-                return Err(format!("cell {slot} offered crest planes without a block"));
-            }
             return Ok(());
         };
-        if crest.is_some() && self.crest.is_none() {
-            return Err("this container was not opened for crest planes".to_string());
-        }
-        if let (Some(bytes), Some((_, len))) = (crest, self.crest) {
-            if bytes.len() != len as usize {
-                return Err(format!("crest block is {} bytes, expected {len}", bytes.len()));
-            }
-        }
         if block.len() != self.block_len as usize {
             return Err(format!("cell block is {} bytes, expected {}", block.len(), self.block_len));
         }
@@ -388,14 +320,6 @@ impl<W: Write + Seek> ShardWriter<W> {
         self.out.write_all(block).map_err(|e| format!("writing OBCT cell block: {e}"))?;
         self.directory[slot] = self.cursor;
         self.cursor += self.block_len;
-        if let Some(bytes) = crest {
-            if self.cursor as u64 + bytes.len() as u64 > u32::MAX as u64 {
-                return Err("this shard's crest planes have grown past its uint32 offsets".to_string());
-            }
-            self.out.write_all(bytes).map_err(|e| format!("writing OBCT crest block: {e}"))?;
-            self.crest_directory[slot] = self.cursor;
-            self.cursor += bytes.len() as u32;
-        }
         Ok(())
     }
 
@@ -411,13 +335,6 @@ impl<W: Write + Seek> ShardWriter<W> {
         let bytes: Vec<u8> = self.directory.iter().flat_map(|e| e.to_le_bytes()).collect();
         self.out.seek(SeekFrom::Start(HEADER_LEN as u64)).map_err(|e| format!("seeking to the OBCT directory: {e}"))?;
         self.out.write_all(&bytes).map_err(|e| format!("patching the OBCT directory: {e}"))?;
-        if let Some((directory, _)) = self.crest {
-            let bytes: Vec<u8> = self.crest_directory.iter().flat_map(|e| e.to_le_bytes()).collect();
-            self.out
-                .seek(SeekFrom::Start(directory.offset.into()))
-                .map_err(|e| format!("seeking to the crest directory: {e}"))?;
-            self.out.write_all(&bytes).map_err(|e| format!("patching the crest directory: {e}"))?;
-        }
         if let Some((layout, _)) = self.cell_index {
             let mut prefix = vec![0; layout.end() as usize];
             fill_cell_index(&mut prefix, self.rect, &self.cell_maxima)?;

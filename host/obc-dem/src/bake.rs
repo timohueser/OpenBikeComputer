@@ -20,6 +20,7 @@ use obc_formats::obct::{
 };
 
 use crate::container::{CellRect, ShardWriter};
+use crate::crest::LiftMap;
 use crate::geotiff::DemMosaic;
 use crate::BboxUdeg;
 
@@ -95,7 +96,8 @@ pub fn cell_rect(bbox: BboxUdeg, posting_log2: u8, cell_log2: u8) -> Result<Cell
     Ok(CellRect { min_i, min_j, rows, cols })
 }
 
-/// Bake one terrain cell: every lattice sample the cell owns, point-sampled from `mosaic`.
+/// Bake one terrain cell: every lattice sample the cell owns, point-sampled from `mosaic` and
+/// raised by `lift` where a reference DEM says our lattice loses a crest (`OBCT_Spec.md` §9).
 ///
 /// Returns `None` when **every** sample is `NODATA` — the cell is then published as an absent
 /// directory slot rather than 2 MiB of sentinel. That is not a compression trick: an all-void cell
@@ -105,7 +107,38 @@ pub fn cell_rect(bbox: BboxUdeg, posting_log2: u8, cell_log2: u8) -> Result<Cell
 /// The returned block is laid out per §3.2 — tiles row-major with `ti` advancing latitude, samples
 /// row-major within a tile with `row` advancing latitude — and the offsets come from `obc-formats`
 /// rather than from this file's own arithmetic.
-pub fn bake_cell(mosaic: &DemMosaic, ci: u32, cj: u32, posting_log2: u8, cell_log2: u8) -> Option<Vec<u8>> {
+pub fn bake_cell(
+    mosaic: &DemMosaic,
+    ci: u32,
+    cj: u32,
+    posting_log2: u8,
+    cell_log2: u8,
+    lift: Option<&LiftMap>,
+) -> Option<Vec<u8>> {
+    match lift {
+        Some(map) => fill_cell(ci, cj, posting_log2, cell_log2, map.apply(lattice_sampler(mosaic))),
+        None => fill_cell(ci, cj, posting_log2, cell_log2, lattice_sampler(mosaic)),
+    }
+}
+
+/// The mosaic as the lattice sees it: point-sampled at a µdeg node, quantised by [`quantise`], and
+/// `NODATA` outside coverage. The lift rule measures its gap against these same samples, so there
+/// is one definition of "our surface" in this file.
+fn lattice_sampler(mosaic: &DemMosaic) -> impl Fn(i32, i32) -> i16 + '_ {
+    move |lat, lon| match mosaic.height(f64::from(lat) / 1e6, f64::from(lon) / 1e6) {
+        Some(metres) => quantise(metres),
+        None => NODATA,
+    }
+}
+
+/// The block itself, from whatever sampler the caller composed.
+fn fill_cell(
+    ci: u32,
+    cj: u32,
+    posting_log2: u8,
+    cell_log2: u8,
+    mut sample: impl FnMut(i32, i32) -> i16,
+) -> Option<Vec<u8>> {
     let samples_log2 = cell_samples_log2(posting_log2, cell_log2).expect("caller validated the pairing");
     let tiles_log2 = cell_tiles_log2(posting_log2, cell_log2).expect("caller validated the pairing");
     let block_len = cell_block_len(posting_log2, cell_log2).expect("caller validated the pairing") as usize;
@@ -116,14 +149,10 @@ pub fn bake_cell(mosaic: &DemMosaic, ci: u32, cj: u32, posting_log2: u8, cell_lo
     let mut block = vec![0u8; block_len];
     let mut any = false;
     for li in 0..span {
-        let lat_deg = f64::from(lattice_coord(base_i + li, posting_log2)) / 1e6;
+        let lat = lattice_coord(base_i + li, posting_log2);
         let (ti, row) = (li >> TILE_LOG2, li & (TILE_SAMPLES as u32 - 1));
         for lj in 0..span {
-            let lon_deg = f64::from(lattice_coord(base_j + lj, posting_log2)) / 1e6;
-            let value = match mosaic.height(lat_deg, lon_deg) {
-                Some(metres) => quantise(metres),
-                None => NODATA,
-            };
+            let value = sample(lat, lattice_coord(base_j + lj, posting_log2));
             any |= value != NODATA;
             let (tj, col) = (lj >> TILE_LOG2, lj & (TILE_SAMPLES as u32 - 1));
             let at = tile_offset_in_cell(ti, tj, tiles_log2) as usize + sample_offset_in_tile(row, col);
@@ -131,6 +160,20 @@ pub fn bake_cell(mosaic: &DemMosaic, ci: u32, cj: u32, posting_log2: u8, cell_lo
         }
     }
     any.then_some(block)
+}
+
+/// One cell's §9 lifts, or `None` when there is no reference or it selects nothing here.
+///
+/// The lift map is a pure function of the cell and the two DEMs, so the same cell baked alone and
+/// inside a wide shard comes out byte-identical — the property the digest pin exists to protect.
+fn lift_map(
+    mosaic: &DemMosaic,
+    ci: u32,
+    cj: u32,
+    params: BakeParams,
+    reference: Option<&dyn Fn(f64, f64) -> Option<f64>>,
+) -> Option<LiftMap> {
+    LiftMap::bake(ci, cj, params.posting_log2, params.cell_log2, lattice_sampler(mosaic), reference?)
 }
 
 /// Count the `NODATA` samples in a block — the operator's coverage number, read back from the bytes
@@ -147,6 +190,7 @@ fn nodata_in(block: &[u8]) -> u64 {
 pub fn bake_shard<W: Write + Seek>(
     mosaic: &DemMosaic,
     params: BakeParams,
+    reference: Option<&dyn Fn(f64, f64) -> Option<f64>>,
     out: W,
     mut progress: impl FnMut(u64, u64, u32, u32, bool),
 ) -> Result<BakeReport, String> {
@@ -157,7 +201,8 @@ pub fn bake_shard<W: Write + Seek>(
     let mut report = BakeReport { cells_total: total, samples_total: total * per_cell, ..BakeReport::default() };
 
     for (index, (ci, cj)) in rect.cells().enumerate() {
-        let block = bake_cell(mosaic, ci, cj, params.posting_log2, params.cell_log2);
+        let lift = lift_map(mosaic, ci, cj, params, reference);
+        let block = bake_cell(mosaic, ci, cj, params.posting_log2, params.cell_log2, lift.as_ref());
         match &block {
             Some(bytes) => {
                 report.cells_written += 1;
@@ -225,6 +270,7 @@ pub fn write_cell_file(
 pub fn bake_cells(
     mosaic: &DemMosaic,
     params: BakeParams,
+    reference: Option<&dyn Fn(f64, f64) -> Option<f64>>,
     dir: &std::path::Path,
     mut progress: impl FnMut(u64, u64, u32, u32, bool),
 ) -> Result<BakeReport, String> {
@@ -235,7 +281,8 @@ pub fn bake_cells(
     let mut report = BakeReport { cells_total: total, samples_total: total * per_cell, ..BakeReport::default() };
 
     for (index, (ci, cj)) in rect.cells().enumerate() {
-        let block = bake_cell(mosaic, ci, cj, params.posting_log2, params.cell_log2);
+        let lift = lift_map(mosaic, ci, cj, params, reference);
+        let block = bake_cell(mosaic, ci, cj, params.posting_log2, params.cell_log2, lift.as_ref());
         match block {
             Some(bytes) => {
                 report.cells_written += 1;
