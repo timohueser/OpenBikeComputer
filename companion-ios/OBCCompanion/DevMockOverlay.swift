@@ -5,12 +5,10 @@ import UIKit
 import OBCMock
 import OBCUI
 
-// B1P's app-side wiring, Debug-only in its entirety: the shake gesture that opens
-// the dev control panel, the panel sheet itself, and the status HUD the XCUITests
-// assert. The panel/HUD views live in OBCMock; this file only hosts them.
-// B8's hidden second entry point (five taps on Settings ▸ App version) posts the
-// same shake notification — see RootView's `devPanelOpener`.
-// B11 adds the component-gallery sheet (`-OBCShowUIGallery`) for screenshot review.
+// The app-side wiring for the mock tooling, Debug-only in its entirety: the shake gesture that
+// opens the dev control panel, the panel sheet itself, the status HUD the UI tests assert, and the
+// component-gallery sheet. The panel and HUD views live in OBCMock; this file only hosts them.
+// Settings has a hidden second entry point that posts the same shake notification.
 
 extension Notification.Name {
     /// Posted by the `UIWindow` override below on a device shake.
@@ -18,8 +16,8 @@ extension Notification.Name {
 }
 
 extension UIWindow {
-    // UIKit delivers shakes to the first responder chain; the window is the last
-    // stop, so overriding here catches them app-wide (sim: Device ▸ Shake, ⌃⌘Z).
+    // UIKit delivers shakes to the first responder chain, and the window is the last stop, so
+    // overriding here catches them app-wide.
     open override func motionEnded(_ motion: UIEvent.EventSubtype, with event: UIEvent?) {
         if motion == .motionShake {
             NotificationCenter.default.post(name: .obcDeviceDidShake, object: nil)
@@ -28,9 +26,9 @@ extension UIWindow {
     }
 }
 
-/// Hosts the mock dev tooling around the real UI: status HUD at the bottom edge,
-/// panel as a sheet on shake / at launch (`-OBCShowDevPanel`). A no-op when the
-/// launch args forced the real `BLETransport` (no control to drive).
+/// Hosts the mock dev tooling around the real UI: the status HUD at the bottom edge, and the panel
+/// as a sheet on shake or at launch. A no-op when the launch arguments forced the real transport,
+/// because there is then no control to drive.
 struct DevMockOverlay: ViewModifier {
     let control: MockControl?
     let showPanelAtLaunch: Bool
@@ -41,8 +39,7 @@ struct DevMockOverlay: ViewModifier {
 
     func body(content: Content) -> some View {
         mockTooling(around: content)
-            // The B11 gallery presents even when the real transport is forced —
-            // it needs no MockControl.
+            // The gallery presents even when the real transport is forced: it needs no control.
             .sheet(isPresented: $galleryShown) {
                 OBCComponentGallery()
             }
