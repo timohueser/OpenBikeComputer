@@ -1,16 +1,13 @@
-//! The eframe host window — the device "screen".
+//! The eframe host window: the device screen.
 //!
-//! The desktop counterpart to the firmware's main loop: each frame it polls the
-//! [`SimLocationSource`], advances the shared [`obc_app::App`], renders the firmware-identical
-//! path into the resident device-64 frame it owns next to its [`Present`] presenter (the display
-//! contracts' render-vs-present split — the same shape as the firmware's map plane), presents it
-//! through the presenter's self-diffing engine, and blits the reconstructed texture to a GPU
-//! texture at integer scale (nearest-neighbor, so the pixel grid stays crisp). The firmware does
-//! the same with a real GPS driver and the LS021B7DD02 panel. Both the interactive window and
-//! headless PNG path show the panel's true 64-colour gamut.
+//! The desktop counterpart to the firmware's main loop. Each frame it polls the
+//! [`SimLocationSource`], advances the shared [`obc_app::App`], renders the firmware-identical path
+//! into the resident device-64 frame it owns beside its [`Present`] presenter, presents it through
+//! the presenter's self-diffing engine, and blits the reconstructed texture to a GPU texture at
+//! integer scale with nearest-neighbor sampling, so the pixel grid stays crisp.
 //!
-//! The second "Controls" viewport (the simulated GPS fix + emulated buttons) lives
-//! in [`panel`]; its zoom / formatting helpers live in [`units`].
+//! The second Controls viewport lives in [`panel`], and its zoom and formatting helpers in
+//! [`units`].
 
 use std::path::Path;
 
@@ -26,8 +23,8 @@ use obc_route::RouteReader;
 
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 
-/// How long the "POWERING OFF" frame stays on the glass before the process ends — long enough to
-/// read, short enough that it is plainly an ending and not a hang.
+/// How long the powering-off frame stays on the glass before the process ends: long enough to
+/// read, short enough that it reads as an ending and not a hang.
 const POWERING_OFF_HOLD: std::time::Duration = std::time::Duration::from_millis(700);
 
 use crate::map_file::{LoadedMap, StdClock};
@@ -47,33 +44,32 @@ mod units;
 
 use housing::Colorway;
 
-/// The control panel's editable mirrors. The [`SimLocationSource`] stores the fix as
-/// integer microdegrees + `course`; egui widgets need `&mut` floats, so the panel edits
-/// these and pushes them into the source each frame.
+/// The control panel's editable mirrors. The [`SimLocationSource`] stores the fix as integer
+/// microdegrees and a course, and egui widgets need `&mut` floats, so the panel edits these and
+/// pushes them into the source each frame.
 struct PanelState {
     lat_deg: f64,
     lon_deg: f64,
     heading_deg: f32,
-    /// The "Compass" slider — the magnetometer heading orienting a heading-up map while the
-    /// rider is stopped (GPS course drops to `None`). Pushed into [`SimCompass`].
+    /// The Compass slider: the magnetometer heading that orients a heading-up map while the rider
+    /// is stopped and the GPS course is `None`.
     compass_deg: f32,
-    /// The injected BLE link state (epic #447): the host→app seam the sim drives from the control
-    /// panel, pushed into the app each frame via [`obc_app::App::set_ble_status`]. It's the whole
-    /// [`obc_app::BleStatus`] — not just a `connected` bool — so P2/P4 can add passkey / upload
-    /// injection by extending this field and its widgets with no restructuring.
+    /// The injected BLE link state, pushed into the app each frame. It is the whole
+    /// [`obc_app::BleStatus`] and not a `connected` flag, so passkey and upload injection extend
+    /// this field rather than restructuring around it.
     ble: obc_app::BleStatus,
-    /// The "Inject upload" combo's selected catalog row (epic #447, P4) — which route the panel's
-    /// upload-injection buttons duplicate (new) or rewrite (replace-by-id).
+    /// The Inject upload combo's selected catalog row: which route the panel's upload buttons
+    /// duplicate or rewrite by id.
     upload_sel: usize,
-    /// The "Delete trip" combo's selected trip row (epic #526, TR2) — which trip the panel's
-    /// delete button removes (the `.obt`, non-cascading).
+    /// The Delete trip combo's selected trip row: which trip the panel's delete button removes.
+    /// The delete does not cascade.
     trip_sel: usize,
     gps_time: bool,
     clock_offset_secs: u32,
 }
 
-/// In-progress 1:1 size calibration: the user measures the on-screen reference bar and
-/// types the millimetres here. `Some` while the calibration screen is up.
+/// In-progress 1:1 size calibration: the user measures the on-screen reference bar and types the
+/// millimetres here. `Some` while the calibration screen is up.
 #[derive(Default)]
 struct CalibState {
     measured_mm: String,
@@ -82,8 +78,8 @@ struct CalibState {
 mod support;
 pub(crate) use support::SIM_SUPPORT;
 
-/// What only this host can do: the RRAM stand-in file, the injected panel "bond", and the fixed
-/// card-free figure (the desktop sim has no FAT to scan).
+/// What only this host can do: the RRAM stand-in file, the injected panel bond, and the fixed
+/// free-space figure, because the desktop sim has no FAT to scan.
 struct SimPlatform<'a> {
     settings: &'a mut FileSettingsStore,
     panel: &'a mut PanelState,
@@ -91,12 +87,12 @@ struct SimPlatform<'a> {
 
 impl HostPlatform for SimPlatform<'_> {
     /// Persist to the RRAM stand-in file. The answer clears the app's dirty state, or keeps the
-    /// revision retryable on a failure (#810).
+    /// revision retryable on a failure.
     fn persist_settings(&mut self, settings: &Settings, _revision: u16) -> Result<(), SettingsSaveError> {
         self.settings.save(settings)
     }
 
-    /// A fixed ~1.2 GiB stand-in — the sim has no allocation table to walk.
+    /// A fixed stand-in figure: the sim has no allocation table to walk.
     fn measure_free_space(&mut self) -> Result<u64, obc_app::device_core::StorageInfoError> {
         Ok(crate::SIM_CARD_FREE)
     }
@@ -122,14 +118,14 @@ impl obc_ports::ClockSource for SimClock {
             .map(|d| d.as_secs() as u32)
             .unwrap_or(0)
             .wrapping_add(self.offset_secs);
-        // `DateTime` is minute-resolution; the seconds-into-the-minute ride separately so the wall
-        // clock back-dates its epoch exactly like a real fix (see `App::stamp_clock`).
+        // `DateTime` is minute-resolution, so the seconds ride separately and the wall clock
+        // back-dates its epoch as a real fix does.
         Some(obc_ports::GpsTime { utc: obc_ports::DateTime::from_unix(unix), second: (unix % 60) as u8 })
     }
 }
 
-/// Launch the simulator window. `map` is opened once before this — for the process lifetime, as
-/// the device parses its map once at boot — and the per-frame [`Reader`] is a cheap view over it.
+/// Launch the simulator window. `map` is opened once before this, for the process lifetime, as the
+/// device parses its map once at boot, and the per-frame [`Reader`] is a cheap view over it.
 pub fn run(
     map: LoadedMap,
     store: RouteStore,
@@ -138,7 +134,7 @@ pub fn run(
     tracks: TrackStore,
     args: Args,
 ) -> Result<(), eframe::Error> {
-    // The window wraps the whole device (housing + screen + a little backdrop) at `--scale`,
+    // The window wraps the whole device, housing and screen and a little backdrop, at `--scale`,
     // so the body has room around the framebuffer.
     let dev = housing::HousingStyle::default().window_size_px(egui::vec2(args.width as f32, args.height as f32));
     let win = [dev.x * args.scale as f32, dev.y * args.scale as f32];
@@ -156,68 +152,66 @@ pub fn run(
     )
 }
 
-/// One frame's device-control hit-test, produced while the housing is drawn
-/// ([`SimGui::show_device_image`]) and consumed by [`SimGui::apply_device_input`]. Keeps the draw
-/// free of input side effects: it only reports geometry, the caller drives the recognizer.
+/// One frame's device-control hit-test, produced while the housing is drawn and consumed by
+/// [`SimGui::apply_device_input`]. The draw reports geometry only; the caller drives the
+/// recognizer.
 struct DeviceHit {
-    /// UP pressed this frame (housing hit-test OR the ← key).
+    /// UP pressed this frame, by the housing hit-test or the key alias.
     up_down: bool,
-    /// DOWN pressed this frame (housing hit-test OR the → key).
+    /// DOWN pressed this frame, by the housing hit-test or the key alias.
     down_down: bool,
-    /// SELECT pressed this frame (housing hit-test OR the Enter key).
+    /// SELECT pressed this frame, by the housing hit-test or the key alias.
     select_down: bool,
-    /// BACK pressed this frame (housing hit-test OR the Backspace key).
+    /// BACK pressed this frame, by the housing hit-test or the key alias.
     back_down: bool,
     /// Selection steps injected directly this frame by the keyboard's one-shot aliases.
     steps: i32,
-    /// Mouse-wheel delta over the screen — the host's stand-in for tapping UP/DOWN.
+    /// Mouse-wheel delta over the screen, which stands in for tapping UP and DOWN.
     scroll_dy: f32,
 }
 
 struct SimGui {
     peak_view: crate::peak_view::Runtime,
-    /// The opened map: one `.obcm` (see [`LoadedMap`]) — held for the session, like the device's,
-    /// and only the cheap `Reader` view is rebuilt per frame. It carries the immutable tables
-    /// (style table + LOD pyramid, parsed once at startup as the device parses them once at boot)
-    /// and the session-long
-    /// chunk cache, whose cross-frame reuse lets a panned-into view warm to 100% hit so the
-    /// "Map SD" stats track real device behaviour rather than a cold ≤75%.
+    /// The opened map, held for the session as the device holds its own. Only the cheap `Reader`
+    /// view is rebuilt per frame. It carries the immutable tables, parsed once at startup, and the
+    /// session-long chunk cache, whose cross-frame reuse lets a panned-into view warm to a full hit
+    /// rate so the stats track real device behaviour.
     map: LoadedMap,
     app: App,
-    /// The render path's per-frame scratch — ~90 KB the *host* owns since #1146 (the app borrows it
-    /// for the duration of a render call and keeps nothing across frames). Boxed so it never rides
-    /// this struct's moves through the eframe setup.
+    /// The render path's per-frame scratch, owned by the host: the app borrows it for a render
+    /// call and keeps nothing across frames. Boxed so it never rides this struct's moves through
+    /// the eframe setup.
     scratch: Box<obc_render::RenderScratch>,
     photo: obc_host_core::photo::Preparer,
     /// The card route projection and its retained active geometry.
     store: RouteStore,
-    /// The `.obt` trips beside the routes (epic #526, TR2): the grouped-route folders. Rescanned +
-    /// re-fed alongside the route catalog so a rescan re-resolves the trips' stage ids.
+    /// The trips beside the routes: the grouped-route folders. Rescanned and re-fed with the route
+    /// catalog, so a rescan re-resolves the trips' stage ids.
     trip_store: TripStore,
-    /// The tracks folder as the simulator's **ride catalog**: v3 fixture files and process-local
-    /// synced flags for the Rides screen (#454). Rescanned when a ride is saved/deleted.
+    /// The tracks folder as the simulator's ride catalog: fixture files and process-local synced
+    /// flags for the Rides screen. Rescanned when a ride is saved or deleted.
     ride_store: RideStore,
     /// The simulator's temporary sample log plus saved v3/GPX conveniences, reconciled to the app's
     /// tracking session each frame. The shipping device records directly into the flat journal.
     tracks: TrackStore,
-    /// The persisted-settings store (device-RRAM stand-in): seeds the app at boot, written on
-    /// each settings change so they survive a relaunch.
+    /// The persisted-settings store, standing in for the device's RRAM: it seeds the app at boot
+    /// and is written on each settings change, so they survive a relaunch.
     settings_store: FileSettingsStore,
     loc: SimLocationSource,
-    /// The resident device-64 frame the app renders the whole frame into — owned by the GUI next
-    /// to its presenter (the contracts' borrow split); runtime-sized because the device resolution
-    /// is a CLI knob (`--size`).
+    /// The resident device-64 frame the app renders into, owned by the GUI beside its presenter.
+    /// Runtime-sized, because the device resolution is a CLI knob.
     fb: Vec<u8>,
-    /// The simulator's presenter: [`Present::present_now`] self-diffs the resident frame (pushing only the changed spans into the uploaded texture) under an exact-diff oracle. Its
+    /// The simulator's presenter. [`Present::present_now`] self-diffs the resident frame and
+    /// pushes only the changed spans into the uploaded texture. Its
     /// [`stats`](Present::stats) feed the panel.
     present: Present,
     dev_w: u32,
     dev_h: u32,
     scale: u32,
-    /// Saved display calibration (egui points per millimetre), or `None` until the
-    /// user calibrates. Loaded from / written to [`crate::calib`].
+    /// Saved display calibration in egui points per millimetre, or `None` until the user
+    /// calibrates.
     points_per_mm: Option<f32>,
-    /// Render the device at the panel's true physical size (needs `points_per_mm`).
+    /// Render the device at the panel's true physical size. Needs `points_per_mm`.
     physical: bool,
     /// Snap the window to the device's 1:1 size next frame (set when 1:1 turns on).
     physical_resize_pending: bool,
@@ -227,66 +221,63 @@ struct SimGui {
     calib_error: Option<String>,
     /// Editable mirrors for the control-panel widgets.
     panel: PanelState,
-    /// Emulated device controls (four device buttons) → shared gesture recognizer.
+    /// The four emulated device buttons, feeding the shared gesture recognizer.
     input: DeviceInput,
-    /// The loaded GPX replay, if any. When `Some`, it drives the fix instead of the manual
-    /// [`SimLocationSource`] (as the device's GPS would). `None` = manual panel control.
+    /// The loaded GPX replay. When `Some` it drives the fix instead of the manual
+    /// [`SimLocationSource`], as the device's GPS would. `None` is manual panel control.
     gpx: Option<GpxPlayer>,
-    /// Simulated barometer (device altimeter stand-in), fed the replay's elevation on its own
-    /// cadence (asynchronous to the GPS fix).
+    /// Simulated barometer, fed the replay's elevation on its own cadence, asynchronous to the GPS
+    /// fix.
     baro: BaroSensor,
-    /// Simulated compass (device magnetometer stand-in) — the panel's "Compass" slider, orienting
-    /// a heading-up map or Peak View while stopped when the GPS has no course.
+    /// Simulated compass, driven by the panel's Compass slider. It orients a heading-up map or
+    /// Peak View while stopped, when the GPS has no course.
     compass: SimCompass,
-    /// Synthetic BLE sensors (HR / power / cadence) — the panel's "Sensors" section drives them, and
-    /// their three source fields feed `Sensors::{hr,power,cadence}` each tick, honouring the ~1 Hz
-    /// fresh-mailbox contract so a disabled quantity reads `--` (epic #707 SE8).
+    /// Synthetic BLE sensors, driven by the panel's Sensors section. Their three source fields feed
+    /// `Sensors` each tick and honour the fresh-mailbox contract, so a disabled quantity reads as
+    /// blank.
     sim_sensors: crate::sim_sensors::SimSensors,
-    /// A short "name — N pts, M:SS" status line for the loaded track.
+    /// A short status line for the loaded track.
     gpx_label: Option<String>,
     /// The last GPX load error, shown in the panel until the next successful load.
     gpx_error: Option<String>,
     /// Set when the Controls window is closed; quits the whole app next frame.
     quit: bool,
-    /// The panel's brightness, driven from [`App::backlight_level`] every frame — the simulator's
-    /// [`Backlight`](obc_ports::Backlight) implementation (#1515 D2).
+    /// The panel's brightness, driven from [`App::backlight_level`] every frame: the simulator's
+    /// [`Backlight`](obc_ports::Backlight) implementation.
     backlight: crate::panel_power::SimBacklight,
     /// The simulator's [`PowerOff`](obc_ports::PowerOff) port.
     power: crate::panel_power::SimPowerOff,
-    /// Millis the rider completed the power-off hold, so the "POWERING OFF" frame is actually
-    /// **looked at** before the process ends. `None` until then.
+    /// Milliseconds at which the rider completed the power-off hold, so the powering-off frame is
+    /// looked at before the process ends. `None` until then.
     powering_off_at: Option<std::time::Instant>,
     texture: Option<egui::TextureHandle>,
     last_stats: obc_render::RenderStats,
-    /// The render-on-demand signal the last pass planned (`PassPlan::render`), kept for the stats
-    /// panel. The sim always redraws, so this is informational — a live readout of the
-    /// signal the firmware gates its renders on. (Mouse pan/zoom bypasses the app's input path, so
-    /// it isn't reflected; on the device every camera change goes through a gesture or a fix.)
+    /// The render-on-demand signal the last pass planned, kept for the stats panel. The sim always
+    /// redraws, so this is a readout and not a gate. Mouse pan and zoom bypass the app's input
+    /// path, so they are not reflected.
     last_dirty: Dirty,
-    /// The last pass's `next_wake_ms`, for the same panel and the same reason: the simulator
-    /// repaints continuously so its Controls window stays live, so the device's sleep schedule is
-    /// **shown** rather than obeyed — stated here rather than silently dropped.
+    /// The last pass's `next_wake_ms`, for the same panel. The simulator repaints continuously so
+    /// its Controls window stays live, so the device's sleep schedule is shown and not obeyed.
     last_wake_ms: Option<u32>,
-    /// The shared typed executor (`obc-host-core`): the next pass's outcomes and facts, and the
-    /// in-flight resumable planner (#499, stepped once per frame — the board's one-step-per-pass
-    /// shape). Every delete/rescan/nav/track sequencing decision lives in a domain, not here.
+    /// The shared typed executor: the next pass's outcomes and facts, and the in-flight resumable
+    /// planner, stepped once per frame as the board steps it once per pass. Every sequencing
+    /// decision lives in a domain, not here.
     host: HostLoop,
     /// The resident active-route parse, opened once per frame and lent to both the pass and the
-    /// render (so the Map opens without a per-frame `RouteIndex` reparse).
+    /// render, so the Map opens without a per-frame `RouteIndex` reparse.
     session: ActiveRouteSession,
-    /// The gestures the recognizer produced at the end of the **previous** frame, applied by the
-    /// next pass's input stage. Recognition happens where the housing is hit-tested (inside the
-    /// egui draw); the pass is what applies them, so they wait one frame here — exactly the frame
-    /// they already waited for before, when `handle_input` applied them behind the render.
+    /// The gestures the recognizer produced at the end of the previous frame, applied by the next
+    /// pass's input stage. Recognition happens inside the egui draw, where the housing is
+    /// hit-tested, and the pass applies them, so they wait one frame here.
     pending_gestures: Vec<Gesture>,
     /// Embedded terrain from the retained map, or the null source when unavailable.
     /// Planner emission and map-referenced altitude share this bounded cache.
     elevation: Box<dyn obc_route::ElevationSource>,
     /// The device body color drawn by the housing chrome. Switchable in the control panel.
     colorway: Colorway,
-    /// This frame's device-control keyboard state, read at the top of `update` (before a widget
-    /// can take focus and swallow the keys), then folded into the on-housing controls. Steps are
-    /// edge-counted (how many this frame); the four buttons carry held state.
+    /// This frame's device-control keyboard state, read at the top of `update` before a widget can
+    /// take focus and swallow the keys, then folded into the on-housing controls. Steps are
+    /// edge-counted; the four buttons carry held state.
     kbd_steps: i32,
     kbd_up: bool,
     kbd_down: bool,
@@ -309,7 +300,7 @@ impl SimGui {
         tracks: TrackStore,
         args: Args,
     ) -> Self {
-        // The map's style table + LOD pyramid, parsed once — the tables every reader borrows.
+        // The map's style table and LOD pyramid, parsed once: the tables every reader borrows.
         let map_tables = map.tables();
         let (cx, cy, zoom) = crate::initial_camera(&map.reader(), args.width);
         let mut state = AppState::new(cx, cy, zoom);
@@ -322,8 +313,8 @@ impl SimGui {
         if let Some(b) = args.battery {
             state.device.battery_pct = b;
         }
-        // Start in Free so the mouse drives the camera; the fix is still seeded (map center)
-        // so the loop and user marker have something to track.
+        // Start in Free so the mouse drives the camera. The fix is still seeded at the map center,
+        // so the loop and the user marker have something to track.
         state.mode = CameraMode::Free;
         state.heading_up = args.heading.is_some();
         let (fix_lat, fix_lon) =
@@ -365,36 +356,35 @@ impl SimGui {
             },
         };
 
-        // Boot at the device's real power-on state (Home / Idle, no route); the headless
-        // `--png` path opens straight on the map instead (see `--boot`).
+        // Boot at the device's real power-on state. The headless `--png` path opens straight on
+        // the map instead.
         let mut app = App::new_idle(state);
         if app.state.user_fix.is_some() {
             let mut loc = crate::sim_location::SimLocationSource::new(app.state.user_fix);
             app.tick(obc_ports::RideClock(0), obc_ports::Sensors::new(&mut loc), None);
         }
         tracks.offer_recovery(&mut app);
-        // Seed the live settings from the persisted store, falling back to defaults on a first
-        // run / unreadable file — the device's boot path.
+        // Seed the live settings from the persisted store, falling back to defaults on a first run
+        // or an unreadable file, as the device's boot path does.
         let mut settings_store = FileSettingsStore::open(args.settings_path());
         let boot_settings = settings_store.load().unwrap_or_default();
         app.set_settings(boot_settings);
         args.stamp_initial_clock(&mut app);
-        // Mirror the map's §8.6 routing-profile names into the app for the bike-type editor +
-        // created-route overview label (N5). The map is loaded once in the sim, so this is a one-shot
-        // (a device re-runs it on every map load).
+        // Mirror the map's routing-profile names into the app for the bike-type editor and the
+        // created-route overview label. The sim loads one map, so this is a one-shot; a device
+        // re-runs it on every map load.
         app.set_nav_profiles(map_tables.nav_profiles());
         app.set_map_nav_graph(map_tables.has_nav_graph());
-        // Device-info built-ins for the System settings screen (T8 item 6): firmware version (the
-        // sim's crate version) + the loaded map's name (filename stem) & OBCM version. The card-free
-        // scan is answered per-frame in `update` when the screen posts its on-entry request.
-        // The panel-light capability, straight from the port the window will actually drive — the
-        // drawer's root row is built from this (#1515 D2). `--no-backlight` builds the board's
-        // lightless platform instead, so the window shows the three-control sheet and never scales
-        // the blit.
+        // Device-info built-ins for the System settings screen: the firmware version, standing in
+        // as the sim's crate version, and the loaded map's name and version. The free-space scan is
+        // answered per frame in `update`, when the screen posts its on-entry request.
+        // The panel-light capability, straight from the port the window drives. The drawer's root
+        // row is built from it, and `--no-backlight` builds a lightless platform instead, so the
+        // window shows the three-control sheet and never scales the blit.
         let backlight = crate::panel_power::SimBacklight::new(!args.no_backlight);
         app.set_backlight_available(obc_ports::Backlight::available(&backlight));
-        // The window draws into one resident device-64 plane and presents it by self-diff, exactly
-        // as the board does — so the frozen base's rows survive between frames (#1559).
+        // The window draws into one resident device-64 plane and presents it by self-diff, as the
+        // board does, so the frozen base's rows survive between frames.
         app.set_resident_frame(true);
         if peak_profile.is_some() {
             app.show_peak_view();
@@ -402,7 +392,7 @@ impl SimGui {
         app.set_fw_version(env!("CARGO_PKG_VERSION"));
         let map_name = map.display_name();
         app.set_map_info(map_name, map_tables.version);
-        // `--physical` only takes effect with a saved calibration; the panel opens calibration.
+        // `--physical` takes effect only with a saved calibration; the panel opens calibration.
         let points_per_mm = crate::calib::load();
         let physical = args.physical && points_per_mm.is_some();
         let colorway = Colorway::Forest;
@@ -467,8 +457,8 @@ impl SimGui {
         gui
     }
 
-    /// Parse a GPX file and load it as the active replay (paused at the start), or record the
-    /// error for the panel (CLI `--gpx`, file-dialog).
+    /// Parse a GPX file and load it as the active replay, paused at the start, or record the error
+    /// for the panel.
     fn load_gpx(&mut self, path: &Path) {
         match Track::load(path) {
             Ok(track) => {
@@ -488,21 +478,19 @@ impl SimGui {
     }
 
     fn render_to_texture(&mut self, ctx: &egui::Context) {
-        // Reuse the session-long tables and chunk cache (see the field docs): the map is parsed
-        // once at startup exactly as the device parses once at boot, so a frame costs one cheap
-        // `Reader` view. The map plane, nav, POI, hours and routing all read it.
+        // Reuse the session-long tables and chunk cache: the map is parsed once at startup, as the
+        // device parses once at boot, so a frame costs one cheap `Reader` view. The map plane, nav,
+        // POI, hours and routing all read it.
         let reader = self.map.reader();
 
-        // Feed the host→app BLE seam (epic #447): the control panel's injected link state, pushed
-        // every frame exactly as the board's ride loop feeds its `ble::state` snapshot. Cheap and
-        // idempotent — an unchanged status repaints nothing.
+        // Feed the BLE seam with the control panel's injected link state, every frame, as the
+        // board's ride loop feeds its own snapshot. An unchanged status repaints nothing.
         self.host.facts().note_link(self.panel.ble);
 
-        // Feed the host→app BLE **sensor** seam (epic #707, SE7) from a fake central manager, so the
-        // Sensors screen is fully drivable without a radio. While the scan list is up, publish a
-        // canned hit set (one per kind); for each saved slot, report Connected with a stand-in
-        // battery — so pairing a hit (a Settings write) flips its row to Connected next frame, and
-        // Forget drops it back to Not set. The board's ride loop drives the real thing the same shape.
+        // Feed the BLE sensor seam from a fake central manager, so the Sensors screen is drivable
+        // without a radio. While the scan list is up it publishes a canned hit set, one per kind,
+        // and reports each saved slot as connected with a stand-in battery. Pairing a hit is a
+        // settings write, so its row flips next frame, and Forget drops it back.
         if self.app.sensor_scan_active() {
             self.app.set_sensor_scan_hits(&crate::fake_scan_hits());
         } else {
@@ -520,10 +508,9 @@ impl SimGui {
         }
         self.app.set_sensor_status(&sensor_status);
 
-        // ── One DeviceCore pass ──────────────────────────────────────────────────────────────
-        // The active route is opened once from the resident session (no per-frame `RouteIndex`
-        // reparse) and lent to the pass, so the map-matcher reads the geometry the frame draws.
-        // The render below re-opens it: the executor may commit new bytes under it.
+        // One DeviceCore pass. The active route is opened once from the resident session and lent
+        // to the pass, so the map-matcher reads the geometry the frame draws. The render below
+        // re-opens it, because the executor may commit new bytes under it.
         self.session.sync(&self.app, &mut self.store);
         let ui_now = self.input.now_ms();
         let gestures = core::mem::take(&mut self.pending_gestures);
@@ -534,13 +521,12 @@ impl SimGui {
                 _ => None,
             };
             // Drive the app from whichever location source is active. A loaded GPX replay takes
-            // over from the manual panel fix (as the device's GPS would).
+            // over from the manual panel fix, as the device's GPS would.
             if let Some(player) = self.gpx.as_mut() {
                 let dt = ctx.input(|i| i.stable_dt) as f64;
-                // Feed the synthetic sensors on the same playback clock, from the *previous*
-                // frame's speed (a ~1-frame lag is irrelevant at the 1 Hz emit cadence) — so a
-                // sample is stamped onto the point this pass logs. Effort-follows-speed reads that
-                // speed; the sliders don't.
+                // Feed the synthetic sensors on the same playback clock, from the previous frame's
+                // speed, so a sample is stamped onto the point this pass logs. The one-frame lag
+                // does not matter at the emit cadence.
                 let speed_mps = self.app.state.user_fix.and_then(|f| f.speed_mps).unwrap_or(0.0);
                 self.sim_sensors.feed((player.time() * 1000.0) as u32, speed_mps);
                 let (ride, sensors) = obc_host_core::replay_advance(
@@ -563,22 +549,21 @@ impl SimGui {
                     SIM_SUPPORT,
                 )
             } else {
-                // Manual panel control: no barometer, wall-clock for any moving-time.
+                // Manual panel control: no barometer, and wall clock for any moving time.
                 self.baro.clear();
-                // The synthetic sensors run under manual control too (their sliders drive fixed
-                // values); effort-follows-speed has no GPX speed here, so it reads whatever the
-                // last fix had (~0).
+                // The synthetic sensors run under manual control too, driven by their sliders.
+                // Effort-follows-speed has no replay speed here, so it reads the last fix's.
                 let speed_mps = self.app.state.user_fix.and_then(|f| f.speed_mps).unwrap_or(0.0);
                 self.sim_sensors.feed(ui_now, speed_mps);
                 let mut sim_clock =
                     SimClock { enabled: self.panel.gps_time, offset_secs: self.panel.clock_offset_secs };
-                // Defaulted away: no thermometer in manual control (BMP581 temperature is
-                // device-only) and no live fuel gauge (battery is set once from `--battery`).
+                // Defaulted away: no thermometer in manual control, and no live fuel gauge, because
+                // the battery is set once from `--battery`.
                 let sensors = Sensors {
                     clock: Some(&mut sim_clock),
                     compass: Some(&mut self.compass),
-                    // The panel's "Sensors" section drives these (SE8); each source honours the
-                    // ~1 Hz fresh-mailbox contract, so a disabled quantity goes stale → `--`.
+                    // The panel's Sensors section drives these. Each source honours the
+                    // fresh-mailbox contract, so a disabled quantity goes stale and reads blank.
                     hr: Some(&mut self.sim_sensors.hr),
                     power: Some(&mut self.sim_sensors.power),
                     cadence: Some(&mut self.sim_sensors.cadence),
@@ -595,8 +580,7 @@ impl SimGui {
             }
         };
         // A single-loop host has no second recognizer to cancel, so it consumes the hold-cancel
-        // latch the pass may have armed rather than leaving it set for a plane that does not exist
-        // — the same rule `App::handle_input` applies for the hosts that still go through it.
+        // latch the pass may have armed rather than leaving it set for a plane that does not exist.
         let _ = self.app.take_hold_cancel();
 
         // Reflect the replayed fix in the panel mirrors, so manual control resumes from here if the
@@ -626,9 +610,8 @@ impl SimGui {
                 &mut platform,
             );
         }
-        // The map-referenced altimeter's terrain read (EL8, #1076), drained once per frame behind
-        // the pass — the board's ride-loop shape. It is a one-shot armed only by a fresh fix, so
-        // this reads at most one 512 B tile per fix, never per frame.
+        // The map-referenced altimeter's terrain read, drained once per frame behind the pass, as
+        // the board's ride loop does. A fresh fix arms it, so it reads at most one tile per fix.
         self.app.sample_terrain(&mut *self.elevation);
 
         self.session.sync(&self.app, &mut self.store);
@@ -637,16 +620,15 @@ impl SimGui {
         self.peak_view.update(&mut self.app);
         let panorama = self.peak_view.panorama();
 
-        // Time the whole frame draw into `render_us` (`obc-render` is clockless, so the host
-        // fills it; the device uses the DWT cycle counter). Render the whole frame straight into the
-        // backend's resident device-64 plane — the device's own color path (`Rgb565` → device-64
-        // pack), exactly as the firmware's map plane draws into its `FbDevice64`.
+        // Time the whole frame draw into `render_us`: `obc-render` is clockless, so the host fills
+        // it. The frame renders straight into the resident device-64 plane, which is the device's
+        // own color path.
         let t0 = std::time::Instant::now();
         let (dev_w, dev_h) = (self.dev_w, self.dev_h);
         let mut fbdev = FbDevice64::new(&mut self.fb, dev_w, dev_h);
         let scene = frame::Scene { reader: &reader, route: route.as_ref() };
-        // The frame renders the very snapshot this pass decided over — sampled before it, not after
-        // — so the card, the step count and the raster are one decision.
+        // The frame renders the snapshot this pass decided over, sampled before it, so the card,
+        // the step count and the raster are one decision.
         let (app, scratch) = (&mut self.app, &mut *self.scratch);
         let mut stats = frame::render(
             app,
@@ -661,24 +643,19 @@ impl SimGui {
         );
         stats.render_us = t0.elapsed().as_micros() as u32;
         self.last_stats = stats;
-        // The plan's own render decision, for the stats readout (the sim always redraws, so this
-        // doesn't gate drawing). `plan.next_wake_ms` rides beside it for the same reason: the sim
-        // repaints continuously so its control panel stays live, and the device's sleep schedule is
-        // shown rather than obeyed.
+        // The plan's render decision, for the stats readout: the sim always redraws, so it gates
+        // nothing. `plan.next_wake_ms` rides beside it for the same reason.
         self.last_dirty = plan.render;
         self.last_wake_ms = plan.next_wake_ms;
 
-        // Present: the presenter self-diffs the resident frame and pushes only the changed spans
-        // into its reconstructed texture (under the exact-diff oracle). Uploading *that* — not a
-        // whole-frame copy — means a diff bug shows as a stale row on glass, not just a failed
-        // assert. `present_now` is the same engine the display-contract impls delegate to (the
-        // contracts type geometry at compile time; the GUI's device size is the `--size` knob).
+        // The presenter self-diffs the resident frame and pushes only the changed spans into its
+        // reconstructed texture. Uploading that texture, rather than a whole-frame copy, means a
+        // diff bug shows as a stale row on glass and not only as a failed assert.
         self.present.present_now(&self.fb, None);
         self.peak_view.note_frame_presented(&self.app);
-        // The backlight, applied where a panel's brightness is actually visible: the pixels the
-        // window blits. Driven every frame from the app's own answer, which is the drawer's staged
-        // preview while its editor is open and the committed setting otherwise — so previewing,
-        // committing and cancelling all fall out of one idempotent call.
+        // The backlight, applied where a panel's brightness is visible: the pixels the window
+        // blits. Driven every frame from the app's own answer, which is the drawer's staged preview
+        // while its editor is open and the committed setting otherwise.
         let _ = obc_ports::Backlight::apply(&mut self.backlight, self.app.backlight_level());
         let size = [dev_w as usize, dev_h as usize];
         let image = match self.backlight.gain() {
@@ -695,9 +672,9 @@ impl SimGui {
         }
     }
 
-    /// Apply mouse pan/scroll-zoom over the screen `rect`, switching to Free mode. `scale` is
-    /// the *displayed* device-pixels-to-screen-points factor (the image is fit to the window,
-    /// so it can differ from the requested `--scale`).
+    /// Apply mouse pan and scroll-zoom over the screen `rect`, switching to Free mode. `scale` is
+    /// the displayed device-pixels-to-screen-points factor, which can differ from the requested
+    /// `--scale` because the image is fit to the window.
     fn handle_camera_input(&mut self, ui: &egui::Ui, resp: &egui::Response, rect: egui::Rect, scale: f32) {
         let (w, h) = (self.dev_w as f32, self.dev_h as f32);
         let st = &mut self.app.state;
@@ -707,9 +684,8 @@ impl SimGui {
             let dpx = d.x / scale;
             let dpy = d.y / scale;
             let vp = st.viewport(w, h);
-            // Convert the screen-space drag into a map delta through the inverse
-            // projection (`to_map`), so panning follows the cursor even when the
-            // view is rotated (heading-up) — a fixed `cam ± dx/zoom` would drift.
+            // Convert the screen-space drag into a map delta through the inverse projection, so
+            // panning follows the cursor even when the view is rotated. A fixed offset would drift.
             let (lon0, lat0) = vp.to_map(w / 2.0, h / 2.0);
             let (lon1, lat1) = vp.to_map(w / 2.0 - dpx, h / 2.0 - dpy);
             st.cam_lon = st.cam_lon.wrapping_add(lon1.wrapping_sub(lon0));
@@ -737,11 +713,9 @@ impl SimGui {
         }
     }
 
-    /// Draw the device — housing chrome plus the framebuffer blitted into its screen cutout —
-    /// centred, at either the integer fit scale (default) or the panel's true physical size
-    /// when 1:1 is on and calibrated. Reports this frame's device-control hit-test ([`DeviceHit`])
-    /// so the caller can fold it into the shared input recognizer via [`apply_device_input`]; the
-    /// drawing itself has no input side effects.
+    /// Draw the device, housing chrome plus the framebuffer blitted into its screen cutout,
+    /// centred, at the integer fit scale or the panel's true physical size when 1:1 is on and
+    /// calibrated. It reports this frame's [`DeviceHit`] and has no input side effects.
     #[must_use]
     fn show_device_image(&mut self, ctx: &egui::Context) -> DeviceHit {
         // Frame the device in a charcoal backdrop.
@@ -753,12 +727,12 @@ impl SimGui {
                 let style = housing::HousingStyle::default();
                 let screen = egui::vec2(self.dev_w as f32, self.dev_h as f32);
                 let disp_scale = match (self.physical, self.points_per_mm) {
-                    // 1:1 — points per device pixel so 240 px spans the panel's real width.
-                    // Fractional on purpose (the size isn't a whole multiple of the grid);
-                    // NEAREST keeps it crisp at the cost of a slightly uneven pixel grid.
+                    // 1:1: points per device pixel, so the frame spans the panel's real width.
+                    // Fractional on purpose, and nearest sampling keeps it crisp at the cost of a
+                    // slightly uneven pixel grid.
                     (true, Some(ppm)) => (crate::calib::PANEL_W_MM * ppm / self.dev_w as f32).max(0.05),
-                    // Otherwise: largest integer scale at which the whole *device* fits,
-                    // capped at `--scale`, ≥1 — keeps the screen at a crisp whole multiple.
+                    // Otherwise the largest integer scale at which the whole device fits, capped
+                    // at `--scale`, which keeps the screen at a crisp whole multiple.
                     _ => {
                         let avail = ui.available_size();
                         let dev = style.device_size_px(screen);
@@ -768,10 +742,9 @@ impl SimGui {
                 };
                 let lo = style.layout(ui.available_rect_before_wrap(), disp_scale, screen);
 
-                // The device controls live on the housing: click any of the four pads — UP / DOWN
-                // on the left flank, SELECT / BACK on the right. Hit-test their rects here (drawing
-                // only); the keyboard fold-in and shared recognizer run in `apply_device_input` from
-                // the returned `DeviceHit`.
+                // The device controls live on the housing: UP and DOWN on the left flank, SELECT
+                // and BACK on the right. Their rects are hit-tested here; the keyboard fold-in and
+                // the shared recognizer run in `apply_device_input`.
                 let pad = |ui: &mut egui::Ui, rect, id| {
                     ui.interact(rect, egui::Id::new(id), egui::Sense::click())
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -780,18 +753,17 @@ impl SimGui {
                 let down = pad(ui, lo.down, "dev_down");
                 let select = pad(ui, lo.select, "dev_select");
                 let back = pad(ui, lo.back, "dev_back");
-                // Wheel scroll over the pads stands in for tapping UP/DOWN (zero when not hovered);
-                // the delta is applied in `apply_device_input`.
+                // Wheel scroll over the pads stands in for tapping UP and DOWN, and is zero when
+                // they are not hovered. The delta is applied in `apply_device_input`.
                 let scroll_dy =
                     if up.hovered() || down.hovered() { ui.input(|i| i.smooth_scroll_delta.y) } else { 0.0 };
-                // UP/DOWN now carry held state like the other two pads, so a held pad or arrow key
-                // auto-repeats through the shared recognizer at the device's own cadence. Only the
-                // one-shot keyboard aliases still inject finished steps.
+                // All four pads carry held state, so a held pad or arrow key auto-repeats through
+                // the shared recognizer at the device's own cadence. Only the one-shot keyboard
+                // aliases inject finished steps.
                 //
-                // `clicked()` is OR-ed in because held state alone is sampled once a frame: a press
-                // and its release inside one long frame — a deep map render is easily 100 ms — would
-                // otherwise show no transition and the tap would vanish. The extra frame of "held"
-                // still yields exactly one Down/Up pair.
+                // `clicked()` is OR-ed in because held state is sampled once a frame: a press and
+                // its release inside one long frame would otherwise show no transition and the tap
+                // would vanish. The extra frame of held state still yields one press and release.
                 let steps = self.kbd_steps;
                 let up_down = up.is_pointer_button_down_on() || up.clicked() || self.kbd_up;
                 let down_down = down.is_pointer_button_down_on() || down.clicked() || self.kbd_down;
@@ -802,8 +774,9 @@ impl SimGui {
                 let ctrl = housing::ControlVisual { up_down, down_down, select_down, back_down };
                 let palette = self.colorway.palette();
 
-                // Paint the housing, then blit the framebuffer into its screen rect, corners rounded
-                // to follow the bezel. Clone the painter so `ui`'s borrow is released before `ui.put`.
+                // Paint the housing, then blit the framebuffer into its screen rect with the
+                // corners rounded to follow the bezel. The painter is cloned so `ui`'s borrow is
+                // released before `ui.put`.
                 let painter = ui.painter().clone();
                 housing::draw(&painter, &lo, &style, &palette, &ctrl);
                 let resp = ui.put(
@@ -814,7 +787,7 @@ impl SimGui {
                         .rounding(egui::Rounding::same(style.screen_radius_pts(disp_scale)))
                         .sense(egui::Sense::click_and_drag()),
                 );
-                // Mouse drag pans / scroll zooms over the screen.
+                // Mouse drag pans and scroll zooms over the screen.
                 self.handle_camera_input(ui, &resp, resp.rect, disp_scale);
 
                 DeviceHit { up_down, down_down, select_down, back_down, steps, scroll_dy }
@@ -822,13 +795,11 @@ impl SimGui {
             .inner
     }
 
-    /// Fold a frame's device-control hit-test ([`show_device_image`]'s [`DeviceHit`]) into the
-    /// shared input recognizer — the same path the firmware runs with real GPIO — and persist
-    /// settings on the dirty edge. Split out of the draw so drawing reports geometry only; the same
-    /// events reach [`handle_input`](obc_app::App::handle_input) in the same order, with the same
-    /// coordinates, they did inline.
+    /// Fold a frame's [`DeviceHit`] into the shared input recognizer, which is the path the
+    /// firmware runs with real GPIO, and persist settings on the dirty edge. Split out of the draw
+    /// so drawing reports geometry only.
     fn apply_device_input(&mut self, hit: DeviceHit) {
-        // Mouse-wheel scroll → steps (non-zero only when a UP/DOWN pad was hovered this frame).
+        // Mouse-wheel scroll becomes steps, and is non-zero only over a UP or DOWN pad.
         if hit.scroll_dy != 0.0 {
             self.input.scroll(hit.scroll_dy);
         }
@@ -838,16 +809,14 @@ impl SimGui {
         self.input.set_button(Button::Select, hit.select_down);
         self.input.set_button(Button::Back, hit.back_down);
         let now = self.input.now_ms();
-        // Recognition only: the *pass* applies the batch, at its input stage, on the next frame —
+        // Recognition only: the pass applies the batch at its input stage on the next frame,
         // where a gesture lands after what the executor finished and before the domains decide.
-        // That is the same one-frame delay the old order had (the transition used to happen behind
-        // the render it would first be visible on), moved to the one place that owns it.
         self.pending_gestures.extend(self.app.recognize(InputClock(now), &mut self.input));
     }
 
-    /// The 1:1 calibration screen: draw a reference bar of a known point-width; the user
-    /// measures it and types the length → points-per-mm. `calib` is taken out of `self` so the
-    /// egui closure borrows only locals.
+    /// The 1:1 calibration screen: it draws a reference bar of a known point width, and the user
+    /// measures it and types the length, which gives points per millimetre. `calib` is taken out of
+    /// `self` so the egui closure borrows only locals.
     fn show_calibration(&mut self, ctx: &egui::Context) {
         let Some(mut calib) = self.calib.take() else { return };
         let mut save_ppm: Option<f32> = None;
@@ -861,8 +830,8 @@ impl SimGui {
                 ui.label("then type its length. Saved once and reused on every launch.");
                 ui.add_space(22.0);
 
-                // Reference bar: a known width in points (clamped to the window). The user
-                // measures its physical length, so points-per-mm = drawn width / mm.
+                // Reference bar: a known width in points, clamped to the window. The user measures
+                // its physical length, which gives points per millimetre.
                 let bar_w = crate::calib::REF_BAR_POINTS.min(ui.available_width() - 48.0).max(60.0);
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(bar_w, 34.0), egui::Sense::hover());
                 let p = ui.painter_at(rect);
@@ -909,7 +878,7 @@ impl SimGui {
                     self.physical = true;
                     self.physical_resize_pending = true;
                     self.calib_error = None;
-                    // `calib` stays taken (None) → leave the calibration screen.
+                    // `calib` stays taken, which leaves the calibration screen.
                 }
                 Err(e) => {
                     self.calib_error = Some(e);
@@ -921,8 +890,8 @@ impl SimGui {
         }
     }
 
-    /// Snap the device window to match the current mode once, when 1:1 is toggled:
-    /// the panel's true size in physical mode, the `--scale` default otherwise.
+    /// Snap the device window to the current mode once, when 1:1 is toggled: the panel's true size
+    /// in physical mode, the `--scale` default otherwise.
     fn apply_physical_resize(&mut self, ctx: &egui::Context) {
         if !std::mem::take(&mut self.physical_resize_pending) {
             return;
@@ -933,7 +902,7 @@ impl SimGui {
                 let s = crate::calib::PANEL_W_MM * ppm / self.dev_w as f32;
                 egui::vec2(dev.x * s, dev.y * s)
             }
-            // 1:1 off → back to the requested `--scale` window.
+            // 1:1 off goes back to the requested `--scale` window.
             _ => egui::vec2(dev.x * self.scale as f32, dev.y * self.scale as f32),
         };
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
@@ -942,12 +911,11 @@ impl SimGui {
 
 impl eframe::App for SimGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Read the device-control keyboard shortcuts *first*, before a widget can take focus and
-        // swallow the keys. All four keys now carry live held state into the same edge recognizer
-        // the firmware feeds, so a held ←/→ auto-repeats at the device's cadence rather than the
-        // OS key-repeat's. The bracket / comma / period aliases stay one-shot injected steps — no
-        // button models them. The device's UP/DOWN pads sit on one flank, so the horizontal pair
-        // reads more naturally under a hand than ↑/↓. Applied in `show_device_image`.
+        // Read the device-control keyboard shortcuts first, before a widget can take focus and
+        // swallow the keys. All four keys carry live held state into the same edge recognizer the
+        // firmware feeds, so a held key auto-repeats at the device's cadence and not the OS key
+        // repeat's. The bracket, comma and period aliases stay one-shot injected steps, because no
+        // button models them. Applied in `show_device_image`.
         let keys = ctx.input_mut(|i| {
             let mut steps = 0;
             if i.consume_key(egui::Modifiers::NONE, egui::Key::CloseBracket)
@@ -960,12 +928,12 @@ impl eframe::App for SimGui {
             {
                 steps -= 1;
             }
-            // The four device keys are read as *held state*, OR-ed with "pressed this frame" so a
-            // tap that also releases inside one long frame still produces an edge. ←/→ then have
-            // their press events eaten, so a focused slider or text field does not act on them as
-            // well: the device keys belong to the device. Consuming does not touch `key_down`, and
-            // a key-repeat can queue more than one press per frame, so drain them. A modified
-            // arrow (Cmd/Ctrl-←) is an editing shortcut, not a device key: it is left alone.
+            // The four device keys are read as held state, OR-ed with pressed-this-frame, so a tap
+            // that also releases inside one long frame still produces an edge. The arrow keys then
+            // have their press events eaten, so a focused slider or text field does not act on them
+            // too. Consuming does not touch `key_down`, and a key repeat can queue more than one
+            // press per frame, so they are drained. A modified arrow is an editing shortcut and is
+            // left alone.
             let held = |i: &egui::InputState, k| i.modifiers.is_none() && (i.key_down(k) || i.key_pressed(k));
             let (left, right) = (held(i, egui::Key::ArrowLeft), held(i, egui::Key::ArrowRight));
             let (enter, back) = (held(i, egui::Key::Enter), held(i, egui::Key::Backspace));
@@ -976,7 +944,7 @@ impl eframe::App for SimGui {
         });
         (self.kbd_steps, self.kbd_up, self.kbd_down, self.kbd_select, self.kbd_back) = keys;
 
-        // Drag-and-drop a `.gpx` onto the window to import it (the device's USB-drop path).
+        // Drag and drop a `.gpx` onto the window to import it, as the device's USB drop does.
         let dropped: Vec<std::path::PathBuf> =
             ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
         for path in dropped {
@@ -1005,7 +973,7 @@ impl eframe::App for SimGui {
         self.render_to_texture(ctx);
 
         // The device window shows either the live screen or the size-calibration UI. Drawing the
-        // device only reports its hit-test; folding that into the input recognizer + saving
+        // device only reports its hit-test; folding that into the input recognizer and saving
         // settings happens right after, out of the draw.
         if self.calib.is_some() {
             self.show_calibration(ctx);
@@ -1015,11 +983,11 @@ impl eframe::App for SimGui {
         }
         self.apply_physical_resize(ctx);
 
-        // The Controls window (the development tool driving fix/sensors/BLE).
+        // The Controls window, which drives the fix, the sensors and BLE.
         self.show_control_panel(ctx);
 
-        // Closing the Controls window quits (otherwise a controls-less window lingers with no
-        // way to drive the fix).
+        // Closing the Controls window quits, because otherwise a window with no controls lingers
+        // and nothing can drive the fix.
         if self.quit {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
@@ -1035,7 +1003,7 @@ impl eframe::App for SimGui {
             self.powering_off_at = None;
         }
 
-        // Repaint continuously so control-panel / GPX changes show without a mouse event.
+        // Repaint continuously, so control-panel and GPX changes show with no mouse event.
         ctx.request_repaint();
     }
 }
