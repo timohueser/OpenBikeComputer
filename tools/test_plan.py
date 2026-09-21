@@ -419,9 +419,7 @@ def is_policy_path(path: str) -> bool:
     return any(glob_matches(path, pattern) for pattern in TEST_POLICY_PATTERNS)
 
 def looks_like_production(path: str) -> bool:
-    # `scratch/` is working material kept for the next reader, not production: nothing builds it
-    # and nothing depends on it. Each directory under it carries a README saying when to delete it.
-    if path.startswith(("docs/", "artifacts/", "scratch/", ".claude/", ".repowise/")):
+    if path.startswith(("docs/", "artifacts/", ".claude/", ".repowise/")):
         return False
     name = Path(path).name
     if name.startswith("test_") or "/tests/" in path or "/test/" in path:
@@ -460,6 +458,7 @@ def select(
         if name in by_package:
             claim(by_package[name], reason)
 
+    orphaned: list[str] = []
     for path in sorted(set(changed_paths)):
         owned = False
         if is_policy_path(path):
@@ -506,19 +505,29 @@ def select(
         if owned:
             continue
         if path in gone:
-            # The owner may have been deleted with it, and the base tree's Cargo graph is
-            # not available here, so this runs the whole graph rather than nothing.
-            reason = f"{WHOLE_GRAPH} deleted path with no owner in the head tree: {path}"
-            for name in graph.packages:
-                claim_package(name, reason)
-            for unit in units:
-                if unit.declared and unit.jobs:
-                    claim(unit, reason)
+            orphaned.append(path)
         elif looks_like_production(path):
             errors.append(
                 f"changed production path has no owner: {path}; "
                 "add a trigger in testing/suites.toml or a Cargo package that contains it"
             )
+
+    # The owner may have been deleted with these paths, and the base tree's Cargo graph is
+    # not available here, so any unowned deletion runs the whole graph rather than nothing.
+    # One reason covers them all, and names three: a reason per path multiplies by every
+    # package and unit, and a branch that deletes a directory writes a plan too large for the
+    # `ci` gate to read at all. The plan already lists every changed path.
+    if orphaned:
+        named = ", ".join(orphaned[:3])
+        if len(orphaned) > 3:
+            named += f", and {len(orphaned) - 3} more"
+        count = f"{len(orphaned)} deleted paths" if len(orphaned) > 1 else "a deleted path"
+        reason = f"{WHOLE_GRAPH} {count} with no owner in the head tree: {named}"
+        for name in graph.packages:
+            claim_package(name, reason)
+        for unit in units:
+            if unit.declared and unit.jobs:
+                claim(unit, reason)
 
     # The snapshot sweep has an explicit rendering-input budget: broad policy and fixture
     # changes must not add an otherwise unrelated full UI render run. A deleted path with no
