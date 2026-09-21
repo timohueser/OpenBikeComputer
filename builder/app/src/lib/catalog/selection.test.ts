@@ -400,9 +400,9 @@ describe("SelectionResolver", () => {
 
     it("resolves terrain by the same intersect rule, on the terrain grid (EL4, §13.3)", () => {
         const terrain = exampleTerrainIndex();
-        // The example store is `2^13` squares; the box below is drawn over the
-        // first published one, plus the void square beside it and one the store
-        // says nothing about — the three answers §13.3/§13.6 distinguish.
+            // The example store is `2^13` squares; the box below is drawn over the first published
+            // one, plus the void square beside it and one the store says nothing about — the three
+            // answers the terrain model distinguishes.
         const first = cellSquare(parseCellId("13/38528/33664"));
         const wide: BoxPart = {
             kind: "box",
@@ -414,7 +414,7 @@ describe("SelectionResolver", () => {
         expect(r.terrain.cells).toEqual(["13/38528/33664", "13/38528/33665"]);
         expect(r.terrain.knownEmpty).toEqual(["13/38528/33667"]);
         expect(r.terrain.missing).toEqual(["13/38528/33666"]);
-        // §13.1 publishes 548 B per cell in the example.
+            // The example publishes 548 B per cell.
         expect(r.terrain.bytes).toBe(548 * 2);
     });
 

@@ -1,20 +1,17 @@
-// Leaflet glue for the coverage map (#1038). This paints the
-// cell catalog's own region boundaries as quiet affordances, each selection
-// part's true stair-edged outline, hatched not-baked patches inside the
-// selection, and the corridor panel's dashed preview. No grid is ever drawn —
-// §8 U1's decision is enforced by this file simply having no code that could.
+// Leaflet glue for the coverage map. This paints the cell catalog's own region
+// boundaries as quiet affordances, each selection part's true stair-edged outline,
+// hatched not-baked patches inside the selection, and the corridor panel's dashed
+// preview. No grid is ever drawn, and this file simply has no code that could.
 //
-// All Leaflet state lives on the instance (created in onMount, destroyed in
-// onDestroy); the Svelte component owns *what* to draw and pushes it through
-// the `set*` methods below, so this class stays framework-free and the
-// component stays Leaflet-free.
+// All Leaflet state lives on the instance; the Svelte component owns *what* to draw
+// and pushes it through the `set*` methods below, so this class stays framework-free
+// and the component stays Leaflet-free.
 //
-// Region picking is resolved by this class rather than by per-polygon click
-// handlers, because nested regions overlap: the topmost polygon under the
-// cursor is always the smallest, and the whole point of the ancestor ladder is
-// that a click means "this ground", not "this smallest boundary". So the
-// polygons are never interactive; armed hover and click do point-in-rings over
-// every region and hand the component the full chain.
+// Region picking is resolved here rather than by per-polygon click handlers, because
+// nested regions overlap: the topmost polygon under the cursor is always the
+// smallest, and the point of the ancestor ladder is that a click means "this
+// ground", not "this smallest boundary". So the polygons are never interactive;
+// armed hover and click do point-in-rings over every region.
 
 import L from "leaflet";
 
@@ -49,10 +46,9 @@ export interface CoverageMapCallbacks {
     /** An armed click found exactly one region under the point. */
     onRegionPick(regionId: string): void;
     /**
-     * An armed click found several nested regions under the point. Smallest
-     * first; `defaultId` is the zoom-matched suggestion (the largest chain
-     * member wholly inside the current view); `x`/`y` are container pixels for
-     * the popup.
+     * An armed click found several nested regions under the point. Smallest first;
+     * `defaultId` is the zoom-matched suggestion (the largest chain member wholly
+     * inside the current view); `x`/`y` are container pixels for the popup.
      */
     onRegionLadder(regionIds: string[], defaultId: string, x: number, y: number): void;
     /** A box was drawn; bounds in degrees, south/west/north/east. */
@@ -69,9 +65,8 @@ export interface CoverageMapCallbacks {
     onWarningClick(kind: "hole" | "partial"): void;
 }
 
-// The selection reads amber (a choice being made), warnings read coral, the
-// shelf reads quiet forest — the same assignments as the approved mocks and
-// the v1 picker's field-guide palette.
+// The selection reads amber (a choice being made), warnings read coral, the shelf
+// reads quiet forest.
 const REGION_STYLE: L.PathOptions = {
     color: "#3c6b39",
     weight: 1.6,
@@ -112,8 +107,8 @@ const BOX_DRAW_STYLE: L.PathOptions = {
 };
 const LASSO_DRAW_STYLE: L.PathOptions = { ...BOX_DRAW_STYLE, dashArray: "5 4" };
 
-/** Even-odd containment in a region's drawable rings, degrees — the same rule
- *  the even-odd fill draws them with, so what hovers is what is painted. */
+/** Even-odd containment in a region's drawable rings, degrees — the same rule the
+ *  even-odd fill draws them with, so what hovers is what is painted. */
 function pointInDegRings(lat: number, lon: number, rings: DegPoint[][]): boolean {
     let inside = false;
     for (const ring of rings) {
@@ -137,8 +132,8 @@ interface ShelfRegion {
     span: number;
 }
 
-/** Minimum pointer movement, px, before a lasso takes another vertex. Keeps a
- *  slow gesture from minting thousands of points the pricing then walks. */
+/** Minimum pointer movement, px, before a lasso takes another vertex. Keeps a slow
+ *  gesture from minting thousands of points the pricing then walks. */
 const LASSO_STEP_PX = 4;
 
 export class CoverageMapView {
@@ -169,17 +164,17 @@ export class CoverageMapView {
     private lassoPoly: L.Polygon | null = null;
 
     private resizeObs: ResizeObserver;
-    /** The shelf's bounds. The pane's size settles over several layout passes
-     *  (0-wide at mount, a strip, then the real grid track), and a fit computed
-     *  against any of the interim sizes frames the wrong world — so the fit is
-     *  re-applied on every resize until the user takes over the camera. */
+    /** The shelf's bounds. The pane's size settles over several layout passes (0-wide
+     *  at mount, a strip, then the real grid track), and a fit computed against any of
+     *  the interim sizes frames the wrong world — so the fit is re-applied on every
+     *  resize until the user takes over the camera. */
     private shelfBounds: L.LatLngBounds | null = null;
     private userMoved = false;
 
     constructor(el: HTMLElement, cb: CoverageMapCallbacks) {
         this.cb = cb;
-        // boxZoom off: shift+drag stays free for a future gesture and never
-        // fights the box tool.
+        // boxZoom off: shift+drag stays free for a future gesture and never fights
+        // the box tool.
         this.map = L.map(el, { worldCopyJump: true, boxZoom: false }).setView([49, 9], 5);
         L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
             maxZoom: 19,
@@ -211,10 +206,10 @@ export class CoverageMapView {
         });
         this.map.on("click", (e) => this.onRegionClick(e));
         this.map.on("mouseout", () => this.clearRegionHover());
-        // Leaflet only hears a mouseup inside its container: a drag released
-        // over the steps column (or outside the window) used to leave the
-        // rubber band armed and drawing (#1041 low sweep). The document hears
-        // every release; finishing twice is harmless — `drawing` gates it.
+        // Leaflet only hears a mouseup inside its container: a drag released over the
+        // steps column, or outside the window, otherwise leaves the rubber band armed
+        // and drawing. The document hears every release; finishing twice is harmless,
+        // because `drawing` gates it.
         document.addEventListener("pointerup", this.onDocPointerUp);
 
         // Any gesture on the pane hands the camera to the user for good.
@@ -226,10 +221,9 @@ export class CoverageMapView {
             this.tryShelfFit();
         });
         this.resizeObs.observe(el);
-        // Defensive (#1041 watch item): one unreproduced sighting of a
-        // zero-width SVG viewBox surviving a viewport change — recheck the
-        // size whenever the tab becomes visible again, where a stale layout
-        // pass would otherwise go unnoticed until a resize.
+        // Defensive: a zero-width SVG viewBox can survive a viewport change, so the
+        // size is rechecked whenever the tab becomes visible again, where a stale
+        // layout pass would otherwise go unnoticed until a resize.
         document.addEventListener("visibilitychange", this.onVisibility);
     }
 
@@ -263,8 +257,6 @@ export class CoverageMapView {
         this.map.invalidateSize();
     }
 
-    // --- the shelf --------------------------------------------------------
-
     /** The catalog's named regions as quiet outlines. Called once. */
     setRegions(regions: { id: string; name: string; rings: DegPoint[][] }[]): void {
         this.regionLayer.clearLayers();
@@ -291,8 +283,8 @@ export class CoverageMapView {
         }
     }
 
-    /** Arm or disarm region picking: hover and click only resolve regions while
-     *  the tool is armed, so plain drag always pans (mock note). */
+    /** Arm or disarm region picking: hover and click only resolve regions while the
+     *  tool is armed, so plain drag always pans. */
     setRegionToolArmed(armed: boolean): void {
         if (armed === this.regionArmed) return;
         this.regionArmed = armed;
@@ -313,10 +305,10 @@ export class CoverageMapView {
     }
 
     /**
-     * The ladder's zoom-matched suggestion: the largest chain member wholly
-     * inside the current view. Looking at all of Europe, that is Germany;
-     * zoomed into the Schwarzwald it is Baden-Württemberg. With nothing fully
-     * visible the smallest wins — the one certainly near the click.
+     * The ladder's zoom-matched suggestion: the largest chain member wholly inside
+     * the current view. Looking at all of Europe, that is Germany; zoomed into the
+     * Schwarzwald it is Baden-Württemberg. With nothing fully visible the smallest
+     * wins — the one certainly near the click.
      */
     private zoomDefault(chain: ShelfRegion[]): ShelfRegion {
         for (let k = chain.length - 1; k >= 0; k--) {
@@ -387,8 +379,6 @@ export class CoverageMapView {
         return region ? this.fullyVisible(region) : false;
     }
 
-    // --- the selection ----------------------------------------------------
-
     setParts(parts: RenderedPart[]): void {
         this.partLayer.clearLayers();
         for (const part of parts) {
@@ -418,9 +408,9 @@ export class CoverageMapView {
     setPreview(preview: RenderedPreview | null): void {
         this.previewLayer.clearLayers();
         if (!preview) return;
-        // One polygon holding every ring: Leaflet's default even-odd fill rule
-        // renders disjoint outers filled and stair-holes empty without this
-        // code having to work out which hole belongs to which patch.
+            // One polygon holding every ring: Leaflet's default even-odd fill rule
+            // renders disjoint outers filled and stair-holes empty without this code
+            // having to work out which hole belongs to which patch.
         if (preview.rings.length) L.polygon(preview.rings, PREVIEW_RING_STYLE).addTo(this.previewLayer);
         for (const route of preview.routes) {
             if (route.length > 1) L.polyline(route, PREVIEW_ROUTE_STYLE).addTo(this.previewLayer);
@@ -438,8 +428,6 @@ export class CoverageMapView {
             { maxZoom: 9, padding: [24, 24] },
         );
     }
-
-    // --- the box tool -----------------------------------------------------
 
     armBoxDraw(): void {
         this.drawArmed = true;
@@ -509,8 +497,6 @@ export class CoverageMapView {
         }
     }
 
-    // --- the lasso tool ---------------------------------------------------
-
     armLassoDraw(): void {
         this.lassoArmed = true;
         this.map.dragging.disable();
@@ -527,10 +513,9 @@ export class CoverageMapView {
 
     private onLassoStart(e: L.LeafletMouseEvent): void {
         if (!this.lassoArmed) return;
-        // Clear any leftover preview FIRST: removeLassoPoly also resets the
-        // point buffer, and calling it after seeding wiped the gesture's first
-        // point — every move then bailed on the null guard and the tool never
-        // drew anything (the 2026-08-09 on-glass catch).
+        // Clear any leftover preview FIRST: `removeLassoPoly` also resets the point
+        // buffer, so calling it after seeding wipes the gesture's first point and every
+        // move then bails on the null guard.
         this.removeLassoPoly();
         this.lassoing = true;
         this.lassoPoints = [e.latlng];
@@ -554,8 +539,8 @@ export class CoverageMapView {
         this.lassoing = false;
         const points = this.lassoPoints;
         this.cancelLassoDraw();
-        // A stray click or a gesture with no area draws nothing — the same
-        // 5 px threshold the box uses, over the ring's pixel extent.
+        // A stray click or a gesture with no area draws nothing — the same 5 px
+        // threshold the box uses, over the ring's pixel extent.
         let minX = Infinity;
         let minY = Infinity;
         let maxX = -Infinity;
@@ -590,11 +575,11 @@ export class CoverageMapView {
     }
 
     /**
-     * The diagonal hatch the warning rectangles fill with. Leaflet's SVG
-     * renderer has no pattern support, so the pattern is injected into the
-     * overlay pane's `<defs>` once and the rectangles reference it by class
-     * (`.coverage-hatch` in app.css) — CSS `fill` beats the presentation
-     * attribute Leaflet sets, which is exactly the override needed here.
+     * The diagonal hatch the warning rectangles fill with. Leaflet's SVG renderer has
+     * no pattern support, so the pattern is injected into the overlay pane's `<defs>`
+     * once and the rectangles reference it by class (`.coverage-hatch` in app.css) —
+     * CSS `fill` beats the presentation attribute Leaflet sets, which is exactly the
+     * override needed here.
      */
     private ensureHatchPattern(): void {
         const svg = this.map.getPane("overlayPane")?.querySelector("svg");

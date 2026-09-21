@@ -19,7 +19,7 @@ import { NativeWatcher, type NativeWatcherOptions } from "./usb";
  * render in every state, including "nothing is plugged in yet".
  *
  * There is no `unsupported` state to reach here. That one means "this browser has no WebUSB", and
- * not having to say it is the reason this tier exists (#894).
+ * not having to say it is the reason this tier exists.
  */
 export async function openNativeSession(options: NativeWatcherOptions = {}): Promise<DeviceSession> {
     const watcher = new NativeWatcher(options);

@@ -1,6 +1,6 @@
 <script lang="ts">
-    // Step 2 on the cell catalog: which skin the assembly is stamped with
-    // (#1038; epic #1016 §4). A skin is ~2 KB of style table applied at
+    // Step 2 on the cell catalog: which skin the assembly is stamped with.
+    // A skin is ~2 KB of style table applied at
     // assembly time — the one fact worth a line here is that choosing one
     // never changes the downloaded cells.
 

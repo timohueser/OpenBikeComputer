@@ -2,9 +2,9 @@
  * The device page's store, against the loopback device: loading and grouping, the serialization
  * chain, busy-conflict accounting, and scope invalidation.
  *
- * The chain's reason to exist narrowed under v4 and did not go away. A `LIST` is an ordinary control
- * exchange now, served beside a live transfer — but a trip's stage list is a `GET`, and §1 allows one
- * transfer at a time device-wide, so two of those fired together still collide. That is what these
+ * A `LIST` is an ordinary control exchange, served beside a live transfer — but a trip's stage list
+ * is a `GET`, and one transfer at a time is a device-wide rule, so two of those fired together
+ * still collide. That is what these
  * tests drive the chain with.
  */
 
@@ -68,7 +68,7 @@ describe("DeviceDashboard", () => {
     });
 
     it("lists a ride the device is still recording, and marks it rather than offering it", async () => {
-        // §3.5 refuses a `GET` of a `RECORDING` entry — its length and CRC are zero until the commit
+        // A `GET` of a `RECORDING` entry is refused — its length and CRC are zero until the commit
         // that ends it — so the page's job is to show it as in progress, not to hide it.
         await withDevice(async ({ client, device }, dash) => {
             const finished = device.seed({ kind: ObjectKind.Ride, displayName: "Tuesday", bytes: routeBytes(9) });
@@ -135,7 +135,7 @@ describe("DeviceDashboard", () => {
         await withDevice(async ({ client, device }, dash) => {
             const route = seedRoute(device, "One");
             // A transfer the page does not own: started directly on the client, outside the chain —
-            // the builder tab's map send, in miniature. §1's rule is device-wide, so the page cannot
+            // the builder tab's map send, in miniature. The rule is device-wide, so the page cannot
             // serialize its way out of this one; it renders it.
             let releaseForeign!: () => void;
             const gate = new Promise<void>((resolve) => (releaseForeign = resolve));

@@ -1,18 +1,16 @@
 <script lang="ts">
-    // The coverage step's map pane (#1038): tool rail, quiet region
-    // affordances, each part's true stair outline, hatched not-baked ground,
-    // and the corridor panel — the approved R2·1/R2·2 frames as a component.
+    // The coverage step's map pane: tool rail, quiet region affordances, each
+    // part's true stair outline, hatched not-baked ground, and the corridor panel.
     //
-    // Division of labour: `CoverageMapView` owns Leaflet, `CoverageStore` owns
-    // the selection, and this component is the adapter that turns one into
-    // drawing instructions for the other. The one piece of real work it keeps
-    // is the ring cache — stair outlines are geometry over every cell of a
-    // part, worth computing once per distinct cell set rather than once per
-    // resolution object identity.
+    // Division of labour: `CoverageMapView` owns Leaflet, `CoverageStore` owns the
+    // selection, and this component is the adapter that turns one into drawing
+    // instructions for the other. The one piece of real work it keeps is the ring
+    // cache — stair outlines are geometry over every cell of a part, worth
+    // computing once per distinct cell set rather than once per resolution object.
     //
-    // The region tool is armed by default: an empty builder whose map answers
-    // no click is a builder that looks broken, and picking a region is the
-    // first thing almost every map starts with (2026-08-09 feedback round).
+    // The region tool is armed by default: an empty builder whose map answers no
+    // click looks broken, and picking a region is the first thing almost every map
+    // starts with.
 
     import { onDestroy, onMount, tick } from "svelte";
     import { coverageRings, mergeCellRects } from "../../lib/catalog/outline";
@@ -53,11 +51,10 @@
         lon: Math.round(lon * 1e6),
     });
 
-    // --- outline cache ----------------------------------------------------
-    // Keyed by part id, validated by comparing the cell list itself: the
-    // resolver hands fresh array copies every resolve, so identity is useless
-    // but content comparison is O(n) over short strings — far cheaper than
-    // re-walking the boundary of a country-sized part.
+    // Keyed by part id, validated by comparing the cell list itself: the resolver
+    // hands fresh array copies every resolve, so identity is useless but content
+    // comparison is O(n) over short strings — far cheaper than re-walking the
+    // boundary of a country-sized part.
     const ringCache = new Map<string, { cells: string[]; rings: DegPoint[][] }>();
 
     function sameCells(a: string[], b: string[]): boolean {
@@ -112,10 +109,8 @@
 
     onDestroy(() => view?.destroy());
 
-    // The pane lives inside a display-toggled route, so a re-activation
-    // rechecks the size. Element resizes are the view's own ResizeObserver's
-    // job — a second one here was watching the same element for the same call
-    // (#1041 low sweep).
+    // The pane lives inside a display-toggled route, so a re-activation rechecks the
+    // size. Element resizes are the view's own ResizeObserver's job.
     $effect(() => {
         if (active) view?.invalidateSize();
     });
@@ -148,13 +143,11 @@
         view.setParts(parts);
     });
 
-    // Warnings, hatched inside the selection. Holes come from **every** band
-    // (#1041 A5): a missing coarse cell is a map with no zoomed-out context
-    // there, as real as a missing street grid, so its square hatches too.
-    // Partial cells stay the detail band's — and only where they abut a hole
-    // (#1041 A9): `store.partialHatchCells` owns that rule and says why. The
-    // hole hatch stays the louder of the two (solid ring, denser fill); the
-    // partial hatch reads as its quieter margin.
+    // Warnings, hatched inside the selection. Holes come from **every** band: a
+    // missing coarse cell is a map with no zoomed-out context there, as real as a
+    // missing street grid. Partial cells stay the detail band's, and only where they
+    // abut a hole — `store.partialHatchCells` owns that rule. The hole hatch stays
+    // the louder of the two; the partial hatch reads as its quieter margin.
     $effect(() => {
         if (!view) return;
         const warnings: RenderedWarning[] = [];
@@ -311,10 +304,9 @@
         const target = tool === next ? "none" : next;
         const leavingCorridor = tool === "corridor" && target !== "corridor";
         if (leavingCorridor) {
-            // The corridor panel may be holding uploaded routes — the one
-            // kind of tool state a user cannot get back by re-arming the tool
-            // — so leaving it asks first (#1041 A7). Declining keeps the
-            // panel; everything below only runs on a real close.
+            // The corridor panel may be holding uploaded routes — the one kind of
+            // tool state a user cannot get back by re-arming the tool — so leaving it
+            // asks first. Declining keeps the panel.
             if (corridorPanel && !(await corridorPanel.requestClose())) return;
             store.previewParts = [];
         }
@@ -325,10 +317,8 @@
         if (target === "box") view?.armBoxDraw();
         if (target === "lasso") view?.armLassoDraw();
         if (leavingCorridor) {
-            // The panel held focus (it takes it on open); its unmount dropped
-            // focus on <body>. Hand it back to the tool that opened it — but
-            // only when nothing else claimed it, e.g. the rail button a click
-            // just landed on.
+            // The panel held focus; its unmount dropped focus on <body>. Hand it back
+            // to the tool that opened it, but only when nothing else claimed it.
             await tick();
             if (document.activeElement === document.body) corridorBtn?.focus();
         }
@@ -346,8 +336,8 @@
     }
 
     // The rail is a toolbar, and a toolbar is ONE tab stop: Tab lands on the
-    // remembered tool, arrows walk the tools, Tab leaves (#1041 low sweep,
-    // WAI-APG toolbar pattern). Vertical rail, so Up/Down are the axis.
+    // remembered tool, arrows walk the tools, Tab leaves. Vertical rail, so Up/Down
+    // are the axis.
     let railEl = $state<HTMLDivElement>();
     let railAt = $state(0);
 
@@ -368,9 +358,9 @@
         e.preventDefault();
     }
 
-    /** The live pricing chip under a box being drawn: the store prices the
-     *  drag through the same resolver + ledger as the released part, so the
-     *  chip's number is the row's number by construction (#1041 low sweep). */
+    /** The live pricing chip under a box being drawn: the store prices the drag
+     *  through the same resolver and ledger as the released part, so the chip's number
+     *  is the row's number by construction. */
     function priceBox(south: number, west: number, north: number, east: number): string {
         return priceLabel(store.priceDraggedBox(degreesToUbox(south, west, north, east)));
     }
@@ -390,7 +380,7 @@
 <div class="map-wrap card">
     <div class="map" bind:this={mapEl}></div>
 
-    <!-- The tool rail (§8 U2): the map owns selection. -->
+    <!-- The tool rail: the map owns selection. -->
     <div class="overlay rail-wrap">
         <div
             class="rail"
@@ -828,8 +818,7 @@
     }
 
     /* At phone widths the attribution line spans nearly the whole pane, so
-       the chip moves up a line instead of sitting on top of it (#1041 low
-       sweep, mobile). */
+       the chip moves up a line instead of sitting on top of it. */
     @media (max-width: 940px) {
         .bottom-left {
             bottom: 38px;
@@ -845,7 +834,7 @@
        this pane has the tool rail there instead. The offset tucks the control
        directly under the rail (4 × 32px buttons + gaps + padding + 12px top
        ≈ 160px) rather than parking it mid-pane — which is where a fixed
-       200px put it on a short phone pane (#1041 low sweep, mobile). */
+       200px put it on a short phone pane. */
     .map-wrap :global(.leaflet-top.leaflet-left) {
         top: 172px;
     }

@@ -33,7 +33,7 @@ void deviceHolder.open(openSimulatedSession);
     seam.rides = async () => harnessRideLibrary();
 }
 
-// A published firmware release, simulated the same way as the device (#1002). The real endpoint
+// A published firmware release, simulated the same way as the device. The real endpoint
 // can be empty before the first tag, so the harness pins an "available" state that must remain
 // reachable locally. Claim-first again: `ensure` is memoized, so the card and the prompt both read
 // this answer and neither makes a request. The simulated device reports `0.4.0+…`, so this reads as

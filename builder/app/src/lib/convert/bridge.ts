@@ -1,35 +1,32 @@
 /**
- * The browser side of the conversion bridge (epic #894, A2 — issue #896).
+ * The browser side of the conversion bridge.
  *
- * GPX -> OBCR and finished ride-v3 -> GPX, run client-side by `apps/obc-web-convert`
- * compiled to wasm. There is no TypeScript re-implementation here on purpose: the bytes a
- * visitor downloads are produced by the same `obc-route` code the device and the CLI run, and
- * `bridge.test.ts` pins that equality against the checked-in `specs/vectors/` fixtures.
+ * GPX to OBCR and finished ride to GPX, run client-side by `apps/obc-web-convert` compiled to wasm.
+ * There is no TypeScript re-implementation here on purpose: the bytes a visitor downloads are
+ * produced by the same `obc-route` code the device and the CLI run, and `bridge.test.ts` pins that
+ * equality against the checked-in `specs/vectors/` fixtures.
  *
- * The wasm module is fetched through a **dynamic import**, so the ~95 KB of glue + module land in
- * their own bundle chunk and cost nothing until someone actually drops a file. The first call
- * pays for the fetch; every later one is a plain function call.
+ * The wasm module is fetched through a **dynamic import**, so the glue and module land in their own
+ * bundle chunk and cost nothing until someone drops a file.
  *
- * Everything this module throws is a {@link ConvertError} — including a failed load or an
- * unexpected wasm trap, which arrive as `code: "internal"`. Callers never have to guess at a
- * message shape.
+ * Everything this module throws is a {@link ConvertError}, including a failed load or an unexpected
+ * wasm trap, which arrive as `code: "internal"`.
  */
 
 import type { InitInput } from "./pkg/obc_web_convert.js";
 
 /**
- * Why a conversion failed. Mirrors `ErrorCode::as_str` in
- * `apps/obc-web-convert/src/convert.rs` — the two are one contract, so add or rename in both.
+ * Why a conversion failed. Mirrors `ErrorCode::as_str` in `apps/obc-web-convert/src/convert.rs` —
+ * the two are one contract, so add or rename in both.
  *
  * - `empty-file` — the dropped file is zero bytes.
- * - `not-gpx` — the route file is not XML at all (a `.fit`/`.tcx` export, a zip, an image).
+ * - `not-gpx` — the route file is not XML at all.
  * - `gpx-no-track-points` — valid GPX with no `<trkpt>`: waypoints or a `<rte>` route only.
  * - `gpx-too-many-points` — past the OBCR storage ceiling even after decimation.
- * - `not-ride` — the bytes are not one complete ride-v3 object.
+ * - `not-ride` — the bytes are not one complete ride object.
  * - `ride-no-points` — the finished ride has no recorded samples.
  * - `input-truncated` — a read ran off the end of the file.
  * - `not-route` — the bytes handed to the route read-back are not an OBCR route.
- * - `internal` — a defect in the bridge, or the module failed to load. The message says so.
  */
 export type ConvertErrorCode =
     | "empty-file"
@@ -55,30 +52,26 @@ export class ConvertError extends Error {
 
 type Bridge = typeof import("./pkg/obc_web_convert.js");
 
-/**
- * The in-flight or settled module load. Memoized so concurrent drops share one fetch; cleared on
- * failure so a transient network error can be retried rather than cached forever.
- */
+/** Memoized so concurrent drops share one fetch; cleared on failure so a transient network error
+ *  can be retried rather than cached forever. */
 let loading: Promise<Bridge> | null = null;
 
 /**
  * Load and instantiate the wasm module, if it is not already up.
  *
  * `source` overrides where the `.wasm` comes from. Leave it out in the browser: the generated glue
- * resolves the module next to itself, which is the form the bundler rewrites to a hashed asset
- * URL. Node has no `fetch` for `file:` URLs, so tests (and any other non-browser host) pass the
- * bytes directly.
+ * resolves the module next to itself, which is the form the bundler rewrites to a hashed asset URL.
+ * Node has no `fetch` for `file:` URLs, so tests pass the bytes directly.
  *
- * Calling this early — say, when the drop target is first hovered — turns the first conversion
- * into a plain function call. It is optional; the convert functions load on demand.
+ * Calling this early — when the drop target is first hovered — turns the first conversion into a
+ * plain function call. It is optional; the convert functions load on demand.
  */
 export function initConvert(source?: InitInput): Promise<void> {
     if (!loading) {
         const pending = load(source);
         loading = pending;
-        // Drop the memo if it settles as a failure, so the next call retries. Attached here (not
-        // in the caller) so a caller that ignores the returned promise still cannot wedge the
-        // module into a permanently-failed state.
+        // Drop the memo if it settles as a failure, so the next call retries. Attached here so a
+        // caller that ignores the returned promise cannot wedge the module into a failed state.
         pending.catch(() => {
             if (loading === pending) loading = null;
         });
@@ -160,8 +153,8 @@ export async function routeTrack(obcr: Uint8Array): Promise<TrackPoint[]> {
 }
 
 /**
- * One waypoint of a route (OBCR spec §4): a point of interest pinned along the track, with the
- * position it was pinned at.
+ * One waypoint of a route: a point of interest pinned along the track, with the position it was
+ * pinned at.
  */
 export interface RouteWaypoint {
     /** The stored short name (≤ 24 UTF-8 bytes; may be empty). */
@@ -171,11 +164,11 @@ export interface RouteWaypoint {
     readonly lon: number;
     /** Metres, or null where the source carried none. */
     readonly ele: number | null;
-    /** The stored category byte raw: 0 = generic, 1..=6 the OBCM §7.4 POI category ids. Render
-     *  anything else as generic, per the spec. */
+    /** The stored category byte raw: 0 = generic, 1..=6 the POI category ids. Render anything else
+     *  as generic. */
     readonly category: number;
     /** Metres from the route start to the waypoint's position on the track — the stored
-     *  placement-time distance (nearest raw track point at conversion), not a recomputation. */
+     *  placement-time distance, not a recomputation. */
     readonly distAlongM: number;
 }
 
@@ -193,8 +186,8 @@ export async function routeWaypoints(obcr: Uint8Array): Promise<RouteWaypoint[]>
     } catch (cause) {
         throw asConvertError(cause);
     }
-    // The wasm side builds these objects field by field (`lib.rs`), so the cast is a statement
-    // about that code, not about arbitrary input; the copy keeps the result plain-JS-owned.
+    // The wasm side builds these objects field by field, so the cast is a statement about that code
+    // rather than about arbitrary input; the copy keeps the result plain-JS-owned.
     return raw.map((entry) => {
         const w = entry as RouteWaypoint;
         return { name: w.name, lat: w.lat, lon: w.lon, ele: w.ele, category: w.category, distAlongM: w.distAlongM };
@@ -220,11 +213,9 @@ const CODES: ReadonlySet<string> = new Set<ConvertErrorCode>([
 ]);
 
 /**
- * Normalize whatever crossed the wasm boundary into a {@link ConvertError}.
- *
- * The Rust side throws a real `Error` carrying `code`, so the happy path is a straight read. A
- * value without a known code is a wasm trap, an out-of-memory, or a bug — reported as `internal`
- * rather than passed through, so callers only ever handle one error type.
+ * Normalize whatever crossed the wasm boundary into a {@link ConvertError}. A value without a known
+ * code is a wasm trap, an out-of-memory or a bug, reported as `internal` so that callers only ever
+ * handle one error type.
  */
 function asConvertError(cause: unknown): ConvertError {
     if (cause instanceof ConvertError) return cause;

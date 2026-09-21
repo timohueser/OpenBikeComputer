@@ -6,9 +6,9 @@
   what the tile shows is what the device will show, and a file that converts to something
   unexpected is caught before it is on the card rather than on a hill.
 
-  A send is a `PUT` and nothing else. There is no "keep on device" choice here any more: retention
-  is not on the cable — protocol v4 has no command that sets it and a `LIST` entry carries no
-  expiry — so a control offering it would be a promise this link cannot keep.
+  A send is a `PUT` and nothing else. There is no "keep on device" choice: retention is not on the
+  cable — no command sets it and a catalog entry carries no expiry — so a control offering it would
+  be a promise this link cannot keep.
 -->
 <script lang="ts">
     import { formatBytes } from "../../lib/format";
@@ -28,19 +28,18 @@
         heading = "Route",
     }: {
         client: FlatStoreClient;
-        /** Take over when several files land at once (the trip dialog). Null keeps the
-         *  single-file behaviour: extra files are ignored, as they always were. */
+        /** Take over when several files land at once. Null keeps the single-file behaviour:
+         *  extra files are ignored. */
         onmultiple?: ((files: File[]) => void) | null;
-        /** Order this surface's transfers behind a page-owned queue (the device page's
-         *  dashboard chain). Null sends directly, as the builder column always has. */
+        /** Order this surface's transfers behind a page-owned queue. Null sends directly. */
         serialize?: (<T>(op: () => Promise<T>) => Promise<T>) | null;
         /** A route landed — the device page refreshes its lists on this. */
         onsent?: (() => void) | null;
         /** True when the card holds no routes at all: the tile carries the empty-state line. */
         empty?: boolean;
-        /** Non-null wraps the tile in the builder column's `section.block` + `h4` chrome
-         *  (`DeviceSurfaces` relies on the `.block` rhythm for its separators). The device
-         *  page passes null: there the grid is the chrome. */
+        /** Non-null wraps the tile in the builder column's `section.block` + `h4` chrome, whose
+         *  `.block` rhythm `DeviceSurfaces` relies on for its separators. The device page passes
+         *  null: there the grid is the chrome. */
         heading?: string | null;
     } = $props();
 
@@ -85,9 +84,9 @@
 
     async function send(prepared: PreparedRoute) {
         const run = serialize ?? (<T,>(op: () => Promise<T>) => op());
-        // §3.6 commits or it does not: the device verifies the declared length and the whole-payload
-        // CRC before it publishes anything, so a resolved `PUT` means the card holds a valid route
-        // and a failed one leaves the card as if nothing had happened.
+        // A `PUT` commits or it does not: the device verifies the declared length and the
+        // whole-payload CRC before it publishes anything, so a resolved one means the card holds a
+        // valid route and a failed one leaves the card as if nothing had happened.
         const result = await job.run(
             (ctx) => run(() => sendRoute(client, prepared, ctx)),
             (value) => `“${prepared.header.name}” is on the device (route ${value.objectId}).`,

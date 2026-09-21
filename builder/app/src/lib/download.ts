@@ -9,9 +9,8 @@ export interface BytePin {
 
 /**
  * Why the bytes were refused. The distinction is not cosmetic: `short` is what a
- * connection dropped mid-body looks like once the reader has ended cleanly, and
- * that is worth another attempt. `long` and `checksum` mean the origin served
- * *something else* — retrying only serves it again.
+ * connection dropped mid-body looks like once the reader has ended cleanly, and that is
+ * worth another attempt. `long` and `checksum` mean the origin served *something else*.
  */
 export type VerificationFault = "short" | "long" | "checksum";
 
@@ -68,10 +67,10 @@ const RETRY_BASE_MS = 250;
 /**
  * Whether another attempt could plausibly answer differently.
  *
- * Deliberately narrow on the response side: a 404 or a 403 is the catalog and
- * the store disagreeing, and hammering it neither fixes that nor tells the user
- * anything new. The open-ended `true` at the end is for what `fetch` throws —
- * a dropped connection, a DNS blip, a reset — which is the whole point.
+ * Deliberately narrow on the response side: a 404 or a 403 is the catalog and the store
+ * disagreeing, and hammering it neither fixes that nor tells the user anything new. The
+ * open-ended `true` at the end is for what `fetch` throws — a dropped connection, a DNS
+ * blip, a reset — which is the whole point.
  */
 function worthRetrying(cause: unknown): boolean {
     if (cause instanceof BytesVerificationError) return cause.fault === "short";
@@ -85,12 +84,12 @@ function worthRetrying(cause: unknown): boolean {
 }
 
 /**
- * Run `attempt` until it succeeds, refuses in a way another try cannot mend, or
- * runs out of attempts.
+ * Run `attempt` until it succeeds, refuses in a way another try cannot mend, or runs out
+ * of attempts.
  *
- * Exported because the catalog root is fetched before there is anything to pin
- * it against, and a dropped connection there is just as fatal to the run as one
- * in the middle of a cell.
+ * Exported because the catalog root is fetched before there is anything to pin it
+ * against, and a dropped connection there is just as fatal to the run as one in the
+ * middle of a cell.
  */
 export async function withRetry<T>(attempt: () => Promise<T>, opts: DownloadOptions = {}): Promise<T> {
     const attempts = Math.max(1, opts.attempts ?? DEFAULT_ATTEMPTS);
@@ -122,14 +121,13 @@ function toHex(digest: ArrayBuffer): string {
 }
 
 /**
- * One digest-pinned object, fetched again if the first answer was a torn body
- * rather than a different one.
+ * One digest-pinned object, fetched again if the first answer was a torn body rather
+ * than a different one.
  *
- * Retrying is safe *because* every object is pinned: an attempt that returns the
- * wrong bytes cannot be mistaken for the right ones, so the only thing a second
- * attempt can do is succeed or fail again. Progress is reported per attempt and
- * therefore restarts from zero on a retry — callers track the in-flight figure
- * as an absolute, not a running sum.
+ * Retrying is safe *because* every object is pinned: an attempt that returns the wrong
+ * bytes cannot be mistaken for the right ones. Progress is reported per attempt and
+ * therefore restarts from zero on a retry — callers track the in-flight figure as an
+ * absolute, not a running sum.
  */
 export async function fetchVerified(
     url: string,
@@ -194,9 +192,8 @@ export function saveBytes(bytes: Uint8Array, filename: string, type = "applicati
 }
 
 /**
- * Save a Blob the caller already holds. The assembly stages its files as Blobs
- * while the run is still going (#1116 B1) and saves them once the set is
- * complete, so it has nothing left to wrap by then — and a Blob is what a
+ * Save a Blob the caller already holds. The assembly stages its files as Blobs while the
+ * run is still going and saves them once the set is complete, and a Blob is what a
  * browser can spill to disk rather than keep in the tab's heap.
  */
 export function saveBlob(blob: Blob, filename: string): void {
@@ -205,9 +202,8 @@ export function saveBlob(blob: Blob, filename: string): void {
     anchor.href = url;
     anchor.download = filename;
     anchor.click();
-    // Deliberately never revoked. Firefox resolves the URL when the user
-    // *accepts* the save dialog, not when `click()` runs — a revoke on a timer
-    // is a race that kills the download and strands a `.part` file. The cost of
-    // keeping it is one registry entry per save (the big blobs are OPFS-backed
-    // Files, so no heap is pinned), and the registry dies with the document.
+    // Deliberately never revoked. Firefox resolves the URL when the user *accepts* the
+    // save dialog, not when `click()` runs — a revoke on a timer is a race that kills the
+    // download and strands a `.part` file. The cost is one registry entry per save, and
+    // the registry dies with the document.
 }

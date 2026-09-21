@@ -49,10 +49,9 @@
     /**
      * Rides exported in *this visit*, keyed by `(serial, era, id)`.
      *
-     * Not a record of anything — it is never persisted, and it is thrown away the moment the id era
-     * changes, because a re-initialized card starts its ids again and a tick against a restarted id
-     * would be a claim about a ride nobody has seen. It exists so the row says "exported" instead
-     * of nothing.
+     * Not a record of anything — never persisted, and thrown away the moment the id era changes,
+     * because a re-initialized card starts its ids again and a tick against a restarted id would be
+     * a claim about a ride nobody has seen. It exists so the row says "exported" instead of nothing.
      */
     let exported = $state(new Set<string>());
     let lastScope = "";
@@ -77,11 +76,9 @@
         listError = null;
         try {
             // Newest first, by `ObjectId`. A `LIST` entry carries no start time, and the id comes
-            // from a monotonic allocation cursor never reused within one card
-            // (`FLAT_Store_Format.md` §3) — so on one card, id order *is* recording order.
-            //
-            // `recordedRides` drops what is still being recorded: §3.5 refuses a `GET` of an entry
-            // carrying `RECORDING`, so such a row could only ever be an error to click.
+            // from a monotonic allocation cursor never reused within one card — so on one card, id
+            // order *is* recording order. `recordedRides` drops what is still being recorded, since
+            // a `GET` of such an entry is refused and the row could only ever be an error to click.
             entries = recordedRides(await rides.listRides()).sort((a, b) =>
                 a.objectId < b.objectId ? 1 : a.objectId > b.objectId ? -1 : 0,
             );

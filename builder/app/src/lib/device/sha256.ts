@@ -88,7 +88,7 @@ export class Sha256 {
         return out;
     }
 
-    /** The digest as lowercase hex — the spelling `OBCC_Spec.md` §9 uses. */
+    /** The digest as lowercase hex — the spelling the catalog pins with. */
     hex(): string {
         return toHex(this.digest());
     }
