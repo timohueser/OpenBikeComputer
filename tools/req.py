@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read and write the verification console from a terminal or an agent session.
 
-    obc req SYS-003                    statement, coverage state, criteria 1..n, pending proposal
+    obc req SYS-003                    statement, coverage state, criteria 1..n, what waits on it
     obc req SYS-003 --json             the raw requirement record
     obc req list                       every requirement, one line each
     obc req list --gaps                only those with an open gap
@@ -14,6 +14,10 @@
     obc req changed --since 16         what changed since revision 16
     obc req propose plan.json [...]    validate the plans, then submit them
     obc req propose plan.json --check  validate only, submit nothing
+    obc req suggestions                open requirement suggestions, one line each
+    obc req suggestions --decided      decided ones, with the owner's feedback
+    obc req suggest file.json [...]    validate the suggestions, then submit them
+    obc req suggest file.json --check  validate only, submit nothing
 
 A plan file holds one object, or a list of them:
 
@@ -22,6 +26,14 @@ A plan file holds one object, or a list of them:
 which is what `POST /api/coverage-proposals` takes, minus `baseRevision` and `sourceSha`. Those are
 filled in here from the console and from `git rev-parse HEAD`, so a proposal always names the exact
 commit it was written against. Pass `--sha=<40 chars>` to override.
+
+A suggestion file holds one object, or a list of them:
+
+    {"requirementId": "SYS-003", "title": ..., "statement": ..., "group": ..., "reason": ...}
+
+Leave out `requirementId` to suggest a new requirement. A suggestion is never a requirement: the
+owner writes the prose by hand and then ticks the suggestion off. Read the answer, and any
+feedback, with `obc req suggestions --decided`.
 
 Reads the agent token from ~/.config/openbikecomputer/verification-agent.token (override with
 OBC_VERIFICATION_TOKEN_FILE) and the console at https://releases.openbikecomputer.com (override
@@ -115,6 +127,39 @@ def pending_for(proposals: list[dict], requirement_id: str) -> dict | None:
     return next((p for p in proposals if p["requirementId"] == requirement_id and p["status"] == "pending"), None)
 
 
+def open_suggestion_for(suggestions: list[dict], requirement_id: str) -> dict | None:
+    return next((s for s in suggestions
+                 if s.get("requirementId") == requirement_id and s["status"] == "open"), None)
+
+
+def suggestion_note(suggestion: dict) -> str:
+    note = suggestion.get("stale") or "read it with: obc req suggestions"
+    return (f"Suggested change by {suggestion['author']} ({suggestion['createdAt'][:10]}, "
+            f"against r{suggestion['baseRevision']}): {suggestion['title']}; {note}")
+
+
+def suggestion_lines(suggestions: list[dict], decided: bool = False) -> list[str]:
+    """One line per suggestion, with the owner's answer under a decided one."""
+    lines: list[str] = []
+    for suggestion in suggestions:
+        marks = [suggestion["author"], suggestion["createdAt"][:10]]
+        if suggestion.get("requirementId"):
+            marks.append(f"against r{suggestion['baseRevision']}")
+        elif suggestion.get("group"):
+            marks.append(suggestion["group"])
+        if decided:
+            marks.append(f"{suggestion['status']} by {suggestion.get('decidedBy') or 'the owner'}")
+        elif suggestion.get("missing"):
+            marks.append("the requirement is gone")
+        elif suggestion.get("stale"):
+            marks.append("stale")
+        subject = suggestion.get("requirementId") or "new"
+        lines.append(f"{subject:<8}  {suggestion['title'][:44]:<44}  {' · '.join(marks)}")
+        if decided and suggestion.get("feedback"):
+            lines.append(f"          “{suggestion['feedback']}”")
+    return lines
+
+
 def coverage_header(plan: dict) -> str:
     review = plan.get("review")
     if not review:
@@ -167,7 +212,7 @@ def proposal_note(proposal: dict) -> str:
             f"commit {proposal['sourceSha'][:10]}): {count} {'criterion' if count == 1 else 'criteria'}; {note}")
 
 
-def render(requirement: dict, revision: dict, proposals: list[dict]) -> str:
+def render(requirement: dict, revision: dict, proposals: list[dict], suggestions: list[dict] | None = None) -> str:
     head = [requirement["id"], requirement.get("group") or "Ungrouped", state(requirement), *labels(requirement),
             f"r{revision['id']}"]
     lines = [" · ".join(head), requirement["title"], "", requirement["statement"].strip(), ""]
@@ -180,6 +225,9 @@ def render(requirement: dict, revision: dict, proposals: list[dict]) -> str:
     proposal = pending_for(proposals, requirement["id"])
     if proposal:
         lines += ["", proposal_note(proposal)]
+    suggestion = open_suggestion_for(suggestions or [], requirement["id"])
+    if suggestion:
+        lines += ["", suggestion_note(suggestion)]
     return "\n".join(lines)
 
 
@@ -400,6 +448,23 @@ def as_text(value) -> str:
     return value if isinstance(value, str) else ""
 
 
+def read_entries(paths: list[str], shape: str, ok=lambda entry: True) -> list[dict]:
+    """The objects in one or more files, each holding one object or a list of them."""
+    entries: list[dict] = []
+    for path in paths:
+        try:
+            loaded = json.loads(Path(path).read_text())
+        except OSError as error:
+            raise Problem(f"could not read {path}: {error}") from None
+        except json.JSONDecodeError as error:
+            raise Problem(f"{path} is not valid JSON: {error}") from None
+        for entry in loaded if isinstance(loaded, list) else [loaded]:
+            if not isinstance(entry, dict) or not ok(entry):
+                raise Problem(f"{path} must hold {shape}, or a list of them")
+            entries.append(entry)
+    return entries
+
+
 def head_sha() -> str:
     try:
         result = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True)
@@ -416,18 +481,7 @@ def propose(console: Console, paths: list[str], sha: str, check_only: bool) -> i
     requirements = {r["id"]: r for r in revision["requirements"]}
     proposals = console.call("/api/coverage-proposals")
     catalog_ids = {c["id"] for c in console.call("/api/catalog")["cases"]}
-    entries: list[dict] = []
-    for path in paths:
-        try:
-            loaded = json.loads(Path(path).read_text())
-        except OSError as error:
-            raise Problem(f"could not read {path}: {error}") from None
-        except json.JSONDecodeError as error:
-            raise Problem(f"{path} is not valid JSON: {error}") from None
-        for entry in loaded if isinstance(loaded, list) else [loaded]:
-            if not isinstance(entry, dict) or not isinstance(entry.get("plan"), dict):
-                raise Problem(f"{path} must hold a plan object, or a list of them, each with a `plan`")
-            entries.append(entry)
+    entries = read_entries(paths, "a plan object with a `plan`", lambda entry: isinstance(entry.get("plan"), dict))
     problems: list[str] = []
     notes: list[str] = []
     for entry in entries:
@@ -475,6 +529,83 @@ def propose(console: Console, paths: list[str], sha: str, check_only: bool) -> i
     return 1 if failed else 0
 
 
+def suggestion_problems(entry: dict, requirements: dict, revision_id: int) -> tuple[list[str], list[str]]:
+    """What is wrong with one suggestion, split into what blocks it and what is worth saying.
+
+    A suggestion carries the whole replacement title and statement, not a patch, so the only
+    judgement call is a change that says exactly what the requirement already says.
+    """
+    rid = entry.get("requirementId")
+    label = rid or f"new requirement {entry.get('title') or '?'}"
+    found: list[str] = []
+    notes: list[str] = []
+    say = found.append
+    requirement = None
+    if rid is not None and not identifier_ok(rid):
+        say(f"{label}: requirementId {rid!r} is not one the server accepts")
+    elif rid:
+        requirement = requirements.get(rid)
+        if not requirement:
+            say(f"{label}: no such requirement in r{revision_id}")
+    for field, limit in (("title", 200), ("statement", 10000), ("reason", 2000)):
+        value = as_text(entry.get(field))
+        if not value.strip():
+            say(f"{label}: the suggestion has no {field}")
+        elif len(value) > limit:
+            say(f"{label}: the {field} is {len(value)} characters; the server takes at most {limit}")
+    if entry.get("group") is not None and len(as_text(entry.get("group"))) > 100:
+        say(f"{label}: the group is longer than the 100 characters the server takes")
+    if requirement and as_text(entry.get("title")).strip() == requirement["title"] \
+            and as_text(entry.get("statement")).strip() == requirement["statement"]:
+        notes.append(f"{label}: the title and the statement are the ones {rid} already has")
+    return found, notes
+
+
+def suggest(console: Console, paths: list[str], sha: str, check_only: bool) -> int:
+    revision = console.call("/api/bootstrap")["revision"]
+    requirements = {r["id"]: r for r in revision["requirements"]}
+    entries = read_entries(paths, "a suggestion object with a title, a statement, and a reason")
+    problems: list[str] = []
+    notes: list[str] = []
+    for entry in entries:
+        found, said = suggestion_problems(entry, requirements, revision["id"])
+        problems += found
+        notes += said
+    changes = sum(1 for e in entries if e.get("requirementId"))
+    print(f"r{revision['id']} · {len(entries)} suggestions · {len(entries) - changes} new · "
+          f"{changes} to requirements · commit {sha[:10]}")
+    for note in notes:
+        print(f"  note · {note}")
+    for problem in problems:
+        print(f"  {problem}")
+    if problems:
+        print(f"\n{len(problems)} problems. Nothing was submitted.")
+        return 1
+    if check_only:
+        print("\nEvery suggestion is valid. Drop --check to submit them.")
+        return 0
+    known_ids = {s["id"] for s in console.call("/api/requirement-suggestions")}
+    failed = 0
+    for entry in entries:
+        label = entry.get("requirementId") or entry["title"]
+        body = {"baseRevision": revision["id"], "sourceSha": sha, "title": entry["title"],
+                "statement": entry["statement"], "reason": entry["reason"]}
+        for optional in ("requirementId", "group"):
+            if entry.get(optional):
+                body[optional] = entry[optional]
+        try:
+            result = console.call("/api/requirement-suggestions", body)
+            if result["id"] in known_ids:
+                print(f"  unchanged {label}: the console already holds this exact suggestion")
+            else:
+                print(f"  submitted {label}"
+                      + (" (superseded the open one)" if result.get("supersedes") else ""))
+        except Problem as error:
+            failed += 1
+            print(f"  FAILED {label}: {error}")
+    return 1 if failed else 0
+
+
 # ──────────────────────────────── dispatch ────────────────────────────────
 
 
@@ -490,7 +621,8 @@ def flag_value(argv: list[str], name: str) -> str | None:
 
 """The flags each command takes. Anything else is refused, because `--checks` must not submit."""
 ALLOWED = {"": {"--json"}, "list": {"--gaps", "--no-plan", "--pending", "--flagged"},
-           "proposal": {"--json"}, "tests": set(), "changed": {"--since"}, "propose": {"--check", "--sha"}}
+           "proposal": {"--json"}, "tests": set(), "changed": {"--since"}, "propose": {"--check", "--sha"},
+           "suggestions": {"--json", "--decided"}, "suggest": {"--check", "--sha"}}
 
 
 def main(argv: list[str]) -> int:
@@ -517,7 +649,8 @@ def main(argv: list[str]) -> int:
         if "--json" in flags:
             print(json.dumps(requirement, indent=2, ensure_ascii=False))
         else:
-            print(render(requirement, revision, console.call("/api/coverage-proposals")))
+            print(render(requirement, revision, console.call("/api/coverage-proposals"),
+                         console.call("/api/requirement-suggestions")))
         return 0
 
     if command == "list":
@@ -579,6 +712,30 @@ def main(argv: list[str]) -> int:
             raise Problem("there is no revision before r1.")
         print("\n".join(changed_lines(console.call(f"/api/revisions/{since}"), latest)))
         return 0
+
+    if command == "suggestions":
+        if rest:
+            raise Problem(f"suggestions takes no arguments; did you mean `obc req suggest {rest[0]}`?")
+        decided = "--decided" in flags
+        keep = ("accepted", "dismissed") if decided else ("open",)
+        wanted = [s for s in console.call("/api/requirement-suggestions") if s["status"] in keep]
+        if "--json" in flags:
+            print(json.dumps(wanted, indent=2, ensure_ascii=False))
+            return 0
+        lines = suggestion_lines(wanted, decided)
+        print("\n".join(lines) if lines
+              else ("Nothing is decided yet." if decided else "No suggestion is waiting."))
+        return 0
+
+    if command == "suggest":
+        if not rest:
+            raise Problem("name at least one suggestion file, for example: obc req suggest suggestion.json")
+        sha = flag_value(argv, "sha")
+        if "--sha" in flags and not sha:
+            raise Problem("--sha needs a 40-character commit")
+        if sha and (len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha.lower())):
+            raise Problem(f"--sha takes the exact 40-character commit, not {sha!r}")
+        return suggest(console, rest, sha or head_sha(), "--check" in flags)
 
     if command == "propose":
         if not rest:
