@@ -22,12 +22,11 @@ pub const HEADER_PEAK_LENGTH_OFF: usize = 61;
 pub const LOD_ENTRY_LEN: usize = 18;
 pub const STYLE_RECORD_LEN: usize = 8;
 
-/// Width of the compact feature header: `style, flags, pt_count u8, anchor u16 ×2`. The common
-/// case: at most 255 vertices and a leaf-relative anchor that fits `0..=65535`.
+/// Width of the compact feature header. The common case: at most 255 vertices and an anchor that
+/// fits `0..=65535`.
 pub const FEATURE_HEADER_COMPACT_LEN: usize = 7;
-/// Width of the wide feature header (`FEATURE_FLAG_WIDE` set): `style, flags, pt_count u16,
-/// anchor i32 ×2`. Both layouts put `flags` at byte 1, so a reader knows the width before it
-/// needs it.
+/// Width of the wide feature header. Both layouts put `flags` at byte 1, so a reader knows the
+/// width before it needs it.
 pub const FEATURE_HEADER_WIDE_LEN: usize = 12;
 
 pub const FEATURE_FLAG_16BIT: u8 = 0x01;
@@ -37,40 +36,33 @@ pub const FEATURE_FLAG_WIDE: u8 = 0x08;
 pub const STYLE_PRIORITY_MASK: u8 = 0x03;
 pub const STYLE_DASHED_BIT: u8 = 0x04;
 pub const STYLE_HAS_COLOR2_BIT: u8 = 0x08;
-/// Style flag bit 4: the style's `weight` is the stroke width in device pixels, used verbatim,
-/// and the renderer's zoom-to-width ramp is bypassed.
+/// Style flag bit 4: `weight` is the stroke width in device pixels, bypassing the zoom ramp.
 pub const STYLE_FIXED_WIDTH_BIT: u8 = 0x10;
 /// Style flag bit 5: the style belongs to the suppressible terrain layer.
 pub const STYLE_TERRAIN_LAYER_BIT: u8 = 0x20;
-/// Style flag bit 6: a ticked line, a solid stroke with regular perpendicular ticks. Written with
-/// [`STYLE_DASHED_BIT`] clear; a record that sets both is malformed and a reader draws it ticked.
+/// Style flag bit 6: a ticked line. Written with [`STYLE_DASHED_BIT`] clear; a record that sets
+/// both is malformed and a reader draws it ticked.
 pub const STYLE_TICKED_BIT: u8 = 0x40;
 /// Style flag bit 7: reserved, written `0`. Unlike a feature's flags, a reader must ignore style
-/// bits it does not define rather than reject the record, which is what lets a bit be defined in
-/// place.
+/// bits it does not define rather than reject the record.
 pub const STYLE_RESERVED_MASK: u8 = 0x80;
 
 pub const BRANCH_BIT: u32 = 0x8000_0000;
 pub const EMPTY_LEAF: u32 = 0x7FFF_FFFF;
 pub const CHUNK_END: u8 = 0xFF;
-/// The one fill byte. Every gap a scaled offset rounds past is written `0xFF`, because that is
-/// already this format's "nothing here" byte in every chunked section, so filler that leaks into
-/// a decode path meets a stop rather than a plausible record. A reserved field is still `0`: a
-/// field is content that means nothing yet, and a gap is not content at all.
+/// The one fill byte. Every gap a scaled offset rounds past is written `0xFF`, this format's
+/// "nothing here" byte in every chunked section, so filler that leaks into a decode path meets a
+/// stop rather than a plausible record. A reserved field is still `0`: a gap is not content.
 pub const FILLER: u8 = 0xFF;
 
-/// Largest legal `Offset Scale`. `9` is the largest scale at which `512 % U == 0`, and 512 is both
-/// the card block and this format's fixed chunk stride, so every chunk start falls on a unit
-/// boundary the region start already established.
+/// Largest legal `Offset Scale`. `9` is the largest scale at which `512 % U == 0`, and 512 is the
+/// fixed chunk stride, so every chunk start falls on a unit boundary.
 pub const OFFSET_SCALE_MAX: u8 = 9;
-/// The scale every producer in this tree writes: `U = 16`, a 64 GiB addressable interior. It is
-/// also a byte-determinism pin: two bakes of one input agree on this byte.
+/// The scale every producer writes: `U = 16`, a 64 GiB interior. Also a byte-determinism pin.
 pub const OFFSET_SCALE_DEFAULT: u8 = 4;
 
-/// One file's offset unit, carried as the base-2 logarithm the header stores.
-///
-/// Recording it as a logarithm makes "a power of two" a property of the encoding: no value of
-/// this type names a unit that is not one.
+/// One file's offset unit, carried as the base-2 logarithm the header stores, which makes "a power
+/// of two" a property of the encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OffsetScale {
     log2: u8,
@@ -81,8 +73,8 @@ impl OffsetScale {
     pub const DEFAULT: OffsetScale = OffsetScale { log2: OFFSET_SCALE_DEFAULT };
 
     /// Accept a header's scale byte. `0..=9` only; anything else is [`DecodeError::Layout`] and
-    /// deliberately not [`DecodeError::Version`], because a scale a reader cannot resolve is an
-    /// unreadable file, not an old one.
+    /// not [`DecodeError::Version`], because an unresolvable scale is an unreadable file, not an
+    /// old one.
     #[inline]
     pub const fn new(log2: u8) -> Result<OffsetScale, DecodeError> {
         if log2 > OFFSET_SCALE_MAX {
@@ -102,8 +94,7 @@ impl OffsetScale {
         1u64 << self.log2
     }
 
-    /// Round `bytes` up to the next unit boundary. `None` on `u64` overflow, which no real layout
-    /// reaches and a corrupt directory can.
+    /// Round `bytes` up to the next unit boundary. `None` on `u64` overflow.
     #[inline]
     pub const fn align_up(self, bytes: u64) -> Option<u64> {
         let unit = self.unit();
@@ -119,9 +110,8 @@ impl OffsetScale {
         ScaledOffset { units, scale: self }
     }
 
-    /// The offset naming byte `bytes`, or `None` when `bytes` is not on a unit boundary or does
-    /// not fit `uint32` units. A writer's check: a scaled offset cannot name a byte that is not a
-    /// multiple of `U`, so a layout that tries is a bug in the layout, not a rounding request.
+    /// The offset naming byte `bytes`, or `None` when it is not on a unit boundary or does not fit
+    /// `uint32` units. A writer's check: a layout that names an unaligned byte is a bug.
     #[inline]
     pub const fn scaled(self, bytes: u64) -> Option<ScaledOffset> {
         if bytes & (self.unit() - 1) != 0 {
@@ -134,19 +124,16 @@ impl OffsetScale {
         Some(ScaledOffset { units: units as u32, scale: self })
     }
 
-    /// Whether this scale covers a file of `total` bytes, the one rule a producer is bound to:
-    /// `2^32 × U` must be at least the file's total length.
+    /// Whether this scale covers a file of `total` bytes: `2^32 × U` must be at least its length.
     #[inline]
     pub const fn covers(self, total: u64) -> bool {
         total <= (1u64 << 32) * self.unit()
     }
 }
 
-/// A `uint32` offset field together with the unit of the file it came from.
-///
-/// The scale travels inside the value on purpose. An assembler holds many cell files and one
-/// output open at once, and an offset read out of one resolved against another's `U` lands inside
-/// the wrong file: the read succeeds and returns the wrong section.
+/// A `uint32` offset field together with the unit of the file it came from. An assembler holds
+/// many files open at once, and an offset resolved against another's `U` lands inside the wrong
+/// file, where the read succeeds and returns the wrong section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScaledOffset {
     units: u32,
@@ -165,8 +152,8 @@ impl ScaledOffset {
         self.scale
     }
 
-    /// The byte offset, always widened before the multiply. `u32(field) * U` wraps silently and
-    /// lands inside the file, so this returns `u64` and there is no narrower spelling in the tree.
+    /// The byte offset, always widened before the multiply, because `u32(field) * U` wraps
+    /// silently and lands inside the file.
     #[inline]
     pub const fn bytes(self) -> u64 {
         self.units as u64 * self.scale.unit()
@@ -179,21 +166,16 @@ impl ScaledOffset {
     }
 }
 
-/// One run of [`FILLER`], long enough for any single gap a producer emits.
-///
-/// The longest is the nav alignment run, which lands the fixed 512-byte chunks on a sector; a
-/// section boundary's own gap is at most `U − 1 ≤ 511`. So one 512-byte run covers both.
+/// One run of [`FILLER`], long enough for any single gap a producer emits: the nav alignment run
+/// is a whole sector and a section boundary's gap is at most `U − 1`.
 pub const FILLER_RUN: [u8; 512] = [FILLER; 512];
 
 /// A file position that only moves by writing, and that knows where the next unit boundary is.
 ///
-/// Every structure a header or directory offset reaches begins on one.
 /// [`begin_section`](Self::begin_section) is the rounding, the filler write and the scaling as one
 /// call, so the position a field names and the position the bytes landed at cannot drift apart.
-///
-/// The sink is a closure, so a writer that discards its bytes still moves the cursor: that is how
-/// a producer projects a layout with the code that emits it. The `scale` travels with the cursor,
-/// because a boundary in one file's unit is not a boundary in another's.
+/// The sink is a closure, so a writer that discards its bytes still moves the cursor, which is how
+/// a producer projects a layout with the code that emits it.
 pub struct UnitWriter<'a, E> {
     at: u64,
     scale: OffsetScale,
@@ -201,8 +183,7 @@ pub struct UnitWriter<'a, E> {
 }
 
 impl<'a, E> UnitWriter<'a, E> {
-    /// A cursor at byte `at` of the file `sink` receives, counting `scale`'s units. `at` need not
-    /// be a boundary: the boundary is found rather than assumed.
+    /// A cursor at byte `at`, counting `scale`'s units. `at` need not be a boundary.
     #[inline]
     pub fn new(scale: OffsetScale, at: u64, sink: &'a mut dyn FnMut(&[u8]) -> Result<(), E>) -> UnitWriter<'a, E> {
         UnitWriter { at, scale, sink }
@@ -214,7 +195,6 @@ impl<'a, E> UnitWriter<'a, E> {
         self.at
     }
 
-    /// The unit every offset this writer's file stores counts.
     #[inline]
     pub const fn scale(&self) -> OffsetScale {
         self.scale
@@ -228,8 +208,7 @@ impl<'a, E> UnitWriter<'a, E> {
         Ok(())
     }
 
-    /// Append `len` bytes of [`FILLER`]. Used where a gap's length is computed rather than found,
-    /// such as the nav alignment run, whose size answers to a sector as well as to a unit.
+    /// Append `len` bytes of [`FILLER`], where a gap's length is computed rather than found.
     pub fn pad(&mut self, len: u64) -> Result<(), E> {
         let mut left = len;
         while left > 0 {
@@ -242,25 +221,18 @@ impl<'a, E> UnitWriter<'a, E> {
 
     /// Move the cursor past `len` bytes without writing them.
     ///
-    /// This is a projection's tool and a writer must never reach for it. A layout walked over a
-    /// discarding sink still has to account for bodies it is not holding, and padding past
-    /// gigabytes of chunk run one [`FILLER_RUN`] at a time would be millions of no-op calls to
-    /// answer a question about arithmetic.
-    ///
-    /// A writer that skips instead of putting emits a file with a hole where the cursor says there
-    /// are bytes, so a producer using this type must check the bytes its sink received against the
-    /// position it ended at.
+    /// A projection's tool that a writer must never reach for. A layout walked over a discarding
+    /// sink still has to account for bodies it is not holding, and padding past gigabytes one run
+    /// at a time would be millions of no-op calls. A writer that skips instead of putting emits a
+    /// file with a hole, so a producer using this must check the bytes its sink received.
     #[inline]
     pub fn advance(&mut self, len: u64) {
         self.at += len;
     }
 
-    /// Start a structure a scaled offset names: pad to the next unit boundary with [`FILLER`] and
-    /// return that boundary's byte offset.
-    ///
-    /// The return value is a byte offset rather than a [`ScaledOffset`] because a producer past
-    /// the interior its scale addresses refuses in its own words. The value handed to that check
-    /// is the aligned cursor, never the raw one.
+    /// Start a structure a scaled offset names: pad to the next unit boundary and return that
+    /// boundary's byte offset. It is a byte offset rather than a [`ScaledOffset`] because a
+    /// producer past the interior its scale addresses refuses in its own words.
     pub fn begin_section(&mut self) -> Result<u64, E> {
         let boundary = self.scale.align_up(self.at).expect("a layout cursor never approaches u64::MAX");
         self.pad(boundary - self.at)?;
@@ -276,17 +248,17 @@ pub const NAV_EDGE_ORDINAL_MASK: u32 = (1 << NAV_EDGE_ORDINAL_BITS) - 1;
 /// Largest `Edge Chunk Count` a directory may declare: past it, no `Edge Id` could name the
 /// chunks, so the tail would be bytes the directory claims and no id reaches.
 pub const NAV_EDGE_MAX_CHUNKS: u64 = 1 << (32 - NAV_EDGE_ORDINAL_BITS);
-/// A chunk holds at most 31 records, so `ordinal` is never more than `30`. 31 and not 32 is what
-/// makes [`NAV_EDGE_ID_NONE`] impossible unconditionally: `0xFFFFFFFF` is ordinal `31` of chunk
-/// `2^27 − 1`, which a 32-record cap would permit the moment a record shrank to 16 bytes.
+/// A chunk holds at most 31 records. 31 and not 32 is what makes [`NAV_EDGE_ID_NONE`] impossible
+/// unconditionally: `0xFFFFFFFF` is ordinal `31` of the last chunk, which a 32-record cap would
+/// permit the moment a record shrank.
 pub const NAV_EDGE_MAX_RECORDS_PER_CHUNK: usize = 31;
 /// The snap sentinel, and an impossible `Edge Id` under the cap above.
 pub const NAV_EDGE_ID_NONE: u32 = 0xFFFF_FFFF;
-/// `Pt Count == 0xFFFF` is the end-of-chunk sentinel: `Pt Count` is at least `2` in every real
-/// record, and a `0xFF`-filled gap already spells it for free.
+/// `Pt Count == 0xFFFF` is the end-of-chunk sentinel: a real record has at least `2`, and a
+/// `0xFF`-filled gap already spells it.
 pub const NAV_EDGE_PT_COUNT_SENTINEL: u16 = 0xFFFF;
-/// The smallest record this format can express. It is what makes the record cap, and so the 5-bit
-/// ordinal, a property of the format rather than an observation about real maps.
+/// The smallest record this format can express, which is what makes the record cap a property of
+/// the format rather than an observation about real maps.
 pub const NAV_EDGE_MIN_LEN: usize = NAV_EDGE_FIXED_LEN + 4;
 
 /// Pack a `(chunk_index, ordinal)` pair into the wire `Edge Id`. `None` when either half is out of
@@ -313,13 +285,12 @@ pub const fn nav_edge_id_ordinal(id: u32) -> u32 {
 }
 
 /// One step of the edge-resolve walk: the length of the record at byte position `p` of a 512-byte
-/// edge chunk, or `None` to refuse.
+/// chunk, or `None` to refuse.
 ///
-/// Two lines are load-bearing. `NAV_CHUNK_SIZE - p` appears nowhere: written `512 - p < 19`, the
-/// first guard wraps to a huge value once a corrupt `Pt Count` pushes `p` past `512`, and the read
-/// at `p + 4` then lands outside the chunk, so every bound is written additively on `p`. And `len`
-/// is evaluated in 32 bits, not in `Pt Count`'s own `u16`, where the largest admitted `n` wraps to
-/// `3` and the walk advances into the middle of a record instead of refusing.
+/// Two lines are load-bearing. `NAV_CHUNK_SIZE - p` appears nowhere, because that subtraction
+/// wraps once a corrupt `Pt Count` pushes `p` past the chunk, so every bound is additive on `p`.
+/// And `len` is evaluated in 32 bits, not in `Pt Count`'s `u16`, where the largest admitted `n`
+/// wraps to `3` and the walk advances into the middle of a record.
 #[inline]
 pub fn nav_edge_step(chunk: &[u8], p: usize) -> Option<usize> {
     if chunk.len() < NAV_CHUNK_SIZE {
@@ -345,11 +316,9 @@ pub fn nav_edge_step(chunk: &[u8], p: usize) -> Option<usize> {
     Some(len)
 }
 
-/// Resolve `ordinal` to the record's byte range within its 512-byte chunk, walking from the
-/// chunk's first byte and taking each record's length from its own `Pt Count`.
-///
-/// Every record the walk touches, the intermediate ones and the target alike, gets the same four
-/// checks. A refused id is a malformed map, not an absent edge.
+/// Resolve `ordinal` to the record's byte range within its chunk, walking from the chunk's first
+/// byte and taking each record's length from its own `Pt Count`. Every record the walk touches
+/// gets the same checks, and a refused id is a malformed map, not an absent edge.
 #[inline]
 pub fn nav_edge_record_range(chunk: &[u8], ordinal: u32) -> Option<(usize, usize)> {
     let mut p = 0usize;
@@ -493,21 +462,18 @@ pub const NAV_MAX_DEGREE: usize = 24;
 /// One snap-anchor record: absolute `lat i32`, absolute `lon i32`, and `edge_id u32`.
 pub const NAV_SNAP_RECORD_LEN: usize = 12;
 /// Edges no longer than this need no interior anchor: every on-edge position is already within
-/// half this distance of a graph endpoint. With [`NAV_SNAP_ANCHOR_GAP_M`] it gives the 250 m
-/// node-or-anchor lookup a 100 m road-proximity guarantee.
+/// half this distance of a graph endpoint.
 pub const NAV_SNAP_EDGE_MIN_M: u32 = 300;
 /// Maximum along-polyline gap between graph endpoints / interior snap anchors.
 pub const NAV_SNAP_ANCHOR_GAP_M: u32 = 300;
 
-/// Padding inserted immediately before a populated node or snap index, so that the fixed 512-byte
-/// chunks after it begin on a physical sector boundary and the index itself starts on a unit
-/// boundary. `unpadded` is the file offset the index would take with no padding; the return is
-/// always `0..512`.
+/// Padding inserted before a populated node or snap index, so that the fixed 512-byte chunks after
+/// it begin on a sector boundary and the index itself starts on a unit boundary. `unpadded` is the
+/// offset the index would take unpadded, and the return is always `0..512`.
 ///
 /// The reader computes the first chunk as `align_up(index_offset × U + node_count × 4, U)`, so the
 /// index may end anywhere in the `U` bytes below the sector target. That slack is what makes both
-/// alignments satisfiable for every node count: reserve `align_up(index_len, U)` bytes, round the
-/// target up to the sector, and hand the index the difference.
+/// alignments satisfiable for every node count.
 #[inline]
 pub const fn nav_index_padding(scale: OffsetScale, unpadded: u64, index_len: u64) -> Option<usize> {
     let sector = NAV_CHUNK_SIZE as u64;
@@ -569,7 +535,7 @@ impl PoiCategory {
         })
     }
 
-    /// Stable device-facing category label. Distinct from a subtype fallback label.
+    /// Stable device-facing category label, distinct from a subtype fallback label.
     #[inline]
     pub const fn name(self) -> &'static str {
         match self {
@@ -714,12 +680,12 @@ const _: () = assert!(SETTLEMENT_SUBTYPE_CITY > TRAIN_SUBTYPE_ID);
 const _: () = assert!(EMPTY_LEAF == !BRANCH_BIT);
 const _: () = assert!(NAV_NODE_FIXED_LEN + NAV_MAX_DEGREE * NAV_NEIGHBOR_LEN <= NAV_CHUNK_SIZE);
 const _: () = assert!(POI_HOURS_BLOB_LEN == 1 + POI_HOURS_DAYS * POI_HOURS_SLOTS_PER_DAY * 2);
-// `9` is the largest scale at which `U` still divides the fixed 512-byte chunk stride, which keeps
-// the chunk runs free of internal filler.
+// `9` is the largest scale at which `U` still divides the chunk stride, which keeps the chunk runs
+// free of internal filler.
 const _: () = assert!(NAV_CHUNK_SIZE.is_multiple_of(1usize << OFFSET_SCALE_MAX));
 const _: () = assert!(POI_CHUNK_SIZE.is_multiple_of(1usize << OFFSET_SCALE_MAX));
-// The real per-chunk maximum sits below the 31-record cap, so the cap gives up nothing today and
-// keeps the encoding sound if a record ever shrinks.
+// The real per-chunk maximum sits below the cap, so the cap gives up nothing and keeps the
+// encoding sound if a record ever shrinks.
 const _: () = assert!(NAV_CHUNK_SIZE / NAV_EDGE_MIN_LEN <= NAV_EDGE_MAX_RECORDS_PER_CHUNK);
 // …and the cap is what makes `0xFFFFFFFF` an impossible id whatever the chunk index.
 const _: () = assert!((NAV_EDGE_MAX_RECORDS_PER_CHUNK as u32 - 1) < NAV_EDGE_ORDINAL_MASK);
@@ -733,8 +699,7 @@ mod tests {
         let mut fixture = [0u8; HEADER_LEN];
         fixture[..4].copy_from_slice(&MAGIC);
         fixture[4] = VERSION;
-        // The header is 65 bytes, so the style table begins at the first unit boundary at or
-        // after it: `80` at the default `U = 16`, which is `Style Offset = 5`.
+        // The header is 65 bytes, so the style table begins at the first unit boundary past it.
         let style = OffsetScale::DEFAULT.scaled(OffsetScale::DEFAULT.align_up(HEADER_LEN as u64).unwrap()).unwrap();
         fixture[21..25].copy_from_slice(&style.units().to_le_bytes());
         fixture[HEADER_OFFSET_SCALE_OFF] = OFFSET_SCALE_DEFAULT;
@@ -760,8 +725,7 @@ mod tests {
         let fine = OffsetScale::new(0).unwrap();
         assert_eq!(coarse.unit(), 512);
         assert_eq!(fine.unit(), 1);
-        // The same stored `uint32` names two different bytes in two files, which is why the scale
-        // rides inside the value.
+        // The same stored `uint32` names two different bytes in two files.
         assert_eq!(coarse.offset(3).bytes(), 1536);
         assert_eq!(fine.offset(3).bytes(), 3);
         assert_eq!(OffsetScale::DEFAULT.offset(3).bytes(), 48);
@@ -779,8 +743,7 @@ mod tests {
             // Layout, not Version: an unresolvable scale is an unreadable file, not an old one.
             assert_eq!(OffsetScale::new(log2), Err(DecodeError::Layout));
         }
-        // The producer rule: `2^32 × U` must be at least the file's total length, so the largest
-        // legal file is exactly that many bytes.
+        // The producer rule: `2^32 × U` must be at least the file's total length.
         assert!(OffsetScale::DEFAULT.covers(1 << 36));
         assert!(!OffsetScale::DEFAULT.covers((1 << 36) + 1));
     }
@@ -800,9 +763,8 @@ mod tests {
         assert_eq!(scale.scaled((1u64 << 36) - 16).map(ScaledOffset::units), Some(u32::MAX));
     }
 
-    /// One call must do all three steps of a boundary: round the cursor up, write that many
-    /// `0xFF`, and scale the rounded value. The last is the pin that matters: the offset a field
-    /// stores names the byte the bytes landed on.
+    /// One call must do all three steps of a boundary. The last is the pin that matters: the
+    /// offset a field stores names the byte the bytes landed on.
     #[test]
     fn begin_section_pads_the_gap_and_names_the_boundary_it_reached() {
         let mut out: std::vec::Vec<u8> = std::vec::Vec::new();
@@ -831,8 +793,7 @@ mod tests {
         assert_eq!(out.len(), 96);
     }
 
-    /// A writer over a sink that keeps nothing still moves its cursor, which is how a producer
-    /// projects a layout with the code that emits it.
+    /// A writer over a sink that keeps nothing still moves its cursor.
     #[test]
     fn a_discarding_sink_still_advances_the_cursor() {
         let mut discard = |_: &[u8]| -> Result<(), core::convert::Infallible> { Ok(()) };
@@ -846,8 +807,8 @@ mod tests {
         assert_eq!(w.at(), 595);
     }
 
-    /// [`UnitWriter::pad`] must be able to exceed one [`FILLER_RUN`]. No gap does today, so the
-    /// loop that makes it possible is otherwise unreached and an off-by-one in it would sit unseen.
+    /// [`UnitWriter::pad`] must exceed one [`FILLER_RUN`]. No gap does today, so the loop is
+    /// otherwise unreached and an off-by-one in it would sit unseen.
     #[test]
     fn pad_spans_more_than_one_filler_run() {
         let mut out: std::vec::Vec<u8> = std::vec::Vec::new();
@@ -866,9 +827,9 @@ mod tests {
         assert!(out.iter().all(|&b| b == FILLER));
     }
 
-    /// [`UnitWriter::advance`] is the one method that moves the cursor without writing. Two
-    /// properties the type cannot enforce: it moves exactly `n` and hands the sink nothing, and a
-    /// walk that advances past its bodies lands on the same byte as the walk that writes them.
+    /// [`UnitWriter::advance`] moves the cursor without writing. Two properties the type cannot
+    /// enforce: it moves exactly `n` and hands the sink nothing, and a walk that advances past its
+    /// bodies lands on the byte the writing walk ends at.
     #[test]
     fn advance_moves_the_cursor_by_exactly_its_length_and_writes_nothing() {
         // One script, run twice: once putting real bodies, once advancing past them.
@@ -917,8 +878,8 @@ mod tests {
         assert_eq!(w.at(), 3_000_000_007, "and it is `u64` arithmetic, not a loop over a buffer");
     }
 
-    /// The filler run must cover the longest single gap the format can ask for: `U − 1` at the
-    /// largest legal scale, which is also the 512-byte alignment run.
+    /// The filler run must cover the longest single gap: `U − 1` at the largest scale, which is
+    /// also the alignment run.
     #[test]
     fn one_filler_run_covers_every_gap_the_format_can_ask_for() {
         const _: () = assert!(FILLER_RUN.len() as u64 == 1 << OFFSET_SCALE_MAX);
@@ -932,7 +893,6 @@ mod tests {
         // A one-node index whose chunk must begin at S+512.
         let pad = nav_index_padding(scale, 104, 4).unwrap();
         assert_eq!(104 + pad, 496, "the index takes S+496, twelve bytes of filler carry it to S+512");
-        // The two properties, checked for every index length rather than at the example.
         for unpadded in [0u64, 40, 104, 500, 1021] {
             for index_len in [4u64, 16, 20, 508, 512, 4096] {
                 let pad = nav_index_padding(scale, unpadded, index_len).unwrap();
@@ -963,11 +923,11 @@ mod tests {
         assert_eq!(NAV_EDGE_MAX_CHUNKS * NAV_CHUNK_SIZE as u64, 1 << 36, "the pool reaches the interior");
     }
 
-    /// The edge walk, including the two transcription traps the spec spells out because this block
-    /// is the one a reader copies verbatim.
+    /// The edge walk, including the two transcription traps, because this block is the one a
+    /// reader copies verbatim.
     #[test]
     fn the_edge_resolve_walk_applies_its_four_refusals_every_step() {
-        /// A chunk holding `counts.len()` records of the given point counts, `0xFF`-filled after.
+        /// A chunk holding records of the given point counts, `0xFF`-filled after.
         fn chunk_of(counts: &[u16]) -> std::vec::Vec<u8> {
             let mut out = std::vec![FILLER; NAV_CHUNK_SIZE];
             let mut p = 0usize;
@@ -984,7 +944,7 @@ mod tests {
         assert_eq!(nav_edge_record_range(&chunk, 0), Some((0, 19)));
         assert_eq!(nav_edge_record_range(&chunk, 1), Some((19, 50)));
         assert_eq!(nav_edge_record_range(&chunk, 2), Some((50, 69)));
-        // The walk MUST NOT pass the chunk's last record: the filler behind it spells the sentinel.
+        // The walk must not pass the chunk's last record: the filler behind it spells the sentinel.
         assert_eq!(nav_edge_record_range(&chunk, 3), None);
         assert_eq!(nav_edge_record_range(&chunk, NAV_EDGE_ORDINAL_MASK), None);
 
