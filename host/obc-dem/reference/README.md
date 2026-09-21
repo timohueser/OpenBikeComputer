@@ -59,11 +59,12 @@ conversion code is in the tool yet, because no adapter needs one yet.
 
 `vertical_datum` is in `sources/<key>.json` and in `index.json`'s `sources`.
 
-### Two additions to the index
+### The additions to the index
 
-`index.json` carries two maps more than the contract above shows, under the same tile ids as
-`tiles`: **`sha256`**, the digest of each tile's pixels, and **`contributors`**, every source that
-holds a pixel in the tile, best priority first.
+`index.json` carries three things more than the contract above shows: two maps under the same tile
+ids as `tiles` — **`sha256`**, the digest of each tile's pixels, and **`contributors`**, every
+source that holds a pixel in the tile, best priority first — and **`vertical_datum`** in each
+source's entry.
 
 ```json
 { "schema": 1, "step_log2": 6, "tile_log2": 16,
@@ -111,7 +112,7 @@ It needs `rasterio`, `pyproj` and `numpy` (`tools/requirements-bake.txt`, or
 | --- | --- |
 | `ingest <key>` | The source adapter obtains rasters for the box; the shared tail writes tiles. `--input <dir>` takes hand-fetched rasters instead of the service. `--work <dir>` is where fetched rasters are cached, so a second run of the same box downloads nothing. |
 | `index` | Rebuilds `index.json` from the manifests in `sources/`. |
-| `check` | Opens every tile and holds it against the contract — size, dtype, nodata, CRS, the exact transform, the digest — and refuses a tile the index does not name. |
+| `check` | Opens every tile and holds it against the contract — size, dtype, nodata, CRS, band count, `AREA_OR_POINT`, deflate, 256 × 256 blocks, little-endian, the exact transform, the pixel digest and the contributors entry — and refuses a tile the index does not name. |
 | `publish` | `rclone copy` of the archive to `<bucket>/reference/v1/`: tiles and manifests first, then the index, which goes up as the merge of the index already on R2 with this archive's. Additive and idempotent: a publish never deletes. |
 | `mirror` | `rclone copy` of the index plus the tiles one box needs, into a local directory. The box is padded by one tile on every side, because the baker's node halo reads over a cell edge. It names the needed tiles the archive does not hold. This is what a bakery run does before `obc-dem bake --reference`. |
 

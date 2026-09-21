@@ -597,14 +597,6 @@ class RcloneSeam(ArchiveCase):
         self.assertIn(ingest.tile_id(4811, 4222), needed)  # the ring
         self.assertNotIn(ingest.tile_id(4810, 4223), needed)  # and nothing past it
 
-    def test_the_mirror_halo_is_one_tile_on_every_side(self):
-        tile = next(iter(self.index()["tiles"]))
-        ti, tj = (int(part) for part in tile.split("/"))
-        needed = ingest.box_tiles(ingest.parse_bbox(bbox_of(self.inputs / "tower.tif")))
-        for di in (-1, 0, 1):
-            for dj in (-1, 0, 1):
-                self.assertIn(ingest.tile_id(ti + di, tj + dj), needed)
-
 
 if __name__ == "__main__":
     unittest.main()
