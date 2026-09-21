@@ -288,8 +288,9 @@ coming back. `--list` enumerates serial ports. Unplug J3 when the test also need
 `stty` with `printf`/`cat` does not work, because macOS resets the termios on every open and
 close — use pyserial.
 
-**Firmware update over the VCOM.** With a **signed** `UPDATE.BIN` in the card root (see [`../README.md`](../README.md); an unsigned
-container is refused), the same link carries the armer's trigger. Send `dfu-install\n` over the
+**Firmware update over the VCOM.** With a **signed** update package in the store (see
+[`../README.md`](../README.md); an unsigned container is refused), the same link carries the armer's
+trigger. Send `dfu-install\n` over the
 live CDC port with pyserial and read the `D` status lines back:
 
 ```sh

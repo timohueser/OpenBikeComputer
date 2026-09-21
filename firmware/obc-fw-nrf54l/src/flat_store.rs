@@ -315,6 +315,14 @@ pub(crate) enum Request {
         bytes: &'static [u8],
         header: &'static [u8],
     },
+    /// Append the rollback container to a fresh allocation: the unsigned OBCU header, then the
+    /// running image straight out of the memory-mapped app slot. Replies with the advanced
+    /// allocation, which the arm's commit publishes as the rollback reserve.
+    WriteRollback {
+        allocation: Allocation,
+        header: [u8; obc_dfu::HEADER_LEN],
+        image: &'static [u8],
+    },
     Seal {
         allocation: Allocation,
         out: &'static mut Option<obc_storage::flat::SealedAllocation<'static>>,
@@ -977,6 +985,11 @@ fn serve(
                 store.patch_allocation(&allocation, 0, header)?;
             }
             store.write(&mut allocation, bytes)?;
+            Ok(Outcome::Wrote(allocation))
+        }
+        Request::WriteRollback { mut allocation, header, image } => {
+            store.write(&mut allocation, &header)?;
+            store.write(&mut allocation, image)?;
             Ok(Outcome::Wrote(allocation))
         }
         Request::Seal { allocation, out } => {

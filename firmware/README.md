@@ -143,9 +143,9 @@ python3 firmware/tools/wasm_size_guard.py --module assemble
 
 ## Firmware update images (OBCU)
 
-A field update is an OBCU container dropped on the SD card as `/UPDATE.BIN`. The byte format is
-[`OBCU_Spec.md`](../specs/OBCU_Spec.md); the shared codec and boot decision live in `obc-dfu`, and
-the producer is `obc-mkimage`. The pipeline is objcopy, then wrap and sign:
+A field update is an OBCU container a client uploads as an update-package object. The byte format
+is [`OBCU_Spec.md`](../specs/OBCU_Spec.md); the codec and boot decision live in `obc-dfu`, and the
+producer is `obc-mkimage`. The pipeline is objcopy, then wrap and sign:
 
 ```sh
 # From the board crate, whose .cargo/config.toml selects the nRF54L target.
@@ -175,10 +175,10 @@ an artifact can be built on one machine and signed on the one that holds the key
 keypair. Keys, the `OBCU_SIGNING_SEED` secret and the **rotation still owed before the first real
 release** are in [`obc-dfu/keys/README.md`](obc-dfu/keys/README.md).
 
-To install a staged `UPDATE.BIN`, copy it to the card root and trigger the armer over the debug
+To install, upload the container and confirm on the device, or trigger the armer over the debug
 VCOM link ([board README](obc-fw-nrf54l/README.md#driving-it-from-a-host-debug-uart)). The armer
-validates the file, snapshots the running image to `/ROLLBACK.BIN`, arms the boot-state page and
-resets into `obc-boot` ([its README](obc-boot/README.md) has the LED codes).
+validates the object, writes the running image into a rollback reserve, arms the boot-state page
+and resets into `obc-boot` ([its README](obc-boot/README.md) has the LED codes).
 
 ## Terrain tiles (OBCT)
 

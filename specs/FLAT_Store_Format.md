@@ -111,7 +111,7 @@ same numbers and defines no others.
 | 5 | map shard | one OBCM object, carrying its terrain inside it (`OBCM_Spec.md` §1.3) |
 | 6 | map set manifest | **retired.** No producer writes this kind; the value is not reissued |
 | 7 | update package | OBCU image |
-| 8 | firmware rollback reserve | extents owned by the store, payload written by the bootloader (§5.3) |
+| 8 | firmware rollback reserve | extents owned by the store, bytes written by the update path (§5.3) |
 | 9 | metadata | device-owned ride archive proofs; [contract](Ride_Archive_Metadata.md) |
 
 ## 4. Superblock
@@ -279,7 +279,7 @@ Flags:
 | --: | :-- | :-- |
 | 0 | `RECORDING` | the active ride. Payload length and CRC are the values of the last commit, not of the current recording; the ride journal (§7) is authoritative for what is beyond them. At most one entry in the catalog carries it. |
 | 1 | `RETAINED` | a non-head revision kept by the store. |
-| 2 | `RESERVED` | the entry owns extents and the store does not write the payload. Only kind 8 uses it; the bootloader writes those bytes. Payload length is zero and `read` on it is refused. |
+| 2 | `RESERVED` | the entry owns extents and the store does not write the payload. Only kind 8 uses it; the device's update path writes those bytes and the bootloader reads them. Payload length is zero and `read` on it is refused. |
 | 3 | `ASSISTANT_ACCEPTED` | the exact immutable Route payload was accepted by Navigator. It is valid only for Route entries without `RECORDING` or `RESERVED`. |
 
 Bits `4..15` are zero. The acceptance flag is set by an `Amend` with unchanged ObjectId,
