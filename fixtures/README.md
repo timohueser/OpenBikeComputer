@@ -165,6 +165,20 @@ content. The Swiss map is a crop, not a full-country map. See the source recipes
 coverage, scenario clocks and the persistent-card option.
 
 
+## Peak View photographs
+
+`peak-view-photos` is the only ground truth Peak View has: seven photographs the owner took near
+Engelberg, the skyline read off each one, and the terrain shard the skylines were measured on.
+`firmware/obc-app/tests/peak_view_photos.rs` draws the whole panorama at each recorded position
+and holds the root-mean-square difference per view to a recorded limit.
+
+[The package README](sources/peak-view/photos/README.md) is the tracked copy of the README inside
+the package. It holds the bake commands and digests, how each skyline was read, and the two views
+whose haze puts the read line on a near ridge rather than on the far horizon. The seven
+`photos/<name>.json` files are `tracked_sources`, so a change to a recorded skyline fails CI until
+the package is packed again. The photographs themselves are in the package only; the commit that
+retired `scratch/peak-view/` is where they were before.
+
 ## Peak article evidence
 
 The `peak-articles` profile contains one bounded raw source package and one compiled catalogue
