@@ -742,6 +742,14 @@ Peak articles are a separate collection, linked only by an explicit tag on the O
 name and a coordinate cannot prove an article is about that summit. One article can serve several
 summits. See the [compiler](src:host/obc-pack/src/landmarks/mod.rs).
 
+Landmarks are an artifact class of the bake, beside the map cells and the terrain. The bakery runs
+them per curated region: the region's own boundary polygon selects the sources, a cache holds the
+raw capture, and the tree holds one compiled artifact for each region. The capture reads live
+sources, so it is the only step of a bake that two runs can disagree on. It is resumable, the run
+says when it starts one, and everything after it is a pure function of the bytes it wrote. A
+region is compiled again only when its captured sources, its boundary, or the category policy
+change.
+
 ## Attribution and share-alike
 
 OpenStreetMap data is under the Open Database License 1.0. A rendered map is a Produced Work, and
@@ -757,6 +765,7 @@ carries the [Copernicus attribution](../terrain/#attribution).
 - OSM ingest: [`ingest.rs`](src:host/obc-pack/src/ingest.rs)
 - POIs and opening hours: [`poi.rs`](src:host/obc-pack/src/poi.rs), [`hours.rs`](src:host/obc-pack/src/hours.rs)
 - Landmark preparation: [`landmarks`](src:host/obc-pack/src/landmarks/mod.rs)
+- Landmark bake stage: [`landmarks.rs`](src:host/obc-bake/src/landmarks.rs)
 - Navigation graph: [`nav.rs`](src:host/obc-pack/src/nav.rs)
 - Quadtree: [`quadtree.rs`](src:host/obc-pack/src/quadtree.rs)
 - Builder: [`builder/`](src:builder)
