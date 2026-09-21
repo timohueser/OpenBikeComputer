@@ -1,3 +1,4 @@
+import fcntl
 import importlib.util
 import os
 import sys
@@ -148,6 +149,56 @@ class DevCleanupTests(unittest.TestCase):
             cleanup.git(root, "init", "--bare", str(bare))
 
             self.assertEqual(cleanup.temp_candidates(int(time.time()), 0, root), [])
+
+    def test_stale_artifacts_selects_old_entries_in_every_profile_dir(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            target = Path(scratch)
+            now = int(time.time())
+            old = now - 8 * cleanup.SECONDS_PER_DAY
+            profiles = [target / "debug", target / "thumbv8m.main-none-eabihf" / "debug"]
+            for profile in profiles:
+                for name in cleanup.ARTIFACT_DIRS:
+                    (profile / name).mkdir(parents=True)
+                (profile / ".cargo-lock").touch()
+            host, device = profiles
+            old_rlib = host / "deps" / "libserde-old.rlib"
+            new_rlib = host / "deps" / "libserde-new.rlib"
+            old_session = host / "incremental" / "obc_app-old"
+            live_session = host / "incremental" / "obc_app-live"
+            uplifted = host / "obc-sim"
+            device_fingerprint = device / ".fingerprint" / "obc-fw-old"
+            for path in (old_rlib, new_rlib, uplifted):
+                path.touch()
+            for path in (old_session, live_session, device_fingerprint):
+                path.mkdir()
+            (live_session / "s-new").mkdir()
+            for path in (old_rlib, old_session, live_session, uplifted, device_fingerprint, host / ".cargo-lock"):
+                os.utime(path, (old, old))
+
+            stale = cleanup.stale_artifacts(target, now - 7 * cleanup.SECONDS_PER_DAY)
+
+            self.assertEqual(
+                stale,
+                {host: [old_rlib, old_session, uplifted], device: [device_fingerprint]},
+            )
+
+    def test_remove_stale_artifacts_yields_to_a_running_build(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            profile = Path(scratch)
+            lock_path = profile / ".cargo-lock"
+            lock_path.touch()
+            stale = profile / "deps" / "libold.rlib"
+            stale.parent.mkdir()
+            stale.touch()
+            cutoff = time.time() + 1
+
+            with open(lock_path) as build:
+                fcntl.flock(build, fcntl.LOCK_EX)
+                self.assertFalse(cleanup.remove_stale_artifacts(profile, [stale], cutoff))
+                self.assertTrue(stale.exists())
+
+            self.assertTrue(cleanup.remove_stale_artifacts(profile, [stale], cutoff))
+            self.assertFalse(stale.exists())
 
 
 if __name__ == "__main__":
