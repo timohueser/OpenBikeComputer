@@ -755,7 +755,7 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // The signed OBCU v2 container (spec §1): the same header table and the
         // same 128-byte image, plus the scheme marker in v1's reserved bytes and a 64-byte Ed25519
         // trailer under the committed test key. Kept alongside v1 rather than replacing it: v1 is
-        // still what a fielded bootloader and the device's own ROLLBACK.BIN look like, and the pair
+        // still what a fielded bootloader and the device's own rollback snapshot look like, and the pair
         // is what pins the offset-compatibility guarantee across implementations.
         ("update-container-v2.bin", update_container_v2()),
         (

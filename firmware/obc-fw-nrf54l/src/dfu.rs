@@ -17,9 +17,12 @@
 //!    CRC-framed blob in whole 16-byte RRAMC lines, with no torn intermediate.
 //! 4. A brief beat to flush the status lines to the host, then `SCB::sys_reset()`.
 //!
-//! Power loss before step 3's write leaves nothing done, because the reserve and the staged blob are
-//! both inert without the record. After it, the install proceeds on the next boot exactly as if the
-//! reset had run, because `Armed` is idempotent. That is why nothing else sits between 3 and 4.
+//! Power loss before step 3's write starts no install, because the reserve and the staged blob are
+//! both inert without the record that points at them. What it can leave behind is one committed
+//! kind-8 entry holding an image's worth of extents: nothing reclaims it until the next arm's batch
+//! removes it, so the cost is bounded at one reserve and the rider sees the old firmware. After
+//! step 3 the install proceeds on the next boot exactly as if the reset had run, because `Armed` is
+//! idempotent. That is why nothing else sits between 3 and 4.
 //!
 //! The heavy work runs at the ride loop's shallow drained-request depth in `#[inline(never)]` calls,
 //! so the `StagedRef`s and the decoded `BootState` live in frames that pop on return. The carried
@@ -141,8 +144,10 @@ fn staged_package(store: &Flat) -> Result<EntryMeta, ScanError> {
 
 /// Resolve one committed object's extents into the bootloader's absolute block runs.
 ///
-/// The boot handoff addresses a block in a `u32`, which is the card driver's own wall, so a card
-/// past 2 TiB refuses here rather than truncating an address.
+/// The boot handoff addresses a block in a `u32`, which is [`FlatCard`]'s own wall, so a run past
+/// 2 TiB refuses rather than truncating an address. No card the SD standards define reaches it —
+/// the driver would already have refused the read — so it gets the transient bucket the rider can
+/// act on and names itself on the log instead of a bucket of its own.
 fn block_extents(
     store: &Flat,
     id: ObjectId,
@@ -152,8 +157,15 @@ fn block_extents(
     let mut runs = [BlockRun::default(); MAX_RANGES];
     let count = store.block_runs(id, revision, &mut runs).map_err(|_| ExtentsError::Io)?;
     for (slot, run) in out.iter_mut().zip(&runs[..count]) {
-        let start_block = u32::try_from(run.start_block).map_err(|_| ExtentsError::Io)?;
-        let blocks = u32::try_from(run.blocks).map_err(|_| ExtentsError::Io)?;
+        let narrow = u32::try_from(run.start_block).ok().zip(u32::try_from(run.blocks).ok());
+        let Some((start_block, blocks)) = narrow else {
+            defmt::error!(
+                "dfu: object extent at block {=u64} ({=u64} blocks) is past the boot handoff's 2 TiB address",
+                run.start_block,
+                run.blocks
+            );
+            return Err(ExtentsError::Io);
+        };
         *slot = Extent { start_block, blocks };
     }
     Ok(count)

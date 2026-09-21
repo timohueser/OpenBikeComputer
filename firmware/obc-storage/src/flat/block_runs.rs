@@ -71,16 +71,27 @@ fn the_runs_of_a_split_object_read_back_as_its_payload() {
     assert_eq!(read, payload, "the runs locate the payload the seam serves");
 }
 
-/// A revision the catalog does not hold has no runs, and a reserve's runs are readable although its
-/// payload is not: the boot handoff needs the extents of exactly the entry that owns them.
+/// A reserve the way an arm makes one: the image is written into the allocation before the commit,
+/// the entry publishes with `payload_len: 0`, and the extents land on both sides of a hole. The
+/// runs have to read back the whole image although the store serves none of it, because that is the
+/// only route the bootloader has to those bytes.
 #[test]
-fn a_reserve_resolves_and_an_absent_revision_does_not() {
+fn a_reserve_split_by_a_hole_reads_back_the_image_the_store_will_not_serve() {
     let geometry = Geometry::DEFAULT;
-    let disk = SparseDisk::blank(EXTENT_AREA + geometry.extent_blocks() * 4, 3);
+    let extent = geometry.extent_size() as usize;
+    let disk = SparseDisk::blank(EXTENT_AREA + geometry.extent_blocks() * 8, 3);
     let store = FlatStore::initialize(&disk, STORE).expect("an expressible card");
 
+    // A hole of one extent, then a survivor: a three-extent reserve takes the hole and continues
+    // past it, which is two ranges over three extents.
+    let (hole, revision) = publish(&store, &[0xA5u8; 8]);
+    publish(&store, &[0x5Au8; 8]);
+    store.commit(&[Mutation::Remove { id: hole, revision }]).expect("the spacer is removed");
+
+    let image: Vec<u8> = (0..2 * extent + 1_024).map(|i| (i % 253) as u8).collect();
     let id = store.next_object_id();
-    let allocation = store.allocate(geometry.extent_size()).expect("the extents are free");
+    let mut allocation = store.allocate(image.len() as u64).expect("three extents are free");
+    store.write(&mut allocation, &image).expect("the image fits the reservation");
     let meta = EntryMeta {
         added_at_utc: 0,
         id,
@@ -94,8 +105,27 @@ fn a_reserve_resolves_and_an_absent_revision_does_not() {
     store.commit(&[Mutation::Put { meta, source: PutSource::Fresh(allocation) }]).expect("the commit lands");
 
     let mut runs = [BlockRun::default(); MAX_RANGES];
-    assert_eq!(store.block_runs(id, Revision(1), &mut runs).expect("the reserve is committed"), 1);
-    assert_eq!(runs[0].blocks, geometry.extent_blocks(), "a reserve keeps every extent it was given");
-    assert!(store.open(id, Some(Revision(1))).is_err(), "and the store still refuses to serve its bytes");
+    let count = store.block_runs(id, Revision(1), &mut runs).expect("the reserve is committed");
+    assert_eq!(count, 2, "the hole and the run past the survivor are two ranges");
+    assert_eq!(
+        runs.iter().take(count).map(|run| run.blocks).sum::<u64>(),
+        geometry.extent_blocks() * 3,
+        "a `payload_len: 0` reserve keeps every extent it was given, untrimmed"
+    );
+    assert_eq!(runs[0].start_block, EXTENT_AREA, "the hole is the first extent of the area");
+    assert!(runs[1].start_block > runs[0].start_block + runs[0].blocks, "the survivor sits between them");
+
+    let mut read = Vec::new();
+    let mut block = [0u8; BLOCK];
+    for run in &runs[..count] {
+        for index in 0..run.blocks {
+            super::device::BlockDevice::read(&&disk, run.start_block + index, &mut block).expect("the card reads");
+            read.extend_from_slice(&block);
+        }
+    }
+    read.truncate(image.len());
+    assert_eq!(read, image, "the runs locate the image the bootloader restores");
+
+    assert!(store.open(id, Some(Revision(1))).is_err(), "and the store still refuses to serve those bytes");
     assert!(store.block_runs(id, Revision(2), &mut runs).is_err(), "no such revision, no runs");
 }

@@ -42,7 +42,8 @@ fn fwimage_upload_happy_path_commits() {
     }
     assert!(rx.is_complete());
     let result = rx.outcome().expect("complete");
-    // Committed means the board promotes the temp to /UPDATE.BIN exactly once.
+    // Committed is the descriptor layer's own verdict: the whole announced object arrived and
+    // its CRC matched. What the board does with those bytes is not this layer's business.
     assert_eq!(result.status, TransferStatus::Committed);
     assert_eq!(result.committed_offset, object.len() as u32);
     assert_eq!(result.object_id, 0);
@@ -50,7 +51,7 @@ fn fwimage_upload_happy_path_commits() {
 
 #[test]
 fn fwimage_crc_mismatch_leaves_nothing_to_commit() {
-    // On crcMismatch the board discards the temp and never touches /UPDATE.BIN.
+    // On crcMismatch the receiver commits nothing, so no caller is ever handed the bytes.
     let mut object = payload(4096);
     let desc = fwimage_desc(&object);
     object[123] ^= 0x01; // corrupt after the CRC is announced
@@ -58,7 +59,7 @@ fn fwimage_crc_mismatch_leaves_nothing_to_commit() {
     rx.push(&object);
     let result = rx.outcome().expect("complete");
     assert_eq!(result.status, TransferStatus::CrcMismatch);
-    assert_eq!(result.committed_offset, 0, "nothing durable — no UPDATE.BIN is written");
+    assert_eq!(result.committed_offset, 0, "nothing is handed on");
 }
 
 #[test]

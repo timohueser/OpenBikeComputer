@@ -670,7 +670,7 @@ mod tests {
         }
     }
 
-    /// A scan answer lands in the "Checking card..." wait the System menu pushed, swapping it for
+    /// A scan answer lands in the "Checking update..." wait the System menu pushed, swapping it for
     /// the confirm screen or the error card. With no wait on the stack it is a no-op, because the
     /// rider pressed Back.
     #[test]

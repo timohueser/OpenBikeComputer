@@ -96,8 +96,8 @@ impl ImageHeader {
         ImageHeader { sig_scheme: SIG_SCHEME_ED25519, sig_len: SIG_LEN as u16, ..self }
     }
 
-    /// The same header with the signature marker cleared. The device-local `ROLLBACK.BIN` snapshot
-    /// uses it: the bootloader verifies that file by CRC, and nothing signs it.
+    /// The same header with the signature marker cleared. The device-local rollback snapshot uses
+    /// it: the bootloader verifies those bytes by CRC, and nothing signs them.
     pub fn unsigned(self) -> ImageHeader {
         ImageHeader { sig_scheme: SIG_SCHEME_NONE, sig_len: 0, ..self }
     }

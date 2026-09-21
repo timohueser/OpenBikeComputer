@@ -4,7 +4,7 @@
 //! real SPI block reads and RRAMC line writes into it and maps the returned [`Outcome`] to an LED
 //! pattern and a jump, reset or halt.
 //!
-//! The armer resolves the whole `UPDATE.BIN` file, so the extent chain reads as `64-byte OBCU
+//! The armer resolves the whole staged object, so the extent chain reads as `64-byte OBCU
 //! header ‖ raw image` (`OBCU_Spec.md`). Both passes skip the first [`HEADER_LEN`] bytes: the
 //! verify CRC covers the raw image only, and the flash pass writes the raw image to the app slot.
 //!
