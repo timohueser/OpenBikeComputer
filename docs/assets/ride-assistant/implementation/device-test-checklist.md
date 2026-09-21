@@ -16,7 +16,7 @@ routes with the existing card tools. Keep a separate test card when testing medi
 | Meiringen | `ebe53f369a558e2c4e8da593b05433e55f730d83d07a928d46f7a236ec145bba` | Find, full visit, return, rejoin, recording, Easier |
 | West Cork | `a48ebe53b9a545492b94ef4d59cdd2f371e70705683f092d9370112cccc29b23` | Dunlough Castle text, photo, Sources, explicit access |
 
-The [Swiss Easier scenario](ra13-easier/README.md) documents a real road-network alternative.
+The Swiss Easier scenario is a real road-network alternative.
 Its GPS motion is authored replay. It is not a recorded field ride. Missing hours, terrain,
 or mapped access must remain explicit on the device as they are in the simulator.
 

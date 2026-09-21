@@ -12,6 +12,9 @@ never through their constructors.
 
 from __future__ import annotations
 
+GOVERNS = ['**/*.rs']
+RULE = 'A scheduler-owned card is built only by the card scheduler.'
+
 import re
 from pathlib import Path
 
@@ -58,6 +61,10 @@ ALLOWED_PATHS = (
 # at the end of its file, so the first `#[cfg(test)]` line is where production code stops.
 TEST_GATE = "#[cfg(test)]"
 
+# Another checkout of this repository is not this checkout. Without this, a linked agent
+# worktree makes the guard report its own card scheduler as a violation.
+SKIP_PARTS = {".git", ".claude", ".codex", ".venv", "dist", "node_modules", "target"}
+
 
 def allowed(rel: Path) -> bool:
     return any(rel == p or p in rel.parents for p in ALLOWED_PATHS)
@@ -67,7 +74,7 @@ def main() -> int:
     failures: list[str] = []
     for path in sorted(ROOT.rglob("*.rs")):
         rel = path.relative_to(ROOT)
-        if "target" in rel.parts or allowed(rel):
+        if set(rel.parts) & SKIP_PARTS or allowed(rel):
             continue
         lines = path.read_text(encoding="utf-8").splitlines()
         gate = next((i for i, line in enumerate(lines) if line.strip() == TEST_GATE), len(lines))

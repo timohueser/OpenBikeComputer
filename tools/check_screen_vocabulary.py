@@ -12,6 +12,9 @@ under `screen/`, and each retired helper name stays retired.
 
 from __future__ import annotations
 
+GOVERNS = ['firmware/obc-app/src/screen/**/*.rs', 'firmware/obc-app/src/stat_fields.rs']
+RULE = 'A shared screen-drawing helper is defined once, under screen/vocab/.'
+
 import re
 from pathlib import Path
 

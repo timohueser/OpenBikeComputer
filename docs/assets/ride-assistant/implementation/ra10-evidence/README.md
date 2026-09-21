@@ -19,7 +19,7 @@ information-only. Unreadable photo credits omit the image while valid article te
 West Cork uses a copied persistent card from the ordinary regional baker and native assembler,
 with captured RA01 OSM/Copernicus inputs and corrected RA08 content. Map SHA-256:
 `a48ebe53b9a545492b94ef4d59cdd2f371e70705683f092d9370112cccc29b23`.
-See [RA09 regional evidence](../ra09-regional-evidence.md) for input and coverage limits.
+Input and coverage limits are recorded on [#1734](https://github.com/timohueser/OpenBikeComputer/issues/1734).
 
 Every simulator invocation used `sandbox-exec` with `(deny network*)`. No study was enabled.
 The explicit simulated fix identifies the test position; it is not a recorded GPS measurement.

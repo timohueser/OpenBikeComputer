@@ -24,6 +24,9 @@ next to the state that already holds it?
 
 from __future__ import annotations
 
+GOVERNS = ['**/*.rs']
+RULE = 'A fact a screen draws belongs in its declared render key, never in a private repaint mirror.'
+
 import re
 from pathlib import Path
 

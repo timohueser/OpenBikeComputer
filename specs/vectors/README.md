@@ -26,18 +26,8 @@ ride-v3 object, and the OBCT terrain raster
 
 A drift on any side fails that side's tests — the files are the contract.
 
-> **FS7.5-c3b removed three files** (OBCM v14, [#1420](https://github.com/timohueser/OpenBikeComputer/issues/1420)).
-> `transfer-set-shard.bin`, `transfer-set-terrain.bin` and `transfer-set-manifest.bin` pinned the
-> `mapShard` / `terrainShard` / `mapSet` object types of a volume-set upload. A map is one object
-> now (`OBCA_Spec.md` §5 is superseded), so they described a transfer no producer will make. They
-> outlived FS7.5b because the board still parsed set manifests off cards written before the cut;
-> that reader — `obc-formats/src/obcs.rs` and the `sd.rs` machinery behind it — went with the USB
-> cutover, and the fixtures went with it. They were not regenerated; they are gone, and the three
-> object-type values `17`–`19` are not re-issued to anything else.
->
-> `version-read.bin` and `version-read-features.bin` were the other two pending files, and FS7.5b
-> re-cut both: their `obcm_version` byte is self-sourced from `obc_formats::obcm::VERSION`, which is
-> now `14`.
+> Object types `17`–`19` (`mapShard` / `terrainShard` / `mapSet`) are retired and MUST NOT be
+> re-issued. A map is one object, so no producer makes a volume-set transfer.
 
 ## Files
 

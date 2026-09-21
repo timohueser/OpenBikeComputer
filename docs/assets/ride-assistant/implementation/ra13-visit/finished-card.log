@@ -1,6 +1,0 @@
-store StoreId([110, 152, 109, 75, 170, 26, 251, 238, 251, 24, 82, 63, 92, 75, 54, 73]); mode ReadWrite
-checkpoint None
-ride EntryMeta { added_at_utc: 0, id: ObjectId(3), revision: Revision(1), kind: Ride, flags: EntryFlags(0), payload_len: 8104, payload_crc: 917909303, name: DisplayName { bytes: [109, 101, 105, 114, 105, 110, 103, 101, 110, 45, 102, 111, 114, 119, 97, 114, 100, 45, 114, 101, 106, 111, 105, 110, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], len: 24 } }
-saved RideInfo { version: 3, name: "meiringen-forward-rejoin", start_time: 1750068000, distance_m: 11253, moving_time_s: 2283, avg_speed_cms: 492, climb_m: 320, point_count: 401, avg_hr: None, max_hr: None, avg_cadence: None, avg_power: None, max_power: None }
-samples 401; segments 1; max_gap_ms 5856; first Some(TrackPoint { lon: 8177272, lat: 46725350, ele: 0, t_ms: 0, segment_start: true, hr: None, cadence: None, power: None }); last Some(TrackPoint { lon: 8196681, lat: 46723856, ele: 597, t_ms: 2342000, segment_start: false, hr: None, cadence: None, power: None })
-ride_objects 1

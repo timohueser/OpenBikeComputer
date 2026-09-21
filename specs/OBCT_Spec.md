@@ -3,33 +3,25 @@
 Version 3 adds the geographic surface index in section 8. Sections 1–7 describe the native
 v1 raster, which remains the base height plane of v3.
 
-OBCT is the terrain artifact: a raster of ground heights on the [OBCA](OBCA_Spec.md) cell grid,
-carried **beside** the map rather than inside it. It defines four things:
+OBCT is the terrain artifact: a raster of ground heights on the [OBCA](OBCA_Spec.md) cell grid.
+It defines four things:
 
 1. **The sample lattice** (§1) — a fixed, global microdegree lattice sharing OBCA's origin, with
    `int16` metre heights and one reserved "no data" value.
 2. **The tile and the terrain cell** (§2, §3) — a 512-byte tile of 16 × 16 samples, and the grid
    cell that is a square block of them.
 3. **The container** (§4) — one file format for both published artifacts: a **cell** is a
-   container whose cell rectangle is 1 × 1, an **assembly raster** one covering a whole selection. A fixed header, a row-major offset directory over that rectangle,
-   then the cell blocks. Every lookup is grid arithmetic; nothing is searched.
+   container whose cell rectangle is 1 × 1, an **assembly raster** one covering a whole selection.
+   A fixed header, a row-major offset directory over that rectangle, then the cell blocks. Every
+   lookup is grid arithmetic; nothing is searched.
 4. **Sampling** (§5) — the normative bilinear rules, including what happens at a cell seam, at a
    coverage edge and around a `NODATA` sample. This is the raster analogue of OBCA §3.4's seam rule:
    **two independent implementations MUST produce bit-identical heights for the same `(lat, lon)`.**
 
-OBCT introduces **no new OBCM version and changes no OBCM semantics**. `obc-reader`, `obcm_diff`
-and the assembler's graft path are untouched; terrain is a new artifact class with its own revision
-track, which is the whole reason it is not an OBCM section (§0.1).
-
-> **Where the bytes live changed in OBCM v14 (#1420); what they are did not.** An assembly's raster
-> is now spliced into the map file's terrain region ([`OBCM_Spec.md` §1.3](OBCM_Spec.md)) instead of
-> riding beside it as a volume-set role or a sidecar. The container is embedded **verbatim** and the
-> map reader hands it over as a window rather than parsing it, so every argument in §0.1 for keeping
-> terrain out of OBCM's **parse** survives intact — an OBCM consumer still learns no terrain
-> section. The arguments about *carriage* do not all survive, and §0.1 marks the two that do not:
-> a rider can no longer decline the raster at download, and a re-bake re-emits the map — terrain is
-> part of the map, and partial updates are not an operation this system offers. One file, two
-> formats, one of them opaque to the other.
+OBCT introduces **no new OBCM version and changes no OBCM semantics**. Terrain is a separate
+artifact class with its own revision track. An assembly's raster is embedded **verbatim** in the
+map file's terrain region ([`OBCM_Spec.md` §1.3](OBCM_Spec.md)), which the map reader hands over as
+an opaque window rather than parsing: an OBCM consumer learns no terrain section.
 
 This document is normative. The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are to be
 interpreted as in RFC 2119.
@@ -39,73 +31,32 @@ arithmetic is [`firmware/obc-formats/src/obct.rs`](../firmware/obc-formats/src/o
 and consumers import those facts directly rather than transcribing them. The reference reader,
 sampler and tile cache are [`firmware/obc-elevation`](../firmware/obc-elevation).
 
-Related contracts: [`OBCA_Spec.md`](OBCA_Spec.md) §1 defines the grid this raster sits on (its §5
-volume sets are superseded — an assembly raster now ships inside the map); [`OBCC_Spec.md`](OBCC_Spec.md) §13 publishes terrain cells as a
-catalog artifact class with its own revision track; [`OBCM_Spec.md`](OBCM_Spec.md) is the map beside which terrain is carried,
-and whose §8 nav graph stores the ascent integrated *from* these samples.
+Related contracts: [`OBCA_Spec.md`](OBCA_Spec.md) §1 defines the grid this raster sits on;
+[`OBCC_Spec.md`](OBCC_Spec.md) §13 publishes terrain cells as a catalog artifact class with its own
+revision track; [`OBCM_Spec.md`](OBCM_Spec.md) is the map that carries an assembly's raster, and
+whose §8 nav graph stores the ascent integrated *from* these samples.
 
 ## Design principles
 
-1. **Terrain is static; OSM churns.** A cell store re-bakes on any OBCM or schema bump (OBCA §6.3).
-   Terrain inside OBCM would re-publish hundreds of MiB of unchanged raster on every bump. As its
-   own artifact class with its own revision, terrain is baked once per **dataset** version and
-   survives every map-format change.
-2. **One sampling truth.** The packer samples baked OBCT tiles when it integrates per-edge ascent;
-   the device samples the same tiles when it fills a planned route's elevation and when it draws the
-   profile. The router's numbers, the drawn profile and the altimeter reference agree **by
-   construction** — one implementation of §5, over one artifact — rather than by luck. It is also
-   why the packer needs no DEM decoder: it reads what was baked, like everyone else.
-3. **Addressing is arithmetic, never search.** Cell, tile and sample are all reached by shifts and
-   masks on the query coordinate, because the lattice, the tile and the cell are all powers of two
-   on one origin. A reader holds a 32-byte header and reads one `uint32` to place a cell. There is
-   no index to walk, no bbox to compare, and nothing to sort.
-4. **Sizes are data; shape is format.** The posting `P` and the cell side are **header fields**
-   (§1.3), so retuning either is a terrain re-bake, not a format bump — the OBCA §1.5 idiom. The
-   *tile* is not: 16 × 16 samples = 512 B is the device's I/O quantum (one SD block, the size of an
-   OBCM §8 nav chunk), and changing it would change the fetch unit every consumer is budgeted
+These constrain what a later version may change without a format bump.
+
+1. **Terrain is static; OSM churns.** Terrain is baked once per **dataset** version and survives
+   every map-format change, because it is its own artifact class with its own revision.
+2. **One sampling truth.** The packer, the device's profile and the altimeter reference all use
+   §5 over one artifact, so their numbers agree by construction.
+3. **Addressing is arithmetic, never search.** Cell, tile and sample are reached by shifts and
+   masks, because lattice, tile and cell are all powers of two on one origin.
+4. **Sizes are data; shape is format.** The posting `P` and the cell side are header fields
+   (§1.3), so retuning either is a re-bake, not a format bump. The 512-byte tile is not: it is
+   the device's I/O quantum, and changing it changes the fetch unit every consumer is budgeted
    around.
 5. **One container for both artifacts.** A published cell and an assembly's raster differ only in
-   how many cells they carry, so they are one format (§4). An assembler that concatenates cells
-   writes the same bytes a baker writes; a reader that samples an assembly raster samples a cell
-   with no branch.
-6. **A hole is silence, never a guess.** Terrain is `None` outside coverage and `None` wherever the
-   source DEM had no data — and one missing corner voids the whole sample (§5.4). Elevation degrades
-   to "not known here"; it never degrades to a plausible-looking number, because every consumer of
-   it (routing cost, profile, altimeter reference) would rather have nothing than a fabrication.
-7. **Removable.** Delete the terrain file and the map still renders, routing still works and
-   profiles go flat. Nothing else in the system parses these bytes, and the seam every consumer
-   wires through has a null implementation that is bit-for-bit the behaviour of not having terrain
-   at all.
-
-### 0.1 Why not an OBCM section
-
-The alternative — a raster **section** inside OBCM, like POIs (§7) or the nav graph (§8) — was
-rejected on four counts, all of which are properties of *terrain*, not preferences. **OBCM v14
-(#1420) does not overturn that**: an assembly's raster now travels inside the map *file*, but as an
-opaque region the map reader hands over as a window (`OBCM_Spec.md` §1.3), never as a section it
-parses. Two of the four counts survive untouched and two are weakened by the move — marked below,
-because a rationale that quietly stopped being true is worse than one that was never written:
-
-- **Revision lockstep.** OBCA principle 5 makes every cell in an assembly share one OBCM version and
-  schema revision. Terrain would inherit that and be re-published on every unrelated bump.
-- **Blast radius.** ⚠️ **Weakened by v14, and it was the more fragile of the two.** The point stands
-  where it counts — no OBCM consumer parses a terrain *section*, so `obcm_diff` and `obcm-testkit`
-  learn nothing about rasters and the graft path is unchanged. But "untouched" is no longer true of
-  `obc-reader`: v14 changes what every header offset *means*, so the reader moves regardless, and it
-  gains the one job of cutting the §1.3 window and handing it to `obc-elevation`. That is a seam,
-  not a parse, and the distinction is the whole of what this section still buys.
-- **Splittability.** A raster splits by bbox trivially, so it never spent the core file's headroom
-  when that was the scarcest resource in a set (OBCA principle 7, superseded with OBCA §5). The
-  property still holds and is still worth having; it is simply no longer paying for anything, since
-  OBCM v14's interior has room for the raster and the map together.
-- **Independence.** ⚠️ **Overturned by v14 for an assembly; intact for a published cell.** With the
-  raster inside the map object, a rider cannot decline it at download, and a re-bake at a new
-  posting re-emits the map. `OBCM_Spec.md` §1.3 states that positively rather than as a regret —
-  terrain is part of the map and partial updates are not a supported operation — and the separable
-  raster it declines was never once used in its life. What survives is the half that is about the
-  *catalog*: terrain is still published on its own revision track, so a terrain re-bake does not
-  re-bake a single cell of map content, and a map bump does not re-bake a single raster. The
-  independence is now upstream of the assembler instead of on the card.
+   how many cells they carry (§4).
+6. **A hole is silence, never a guess.** Terrain is `None` outside coverage and wherever the
+   source DEM had no data, and one missing corner voids the whole sample (§5.4). Elevation never
+   degrades to a plausible-looking number.
+7. **Removable.** Delete the terrain and the map still renders, routing still works and profiles
+   go flat. Nothing else in the system parses these bytes.
 
 ---
 
@@ -130,13 +81,11 @@ lon(j) = GRID_ORIGIN + j·P
 ```
 
 with `0 ≤ i, j < WORLD_SIDE / P`. The same expression on **both** axes: the lattice is square in
-µdeg, not in metres, exactly as OBCA cells are and for the same reason — a lattice that "corrected"
-for latitude would not nest with the grid, and nesting is what makes §3.3's addressing arithmetic.
+µdeg, not in metres, exactly as OBCA cells are, so that §3.3's addressing stays arithmetic.
 
-> **Consequence, stated once.** A `2^9` posting is ≈ 57 m in latitude everywhere and ≈ 39 m in
-> longitude at 47°N, narrowing towards the poles. Samples are therefore denser on the ground the
-> further north a rider is. This is not corrected anywhere and MUST NOT be: the whole contract rests
-> on the lattice being derivable from the coordinate by a shift.
+A `2^9` posting is therefore ≈ 57 m in latitude everywhere and ≈ 39 m in longitude at 47°N,
+narrowing towards the poles. This is not corrected anywhere and MUST NOT be: the contract rests on
+the lattice being derivable from the coordinate by a shift.
 
 The lattice does not wrap, and it spans the world box rather than the geographic domain — the
 antimeridian and pole rules of [`OBCA_Spec.md` §1.4](OBCA_Spec.md) apply unchanged.
@@ -150,13 +99,8 @@ A sample is a signed 16-bit little-endian integer:
 | `-32767 … 32767` | height in **whole metres**, orthometric (EGM2008) |
 | `-32768` (`i16::MIN`) | **`NODATA`** — no height is known at this sample |
 
-Heights are orthometric — height above the geoid, what the source DEM ships and what a rider reads
-off a signpost — **not** ellipsoidal. A producer MUST NOT write `-32768` as a real height; the
-range it gives up is 1 m at the bottom of the Mariana Trench, and what it buys is a sentinel that
-needs no separate mask plane.
-
-Whole metres, not decimetres: the raster's own vertical error at a bikepacking posting is metres,
-and a finer unit would be false precision at twice the bytes.
+Heights are orthometric — height above the geoid — **not** ellipsoidal. A producer MUST NOT write
+`-32768` as a real height.
 
 A sample is a **point sample** of the source at the lattice node, with one exception. At a crest
 node the sample MAY instead be the maximum reference ground height inside the node's half-posting
@@ -174,10 +118,8 @@ values are
 | Posting `P` | `2^9` µdeg | 57 × 39 m |
 | Terrain cell | `2^19` µdeg | 58 × 40 km — 1024 × 1024 samples, 2 MiB raw |
 
-and they are the packer/bakery's choice, published in the catalog. Retuning them is a terrain
-re-bake, **not** a version bump of this format (the [`OBCA_Spec.md` §1.5](OBCA_Spec.md) idiom).
-A finer `2^8` posting (≈ 28 m) was measured and rejected: cycling-grade gradient signal lives at
-≥ 100 m scales, and it costs +17–26 % of a whole map for detail no rider can act on.
+and they are the bakery's choice, published in the catalog. Retuning them is a terrain re-bake,
+**not** a version bump of this format (the [`OBCA_Spec.md` §1.5](OBCA_Spec.md) idiom).
 
 A reader MUST accept any pairing this document permits (§4.5), not only the v1 one. Test fixtures
 in particular use a small cell so that a whole multi-cell rectangle fits in a few KB.
@@ -186,7 +128,8 @@ in particular use a small cell so that a whole multi-cell rectangle fits in a fe
 
 ## 2. Tiles
 
-A **tile** is `16 × 16` samples = **512 bytes**, the unit of every read.
+A **tile** is `16 × 16` samples = **512 bytes**, the unit of every read — one SD block, and one
+OBCM §8 nav chunk.
 
 ```
 tile bytes[ (row · 16 + col) · 2 ] … +2      row, col ∈ 0..16, little-endian int16
@@ -194,20 +137,10 @@ tile bytes[ (row · 16 + col) · 2 ] … +2      row, col ∈ 0..16, little-endi
 
 Row-major, and **rows advance latitude**: `row` steps north by one posting, `col` steps east by one
 posting. So the 32 bytes of one row are 16 consecutive longitudes at one latitude, and the tile's
-first sample is its **minimum** corner in both axes.
-
-> **Why this order, and why it is worth stating.** It is the opposite of the north-up scanline a
-> GeoTIFF ships (row 0 = the *northernmost* line). A baker therefore flips rows on the way in, once,
-> deliberately; a consumer never flips anything. Choosing the format's own axis direction over the
-> source's keeps every on-device index a plain addition — and this is precisely the sort of
-> convention two implementations would otherwise each guess at, which is why §5's determinism
-> requirement makes it normative rather than advisory.
+first sample is its **minimum** corner in both axes. This is the opposite of the north-up scanline
+a GeoTIFF ships, so a baker flips rows on the way in, once; a consumer never flips anything.
 
 One tile spans `16·P` µdeg on each axis — at the v1 posting, `2^13` µdeg ≈ 910 m of latitude.
-
-512 bytes is not a coincidence: it is one SD block and one OBCM §8 nav chunk, so a tile fetch is a
-single aligned read on the device's slowest path and the tile cache's slot size is the same number
-the rest of the firmware already budgets in.
 
 ---
 
@@ -233,9 +166,8 @@ i ∈ [ ci · S/P , (ci+1) · S/P )        j ∈ [ cj · S/P , (cj+1) · S/P )
 
 **A cell owns the samples on its minimum edges and not those on its maximum edges** — half-open,
 like the square itself. The sample lying exactly on the boundary between two cells belongs to the
-upper one, once, in the whole world. This is the raster's version of OBCA principle 3: a seam is
-resolved by definition rather than by tolerance, so no sample is ever stored twice and no
-consumer has to decide which copy is authoritative.
+upper one, once, in the whole world, so no sample is stored twice and no consumer has to decide
+which copy is authoritative.
 
 ### 3.2 A cell block is its tiles, row-major
 
@@ -253,13 +185,12 @@ byte offset of tile (ti, tj) within the block = (ti · T + tj) · 512
 byte length of a cell block                   = T² · 512
 ```
 
-At the v1 pairing, `T = 64` and a cell block is 2 MiB. The `T ≤ 2^11` bound is arithmetic, not
-taste: one more doubling would put a cell block past the `uint32` offsets the directory is made of.
+At the v1 pairing, `T = 64` and a cell block is 2 MiB. The `T ≤ 2^11` bound is arithmetic: one
+more doubling would put a cell block past the `uint32` offsets the directory is made of.
 
 A cell block is **complete**: every tile is present, including tiles that are entirely `NODATA`.
-There is no per-tile presence bit and no sparse encoding in v1 — the cell is a fixed-size array, so
-addressing stays a shift, and a `flags` field (§4.2) is reserved for a future per-tile encoding that
-could change that without renaming anything.
+There is no per-tile presence bit and no sparse encoding in v1, so addressing stays a shift; the
+`flags` field (§4.2) is reserved for a future per-tile encoding.
 
 ### 3.3 Addressing a sample
 
@@ -317,12 +248,10 @@ There is no separate cell format, and a consumer never branches on which it hold
 
 The header carries **no bounding box**: the cell rectangle *is* the bounding box, exactly as a
 catalog cell entry carries none because its square follows from its id
-([`OBCC_Spec.md` §8](OBCC_Spec.md), and §13.1 for a terrain cell's own entry). Two ways to say the
-same thing is one way for them to disagree.
+([`OBCC_Spec.md` §8](OBCC_Spec.md), and §13.1 for a terrain cell's own entry).
 
-`Flags` is the extension point this format deliberately reserves: a future per-tile packed encoding
-(§3.2) sets a bit here rather than needing a new magic. A v1 reader MUST refuse a file with any bit
-set — an unknown encoding is not something to guess at.
+`Flags` is this format's extension point: a future per-tile packed encoding (§3.2) sets a bit here
+rather than needing a new magic. A v1 reader MUST refuse a file with any bit set.
 
 `Directory Offset` is explicit even though v1 fixes it at 32, so a reader follows the field rather
 than an assumption and a later version may prepend something without breaking the follow.
@@ -344,17 +273,15 @@ An entry that is not `0` MUST be even, MUST be at or after the end of the direct
 `T² · 512` bytes MUST lie inside the file. Present cells MAY appear in any order in the file; the
 directory is the only thing that places them.
 
-> **Why a dense rectangle rather than a list of `(i, j, offset)`.** A rectangle is O(1) with two
-> subtractions and a multiply — no search, no sort, no resident index. It costs 4 bytes per covered
-> *or uncovered* cell in the bbox: a DACH-shaped selection is ~2 KB of directory, against ~430 MiB
-> of raster. A sparse list would save a kilobyte and cost every query a binary search, which is
-> exactly the trade OBCM §4 refuses everywhere else.
+The rectangle is dense rather than a list of `(i, j, offset)`, so a lookup is two subtractions and
+a multiply with no search, sort or resident index. It costs 4 bytes per cell in the bounding box,
+covered or not.
 
 ### 4.4 Cell blocks
 
 Each present cell's block is `T² · 512` bytes laid out per §3.2. Blocks are contiguous in v1 and a
-producer SHOULD write them in directory order, so a file is a directory followed by a raster in
-reading order; a reader MUST NOT rely on either, and MUST use the directory.
+producer SHOULD write them in directory order; a reader MUST NOT rely on either, and MUST use the
+directory.
 
 ### 4.5 What a reader MUST reject
 
@@ -377,15 +304,11 @@ tests on the hot path.
 
 A terrain artifact's file extension is **`.obcd`** (8.3: `.OBD`), *not* `.obct`: the device's
 recorded ride log already uses `.obct`
-([`obc-formats/src/track.rs`](../firmware/obc-formats/src/track.rs)), and two unrelated things with
-one extension on one card is a bug waiting for a directory scan. The magic stays `OBCT` — it names
-the format, and it is never ambiguous, because a ride log has no header at all.
+([`obc-formats/src/track.rs`](../firmware/obc-formats/src/track.rs)). The magic stays `OBCT`.
 
-How an assembly's raster reaches a rider is not this document's business: since OBCM v14 it is
-spliced into the map file's terrain region and is not a file on the card at all
-([`OBCM_Spec.md` §1.3](OBCM_Spec.md)). The naming rules OBCA §5 used to state for a terrain shard —
-its manifest role, its 8.3 short name, its sidecar convention — are superseded with that section.
-A **published cell** is still an object of its own, named by the catalog.
+An assembly's raster is not a file on the card at all: it is spliced into the map file's terrain
+region ([`OBCM_Spec.md` §1.3](OBCM_Spec.md)). A **published cell** is an object of its own, named
+by the catalog.
 
 ---
 
@@ -419,8 +342,8 @@ Given `lat`, `lon` in µdeg:
 5. **`NODATA`.** If any resolved corner is `NODATA`, the result is `None` (§5.4).
 6. **Interpolate** per §5.2.
 
-Note what step 2 gives for free: a query exactly on a lattice point has `a = b = 0`, so the
-interpolation collapses to `v00` and returns that sample unchanged.
+A query exactly on a lattice point has `a = b = 0`, so the interpolation collapses to `v00` and
+returns that sample unchanged.
 
 ### 5.2 Interpolation and rounding
 
@@ -441,10 +364,9 @@ permitted posting) and MUST NOT be evaluated in floating point.
 h = num ≥ 0  ?   (num + P²/2) / P²   :   −((−num + P²/2) / P²)          (truncating division)
 ```
 
-Half away from zero rather than `floor`: elevation is signed, and a rider crossing sea level should
-not see the rounding bias flip sign with the terrain. It is also the one rule that needs no
-`div_euclid` — a truncating divide plus a sign test reproduces it in any language, which matters
-because a packer, a device and a browser all evaluate this expression.
+Half away from zero rather than `floor`, so a rider crossing sea level does not see the rounding
+bias flip sign with the terrain, and so the rule needs only a truncating divide and a sign test in
+any language.
 
 Since no corner is `NODATA` at this point, `num / P²` is a weighted mean of values in
 `−32767 … 32767`, so the result always fits `int16`.
@@ -466,31 +388,17 @@ by construction. Resolve each corner as follows:
 
 Step 3 applies to **absence only**. A failed read — of a directory entry, of a tile — is not
 absence, and an implementation MUST NOT let one fall into the clamp: it makes the whole sample
-`None` per §5.1. Absence is a fact about the file and has a defined answer; a read error is a fact
-about the medium, and answering it with a neighbouring height would be the one thing principle 6
-forbids — a guess that looks exactly like data.
+`None` per §5.1.
 
 Clamping is the coverage-edge rule. It makes the surface flatten over the last half posting at the
-outer boundary of coverage instead of jumping to `None`, so a query one micro-degree past the last
-sample answers the last sample rather than nothing. Step 3 fires for a hole *inside* the rectangle
-too: the visible effect is that terrain plateaus for at most one posting (≈ 57 m at v1) as it
-approaches a hole, and then step 3 of §5.1 makes the hole itself `None`.
-
-> **Why clamping and voiding coexist.** They answer different questions. Step 3 of §5.1 asks "is
-> this point covered?" — and an uncovered point must never be invented. §5.3's clamp asks "how does
-> a covered point behave next to an edge?" — and there, the honest answer is the edge sample itself,
-> which is what every texture sampler on earth does and what keeps a route's profile from
-> developing a one-posting notch every time it grazes the coverage boundary.
+outer boundary of coverage instead of jumping to `None`. Step 3 fires for a hole *inside* the
+rectangle too: terrain plateaus for at most one posting as it approaches a hole, and then step 3 of
+§5.1 makes the hole itself `None`.
 
 ### 5.4 `NODATA` propagation
 
 If **any** of the four resolved corners is `NODATA`, the sample is `None`. There is no partial
 interpolation over the remaining corners and no nearest-neighbour substitution.
-
-The alternative — interpolating over whichever corners survive — was rejected because it invents a
-height whose error is unbounded and undetectable: a `NODATA` region is typically water or radar
-shadow, exactly where a fabricated value would be most confidently wrong. A `None` is one posting
-wider than the void it guards, and that is the correct trade.
 
 Consumers MUST treat `None` as "no height here" and MUST NOT substitute `0`. `0` metres is a real
 elevation.
@@ -498,14 +406,12 @@ elevation.
 ### 5.5 What a consumer may assume
 
 - **Determinism.** Two calls with the same coordinate against the same file return the same value,
-  always. There is no caching-dependent behaviour: a tile cache changes how many bytes are read,
-  never what is returned.
+  always. A tile cache changes how many bytes are read, never what is returned.
 - **Continuity.** Within a connected covered region, the sampled surface is continuous — including
   across cell and tile seams, which is the point of §5.3 step 2.
 - **Exactness on a plane.** If the sampled region's heights are an affine function of the lattice
   indices, the interpolated value equals that function evaluated at the query point, rounded per
-  §5.2. (This is what makes a synthetic plane an *oracle* for a second implementation, rather than
-  a copy of the reference one.)
+  §5.2. This is what makes a synthetic plane an *oracle* for a second implementation.
 
 ### 5.6 Worked example
 
@@ -536,33 +442,6 @@ step 3 clamps them back to column `63`, and both longitude corners carry `h(2,63
 is `421`, not the `424` an extrapolation would have produced.
 
 ---
-
-## 6. Budget (informative)
-
-| | |
-| :-- | :-- |
-| Terrain at v1 posting | ≈ 0.90 MiB per 1000 km² — **+4.4–6.7 %** of a whole map, in its own file |
-| DACH (~482 000 km²) | ≈ 430 MiB of terrain objects, baked once per dataset version |
-| Device RAM | < 4 KB resident: a 32-byte header + a 4-slot tile cache (2 KB) + one memoized directory entry |
-| Emit I/O | ~120–150 tile reads per 100 km of route, with strong locality |
-
-The tile cache is 4 slots because a single bilinear query can straddle a tile corner and touch
-exactly four tiles; fewer would thrash on the one access pattern the sampler is guaranteed to make.
-
----
-
-## 7. Version history
-
-**Version 1** (epic #1068 / #1069) — the initial format: global lattice on the OBCA origin, `int16`
-metre samples with `i16::MIN` as `NODATA`, 512-byte 16 × 16 tiles, power-of-two terrain cells, one
-container for cells and shards with a row-major `uint32` offset directory, and the bilinear sampling
-rules of §5. Posting and cell size are header data; compression is not defined and is what the
-reserved `Flags` byte exists for.
-
-**Version 3** (epic #1068 / #1928) — the geographic surface index of section 8: a per-cell height
-pyramid with conservative maxima, smooth-patch error codes and a cross-cell maximum index, for
-arbitrary-viewpoint panoramas. Section 9's crest lifts are a producer rule over section 1's samples
-and add no field, no flag and no block.
 
 ## 8. Version 3: geographic surface index
 
@@ -632,7 +511,7 @@ Each error byte describes the bilinear patch through the node's four inclusive c
 Its low nibble bounds the maximum absolute height residual, in metres. Its high nibble bounds
 the maximum absolute residual of each gradient component, in metres per interval of this level.
 Code 0 means exact; code 15 means unknown. For codes 1 through 14, the bound is
-`2^(code-1) * unit`, where `unit` is0.25 m for height and0.0625 m per interval for gradient.
+`2^(code-1) * unit`, where `unit` is 0.25 m for height and 0.0625 m per interval for gradient.
 The producer MUST round each bound upward. Any unknown vertex MUST produce code 15 for both.
 
 Height residuals MUST cover every source vertex in the node. Gradient residuals MUST cover

@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+GOVERNS = ['fixtures/**']
+RULE = 'A development fixture stays inside its archive budget, and a large blob stays out of Git.'
+
 from pathlib import Path
 import subprocess
 import sys

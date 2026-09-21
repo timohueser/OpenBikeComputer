@@ -6,7 +6,7 @@ state before starting a task. See [the lifecycle](README.md#current-guidance-and
 
 | Work | Status and next source |
 | --- | --- |
-| Ride Assistant | Production implementation is present; acceptance remains open. Check [the epic](https://github.com/timohueser/OpenBikeComputer/issues/1734) and [device checklist](assets/ride-assistant/implementation/device-test-checklist.md). The [original handoff](assets/ride-assistant/implementation/README.md) is historical. |
+| Ride Assistant | Production implementation is present; acceptance remains open. Check [the epic](https://github.com/timohueser/OpenBikeComputer/issues/1734) and [device checklist](assets/ride-assistant/implementation/device-test-checklist.md). |
 | Captured waypoint imports | [TS-H](https://github.com/timohueser/OpenBikeComputer/issues/1829) needs an owner-supplied capture and redistribution decision. See [the remaining test-system work](assets/test-system/implementation/README.md#still-open). |
 
 Add a row for new complex implementation work. Remove the row when the work and its acceptance

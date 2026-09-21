@@ -19,13 +19,13 @@
 >   document remains their authority. They were never part of the object surface.
 >
 > ⚠️ **And the cable no longer speaks it either** (FS7.5-c3b, epic #1256). USB is protocol v4 too,
-> bound by [`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §5.2, so **§10 of this document is
-> retired in full** — see the note at its head for what each of its clauses became. The two clauses
-> a client implementer will otherwise trust:
+> bound by [`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §5.2, so this document's USB binding
+> is **retired in full**. The two clauses a client implementer will otherwise trust:
 >
 > - **The `selector u8` envelope is gone.** Both bulk endpoint pairs carry §3 frames, each record
->   framed as `record_length u32` + frame bytes + zero alignment padding, and a record spans packets freely. §10's "one frame
->   is one USB transfer" rule and its seven-selector table describe nothing that exists.
+>   framed as `record_length u32` + frame bytes + zero alignment padding, and a record spans
+>   packets freely. The retired "one frame is one USB transfer" rule and its seven-selector table
+>   describe nothing that exists.
 > - **The identity read (selector 4) and the device-information read (selector 5) are not
 >   replaced by frames.** USB binding v5 is settled by descriptor matching (`bInterfaceProtocol = 5`,
 >   `bcdDevice = 0x0500`) before a record moves, and the three device-information strings are one EP0
@@ -57,8 +57,7 @@ historical source the firmware Track-A issues (epic #267) implemented.
 
 > **This document is canonical for legacy wire v2 only.** The iOS implementation notes
 > ([`companion-ios/OBCProtocol.md`](../companion-ios/OBCProtocol.md)) defer to it:
-> where they disagree, this spec wins and the notes are corrected. §9 lists the
-> v1 → v2 wire changes so the app-side repin is a checklist, not a diff hunt.
+> where they disagree, this spec wins and the notes are corrected.
 
 All multi-byte integers are **little-endian** (matching OBCM/OBCR). Shared
 binary test vectors pinning these layouts live in
@@ -259,8 +258,8 @@ locked, not incidental: a host that cannot read a running version must never
 offer an automatic update. A development device stays on whatever its owner
 flashed, and gets back onto the release track through the manual install path.
 The value is ≤ 32 bytes (the OBCU `fw_version` field width) and is assembled in
-exactly one place in the firmware, so this characteristic and the USB
-device-information frame (§10) always carry identical bytes.
+exactly one place in the firmware, so this characteristic and the USB device-information read
+([`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §5.2.1) always carry identical bytes.
 
 ### 3.2 Battery Service — `0x180F` (SIG)
 
@@ -338,7 +337,7 @@ Every bulk payload is a typed **object**:
 | `9` | `trip` | app → device (upload), device → app (detail read) | trip object v2, §7.7 |
 | `10` | `tripList` | device → app | list object, §7.4 |
 | `11`–`15` | — | — | reserved (sensors, M4) |
-| `16` | `map` | host → device (upload) | an `.obcm` map — **USB only** (§10), see below |
+| `16` | `map` | host → device (upload) | an `.obcm` map — **USB only** ([`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §5.2), see below |
 | `17` | `mapShard` | host → device (upload) | one OBCM shard of a volume set ([`OBCA_Spec.md` §5.1](OBCA_Spec.md)) — **USB only**; **retired**, see below |
 | `18` | `mapSet` | host → device (upload) | the OBCS set manifest ([`OBCA_Spec.md` §5.2](OBCA_Spec.md)) — **USB only**; **retired**, see below |
 | `19` | `terrainShard` | host → device (upload) | the set's OBCT terrain shard ([`OBCA_Spec.md` §5.1](OBCA_Spec.md)'s `terrain` role) — **USB only**; **retired**, see below |
@@ -407,267 +406,6 @@ only object whose transfer is measured in minutes rather than frames.
    replacement that does not fit alongside the copy it is about to replace; and a
    map the rider placed on the card themselves is **never** retired — it carries
    no device-assigned id, and the rule is one *uploaded* map, not one file.
-
-### Volume sets: several transfers, one map (#1039)
-
-> **Superseded** by OBCM v14 / issue #1420, together with `OBCA_Spec.md` §5. A map is one object, so
-> none of the eight sequence rules below has anything left to sequence: no packed
-> `(shard_count, index)`, no manifest sent last, no set-wide ceiling, no torn-set cleanup. The
-> replacement is a single-object `PUT` under protocol major 4
-> ([`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md)), whose commit is the atomicity the
-> magic-last-write below was faking on FAT. The code is gone — FS7.5b's producers, FS7.5-c3b's
-> readers — so this is history, not a deprecation. Do not implement against it.
-
-A **volume set** ([`OBCA_Spec.md` §5](OBCA_Spec.md)) is one logical map spread
-over OBCM shards, optionally one OBCT **terrain shard**, and an OBCS manifest, so
-it is the first object on this link whose correctness lives *between* transfers.
-Each file is an ordinary upload — its own descriptor (including the real
-whole-object CRC-32), its own commit — and the five map rules above apply to each
-of them unchanged. Eight rules govern the sequence, and they are **normative**:
-
-1. **The `object_id` of a `mapShard` is not an object id.** It carries the set's
-   `Shard Count` in the **high** byte and this shard's `index` in the **low**
-   one: `object_id = (shard_count << 8) | index`, with `1 ≤ shard_count ≤ 32` and
-   `index < shard_count`. A shard has no durable id to target — §5.2 *derives*
-   every filename from the set id and the index, and §5.4 makes the whole set one
-   map with one identity — so the field is repurposed rather than the descriptor
-   widened. A device MUST answer a pair outside those ranges with `notFound`.
-   Restating `shard_count` in **every** shard rather than only the first buys two
-   things, and it is worth being exact about the second:
-   - a device can refuse an over-large set at the **first** announce (rule 4)
-     rather than after the whole upload;
-   - a `mapShard` whose `shard_count` **differs** from the set already in flight
-     MUST be refused with `error`, so a host that starts sending a
-     differently-shaped set mid-transfer is named rather than merged.
-
-   What the announce **cannot** see is a switch between two sets with the *same*
-   shard count: the pair names a file, not a set, and no field in the descriptor
-   identifies which set a shard belongs to. That case is caught at the manifest's
-   commit instead — rule 7 — which is later but is still before anything is a
-   map. Closing it at the announce would need a set identifier on the wire, i.e.
-   a descriptor change; it is left open deliberately, because §5.3 already
-   obliges a host to have proven its own set before offering a byte of it, and
-   the failure mode of a host that has not is an unmountable set rather than a
-   damaged one.
-2. **The manifest is new-only and last, and the device enforces it.** A `mapSet`
-   upload sends `object_id = 0xFFFF`; a named id is answered `notFound`. A
-   `mapSet` announced when **any** shard of the set in flight has not yet
-   committed — or when no set is in flight at all — MUST be refused with `error`
-   **before any byte streams**. §5.4 addresses the writer; this is the receiver's
-   half of the same sentence, and it exists because a device cannot hold a host
-   to a MUST it merely read. An announced `total_len` that is not
-   `72 + 64 × Shard Count` is likewise refused at the descriptor, where
-   `Shard Count` is the manifest's own field and therefore counts **every**
-   record — see rule 8, which is where that word did real damage.
-
-   The manifest a `mapSet` carries on this transport is **unbound**
-   ([`OBCA_Spec.md` §5.2](OBCA_Spec.md)): every member `ObjectId` is `0`. This
-   protocol writes files to a FAT card, which has no object identities to mint,
-   and a device receiving a set here resolves its members by the derived §5.2
-   filenames exactly as it did before v3. Binding belongs to the flat store's own
-   object protocol, where the device answers each member's commit with the id it
-   assigned.
-3. **The terrain shard is its own type, and it precedes the manifest** (#1044).
-   A set with elevation carries one OBCT raster
-   ([`OBCA_Spec.md` §5.1](OBCA_Spec.md)'s `terrain` role, stored as
-   `MS<id>.OBD`). It is uploaded as `terrainShard` (`19`), **not** as a
-   `mapShard`: a shard's `object_id` is a `(shard_count, index)` pair naming one
-   of the OBCM files the manifest's *leading* records describe, and a raster has
-   no index, is not an OBCM file, and lands under a different name — sent as a
-   shard it would consume an index the manifest never names. The rules:
-   - `object_id` MUST be `0xFFFF`; a named id is answered `notFound`. There is at
-     most **one** terrain shard per set, so there is nothing for an id to select.
-     This refusal is checked **first**, ahead of the session rules below, for the
-     same reason rule 1 answers a malformed part before a device's shard ceiling:
-     a host that packed the field wrong is told *that*, not something about a set.
-   - A `terrainShard` announced with **no set in flight** MUST be refused with
-     `error`. The set id is minted by the first `mapShard`, so a raster arriving
-     first names no set at all.
-   - An announced `total_len` below one OBCT header is answered `error` — map
-     rule 3 above, against the raster's format instead of OBCM's.
-   - A device that **discards** a raster's transfer (failed validation, a card that
-     refused the write) MUST stop counting it toward rule 8's length, because the
-     discard removes the file — including one an earlier attempt had committed.
-     The host is then refused at the *manifest's announce*, where it costs one
-     descriptor and the raster can still be re-sent, rather than at the commit
-     that would delete the whole set.
-   - A host MUST send it after every `mapShard` of the set and **before** the
-     `mapSet`. That is not house style: rule 8 makes the manifest's expected
-     length depend on whether the raster has arrived, so a device can only be
-     right about it if it has already seen the file.
-   - A device whose set already holds 32 records MUST refuse it with
-     `storageFull` — §5.2 caps a manifest at 32 records, so such a set has no
-     room for a terrain one and no legal manifest could be written.
-   - A **re-sent** terrain shard is legal and overwrites the file, exactly as a
-     re-sent `mapShard` does. It is never a second record.
-   - Its `transferResult` echoes the device-assigned **set id**, like the
-     manifest's: a raster has no part to correlate against.
-   - A set that carries **no** terrain sends no `terrainShard`, and nothing in
-     this section changes for it.
-4. **A device's own shard ceiling is announced-time, not commit-time.** A device
-   that can hold fewer than 32 shards open MUST refuse a set whose declared
-   `shard_count` exceeds its ceiling with `storageFull`, at the **first** shard —
-   the same "this catalog cannot take another entry" meaning `storageFull`
-   already carries for routes and trips. Refusing at the manifest instead would
-   cost the rider the whole upload. The reference firmware's ceiling is **11**
-   (its FAT handle budget); the format's is 32. A device with no id left to name
-   a new set answers the same `storageFull` at the same moment, for the same
-   reason: it is a catalog refusal, not a storage failure discovered mid-write.
-5. **`transferResult` correlation.** A shard's result echoes its **part**
-   (`object_id` = the same packed pair), because that is what a host correlates
-   its transfer slot against and what says *which* file committed. A host MUST
-   check it: a result naming a different part is not "this file committed", and
-   continuing past it would write a manifest over a set the two sides disagree
-   about. The **manifest's** result carries the **device-assigned set id** — the
-   one moment a set's identity crosses the wire, and the answer to "what did my
-   upload become".
-6. **A staged set can be abandoned, and an `op=3` naming `mapSet` is how.** A set
-   spans several descriptors, so an abort most often arrives when *nothing is in
-   flight* — in the gap between two of them. A device MUST treat an `op=3` whose
-   descriptor names **`mapSet`** as abandoning the set in flight, not merely as a
-   confirmed no-op: the session closes and every file of the set is deleted,
-   exactly as a dropped link would. Without it a host that cancelled would be
-   told `aborted` while gigabytes stayed staged and every differently-shaped set
-   went on being refused (rule 1) until the transport was torn down. The answer
-   is `aborted`, as it already is.
-
-   **The type is load-bearing, because an idle `op=3` has a second meaning.** A
-   host also sends one to *quiesce* the byte pipe after an exchange the device
-   had already closed — a reject it noticed late, a rider's cancel, a shard the
-   device refused on CRC — and in that case it is about to **retry** (§4.2's
-   idle-abort drain). A device MUST NOT abandon the set for such an abort: a
-   descriptor naming `mapShard`, `terrainShard` (or any type other than
-   `mapSet`) is a quiesce, and MUST leave the session and every staged file
-   untouched — including the terrain band, which rule 3 lets a set carry or
-   omit. A host MUST likewise name `mapSet` only when it means abandonment.
-
-   Conflating the two is not a corner case, it is a map-shaped hole: a failed
-   shard drops only itself (**Resume**, below), so a host that re-sends that one
-   shard is doing exactly what this spec tells it to — and if the quiesce that
-   preceded the retry deleted the set, the re-sent shard lands in nothing and the
-   manifest seals a set with no files.
-7. **A shard after a committed manifest begins a new set.** Once a `mapSet` has
-   committed, the set it completed is closed: a later `mapShard` MUST NOT be
-   added to it, because its manifest names exactly the files it names and any
-   addition would make that manifest false. Such a shard opens a **new** set,
-   with a new device-assigned id, and is staged and reclaimed like any other.
-   This is also where a same-count set switch (rule 1) is caught: at the
-   manifest's commit a device re-checks every shard against the manifest's own
-   record of it, and MUST refuse a manifest that does not describe the files
-   beside it — deleting the whole set rather than leaving it half-present.
-
-   **The terrain record is checked here and only here.** A device MUST refuse a
-   just-uploaded manifest whose `terrain` record does not match the raster on the
-   card (absent, a different length, or not a readable OBCT). That is *not* in
-   tension with [`OBCA_Spec.md` §5.3](OBCA_Spec.md)'s rule that a missing or
-   unreadable terrain shard MUST NOT fail a **mount** — the two are different
-   moments and must stay different. At mount the device is judging a card that has
-   aged: a rider deleted the `.OBD` to reclaim space, a hand copy was truncated, a
-   read glitched, a later OBCT version arrived. None of that makes the map a lie,
-   and §5.3 requires it to mount flat. At commit the host built the manifest and
-   the raster together seconds ago and was told the exact length to announce, so a
-   disagreement is the two ends contradicting each other about this very transfer.
-   A device MUST NOT let a stored set's terrain record affect whether that set
-   lists or mounts.
-8. **`Shard Count` counts every record, and the manifest's announced length
-   follows from that** (#1044). Rule 2's `72 + 64 × Shard Count` uses the
-   manifest's own field, and [`OBCA_Spec.md` §5.2](OBCA_Spec.md) is explicit
-   that the field counts **every** record — the `terrain` one included. So the
-   length a device expects at the `mapSet` announce is
-
-   ```text
-   72 + 64 × (mapShards committed + terrainShards committed)
-   ```
-
-   …computed from what **this upload session actually received**, not from the
-   `shard_count` the descriptors carried. A device MUST compute it that way, and
-   a host MUST have sent the terrain shard (rule 3) before the manifest that
-   names it.
-
-   The reason this is a numbered rule rather than a clause is that it was a real
-   and expensive bug. A host that built a terrain-bearing manifest and skipped
-   the raster announced one record more than a device counting only OBCM shards
-   could expect; the manifest was refused with `error` at the **last** transfer
-   of a multi-gigabyte upload, every shard already on the card was swept at the
-   next boot, and — because an announce-time refusal never reaches the glass —
-   the device sat on the previous shard's "Map installed" card while the host
-   reported failure. The two ends must derive the number the same way or a set
-   is lost after all of it has moved.
-
-**Atomicity, and what an interrupted set leaves.** A device MUST NOT let a
-half-received set be mountable, which §5.4 already guarantees (no manifest ⇒ no
-map). What this section adds is the *cleanup* obligation: a device SHOULD
-reclaim a set whose upload it abandoned, and MUST NOT delete files it cannot
-prove are its own. The reference firmware does both with one mechanism — it
-creates `MS{id}.OBS` holding four zero bytes *before the first shard streams* and
-patches the `OBCS` magic in as the very last write of the set. A manifest whose
-magic is **not whole** is therefore its own torn upload: all zeros (the
-placeholder), a strict prefix of `OBCS` (the commit's four-byte write split by a
-power cut), or shorter than four bytes at all (the token's create without its
-write). A set arriving over a card reader is copied from a host that already
-holds a finished manifest and writes it front to back, so its `.OBS` carries the
-whole magic from its first block — the shapes above are, to within one block of a
-copy that was itself interrupted, unreachable any other way, and a manifest in
-one of them cannot be read as a map by anyone regardless. A dropped link, or an `op=3` abort **naming
-`mapSet`** (rule 6), deletes the whole set immediately; a power cut is reclaimed
-by the boot sweep. An `op=3` naming anything else is a quiesce and leaves the set
-alone. Complete shard files with no manifest at all are left alone: §5.4
-makes deleting orphans a MAY, and that shape is a rider mid-copy.
-
-A device MUST NOT let a set's *id allocation* undo that care. Whatever scheme
-assigns the `{id}` of the derived filenames, an id must be treated as taken while
-**any** file naming it is on the card — a manifest-less pile of shards included,
-since that is precisely the mid-copy shape the paragraph above protects. Minting
-such an id and then clearing it (§5.4's replace rule) would delete, at the next
-upload, the map the sweep deliberately spared.
-
-**Resume.** Per **file**, and free: shards are independent files, so a shard
-whose validation failed is re-sent on its own while the rest stand. This is the property
-rule 6's `mapSet`-only abandonment exists to protect — a re-send is preceded by
-the idle-abort quiesce (§4.2), and that abort must not take the set with it. Across a
-**disconnect**, no — the set is gone, and resuming would need a device → host
-query for "which shards of which set do you hold", which is a new §4.4 command
-rather than a change to this section.
-
-**Where an uploaded map lands** is a device convention, not a wire one, but the
-reference firmware's is worth stating because it follows the `RT{id}.OBR` rule
-this section already describes: a received map is `MP{id}.OBM` in the card root
-(`OBM` is an 8.3-safe twin of `.obcm`; the FAT layer creates short names only),
-so the durable object id is guarded by the filename like every other stored
-object. Which map the renderer streams from is recorded separately on the card,
-and a committed upload becomes that selection — it takes effect at the device's
-next boot, since the map's parsed tables are read once at startup.
-
-**The device is never told a map's name.** The descriptor has no field for one,
-the payload is opaque, and the OBCM header (`OBCM_Spec.md` §1) carries no name,
-build date or source-snapshot date. A device can therefore enumerate the maps it
-holds — id, filename, size, OBCM version, bounding box, all derivable from the
-card — but not describe where any of them came from. Closing that gap needs a
-new §4.4 command, not a change to this section.
-
-**Flat-store object ids** are opaque `u64` values, assigned from the catalog's
-monotonic `next_object` cursor and stable for the life of the object, including
-across reboots. The cursor is committed with the catalog, so deletion never
-reissues an id and neither filenames nor an RRAM ride-id floor participate.
-Protocol-v4 LIST/GET/PUT/REMOVE carry these `u64` ids. The legacy BLE control
-surface below still has `u16` route/trip fields until its own migration boundary;
-rides recorded by FS8 are flat objects and do not fall back to that filename
-scheme.
-
-At most **one transfer is in flight at a time** — the CoC carries exactly one
-object's bytes between a `transferControl` open and its `transferResult`. A
-second open while one is active is answered with `busy`. The terminal result is
-the ownership boundary: the device clears its active gate **before** notifying
-that result, and the app holds its local transfer slot until it has consumed a
-correlated close (matching object id and committed byte count).
-
-The CoC is an unframed stream, so an exchange that does not reach that close is
-not reusable. After cancellation, timeout, a mismatched/late answer, or an upload
-descriptor-open reject, the app closes and reopens the CoC **before** handing its
-slot to another descriptor. This also discards bytes the upload sender may have
-queued before its asynchronous reject arrived. A device treats that channel drop
-as an implicit abort, discards the partial, clears the gate, and sends no late
-`transferResult` for the dead exchange.
 
 ### 4.2 `transferControl` — the transfer descriptor
 
@@ -1092,7 +830,7 @@ It is mandatory for BLE uploads, every download receiver, `route`, `trip`,
 `fwImage`, and `echo` on USB, and any future type unless its definition says
 otherwise.
 
-> **The exception below is retired with §10** (FS7.5-c3b, #1420). Protocol v4 verifies the declared
+> **The exception below is retired with the USB binding.** Protocol v4 verifies the declared
 > length and a whole-payload CRC-32 before every commit and runs the kind's validator, maps included
 > ([`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §3.6); a mismatch is `checksumFailure` and
 > nothing is published. The trade this clause made was worth making against a filesystem that could
@@ -1443,163 +1181,5 @@ The object length is fully determined by its header: `56 + 8·stage_count` bytes
   no user interaction.
 
 ---
-
-## 9. Changes from v1 (the repin list)
-
-Protocol v2 (epic #632) is the one coordinated wire break. The iOS implementation
-notes ([`companion-ios/OBCProtocol.md`](../companion-ios/OBCProtocol.md)) point back
-to this list; each item below is a single-spot repin on both sides,
-pinned by the shared `specs/vectors/` fixtures:
-
-1. **`protocolVersion` read widened** `u16` → `version u16 · store_epoch u32`
-   (§1, §3.3): the app reads the store epoch alongside the version on every
-   connect and scopes id-keyed state to `(serial, epoch)`. The version+epoch read
-   gates `ackRides` and reconcile (ack fail-closed, §1).
-2. **`TransferControl` 16 → 12 bytes** (§4.2): the permanently-`0` `offset` field
-   and its `error`-on-nonzero reject are gone (transfers restart, not resume).
-3. **Download announce folds into `status`** (§4.3 `msg = 4`, §4.2): the announce
-   moves off `transferControl`, which becomes **write-only, no CCCD**. All
-   device → app control traffic is now one notify characteristic — one
-   subscription, one ordering domain (the split-CCCD failure mode is gone).
-4. **`objectStore` digest removed** (`…0003` retired, §3.3 / §4.5): `storeChanged`
-   (§4.3 `msg = 2`) is the sole change signal.
-5. **`diagnostics` characteristic removed** (`…0006` retired, §3.3): it returned 0
-   bytes; real diagnostics cross the CoC as object type `4` (§7.5) — unchanged.
-6. **`routeList` entry 72 → 76 bytes** (§7.4): a trailing whole-object `crc32`
-   (`0` = unknown) lets the app verify linked-route identity and adopt by content.
-   `rideList` entries are unchanged (72), so entry length is now **per-list**.
-7. **List header 4 → 6 bytes** (§7.4): `version 2 · entry_len · count u16 ·
-   total u16` — `total` surfaces the >`MAX_RIDES`/`MAX_ROUTES` truncation on the
-   wire (truncated iff `total > count`).
-8. **Unchanged in v2** (already ratified in v1): the custom `3C92xxxx-…` UUID base
-   (§3.3), the ride object (§7.2), the Config blob + append-only rule (§7.3),
-   CRC-32/IEEE (§6), the 244-byte chunk preference (§3.4), the `fwImage` object
-   type (id `5`, §7.6) and `installFw` / `forgetBond` commands (§4.4), and the
-   `transferResult` / `commandResult` status envelopes (§4.3).
-
-The `setClock` command (§4.4 cmd `5`) supplies the trusted clock on connection.
-Routes and rides have no automatic deletion policy.
-
-The USB transport (§10, #889) and the identity read's `obcm_version` byte (§1, E1
-#911) are additive on v2 for the same reason each of the above is:
-
-- **USB is a second transport, not a second protocol** — it re-binds §3's GATT
-  routing to a leading selector byte and carries §4's bytes unchanged, so nothing
-  in this document's object model moved.
-- **The volume-set types** `mapShard` (`17`), `mapSet` (`18`, §4.1, #1039) and
-  `terrainShard` (`19`, #1044) are additive in the same sense `map` was, and for
-  a stronger version of the same reason: a set is *larger* than the map BLE could
-  not carry. Three `ObjectType` values out of the 237 still free, no descriptor
-  change (a shard's part rides the existing `object_id`; a raster is new-only), no
-  new status, no new command. A peer that does not know them simply never sends
-  them — a host that never sends `terrainShard` simply assembles maps with no
-  raster, which is a complete map with flat profiles
-  ([`OBCC_Spec.md` §13](OBCC_Spec.md)).
-- **`protocolVersion` read 6 → 7 bytes** (§1): a trailing `obcm_version u8` on a
-  read that was already decoded by length. Bytes 0–5 keep their meaning and their
-  offsets, absent trailing fields have defined "unknown" behaviour on both sides,
-  and a bump would stop two peers that remain fully interoperable — the argument
-  is written out in §1. Re-cuts the `version-read.bin` fixture and adds
-  `version-read-noobcm.bin`.
-
-## 10. Transport binding — USB (issue #889)
-
-> **Retired in full by FS7.5-c3b (epic #1256, issue #1420).** The cable's binding is
-> [`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §5.2. Nothing below is served, and this section
-> is kept for the same reason §4.1's volume-set rules are: so that a reader who finds a client still
-> speaking it can see what it was and what answered it. Clause by clause:
->
-> | This section says | What is true now |
-> | :-- | :-- |
-> | four bulk endpoints, `0x81/0x01` control and `0x82/0x02` stream | unchanged, and the only clause that survives — but the interface now reports `bInterfaceProtocol = 5` and the device descriptor's `bcdDevice` carries `0x0500`, which settles USB binding v5 before a record is exchanged |
-> | "one frame is one USB transfer", strictly shorter than a max packet | **false.** Each record is `record_length u32` + that many frame bytes + zero alignment padding; packet boundaries carry no protocol meaning and a record spans as many as it needs. The ceilings are constants of the binding: 8,208 B device→host on either channel and host→device on the stream channel, 256 B for a host→device control record (§5.2) |
-> | the seven-selector table, and the "sole unsolicited channel" rule under it | **gone.** The control endpoint pair carries §3 control frames from the first byte, and §3.1 has no unsolicited control frames at all: a transfer's outcome is the answer to its own request. §5.2.2 maps each retired selector to its successor |
-> | selector 4, the §1 identity read | **not replaced.** The protocol major is a descriptor fact and the store's identity is `LIST`'s `StoreId` plus its commit sequence (§3.3) |
-> | selector 5 / device→host 3, the §3.1 device-information read | moved to **EP0**: one vendor control request, `bmRequestType 0xC1`, `bRequest 0x20`, answering `len u8 · UTF-8` ×3 — firmware revision, hardware revision, serial number (§5.2.1) |
-> | selector 7 / device→host 5, the mounted-card free-space read | **gone, and deliberately not replaced.** §1 of that document refuses capability discovery: a `PUT` that does not fit is `noSpace`, whose context is the bytes required |
-> | "every §4.4 command is reachable over USB, `ackRides` included" | **false.** The two imperatives that act on the store are opcodes — `deleteObject` is `REMOVE`, `installFw` is `ARM` — and the rest (bond, clock, ride acknowledgement) keep the BLE characteristics they always had. The cable does not carry them |
-> | §6's map-object integrity carve-out, referenced here as policy | **retired.** §3.6 verifies the declared length and a whole-payload CRC-32 before every commit, maps included |
-> | the shared one-transfer gate, and the ZLP rule for a max-packet-multiple download | the gate is unchanged in effect (one engine beside the card serves one `PUT` or `GET`, and a second is `busy` whichever wire asked); the ZLP rule is moot, because a record's length is declared in front of it |
-> | physical possession as the cable's authentication | unchanged, and now stated as enumeration being the authorization boundary on this link (§5.2) |
-
-Everything above is written against BLE because BLE came first, but only §2
-(advertising), §3 (the GATT table), §5 (the CoC) and §8 (pairing) are actually
-*about* the radio. The object model, the descriptors (§4.2), the status envelope
-(§4.3), the commands (§4.4), the object layouts (§7) and the CRC (§6) are
-transport-free, and `specs/vectors/` pins them for **every** transport.
-
-The nRF54LM20 exposes the same contract over USB, as a **second transport, not a
-second protocol**. One vendor-specific interface (class `0xFF`), four bulk
-endpoints, all at the high-speed-mandated 512 bytes:
-
-| Endpoint | Replaces | Carries |
-| :-- | :-- | :-- |
-| `0x81` / `0x01` | the GATT control plane (§3.3) | one control frame per transfer |
-| `0x82` / `0x02` | the L2CAP CoC (§5) | the unframed object stream, byte for byte |
-
-**The bulk plane needs no translation at all.** Principle #2 holds for a USB bulk
-endpoint exactly as it holds for a CoC — reliable, ordered, unframed — so the
-channel carries exactly the object's payload bytes and the descriptor retains
-its whole-object CRC-32. §6 permits a receiver to omit that redundant calculation
-for the four USB-only map-shaped upload types; this changes policy, not the byte
-stream. §4.1's one-transfer-at-a-time rule and principle #4's
-restart-don't-resume are unchanged.
-
-**The control plane needs exactly one byte.** GATT carries "which
-characteristic" in the transport; USB has one endpoint pair, so that routing
-becomes a leading **`selector u8`**, and the rest of the frame is *the exact
-bytes the corresponding characteristic carries*. One frame is one USB transfer,
-and a frame must be strictly shorter than the endpoint's max packet (a frame
-exactly filling a packet would need a ZLP to be delimited).
-
-| Selector | Direction | Payload |
-| --: | :-- | :-- |
-| 1 | host → device | `command` (§4.4) |
-| 2 | host → device | `transferControl` (§4.2), the 12-byte descriptor |
-| 3 | host → device | `config` write (§7.3) |
-| 4 | host → device | identity read (§1) — no payload |
-| 5 | host → device | device-information read (§3.1) — no payload |
-| 6 | host → device | `config` read (§7.3) — no payload |
-| 7 | host → device | mounted-card free-space read — no payload (USB only) |
-| 1 | device → host | `status` (§4.3), verbatim, discriminator included |
-| 2 | device → host | the §1 identity bytes (7 / 6 with a store, 2 without — the same length-driven read, verbatim) |
-| 3 | device → host | device information: `len u8 · UTF-8` ×3, firmware · hardware · serial |
-| 4 | device → host | the §7.3 config blob |
-| 5 | device → host | mounted-card free bytes as little-endian `u64`; empty when no readable card is mounted |
-
-Device → host selector 1 is the **sole unsolicited channel**, exactly as the
-`status` CCCD is on BLE: one ordering domain for every device → host edge,
-including a download's `downloadAnnounce`.
-
-The free-space read is deliberately an envelope query rather than a new object
-or command. It is USB-only UI telemetry, has no persistent effect, and is
-answered from FAT32's cached FSInfo count (a bounded three-sector read, never a
-FAT walk). A host uses it immediately before a map-set send; an empty reply is
-"space unavailable", not zero bytes free.
-
-**Every §4.4 command is reachable over USB, `ackRides` included**, and not as a
-per-command decision: selector 1 carries the `command` bytes into the *same*
-transport-free handler the GATT write reaches, so the command set is whatever §4.4
-says it is on both wires. What differs is not the plumbing but the *policy* — who is
-allowed to ack, and when — which is written down with the command (§4.4, "What
-`synced` means"): a USB peer acks only after its own durable write, and the browser
-never acks at all.
-
-Two device-side rules the host may rely on:
-
-- A download whose `total_len` is an exact multiple of the endpoint's max packet
-  is followed by a **zero-length packet**, so an object's end is always marked by
-  a short packet or a ZLP. A host reading one max packet per transfer never needs
-  this; one reading several does.
-- The one-transfer gate (§4.1) is **shared across transports**, because the
-  resource it arbitrates is the device's single upload temp and open download
-  source, not the wire. A transfer in flight on BLE answers a USB
-  `transferControl` with `busy`, and vice versa.
-
-Security differs, and deliberately: §8's pairing/encryption gate is a BLE
-mechanism with no USB analogue. Physical possession of the cable is the USB
-plane's authentication, which is the same posture every other wired peripheral
-takes. `forgetBond` over USB still clears the *radio's* bond — it is a device
-command, not a transport one.
 
 ## Reference implementation

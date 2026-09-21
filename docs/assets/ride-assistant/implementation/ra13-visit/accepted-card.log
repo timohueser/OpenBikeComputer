@@ -1,8 +1,0 @@
-store StoreId([157, 83, 243, 128, 49, 111, 177, 110, 51, 219, 204, 70, 164, 48, 37, 50]); mode ReadWrite
-checkpoint Some(NavigatorCheckpoint { route: PayloadFingerprint { object: 6, revision: 1, length: 2680, crc: 3534886765 }, original: Some(PayloadFingerprint { object: 2, revision: 1, length: 568, crc: 1171309483 }), progress_m: 0, occurrence: 0, lon: 8177272, lat: 46725350, phase: Outbound, unresolved_avoidance: false, lower_m: 0, upper_m: 5354 })
-visit VisitDescriptor { original: RouteSourceKey { store: [157, 83, 243, 128, 49, 111, 177, 110, 51, 219, 204, 70, 164, 48, 37, 50], object: 2, revision: 1 }, original_anchors_m: [0, 0, 1000], accepted_anchors_m: [0, 5354, 10091], target_id: 197656656, target_lon: 8215649, target_lat: 46710655, target_kind: 2 }; total_m 11410
-ride EntryMeta { added_at_utc: 0, id: ObjectId(3), revision: Revision(1), kind: Ride, flags: EntryFlags(1), payload_len: 0, payload_crc: 0, name: DisplayName { bytes: [109, 101, 105, 114, 105, 110, 103, 101, 110, 45, 102, 111, 114, 119, 97, 114, 100, 45, 114, 101, 106, 111, 105, 110, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], len: 24 } }
-ride_objects 1
-recording ObjectId(3) Revision(1); sequence 0; bytes 0; crc 00000000
-continuation None
-samples 0; segments 0; max_gap_ms 0; first None; last None

@@ -1,7 +1,0 @@
-{
-  "production_head": "b9807e09c9d523cb6d3d66d9b410061d9d617dcc",
-  "checkout_head_at_completion": "d7dcaedf4b8befd35e86c5c568d76aff40b95b4a",
-  "note": "Only resource_baseline.json changed during this build; compiled source is identical.",
-  "binary": "/Users/timo/Documents/OSM-agents/ride-assistant-speed/.artifacts/place-preview-followup/final/obc-sim",
-  "sha256": "d6930140463e1e5b86f4744a767dd2c2d8d512f921ad8f1638406524c1a1da0d"
-}

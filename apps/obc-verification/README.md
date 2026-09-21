@@ -167,6 +167,18 @@ The demo disables GitHub integration and uses a separate temporary database. It 
 changes. Stop it with Ctrl+C; restart the command to reset the example. Set `VERIFICATION_DEMO_PORT`
 to use another local port.
 
+## Occasional requirements check
+
+Run this when asked, or when a milestone lands, not per pull request. It takes one session.
+
+1. Read the current revision and every plan from the console. Read `git log --since` the last
+   check (the previous check's report names its end commit).
+2. For each requirement touched by those commits, answer three questions: does the prose still
+   describe the product; does the plan still name the right tests, with no cited test removed or
+   emptied; is there new user-visible behavior that no requirement covers.
+3. Report the findings as a short list grouped by those three questions, name the end commit,
+   and propose plan updates for the second group. Requirement prose changes are for the owner.
+
 ## Requirement groups
 
 Each requirement can have one optional group, such as Navigation or Bluetooth. Groups are flat.
