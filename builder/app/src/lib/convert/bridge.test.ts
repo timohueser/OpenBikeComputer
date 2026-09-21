@@ -188,6 +188,35 @@ describe("routeWaypoints", () => {
     });
 });
 
+describe("captured planner exports", () => {
+    /**
+     * `fixtures/sources/route-import/` holds the real files, with their provenance and licence. The
+     * names and the order below are the list `obc-route` and `obc-app` assert on the same bytes, so
+     * a browser import and a device import agree on what a planner actually sent.
+     */
+    it("reads the komoot export's waypoints the way the Rust importer does", async () => {
+        const gpx = text("fixtures/sources/route-import/komoot-schwarzwald.gpx");
+        const obcr = await gpxToObcr(new TextEncoder().encode(gpx), "Schwarzwald");
+        const wps = await routeWaypoints(obcr);
+
+        expect(wps.length).toBe(gpx.split("<wpt ").length - 1);
+        // Stored names are capped at 24 bytes on a character boundary, which four of these reach.
+        expect(wps.map((w) => w.name)).toEqual([
+            "Steiler Abschnitt auf de",
+            "Freudenst\u00e4dter Wasserfo",
+            "Feuerstelle Schmidsberge",
+            "Blick auf die Landschaft",
+            "Fuxxbau",
+        ]);
+        // `Restaurant` is resupply; `Fishing Hot Spot Facility` has no home among the six and stays
+        // generic instead of being dropped or forced into the nearest one.
+        expect(wps.map((w) => w.category)).toEqual([0, 0, 0, 0, 4]);
+        for (let i = 1; i < wps.length; i++) {
+            expect(wps[i].distAlongM).toBeGreaterThanOrEqual(wps[i - 1].distAlongM);
+        }
+    });
+});
+
 describe("failures", () => {
     const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
 
