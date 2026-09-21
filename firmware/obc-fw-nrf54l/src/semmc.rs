@@ -89,7 +89,7 @@ const _: () = assert!(SEMMC_IMAGE_BYTES <= SEMMC_CARVE_BYTES);
 const _: () = assert!(SEMMC_VRI_OFFSET >= SEMMC_CODE_BYTES, "the VRI window must sit above the image's code region");
 const _: () = assert!(SEMMC_RAM_BASE.is_multiple_of(4096), "the image base must stay 4 KiB aligned");
 
-// ── VRI register offsets (nrfxlib `sEMMC/include/nrf_sp_emmc.h`, `NRF_SP_EMMC_Type`) ───────────
+// VRI register offsets, from nrfxlib's `nrf_sp_emmc.h` `NRF_SP_EMMC_Type`.
 const VRI_EV_XFERCOMPLETE: usize = 0x10;
 const VRI_EV_ABORTED: usize = 0x14;
 const VRI_EV_READYTOTRANSFER: usize = 0x18;
@@ -132,7 +132,7 @@ const RESP_R3: u32 = 4;
 const PROC_PROCESS: u32 = 0;
 const PROC_IGNORE: u32 = 1;
 
-// ── Soft-peripheral VPR task / event indices (`softperipheral_regif.h`, the nRF54L row) ────────
+// Soft-peripheral VPR task and event indices, from `softperipheral_regif.h`'s nRF54L row.
 const T_START: usize = 16; // start a prepared transfer (the DPPI start task)
 const T_CONFIG: usize = 17; // __CSB — configuration barrier
 const T_ACTION: usize = 18; // __ASB — action barrier
@@ -314,7 +314,6 @@ impl SemmcError {
     }
 }
 
-/// What card identification found out.
 #[derive(Clone, Copy, defmt::Format)]
 pub struct CardInfo {
     /// Relative card address, from CMD3.
@@ -323,7 +322,6 @@ pub struct CardInfo {
     pub blocks: u32,
     /// Whether the CMD6 High-Speed switch took (and the bus therefore reads at 32 MHz).
     pub high_speed: bool,
-    /// The read clock the bus settled on.
     pub read_clk_hz: u32,
 }
 
@@ -425,7 +423,6 @@ struct AlignedBlock([u8; BLOCK_BYTES]);
 /// The sEMMC host. One instance owns the FLPR while it is in storage mode; `flpr_mux`'s mode
 /// scheduler owns *when* that is.
 pub struct Semmc {
-    /// Clock the next command is configured with.
     clk_hz: u32,
     /// 1 or 4. Mirrors `CONFIG.BUSWIDTH`.
     bus_width: u32,
@@ -1200,7 +1197,6 @@ impl Semmc {
     }
 }
 
-/// Fail on any error bit the card reports in an R1.
 fn check_r1(r1: u32) -> Result<(), SemmcError> {
     if r1 & R1_ERROR_MASK != 0 {
         Err(SemmcError::CardStatus(r1))

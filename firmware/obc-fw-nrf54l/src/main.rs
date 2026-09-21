@@ -52,11 +52,8 @@ mod ls021_flpr;
 // task is spawned onto the same executor.
 mod input_plane;
 mod map_plane;
-// The map/ride thread-mode plane: `run_app` and its loop-only helpers.
 mod ride;
-// The panel's PWM backlight, and system OFF.
 mod panel_power;
-// Persistent device settings in on-chip RRAM.
 mod settings;
 // The app-side DFU armer over `obc_dfu::armer`: stage scan, rollback snapshot, the boot-state
 // page write, the status stream, and the ride loop's trial confirm.
@@ -373,7 +370,7 @@ fn mount_terrain(
 /// off the stack.
 ///
 /// # Safety
-/// `slot` must point at a `static mut MaybeUninit<T>` that is initialised **exactly once** for the
+/// `slot` must point at a `static mut MaybeUninit<T>` that is initialised exactly once for the
 /// program's life through this call and never aliased elsewhere — the returned reference is the only
 /// one handed out. (`MaybeUninit<T>` shares `T`'s layout, so the cast is sound.) Each call site
 /// passes a distinct slot.
@@ -510,9 +507,7 @@ mod stackmeter {
     use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
     const PAINT: u32 = 0xC0DE_DEAD;
-    /// Minimum gap between two full scans.
     const SCAN_INTERVAL_MS: u32 = 1000;
-    /// Wall-clock time (the loop's `now`, in ms) of the last full scan.
     static LAST_SCAN_MS: AtomicU32 = AtomicU32::new(0);
     /// The last scan's result. 0 means never scanned: `paint` leaves at least 512 B unpainted below
     /// the paint-time SP, so a real measurement cannot be 0.
@@ -559,7 +554,6 @@ mod stackmeter {
         LAST_USED.store(top - a, Ordering::Relaxed);
         top - a
     }
-    /// Total usable stack.
     pub fn total() -> usize {
         top() - bottom()
     }
