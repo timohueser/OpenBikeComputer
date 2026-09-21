@@ -58,10 +58,12 @@
 //! is wedged and worth nothing when the answer is known. A wedged FLPR is still halted through its
 //! Debug Module and not through `CPURUN`, which does not stop a busy-polling core.
 
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 use defmt::{error, warn};
 use embassy_time::{Duration, Instant, Timer};
+
+use obc_storage::health::{Breaker, Outcome};
 
 use crate::semmc::{self, CardInfo, Semmc, SemmcError};
 
@@ -192,7 +194,7 @@ pub fn ensure_storage() -> bool {
             true
         }
         Some(Err(e)) => {
-            error!("flpr_mux: sEMMC would not take the hart ({}) — storage is down for this operation", e);
+            error!("flpr_mux: sEMMC would not take the hart ({}) — this operation fails", e);
             MODE.store(Mode::Unknown as u8, Ordering::Relaxed);
             false
         }
@@ -200,15 +202,70 @@ pub fn ensure_storage() -> bool {
     }
 }
 
+/// The transport's health, as [`Breaker`] stores it: the consecutive-fault count and when the
+/// breaker last opened. Two words beside the driver, under the same access rule as everything else
+/// here, but atomics because [`storage_latched`] reads them from the ride loop between operations.
+static FAILURES: AtomicU8 = AtomicU8::new(0);
+static OPENED_AT_MS: AtomicU32 = AtomicU32::new(0);
+
+fn breaker() -> Breaker {
+    Breaker::restore(FAILURES.load(Ordering::Relaxed), OPENED_AT_MS.load(Ordering::Relaxed))
+}
+
+fn store_breaker(b: Breaker) {
+    FAILURES.store(b.failures(), Ordering::Relaxed);
+    OPENED_AT_MS.store(b.opened_at_ms(), Ordering::Relaxed);
+}
+
+/// Whether the transport has given up on the card, for the one warning the ride loop raises. It
+/// stays true through a cool-down and clears when a probe finds the card working again.
+pub fn storage_latched() -> bool {
+    breaker().open()
+}
+
 /// Run one synchronous storage operation with the FLPR in storage mode.
 ///
 /// The single door the `BlockDevice` impl uses: it pairs the mode guarantee with the driver borrow,
-/// so neither can be taken without the other.
-pub fn with_storage<R>(f: impl FnOnce(&mut Semmc) -> R) -> Result<R, SemmcError> {
-    if !ensure_storage() {
-        return Err(SemmcError::NoBoot);
+/// so neither can be taken without the other, and it is the one place every card operation's
+/// outcome is visible, so it is where the [`Breaker`] lives.
+///
+/// The closure returns a `Result` because the breaker must see the transfer's verdict and not only
+/// whether the mode switch worked. A dead card and a soft peripheral that stopped booting are the
+/// same fact to a rider — storage is gone — so they share one latch. A caller-side refusal
+/// ([`SemmcError::is_transport_fault`]) is weighed as [`Outcome::Refused`] and moves nothing.
+///
+/// While the breaker is open every call returns [`SemmcError::Unhealthy`] at once, without a mode
+/// switch, a boot attempt or a bus cycle, and one operation per cool-down is let through to find
+/// out whether the card came back. That is what bounds a ride-loop pass.
+pub fn with_storage<R>(f: impl FnOnce(&mut Semmc) -> Result<R, SemmcError>) -> Result<R, SemmcError> {
+    let before = breaker();
+    if !before.admits(Instant::now().as_millis() as u32) {
+        return Err(SemmcError::Unhealthy);
     }
-    with_semmc(f).ok_or(SemmcError::NotInitialised)
+    let r = if ensure_storage() {
+        with_semmc(f).unwrap_or(Err(SemmcError::NotInitialised))
+    } else {
+        Err(SemmcError::NoBoot)
+    };
+    let outcome = match &r {
+        Ok(_) => Outcome::Success,
+        Err(e) if e.is_transport_fault() => Outcome::TransportFault,
+        Err(_) => Outcome::Refused,
+    };
+    // The clock is read again here, not reused from the admission check: a failed operation can
+    // have spent seconds of its deadline ladder, and the cool-down starts when it ended.
+    let after = before.record(outcome, Instant::now().as_millis() as u32);
+    store_breaker(after);
+    if after.opened_from(before) {
+        error!(
+            "flpr_mux: {=u8} storage operations failed in a row — the transport is off until a probe {=u32} s from now finds the card again",
+            Breaker::LIMIT,
+            Breaker::COOL_DOWN_MS / 1000
+        );
+    } else if before.open() && !after.open() {
+        warn!("flpr_mux: the storage probe found the card working again — the transport is back");
+    }
+    r
 }
 
 /// The async front door for a batch of storage work, acquired by

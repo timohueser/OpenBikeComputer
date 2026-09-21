@@ -870,6 +870,12 @@ pub(crate) async fn run_app(
             defmt::info!("xfer: transfer level {=str} (flat engine)", if transferring { "active" } else { "idle" });
         }
 
+        // The card transport gave up for this session. Raised every pass and deduplicated
+        // downstream, so the card opens once and a dismissal is not re-nagged.
+        if crate::flpr_mux::storage_latched() {
+            exec.facts.raise_warnings(obc_app::WarningFlags::STORAGE_ERROR);
+        }
+
         // The sensor task publishes once GPS responds or its startup deadline passes. Map chips that
         // are absent at that point to a dismissable warning; this is not a live-availability stream.
         #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]

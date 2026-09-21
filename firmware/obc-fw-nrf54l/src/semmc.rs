@@ -293,9 +293,37 @@ pub enum SemmcError {
     OutOfRange,
     /// A transfer was attempted before [`Semmc::init_card`] succeeded.
     NotInitialised,
+    /// The transport's failure latch is open, so the operation was refused without touching the
+    /// device. See [`crate::flpr_mux::with_storage`].
+    Unhealthy,
 }
 
 impl SemmcError {
+    /// Whether the device was actually attempted, which is what the transport's health latch
+    /// counts. A caller-side refusal costs microseconds and says nothing about the card, so it must
+    /// neither extend a failure run nor clear one.
+    ///
+    /// The match is exhaustive on purpose: a new variant has to be classified here or the board
+    /// does not build. The refusals are `check_request`'s three, `start_write_blocks`'s deferred
+    /// write, and the latch's own answer; everything else reached the bus or the soft peripheral.
+    pub const fn is_transport_fault(self) -> bool {
+        match self {
+            SemmcError::BadBuffer
+            | SemmcError::OutOfRange
+            | SemmcError::NotInitialised
+            | SemmcError::Busy
+            | SemmcError::Unhealthy => false,
+            SemmcError::Barrier
+            | SemmcError::NoBoot
+            | SemmcError::Timeout
+            | SemmcError::Aborted(_)
+            | SemmcError::CardStatus(_)
+            | SemmcError::CardBusy
+            | SemmcError::NoCard
+            | SemmcError::UnsupportedCard => true,
+        }
+    }
+
     /// Decode an [`Aborted`](Self::Aborted) status word for the log.
     pub fn abort_reason(status: u32) -> &'static str {
         if status & STATUS_CMDTIMEOUT != 0 {
