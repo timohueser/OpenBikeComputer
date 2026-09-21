@@ -113,6 +113,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--branch", help="the latest run of this branch")
     parser.add_argument("--lines", type=int, default=40, help="kept lines before each error marker")
     args = parser.parse_args(argv)
+    if args.lines < 0:
+        parser.error("--lines must be zero or greater")
 
     if args.run:
         run = run_by_id(args.run)
