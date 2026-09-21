@@ -1,33 +1,26 @@
 <!--
-  The ride library, as a logbook (E2 #912; #894 redesign, the "Logbook" option): the list on the
-  left, a sticky all-rides map on the right, and the pull that fills both.
+  The ride library, as a logbook: the list on the left, a sticky all-rides map on the right, and
+  the pull that fills both.
 
   The desktop tier's answer to a real gap — an Android or no-phone rider has no way to get a ride
-  off the device today. Not a second sync product: there is no editing here, no analysis, and no
-  upload to Strava or Komoot (#781, which the iOS companion owns). It copies rides into a folder
-  of GPX files, shows what is in it, and keeps those GPX files existing.
-
-  ## The folder is GPX-only, and the GPX repairs itself
+  off the device. Not a second sync product: there is no editing here, no analysis, and no upload
+  to Strava or Komoot. It copies rides into a folder of GPX files, shows what is in it, and keeps
+  those GPX files existing.
 
   The visible folder holds one `.gpx` per ride and nothing else; the device's own ride objects and
-  the index live in app data (`apps/obc-desktop/src/rides.rs` owns that split). So there is no
-  export button anywhere: the GPX exists because the ride does, and a missing one (deleted,
-  renamed, moved away) is quietly re-written from the archived object on the next open or pull.
-  What remains per ride is: click → preview, and "Show in folder". A ride whose *archive* is
-  missing is the one thing a re-export cannot fix — that needs the device, and its row says so.
+  the index live in app data. So there is no export button anywhere: the GPX exists because the
+  ride does, and a missing one is quietly re-written from the archived object on the next open or
+  pull. What remains per ride is: click for a preview, and "Show in folder". A ride whose
+  *archive* is missing is the one thing a re-export cannot fix, and its row says so.
 
-  ## The one sentence that has to be on screen
+  A pull copies; it does not tell the device anything. USB carries no possession acknowledgement —
+  it changes no object, so it has no store meaning, and the phone keeps its BLE surface. The
+  consequence belongs on screen: a rider who syncs only over the cable has their rides here, and
+  the device still counts them as un-copied. So the disclosure is a permanent line under the list.
 
-  A pull copies; it does not tell the device anything. `FLAT_Store_Protocol.md` §5.2.2 retires the
-  v1 possession acknowledgement — an ack changes no object, so it has no store meaning and USB does
-  not carry it (the phone keeps its BLE surface, and still acks). The consequence belongs on screen
-  rather than in a changelog: a rider who syncs only over the cable has their rides here, and the
-  device still counts them as un-copied. So the disclosure is a permanent line under the list, not a
-  tooltip.
-
-  It cannot report the device's own retention setting either, and says so rather than guessing:
-  nothing in protocol v4 reads it. Inventing "1 week" here because that is the firmware default
-  would be a number the app cannot stand behind.
+  It cannot report the device's own retention setting either, and says so rather than guessing.
+  Inventing "1 week" here because that is the firmware default would be a number the app cannot
+  stand behind.
 -->
 <script lang="ts">
     import { onMount, untrack } from "svelte";
@@ -94,10 +87,10 @@
     }
 
     /**
-     * Quietly re-write every missing GPX from its archived object — sequential, non-blocking,
-     * run on open and after every pull. Nothing crosses the cable: the archive each GPX is
-     * derived from is already on this disk, which is also why a pull does not re-download a ride
-     * whose GPX someone deleted.
+     * Quietly re-write every missing GPX from its archived object — sequential, non-blocking, run on
+     * open and after every pull. Nothing crosses the cable: the archive each GPX is derived from is
+     * already on this disk, which is also why a pull does not re-download a ride whose GPX someone
+     * deleted.
      */
     let repairing = false;
     async function repairGpx() {
@@ -119,9 +112,9 @@
         } finally {
             repairing = false;
         }
-        // Refresh first: its success path clears `error`, and the whole point of surfacing a
-        // repair failure is that there is no manual export button left to fall back on — on a
-        // read-only folder this message is the only sign anything is wrong.
+        // Refresh first: its success path clears `error`, and the point of surfacing a repair
+        // failure is that there is no manual export button to fall back on — on a read-only folder
+        // this message is the only sign anything is wrong.
         await refresh();
         if (failures.length > 0) {
             error = `Some GPX files could not be re-written: ${failures.join("; ")}`;

@@ -39,7 +39,7 @@
 
     const job = new DeviceJob("firmware");
     /** The package this card put on the card: its version, and the `(ObjectId, Revision)` the
-     *  commit published — which is what `ARM`'s compare-and-swap names (§4). */
+     *  commit published — which is what `ARM`'s compare-and-swap names. */
     let staged = $state<{ version: string; objectId: bigint; revision: bigint } | null>(null);
     let armed = $state(false);
     let armError = $state<string | null>(null);
@@ -65,8 +65,8 @@
             ctx.phase("downloading", entry.bytes);
             const response = await fetch(entry.url, { signal: ctx.signal, credentials: "omit" });
             if (!response.ok) throw new Error(`The update could not be downloaded (HTTP ${response.status}).`);
-            // An update image is ~1.5 MB at most (`OBCU_Spec.md` §1.1's slot ceiling), so it is
-            // read whole — the streaming machinery a map needs would be noise at this size.
+            // An update image is at most a couple of megabytes, so it is read whole — the
+            // streaming machinery a map needs would be noise at this size.
             const bytes = new Uint8Array(await response.arrayBuffer());
             if (bytes.length !== entry.bytes || Sha256.hex(bytes) !== entry.sha256) {
                 throw new Error("The downloaded update failed its checksum. Nothing was sent to the device.");
@@ -102,7 +102,7 @@
     }
 
     /**
-     * Ask the device to make the staged package its next boot (§4's `ARM`).
+     * Ask the device to make the staged package its next boot.
      *
      * A `rejected` answer is the device's stated policy rather than a fault, so it gets its own
      * sentence: the rider is told the device refused, not that something broke. Any other failure
