@@ -493,7 +493,7 @@ class ShippedPlanTests(unittest.TestCase):
                 sweep = next(item for item in chosen.units if item.id == "ci.ui-snapshots")
                 self.assertEqual(sweep.selected, selected)
 
-    def test_the_captured_fixture_tier_is_the_five_carved_targets(self) -> None:
+    def test_the_captured_fixture_tier_is_the_six_carved_targets(self) -> None:
         self.assertEqual(
             sorted(
                 f"{name}:{target}"
@@ -501,6 +501,7 @@ class ShippedPlanTests(unittest.TestCase):
                 for target in item.fixture_targets
             ),
             [
+                "obc-app:peak_view_photos",
                 "obc-dem:assets",
                 "obc-host-core:altitude_fusion",
                 "obc-reader:poi_fixtures",
