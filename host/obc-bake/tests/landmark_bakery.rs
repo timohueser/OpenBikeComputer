@@ -60,6 +60,7 @@ impl LandmarkCapture for FakeCapture {
                 "schema": 1,
                 "boundary_sha256": sha(&boundary_bytes),
                 "policy_sha256": sha(&std::fs::read(policy).unwrap()),
+                "language_sha256": sha(obc_pack::landmarks::LANGUAGE_BYTES),
             })
             .to_string(),
         )
@@ -113,6 +114,17 @@ impl Fixture {
 
     fn artifact(&self) -> PathBuf {
         self.tree.join("landmarks/europe/testland")
+    }
+
+    /// The region's capture directories, one per recipe the cache has seen.
+    fn captures(&self) -> Vec<PathBuf> {
+        let mut dirs: Vec<PathBuf> = std::fs::read_dir(self.cache.join("landmarks/europe_testland"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.is_dir())
+            .collect();
+        dirs.sort();
+        dirs
     }
 }
 
@@ -168,6 +180,34 @@ fn an_unchanged_capture_is_neither_re_fetched_nor_re_compiled() {
     let repaired = fixture.run(&capture, false, false);
     assert_eq!(repaired.regions[0].status, LandmarkStatus::Compiled, "{}", repaired.render());
     assert_eq!(capture.calls.lock().unwrap().len(), 1);
+
+    // The key covers every file of the artifact, not just `content.json`: the photos are most of
+    // it, and one that goes missing or arrives uninvited must not read as unchanged.
+    std::fs::write(fixture.artifact().join("0123456789abcdef.rgb222"), "not a photo").unwrap();
+    let extra = fixture.run(&capture, false, false);
+    assert_eq!(extra.regions[0].status, LandmarkStatus::Compiled, "{}", extra.render());
+}
+
+/// The fourth acceptance criterion: the shared UI language set decides which articles are fetched
+/// and which places are eligible, so adding a language has to re-capture, not read `Unchanged`.
+#[test]
+fn a_capture_made_under_another_language_set_is_never_compiled() {
+    let fixture = Fixture::new("language-set");
+    let capture = FakeCapture::default();
+    fixture.run(&capture, false, false);
+
+    // What a fifth UI language does to the capture the cache holds.
+    let recipe_path = fixture.captures()[0].join("recipe.json");
+    let mut recipe: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+    recipe["language_sha256"] = serde_json::json!("0".repeat(64));
+    std::fs::write(&recipe_path, recipe.to_string()).unwrap();
+
+    let refused = fixture.run(&capture, false, true);
+    assert_eq!(refused.regions[0].status, LandmarkStatus::CaptureMissing, "{}", refused.render());
+    assert_eq!(capture.calls.lock().unwrap().len(), 1, "--no-capture never goes to the network");
+
+    let recaptured = fixture.run(&capture, false, false);
+    assert_eq!(recaptured.regions[0].status, LandmarkStatus::Captured, "{}", recaptured.render());
 }
 
 #[test]
@@ -184,7 +224,10 @@ fn a_capture_of_a_different_boundary_is_never_compiled() {
     assert!(!refused.ok(), "a region without a current capture is not a finished run");
     assert_eq!(capture.calls.lock().unwrap().len(), 1, "--no-capture never goes to the network");
 
+    // The capture tool refuses to reuse a directory whose recipe moved, so the new boundary gets
+    // its own, and the hours the old one cost are still on disk.
     let recaptured = fixture.run(&capture, false, false);
     assert_eq!(recaptured.regions[0].status, LandmarkStatus::Captured, "{}", recaptured.render());
     assert_eq!(capture.calls.lock().unwrap().len(), 2);
+    assert_eq!(fixture.captures().len(), 2, "one capture directory per recipe");
 }
