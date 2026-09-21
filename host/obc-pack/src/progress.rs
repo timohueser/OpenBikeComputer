@@ -1,36 +1,25 @@
 //! What a packing run says about itself while it runs, and how it is stopped.
 //!
-//! The packer has always narrated its own progress — it printed a stage line per
-//! phase and the web builder scraped them off the subprocess's stdout
-//! (`builder/server/jobs.py`). In-process there is no stdout to scrape, so the
-//! narration becomes a [`Progress`] sink the caller supplies: the CLI's prints the
-//! line, the desktop app's forwards `(phase, line)` to the webview.
+//! The narration is a [`Progress`] sink the caller supplies: the CLI's prints the line, and the
+//! desktop app's forwards `(phase, line)` to the webview.
 //!
-//! Two rules keep the two hosts from drifting apart:
+//! Two rules keep the two hosts from drifting apart. The phase vocabulary is [`Phase`] and it is
+//! closed, because the build UI derives a percentage from a phase's index, so a phase is a value
+//! with an order and not a string someone typed; the web builder holds the same list, pinned by a
+//! test. And the line is still the CLI's line: every `progress.stage()` call passes the sentence the
+//! packer would print, so a terminal and a log pane show the same text.
 //!
-//! - **The phase vocabulary is [`Phase`], and it is closed.** The build UI derives
-//!   a percentage from a phase's index, so a phase is a value with an order, not a
-//!   string someone typed. `builder/app/src/lib/api/jobs.svelte.ts`
-//!   holds the same list; `stage_lines_match_the_web_builders_markers` pins the
-//!   scraped side against this one.
-//! - **The line is still the CLI's line.** Every `progress.stage()` call passes the
-//!   sentence the packer used to `println!`, so the CLI's output is unchanged and
-//!   the app's log pane shows the same text a terminal would.
-//!
-//! Cancellation shares the struct because it shares the call sites: everywhere the
-//! pipeline is far enough along to say where it is, it is also far enough along to
-//! notice it should stop. See [`Progress::check`] for what "stop" costs.
+//! Cancellation shares the struct because it shares the call sites: everywhere the pipeline is far
+//! enough along to say where it is, it is also far enough along to notice it should stop.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// The coarse phases of a build, in the order they happen.
 ///
-/// Order is load-bearing: the UI turns a phase's index into a percentage, so a
-/// phase must never be reported after a later-indexed one. Sub-steps (which pass,
-/// which LOD) live in the *line*, not in a new variant — the vocabulary is
-/// deliberately coarse so a pipeline change doesn't move the progress bar's
-/// meaning.
+/// Order is load-bearing: the UI turns a phase's index into a percentage, so a phase must never be
+/// reported after a later-indexed one. Sub-steps live in the line, not in a new variant, so a
+/// pipeline change cannot move the progress bar's meaning.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Phase {
     /// Several `.pbf` sources are being folded together (multi-region builds only).
@@ -102,9 +91,8 @@ pub struct Progress {
 }
 
 impl Progress {
-    /// The CLI's reporter: the line, on stdout, exactly as the packer printed it
-    /// before the pipeline moved into the library. Warnings keep their stderr
-    /// stream, so `obc-pack … > log` still separates them.
+    /// The CLI's reporter: the line, on stdout. Warnings keep their stderr stream, so redirecting
+    /// stdout to a log still separates them.
     pub fn stdout() -> Self {
         Progress {
             sink: Box::new(|_, line| println!("{line}")),
@@ -113,15 +101,13 @@ impl Progress {
         }
     }
 
-    /// Says nothing and never cancels — for tests and for callers that only want
-    /// the artifact.
+    /// Says nothing and never cancels — for tests and for callers that only want the artifact.
     pub fn silent() -> Self {
         Progress { sink: Box::new(|_, _| {}), warn: Box::new(|_, _| {}), cancel: CancelToken::new() }
     }
 
-    /// A reporter that forwards every line to `sink`, cancellable through `cancel`.
-    /// Warnings arrive at the same sink with no phase — a host with one log pane
-    /// has one place to put them.
+    /// A reporter that forwards every line to `sink`, cancellable through `cancel`. Warnings arrive
+    /// at the same sink with no phase, because a host with one log pane has one place to put them.
     pub fn new(cancel: CancelToken, sink: impl Fn(Option<Phase>, &str) + Send + Sync + 'static) -> Self {
         let sink = Arc::new(sink);
         let warn = Arc::clone(&sink);
@@ -151,31 +137,18 @@ impl Progress {
         self.cancel.is_cancelled()
     }
 
-    /// `Err` once the run has been cancelled, so a `?` at a checkpoint unwinds the
-    /// pipeline.
+    /// `Err` once the run has been cancelled, so a `?` at a checkpoint unwinds the pipeline.
     ///
-    /// **Granularity.** This is a relaxed atomic load, so it is cheap enough to sit
-    /// inside the per-blob and per-feature loops, and that is where it sits:
+    /// This is a relaxed atomic load, cheap enough to sit inside the per-blob and per-feature loops,
+    /// and that is where it sits: per `.pbf` blob in the ingest passes, per shapefile record in the
+    /// land clip, per style class in the merge passes, per feature in the simplify, cull and
+    /// quadtree build, and per LOD in the pipeline's closure, which skips the level whole.
     ///
-    /// | checkpoint | unit |
-    /// |---|---|
-    /// | [`crate::ingest`] passes 0/1/2 | one `.pbf` blob (a few thousand elements) |
-    /// | [`crate::land`] | one shapefile record |
-    /// | [`crate::merge`] fill/line dissolve | one style class |
-    /// | per-LOD simplify + cull | one feature |
-    /// | [`crate::quadtree::build_lod_with`] | one feature |
-    /// | the per-LOD closure in [`crate::pipeline`] | one LOD, skipped whole |
+    /// What it cannot interrupt is a single call below those: one GEOS operation on one very large
+    /// geometry runs to completion, and so does the teardown, since freeing a country's worth of
+    /// ingested geometry is measured in seconds.
     ///
-    /// What it cannot interrupt is a single call *below* those: one GEOS operation
-    /// on one very large geometry runs to completion, and so does the teardown —
-    /// freeing a country's worth of ingested geometry is measured in seconds, and
-    /// that is the memory being handed back rather than work refusing to stop.
-    /// Measured on a 157 MB extract in release, a cancel lands in ~20 % of the work
-    /// it had left, most of that teardown
-    /// (`obc-desktop`'s `cancelling_actually_stops_the_work`).
-    ///
-    /// The message is a filler: [`crate::pipeline::pack`] consults the token, not
-    /// the string, so nothing anywhere matches on it.
+    /// The message is filler: [`crate::pipeline::pack`] consults the token, not the string.
     pub fn check(&self) -> Result<(), String> {
         if self.is_cancelled() {
             return Err("build cancelled".into());
@@ -220,9 +193,8 @@ mod tests {
     #[test]
     fn phase_order_is_the_uis_percentage_scale() {
         let names: Vec<&str> = Phase::ALL.iter().map(|p| p.as_str()).collect();
-        // Mirrors PHASES in builder/app/src/lib/api/jobs.svelte.ts
-        // (minus "downloading", which is the host's own phase — the packer is
-        // handed local files and never downloads a source).
+        // Mirrors the web builder's PHASES, minus "downloading", which is the host's own phase: the
+        // packer is handed local files and never downloads a source.
         assert_eq!(names, ["merging", "ingest", "bbox", "land", "contours", "quadtree", "serialize"]);
         assert!(Phase::ALL.windows(2).all(|w| w[0] < w[1]), "ALL must be in reported order");
     }

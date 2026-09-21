@@ -12,9 +12,8 @@ use super::terrain::{IndexedTerrain, TerrainIndex};
 use super::validate::{parse_strict_id, validate_id};
 use super::{boundary, document_json, file_name, sorted_entries, Satellite, CATALOG_SCHEMA_VERSION, SCHEMA_DOC};
 
-/// A boundary bigger than this is worth a warning: §7 budgets "a few KB" per
-/// region, and the root carries one per region *before* a consumer knows anything
-/// else about the catalog.
+/// A boundary bigger than this is worth a warning: the budget is a few KB per region, and the root
+/// carries one per region before a consumer knows anything else about the catalog.
 const BOUNDARY_WARN_BYTES: usize = 16 * 1024;
 
 pub(super) const REGIONS_DIR: &str = "regions";
@@ -29,13 +28,12 @@ const REGION_CELLS_NAME: &str = "cells.json";
 #[serde(deny_unknown_fields)]
 struct RegionDoc {
     name: String,
-    /// Band id → the cell ids this region selects in that band. **Stored, not derived
-    /// from the boundary** (§6): a simplification error must not be able to drop an
-    /// edge cell, and two consumers with different point-in-polygon edge handling must
-    /// not be able to disagree about what a region is.
+    /// Band id to the cell ids this region selects in that band. Stored, not derived from the
+    /// boundary: a simplification error must not be able to drop an edge cell, and two consumers
+    /// with different point-in-polygon edge handling must not be able to disagree about a region.
     cells: BTreeMap<String, Vec<String>>,
-    /// The terrain cell ids this region selects, by the same intersect rule applied to
-    /// the terrain grid (§13.3). Empty or absent for a terrain-less catalog.
+    /// The terrain cell ids this region selects, by the same intersect rule applied to the terrain
+    /// grid. Empty or absent for a terrain-less catalog.
     #[serde(default)]
     terrain: Vec<String>,
 }
@@ -166,8 +164,8 @@ fn read_region(
                     band.id
                 ));
             }
-            // §6: a region MUST NOT name a cell absent from the band's index. A
-            // consumer would reject the pair, so publishing it is not an option.
+            // A region MUST NOT name a cell absent from the band's index. A consumer would reject
+            // the pair, so publishing it is not an option.
             let entry =
                 index.get(&canonical).map_err(|e| format!("{}: {e}", doc_path.display()))?.ok_or_else(|| {
                     format!(
@@ -203,8 +201,8 @@ fn read_region(
         }
     }
 
-    // §13.3: the terrain selection, resolved against the terrain index by exactly the
-    // rule a band's is resolved against its own.
+    // The terrain selection, resolved against the terrain index by exactly the rule a band's is
+    // resolved against its own.
     let terrain_selection = read_region_terrain(id, &doc, &doc_path, terrain, warnings)?;
 
     let poly_path = dir.join(REGION_POLY);
@@ -214,9 +212,8 @@ fn read_region(
             poly_path.display()
         )
     })?;
-    // One tolerance, [`boundary::DEFAULT_TOLERANCE_UDEG`], and it is published in the
-    // document beside the rings it produced — a consumer reads what it was simplified at
-    // rather than assuming.
+    // One tolerance, [`boundary::DEFAULT_TOLERANCE_UDEG`], published in the document beside the
+    // rings it produced, so a consumer reads what it was simplified at rather than assuming.
     let rings = boundary::simplified_rings(&poly, boundary::DEFAULT_TOLERANCE_UDEG)
         .map_err(|e| format!("{}: {e}", poly_path.display()))?;
     let boundary = Boundary { tolerance_udeg: boundary::DEFAULT_TOLERANCE_UDEG, rings };

@@ -1,28 +1,27 @@
-//! Host render benchmark harness + pixel-hash and read-counter golden gate (issues #327, #1467).
+//! Host render benchmark harness plus a pixel-hash and read-counter golden gate.
 //!
-//! Renders a fixed 8-scene matrix through the **real pipeline** — `obcm-testkit`'s deterministic
-//! fixture → `SliceSource` → `MapTables`/`MapCache`/`Reader` → `RenderScratch::render_timed` → the
+//! Renders a fixed 8-scene matrix through the real pipeline — `obcm-testkit`'s deterministic
+//! fixture, `SliceSource`, `MapTables`/`MapCache`/`Reader`, `RenderScratch::render_timed`, the
 //! device-resolution [`Framebuffer565`] — and prints per-stage timings (min of 10 after a warm-up),
 //! the [`RenderStats`] counters, and an FNV-1a 64 hash of the frame's pixels.
 //!
-//! Two jobs, one binary:
-//! - **Benchmark** (the epic's measuring instrument): the timings are the before/after numbers every
-//!   #329 optimization lands with. Printed, never gated — shared CI runners are noisy.
-//! - **Tripwire** (`--check`): both the frame hashes *and* the map read path's per-case read
-//!   counters are deterministic (seeded fixture, integer/`libm` math, fixed cache policy), so CI
-//!   compares them against the committed `golden.txt` and fails on any drift. Pixels catch a
-//!   rendering change; the counters catch a cache change that halves the hit rate while every pixel
-//!   stays identical (epic #1402 §2.5). A pure refactor must touch neither; an intentional change
-//!   regenerates the file with `--write-golden` in the same PR — that is the review signal.
+//! Two jobs, one binary. As a benchmark, the timings are the before-and-after numbers an
+//! optimization lands with: printed, never gated, because shared CI runners are noisy. As a
+//! tripwire, `--check` compares both the frame hashes and the map read path's per-case read
+//! counters against the committed `golden.txt` and fails on any drift; both are deterministic,
+//! from a seeded fixture, integer and `libm` math, and a fixed cache policy. Pixels catch a
+//! rendering change; the counters catch a cache change that halves the hit rate while every pixel
+//! stays identical. A pure refactor must touch neither; an intentional change regenerates the file
+//! with `--write-golden` in the same PR.
 //!
-//! `--check`/`--write-golden` cover **two** matrices against one file: the 8 render scenes and the
+//! `--check` and `--write-golden` cover two matrices against one file: the 8 render scenes and the
 //! 9 route-corridor snapshot cases, the latter under `corridor/` names.
 //!
 //! Modes: default (print the table), `--repeat <N>` (repeat the whole matrix and report
 //! min/median/max), `--write-golden <file>`, `--check <file>` (exit 1 on mismatch), `--corridor`
-//! (print the corridor matrix alone), and `--map <path> --mpp <f> --heading <deg>` — a manual
-//! escape hatch to run one scene against a real local `.obcm` (never in CI: real maps aren't
-//! byte-stable fixtures).
+//! (print the corridor matrix alone), and `--map <path> --mpp <f> --heading <deg>`, a manual escape
+//! hatch to run one scene against a real local `.obcm` — never in CI, because real maps are not
+//! byte-stable fixtures.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -384,7 +383,6 @@ fn print_repeat_table(repeats: usize) {
     }
 }
 
-// ==================== the route-corridor snapshot bench (epic #946, U2) ====================
 //
 // The Up-ahead list's data source (`Reader::corridor_pois`) is an on-demand snapshot, not a frame
 // stage, so it doesn't belong in the scene matrix — but it is the epic's named cost risk and its
@@ -626,7 +624,6 @@ fn print_corridor_table(results: &[CorridorResult], route: &[u8]) {
     );
 }
 
-// ==================== the golden file: pixels and read counters, one gate (issue #1467) ====================
 //
 // One record per case, `name key=value …`, keys named exactly as the `RenderStats` / corridor-table
 // fields that produced them so a golden line greps straight back to the code. Both matrices share
@@ -823,7 +820,7 @@ enum Mode {
         mpp: f32,
         heading: f32,
     },
-    /// The route-corridor snapshot cost matrix (epic #946 U2) — SD reads + host time, not pixels.
+    /// The route-corridor snapshot cost matrix — SD reads + host time, not pixels.
     Corridor,
 }
 

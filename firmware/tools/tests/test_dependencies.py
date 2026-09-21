@@ -51,13 +51,12 @@ def metadata_root(member_names, dependencies=()):
         )
     return {"workspace_members": members, "packages": packages}
 
-def rules(exceptions=()):
+def rules():
     return {
         "groups": {"low": ["low"], "high": ["high"]},
         "forbidden": [
             {"from_group": "low", "to_group": "high", "reason": "low must stay low"}
         ],
-        "exceptions": list(exceptions),
     }
 
 class DependencyTests(unittest.TestCase):
@@ -80,16 +79,7 @@ class DependencyTests(unittest.TestCase):
         edges = check_dependencies.local_edges(metadata(("low", "high", "dev")))
         self.assertEqual(edges, set())
 
-    def test_named_exception_allows_existing_debt(self):
-        exception = {"from": "low", "to": "high", "issue": "#1", "reason": "migration"}
-        edges = check_dependencies.local_edges(metadata(("low", "high", None)))
-        self.assertEqual(check_dependencies.check_edges(edges, rules((exception,))), [])
 
-    def test_stale_exception_forces_allowlist_tightening(self):
-        exception = {"from": "low", "to": "high", "issue": "#1", "reason": "migration"}
-        violations = check_dependencies.check_edges(set(), rules((exception,)))
-        self.assertEqual(len(violations), 1)
-        self.assertIn("stale dependency exception", violations[0])
 
     def test_ambiguous_group_membership_is_rejected(self):
         with self.assertRaisesRegex(check_dependencies.DependencyError, "ambiguous"):
@@ -113,11 +103,6 @@ class DependencyTests(unittest.TestCase):
         with self.assertRaisesRegex(check_dependencies.DependencyError, "duplicate forbidden dependency pair"):
             check_dependencies.check_edges(set(), invalid)
 
-    def test_duplicate_exception_edge_is_rejected(self):
-        exception = {"from": "low", "to": "high", "issue": "#1", "reason": "migration"}
-        invalid = rules((exception, dict(exception)))
-        with self.assertRaisesRegex(check_dependencies.DependencyError, "duplicate dependency exception"):
-            check_dependencies.check_edges({check_dependencies.Edge("low", "high")}, invalid)
 
     def test_excluded_board_target_is_visible_and_rejected(self):
         workspace = metadata_root(
@@ -135,7 +120,6 @@ class DependencyTests(unittest.TestCase):
                     "reason": "foundation must stay below composition roots",
                 }
             ],
-            "exceptions": [],
         }
 
         self.assertEqual(packages, {"obc-ports", "obc-fw-nrf54l"})
@@ -160,7 +144,6 @@ class DependencyTests(unittest.TestCase):
                     "reason": "foundation must stay below composition roots",
                 }
             ],
-            "exceptions": [],
         }
 
         self.assertIn(check_dependencies.Edge("obc-ports", "obc-boot"), edges)

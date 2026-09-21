@@ -1,9 +1,8 @@
-//! The free-extent bitmap (`FLAT_Store_Format.md` §6.2): the complement of the catalog, recomputed
-//! at mount.
+//! The free-extent bitmap (`FLAT_Store_Format.md`): the complement of the catalog, recomputed at
+//! mount.
 //!
 //! There is no free list on the card and nothing to reconcile — an extent is free exactly when no
-//! entry names it. The resident cost is the 8 KiB §6 budgets for it, which is what the entry's `u16`
-//! extent index buys.
+//! entry names it. The resident cost is 8 KiB, which is what the entry's `u16` extent index buys.
 
 use super::layout::{Ranges, MAX_EXTENTS};
 
@@ -27,14 +26,12 @@ impl Default for FreeMap {
 }
 
 impl FreeMap {
-    /// A card of no extents, none of them free — which is what a store that is serving no catalog has
-    /// to answer, rather than the whole address space.
+    /// A card of no extents, none of them free — what a store serving no catalog has to answer,
+    /// rather than the whole address space.
     ///
-    /// A `const` and not only a [`Default`], because the difference is 8 KiB of somebody's frame: a
-    /// constant expression is copied straight into the store being built, while `FreeMap::default()`
-    /// is a call returning 8 KiB by value, which
-    /// [`FlatStore::mount`](super::store::FlatStore::mount) then has to copy out of a stack temporary.
-    /// The #1386 frame gate measures exactly that symbol.
+    /// A `const` and not only a [`Default`], because a constant expression is copied straight into the
+    /// store being built while `FreeMap::default()` returns 8 KiB through a stack temporary. CI
+    /// measures that frame.
     pub const BLANK: FreeMap = FreeMap { words: [u64::MAX; WORDS], extents: 0 };
 
     /// Every extent of a card with `extents` extents free, and every address above it unavailable.
@@ -55,7 +52,7 @@ impl FreeMap {
     }
 
     /// Marks every extent of `ranges` used, and reports the first extent already taken — which at
-    /// mount is §5.3's overlap rule failing, and a structural failure of that copy.
+    /// mount is the overlap rule failing, and a structural failure of that copy.
     pub fn claim(&mut self, ranges: &Ranges) -> Result<(), u32> {
         for (first, count) in ranges.iter() {
             for extent in first as u32..first as u32 + count as u32 {
@@ -68,7 +65,6 @@ impl FreeMap {
         Ok(())
     }
 
-    /// Returns every extent of `ranges` to the allocator.
     pub fn release(&mut self, ranges: &Ranges) {
         for (first, count) in ranges.iter() {
             for extent in first as u32..first as u32 + count as u32 {
@@ -77,20 +73,17 @@ impl FreeMap {
         }
     }
 
-    /// Returns one extent to the allocator.
     pub fn release_one(&mut self, extent: u32) {
         self.words[extent as usize / 64] &= !(1 << (extent % 64));
     }
 
-    /// Free extents.
     pub fn free(&self) -> u32 {
         MAX_EXTENTS - self.words.iter().map(|word| word.count_ones()).sum::<u32>()
     }
 
-    /// §6.2's allocation: first-fit over the free bitmap in ascending extent order, at most eight
-    /// ranges. `None` is the refusal — the caller sees it, never a partial object.
-    ///
-    /// Nothing is marked here: the caller claims the result, so a refusal leaves the map untouched.
+    /// First-fit over the free bitmap in ascending extent order, at most eight ranges. `None` is the
+    /// refusal — the caller sees it, never a partial object. Nothing is marked here: the caller claims
+    /// the result, so a refusal leaves the map untouched.
     pub fn first_fit(&self, extents: u32) -> Option<Ranges> {
         let mut out = Ranges::default();
         let mut remaining = extents;

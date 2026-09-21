@@ -6,9 +6,8 @@ use obc_route::{Climbs, RouteReader, Waypoints};
 
 use super::NavigatorMachine;
 
-/// A route-catalog index stored as `index + 1`. Catalog indices are bounded by
-/// [`crate::MAX_ROUTES`], so the nonzero representation preserves every valid value and gives
-/// [`Option`] a compact empty state.
+/// A route-catalog index stored as `index + 1`, so [`Option`] gets a compact empty state. Catalog
+/// indices are bounded by [`crate::MAX_ROUTES`], so the nonzero form preserves every valid value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RouteIndex(NonZeroUsize);
 
@@ -90,42 +89,18 @@ impl RouteState {
     }
 }
 
-/// Enter/exit hysteresis for [`NavigatorMachine::update_active_climb`] — the margins that turn the raw
-/// interval lookup ([`Climbs::active_at`], exact detected geometry, no slack) into a flap-free "on
-/// a climb now" state.
-///
-/// **Enter early, exit late.** The raw intervals are the detected trough→summit, but the matched
-/// `progress_m` jitters a few metres either way of the true position each fix (matcher snap +
-/// smoothing). Without slack a rider straddling the base or the summit would toggle the Climb
-/// screen on and off between consecutive fixes. So we **arm** the climb once progress reaches
-/// [`CLIMB_ENTER_MARGIN_M`] *before* the base and **hold** it until progress passes
-/// [`CLIMB_EXIT_MARGIN_M`] *past* the summit — an on-then-off band wider than the jitter, biased so
-/// the panel appears slightly ahead of the ramp (useful) and lingers slightly past the crest
-/// (avoids a premature dismissal on the false-flat over the top).
-///
-/// The margins are asymmetric on purpose: showing the climb a touch early is welcome, and holding a
-/// touch past the crest reads better than snapping away the instant `progress == end_m`. Both are
-/// well under [`obc_route::MIN_LEN`] (400 m), so they can't make one climb's exit band overlap the
-/// next climb's entry band on any kept climb.
+/// Metres before a climb's base the "on climb" state arms. The matched `progress_m` jitters a few
+/// metres each fix, so a raw interval lookup would toggle the Climb screen at the base or the
+/// summit. Both margins are well under [`obc_route::MIN_LEN`], so two kept climbs' bands cannot
+/// overlap.
 const CLIMB_ENTER_MARGIN_M: u32 = 50;
-/// Distance (m) past a climb's summit the "on climb" state is held before it disarms — see
-/// [`CLIMB_ENTER_MARGIN_M`].
+/// Metres past a climb's summit the "on climb" state is held before it disarms.
 const CLIMB_EXIT_MARGIN_M: u32 = 30;
 
-/// The active-climb hysteresis, as a **pure** function of the climbs list, the matched progress,
-/// and the previous active index — the whole flap-guard policy in one testable place (the
-/// `NavigatorMachine::update_active_climb` wrapper only adds the off-route freeze and the once-per-entry
-/// refill).
-///
-/// While *on* climb `prev`, hold it until `progress` passes its summit + [`CLIMB_EXIT_MARGIN_M`]
-/// (or the index went stale — a shrunk list after a swap); otherwise re-arm. To *arm* a climb,
-/// `progress` must have reached within [`CLIMB_ENTER_MARGIN_M`] of its base and not yet passed its
-/// summit — the first such climb in route order (they're non-overlapping and the margins are far
-/// under [`obc_route::MIN_LEN`], so the bands can't collide on kept climbs). The exit band is wider
-/// on the far side and the entry band on the near side, so a rider straddling a boundary can't
-/// toggle the state between consecutive fixes.
+/// The active-climb hysteresis, as a pure function of the climbs list, the matched progress and the
+/// previous active index. While on climb `prev`, hold it until `progress` passes its summit plus
+/// [`CLIMB_EXIT_MARGIN_M`]; otherwise arm the first climb whose entry band contains `progress`.
 fn resolve_active_climb(climbs: &Climbs, progress: u32, prev: Option<usize>) -> Option<usize> {
-    // While committed to a climb, hold it across its exit band before reconsidering.
     if let Some(i) = prev {
         if let Some(seg) = climbs.as_slice().get(i) {
             if progress <= seg.end_m.saturating_add(CLIMB_EXIT_MARGIN_M) {
@@ -133,39 +108,26 @@ fn resolve_active_climb(climbs: &Climbs, progress: u32, prev: Option<usize>) -> 
             }
         }
     }
-    // Not held: arm the first climb whose entry band (base − enter margin ..= summit) contains
-    // progress.
     climbs
         .as_slice()
         .iter()
         .position(|c| progress >= c.start_m.saturating_sub(CLIMB_ENTER_MARGIN_M) && progress <= c.end_m)
 }
 
-/// Distance (m) a passed waypoint **lingers** as "next" before the index advances — distance
-/// hysteresis, not time. GPS jitter around a waypoint's position stays inside this band, so the
-/// resolved index can't flap there; the shown distance-to-go clamps to 0 through the linger. Matches
-/// the epic's 100 m pass-linger.
+/// Metres a passed waypoint lingers as "next" before the index advances. GPS jitter around a
+/// waypoint's position stays inside this band, so the resolved index cannot flap there.
 pub(crate) const WAYPOINT_LINGER_M: u32 = 100;
 
-/// The next-waypoint index as a **pure** function of the resident table, the matched progress, and
-/// the previously-resolved index — the waypoint sibling of [`resolve_active_climb`]. The
-/// [`update_next_waypoint`](NavigatorMachine::update_next_waypoint) wrapper adds the off-route freeze and
-/// the re-window; this is the whole "which waypoint is next?" policy in one testable place.
-///
-/// The next waypoint is the **first entry still ahead**: one whose linger band is open,
-/// `progress < dist_along_m + WAYPOINT_LINGER_M`. A passed waypoint therefore lingers
-/// [`WAYPOINT_LINGER_M`] before the index moves on, so jitter around a waypoint can't flap it. `prev`
-/// only keeps the index from *regressing* on a progress dip (jitter at the far, advance edge of the
-/// band) — it never steps back onto a waypoint already passed while progress oscillates. `None` once
-/// the rider is past every waypoint's linger.
+/// The next-waypoint index, as a pure function of the resident table, the matched progress and the
+/// previously-resolved index. The next waypoint is the first entry whose linger band is still open.
+/// `prev` only keeps the index from regressing on a progress dip; `None` once every one is passed.
 fn resolve_next_waypoint(wpts: &Waypoints, progress_m: u32, prev: Option<usize>) -> Option<usize> {
     let ahead = wpts.as_slice().iter().position(|w| progress_m < w.dist_along_m.saturating_add(WAYPOINT_LINGER_M));
     match ahead {
         // Past every waypoint's linger — the chip / fields go empty even if one was held.
         None => None,
-        // Hold the furthest-reached index against a jittering cursor (never un-pass a waypoint);
-        // otherwise take the first still-ahead one. A stale `prev` (≥ len, after a table shrink)
-        // falls through to `a`.
+        // Hold the furthest-reached index against a jittering cursor (never un-pass a waypoint).
+        // A stale `prev` (≥ len, after a table shrink) falls through to `a`.
         Some(a) => match prev {
             Some(p) if p > a && p < wpts.len() => Some(p),
             _ => Some(a),
@@ -174,7 +136,6 @@ fn resolve_next_waypoint(wpts: &Waypoints, progress_m: u32, prev: Option<usize>)
 }
 
 impl NavigatorMachine {
-    /// The live route-following view screens render.
     pub(crate) fn route_state(&self) -> &RouteState {
         &self.following
     }
@@ -211,14 +172,12 @@ impl NavigatorMachine {
         self.following.active_route = None;
     }
 
-    /// Select a route and return the previous selection.
     pub(crate) fn replace_active_route(&mut self, route: usize) -> Option<usize> {
         let previous = self.following.active_route;
         self.set_active_route(Some(route));
         previous
     }
 
-    /// Queue a seam re-anchor for the newly committed route.
     pub(crate) fn request_seam(&mut self, route: usize, anchor_m: u32) {
         self.following.request_seam(route, anchor_m);
     }
@@ -261,22 +220,11 @@ impl NavigatorMachine {
     }
 
     /// The once-per-load route sync, run at the top of every tick. Returns whether the map must
-    /// repaint (a route line appeared/vanished, the matcher re-locked).
+    /// repaint. The climbs and waypoints caches build once per load and advance their build key only
+    /// when the geometry is streamable: a `None` route keeps the old state and retries next tick.
     ///
-    /// A new **ride session** re-locks the matcher too, and that is Recorder's edge rather than a
-    /// key held here — see [`reset_ride`](NavigatorMachine::reset_ride).
-    ///
-    /// - The **matcher** follows the *navigated route*: a load or a "Swap route only" re-locks it.
-    /// - The **accumulators, trail and pace window** follow the *ride session*, which is Recorder's:
-    ///   the pass applies them on its session edge. A swap keeps the session, so it keeps them.
-    /// - `route_total_m` mirrors the active route's length for the riding views (0 when none
-    ///   loaded). A change here means the *drawable* route appeared or vanished — a load, or a
-    ///   transient SD glitch recovering where the geometry becomes streamable a frame or two later.
-    /// - The **climbs** and **waypoints** caches build once per load — climbs here in the tick
-    ///   (not render) because [`update_active_climb`](NavigatorMachine::update_active_climb) needs the
-    ///   list before the fix is matched. Only advance a build key when the geometry is actually
-    ///   streamable: a `None` route (idle, or a transient SD glitch) leaves the old state in place
-    ///   and retries next tick, rather than latching an empty result for the route.
+    /// The matcher follows the navigated route, so a load or a swap re-locks it. The accumulators,
+    /// the trail and the pace window follow the ride session, which is Recorder's.
     pub(crate) fn sync_route_state(&mut self, route: Option<&RouteReader>) -> bool {
         let mut dirty = false;
         if self.following.active_route != self.matched_route {
@@ -293,7 +241,6 @@ impl NavigatorMachine {
             dirty = true;
         }
 
-        // Segment the route's climbs once per load — the twin of the elevation-profile rebuild.
         if self.following.active_route != self.climbs_route {
             match (self.following.active_route, route) {
                 (Some(_), Some(r)) => {
@@ -302,7 +249,6 @@ impl NavigatorMachine {
                     self.following.active_climb = None; // a fresh list — re-derive the active climb on the next match
                 }
                 (None, _) => {
-                    // The route unloaded: drop the climbs and the on-climb state.
                     self.climbs = Climbs::new();
                     self.climbs_route = None;
                     self.following.active_climb = None;
@@ -311,9 +257,8 @@ impl NavigatorMachine {
             }
         }
 
-        // Load the route's named waypoints once per load, alongside the climbs above and on the
-        // same streamable-geometry guard. Loaded from the route start (`min_dist_m = 0`); a
-        // truncated table is slid forward later, in `update_next_waypoint`, not here.
+        // Load the route's named waypoints once per load, on the same streamable-geometry guard.
+        // Loaded from the route start; a truncated table is slid forward in `update_next_waypoint`.
         if self.following.active_route != self.waypoints_route {
             match (self.following.active_route, route) {
                 (Some(_), Some(r)) => {
@@ -322,7 +267,6 @@ impl NavigatorMachine {
                     self.following.next_waypoint = None; // a fresh table — re-derive the next waypoint on the next match
                 }
                 (None, _) => {
-                    // The route unloaded: drop the table and the next-waypoint state.
                     self.waypoints = Waypoints::new();
                     self.waypoints_route = None;
                     self.following.next_waypoint = None;
@@ -338,34 +282,26 @@ impl NavigatorMachine {
     }
 
     /// Snap a fresh fix onto the active route: run the matcher and store the result on
-    /// [`RouteState`]. Called once per fresh fix (never on a dropout, so progress is not re-derived
-    /// from a stale position).
+    /// [`RouteState`]. Called once per fresh fix, never on a dropout, so progress is not re-derived
+    /// from a stale position.
     pub(crate) fn match_fix(&mut self, fix: obc_ports::Fix, route: &RouteReader) {
         let m = self.route_match.update_to(fix.lon, fix.lat, route, self.visit_ceiling().unwrap_or(u32::MAX));
         self.following.apply_match(m);
         self.advance_visit((fix.lon, fix.lat), route);
     }
 
-    /// A fresh fix went **unmatched** — the Recalculating freeze (#1146 P2) holds the matcher for
-    /// the length of a route search, which is seconds, not one fix. Arm a one-shot wide re-lock so
-    /// the first match after the freeze reaches wherever the rider actually got to: the tight
+    /// A fresh fix went unmatched. The Recalculating freeze holds the matcher for the length of a
+    /// route search, which is seconds rather than one fix, so arm a one-shot wide re-lock: the tight
     /// on-route window is sized for one fix's travel, and a rider who rode past it would otherwise
     /// come out of the freeze with a false off-route chip and frozen progress.
-    ///
-    /// **The freezes this covers are the ones that end *without* new geometry** — a cancel, a
-    /// `NoPath`/`Exhausted` answer, a detour's terminal edge. A search that *succeeds* never needs
-    /// it: committing the result runs `drop_route_derived_state`, and its `RouteMatch::reset`
-    /// clears this flag along with the rest of the lock, leaving the matcher unstarted so the next
-    /// fix scans the whole new route regardless. This is for the rider who was shown
-    /// "Recalculating" and then handed back the route they were already riding.
     pub(crate) fn note_unmatched_fix(&mut self) {
         self.route_match.relock_wide();
     }
 
-    /// Apply a queued seam re-anchor (#882) once matching route geometry is available: install
-    /// matcher progress + the forward-only floor at the splice seam. Returns `true` when the
-    /// matcher/progress floor moved; a transient `None` reader leaves the request queued, while a
-    /// route-key mismatch drops it rather than applying the distance to different geometry.
+    /// Apply a queued seam re-anchor once matching route geometry is available: install matcher
+    /// progress and the forward-only floor at the splice seam. A transient `None` reader leaves the
+    /// request queued; a route-key mismatch drops it rather than applying the distance to different
+    /// geometry.
     pub(crate) fn apply_pending_seam(&mut self, route: Option<&RouteReader>) -> bool {
         let Some(req) = self.following.seam_request else { return false };
         if self.following.active_route != Some(req.route.get()) {
@@ -386,30 +322,15 @@ impl NavigatorMachine {
         }
     }
 
-    /// Recompute the active climb from the freshly-matched progress, applying
-    /// enter/exit hysteresis over the raw [`Climbs::active_at`] lookup, and refill the resident
-    /// [`climb_profile`](NavigatorMachine::climb_profile) detail buffer **only on a new climb entry**
-    /// (never per frame — the fill streams the climb's chunks).
+    /// Recompute the active climb from the freshly-matched progress, and refill the resident
+    /// [`climb_profile`](NavigatorMachine::climb_profile) only on a new climb entry, never per frame,
+    /// because the fill streams the climb's chunks. Returns the `(prev, next)` transition when the
+    /// active climb changed.
     ///
-    /// **Hysteresis.** The raw intervals carry no slack, so this widens them per the current state:
-    /// while *off* a climb, a climb arms once progress reaches within [`CLIMB_ENTER_MARGIN_M`] of
-    /// its base; while *on* a climb, it stays that climb until progress passes
-    /// [`CLIMB_EXIT_MARGIN_M`] past its summit (or the rider has clearly moved onto a *different*
-    /// climb's core interval). That asymmetric band is wider than the matcher's per-fix jitter, so
-    /// straddling a boundary can't flap the on-climb state between consecutive fixes.
-    ///
-    /// **Off-route.** A stale match freezes `progress_m` (the matcher holds it while off-route), so
-    /// leaving the route mid-climb *keeps* the current climb rather than snapping it away on a
-    /// frozen cursor — the panel stays put until the rider rejoins and progress moves again. Only an
-    /// explicit clear path (route swap/unload/replace) drops it.
-    ///
-    /// Called on each matched fix with the live route reader (the source the refill reads); a
-    /// no-op that touches no SD when the active climb is unchanged. Returns the `(prev, next)`
-    /// transition when the active climb **changed** (the caller repaints and runs the C5
-    /// auto-switch off the same edge), `None` when unchanged.
+    /// Off-route, the matcher freezes `progress_m`, so leaving the route mid-climb keeps the current
+    /// climb rather than snapping it away on a frozen cursor.
     pub(crate) fn update_active_climb(&mut self, route: &RouteReader) -> Option<(Option<usize>, Option<usize>)> {
-        // Off-route freezes the cursor, so keep whatever climb we were on — don't recompute against
-        // a stale progress. `apply_match` leaves `progress_m` frozen while off-route.
+        // Off-route freezes the cursor, so keep whatever climb we were on.
         if self.following.off_route {
             return None;
         }
@@ -419,8 +340,6 @@ impl NavigatorMachine {
             return None; // unchanged — no refill, no SD read.
         }
         self.following.active_climb = next;
-        // Refill the single resident detail buffer for the new climb — only here, on the transition,
-        // so a fix that stays on the same climb never re-reads the card.
         if let Some(seg) = next.and_then(|i| self.climbs.as_slice().get(i)) {
             self.climb_profile.fill(route, seg);
             #[cfg(test)]
@@ -431,30 +350,17 @@ impl NavigatorMachine {
         Some((prev, next))
     }
 
-    /// Recompute the next waypoint from the freshly-matched progress via the pure
-    /// [`resolve_next_waypoint`], and slide a truncated table's window forward when the rider passes
-    /// its tail — the waypoint twin of [`update_active_climb`](NavigatorMachine::update_active_climb).
+    /// Recompute the next waypoint from the freshly-matched progress, and slide a truncated table's
+    /// window forward when the rider passes its tail. Returns whether the next waypoint changed.
     ///
-    /// **Off-route.** `apply_match` freezes `progress_m` off-route, so the index self-freezes; like
-    /// the climb resolver, just don't fight that — return and hold whatever was next. (The chip is
-    /// hidden off-route anyway; the along-route distance is meaningless there.)
-    ///
-    /// **Re-window on exhaustion.** A file with more than [`MAX_WAYPOINTS`](obc_route::MAX_WAYPOINTS)
-    /// named waypoints loads only the first window and flags [`truncated`](obc_route::Waypoints).
-    /// Once the rider has passed the resident tail (its linger included), reload from the current
-    /// progress so the far waypoints keep tracking. Gated on `truncated`, so a normal route never
-    /// re-streams; and the reload starts strictly past the old window (all its entries sit at
-    /// `dist < progress`), so it can't re-fire on the next tick.
-    ///
-    /// Called on each matched fix; touches SD only on the rare re-window. Returns whether the next
-    /// waypoint changed (the caller repaints the chip / fields).
+    /// The re-window is gated on [`truncated`](obc_route::Waypoints), so a normal route never
+    /// re-streams, and it starts strictly past the old window, so it cannot re-fire next tick.
+    /// Off-route, `progress_m` is frozen, so the index self-freezes and is left alone.
     pub(crate) fn update_next_waypoint(&mut self, route: &RouteReader) -> bool {
-        // Off-route freezes progress, so the resolved index freezes with it — keep what we had.
         if self.following.off_route {
             return false;
         }
-        // Slide a truncated window forward once its whole resident span (last entry + linger) is
-        // behind the rider — see the re-window note above.
+        // Slide a truncated window forward once its whole resident span is behind the rider.
         if self.waypoints.truncated {
             if let Some(last) = self.waypoints.as_slice().last() {
                 if self.following.progress_m >= last.dist_along_m.saturating_add(WAYPOINT_LINGER_M) {
@@ -468,7 +374,7 @@ impl NavigatorMachine {
         let next = resolve_next_waypoint(&self.waypoints, self.following.progress_m, prev);
         if next != prev {
             self.following.next_waypoint = next;
-            return true; // the next waypoint changed — the chip / fields must repaint
+            return true;
         }
         false
     }
@@ -482,26 +388,22 @@ impl NavigatorMachine {
         }
     }
 
-    /// Drop **everything derived from the active route's geometry** — matcher lock, elevation
-    /// profile, climbs (+ on-climb state), waypoints (+ next-waypoint), and the match-derived
-    /// readouts in [`RouteState`] — so the next tick/render re-derives all of it from the reopened
-    /// geometry. The forced-adoption discipline shared by a committed route plan (new bytes under
-    /// the reserved nav id) and an active-replace upload (new bytes under a kept id): the same-id
-    /// remap deliberately preserves same-id state, and these are exactly the cases where that
-    /// preservation would carry stale state onto new geometry. The recording session is untouched.
+    /// Drop everything derived from the active route's geometry — matcher lock, elevation profile,
+    /// climbs, waypoints and the match-derived readouts in [`RouteState`] — so the next tick and
+    /// render re-derive it. New bytes under a kept route id are exactly the case the same-id remap
+    /// would otherwise treat as unchanged state. The recording session is untouched.
     pub(crate) fn drop_route_derived_state(&mut self) {
-        // `reset` also clears any wide re-lock armed by a freeze (`note_unmatched_fix`), and should:
-        // an unstarted matcher scans the whole route on its next fix, which is wider still. That is
-        // why the wide window is only ever spent on a freeze that ended without new geometry.
+        // `reset` also clears any wide re-lock armed by a freeze: an unstarted matcher scans the
+        // whole route on its next fix, which is wider still.
         self.route_match.reset();
-        self.matched_route = None; // tick re-locks the matcher from the current fix
+        self.matched_route = None;
         self.profile = None;
-        self.profile_route = None; // the next render rebuilds from the reopened geometry
+        self.profile_route = None;
         self.climbs = Climbs::new();
-        self.climbs_route = None; // the next tick re-segments from the reopened geometry
+        self.climbs_route = None;
         self.following.active_climb = None;
         self.waypoints = Waypoints::new();
-        self.waypoints_route = None; // the next tick re-loads from the reopened geometry
+        self.waypoints_route = None;
         self.following.next_waypoint = None;
         self.following.waypoint_count = 0;
         self.following.progress_m = 0;
@@ -510,22 +412,19 @@ impl NavigatorMachine {
         self.following.seam_request = None;
     }
 
-    /// Re-point every route-keyed cache after a catalog replacement (#450): each build key follows
-    /// its route's identity through `remap`; a key whose route vanished drops its cache (and the
-    /// derived [`RouteState`] hanging off it). The active-route remap itself lives here too,
-    /// so the matcher reset on a vanished navigated route can't be forgotten by a caller.
+    /// Re-point every route-keyed cache after a catalog replacement: each build key follows its
+    /// route's identity through `remap`, and a key whose route vanished drops its cache. The
+    /// active-route remap lives here too, so a caller cannot forget the matcher reset.
     pub(crate) fn remap_route_keys(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
-        // The navigated route + the caches keyed on it. When the identity survives, all move
-        // together, so nothing resets (no matcher re-lock, no profile rebuild). When it vanished,
-        // navigation unloads and the stale per-route state is dropped with it.
+        // When the identity survives, the navigated route and its caches all move together, so
+        // nothing resets. When it vanished, navigation unloads and the per-route state goes with it.
         let old_active = self.following.active_route;
         self.following.active_route = old_active.and_then(remap);
-        // A queued seam re-anchor (one tick between detour commit and geometry) follows the same
-        // durable route identity as `active_route`, or is cancelled if that route vanished. So does
-        // Navigator's undelivered detour request, which its owner remaps beside this call.
+        // A queued seam re-anchor follows the same durable route identity as `active_route`, or is
+        // cancelled if that route vanished. So does Navigator's undelivered detour request.
         self.following.remap_seam(remap);
         if old_active.is_some() && self.following.active_route.is_none() {
-            self.route_match.reset(); // drop stale progress/off-route from the vanished route
+            self.route_match.reset();
         }
         self.matched_route = self.matched_route.and_then(remap);
         let old_profile = self.profile_route;
@@ -533,17 +432,14 @@ impl NavigatorMachine {
         if old_profile.is_some() && self.profile_route.is_none() {
             self.profile = None;
         }
-        // The climbs cache follows the same identity: it survives a rescan that keeps the route
-        // (same-id remap), and drops when the navigated route vanishes. Clearing the active-climb
-        // state too keeps a stale "on climb" flag from stranding the rider on a gone route.
+        // Clearing the active-climb state with the cache keeps a stale "on climb" flag from
+        // stranding the rider on a gone route.
         let old_climbs = self.climbs_route;
         self.climbs_route = old_climbs.and_then(remap);
         if old_climbs.is_some() && self.climbs_route.is_none() {
             self.climbs = Climbs::new();
             self.following.active_climb = None;
         }
-        // The waypoint table follows that same identity — remapped across a rescan, dropped (with
-        // the next-waypoint index) when the navigated route vanishes.
         let old_wpts = self.waypoints_route;
         self.waypoints_route = old_wpts.and_then(remap);
         if old_wpts.is_some() && self.waypoints_route.is_none() {
@@ -632,13 +528,6 @@ mod tests {
         placed.assert_boot_state();
     }
 
-    // --- the pure climb resolver (C3, #509) ---
-    //
-    // `resolve_active_climb` is pinned directly over a hand-built `Climbs` list — enter, exit,
-    // and the flap-guard — with no reader. The App-side wiring (build-on-load, clear-on-unload,
-    // the once-per-entry `ClimbProfile::fill`, the C5 auto-switch) stays pinned end-to-end in
-    // `app.rs` over the committed Grimsel fixture.
-
     use obc_route::ClimbSeg;
 
     /// A `ClimbSeg` over `[start_m, end_m]` — the other fields don't affect the interval hysteresis.
@@ -653,7 +542,6 @@ mod tests {
         }
     }
 
-    /// A `Climbs` list from `(start, end)` pairs.
     fn climbs(spans: &[(u32, u32)]) -> Climbs {
         let mut c = Climbs::new();
         for &(s, e) in spans {
@@ -662,19 +550,16 @@ mod tests {
         c
     }
 
-    /// Enter: below a climb's entry band there's no active climb; once progress reaches within
-    /// `CLIMB_ENTER_MARGIN_M` of the base the climb arms (slightly *before* the base), and it stays
-    /// armed through the interval.
+    /// Below the entry band there is no active climb; the climb arms slightly before the base and
+    /// stays armed through the interval.
     #[test]
     fn resolve_arms_a_climb_at_its_entry_band() {
         let cs = climbs(&[(1000, 3000)]);
-        // Well before the entry band (base 1000 − 50 = 950): nothing.
         assert_eq!(resolve_active_climb(&cs, 800, None), None);
-        // Just outside the band: still nothing.
+        // Just outside the entry band (base 1000 − 50 = 950): still nothing.
         assert_eq!(resolve_active_climb(&cs, 949, None), None);
         // Inside the entry band, before the base: armed early (the point of the enter margin).
         assert_eq!(resolve_active_climb(&cs, 960, None), Some(0));
-        // Mid-climb: on it.
         assert_eq!(resolve_active_climb(&cs, 2000, None), Some(0));
     }
 
@@ -682,7 +567,6 @@ mod tests {
     #[test]
     fn resolve_holds_past_the_summit_then_exits() {
         let cs = climbs(&[(1000, 3000)]);
-        // At the summit: still on it.
         assert_eq!(resolve_active_climb(&cs, 3000, Some(0)), Some(0));
         // Within the exit band (summit 3000 + 30 = 3030): held.
         assert_eq!(resolve_active_climb(&cs, 3025, Some(0)), Some(0));
@@ -695,11 +579,9 @@ mod tests {
     #[test]
     fn resolve_does_not_flap_at_a_boundary() {
         let cs = climbs(&[(1000, 3000)]);
-        // Arm at the base.
         let mut active = resolve_active_climb(&cs, 1000, None);
         assert_eq!(active, Some(0));
-        // Progress jitters back a few metres below the base across several fixes — inside the entry
-        // band, so the climb stays armed every time (no off→on→off flapping).
+        // Progress jitters back below the base, inside the entry band, so the climb stays armed.
         for p in [995u32, 980, 970, 990, 1005, 998] {
             active = resolve_active_climb(&cs, p, active);
             assert_eq!(active, Some(0), "jitter around the base must not drop the active climb");
@@ -712,20 +594,18 @@ mod tests {
         }
     }
 
-    /// Back-to-back climbs (the Grimsel shape): leaving climb 0's exit band hands straight over to
-    /// climb 1 whose entry band it's already inside — one clean transition, never a gap of `None`.
+    /// Leaving climb 0's exit band hands straight over to climb 1, whose entry band already contains
+    /// progress: one clean transition, never a gap of `None`.
     #[test]
     fn resolve_hands_over_between_adjacent_climbs() {
         let cs = climbs(&[(1000, 3000), (3000, 5000)]);
-        // On climb 0 at its summit, held through the exit band.
         assert_eq!(resolve_active_climb(&cs, 3010, Some(0)), Some(0));
-        // Past climb 0's exit band: re-arms, and climb 1's entry band already contains progress →
-        // straight onto climb 1.
+        // Past climb 0's exit band: re-arms straight onto climb 1.
         assert_eq!(resolve_active_climb(&cs, 3040, Some(0)), Some(1));
     }
 
-    /// A stale index (the list shrank under the previous active climb, e.g. a swap to a flatter
-    /// route) doesn't strand the resolver — it re-arms from scratch (here: nothing).
+    /// A stale index (the list shrank under the previous active climb) does not strand the resolver:
+    /// it re-arms from scratch.
     #[test]
     fn resolve_recovers_from_a_stale_index() {
         let cs = climbs(&[(1000, 3000)]);
@@ -733,15 +613,7 @@ mod tests {
         assert_eq!(resolve_active_climb(&cs, 200, Some(5)), None);
     }
 
-    // --- next-waypoint tracking (#569) ---
-    //
-    // The pure resolver `resolve_next_waypoint` is pinned directly over a hand-built `Waypoints`
-    // table: the linger advance, the anti-flap jitter guard, the past-the-last `None`, and a fresh
-    // route starting at index 0. (The App-side wiring — build-on-load, off-route freeze, re-window,
-    // route-swap clear — rides the same tick/Navigator machinery the climb wiring does.)
-
-    /// The index advances at exactly `dist + WAYPOINT_LINGER_M`, and not one metre before — the
-    /// passed waypoint lingers the whole 100 m band.
+    /// The index advances at exactly `dist + WAYPOINT_LINGER_M` and not one metre before.
     #[test]
     fn resolve_next_advances_exactly_at_the_linger() {
         let w = wpts(&[(1_000, "A"), (2_000, "B")]);
@@ -753,8 +625,7 @@ mod tests {
         assert_eq!(resolve_next_waypoint(&w, 1_100, Some(0)), Some(1));
     }
 
-    /// Jitter around a waypoint's own position (progress wobbling ±30 m across A's `dist`) never
-    /// flaps the index — the linger band absorbs it.
+    /// Jitter around a waypoint's own position never flaps the index.
     #[test]
     fn resolve_next_does_not_flap_around_a_waypoint() {
         let w = wpts(&[(1_000, "A"), (2_000, "B")]);
@@ -777,22 +648,19 @@ mod tests {
     #[test]
     fn resolve_next_is_none_past_the_last() {
         let w = wpts(&[(1_000, "A"), (2_000, "B")]);
-        // Inside B's band: still B.
         assert_eq!(resolve_next_waypoint(&w, 2_099, Some(1)), Some(1));
         // Past B + 100: nothing ahead.
         assert_eq!(resolve_next_waypoint(&w, 2_100, Some(1)), None);
         assert_eq!(resolve_next_waypoint(&w, 9_999, Some(1)), None);
     }
 
-    /// A fresh route (no prior index) starts at the first waypoint ahead — index 0 from progress 0,
-    /// or the first still-ahead one when the rider starts mid-route.
+    /// A fresh route with no prior index starts at the first waypoint ahead.
     #[test]
     fn resolve_next_fresh_route_starts_at_the_first_ahead() {
         let w = wpts(&[(1_000, "A"), (2_000, "B"), (3_000, "C")]);
         assert_eq!(resolve_next_waypoint(&w, 0, None), Some(0));
         // Starting past A's linger picks B (the first still-ahead), not A.
         assert_eq!(resolve_next_waypoint(&w, 1_500, None), Some(1));
-        // An empty table is always `None`.
         assert_eq!(resolve_next_waypoint(&Waypoints::new(), 0, None), None);
     }
 }

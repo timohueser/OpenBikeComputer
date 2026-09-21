@@ -8,7 +8,7 @@ use obc_app::recorder::RideClose;
 use obc_app::{CatalogObjectId, RideEntry, RideSummary};
 use obc_route::{Profile, RideStats};
 
-/// An in-memory ride store: a fixed demo catalog so the Rides screen renders (#454). Hold-to-delete
+/// An in-memory ride store: a fixed demo catalog so the Rides screen renders. Hold-to-delete
 /// removes rows for the session; nothing is ever written.
 pub struct MemRideStore {
     catalog: Vec<RideEntry>,
@@ -56,10 +56,9 @@ impl RideRepository for MemRideStore {
 }
 
 /// An in-memory track store: no filesystem, so no on-disk ride object — the breadcrumb and the ride
-/// totals are the app's own. It takes the samples it is handed and keeps none of them, and mirrors
-/// whether a ride is active so
-/// `is_recording()` stays honest, and numbers the rides it closes so a finalize can answer with an
-/// identity like every other store.
+/// totals are the app's own. It takes the samples it is handed and keeps none of them, mirrors
+/// whether a ride is active so `is_recording()` stays honest, and numbers the rides it closes so a
+/// finalize can answer with an identity like every other store.
 #[derive(Default)]
 pub struct MemTrackStore {
     recording: bool,

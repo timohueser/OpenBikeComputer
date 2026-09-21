@@ -1,44 +1,31 @@
-//! The **scratch seam** — where the engine puts bookkeeping it is not allowed to keep in memory.
+//! The scratch seam: where the engine puts bookkeeping it is not allowed to keep in memory.
 //!
-//! The engine never touches a filesystem: it has to run in a browser tab, so every byte it reads
-//! crosses [`obc_formats::io::ByteSource`] and every byte it writes crosses [`crate::MapStore`].
-//! That rule is what this module extends rather than breaks. A country-scale merge's *bookkeeping*
-//! — not its output, not its input — is measured in gigabytes at DACH scale (#1116 phase D), and
-//! none of it is information that has to be resident: every global step has a sorted-pass
-//! equivalent, and a sorted pass needs somewhere to spill.
+//! The engine never touches a filesystem, because it has to run in a browser tab. A country-scale
+//! merge's bookkeeping — not its output, not its input — is measured in gigabytes, and none of it
+//! has to be resident: every global step has a sorted-pass equivalent, and a sorted pass needs
+//! somewhere to spill.
 //!
-//! [`ScratchStore`] is that somewhere, and it is a **host** capability exactly as the shard store
-//! is. The native CLI backs it with temp files; a browser backs it with OPFS sync access handles;
-//! the tests and any host without storage use [`MemoryScratch`], which is honest about being a
-//! fallback rather than a win.
+//! [`ScratchStore`] is that somewhere, and it is a host capability exactly as the map store is. The
+//! native CLI backs it with temp files; a browser backs it with OPFS sync access handles; the tests
+//! and any host without storage use [`MemoryScratch`].
 //!
-//! # The contract, and why it is shaped like this
+//! The contract:
 //!
-//! * **Anonymous.** A scratch file has no name a caller chooses and no meaning outside the run that
-//!   created it. [`ScratchStore::create`] mints an opaque [`ScratchId`]; nothing else addresses it.
-//! * **Append, then read at.** Every producer in the merge writes a stream front to back and every
-//!   consumer reads ranges of it. There is no `write_at`, because nothing needs one and because a
-//!   random-access write is the one operation an OPFS handle makes a host reason about
-//!   (`FileSystemSyncAccessHandle.write` past the end silently zero-fills).
-//! * **`&self`, not `&mut self`.** A k-way merge reads a dozen runs *while* writing the next one.
-//!   With `&mut self` on the write half that is a borrow conflict at every call site, so the store
-//!   carries its own interior mutability — the same choice [`obc_formats::io::ByteSource`] and the
-//!   CLI's `FileSource` already made.
-//! * **`u64` offsets.** OBCM addresses bytes with `uint32` because a *map file* does; a merge's
-//!   spill does not, and a DACH edge stream passes 4 GiB.
-//! * **Synchronous.** The assembly is one straight-line call, and in the browser it runs on a worker
-//!   precisely so a blocking read is legal there. A future-shaped seam could not be called from the
-//!   middle of the merge at all.
-//! * **No borrows of store-owned buffers.** Every read fills the caller's slice. A
-//!   `fn read(&self) -> &[u8]` would force a file-sized buffer to exist somewhere, which is the
-//!   thing this seam exists to avoid.
+//! * Anonymous. A scratch file has no name a caller chooses and no meaning outside the run that
+//!   created it.
+//! * Append, then read at. Every producer writes a stream front to back and every consumer reads
+//!   ranges of it. There is no `write_at`, because a random-access write is the one operation an
+//!   OPFS handle makes a host reason about: writing past the end silently zero-fills.
+//! * `&self`, not `&mut self`. A k-way merge reads a dozen runs while writing the next one, which
+//!   with `&mut self` on the write half is a borrow conflict at every call site.
+//! * `u64` offsets, because a DACH edge stream passes 4 GiB.
+//! * Synchronous. The assembly is one straight-line call, and in the browser it runs on a worker
+//!   precisely so a blocking read is legal there.
+//! * No borrows of store-owned buffers. Every read fills the caller's slice; returning a `&[u8]`
+//!   would force a file-sized buffer to exist somewhere.
 //!
-//! # Lifetime of a scratch file
-//!
-//! The engine deletes what it creates as soon as the last reader is done with it, and a host is
-//! expected to clean the rest up when the run ends anyway (the CLI removes its whole temp directory
-//! on drop). A delete that fails is **not** an assembly failure: the bytes are already unreachable
-//! and the map is unaffected.
+//! The engine deletes what it creates as soon as the last reader is done with it. A delete that
+//! fails is not an assembly failure: the bytes are already unreachable and the map is unaffected.
 
 use std::cell::RefCell;
 
@@ -54,9 +41,8 @@ impl core::fmt::Display for ScratchId {
     }
 }
 
-/// Where the engine spills the passes it may not hold in memory. See the module header for the
-/// contract; the short version is *anonymous files, append-only writes, `u64` random-access reads,
-/// synchronous, `&self`*.
+/// Where the engine spills the passes it may not hold in memory: anonymous files, append-only
+/// writes, `u64` random-access reads, synchronous, `&self`.
 pub trait ScratchStore {
     /// Mint an empty scratch file.
     fn create(&self) -> Result<ScratchId>;
@@ -74,10 +60,9 @@ pub trait ScratchStore {
 
 /// A [`ScratchStore`] that keeps the spill in memory.
 ///
-/// It is the **fallback**, not the destination: a spill held in RAM is exactly the residency the
-/// spill exists to remove. It is here because two callers legitimately want it — the test suite,
-/// where a fixture's whole scratch is a few kilobytes, and a host that has no storage to offer, for
-/// which a slightly worse peak beats a refusal to assemble at all.
+/// The fallback, not the destination: a spill held in RAM is the residency the spill exists to
+/// remove. Two callers legitimately want it — the test suite, and a host that has no storage to
+/// offer, for which a slightly worse peak beats a refusal to assemble at all.
 #[derive(Default, Debug)]
 pub struct MemoryScratch {
     /// `None` marks a removed file, so ids are never reused and a use-after-remove is a refusal

@@ -1,174 +1,122 @@
-//! The bootloader's install engine — verify → flash → readback → state transition (S3, #618).
+//! The bootloader's install engine: verify, flash, readback, then the state transition.
 //!
-//! ALL install **sequencing** lives here as a pure, host-testable driver: the ordering of the
-//! passes, the retry counts, the header-skip arithmetic, and which state gets written on which
-//! failure. That ordering is the safety property of the whole DFU epic (#615), so it gets unit
-//! tests with mock IO (`tests/engine.rs`), not trust. `obc-boot` stays a dumb driver that wires
-//! real SPI block reads and RRAMC line writes into the [`InstallIo`] trait and maps the returned
-//! [`Outcome`] to an LED pattern + jump/reset/halt.
+//! All install sequencing lives here as a pure driver over [`InstallIo`], so `obc-boot` only wires
+//! real SPI block reads and RRAMC line writes into it and maps the returned [`Outcome`] to an LED
+//! pattern and a jump, reset or halt.
 //!
-//! ## What the extents cover (pinned here so S4 and the bootloader can never disagree)
+//! The armer resolves the whole `UPDATE.BIN` file, so the extent chain reads as `64-byte OBCU
+//! header ‖ raw image` (`OBCU_Spec.md`). Both passes skip the first [`HEADER_LEN`] bytes: the
+//! verify CRC covers the raw image only, and the flash pass writes the raw image to the app slot.
 //!
-//! The armer resolves the **whole `UPDATE.BIN` file** to block extents, so the extent chain's
-//! byte stream is `64-byte OBCU header ‖ raw image` (`OBCU_Spec.md` §1). The [`StagedRef`]'s
-//! `len`/`crc32` are the **raw-image** values (they must match the embedded header's own fields —
-//! the codec enforces it). Both passes therefore skip the first [`HEADER_LEN`] bytes of the
-//! chain: the verify CRC covers the raw image **only**, and the flash pass writes the raw image
-//! (never the container header) to the app slot.
-//!
-//! ## Failure semantics (each is a host test)
-//!
-//! - **Verify mismatch** (bad CRC, foreign/diverging embedded header, chain too short, image
-//!   over the slot): deterministic bad stage. The app slot was never touched, so the arm is
-//!   cleared to `Idle` and the outcome is [`Outcome::StageRejected`] — a bad stage must never
-//!   cost the running firmware (epic invariant 1).
-//! - **SD read error** (any pass): could be a transient card wobble, so the arm is **not**
-//!   cleared — [`Outcome::SdError`], state untouched, the caller backs off and retries (the card
-//!   is life-support; recovery is reinsert + power cycle).
-//! - **Readback mismatch / RRAM write error**: the flash pass is retried up to [`FLASH_RETRIES`]
-//!   more times, then [`Outcome::FlashError`] — the caller halts (LED SOS) with the state still
-//!   `Armed`, so the next power cycle retries from scratch (epic invariant 2).
-//! - **Power loss anywhere**: nothing here writes the state page until the readback has passed,
-//!   so a torn install re-enters as `Armed` and simply reruns. A torn *state-page* write itself
-//!   decodes to `Idle` (the §2 CRC frame) — by then the slot already holds the verified image,
-//!   so the device still boots it (only the trial/rollback bookkeeping is lost).
+//! Nothing writes the state page before the readback passes, so a torn install re-enters as
+//! `Armed` and reruns.
 
 use crate::crc32::Crc32;
 use crate::image::{ImageHeader, HEADER_LEN, MAX_IMAGE_LEN};
 use crate::state::{decide, BootDecision, BootState, Extent, LastOutcome, OutcomeKind, StagedRef};
 
-/// SD block size — extents are runs of these (`OBCU_Spec.md` §2.3).
 pub const SD_BLOCK_LEN: usize = 512;
 
-/// RRAMC write granularity: one 128-bit line. Every [`InstallIo::write_lines`] call is a whole
-/// number of these, at a line-aligned address, by construction.
+/// RRAMC write granularity. Every [`InstallIo::write_lines`] call is a whole number of these, at a
+/// line-aligned address.
 pub const RRAM_LINE_LEN: usize = 16;
 
-/// How many times the flash pass is **retried** after a failed readback (or a failed RRAM
-/// write) before the engine gives up with [`Outcome::FlashError`] — i.e. `1 + FLASH_RETRIES`
-/// flash passes total.
+/// Retries of the flash pass after a failed readback or RRAM write: `1 + FLASH_RETRIES` passes in
+/// total, then [`Outcome::FlashError`].
 pub const FLASH_RETRIES: u32 = 3;
 
-/// The byte the image tail is padded with up to a whole RRAM line (matches the erased-RRAM
-/// convention `Rramc::erase` emulates).
+/// The byte that pads the image tail up to a whole RRAM line; it matches erased RRAM.
 pub const PAD_BYTE: u8 = 0xFF;
 
-/// The app slot the engine flashes into: base address (the app's link origin, `0x8000`) and
-/// capacity in bytes. Passed in by the bootloader so the engine owns the "padded image must fit
-/// the slot" check (host-tested) without hard-coding the board's memory map.
+/// The bootloader passes the slot in, so the engine checks that the padded image fits without
+/// knowing the board's memory map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Slot {
-    /// First byte of the slot (16-byte-line aligned).
+    /// First byte of the slot; 16-byte-line aligned.
     pub base: u32,
-    /// Slot capacity, bytes.
     pub len: u32,
 }
 
-/// An IO operation failed. Deliberately carries nothing: the engine maps each failure by *which
-/// call* failed (an SD read ⇒ [`Outcome::SdError`], a flash write/readback ⇒ retry then
-/// [`Outcome::FlashError`]), so the driver-side error detail stays in the driver's own log.
+/// An IO operation failed. The engine maps a failure by which call failed, so the driver keeps the
+/// error detail in its own log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct IoError;
 
-/// Which pass the engine is in — for the driver's LED heartbeat and throughput measurement.
+/// Which pass the engine is in; the driver uses it for the LED heartbeat and throughput.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
-    /// Streaming the staged extents, CRC-checking before anything is erased (slow LED blink).
     Verify,
-    /// Re-streaming the extents and writing the app slot (fast LED heartbeat).
     Flash,
-    /// CRC over the freshly-written slot (fast LED heartbeat, like Flash).
     Readback,
 }
 
-/// The IO the engine drives — real SPI/RRAMC in `obc-boot`, a scriptable mock in the host tests.
-/// Every method is infallible-or-[`IoError`]; the engine owns what each failure *means*.
+/// The IO the engine drives. The engine owns what each failure means.
 pub trait InstallIo {
-    /// Read `buf.len() / 512` whole 512-byte blocks, starting at **absolute** SD block
-    /// `start_block`, into `buf` (`buf.len()` is always a non-zero multiple of [`SD_BLOCK_LEN`]).
+    /// Reads whole blocks from absolute SD block `start_block`. `buf.len()` is always a non-zero
+    /// multiple of [`SD_BLOCK_LEN`].
     fn read_blocks(&mut self, start_block: u32, buf: &mut [u8]) -> Result<(), IoError>;
 
-    /// Write `data` (16-byte-line aligned address, `data.len()` a non-zero multiple of
-    /// [`RRAM_LINE_LEN`]) to absolute RRAM address `addr`.
+    /// Writes to absolute RRAM address `addr`, which is line-aligned; `data.len()` is a non-zero
+    /// multiple of [`RRAM_LINE_LEN`].
     fn write_lines(&mut self, addr: u32, data: &[u8]) -> Result<(), IoError>;
 
-    /// Read back `buf.len()` bytes from absolute RRAM address `addr` — on the device a plain
-    /// memory-mapped slice copy (RRAM is XIP-readable), in the mock a read of its flash model
-    /// (so the readback pass observably checks what [`write_lines`](Self::write_lines) wrote).
+    /// Reads back from absolute RRAM address `addr`. The read must observe what
+    /// [`write_lines`](Self::write_lines) wrote.
     fn read_flash(&mut self, addr: u32, buf: &mut [u8]) -> Result<(), IoError>;
 
-    /// Persist a boot state to the BOOT_STATE page (encode + 16-byte-line writes).
     fn write_state(&mut self, state: &BootState) -> Result<(), IoError>;
 
-    /// Progress hook, called at the start of each pass and after every chunk: LED heartbeat +
-    /// (rtt builds) wall-time/throughput measurement. Default: no-op.
+    /// Called at the start of each pass and after every chunk.
     fn progress(&mut self, _phase: Phase, _done: u32, _total: u32) {}
 }
 
-/// What the bootloader must do after [`run`] returns. Every arm is terminal for this boot.
+/// What the bootloader must do after [`run`] returns; every variant is terminal for this boot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    /// Boot the app in the slot: nothing was pending (`Idle`), or an unconfirmed first-install
-    /// trial was accepted and cleared (`AcceptAndClear` — no snapshot exists to roll back to).
+    /// Boot the app in the slot: nothing was pending, or an unconfirmed first-install trial was
+    /// accepted and cleared.
     Jump,
-    /// The staged image failed verification **before anything was erased** — the arm was cleared
-    /// to `Idle` and the old app is intact. Caller: error LED code, then jump.
+    /// The staged image failed verification before anything was erased. The arm is cleared and the
+    /// old app is intact, so the caller shows an error code and jumps.
     StageRejected,
-    /// The bootloader gave up on an `Armed` card it could not read within the driver's bounded
-    /// retry budget and cleared the arm to `Idle` **before the flash pass ever began** (DR3 #731):
-    /// nothing was erased, so the old app at the slot base is intact — caller: error LED code, then
-    /// jump. Only ever returned by [`abandon_arm`], never by [`run`]; a `RolledBack`/`StageRejected`
-    /// [`LastOutcome`] would misreport it, so it records [`OutcomeKind::ArmAbandoned`] instead.
+    /// The caller gave up on an `Armed` card it could not read, before the flash pass began, and
+    /// the arm is cleared. The old app is intact, so the caller shows an error code and jumps.
+    /// Only [`abandon_arm`] returns it.
     ArmAbandoned,
-    /// The image was flashed, readback-verified, and the follow-up state (`Trial` after an
-    /// install, `Idle` after a rollback) written. Caller: **jump straight to the app slot** —
-    /// never reset. A reset would re-enter the bootloader with the just-written `Trial`, which
-    /// [`decide`] reads as an *unconfirmed* trial and rolls straight back; the trial boot must
-    /// be the very next thing that runs.
+    /// The image was flashed, readback-verified, and the follow-up state written. The caller must
+    /// jump straight to the app slot, never reset: a reset would re-enter the bootloader with the
+    /// just-written `Trial` and roll it back before the trial image ever ran.
     Installed,
-    /// An SD read failed mid-pass. The state page was **not** touched (a transient card error
-    /// must never clear a valid arm) — caller: LED code, back off, bring the card up again, and
-    /// re-run; state-wise this boot never happened.
+    /// An SD read failed mid-pass. The state page was not touched, because a transient card error
+    /// must never clear a valid arm. The caller backs off, brings the card up again, and re-runs.
     ///
-    /// `pre_erase` is the DR3 (#731) erase-safety flag: `true` iff the failure happened during the
-    /// **verify** pass (or its container-header read) of an `Install`, i.e. **before any slot byte
-    /// could have been written**. Only then is the arm provably untouched and therefore abandonable
-    /// — the caller may retry a bounded number of `pre_erase: true` rounds and then call
-    /// [`abandon_arm`] to clear the arm and boot the intact old app. `false` means the flash pass
-    /// had already begun (the slot may be half-written) or the failure was on a `Rollback` (whose
-    /// trial image is the only bootable thing in the slot): the caller must keep retrying/parking
-    /// forever — abandoning would brick.
+    /// `pre_erase` is true only when the failure was in an `Install`'s verify pass, before any slot
+    /// byte could have been written. Only then may the caller give up and call [`abandon_arm`].
+    /// When it is false the slot may be half-written, or the run was a `Rollback` whose trial image
+    /// is the only bootable thing, and abandoning would brick the device.
     SdError { pre_erase: bool },
-    /// The readback never matched (or an RRAM write failed) after `1 +` [`FLASH_RETRIES`] flash
-    /// passes — or the post-flash state write itself failed. The state page still holds the
-    /// `Armed`/`Trial` record, so the next power cycle retries from scratch. Caller: LED SOS,
-    /// halt.
+    /// The readback never matched, an RRAM write failed after all the retries, or the follow-up
+    /// state write failed. The state page still holds the `Armed`/`Trial` record, so the next power
+    /// cycle retries from the start. The caller halts.
     FlashError,
 }
 
-/// Why a stream fill couldn't complete.
 enum StreamError {
-    /// The extent chain ran out before the requested bytes — a malformed stage (deterministic).
+    /// The extent chain ran out before the requested bytes: a malformed stage.
     Exhausted,
-    /// An SD read failed — possibly transient.
+    /// An SD read failed; possibly transient.
     Io,
 }
 
-/// Byte-stream reader over an extent chain: hides the 512-byte block granularity so the passes
-/// deal in plain byte runs (the 64-byte header skip and the tail chunk never align to blocks).
-/// Whole-block spans are read straight into the caller's buffer (letting the SD driver use
-/// multi-block reads); stragglers go through a one-block scratch.
+/// Byte-stream reader over an extent chain. It hides the 512-byte block granularity, because the
+/// header skip and the tail chunk do not align to blocks. Whole-block spans go straight into the
+/// caller's buffer; shorter reads go through a one-block scratch.
 struct ExtentStream<'a> {
     extents: &'a [Extent],
-    /// Current extent index.
     idx: usize,
-    /// Blocks already consumed from the current extent.
     blocks_done: u32,
-    /// One-block scratch for partial-block reads.
     scratch: [u8; SD_BLOCK_LEN],
-    /// Next unread byte in `scratch`.
     scratch_pos: usize,
-    /// Valid bytes in `scratch` (0 = empty).
     scratch_len: usize,
 }
 
@@ -177,8 +125,8 @@ impl<'a> ExtentStream<'a> {
         ExtentStream { extents, idx: 0, blocks_done: 0, scratch: [0; SD_BLOCK_LEN], scratch_pos: 0, scratch_len: 0 }
     }
 
-    /// The current extent's next absolute block, or `None` when the chain is exhausted (also
-    /// treats a block-index overflow — garbage extents — as exhaustion; never panics).
+    /// The next absolute block, or `None` when the chain is exhausted. A block-index overflow from
+    /// garbage extents also reads as exhaustion, so this never panics.
     fn next_block(&mut self) -> Option<(u32, u32)> {
         loop {
             let e = self.extents.get(self.idx)?;
@@ -193,11 +141,10 @@ impl<'a> ExtentStream<'a> {
         }
     }
 
-    /// Fill `out` completely with the next bytes of the chain's byte stream.
+    /// Fills `out` completely from the chain's byte stream.
     fn fill(&mut self, io: &mut impl InstallIo, out: &mut [u8]) -> Result<(), StreamError> {
         let mut w = 0;
         while w < out.len() {
-            // Drain the scratch block first.
             if self.scratch_pos < self.scratch_len {
                 let n = (self.scratch_len - self.scratch_pos).min(out.len() - w);
                 out[w..w + n].copy_from_slice(&self.scratch[self.scratch_pos..self.scratch_pos + n]);
@@ -208,12 +155,10 @@ impl<'a> ExtentStream<'a> {
             let (start, left) = self.next_block().ok_or(StreamError::Exhausted)?;
             let whole = ((out.len() - w) / SD_BLOCK_LEN).min(left as usize);
             if whole > 0 {
-                // Whole blocks go straight into the caller's buffer (multi-block read).
                 io.read_blocks(start, &mut out[w..w + whole * SD_BLOCK_LEN]).map_err(|_| StreamError::Io)?;
                 self.blocks_done += whole as u32;
                 w += whole * SD_BLOCK_LEN;
             } else {
-                // Less than a block wanted — stage one block in the scratch.
                 io.read_blocks(start, &mut self.scratch).map_err(|_| StreamError::Io)?;
                 self.blocks_done += 1;
                 self.scratch_pos = 0;
@@ -225,26 +170,24 @@ impl<'a> ExtentStream<'a> {
 }
 
 enum VerifyError {
-    /// Deterministic bad stage — reject it (clear the arm; the old app was never touched).
+    /// A bad stage: reject it and clear the arm; the old app was never touched.
     Mismatch,
-    /// SD read failed — possibly transient; do NOT clear the arm.
+    /// An SD read failed. It can be transient, so the arm must not be cleared.
     Io,
 }
 
-/// The verify pass: stream the whole extent chain, check the embedded OBCU header against the
-/// staged record, and CRC the raw image (header skipped — see the module doc) **before anything
-/// is erased**. Also owns the size gates: a zero/oversized image or one whose line-padded length
-/// exceeds the slot is a mismatch (never a partial flash later).
+/// Streams the whole chain, checks the embedded header against the staged record, and CRCs the raw
+/// image, all before anything is erased. A zero or oversized image, or one whose padded length
+/// exceeds the slot, is a mismatch here rather than a partial flash later.
 fn verify(io: &mut impl InstallIo, staged: &StagedRef, slot: &Slot, buf: &mut [u8]) -> Result<(), VerifyError> {
     let len = staged.len;
-    // `StagedRef` decode already pins len == header.image_len and crc32 == header.image_crc32;
-    // these gates are about the slot, not internal consistency.
+    // The codec already pins len and crc32 against the header; these gates are about the slot.
     if len == 0 || len > MAX_IMAGE_LEN || padded_len(len) > slot.len {
         return Err(VerifyError::Mismatch);
     }
     let mut stream = ExtentStream::new(staged.extents());
-    // The chain starts with the staged file's own 64-byte OBCU header: it must decode and match
-    // the header the armer recorded, or the blocks on card are not the image this arm described.
+    // The chain starts with the file's own OBCU header. It must match the header the armer
+    // recorded, or the blocks on card are not the image this arm described.
     let mut hdr = [0u8; HEADER_LEN];
     match stream.fill(io, &mut hdr) {
         Ok(()) => {}
@@ -275,19 +218,19 @@ fn verify(io: &mut impl InstallIo, staged: &StagedRef, slot: &Slot, buf: &mut [u
 }
 
 enum PassError {
-    /// An SD read failed (transient — abort the engine run with state untouched).
+    /// An SD read failed; abort the run with the state untouched.
     Sd,
-    /// An RRAM write or readback failed (retry the flash pass, then give up).
+    /// An RRAM write or readback failed; retry the flash pass, then give up.
     Flash,
 }
 
-/// One flash pass: re-stream the extents, skip the 64-byte container header, and write the raw
-/// image to the slot in buffer-sized, 16-byte-line-aligned chunks, tail padded with [`PAD_BYTE`].
+/// Re-streams the extents, skips the container header, and writes the raw image to the slot in
+/// line-aligned chunks, with the tail padded with [`PAD_BYTE`].
 fn flash_pass(io: &mut impl InstallIo, staged: &StagedRef, slot: &Slot, buf: &mut [u8]) -> Result<(), PassError> {
     let len = staged.len as usize;
     let mut stream = ExtentStream::new(staged.extents());
-    // Skip the container header (already validated by the verify pass). An exhausted chain here
-    // means the card changed under us mid-install — report it as an SD problem, not a bad stage.
+    // Skip the container header. An exhausted chain here means the card changed mid-install, so it
+    // is an SD problem, not a bad stage.
     let mut hdr = [0u8; HEADER_LEN];
     stream.fill(io, &mut hdr).map_err(|_| PassError::Sd)?;
     io.progress(Phase::Flash, 0, len as u32);
@@ -295,12 +238,10 @@ fn flash_pass(io: &mut impl InstallIo, staged: &StagedRef, slot: &Slot, buf: &mu
     while done < len {
         let n = buf.len().min(len - done);
         stream.fill(io, &mut buf[..n]).map_err(|_| PassError::Sd)?;
-        // Pad the tail chunk up to a whole RRAM line (verify pinned padded_len ≤ slot.len, so
-        // the pad never writes past the slot). Intermediate chunks are already line-multiples.
+        // Pad the tail chunk up to a whole RRAM line. Verify pinned padded_len <= slot.len, so the
+        // pad never writes past the slot.
         let padded = n.div_ceil(RRAM_LINE_LEN) * RRAM_LINE_LEN;
-        // `run` clamps `buf` to whole SD blocks (themselves line multiples), so the pad always fits.
-        // Fail the pass rather than panic if a buffer ever reaches here off-contract — `run`'s
-        // "never panics" promise holds for every caller, not just the one that obeys the clamp.
+        // An off-contract buffer fails the pass instead of panicking.
         let chunk = buf.get_mut(..padded).ok_or(PassError::Flash)?;
         chunk[n..].fill(PAD_BYTE);
         io.write_lines(slot.base + done as u32, chunk).map_err(|_| PassError::Flash)?;
@@ -310,8 +251,7 @@ fn flash_pass(io: &mut impl InstallIo, staged: &StagedRef, slot: &Slot, buf: &mu
     Ok(())
 }
 
-/// The readback pass: CRC-32 over the just-written slot bytes (`slot.base .. slot.base + len`,
-/// pad excluded — the CRC is defined over the raw image). `Ok(true)` = it matches the stage.
+/// CRCs the just-written slot bytes, pad excluded, because the CRC is defined over the raw image.
 fn readback(io: &mut impl InstallIo, staged: &StagedRef, slot: &Slot, buf: &mut [u8]) -> Result<bool, PassError> {
     let len = staged.len as usize;
     io.progress(Phase::Readback, 0, len as u32);
@@ -327,9 +267,8 @@ fn readback(io: &mut impl InstallIo, staged: &StagedRef, slot: &Slot, buf: &mut 
     Ok(crc.finalize() == staged.crc32)
 }
 
-/// Flash + readback with the retry policy: up to `1 +` [`FLASH_RETRIES`] flash passes, each
-/// followed by a full readback. An SD read error aborts immediately (transient — the whole run
-/// is retried by the caller); a write/readback failure consumes a retry.
+/// Up to `1 +` [`FLASH_RETRIES`] flash passes, each followed by a full readback. An SD read error
+/// aborts immediately; a write or readback failure uses one retry.
 fn flash_verified(io: &mut impl InstallIo, staged: &StagedRef, slot: &Slot, buf: &mut [u8]) -> Result<(), PassError> {
     let mut attempts_left = 1 + FLASH_RETRIES;
     loop {
@@ -352,28 +291,14 @@ fn flash_verified(io: &mut impl InstallIo, staged: &StagedRef, slot: &Slot, buf:
     }
 }
 
-/// Line-padded image length: what the flash pass actually writes.
 fn padded_len(len: u32) -> u32 {
     len.div_ceil(RRAM_LINE_LEN as u32) * RRAM_LINE_LEN as u32
 }
 
-/// The shared install pipeline behind both an `Install` and a `Rollback` decision — the
-/// `verify → map errors → flash_verified → map errors → write_state → map result` sequence with
-/// byte-identical error mapping (DR7, #735). The two callers differ only in:
-///
-/// - `source`: the extent chain to stream (the staged update, or the rollback snapshot);
-/// - `mismatch_state`: the `Idle` written when `verify` deterministically rejects the stage — the
-///   invariant-1 "a bad stage must never cost the running firmware" path, constructed at each call
-///   site (an `Install` carries the outgoing header forward + records `StageRejected`; a `Rollback`
-///   keeps the running trial image + records `Installed`);
-/// - `success_state`: the follow-up written after a verified flash (an `Install`'s single-trial
-///   `Trial`, a `Rollback`'s straight-to-`Idle`);
-/// - `verify_io_pre_erase`: whether a **verify-pass** SD error is abandonable — `true` only for an
-///   `Install`, whose old app is still intact before the flash pass (DR3, #731); a `Rollback`'s
-///   trial image is the only bootable thing, so its card errors are never pre-erase-abandonable.
-///
-/// Keeping the reject policy and error mapping single-sourced is the point: a future change to
-/// either must land once, so the install and rollback safety paths can never silently diverge.
+/// The shared pipeline behind an `Install` and a `Rollback`, so the two safety paths cannot
+/// diverge. `mismatch_state` is written when `verify` rejects the stage, `success_state` after a
+/// verified flash, and `verify_io_pre_erase` says whether a verify-pass SD error leaves the arm
+/// abandonable: true only for an `Install`, whose old app is still intact.
 fn install_pipeline(
     io: &mut impl InstallIo,
     source: &StagedRef,
@@ -384,22 +309,19 @@ fn install_pipeline(
     success_state: &BootState,
 ) -> Outcome {
     match verify(io, source, slot, buf) {
-        // Deterministic bad stage, old app never touched: clear the arm to the caller's follow-up
-        // state and boot the old app. If even the clear fails, still jump — the old app is intact and
-        // the next boot repeats this same safe path.
+        // Bad stage, old app never touched: clear the arm and boot the old app. If even the clear
+        // fails, still jump; the next boot repeats this same safe path.
         Err(VerifyError::Mismatch) => {
             let _ = io.write_state(mismatch_state);
             Outcome::StageRejected
         }
-        // Verify-pass SD error: nothing erased yet; abandonable only for an Install (DR3).
         Err(VerifyError::Io) => Outcome::SdError { pre_erase: verify_io_pre_erase },
         Ok(()) => match flash_verified(io, source, slot, buf) {
-            // The flash pass has begun — the slot may be half-written, so this is NOT abandonable;
-            // the caller retries/parks forever (invariant: never abandon a touched slot).
+            // The flash pass has begun, so the slot may be half-written: never abandonable.
             Err(PassError::Sd) => Outcome::SdError { pre_erase: false },
             Err(PassError::Flash) => Outcome::FlashError,
-            // The slot now provably holds the image — write the follow-up state. A failed write
-            // leaves the Armed/Trial record ⇒ halt; the next power cycle retries from scratch.
+            // The slot now holds the image. A failed state write leaves the Armed or Trial record,
+            // so the next power cycle retries from the start.
             Ok(()) => match io.write_state(success_state) {
                 Ok(()) => Outcome::Installed,
                 Err(_) => Outcome::FlashError,
@@ -408,16 +330,11 @@ fn install_pipeline(
     }
 }
 
-/// Run the whole boot-time install engine for a decoded [`BootState`]: decide, then execute the
-/// decision's verify → flash → readback → state-transition sequence over `io`, using `buf` as
-/// the SD↔RRAM staging buffer (a non-zero multiple of [`SD_BLOCK_LEN`]; the bootloader passes
-/// 4 KB). Returns what the bootloader must do next — see [`Outcome`]. Never panics on any state
-/// content (the bootloader's standing rule); the only `debug_assert` is the caller's buffer
-/// contract, which is a compile-time constant in `obc-boot` and pinned by the host tests.
+/// Decides from the [`BootState`], then runs that decision over `io`. `buf` is the staging buffer
+/// and must be a non-zero multiple of [`SD_BLOCK_LEN`]. It never panics on any state content.
 pub fn run(state: &BootState, slot: &Slot, io: &mut impl InstallIo, buf: &mut [u8]) -> Outcome {
     debug_assert!(!buf.is_empty() && buf.len().is_multiple_of(SD_BLOCK_LEN), "buffer must be whole SD blocks");
-    // Belt-and-braces for release: clamp to whole blocks; an unusable buffer halts (caller bug,
-    // state left Armed) rather than corrupting arithmetic below.
+    // Clamp to whole blocks; an unusable buffer halts instead of corrupting the arithmetic below.
     let whole = buf.len() - buf.len() % SD_BLOCK_LEN;
     if whole == 0 {
         return Outcome::FlashError;
@@ -427,9 +344,7 @@ pub fn run(state: &BootState, slot: &Slot, io: &mut impl InstallIo, buf: &mut [u
     match decide(state) {
         BootDecision::Jump => Outcome::Jump,
 
-        // Unconfirmed trial with no snapshot (first install): accept the running image and
-        // clear to Idle. A failed clear changes nothing observable — next boot re-accepts.
-        // The running (trial) image is accepted as permanent — record it as Installed.
+        // A failed clear changes nothing: the next boot accepts the image again.
         BootDecision::AcceptAndClear { installed, generation } => {
             let last_outcome = Some(LastOutcome { kind: OutcomeKind::Installed, generation });
             let _ = io.write_state(&BootState::Idle { installed: Some(installed), last_outcome });
@@ -437,67 +352,50 @@ pub fn run(state: &BootState, slot: &Slot, io: &mut impl InstallIo, buf: &mut [u
         }
 
         BootDecision::Install { update, generation, rollback } => {
-            // Bad stage, old app never touched (invariant 1): clear the arm carrying forward the
-            // outgoing image's header from the rollback snapshot (if the armer took one) and boot
-            // the old app; the terminal write records StageRejected against the arm's generation.
+            // Bad stage: clear the arm, carry the outgoing image's header forward from the
+            // snapshot, and boot the old app. A bad stage must never cost the running firmware.
             let mismatch = BootState::Idle {
                 installed: rollback.map(|r| r.header),
                 last_outcome: Some(LastOutcome { kind: OutcomeKind::StageRejected, generation }),
             };
-            // The slot now provably holds the image — record the single trial boot, with the
-            // rollback snapshot riding into the Trial; an unconfirmed Trial rolls back next boot.
+            // The snapshot rides into the Trial record: an unconfirmed Trial rolls back next boot.
             let success = BootState::Trial { generation, installed: update.header, rollback };
-            // A verify-pass SD error is pre-erase-abandonable here: the old app is still intact (DR3).
+            // A verify-pass SD error is abandonable here: the old app is still intact.
             install_pipeline(io, &update, slot, buf, true, &mismatch, &success)
         }
 
-        // Unconfirmed trial with a snapshot: same engine, source = the rollback extents.
         BootDecision::Rollback { snapshot, installed, generation } => {
-            // The snapshot on card is bad and the trial image is what's in the slot — the only
-            // bootable thing we have. Accept it (clear to Idle) rather than brick: a rollback to
-            // garbage would cost the running firmware, which invariant 1 forbids in both directions.
-            // The trial image stuck, so record it as Installed against the arm's generation.
+            // The snapshot on card is bad, and the trial image in the slot is the only bootable
+            // thing. Accept it instead of flashing garbage over it.
             let mismatch = BootState::Idle {
                 installed: Some(installed),
                 last_outcome: Some(LastOutcome { kind: OutcomeKind::Installed, generation }),
             };
-            // Rollback complete: straight to Idle (no trial for the known-good image), recorded
-            // as RolledBack.
+            // The restored image is known good, so it gets no trial boot.
             let success = BootState::Idle {
                 installed: Some(snapshot.header),
                 last_outcome: Some(LastOutcome { kind: OutcomeKind::RolledBack, generation }),
             };
-            // A Rollback is never abandonable — the trial image already in the slot is the only
-            // bootable thing, so even a verify-pass card error keeps today's forever-retry/park.
+            // A Rollback is never abandonable: the trial image in the slot is the only bootable
+            // thing, so even a verify-pass card error must keep retrying.
             install_pipeline(io, &snapshot, slot, buf, false, &mismatch, &success)
         }
     }
 }
 
-/// Abandon a pre-erase `Armed` arm the bootloader could not bring the card up for (DR3 #731).
+/// Abandons an `Armed` arm the bootloader could not bring the card up for: clears the state to
+/// `Idle` and records [`OutcomeKind::ArmAbandoned`] against the arm's `generation`.
 ///
-/// Clears the state to `Idle`, carrying forward the outgoing image's header from the rollback
-/// snapshot exactly as the verify-reject path does ([`run`]'s `VerifyError::Mismatch` arm), and
-/// records an [`OutcomeKind::ArmAbandoned`] outcome against the arm's `generation` so the next
-/// boot's [`verdict`](crate::verdict) surfaces the abandon card. Returns [`Outcome::ArmAbandoned`]
-/// — the old app at `slot.base` is intact, so the caller boots it.
-///
-/// **Sequencing contract (the safety property this issue turns on):** the caller must only invoke
-/// this after a [`run`] that returned [`Outcome::SdError`]` { pre_erase: true }` — i.e. the failure
-/// was in the verify pass, before any slot byte could have been written. Once the flash pass has
-/// begun the slot may be half-written and the arm is **no longer abandonable**; clearing it then
-/// would strand a bricked slot. The retry *count* that decides when to give up lives in the driver
-/// (`obc-boot`); this function owns the "abandon writes `Idle` + `ArmAbandoned`" rule, host-tested.
-///
-/// A non-`Armed` state is a caller bug (nothing but an `Armed` arm can be abandoned): nothing is
-/// written and [`Outcome::Jump`] is returned, staying total rather than panicking (the bootloader's
-/// standing rule).
+/// The caller must call this only after a [`run`] that returned [`Outcome::SdError`] with
+/// `pre_erase: true`. Once the flash pass has begun the slot may be half-written, and clearing the
+/// arm then would strand a bricked slot. The driver owns the retry count that decides when to give
+/// up. A non-`Armed` state writes nothing and returns [`Outcome::Jump`].
 pub fn abandon_arm(state: &BootState, io: &mut impl InstallIo) -> Outcome {
     match state {
         BootState::Armed { generation, rollback, .. } => {
             let last_outcome = Some(LastOutcome { kind: OutcomeKind::ArmAbandoned, generation: *generation });
-            // Same as the reject path: the app slot is never touched. If even this clear fails, the
-            // caller still boots the intact old app and the next boot repeats the same safe path.
+            // The app slot is never touched. If even this clear fails, the caller still boots the
+            // intact old app.
             let installed = rollback.as_ref().map(|r| r.header);
             let _ = io.write_state(&BootState::Idle { installed, last_outcome });
             Outcome::ArmAbandoned

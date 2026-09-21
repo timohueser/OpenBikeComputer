@@ -1,7 +1,6 @@
-//! Wiring test for the user-position marker overlay in [`App::render_frame`]:
-//! it draws the marker (resolved through the host `color_fn`) only when a fix is
-//! present, and the dot-vs-chevron branch follows `Fix.course`. Renders against a
-//! tiny in-memory `DrawTarget` over a hand-built minimal v5 `.obcm`.
+//! Wiring test for the user-position marker overlay in [`App::render_frame`]: it draws the marker
+//! (resolved through the host `color_fn`) only when a fix is present, and the dot-vs-chevron branch
+//! follows `Fix.course`. Renders against a tiny in-memory `DrawTarget` over a minimal `.obcm`.
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::{App, AppState, CameraMode};

@@ -1,43 +1,31 @@
-//! Every **quantity readout** a screen prints — one formatter per quantity and output style.
-//!
-//! Each function is named `<quantity>_<style>`: the quantity it prints, then the shape it prints
-//! it in. Two styles of one quantity are two functions ([`distance_short`] compacts to `12.4km`,
-//! [`write_distance_coarse`] to a whole `12km`) because their thresholds genuinely differ; they
-//! are not folded together for looking alike. A `write_*` name appends into a caller-owned buffer
-//! — the form a screen needs when the figure joins a longer line.
-//!
-//! Everything here is allocation-free: a bounded [`heapless::String`] out, or an append into one.
+//! Every quantity readout a screen prints, one formatter per quantity and output style. Each
+//! function is named `<quantity>_<style>`, and a `write_*` name appends into a caller-owned buffer.
+//! Two styles of one quantity are two functions, because their thresholds differ.
 
 use core::fmt::Write;
 
 use crate::settings::{DateTime, Language, Units, FT_PER_M, FT_PER_MI};
 use crate::{t, Msg};
 
-/// The "no data" glyph every optional readout falls back to: an absent sensor sample, a
-/// route-relative figure on a route-less ride, a climb delta with no honest number behind it.
+/// The "no data" glyph every optional readout falls back to.
 pub(crate) fn dashes() -> heapless::String<8> {
     let mut s = heapless::String::new();
     let _ = s.push_str("--");
     s
 }
 
-// ---------------------------------------------------------------------------------------------
-// Distance
-// ---------------------------------------------------------------------------------------------
-
-/// A large-unit distance **figure** with no unit in it — the tile and header form, where the unit
-/// rides in the caption. One decimal below 100, whole above, so the value stays ≤ 3 digits and
-/// fits a half-width tile. Takes the already-converted figure (`units.dist(km)`).
+/// A large-unit distance figure with no unit in it, for a tile whose caption carries the unit. One
+/// decimal below 100 and whole above, so the value stays inside three digits. Takes the
+/// already-converted figure (`units.dist(km)`).
 pub(crate) fn distance_figure(value: f32) -> heapless::String<8> {
     let mut s = heapless::String::new();
     let _ = if value >= 100.0 { write!(s, "{value:.0}") } else { write!(s, "{value:.1}") };
     s
 }
 
-/// A compact **whole-distance** readout with its unit tight against the number — the Map waypoint
-/// chip, the Up ahead rows, the detour figures. Metric: `NNNm` below 1 km, `N.Nkm` to one decimal
-/// below 100 km, whole `NNNkm` above. Imperial: `NNNft` below 1000 ft, `N.Nmi` below 100 mi, whole
-/// `NNNmi` above. Rounds to the readout's own grain (nearest tenth / whole).
+/// A distance with its unit tight against the number. Metric: `NNNm` below 1 km, `N.Nkm` below
+/// 100 km, whole `NNNkm` above. Imperial: `NNNft` below 1000 ft, `N.Nmi` below 100 mi, whole
+/// `NNNmi` above.
 pub(crate) fn distance_short(d_m: u32, units: Units) -> heapless::String<10> {
     let mut s = heapless::String::new();
     if units.is_imperial() {
@@ -45,7 +33,6 @@ pub(crate) fn distance_short(d_m: u32, units: Units) -> heapless::String<10> {
         if ft < 1000 {
             let _ = write!(s, "{ft}ft");
         } else if ft < 100 * u64::from(FT_PER_MI) {
-            // One decimal mile, rounded to the nearest tenth.
             let tenths = (ft * 10 + u64::from(FT_PER_MI) / 2) / u64::from(FT_PER_MI);
             let _ = write!(s, "{}.{}mi", tenths / 10, tenths % 10);
         } else {
@@ -54,7 +41,6 @@ pub(crate) fn distance_short(d_m: u32, units: Units) -> heapless::String<10> {
     } else if d_m < 1000 {
         let _ = write!(s, "{d_m}m");
     } else if d_m < 100_000 {
-        // One decimal km, rounded to the nearest tenth (100 m).
         let tenths = (d_m + 50) / 100;
         let _ = write!(s, "{}.{}km", tenths / 10, tenths % 10);
     } else {
@@ -63,10 +49,9 @@ pub(crate) fn distance_short(d_m: u32, units: Units) -> heapless::String<10> {
     s
 }
 
-/// Append a distance after `prefix`, compacted to a **whole large unit** past the crossover so the
-/// readout stays within a chip or a header line. Metric: `NNNm` below 1 km, `NNkm` above
-/// (rounded). Imperial: `NNNft` below a mile, `NNmi` above. Shared by the Statistics header, the
-/// Map's off-route pill, the POI distance columns and the Up ahead side hint.
+/// Append a distance after `prefix`, compacted to a whole large unit past the crossover, so the
+/// readout fits a chip or a header line. Metric: `NNNm` below 1 km, `NNkm` above. Imperial: `NNNft`
+/// below a mile, `NNmi` above.
 pub(crate) fn write_distance_coarse<const N: usize>(s: &mut heapless::String<N>, prefix: &str, d_m: u32, units: Units) {
     if units.is_imperial() {
         let ft = (d_m as f32 * FT_PER_M) as u64;
@@ -82,10 +67,8 @@ pub(crate) fn write_distance_coarse<const N: usize>(s: &mut heapless::String<N>,
     }
 }
 
-/// Append a distance as a **spaced large unit**: `NN.N km` / `NN.N mi`, compacting to a whole unit
-/// (`142 km`) from 100 up — the tenths stop meaning anything at that magnitude, and the whole
-/// figure keeps the worst legitimate metadata run inside an inset row's budget. The rides-list and
-/// ride-detail metadata shape.
+/// Append a distance as a spaced large unit: `NN.N km` or `NN.N mi`, compacted to a whole unit
+/// from 100 up, so the longest metadata run stays inside an inset row's budget.
 pub(crate) fn write_distance_spaced<const N: usize>(s: &mut heapless::String<N>, dist_m: u32, units: Units) {
     if units.is_imperial() {
         let mi10 = (dist_m as f32 * FT_PER_M / FT_PER_MI as f32 * 10.0) as u32;
@@ -104,10 +87,9 @@ pub(crate) fn write_distance_spaced<const N: usize>(s: &mut heapless::String<N>,
     }
 }
 
-/// Append a distance **split from its unit**: the value goes into `s`, the unit suffix comes back
-/// for the caller to draw in its own font. Whole metres below 1 km, one-decimal km above —
-/// imperial twin: whole feet below a mile, one-decimal miles. The ledger form, where value and
-/// unit are drawn as two runs.
+/// Append a distance split from its unit: the value goes into `s` and the unit suffix comes back,
+/// for the caller to draw in its own font. Whole metres below 1 km and one-decimal km above; whole
+/// feet below a mile and one-decimal miles above.
 pub(crate) fn write_distance_split(s: &mut heapless::String<8>, total_m: u32, units: Units) -> &'static str {
     if units.is_imperial() {
         let ft = (total_m as f32 * FT_PER_M) as u32;
@@ -127,12 +109,7 @@ pub(crate) fn write_distance_split(s: &mut heapless::String<8>, total_m: u32, un
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Speed, plain integers, percent
-// ---------------------------------------------------------------------------------------------
-
-/// A speed figure to one decimal, or [`dashes`] when unknown (no fix / no moving time yet). The
-/// unit rides in the caption.
+/// A speed figure to one decimal, or [`dashes`] when unknown. The unit rides in the caption.
 pub(crate) fn speed_figure(v: Option<f32>) -> heapless::String<8> {
     let mut s = heapless::String::new();
     match v {
@@ -146,8 +123,7 @@ pub(crate) fn speed_figure(v: Option<f32>) -> heapless::String<8> {
     s
 }
 
-/// A whole figure as plain digits — a climb in the rider's elevation unit, a bpm / watt / rpm
-/// reading. The unit rides in the caption.
+/// A whole figure as plain digits. The unit rides in the caption.
 pub(crate) fn integer(v: u32) -> heapless::String<8> {
     let mut s = heapless::String::new();
     let _ = write!(s, "{v}");
@@ -169,13 +145,9 @@ pub(crate) fn percent(pct: i32) -> heapless::String<8> {
     s
 }
 
-// ---------------------------------------------------------------------------------------------
-// Elevation
-// ---------------------------------------------------------------------------------------------
-
-/// A live-elevation figure rounded to a whole unit — signed, so a sub-sea-level reading shows a
-/// `-` rather than wrapping — or [`dashes`] when there is no altimeter sample yet. Rounds half
-/// away from zero without `libm` (the codebase keeps elevation maths off the math lib).
+/// A live-elevation figure rounded to a whole unit, or [`dashes`] when there is no altimeter
+/// sample. It is signed, for a sub-sea-level reading, and rounds half away from zero without
+/// `libm`.
 pub(crate) fn elevation_rounded(v: Option<f32>) -> heapless::String<8> {
     let mut s = heapless::String::new();
     match v {
@@ -190,8 +162,7 @@ pub(crate) fn elevation_rounded(v: Option<f32>) -> heapless::String<8> {
     s
 }
 
-/// A remaining-ascent readout with its unit tight against the number (`250m`), or [`dashes`] when
-/// there is no figure — the form for a row that shares its line with other text.
+/// A remaining-ascent readout with its unit tight against the number (`250m`), or [`dashes`].
 pub(crate) fn elevation_short(value_m: Option<u32>, units: Units) -> heapless::String<12> {
     let mut s = heapless::String::new();
     match value_m {
@@ -206,8 +177,8 @@ pub(crate) fn elevation_short(value_m: Option<u32>, units: Units) -> heapless::S
     s
 }
 
-/// A **signed** climb difference (`+120m` / `-40m`) in the rider's elevation unit, or [`dashes`]
-/// when there is no honest number. `+0m` is an answer, not a missing one.
+/// A signed climb difference (`+120m` or `-40m`) in the rider's elevation unit, or [`dashes`].
+/// `+0m` is an answer, not a missing one.
 pub(crate) fn elevation_delta(delta_m: Option<i32>, units: Units) -> heapless::String<12> {
     let mut s: heapless::String<12> = heapless::String::new();
     let Some(delta_m) = delta_m else {
@@ -220,10 +191,6 @@ pub(crate) fn elevation_delta(delta_m: Option<i32>, units: Units) -> heapless::S
     s
 }
 
-// ---------------------------------------------------------------------------------------------
-// Clocks, durations and dates
-// ---------------------------------------------------------------------------------------------
-
 /// Clock components as `HH:MM`, without date or timezone conversion. Hours are not wrapped:
 /// an opening-hours endpoint can be `24:00`.
 pub(crate) fn clock_hm(hour: u8, minute: u8) -> heapless::String<8> {
@@ -232,17 +199,16 @@ pub(crate) fn clock_hm(hour: u8, minute: u8) -> heapless::String<8> {
     s
 }
 
-/// A duration in seconds as `H:MM` — hours uncapped, minutes zero-padded. Hours and minutes are
-/// hours and minutes in every catalog language and both unit systems, so this is not localised.
+/// A duration in seconds as `H:MM`: hours uncapped, minutes zero-padded. It is not localised,
+/// because hours and minutes are the same in every catalog language.
 pub(crate) fn duration_hms(secs: f32) -> heapless::String<8> {
     let total_min = (secs as u32) / 60;
     let mut s = heapless::String::new();
     let _ = write!(s, "{}:{:02}", total_min / 60, total_min % 60);
     s
 }
-/// The 12 uppercase month-abbreviation catalog keys (the `[date]` section) in calendar order — the
-/// short-date table the Home date line and the rides rows share. Distinct from the Date & Time
-/// stepper's mixed-case `[month]` table.
+/// The 12 uppercase month-abbreviation catalog keys, in calendar order. The Date & Time stepper
+/// has its own mixed-case table.
 pub(crate) const DATE_MONTHS: [Msg; 12] = [
     Msg::DateJan,
     Msg::DateFeb,
@@ -258,16 +224,15 @@ pub(crate) const DATE_MONTHS: [Msg; 12] = [
     Msg::DateDec,
 ];
 
-/// Append a unix instant as the short day-first date `D MON` (UTC) — no leading zero, the month
-/// from [`DATE_MONTHS`]. Day-first in all four languages (the locked shared shape).
+/// Append a unix instant as the short day-first date `D MON` (UTC), with no leading zero. It is
+/// day-first in every language.
 pub(crate) fn write_date_short<const N: usize>(s: &mut heapless::String<N>, unix: u32, lang: Language) {
     let d = DateTime::from_unix(unix);
     let _ = write!(s, "{} {}", d.day, t(DATE_MONTHS[(d.month.clamp(1, 12) - 1) as usize], lang));
 }
 
-/// A unix instant as a compact `YYYY-MM-DD` (UTC) — the rides list's and the Ride detail's shared
-/// date shape. (Local-time formatting would need the app's UTC offset threaded in; the date rarely
-/// differs and the extra plumbing isn't worth it.)
+/// A unix instant as a compact `YYYY-MM-DD` (UTC). Local time would need the app's UTC offset
+/// threaded in, and the date rarely differs.
 pub(crate) fn date_iso(unix: u32) -> heapless::String<12> {
     let d = DateTime::from_unix(unix);
     let mut s = heapless::String::new();
@@ -275,7 +240,7 @@ pub(crate) fn date_iso(unix: u32) -> heapless::String<12> {
     s
 }
 
-/// A UTC offset as `±HH:MM` — the sign is always printed, zero reading `+00:00`.
+/// A UTC offset as `±HH:MM`. The sign is always printed, so zero reads `+00:00`.
 pub(crate) fn utc_offset(min: i16) -> heapless::String<8> {
     let mut s = heapless::String::new();
     let sign = if min < 0 { '-' } else { '+' };
@@ -284,14 +249,13 @@ pub(crate) fn utc_offset(min: i16) -> heapless::String<8> {
     s
 }
 
-/// Append a byte count as a compact `N.N GB` / `NNN MB` / `NNN KB` — GB with one decimal at or
-/// above 1 GiB, whole MB / KB below (rounded). Binary units throughout.
+/// Append a byte count as `N.N GB`, `NNN MB` or `NNN KB`. The units are binary.
 pub(crate) fn write_bytes_short(s: &mut heapless::String<16>, bytes: u64) {
     const KIB: u64 = 1024;
     const MIB: u64 = KIB * 1024;
     const GIB: u64 = MIB * 1024;
     if bytes >= GIB {
-        let tenths = (bytes * 10 + GIB / 2) / GIB; // round to 0.1 GB
+        let tenths = (bytes * 10 + GIB / 2) / GIB;
         let _ = write!(s, "{}.{} GB", tenths / 10, tenths % 10);
     } else if bytes >= MIB {
         let _ = write!(s, "{} MB", (bytes + MIB / 2) / MIB);
@@ -300,8 +264,8 @@ pub(crate) fn write_bytes_short(s: &mut heapless::String<16>, bytes: u64) {
     }
 }
 
-/// Append a BLE address big-endian (`AA:BB:…`), the conventional display order — the stored bytes
-/// are little-endian, as the wire carries them.
+/// Append a BLE address big-endian (`AA:BB:…`), the display order. The stored bytes are
+/// little-endian, as the wire carries them.
 pub(crate) fn write_ble_address(buf: &mut heapless::String<24>, addr: &[u8; 6]) {
     for (i, b) in addr.iter().rev().enumerate() {
         if i > 0 {
@@ -315,8 +279,6 @@ pub(crate) fn write_ble_address(buf: &mut heapless::String<24>, addr: &[u8; 6]) 
 mod tests {
     use super::*;
 
-    /// Metres below 1 km, one-decimal km up to 100 km, whole km above — pinned across both
-    /// crossovers.
     #[test]
     fn distance_short_metric_crossovers() {
         assert_eq!(distance_short(0, Units::Metric).as_str(), "0m");
@@ -329,16 +291,12 @@ mod tests {
         assert_eq!(distance_short(153_000, Units::Metric).as_str(), "153km");
     }
 
-    /// Feet below 1000 ft, one-decimal miles up to 100 mi, whole miles above — pinned across the
-    /// ft→mi and 100 mi crossovers.
     #[test]
     fn distance_short_imperial_crossovers() {
         assert_eq!(distance_short(0, Units::Imperial).as_str(), "0ft");
         assert_eq!(distance_short(300, Units::Imperial).as_str(), "984ft", "300 m ≈ 984 ft stays feet");
-        // 1000 ft ≈ 304.8 m — the feet→miles crossover; 305 m ≈ 1000 ft reads a fractional mile.
         assert_eq!(distance_short(305, Units::Imperial).as_str(), "0.2mi", "past 1000 ft crosses to decimal miles");
         assert_eq!(distance_short(15_933, Units::Imperial).as_str(), "9.9mi");
-        // 100 mi = 528000 ft ≈ 160934 m — the decimal→whole-miles crossover.
         assert_eq!(distance_short(160_000, Units::Imperial).as_str(), "99.4mi", "just under 100 mi keeps a decimal");
         assert_eq!(distance_short(200_000, Units::Imperial).as_str(), "124mi", "well past 100 mi is whole miles");
     }
@@ -360,8 +318,6 @@ mod tests {
         }
     }
 
-    /// The coarse chip readout compacts straight to a whole large unit — no decimal band at all,
-    /// which is exactly what separates it from [`distance_short`].
     #[test]
     fn distance_coarse_compacts_to_a_whole_large_unit() {
         let coarse = |d_m, units| {
@@ -378,14 +334,11 @@ mod tests {
         assert_eq!(coarse(1610, Units::Imperial).as_str(), "1mi", "a full mile crosses to whole miles");
         assert_eq!(coarse(1609, Units::Imperial).as_str(), "5278ft", "a metre short of the mile is still feet");
 
-        // The prefix is the caller's translated lead-in, appended in front of the figure.
         let mut pilled: heapless::String<24> = heapless::String::new();
         write_distance_coarse(&mut pilled, "OFF ", 1500, Units::Metric);
         assert_eq!(pilled.as_str(), "OFF 2km");
     }
 
-    /// The metadata shape is always a large unit — a spaced `0.5 km`, never `500 m` — and drops
-    /// its decimal from 100 up.
     #[test]
     fn distance_spaced_stays_a_large_unit_and_compacts_at_a_hundred() {
         let spaced = |d_m, units| {
@@ -402,8 +355,6 @@ mod tests {
         assert_eq!(spaced(200_000, Units::Imperial).as_str(), "124 mi");
     }
 
-    /// The ledger form hands the unit back rather than printing it, and switches at the first
-    /// whole large unit.
     #[test]
     fn distance_split_returns_its_unit() {
         let split = |total_m, units| {
@@ -425,8 +376,6 @@ mod tests {
         assert_eq!((v.as_str(), u), ("1.0", "mi"));
     }
 
-    /// The unit-less tile figure keeps a decimal below 100 and drops it above, so the value never
-    /// exceeds three digits.
     #[test]
     fn distance_figure_drops_its_decimal_at_a_hundred() {
         assert_eq!(distance_figure(0.0).as_str(), "0.0");
@@ -436,8 +385,6 @@ mod tests {
         assert_eq!(distance_figure(142.6).as_str(), "143");
     }
 
-    /// Speed, plain integers and percent: the present value, and the `--` fallback where one
-    /// exists.
     #[test]
     fn figures_and_their_dashes() {
         assert_eq!(speed_figure(Some(0.0)).as_str(), "0.0");
@@ -453,8 +400,6 @@ mod tests {
         assert_eq!(percent(12).as_str(), "12%");
     }
 
-    /// Elevation rounds half away from zero and keeps a sub-sea-level sign; an absent sample is
-    /// dashes, not a zero.
     #[test]
     fn elevation_rounded_signs_and_rounds() {
         assert_eq!(elevation_rounded(Some(0.0)).as_str(), "0");
@@ -464,7 +409,6 @@ mod tests {
         assert_eq!(elevation_rounded(None).as_str(), "--");
     }
 
-    /// The unit-suffixed climb readouts, in both unit systems, with and without a value.
     #[test]
     fn elevation_short_and_delta_carry_their_unit() {
         assert_eq!(elevation_short(Some(0), Units::Metric).as_str(), "0m");
@@ -486,7 +430,6 @@ mod tests {
         }
     }
 
-    /// `H:MM` at the minute and hour boundaries — minutes zero-padded, hours uncapped.
     #[test]
     fn duration_hms_boundaries() {
         assert_eq!(duration_hms(0.0).as_str(), "0:00");
@@ -497,7 +440,6 @@ mod tests {
         assert_eq!(duration_hms(35_999.0).as_str(), "9:59");
         assert_eq!(duration_hms(360_000.0).as_str(), "100:00", "hours are uncapped");
     }
-    /// Both date shapes off the same instant: day-first `D MON` for a row, ISO for the detail.
     #[test]
     fn date_shapes() {
         // 2026-03-07T09:41:00Z.
@@ -509,7 +451,6 @@ mod tests {
         assert_eq!(date_iso(0).as_str(), "1970-01-01", "the epoch itself");
     }
 
-    /// The UTC offset always prints its sign and pads both fields.
     #[test]
     fn utc_offset_signs() {
         assert_eq!(utc_offset(0).as_str(), "+00:00", "zero reads positive");
@@ -519,7 +460,6 @@ mod tests {
         assert_eq!(utc_offset(-570).as_str(), "-09:30");
     }
 
-    /// Each displayed byte-unit boundary, and the rounding at it.
     #[test]
     fn bytes_short_unit_boundaries() {
         let show = |bytes| {
@@ -539,7 +479,6 @@ mod tests {
         assert_eq!(show(29 * GIB + GIB / 2).as_str(), "29.5 GB");
     }
 
-    /// Addresses render big-endian with colons, from the little-endian bytes the wire carries.
     #[test]
     fn ble_address_is_big_endian() {
         let mut b = heapless::String::<24>::new();

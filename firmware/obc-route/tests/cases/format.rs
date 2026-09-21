@@ -1,9 +1,8 @@
 //! Format-contract tests for the OBCR reader.
 //!
-//! Each test builds a synthetic `.obcr` byte buffer with the shared handwritten builder
-//! ([`crate::common::build_obcr`], which mirrors `OBCR_Spec.md` exactly), then asserts the reader
-//! parses it back. Hand-emitting the bytes rather than going through the converter pins the
-//! reader to the spec independently: if either drifts, these break.
+//! Each test builds a synthetic `.obcr` byte buffer with the shared handwritten builder, which
+//! mirrors `OBCR_Spec.md`, then asserts the reader parses it back. Hand-emitting the bytes instead
+//! of going through the converter pins the reader to the spec independently.
 
 use core::cell::Cell;
 
@@ -15,8 +14,7 @@ use obc_route::{
 
 use crate::common::{build_obcr, decode, ChunkIn, IndexPlacement, RouteSpec};
 
-/// A [`ByteSource`] that wraps a [`SliceSource`] and counts `read_at` calls, so a test can prove
-/// the [`RouteCache`] really skips the source on a hit.
+/// A [`ByteSource`] that counts `read_at` calls, so a test can prove a cache hit skips the source.
 struct CountingSource<'a> {
     inner: SliceSource<'a>,
     reads: Cell<u32>,
@@ -32,8 +30,8 @@ impl ByteSource for CountingSource<'_> {
     }
 }
 
-/// A source that runs one callback from inside its first geometry read. This models a safe
-/// reentrant source implementation using another reader that shares the cache.
+/// A source that runs one callback from inside its first geometry read. It models a reentrant
+/// source that drives another reader sharing the same cache.
 struct ReentrantSource<'a> {
     inner: SliceSource<'a>,
     reads: Cell<u32>,
@@ -55,9 +53,9 @@ impl ByteSource for ReentrantSource<'_> {
     }
 }
 
-/// Build a `.obcr` from seam-sharing chunks with the index right after the header — the layout
-/// the corruption tests below poke meta fields in at known absolute offsets. `start` is the
-/// first route point; `totals` is `(distance_m, ascent_m, descent_m)`.
+/// Build a `.obcr` from seam-sharing chunks with the index right after the header: the layout the
+/// corruption tests below poke meta fields into at known absolute offsets. `totals` is
+/// `(distance_m, ascent_m, descent_m)`.
 fn build_route(
     name: &str,
     start: (i32, i32),
@@ -139,10 +137,9 @@ fn header_and_summary() {
     assert_eq!(s2.bbox.max_lon, 90);
 }
 
-/// `read_into` fills the caller's **resident** slot in place (the board path — the by-value
-/// `read` transits ~6.7 KB of stack, which overflowed the DK's main stack on the post-upload
-/// index rebuild). Pins the slot's lifecycle: a reused slot is fully replaced by the new route,
-/// and a failed read leaves it cleared — never a half-filled or stale index.
+/// `read_into` fills the caller's resident slot in place. The by-value `read` transits ~6.7 KB of
+/// stack, too much for the board. This pins the slot's lifecycle: a reused slot is fully replaced
+/// by the new route, and a failed read leaves it cleared, never half-filled or stale.
 #[test]
 fn read_into_reuses_and_clears_the_resident_slot() {
     let first = two_chunk_route();
@@ -165,7 +162,6 @@ fn read_into_reuses_and_clears_the_resident_slot() {
     assert_eq!(idx.point_count, 2);
     assert_eq!(idx.total_distance_m, 2_000);
 
-    // A failed read clears the slot (the caller's validity flag is already down).
     assert!(idx.read_into(&SliceSource(&first[..10])).is_err());
     assert_eq!(idx.chunks().len(), 0, "a failed read must not leave a half-filled index");
     assert_eq!(idx.name(), "");
@@ -190,9 +186,8 @@ fn route_cache_serves_repeats_without_re_reading() {
     assert_eq!(src.reads.get(), 2);
     assert_eq!(cache.stats(), (0, 2));
 
-    // Moving the parsed index preserves its session identity. A fresh reader over that same
-    // resident parse adopts the same identity and retains hits — no further source reads. This is
-    // both the by-value host path and the board's per-frame reader lifecycle.
+    // Moving the parsed index preserves its session identity, so a fresh reader over the same
+    // parse keeps its hits. This is the host by-value path and the board's per-frame lifecycle.
     let moved_ridx = ridx;
     let repeated = RouteReader::new_cached(&moved_ridx, &src, &cache);
     let b0 = decode(&repeated, 0);
@@ -207,7 +202,6 @@ fn route_cache_serves_repeats_without_re_reading() {
     assert_eq!(decode(&plain, 0), a0);
     assert_eq!(decode(&plain, 1), a1);
 
-    // An explicit diagnostic clear remains available; the chunk misses and is re-read.
     cache.clear();
     assert_eq!(cache.stats(), (0, 0));
     let cold = RouteReader::new_cached(&moved_ridx, &src, &cache);
@@ -216,10 +210,9 @@ fn route_cache_serves_repeats_without_re_reading() {
     assert_eq!(cache.stats(), (0, 1));
 }
 
-/// Two routes may use identical chunk indices and byte offsets while containing different points.
-/// Constructing a cached reader for the second parsed index must automatically invalidate the
-/// first route's slot — no caller-ordered `clear()` — and then keep hits for repeated readers over
-/// that second resident session.
+/// Two routes can use identical chunk indices and byte offsets while holding different points.
+/// Building a cached reader for the second parsed index must invalidate the first route's slot
+/// without a caller-ordered `clear()`, then keep hits for repeated readers over that session.
 #[test]
 fn route_switch_without_clear_cannot_cross_serve() {
     let a = one_chunk_route("A", (20, 20, 110));
@@ -238,8 +231,8 @@ fn route_switch_without_clear_cannot_cross_serve() {
     assert_eq!(src_a.reads.get(), 1);
     assert_eq!(cache.stats(), (0, 1));
 
-    // Refill the *same* resident slot, exactly like board reconciliation. Same chunk key (0), no
-    // explicit clear: its new parse identity must force a miss against route B's source.
+    // Refill the same resident slot, as board reconciliation does. The chunk key is unchanged and
+    // there is no explicit clear, so only the new parse identity can force the miss.
     resident_idx.read_into(&SliceSource(&b)).unwrap();
     let reader_b = RouteReader::new_cached(&resident_idx, &src_b, &cache);
     let points_b = decode(&reader_b, 0);
@@ -250,15 +243,14 @@ fn route_switch_without_clear_cannot_cross_serve() {
     assert_eq!(src_b.reads.get(), 1, "a route switch must read B rather than hit A's slot");
     assert_eq!(cache.stats(), (0, 1), "adoption resets diagnostics and starts B cold");
 
-    // Reconstructing a reader over the same parsed index is a hit, not a new session.
     let reader_b_again = RouteReader::new_cached(&resident_idx, &src_b, &cache);
     assert_eq!(decode(&reader_b_again, 0), points_b);
     assert_eq!(src_b.reads.get(), 1, "the same resident index must retain cache hits");
     assert_eq!(cache.stats(), (1, 1));
 }
 
-/// Long-lived safe readers can be interleaved against one cache. Every A/B ownership transition
-/// must miss and return that reader's geometry; a same-route repeat must still hit without I/O.
+/// Long-lived readers interleaved against one cache: every A/B ownership transition must miss and
+/// return that reader's own geometry, while a same-route repeat still hits without I/O.
 #[test]
 fn interleaved_readers_revalidate_identity_on_every_hit_lookup() {
     let a = one_chunk_route("A", (20, 20, 110));
@@ -286,8 +278,7 @@ fn interleaved_readers_revalidate_identity_on_every_hit_lookup() {
 }
 
 /// A miss releases the cache borrow before source I/O. If that source reentrantly fills the cache
-/// for B, A's eventual put must re-adopt A; otherwise the cache claims to own B while holding A's
-/// same-tag points and B's next lookup cross-serves poisoned geometry.
+/// for B, A's eventual put must re-adopt A, or B's next lookup cross-serves A's same-tag points.
 #[test]
 fn reentrant_read_revalidates_identity_before_miss_put() {
     let a = one_chunk_route("A", (20, 20, 110));
@@ -406,7 +397,7 @@ fn rejects_bad_input() {
 #[test]
 fn rejects_chunk_count_over_cap() {
     let mut bytes = two_chunk_route();
-    // Header byte 52 is the u32 chunk_count (OBCR_Spec §1). Claim one past the cap.
+    // Header byte 52 is the u32 chunk_count. Claim one past the cap.
     let bad = (MAX_ROUTE_CHUNKS as u32 + 1).to_le_bytes();
     bytes[52..56].copy_from_slice(&bad);
     let src = SliceSource(&bytes);
@@ -440,9 +431,8 @@ fn rejects_chunk_data_region_past_end() {
 }
 
 /// A chunk whose `byte_len` disagrees with its `point_count` is rejected: the data region is
-/// exactly `point_count − 1` six-byte records (§3), and the decode path sizes its read from the
-/// count alone — a shrunken `byte_len` that still lies inside the file would otherwise let chunk 0
-/// decode chunk 1's bytes as its own geometry.
+/// exactly `point_count - 1` six-byte records, and the decode path sizes its read from the count
+/// alone, so a shrunken `byte_len` still inside the file would let chunk 0 decode chunk 1's bytes.
 #[test]
 fn rejects_chunk_byte_len_disagreeing_with_point_count() {
     let len_off = HEADER_FULL_LEN + 40;
@@ -455,9 +445,6 @@ fn rejects_chunk_byte_len_disagreeing_with_point_count() {
     }
 }
 
-/// `preview_polyline` (#685 §4): the two-chunk fixture has 5 distinct points (the seam point
-/// deduped). `N` at/above that keeps all 5 verbatim; `N = 3` keeps first / middle / last; and
-/// every preview is a route-order subset with the endpoints exact.
 #[test]
 fn preview_polyline_decimates_uniformly_with_exact_endpoints() {
     let bytes = two_chunk_route();

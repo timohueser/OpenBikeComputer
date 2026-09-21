@@ -8,31 +8,26 @@ use crate::recorder::{RecorderEffect, RecorderOutcome};
 use crate::settings::{SettingsEffect, SettingsOutcome};
 
 /// A [`Slot::try_put`] that found the slot occupied, carrying the rejected value back to its owner.
-///
-/// Deliberately not a bare `Err(T)`: the name is what makes the caller's `if let Err(full)` read as
-/// "the slot was busy, keep this" rather than "this value is bad".
+/// Named rather than a bare `Err(T)`, so a caller's `if let Err(full)` reads as "the slot was busy,
+/// keep this" rather than "this value is bad".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SlotFull<T> {
     /// The value that did not fit. Its owner keeps it and offers it again on the next pass.
     pub rejected: T,
 }
 
-/// One bounded output slot: capacity one, **first value wins**.
+/// One bounded output slot: capacity one, first value wins.
 ///
-/// A newtype over `Option<T>` rather than a bare field, so the capacity-one rule is enforced by the
-/// type instead of policed at every call site — a plain `Option` would let any writer overwrite an
-/// unconsumed effect with `=` and silently drop a delete or a persist.
-///
-/// Deliberately **not** `Clone` or `Copy`. The slot fields are `pub`, so a `Copy` slot could be
-/// copied out and drained beside the original, and the executor's "consume each effect at most
-/// once" obligation would become a convention again. One slot, one value, one taker.
+/// A newtype over `Option<T>` so the capacity-one rule is enforced by the type rather than policed
+/// at every call site: a plain `Option` would let any writer overwrite an unconsumed effect with
+/// `=`. Deliberately not `Clone` or `Copy` either, because the slot fields are `pub` and a copied
+/// slot could be drained beside the original.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Slot<T> {
     held: Option<T>,
 }
 
 impl<T> Slot<T> {
-    /// An empty slot.
     pub const fn new() -> Self {
         Slot { held: None }
     }
@@ -51,7 +46,7 @@ impl<T> Slot<T> {
         self.held.take()
     }
 
-    /// Whether the slot holds nothing — the admission test before issuing a new operation.
+    /// Whether the slot holds nothing: the admission test before issuing a new operation.
     pub fn is_empty(&self) -> bool {
         self.held.is_none()
     }
@@ -64,8 +59,8 @@ impl<T> Default for Slot<T> {
 }
 
 /// Macro for the two eight-field slot structs. They differ only in which types their fields hold,
-/// and writing `new`, `Default` and `has_pending` twice by hand would be eight near-identical lines
-/// each with eight places to forget a domain.
+/// and writing `new`, `Default` and `has_pending` twice by hand leaves eight places to forget a
+/// domain.
 macro_rules! domain_slots {
     ($(#[$meta:meta])* $name:ident { $( $(#[$field_meta:meta])* $field:ident : $ty:ty ),+ $(,)? }) => {
         $(#[$meta])*
@@ -75,12 +70,10 @@ macro_rules! domain_slots {
         }
 
         impl $name {
-            /// Every slot empty.
             pub const fn new() -> Self {
                 $name { $( $field: Slot::new(), )+ }
             }
 
-            /// Whether any domain slot holds a value — the runtime's "there is work here" test.
             pub fn has_pending(&self) -> bool {
                 $( if !self.$field.is_empty() { return true; } )+
                 false
@@ -96,19 +89,13 @@ domain_slots! {
     /// through the matching [`OutcomeSlots`] field. A field it cannot serve is simply left; the
     /// domain re-offers it next pass.
     EffectSlots {
-        /// Catalog reads, trip-member reads, and object removals.
         catalog: CatalogEffect,
         recorder: RecorderEffect,
-        /// Planner acquire, step, commit and release.
         navigator: NavigatorEffect,
         metadata: MetadataEffect,
-        /// The settings-revision write.
         settings: SettingsEffect,
-        /// Firmware package scan and install arming.
         dfu: DfuEffect,
-        /// Bond removal.
         bond: BondEffect,
-        /// Free-space measurement.
         storage_info: StorageInfoEffect,
     }
 }
@@ -116,33 +103,23 @@ domain_slots! {
 domain_slots! {
     /// What the platform finished since the last pass — one terminal result per domain.
     ///
-    /// DeviceCore consumes these first, before anything else in a pass (#1433 §6), and each domain
-    /// validates its own [`OperationToken`](super::OperationToken) before believing a word of it.
+    /// DeviceCore consumes these first, before anything else in a pass, and each domain validates
+    /// its own [`OperationToken`](super::OperationToken) before believing a word of it.
     OutcomeSlots {
-        /// The answer to a [`CatalogEffect`].
         catalog: CatalogOutcome,
         recorder: RecorderOutcome,
-        /// The answer to a [`NavigatorEffect`].
         navigator: NavigatorOutcome,
         metadata: MetadataOutcome,
-        /// The answer to a [`SettingsEffect`].
         settings: SettingsOutcome,
-        /// The answer to a [`DfuEffect`].
         dfu: DfuOutcome,
-        /// The answer to a [`BondEffect`].
         bond: BondOutcome,
-        /// The answer to a [`StorageInfoEffect`].
         storage_info: StorageInfoOutcome,
     }
 }
 
-// ==================== layout tripwires ====================
-//
-// 64-bit host ceilings (the device's 32-bit `usize` makes these smaller, never larger). Both structs
-// are per-pass values on the executor's stack, not resident state, but they still cross the seam on
-// every pass and a growth here means a payload crept into a message. `OutcomeSlots` is dominated by
-// `DfuOutcome`'s two fixed 32-byte version strings — see `dfu.rs` for why that one is allowed to be
-// the biggest thing in the protocol.
+// Layout tripwires, at 64-bit host ceilings. Both structs are per-pass values on the executor's
+// stack, but they cross the seam on every pass, and a growth here means a payload crept into a
+// message. `OutcomeSlots` is dominated by `DfuOutcome`'s two fixed 32-byte version strings.
 const _: () = assert!(core::mem::size_of::<EffectSlots>() <= 216, "eight bounded effects, no payloads");
 const _: () = assert!(core::mem::size_of::<OutcomeSlots>() <= 248, "eight bounded outcomes, no payloads");
 
@@ -177,9 +154,9 @@ mod tests {
         assert!(source.is_current(newer));
     }
 
-    /// Every domain, through its own outcome type and its own tag. Nine cases, because "a token is
-    /// checked" is a per-domain obligation and a domain that forgot to carry one would not compile
-    /// into this list at all.
+    /// Every domain, through its own outcome type and its own tag. "A token is checked" is a
+    /// per-domain obligation, and a domain that forgot to carry one would not compile into this
+    /// list at all.
     #[test]
     fn every_domain_accepts_its_own_token_and_rejects_a_stale_one() {
         token_rules(|token| CatalogOutcome::Cancelled { token }, CatalogOutcome::token);
@@ -305,9 +282,8 @@ mod tests {
     /// Every slot field of both structs: a second put is refused, the first value stands untouched,
     /// and the rejected value comes back to its owner unchanged.
     ///
-    /// `expected` and `refused` are independent builds of the same two sets (the builders are
-    /// deterministic), so the assertions compare against values the slot never saw — no clone of a
-    /// `Copy` message, and no chance of comparing a value with itself.
+    /// `expected` and `refused` are independent builds of the same two sets, so the assertions
+    /// compare against values the slot never saw.
     macro_rules! check_full_slot {
         ($slots:ident, $other:ident, $expected:ident, $refused:ident, $($field:ident),+) => {$(
             let intruder = $other.$field.take().expect("a second value exists");
@@ -366,9 +342,8 @@ mod tests {
         assert!(!slots.has_pending(), "all eight fields drained");
     }
 
-    /// The backpressure contract in the shape a domain owner actually uses it: one operation is in
-    /// flight, the next request waits in the domain's own state, and it goes out on the pass after
-    /// the slot frees — nothing queued in the slot, nothing lost.
+    /// The backpressure contract as a domain owner uses it: one operation is in flight, the next
+    /// request waits in the domain's own state, and it goes out on the pass after the slot frees.
     #[test]
     fn a_domain_retains_later_work_while_one_effect_is_in_flight() {
         let mut tokens: TokenSource<CatalogTag> = TokenSource::new();
@@ -398,9 +373,8 @@ mod tests {
         assert!(pending.is_none());
     }
 
-    /// Bulk stays out of the protocol. Not a size opinion but the epic's rule (§8) made mechanical:
-    /// *both* slot structs together are far smaller than a single resident catalog, so no catalog,
-    /// profile, preview or bundle can be hiding inside one.
+    /// Bulk stays out of the protocol, made mechanical: both slot structs together are far smaller
+    /// than a single resident catalog, so no catalog, profile, preview or bundle can hide in one.
     #[test]
     fn large_payload_types_do_not_enter_a_slot() {
         use core::mem::size_of;
@@ -410,13 +384,13 @@ mod tests {
         assert!(protocol < size_of::<crate::ride::RideCatalog>(), "a ride catalog cannot be in here");
         assert!(protocol < size_of::<crate::trip::Trips>(), "the trip folders cannot be in here");
 
-        // A nav preview is the smallest bulk payload the epic names — even that outweighs the
-        // largest single message in the protocol.
+        // A nav preview is the smallest bulk payload named, and even that outweighs the largest
+        // single message in the protocol.
         let preview = size_of::<[(i32, i32); crate::app::NAV_PREVIEW_MAX]>();
         assert!(size_of::<NavigatorEffect>() < preview && size_of::<NavigatorOutcome>() < preview);
     }
 
-    /// The planner request is the largest effect payload, and it is bounded by construction — a
+    /// The planner request is the largest effect payload, and it is bounded by construction: a
     /// fixed name buffer, not a name that can grow.
     #[test]
     fn the_planner_request_stays_bounded() {

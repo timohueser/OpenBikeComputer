@@ -4,9 +4,8 @@
 //! record framing, the packet slicing and the backpressure, and calls back for the next reaction
 //! when it has taken the last one. Nothing here loops, buffers a download or knows what USB is.
 //!
-//! Device information (§5.2.1's EP0 vendor read) is **not** here. The loopback link on the
-//! TypeScript side already answers it, and a second opinion about a constant would be a device
-//! policy this crate has no business holding.
+//! Device information is not here. The loopback link on the TypeScript side already answers it, and
+//! a second opinion about a constant would be a device policy this crate has no business holding.
 
 use obc_storage::flat::{EntryFlags, StoreId};
 use wasm_bindgen::prelude::*;
@@ -101,8 +100,6 @@ impl JsDevice {
         }
     }
 
-    // --- records ---------------------------------------------------------------
-
     #[wasm_bindgen(js_name = onControl)]
     pub fn on_control(&mut self, record: &[u8]) -> JsReaction {
         self.inner.on_control(record).into()
@@ -117,13 +114,9 @@ impl JsDevice {
         self.inner.poll().into()
     }
 
-    // --- the wire and the power ------------------------------------------------
-
     pub fn reboot(&mut self) {
         self.inner.reboot();
     }
-
-    // --- what the card holds ---------------------------------------------------
 
     #[wasm_bindgen(js_name = commitSequence)]
     pub fn commit_sequence(&self) -> u64 {
@@ -165,8 +158,6 @@ impl JsDevice {
     pub fn seed_retained(&mut self, id: u64, name: &str, bytes: &[u8]) -> String {
         catalog_json(&[self.inner.seed_retained(id, bytes, name)])
     }
-
-    // --- the two test hooks ----------------------------------------------------
 
     #[wasm_bindgen(js_name = traceRequests)]
     pub fn trace_requests(&mut self) {

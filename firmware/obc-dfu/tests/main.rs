@@ -1,5 +1,4 @@
-//! `obc-dfu`'s integration tests. One binary; each module below was a
-//! top-level `tests/*.rs` file and keeps its own name, helpers and assertions.
+//! `obc-dfu`'s integration tests: one binary, one module per case file.
 
 #[path = "cases/armer.rs"]
 mod armer;

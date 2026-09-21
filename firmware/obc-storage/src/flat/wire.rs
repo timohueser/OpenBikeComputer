@@ -1,15 +1,12 @@
-//! The binder: [`FlatStore`] as the protocol-v4 engine names it.
+//! The binder: [`FlatStore`] as the protocol engine names it.
 //!
-//! `FLAT_Store_Protocol.md` §2 is one seam written twice — here as the trait the store implements
-//! ([`super::seam::Store`]), and in `obc-link` as the trait the engine declares
-//! ([`obc_link::flat::Store`]) — because the dependency runs downward: `obc-link` is a
-//! foundation crate and this one is a platform adapter, so the engine may not name the store and the
-//! store therefore names the engine. This module is the whole of that cost: one `impl` block and two
-//! total conversions, with the two definitions pinned to each other by the tests below.
+//! The protocol is one seam written twice — here as the trait the store implements, and in `obc-link`
+//! as the trait the engine declares — because the dependency runs downward: `obc-link` is a
+//! foundation crate and this one is a platform adapter, so the store names the engine.
 //!
-//! Nothing here decides anything. Every refusal is the store's own, every value is carried across
-//! unchanged, and the one thing it adds is [`MAX_BATCH`](super::store::MAX_BATCH): a batch larger
-//! than the store's plan arrays is refused rather than truncated.
+//! Nothing here decides anything. Every refusal is the store's own, and the one thing it adds is
+//! [`MAX_BATCH`](super::store::MAX_BATCH): a batch larger than the store's plan arrays is refused
+//! rather than truncated.
 
 use obc_link::flat as v4;
 
@@ -21,8 +18,7 @@ use super::seam::{
 use super::store::{FlatStore, Handle, Mode, MAX_BATCH};
 
 /// The kind, as the wire names it. An exhaustive match rather than a decode: the two tables are the
-/// same table (`FLAT_Store_Format.md` §3.1), and a match that stops compiling is how a divergence
-/// announces itself.
+/// same table, and a match that stops compiling is how a divergence announces itself.
 fn kind_out(kind: ObjectKind) -> v4::ObjectKind {
     match kind {
         ObjectKind::Route => v4::ObjectKind::Route,

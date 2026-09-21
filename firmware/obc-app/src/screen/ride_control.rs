@@ -1,10 +1,7 @@
-//! The Paused page — a full screen (no longer the small overlay): the ride-so-far as a stat
-//! ledger (ride time / distance / climb, the Route overview's pane-free look) over the pause
-//! menu's option rows, Resume / Finish / Discard.
+//! The Paused page: the ride so far as a stat ledger, over the Resume, Finish and Discard rows.
 //!
-//! Each option has a `guard` flag: non-guarded (Resume) fire on `press`; guarded, irreversible ones
-//! (Finish, Discard) fire only on a completed `hold`, their row filling with a warning bar as the
-//! Select is held (release early → no `Hold` gesture → nothing happens). `back` resumes.
+//! Resume is not guarded and fires on a press. Finish and Discard are irreversible, so they fire
+//! only on a completed hold, and their row fills as the rider holds Select. Back resumes.
 
 use core::fmt::Write;
 
@@ -30,14 +27,12 @@ const OPTIONS_TOP: i32 = 178;
 const OPTION_ROW_H: i32 = 38;
 const OPTION_GAP: i32 = 8;
 
-/// Per-row guard flags (Finish / Discard are irreversible). Labels are looked up per language at
-/// draw time (see [`RideControl::draw`]) — the old `const ITEMS` couldn't stay const.
+/// Per-row guard flags. Finish and Discard are irreversible.
 const GUARDS: [bool; 3] = [false, true, true];
 
 const FINISH: usize = 1;
 const DISCARD: usize = 2;
 
-/// The Paused page. State is just the highlighted option.
 #[derive(Debug, Default)]
 pub struct RideControl {
     selected: usize,
@@ -48,9 +43,7 @@ impl RideControl {
         RideControl { selected: 0 }
     }
 
-    /// True if the highlighted option is guarded (needs a hold): its row fills with the live hold
-    /// progress in `draw`, so [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) reports
-    /// a charging hold as worth repainting here.
+    /// True when the highlighted row fills for a hold, which makes the app repaint that fill.
     pub fn selection_is_guarded(&self) -> bool {
         GUARDS[self.selected.min(GUARDS.len() - 1)]
     }
@@ -59,7 +52,6 @@ impl RideControl {
         match g {
             Gesture::Step(n) => list::on_step(&mut self.selected, n, GUARDS.len()),
             Gesture::Press => {
-                // Instant (non-guarded) options only — i.e. Resume.
                 if GUARDS[self.selected.min(GUARDS.len() - 1)] {
                     Transition::None
                 } else {
@@ -68,8 +60,8 @@ impl RideControl {
                 }
             }
             Gesture::Hold => {
-                // Confirm guarded options. The recognizer emits `Hold` only when the hold completes,
-                // so reaching here *is* the confirmation; releasing early never produces it.
+                // The recognizer emits `Hold` only for a completed hold, so this is the
+                // confirmation of a guarded row.
                 match self.selected {
                     FINISH => self.end_ride(cx, RecorderIntent::Save),
                     DISCARD => self.end_ride(cx, RecorderIntent::Discard),
@@ -77,7 +69,7 @@ impl RideControl {
                 }
             }
             Gesture::Back => {
-                cx.activity.mode = Mode::Riding; // back = Resume (cancel the pause)
+                cx.activity.mode = Mode::Riding; // Back resumes the ride
                 Transition::Pop
             }
             // Back-hold is the global escape, resolved above screen dispatch.
@@ -85,12 +77,9 @@ impl RideControl {
         }
     }
 
-    /// Close the ride: name the disposition to Recorder (Save → the durable ride object / Discard →
-    /// drop), go Idle, clear the route, and return Home.
-    ///
-    /// The session is **not** ended here. Recorder closes it when the store confirms the close, so a
-    /// finalize that fails leaves a ride that can still be finished rather than one the app has
-    /// already forgotten.
+    /// Close the ride: name the disposition to Recorder, go idle, clear the route, and return
+    /// home. The session does not end here. Recorder closes it when the store confirms the close,
+    /// so a finalize that fails leaves a ride the rider can still finish.
     fn end_ride(&self, cx: &mut Ctx, intent: RecorderIntent) -> Transition {
         cx.recorder.request(intent);
         cx.activity.mode = Mode::Idle;
@@ -103,8 +92,6 @@ impl RideControl {
         let (w, h) = (rx.w, rx.h);
         title_frame(cv, w, h, rx.t(Msg::RideControlTitle), "");
 
-        // The ride so far, in the shared pane-free ledger: what you're about to Finish (or throw
-        // away with Discard) is on screen while the option rows are armed below.
         let units = rx.settings.units;
         let ride = rx.recorder;
         let time = duration_hms(ride.moving_s());
@@ -126,7 +113,6 @@ impl RideControl {
             }
         }
 
-        // Guarded rows fill warning-red — Finish/Discard are irreversible.
         let geo = GuardedRowsGeometry::panel(w, OPTIONS_TOP, OPTION_ROW_H, OPTION_GAP);
         let items = [
             MenuItem { label: rx.t(Msg::RideControlResume), guard: GUARDS[0] },

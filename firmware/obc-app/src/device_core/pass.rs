@@ -14,8 +14,7 @@ use super::{
     TransferState, UpdateResult,
 };
 
-/// The thirteen stages, in the order [`App::run_pass`] runs them. Each runs exactly once, and each
-/// advances exactly one component.
+/// The pass stages, in the order [`App::run_pass`] runs them. Each runs exactly once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PassStage {
     /// Validate and consume each domain's outcome slot.
@@ -27,26 +26,20 @@ pub enum PassStage {
     /// Advance `UiRuntime` and collect the typed intents it produced.
     Ui,
     Catalog,
-    /// Advance `Recorder`.
     Recorder,
-    /// Advance `Navigator`.
     Navigator,
-    /// Advance `SettingsMachine`.
     Settings,
 
     /// Advance `DfuState`, `BondState` and `StorageInfo`.
     Platform,
     /// Admit heavy work through `CoreMode` and recalculate [`Capabilities`].
     Admission,
-    /// Advance `FaultState`.
     Faults,
     /// Calculate render work, needs, effects and the next wake.
     Plan,
 }
 
 impl PassStage {
-    /// The fixed order, as one value — what the order test compares against, and the only place the
-    /// sequence is written down besides [`App::run_pass`] itself.
     pub const ORDER: [PassStage; 12] = [
         PassStage::Outcomes,
         PassStage::Facts,
@@ -63,35 +56,28 @@ impl PassStage {
     ];
 }
 
-/// The pass's two clocks. They are the same value on the board (one monotonic `now` drives the whole
-/// loop) and differ in the simulator, where [`ride`](Self::ride) is GPX-playback time and
-/// [`ui`](Self::ui) is wall time — so a replayed ride's moving time is not scaled by the replay
-/// speed while a hold still charges in real seconds.
+/// The pass's two clocks. They are the same value on the board. In the simulator
+/// [`ride`](Self::ride) is GPX-playback time and [`ui`](Self::ui) is wall time, so a replayed ride's
+/// moving time is not scaled by the replay speed while a hold still charges in real seconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PassClock {
-    /// Fix-consistent millis: ride accumulators, sensor freshness, the recorded track.
     pub ride: RideClock,
-    /// Monotonic wall millis: holds, animations, idle return, the next wake.
     pub ui: InputClock,
 }
 
-/// Everything one pass reads. Values and pull-only ports — nothing here can reach back into
+/// Everything one pass reads. Values and pull-only ports: nothing here can reach back into
 /// DeviceCore while the pass runs.
 ///
-/// [`outcomes`](Self::outcomes) and [`facts`](Self::facts) are borrowed rather than owned so the
-/// pass can consume *what it has an owner for* and leave the rest where the executor put it: a
-/// value with no owner is never silently dropped.
+/// [`outcomes`](Self::outcomes) and [`facts`](Self::facts) are borrowed rather than owned, so the
+/// pass consumes only what it has an owner for and leaves the rest where the executor put it.
 pub struct PassInputs<'a> {
-    /// This pass's clocks.
     pub now: PassClock,
     /// The gestures recognised since the last pass, in the order they happened.
     pub gestures: &'a [Gesture],
-    /// The platform's sensor ports.
     pub sensors: Sensors<'a>,
-    /// The active route's reader, when the platform has one open.
     pub route: Option<&'a RouteReader<'a>>,
 
-    /// What this firmware image and its hardware implement at all — constant for a boot.
+    /// What this firmware image and its hardware implement at all. Constant for a boot.
     pub support: PlatformSupport,
     /// What the platform finished since the last pass.
     pub outcomes: &'a mut OutcomeSlots,
@@ -99,17 +85,14 @@ pub struct PassInputs<'a> {
     pub facts: &'a mut ExternalFacts,
     /// Keyed answers to the derived needs of the previous plan.
     pub derived: DerivedInputs,
-    /// The bounded polylines a derived answer carries beside its key.
     pub targets: DerivedTargets<'a>,
 }
 
-/// What the platform must read for the frame the pass just planned. A *level*, recalculated every
-/// pass: a host that cannot open a source simply sees the need again.
+/// What the platform must read for the frame the pass just planned. A level, recalculated every
+/// pass: a host that cannot open a source sees the need again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SourceNeeds {
-    /// The map reader — the base screen draws the map.
     pub map: bool,
-    /// The active route's reader — a route is loaded.
     pub route: bool,
 }
 
@@ -117,81 +100,59 @@ pub struct SourceNeeds {
 /// physical work per domain.
 #[derive(Debug, PartialEq, Eq)]
 pub struct PassPlan {
-    /// Which display planes changed.
     pub render: Dirty,
-    /// Millis until the pass must run again, or `None` to sleep until an event. `Some(0)` when
-    /// [`immediate`](Self::immediate) holds. Planned before the frame is drawn: a host that renders
-    /// in the same pass reads [`App::ms_until_next_wake`](crate::App::ms_until_next_wake) after the
-    /// draw, since a draw can arm a wake of its own (a long name that starts scrolling).
+    /// Millis until the pass must run again, or `None` to sleep until an event. Planned before the
+    /// frame is drawn: a host that renders in the same pass reads
+    /// [`App::ms_until_next_wake`](crate::App::ms_until_next_wake) after the draw, since a draw can
+    /// arm a wake of its own.
     pub next_wake_ms: Option<u32>,
-    /// The keyed derived reads DeviceCore still needs.
     pub derived_needs: DerivedNeeds,
-    /// The sources the next frame needs open.
     pub sources: SourceNeeds,
     /// One bounded operation per domain.
     pub effects: EffectSlots,
-    /// A later-to-earlier value is waiting: run another pass **before sleeping**. The work is
-    /// already decided; it has simply not reached its consumer yet.
+    /// A later-to-earlier value is waiting: run another pass before sleeping.
     pub immediate: bool,
 }
 
-/// The overlay plane's live content and animation phase.
-///
-/// The overlay is the cheap transient layer: the hold bulge and the planning banner. Its
-/// repaint rule is not the map's — it is two rules over two levels, which used to be three separate
-/// level-to-edge converters, one on the input plane, one on the UI runtime and one on the mode
-/// machine, producing a single boolean per frame between them.
-///
-/// - The **bulge** repaints while it is live, plus exactly one trailing frame after it goes quiet,
-///   so the last bulge is cleared off the layer rather than left painted over an unchanged map.
-/// - The banner repaints when it appears, disappears, or advances its activity phase.
+/// The overlay plane's live content and animation phase: the hold bulge and the planning banner.
+/// The bulge repaints for one more frame after it goes quiet, so the last bulge is cleared off the
+/// layer. The banner repaints when it appears, disappears, or advances its activity phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OverlayKey {
-    /// The hold bulge is charging, popping or retracting.
     pub(crate) hold: bool,
     /// Zero when absent, otherwise the banner's current activity phase.
     pub(crate) banner: u8,
 }
 
 impl OverlayKey {
-    /// The boot level: nothing charging, nothing frozen.
     const QUIET: OverlayKey = OverlayKey { hold: false, banner: 0 };
 
-    /// Whether the overlay plane must be repainted, given the level at the previous drain.
     fn dirty_against(self, previous: OverlayKey) -> bool {
         (self.hold || previous.hold) || (self.banner != previous.banner)
     }
 }
 
 /// The coordinator's own resident state: the connections, the levels a stage compares against to
-/// find an edge, the current capabilities, and the re-entrancy guard.
-///
-/// Deliberately small and deliberately *not* domain state — nothing here decides a product rule.
-/// Each field is either a wire ([`Connections`]) or the previous value of something a stage must
-/// detect a change in.
+/// find an edge, the current capabilities, and the re-entrancy guard. No domain state lives here.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct PassState {
-    /// Every cross-domain connection.
     pub(crate) connections: Connections,
-    /// The newest store revision seen — the level stage 2 detects a commit against.
+    /// The newest store revision seen: the level the facts stage detects a commit against.
     store: Option<StoreRevision>,
     link: Option<crate::ble::BleStatus>,
-    /// The active route's durable identity as of the last pass — Navigator's activation edge.
+    /// The active route's durable identity as of the last pass: Navigator's activation edge.
     active_route: Option<crate::CatalogObjectId>,
-    /// What the device can currently do, recalculated at stage 12.
+    /// What the device can currently do, recalculated every pass.
     pub(crate) capabilities: Capabilities,
-    /// The overlay plane's levels at the last drain — the one converter behind
-    /// [`Dirty::overlay`](crate::Dirty::overlay). See [`OverlayKey`].
+    /// The overlay plane's levels at the last drain. See [`OverlayKey`].
     overlay: OverlayKey,
     /// Whether a pass is running. The push doors refuse while it is set.
     in_pass: bool,
-    /// The stages this pass ran, in order.
     #[cfg(test)]
     trace: heapless::Vec<PassStage, 16>,
 }
 
 impl PassState {
-    /// The boot state: nothing wired, no level seen, no capability.
     pub(crate) const fn new() -> Self {
         PassState {
             connections: Connections::new(),
@@ -206,13 +167,12 @@ impl PassState {
         }
     }
 
-    /// Whether a pass is currently running — the guard the push doors read.
     pub(crate) fn in_pass(&self) -> bool {
         self.in_pass
     }
 
     /// Open a pass. Re-entry is a caller bug: a platform callback that reached here would be
-    /// mutating DeviceCore in the middle of one.
+    /// mutating DeviceCore in the middle of a pass.
     fn enter(&mut self) {
         debug_assert!(!self.in_pass, "a pass cannot run inside a pass");
         self.in_pass = true;
@@ -220,7 +180,6 @@ impl PassState {
         self.trace.clear();
     }
 
-    /// Close the pass.
     fn leave(&mut self) {
         self.in_pass = false;
     }
@@ -232,8 +191,7 @@ impl PassState {
         now.dirty_against(core::mem::replace(&mut self.overlay, now))
     }
 
-    /// Note that a stage ran. Free outside tests: the recorder exists so the *order* can be
-    /// asserted, not to be read at runtime.
+    /// Note that a stage ran. Free outside tests.
     #[inline]
     fn record(&mut self, stage: PassStage) {
         #[cfg(test)]
@@ -243,29 +201,18 @@ impl PassState {
     }
 }
 
-// Layout tripwire: the coordinator's own state is wires and levels — a growth here means domain
-// state drifted into the sequencer.
+// Tripwire: a growth here means domain state drifted into the sequencer.
 const _: () = assert!(core::mem::size_of::<PassState>() <= 344, "connections, a few levels, the test recorder");
 
 impl App {
-    /// Run one DeviceCore pass: thirteen stages, once each, in [`PassStage::ORDER`].
-    ///
-    /// The whole product frame in one call — what completed, what changed, what the rider did, and
-    /// what every domain decides about it — returning the bounded work the platform must perform.
-    ///
-    /// Public from #1439 on, so the compatibility adapter and the conformance tests can drive it.
-    /// The existing frame methods stay the *production* hosts' entry points until #1397 S6 migrates
-    /// them; both compositions call the same per-domain entry points, so there is one implementation
-    /// of each and only the order differs.
+    /// Run one DeviceCore pass: every stage once, in [`PassStage::ORDER`]. The whole product frame
+    /// in one call, returning the bounded work the platform must perform.
     pub fn run_pass(&mut self, inputs: PassInputs<'_>) -> PassPlan {
         let PassInputs { now, gestures, sensors, route, support, outcomes, facts, derived, targets } = inputs;
         self.pass.enter();
-        // The visible screens' exact facts, as they are *before* any stage runs (#1447). Held on
-        // this frame's stack and nowhere else: a resident copy would be one more mirror of the state
-        // it is describing. The twin below closes the comparison — see `crate::render_key`.
+        // The visible screens' exact facts, before any stage runs. The twin after the last stage
+        // closes the comparison.
         let key_before = self.render_key();
-        // The previous pass's later-to-earlier deposits become visible here — before any new
-        // outcome, fact or gesture, so an earlier component acts on them ahead of new user input.
 
         self.stage_outcomes(outcomes, now.ui.0);
         self.stage_facts(facts, derived, targets);
@@ -282,10 +229,8 @@ impl App {
         self.stage_platform(&mut effects, support);
         self.stage_admission(support);
         self.stage_faults();
-        // Every stage has run: whatever the visible screens draw is now final for this frame. A
-        // moved key is a repaint, folded in *before* stage 14 drains the demand, so the explicit
-        // requests the stages made and the region-scoped tick demand fold together exactly as they
-        // always have (a full-frame demand still overrides a region — over-redraw stays safe).
+        // Every stage has run, so what the visible screens draw is final for this frame. A moved
+        // key is a repaint, folded in before the plan stage drains the demand.
         if self.render_key() != key_before {
             self.ui.map_dirty = true;
         }
@@ -295,8 +240,6 @@ impl App {
         plan
     }
 
-    /// Stage 1 — validate and consume each domain's outcome slot.
-    ///
     fn stage_outcomes(&mut self, outcomes: &mut OutcomeSlots, now_ms: u32) {
         self.pass.record(PassStage::Outcomes);
         if let Some(outcome) = outcomes.catalog.take() {
@@ -349,11 +292,9 @@ impl App {
             }
         }
         if let Some(outcome) = outcomes.recorder.take() {
-            // Recorder's verdict on the close. A committed ride tells the catalog at stage 6 of this
-            // pass — the same owed bit a removal and a store commit arm, so one saved ride is one
-            // re-read. A failure raises the recording warning through the fault connection and
-            // changes nothing else: the ride is still on the store, so the close stays pending and
-            // re-offers.
+            // A committed ride tells the catalog later in this pass. A failure raises the recording
+            // warning and changes nothing else: the ride is still on the store, so the close stays
+            // pending and re-offers.
             match self.recorder.apply_outcome(outcome) {
                 crate::recorder::RecorderVerdict::Saved(ride) => {
                     let _ = self.pass.connections.ride_finalized.try_put(RideFinalized { ride });
@@ -363,10 +304,8 @@ impl App {
                 crate::recorder::RecorderVerdict::Failed => {
                     self.pass.connections.faults.raise(crate::screen::WarningFlags::REC_ERROR);
                 }
-                // The rider's one repair attempt on a damaged recovered object is over and Recorder
-                // has latched what it came to. Re-raise the card so its new mode is what the rider
-                // sees — the typed card **is** the explanation, so no `REC_ERROR` is raised beside
-                // it: that warning means a ride log is now incomplete, and no ride is being logged.
+                // The typed card is the explanation, so no `REC_ERROR` is raised beside it: that
+                // warning means a ride log is now incomplete, and no ride is being logged.
                 crate::recorder::RecorderVerdict::RecoveryLatched => {
                     self.raise_ride_recovery();
                 }
@@ -380,8 +319,7 @@ impl App {
         if let Some(outcome) = outcomes.settings.take() {
             if self.apply_settings_outcome(outcome) {
                 // Through the fault connection, not straight to a card: every notice raised in a
-                // pass reaches the rider together at stage 13, so a failed save shares the card
-                // with whatever else this pass found rather than displacing it.
+                // pass reaches the rider together, on one card.
                 self.pass.connections.faults.raise(crate::screen::WarningFlags::SETTINGS_ERROR);
             }
         }
@@ -420,10 +358,9 @@ impl App {
                     self.catalogs.loaded_scope = self.catalogs.loaded_scope.filter(|scope| scope.store == store.store);
                 }
                 self.pass.store = Some(store);
-                // The fact says the store moved; it does not order a re-read. The **domain** owes
-                // the read from here on, and stage 6 admits it — so a commit that arrives while the
-                // catalog is busy costs a delay rather than a missed rescan, and it coalesces with
-                // the reads a completed removal or a failed read owe.
+                // The fact says the store moved; it does not order a re-read. The catalog domain
+                // owes the read from here on, so a commit that arrives while the catalog is busy
+                // costs a delay rather than a missed rescan.
                 self.catalogs.note_store_moved();
             }
         }
@@ -459,11 +396,9 @@ impl App {
 
     /// Stage 3 — apply gestures, sensors and time.
     ///
-    /// Gestures land in the order they were recognised, and a `Hold`/`BackHold` already in the batch
-    /// behind a stack-changing gesture is dropped rather than delivered to the screen that replaced
-    /// its target (#480). The hold-cancel latch a stack change arms is
-    /// deliberately **not** drained here: it belongs to the board's input plane, which drains it
-    /// between passes (see the module docs).
+    /// A `Hold` or `BackHold` already in the batch behind a stack-changing gesture is dropped rather
+    /// than delivered to the screen that replaced its target. The hold-cancel latch is deliberately
+    /// not drained here: it belongs to the board's input plane, which drains it between passes.
     fn stage_input(
         &mut self,
         now: PassClock,
@@ -473,9 +408,8 @@ impl App {
     ) {
         self.pass.record(PassStage::Input);
         self.ui.now_ms = now.ui.0;
-        // Recorder's session edge, before the world is applied: a host that asked for a ride between
-        // two passes must have it open before this pass integrates a fix into it, or the ride would
-        // start by discarding its own first frame of motion.
+        // Recorder's session edge, before the world is applied: a ride asked for between two passes
+        // must be open before this pass integrates a fix into it.
         self.advance_recorder_session();
         self.apply_gesture_batch(gestures);
         self.advance_inputs(now.ride, sensors, route);
@@ -484,27 +418,21 @@ impl App {
     /// Stage 4 — advance `UiRuntime`, then collect the typed intents the rider produced.
     ///
     /// The UI reaches a domain by naming what it wants, never by performing the work: a delete is a
-    /// [`CatalogIntent`], not a store operation. Every intent is offered into a slot that is
-    /// **checked first** — an intent that cannot be delivered leaves the rider's one-shot exactly
-    /// where it was, so nothing is lost by a busy pass.
-    ///
-    /// The ride close, navigation, update and free-space requests are not taken here: their domains
-    /// exist, so the screens name them directly through `Ctx` and there is nothing left in
-    /// `Activity` to collect (see the module docs).
+    /// [`CatalogIntent`], not a store operation. Every intent is offered into a slot that is checked
+    /// first, so an intent that cannot be delivered leaves the rider's one-shot where it was.
     fn stage_ui(&mut self, now: PassClock) {
         self.pass.record(PassStage::Ui);
         self.advance_animations(now.ui);
 
         if self.pass.connections.ui_catalog.is_empty() {
-            // A vanished subject consumes the request and yields nothing — the same rule the
-            // legacy drain applies, and the reason the index is resolved to a durable id here.
+            // A vanished subject consumes the request and yields nothing, which is why the index is
+            // resolved to a durable id here.
             let intent = if let Some(idx) = self.activity.take_route_delete() {
                 self.catalogs.route_id_at(idx).map(|id| CatalogIntent::DeleteRoute { id })
             } else if let Some(idx) = self.activity.take_ride_delete() {
                 self.catalogs.ride_entry(idx).map(|entry| CatalogIntent::DeleteRide { id: entry.id })
             } else {
-                // The trip delete already *is* a durable id — the confirm dialog holds the folder's
-                // identity rather than a menu row — so there is nothing to resolve here.
+                // The trip delete already is a durable id, so there is nothing to resolve here.
                 self.activity
                     .take_trip_delete()
                     .map(|id| CatalogIntent::DeleteTrip { id })
@@ -524,9 +452,8 @@ impl App {
         if self.pass.connections.ride_finalized.take().is_some() {
             self.catalogs.note_ride_finalized();
         }
-        // A refused intent goes back into the slot it came from: that slot is its producer's pending
-        // state until the catalog has room, and putting it back is what makes a busy pass cost a
-        // delay rather than a delete.
+        // A refused intent goes back into the slot it came from: that slot is its producer's
+        // pending state until the catalog has room, so a busy pass costs a delay, not a delete.
         if let Some(intent) = self.pass.connections.ui_catalog.take() {
             if let Err(full) = self.admit_catalog_intent(intent) {
                 let _ = self.pass.connections.ui_catalog.try_put(full.rejected);
@@ -538,7 +465,7 @@ impl App {
     }
 
     /// Hand one intent to the catalog domain, and — when what leaves is the route being followed —
-    /// tell Navigator in this same pass. The refusal is handed back to the caller unchanged.
+    /// tell Navigator in this same pass.
     fn admit_catalog_intent(&mut self, intent: CatalogIntent) -> Result<(), SlotFull<CatalogIntent>> {
         self.catalogs.admit_intent(intent)?;
         if let CatalogIntent::DeleteRoute { id } = intent {
@@ -565,18 +492,15 @@ impl App {
     /// Stage 7 — `RecorderMachine`'s one bounded operation: a journal checkpoint the cadence owes,
     /// or the close the rider named.
     ///
-    /// Gated on [`Capabilities::recorder`](super::Capabilities) — the last pass's level, the same
-    /// pattern stage 10 uses. A device with nowhere to put a ride does no recording work at all,
-    /// rather than starting operations that fail on their first write.
-    ///
-    /// The rider's [`Start`](crate::RecorderIntent::Start) is not taken here: opening a session is a
-    /// state change, not an effect, and everything from stage 3 on has to see it — see
-    /// [`advance_recorder_session`](App::advance_recorder_session) for where it lands and why.
+    /// Gated on [`Capabilities::recorder`](super::Capabilities), so a device with nowhere to put a
+    /// ride does no recording work at all. [`Start`](crate::RecorderIntent::Start) is a state
+    /// change, not an effect, so it lands in
+    /// [`advance_recorder_session`](App::advance_recorder_session) instead.
     fn stage_recorder(&mut self, effects: &mut EffectSlots) {
         self.pass.record(PassStage::Recorder);
         let caps = self.pass.capabilities.recorder;
-        // The footer's wall-clock anchor goes with the offer, so the figures the executor writes
-        // belong to the operation it is about to perform rather than to whenever it gets to it.
+        // The wall-clock anchor goes with the offer, so the figures the executor writes belong to
+        // the operation and not to whenever it gets to it.
         let clock = self.footer_clock();
         if effects.recorder.is_empty() {
             if let Some(effect) = self.recorder.next_effect(caps, clock) {
@@ -589,15 +513,13 @@ impl App {
         match self.recorder.advance(self.pass.capabilities.recorder) {
             crate::recorder::RecorderAdvance::Opened(start) => self.begin_ride_session(start),
             // The rider asked to record and this device cannot. The request is kept, so a card that
-            // mounts later still opens the ride they asked for — but they are told now, through the
-            // same recording warning a refused first write raises. A riding view that quietly
-            // records nothing is the failure this raise exists to prevent.
+            // mounts later still opens the ride — but they are told now, through the recording
+            // warning. A riding view that quietly records nothing is what this raise prevents.
             crate::recorder::RecorderAdvance::Refused => {
                 self.pass.connections.faults.raise(crate::screen::WarningFlags::REC_ERROR);
             }
             // A damaged recovered object is still standing, so no session opened. Put the decision
-            // back rather than a warning: it is the one thing between the rider and recording, and
-            // it is the thing they can act on.
+            // back rather than a warning: it is the one thing the rider can act on.
             crate::recorder::RecorderAdvance::RecoveryOwed => {
                 self.activity.mode = crate::activity::Mode::Idle;
                 self.raise_ride_recovery();
@@ -609,9 +531,6 @@ impl App {
     /// A ride session opened: re-lock the matcher, restart the trail and the pace window, and — for
     /// a fresh ride, never a recovered continuation — zero the accumulators and drop any detour in
     /// flight.
-    ///
-    /// Recorder is the only thing that knows a session opened, and it is the only thing that knows
-    /// whether it continues a recovered one.
     fn begin_ride_session(&mut self, start: crate::recorder::SessionStart) {
         self.navigator.relock_matcher();
         if start == crate::recorder::SessionStart::Fresh {
@@ -636,16 +555,11 @@ impl App {
 
     /// The ride session closed, saved or discarded: the matcher, the totals and the trail all go
     /// back to their between-rides state, so nothing is left showing the ride that just ended.
-    ///
-    /// The trail restarts on **both** edges, and neither is the other's spare. This one is "the
-    /// ride the trail belonged to is over"; [`begin_ride_session`](App::begin_ride_session)'s is "a
-    /// new ride starts with an empty trail", which is also what a recovered continuation needs —
-    /// it keeps the totals the journal restored and still opens on a clean trail.
     fn end_ride_session(&mut self) {
         self.navigator.relock_matcher();
         self.navigator.reset_ride();
         self.recorder.reset_totals();
-        self.navigator.reset_detour(); // the ride the detour was planned for is over
+        self.navigator.reset_detour();
         self.recorder.restart_buffers();
         self.ui.map_dirty = true;
     }
@@ -693,8 +607,6 @@ impl App {
         self.settings_ops.apply_outcome(outcome, now_ms)
     }
 
-    /// Stage 11 — advance `DfuState`, `BondState` and `StorageInfo`.
-    ///
     fn stage_platform(&mut self, effects: &mut EffectSlots, support: PlatformSupport) {
         self.pass.record(PassStage::Platform);
         if core::mem::take(&mut self.state.ble_forget_requested) {
@@ -721,17 +633,10 @@ impl App {
 
     /// Stage 12 — `CoreMode`: recalculate what this device can do at all.
     ///
-    /// A capability is a level, never latched: it is recomputed from what the image implements and
-    /// what is currently true (a mounted store, a routing graph, a recording ride) and from
-    /// [`CoreMode`](crate::device_core::core_mode::CoreMode)'s heavy-work verdict. Heavy work is
-    /// withdrawn while a transfer holds the store **or a planner run holds the nav arm** — which is
-    /// what stops a second plan or an install from starting, rather than letting one start and
-    /// fail. The mode is the only store of either level; this stage re-derives nothing.
-    ///
-    /// **One axis cannot yet come back down.** `store_writable` reads "a store has reported a
-    /// revision", and [`ExternalFacts`] has no unmount fact to retract it with, so a pulled card
-    /// leaves catalog mutation asserted. That is a gap in the fact vocabulary rather than in this
-    /// stage: the level is honest the moment an unmount can be reported.
+    /// A capability is a level, never latched: it is recomputed from what the image implements, what
+    /// is currently true, and [`CoreMode`](crate::device_core::core_mode::CoreMode)'s heavy-work
+    /// verdict. `store_writable` cannot come back down, because [`ExternalFacts`] has no unmount
+    /// fact to retract it with.
     fn stage_admission(&mut self, support: PlatformSupport) {
         self.pass.record(PassStage::Admission);
         let facts = DeviceFacts {
@@ -745,8 +650,8 @@ impl App {
         self.pass.capabilities = Capabilities::calculate(support, facts);
     }
 
-    /// Stage 13 — advance `FaultState`: deliver every notice raised this pass, together. Last,
-    /// because every producer runs before it, so one card carries what several domains found.
+    /// Stage 13 — deliver every notice raised this pass, together. Last, because every producer
+    /// runs before it, so one card carries what several domains found.
     fn stage_faults(&mut self) {
         self.pass.record(PassStage::Faults);
         let flags = self.pass.connections.faults.take();
@@ -755,11 +660,6 @@ impl App {
         }
     }
 
-    /// Stage 14 — calculate the plan: render work, the next wake, the derived and source needs, and
-    /// the bounded effects.
-    ///
-    /// A deferred connection still in flight folds into an immediate wake: the runtime must run one
-    /// more pass before it sleeps, or work that is already decided would sit until the next input.
     fn stage_plan(&mut self, now: PassClock, effects: EffectSlots) -> PassPlan {
         self.pass.record(PassStage::Plan);
         let render = self.take_dirty();
@@ -778,8 +678,8 @@ impl App {
         }
     }
 
-    /// Stage a mounted card, as stage 2 and stage 12 would: the level that admits catalog mutation
-    /// and ride recording, without driving a whole frame for it.
+    /// Stage a mounted card: the level that admits catalog mutation and ride recording, without
+    /// driving a whole frame for it.
     #[cfg(test)]
     pub(crate) fn test_mount_store(&mut self) {
         self.pass.store =
@@ -788,7 +688,6 @@ impl App {
         self.pass.capabilities.recorder = crate::device_core::RecorderCapabilities { record: true };
     }
 
-    /// Stage a mounted card and an open ride, as stage 12 and stage 7 would.
     #[cfg(test)]
     pub(crate) fn test_start_ride(&mut self) {
         self.test_mount_store();
@@ -811,7 +710,6 @@ impl App {
         self.end_ride_session();
     }
 
-    /// The stages the last pass ran, in order.
     #[cfg(test)]
     pub(crate) fn pass_trace(&self) -> &[PassStage] {
         &self.pass.trace
@@ -832,8 +730,6 @@ mod tests {
     use crate::Screen;
     use obc_ports::{Fix, LocationSource};
 
-    /// A location port that never has a fix — the pass's sensor input in every test that is not
-    /// about the fix path.
     struct NoFix;
     impl LocationSource for NoFix {
         fn poll(&mut self) -> Option<Fix> {
@@ -865,7 +761,7 @@ mod tests {
         )
     }
 
-    /// Every input the pass takes, so one test can drive the halves the shorthands leave at `NONE`.
+    /// Every input the pass takes, for a test that must drive what the shorthands leave at `NONE`.
     fn pass_full(
         app: &mut App,
         now: PassClock,
@@ -928,17 +824,9 @@ mod tests {
         )
     }
 
-    /// A **dismissed terminal map-transfer card must stay dismissed.**
-    ///
-    /// The card is a *level* family: the scheduler re-delivers it every sweep for as long as the
-    /// desired state is `Some`. A terminal card pops itself on a press, but the press and the sweep
-    /// that re-lands it are stages of the **same** pass — so the card is back before the pass ends,
-    /// and the board's dismissal latch (which clears the published state only when it observes a
-    /// card that *was* up and no longer is) never gets to fire. The card then outlives every
-    /// dismissal and the rider cannot leave it.
-    ///
-    /// `card_scheduler::map_transfer_card_opens_updates_and_closes` misses this because it asserts
-    /// right after `apply_gesture` and never runs another pass.
+    /// A terminal card pops itself on a press, but the scheduler sweep that re-delivers it is a
+    /// later stage of the same pass. The card must stay popped for the rest of that pass, or the
+    /// board's dismissal latch never fires and the rider cannot leave the screen.
     #[test]
     fn a_dismissed_terminal_map_transfer_card_does_not_come_back() {
         use crate::screen::MapTransfer;
@@ -1002,17 +890,13 @@ mod tests {
             synced_at_utc: 0,
         }
     }
-    /// A store fact at `revision`, the level a commit reports.
     fn committed(revision: u64) -> ExternalFacts {
         let mut facts = ExternalFacts::NONE;
         facts.note_store_revision(StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(revision) });
         facts
     }
 
-    // ==================== the order ====================
-
-    /// The fixed order, in full: every stage runs, each exactly once, in exactly this sequence.
-    /// A quiet pass runs the same stages as a busy one — a stage is a *position*, not a reaction.
+    /// A stage is a position, not a reaction: a quiet pass runs the same stages as a busy one.
     #[test]
     fn every_stage_runs_exactly_once_in_the_fixed_order() {
         let mut app = navigating();
@@ -1038,10 +922,6 @@ mod tests {
         assert_eq!(app.pass_trace().len(), PassStage::ORDER.len(), "one advance per component, whatever is pending");
     }
 
-    // ==================== earlier → later, in the same pass ====================
-
-    /// The rider's delete: `UiRuntime` produces the intent at stage 4 and `CatalogMachine` has it at
-    /// stage 6 — one pass, not two — and it leaves as one bounded effect.
     #[test]
     fn a_ui_delete_reaches_the_catalog_in_the_same_pass() {
         let mut app = navigating();
@@ -1056,8 +936,7 @@ mod tests {
         );
         assert!(app.pass.connections.ui_catalog.is_empty(), "the intent was consumed, not queued");
     }
-    /// Deleting the route being followed reaches Navigator in the same pass: the rider is not left
-    /// being guided along a route the device has decided to remove.
+    /// The rider is not left being guided along a route the device has decided to remove.
     #[test]
     fn deleting_the_active_route_reaches_navigator_in_the_same_pass() {
         let mut app = navigating();
@@ -1071,8 +950,7 @@ mod tests {
         assert!(app.pass.connections.active_route_removed.is_empty(), "the notice was consumed");
     }
 
-    /// A fault raised by an earlier stage reaches `FaultState` in the same pass, and several
-    /// producers coalesce onto one card rather than displacing each other.
+    /// Several producers coalesce onto one card rather than displacing each other.
     #[test]
     fn a_fault_raised_earlier_in_the_pass_reaches_the_rider_in_it() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
@@ -1088,10 +966,6 @@ mod tests {
             "both notices reached one card"
         );
     }
-    /// The rider's Save becomes a `Finalize` effect in the **same** pass that applied the gesture.
-    ///
-    /// Routed through a stage-4 slot instead, the close would wait a pass — reinstating the wake gap
-    /// would otherwise defer the work until the next external event.
     #[test]
     fn the_riders_save_becomes_a_finalize_effect_in_the_same_pass() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
@@ -1122,13 +996,9 @@ mod tests {
         );
     }
 
-    /// A ride is refused without a writable store — `Capabilities::recorder.record` is the gate and
-    /// stage 7 its reader — and the rider is **told**, through the whole chain from the absent fact
-    /// to the card on glass.
-    ///
-    /// Both halves are the property. Dropping the gate starts a ride with nowhere to put it; keeping
-    /// the gate but swallowing the refusal gives the rider a riding view that records nothing and
-    /// never says so, which is the worse of the two.
+    /// Both halves are the property. Dropping the gate starts a ride with nowhere to put it;
+    /// keeping the gate but swallowing the refusal gives the rider a riding view that records
+    /// nothing and never says so, which is the worse of the two.
     #[test]
     fn recording_is_refused_without_a_writable_store() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
@@ -1149,8 +1019,7 @@ mod tests {
         quiet(&mut app, 30);
         assert!(!matches!(app.top_screen(), Screen::Warning(_)), "the card does not come back");
 
-        // The card mounts. The request the rider already made is still theirs, and it opens the ride
-        // — nothing was destroyed by a device that could not serve it yet.
+        // The card mounts, and the request the rider already made still opens the ride.
         let mut facts = ExternalFacts::NONE;
         facts.note_store_revision(StoreRevision {
             store: StoreIdentity::new(1),
@@ -1162,9 +1031,6 @@ mod tests {
     }
 
     /// A new session clears the trail and the pace window, and a fresh one zeroes the totals.
-    ///
-    /// The reset is re-derived by Recorder's own session edge; leaving it in `sync_route_state`
-    /// against a mirrored session id is what let the previous ride's trail survive.
     #[test]
     fn a_new_session_clears_every_accumulator() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
@@ -1187,15 +1053,13 @@ mod tests {
         app.test_start_ride();
         assert!(app.recorder.breadcrumb.is_empty(), "a new ride starts with an empty trail");
 
-        app.recorder.assert_totals_are_zero(); // a fresh ride starts at zero
+        app.recorder.assert_totals_are_zero();
         assert!(app.recorder.staged().is_empty(), "and owes no sample the previous ride never wrote");
     }
 
-    /// **"Save & start new" gives ride two nothing of ride one's**, and both halves of the gesture
-    /// run in one pass: the verdict lands at stage 1 and the fresh ride opens at stage 3. That is
-    /// the shape that makes the integration anchors part of the reset and not an afterthought — a
-    /// new ride that kept them would credit itself with the step from where the last one ended, and
-    /// its first sample would continue that ride's segment instead of opening its own.
+    /// The integration anchors are part of the reset: a new ride that kept them would credit itself
+    /// with the step from where the last one ended, and its first sample would continue that ride's
+    /// segment instead of opening its own.
     #[test]
     fn save_and_start_new_gives_the_second_ride_nothing_of_the_first() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
@@ -1224,7 +1088,6 @@ mod tests {
         assert!(app.recorder.staged()[0].segment_start, "ride two's first sample opens ride two's segment");
     }
 
-    /// A recovered ride continues without resetting the totals the journal restored.
     #[test]
     fn a_recovered_ride_continues_without_resetting_its_totals() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
@@ -1239,9 +1102,8 @@ mod tests {
         assert!(app.recording());
         assert_eq!(app.recorder.continuation(), restored, "recovery must not zero the ride it just restored");
     }
-    /// A store commit arms the domain's owed refresh, not a rescan cue: the fact reports that
-    /// the store moved, `CatalogState::note_store_moved` arms the one bit that orders the
-    /// re-read, and one commit orders exactly one.
+    /// The fact reports that the store moved and `CatalogState::note_store_moved` arms the one bit
+    /// that orders the re-read, so one commit orders exactly one.
     #[test]
     fn a_store_commit_raises_one_catalog_refresh() {
         let mut app = navigating();
@@ -1260,8 +1122,7 @@ mod tests {
         let plan = pass_with(&mut app, 30, &[], &mut outcomes, &mut same);
         assert!(plan.effects.catalog.is_empty(), "one commit, one refresh");
 
-        // A busy catalog delays the refresh rather than losing it: the rider's delete goes first
-        // and the commit's own re-read follows on a later pass.
+        // A busy catalog delays the refresh rather than losing it: the rider's delete goes first.
         app.activity.request_route_delete(1);
         let mut next = committed(5);
         let plan = pass_with(&mut app, 40, &[], &mut OutcomeSlots::new(), &mut next);
@@ -1283,7 +1144,6 @@ mod tests {
         );
     }
 
-    /// An unreadable catalog waits thirty seconds before retrying, without requesting busy passes.
     #[test]
     fn a_failed_read_waits_for_the_retry_deadline() {
         let mut app = navigating();
@@ -1319,9 +1179,8 @@ mod tests {
         assert!(plan.effects.catalog.is_empty(), "the read landed, so the store is no longer ahead of us");
     }
 
-    /// The store-revision edge and a completed delete **coalesce into one read**. The owed re-read
-    /// is a bit and not a counter, so the board — which raises a revision for its own removals —
-    /// gains no second rescan from this slice.
+    /// The owed re-read is a bit and not a counter, so the board — which raises a revision for its
+    /// own removals — gains no second rescan from this slice.
     #[test]
     fn a_store_edge_and_a_completed_delete_coalesce_into_one_read() {
         let mut app = navigating();
@@ -1351,8 +1210,6 @@ mod tests {
         assert!(plan.effects.catalog.is_empty(), "one read, not one per reason");
     }
 
-    /// The owed re-read is spent **after** the rider's intent, in the same pass that owes both: a
-    /// hold-to-delete is something someone is watching happen, and bookkeeping waits behind it.
     #[test]
     fn an_owed_refresh_yields_to_the_riders_delete() {
         let mut app = navigating();
@@ -1368,11 +1225,8 @@ mod tests {
         );
     }
 
-    // ==================== outcomes ====================
-
-    /// A domain consumes its own outcome and rejects one it has moved past. Only a domain that owns
-    /// a token source may consume at all — an outcome nobody can validate stays in its slot rather
-    /// than being dropped or guessed at.
+    /// Only a domain that owns a token source may consume at all: an outcome nobody can validate
+    /// stays in its slot rather than being dropped or guessed at.
     #[test]
     fn an_outcome_is_consumed_by_its_owner_and_left_alone_without_one() {
         let mut app = navigating();
@@ -1380,8 +1234,8 @@ mod tests {
 
         let mut outcomes = OutcomeSlots::new();
 
-        // Recorder owns a token source too, so its answer is consumed — and refused, because the
-        // token is one it never issued.
+        // Recorder owns a token source, so its answer is consumed — and refused, because the token
+        // is one it never issued.
         let mut recorder_ops: TokenSource<crate::device_core::RecorderTag> = TokenSource::new();
         app.test_start_ride();
         outcomes.recorder.try_put(crate::recorder::RecorderOutcome::Discarded { token: recorder_ops.issue() }).unwrap();
@@ -1402,8 +1256,7 @@ mod tests {
         assert!(outcomes.bond.is_empty(), "the bond owner rejects an unissued result");
     }
 
-    /// The catalog's own outcome frees its operation, so the next intent can go out — the loop that
-    /// makes one effect slot enough for a queue of deletes.
+    /// One effect slot is enough for a queue of deletes, because the outcome frees the operation.
     #[test]
     fn a_catalog_outcome_frees_the_next_operation() {
         let mut app = navigating();
@@ -1443,10 +1296,7 @@ mod tests {
         assert!(plan.effects.catalog.is_empty(), "nothing was owed, and a stale answer starts nothing");
     }
 
-    // ==================== the plan, the guard, and the latch ====================
-
-    /// Capabilities are recalculated every pass from what the platform implements and what is
-    /// currently true — a level, never latched.
+    /// A capability is a level, never latched.
     #[test]
     fn admission_recalculates_capabilities_every_pass() {
         let mut app = navigating();
@@ -1465,9 +1315,8 @@ mod tests {
         assert!(app.pass.capabilities.dfu.install, "and it comes straight back");
     }
 
-    /// The axis this stage did not have before #1397 S5: a **live search** is heavy too. The nav
-    /// arm is one block, so a second plan started mid-search could only fail — withdrawing the
-    /// capability is what stops it being offered rather than offered and refused.
+    /// A live search is heavy too. The nav arm is one block, so a second plan started mid-search
+    /// could only fail; withdrawing the capability stops it being offered at all.
     #[test]
     fn admission_withdraws_heavy_work_while_a_search_holds_the_nav_arm() {
         let mut app = navigating();
@@ -1493,13 +1342,9 @@ mod tests {
         assert!(app.pass.capabilities.navigator.plan_route, "the answer hands the arm back");
     }
 
-    /// A platform callback cannot change DeviceCore in the middle of a pass. `run_pass` holds
-    /// `&mut self` for its whole length, so no safe caller can reach a push door mid-pass at all —
-    /// the flag has to be set by hand here. Reaching one anyway is a caller bug, so it is loud in
-    /// debug and refused in release rather than quietly losing the answer.
-    ///
-    /// One door is left to check it on: with the legacy event door gone, `apply_derived` is the only
-    /// remaining way into DeviceCore that is not `run_pass` itself.
+    /// `run_pass` holds `&mut self` for its whole length, so no safe caller can reach a push door
+    /// mid-pass and the flag has to be set by hand here. Reaching one anyway is a caller bug, so it
+    /// is loud in debug and refused in release rather than quietly losing the answer.
     #[test]
     #[should_panic(expected = "cannot change DeviceCore during a pass")]
     fn a_callback_cannot_mutate_core_state_during_a_pass() {
@@ -1515,7 +1360,6 @@ mod tests {
         );
     }
 
-    /// The same door, outside a pass: it works exactly as it always did.
     #[test]
     fn a_push_outside_a_pass_is_applied_normally() {
         let mut app = navigating();
@@ -1530,8 +1374,8 @@ mod tests {
         assert!(quiet(&mut app, 20).derived_needs.ride_track.is_none(), "the answer landed");
     }
 
-    /// Hold cancellation stays off the pass entirely: a pass neither reports it nor drains it, so
-    /// the board's input plane still finds the latch it must act on between passes.
+    /// A pass neither reports hold cancellation nor drains it, so the board's input plane still
+    /// finds the latch it must act on between passes.
     #[test]
     fn hold_cancellation_stays_independent_of_the_pass() {
         let mut app = navigating();
@@ -1548,8 +1392,6 @@ mod tests {
         assert!(!app.take_hold_cancel(), "and it is a one-shot");
     }
 
-    /// The plan is the whole answer the executor needs: what to repaint, when to come back, what to
-    /// read, and the bounded work per domain.
     #[test]
     fn the_plan_reports_render_wake_needs_and_effects() {
         let mut app = navigating();
@@ -1564,13 +1406,9 @@ mod tests {
         assert!(!plan.effects.has_pending(), "and nothing physical is owed");
     }
 
-    /// Stage 2 with a full batch: every level lands with its owner, every one-shot is **taken** from
-    /// the batch (which is what "the pass consumed it" means), and a keyed derived answer clears the
-    /// need it answers. The handlers themselves are pinned by the legacy-protocol tests; what this
-    /// covers is the pass's routing to them.
-    ///
-    /// The two clocks are deliberately different here — the board runs them equal, the simulator does
-    /// not — so a stage that read the ride clock where it owes the UI one trips
+    /// The pass's routing: every level lands with its owner, every one-shot is taken from the batch,
+    /// and a keyed derived answer clears the need it answers. The two clocks differ here on purpose,
+    /// so a stage that reads the ride clock where it owes the UI one trips
     /// [`App::ms_until_next_wake`]'s same-frame assertion.
     #[test]
     fn one_pass_routes_a_full_fact_batch_and_a_derived_answer() {
@@ -1620,12 +1458,8 @@ mod tests {
         assert!(plan.derived_needs.ride_track.is_none(), "the ride track is answered");
     }
 
-    /// The overlay converter's two rules, on the levels themselves (#1447).
-    ///
-    /// The **freeze** half is the named regression the engaged level exists for: the search's own
-    /// start edge fires under the planning spinner, where nothing freezes — and the pass that puts a
-    /// map base back under the still-live search raises no search edge at all. A host keyed on the
-    /// start edge would never be told to paint the banner for the whole of that search.
+    /// The banner repaints on the engaged level, not on the search's start edge: that edge fires
+    /// under the opaque planning spinner, where nothing freezes.
     #[test]
     fn the_overlay_key_repaints_on_the_engaged_level_and_the_bulge_trailing_edge() {
         let mut pass = PassState::new();

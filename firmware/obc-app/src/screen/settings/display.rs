@@ -1,12 +1,6 @@
-//! The Display screen — the idle-return timeout, and nothing else. `Idle` is a left/right value
-//! picker (15 s / 30 s / 1 min / 5 min / Never) governing when the **whole UI** returns to Home or
-//! the Map, which is a device-global behaviour rather than map chrome, so it stays central.
-//!
-//! The Map's three chrome switches — the `HH:MM` pill, the scale bar and the terrain layer — left
-//! this page in #1515 D4c. They are rows of the map's own contextual sheet now
-//! ([`MAP_DISPLAY`](crate::screen::context_drawer::MAP_DISPLAY)), which is the only home they have:
-//! a switch for what the Map draws belongs on the Map, not two levels inside a settings tree the
-//! rider can only reach by leaving it.
+//! The Display screen: the idle-return timeout, and nothing else. The timeout controls when the
+//! whole UI returns to Home or the Map, so it is a device setting. The switches for what the Map
+//! draws are on the map's own contextual sheet.
 
 use obc_render::{rect, text::Font, Surface};
 
@@ -16,15 +10,13 @@ use crate::screen::vocab::rows::{row_cursor, row_rect};
 use crate::screen::{Ctx, Render, Transition};
 use crate::Msg;
 
-/// Row height — fits a two-line label (Body + sub-caption) plus a value cell with arrow room.
+/// Row height. It fits a two-line label and a value cell with room for the arrows.
 const ROW_H: i32 = 58;
 
-/// The rows: the idle-return picker, alone.
 const IDLE_RETURN: usize = 0;
 const ROWS: usize = 1;
 
-/// The Display screen. `selected` is the highlighted row; `editing` is set only while the
-/// idle-return picker is open.
+/// `editing` is set only while the idle-return picker is open.
 #[derive(Debug, Default)]
 pub struct DisplayScreen {
     selected: usize,
@@ -40,7 +32,6 @@ impl DisplayScreen {
         match g {
             Gesture::Step(n) => {
                 if self.editing {
-                    // Only the idle-return row has an editable value; a turn walks it in place.
                     if self.selected == IDLE_RETURN {
                         cx.settings.idle_return = cx.settings.idle_return.stepped(n);
                     }
@@ -49,13 +40,10 @@ impl DisplayScreen {
                 }
                 Transition::None
             }
-            // The value row: press enters the picker, press again (there's one field) steps back
-            // out — so press just toggles editing.
             Gesture::Press => {
                 self.editing = !self.editing;
                 Transition::None
             }
-            // Back steps out of an open field first, else climbs to the Settings list.
             Gesture::Back => super::back_out_of_field(self.editing, || self.editing = false),
             Gesture::Hold | Gesture::BackHold => Transition::None,
         }
@@ -65,7 +53,6 @@ impl DisplayScreen {
         let (w, h) = (rx.w, rx.h);
         title_frame(cv, w, h, rx.t(Msg::DisplayTitle), "");
 
-        // Row 0 — Idle return (value picker: 15 s / 30 s / 1 min / 5 min / Never).
         let r0 = row_rect(LIST_TOP + 8, w, ROW_H);
         let editing = self.editing && self.selected == IDLE_RETURN;
         row_cursor(cv, r0, self.selected == IDLE_RETURN, editing);
@@ -92,20 +79,17 @@ mod tests {
         scr.handle(g, &mut cx)
     }
 
-    /// The screen's one row: press opens its picker, a turn walks the values in place, and Back
-    /// closes an open picker before it pops the screen.
     #[test]
     fn idle_return_picker() {
         let mut s = Settings { idle_return: IdleReturn::S30, ..Settings::default() };
         let mut scr = DisplayScreen::new();
         assert_eq!(scr.selected, IDLE_RETURN, "the picker is the screen's first and only row");
-        run(&mut scr, &mut s, Gesture::Press); // open the picker
+        run(&mut scr, &mut s, Gesture::Press);
         assert!(scr.editing);
         run(&mut scr, &mut s, Gesture::Step(1));
         assert_eq!(s.idle_return, IdleReturn::M1, "a step walks 30 s → 1 min");
         run(&mut scr, &mut s, Gesture::Step(-1));
         assert_eq!(s.idle_return, IdleReturn::S30, "and back");
-        // Back closes the open picker first (no pop), then a second Back pops the screen.
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::None));
         assert!(!scr.editing);
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::Pop));

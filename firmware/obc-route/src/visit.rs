@@ -1,5 +1,5 @@
 //! Bounded visit construction. The owner keeps output A unsealed and reuses B for each leg.
-//! This module owns route policy and composition; platform adapters own reservations and searches.
+//! This module owns route policy and composition. Platform adapters own reservations and searches.
 use crate::convert::{ObcrEmitter, RouteStats};
 use crate::reader::{decode_route_points_between_checked, WaypointCursor};
 use crate::{RouteReader, MAX_POINTS_PER_CHUNK};
@@ -29,7 +29,7 @@ impl VisitTarget {
             None => Some(self.display),
         }
     }
-    /// Explicit approaches must be reached exactly; other places use the normal bounded graph snap.
+    /// Explicit approaches must be reached exactly. Other places use the bounded graph snap.
     pub fn validate_destination(self, src: &dyn obc_formats::io::ByteSource, profile: u8) -> Result<(), Error> {
         self.destination(src, profile).map(|_| ())
     }
@@ -69,7 +69,7 @@ pub struct VisitCosts {
     pub complete_elevation: bool,
 }
 impl VisitCosts {
-    /// Read with one bounded chunk buffer, without allocating a second route index.
+    /// Must stay `#[inline(never)]`: the bounded chunk buffer lives in this popped frame.
     #[inline(never)]
     pub fn read(src: &dyn obc_formats::io::ByteSource, arrival: [u32; 2]) -> Result<Self, Error> {
         use crate::facts::FactsAccumulator;
@@ -129,7 +129,7 @@ impl VisitCosts {
     }
 }
 
-/// Choose the closest remaining route occurrence in whole metres; ties keep the earlier pass.
+/// Choose the closest remaining route occurrence in whole metres. A tie keeps the earlier pass.
 /// The prefix and tail stay on the original route, so no waypoint or loop is skipped.
 pub fn visit_anchor(original: &RouteReader, progress_m: u32, target: (i32, i32)) -> Result<u32, Error> {
     if progress_m > original.total_distance_m
@@ -265,7 +265,7 @@ impl VisitBuilder {
     ///
     /// # Safety
     /// `slot` must be aligned, writable and exclusively owned for a complete builder. The caller
-    /// must discard any previous output before resetting it; this value owns no external resources.
+    /// must discard any previous output before resetting it.
     pub unsafe fn init_in_place(
         slot: *mut Self,
         original: RouteSourceKey,
@@ -467,7 +467,8 @@ impl VisitBuilder {
         self.descriptor.map(|d| (d.target_lon, d.target_lat))
     }
 
-    /// A decoded leg cannot join the next required coordinate. Source and sink failures do not set this state.
+    /// A decoded leg cannot join the next required coordinate. A source or sink failure does not
+    /// set this state.
     pub fn rejected_geometry(&self) -> bool {
         self.phase == Phase::RejectedGeometry
     }
@@ -521,8 +522,8 @@ impl VisitBuilder {
         Ok(())
     }
 
-    /// Finish with the original tail, complete stored waypoint section and visit descriptor.
-    /// `Some` is terminal; any error requires discarding A.
+    /// Finish with the original tail, the stored waypoint section and the visit descriptor.
+    /// `Some` is terminal. Any error requires discarding A.
     pub fn finish_step(
         &mut self,
         original: &RouteReader,
@@ -579,7 +580,7 @@ impl VisitBuilder {
                     self.accepted_rejoin_m.saturating_add(w.dist_along_m - rejoin).min(self.em.distance_m())
                 };
                 // The retained tail has the same orientation and access geometry, so its signed
-                // lateral offset is unchanged. The annotation's display coordinate is never routed to.
+                // lateral offset is unchanged.
                 let mut bytes = [0; WAYPOINT_LEN];
                 put_u32(&mut bytes, 0, w.dist_along_m);
                 put_i32(&mut bytes, 4, w.lon);
@@ -656,7 +657,7 @@ impl VisitBuilder {
             let coord = (p.lon, p.lat);
             let connector = i == 0 && seam && gap > APPROACH_TOLERANCE_M;
             if i == 0 && ((seam && !connector) || self.last == Some(coord)) {
-                // Coalesce sub-metre quantization at the existing endpoint; add no connector.
+                // Coalesce sub-metre quantization at the existing endpoint and add no connector.
                 self.seam_incomplete |= self.last != Some(coord) || self.last_ele != p.ele;
                 continue;
             }

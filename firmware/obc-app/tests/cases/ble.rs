@@ -1,8 +1,7 @@
-//! The host→app BLE state seam (epic #447, P1 + the P8 extension): [`App::set_ble_status`], the
-//! three-state link + paired flag the Bluetooth screen
-//! reads, and the connected indicator's dirty-tracking contract — a link change repaints only
-//! where the state is drawn (Home / the menu title bar / the Bluetooth screen), never on a riding
-//! view or a static screen whose status is unchanged.
+//! The host→app BLE state seam: [`App::set_ble_status`], the three-state link and paired flag the
+//! Bluetooth screen reads, and the connected indicator's dirty-tracking contract — a link change
+//! repaints only where the state is drawn (Home, the menu title bar, the Bluetooth screen), never
+//! on a riding view or a static screen whose status is unchanged.
 
 use obc_app::{App, AppState, BleLink, BleStatus, DeviceStatus, Dirty};
 
@@ -38,8 +37,6 @@ fn set_ble_status_records_link_paired_and_passkey() {
     assert_eq!(app.state.device.ble_link, BleLink::Advertising, "back to the powered-and-unlinked default");
 }
 
-// --- the indicator's dirty contract (on the connected-glyph screens) --------
-
 #[test]
 fn a_link_change_repaints_the_home_indicator() {
     // Home draws the indicator beside the battery gauge, so a link change must dirty the map…
@@ -69,8 +66,8 @@ fn a_link_change_repaints_the_menu_title_bar() {
     assert_eq!(app.take_dirty(), Dirty::CLEAN, "an unchanged status doesn't re-dirty the Menu");
 }
 
-/// The Bluetooth screen (P8) draws the status line + Paired row, so every seam change repaints it
-/// — including transitions the indicator ignores (Advertising ↔ Off, a paired flip).
+/// The Bluetooth screen draws the status line and Paired row, so every seam change repaints it,
+/// including transitions the indicator ignores (Advertising ↔ Off, a paired flip).
 #[test]
 fn a_link_change_repaints_the_bluetooth_screen() {
     let mut app = App::new_idle(AppState::new(0, 0, 0.05)); // [Home]
@@ -92,8 +89,6 @@ fn a_link_change_repaints_the_bluetooth_screen() {
     app.set_ble_status(BleStatus { link: BleLink::Off, passkey: None, paired: false });
     assert_eq!(app.take_dirty(), Dirty::CLEAN, "the steady state repaints nothing");
 }
-
-// --- the passkey card (P2): host-pushed open/close on the seam's passkey --------
 
 fn pairing(passkey: u32) -> BleStatus {
     BleStatus { link: BleLink::Advertising, passkey: Some(passkey), paired: false }
@@ -185,8 +180,6 @@ fn a_hold_charging_defers_the_card_until_the_hold_settles() {
     app.set_ble_status(BleStatus::DISCONNECTED);
     assert!(!app.passkey_card_up(), "the card closes once the hold settles");
 }
-
-// --- the indicator is NOT on the riding views: no repaint there --------------
 
 #[test]
 fn a_link_change_does_not_repaint_the_map_or_statistics() {

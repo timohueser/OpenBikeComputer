@@ -1,28 +1,19 @@
 //! The break matrix: every opcode flow, cut at every protocol step boundary.
 //!
-//! `FLAT_Store_Protocol.md` §3.6 is the obligation this discharges: "**Any break before the commit
-//! leaves the card as if nothing happened**: the allocation is released, the written bytes are
-//! anonymous, the catalog is untouched, and the client restarts from zero. That holds for a cable
-//! pull, a cancel, a CRC failure, a validator refusal, and a power cut alike."
+//! It discharges one obligation of `FLAT_Store_Protocol.md`: any break before the commit leaves the
+//! card as if nothing happened. Each flow is run once to the end to establish the card after it,
+//! then run again for every prefix of its records with the link torn down at that point. Three
+//! things must then hold:
 //!
-//! So each flow is run once to the end to establish the card **after** it, then run again for every
-//! prefix of its records with the link torn down at that point. Three things must then hold:
+//! 1. The catalog's byte image is the one before the flow or the one after it, and nothing between.
+//! 2. No row leaked: free extents match that state, both reservation rows are free, and the hold
+//!    table let go of what a download was reading. A dropped `Allocation` or `Handle` releases
+//!    nothing, and the only symptom until the next mount is an extent that never comes back.
+//! 3. A following `STATUS` answers the catalog's own truth in all four of its fields.
 //!
-//! 1. **The catalog's byte image is the one before the flow or the one after it.** Nothing in
-//!    between, which is what "one commit, atomically visible" means when it is a claim about bytes.
-//! 2. **No row leaked.** Free extents match whichever of those two states the card is in, both
-//!    reservation rows are free again, and the hold table let go of what a download was reading —
-//!    each measured, because a dropped `Allocation` or a dropped `Handle` releases nothing and the
-//!    only symptom until the next mount is an extent that never comes back.
-//! 3. **A following `STATUS` reconciles the client.** §3.4 is the whole reconcile path after a break,
-//!    and all four fields of its answer must be the catalog's own truth in every one of these states.
-//!
-//! What that does **not** cover, stated so the guarantee is not read wider than it is: a break is
-//! between two link records, so nothing here cuts *inside* a commit — that is the crash matrix's
-//! (`obc-storage`'s `flat::crash`), which cuts every media operation of every durable path. And the
-//! byte-image comparison sees the batch a commit applied, not the batch it was built from: a flow
-//! whose commit composition is wrong in a way that produces the same bytes would pass, which is why
-//! matrix rather than seeded ahead of it.
+//! A break is between two link records, so nothing here cuts inside a commit; that is the crash
+//! matrix in `obc-storage`. The byte-image comparison also sees the batch a commit applied, not the
+//! batch it was built from, so `expected` below is the independent oracle.
 
 mod flat_harness;
 
@@ -46,7 +37,7 @@ enum Step {
     Arm(Vec<u8>),
 }
 
-/// A device with an update path, for the arming flow. §4's two hooks, both satisfied.
+/// A device with an update path, for the arming flow: both policy hooks satisfied.
 #[derive(Default)]
 struct Armer;
 
@@ -74,10 +65,8 @@ struct Plan {
     /// The entries the catalog must hold once the flow has run, in catalog order: `(ObjectId,
     /// Revision, RETAINED)`.
     ///
-    /// This is the matrix's independent oracle and the reason it is here rather than derived: every
-    /// other assertion compares the card against *the same code's* own "after" run, so a commit
-    /// built from the wrong batch would agree with itself. This says what the batch was supposed to
-    /// produce.
+    /// The matrix's independent oracle: every other assertion compares the card against the same
+    /// code's own "after" run, so a commit built from the wrong batch would agree with itself.
     settled: Vec<(u64, u64, bool)>,
     /// Objects besides the subject whose extents must come back when they are removed — the hold
     /// probe, for a flow that commits an entry of its own. Probed only in the states that hold them.
@@ -120,8 +109,8 @@ fn settled(device: &Plain<'_>) -> Vec<(u64, u64, bool)> {
         .collect()
 }
 
-/// §3.4's whole answer for `subject`, read straight off the catalog: state, then the head's
-/// revision, payload length and CRC — zero on all three when the object is absent.
+/// The whole `STATUS` answer for `subject`, read straight off the catalog: state, then the head's
+/// revision, payload length and CRC, all zero when the object is absent.
 fn truth(device: &Plain<'_>, subject: (u64, u64)) -> (u8, u64, u64, u32) {
     match device.entry(subject.0) {
         None => (0, 0, 0, 0),
@@ -134,9 +123,8 @@ fn truth(device: &Plain<'_>, subject: (u64, u64)) -> (u8, u64, u64, u32) {
 /// Runs one scenario at every break point and holds each result to the three rules above.
 fn matrix(name: &str, seed: u64, build: Build) -> usize {
     // One reference run, recording the card after every record: that sequence is what a break at
-    // each point must land on exactly. A flow may commit more than once — a stepped double retention
-    // does — so "the state before or the state after" is not the shape of this; "the state the
-    // records that landed produce" is.
+    // each point must land on. A flow may commit more than once, so the rule is "the state the
+    // records that landed produce", not "the state before or the state after".
     let disk = formatted_card(seed);
     let mut device = boot(&disk);
     let plan = build(&mut device);
@@ -148,9 +136,6 @@ fn matrix(name: &str, seed: u64, build: Build) -> usize {
         catalogs.push(settled(&device));
     }
     assert!(device.is_quiet(), "{name}: the engine is still busy after the whole flow");
-    // The one hand-written expectation in here, and the reason it is hand-written: everything else
-    // compares the card against another run of the same code, so a commit built from the wrong batch
-    // would agree with itself. This says what the flow was supposed to leave behind.
     assert_eq!(settled(&device), plan.settled, "{name}: the flow did not leave the catalog it says it does");
     drop(device);
 
@@ -165,35 +150,33 @@ fn matrix(name: &str, seed: u64, build: Build) -> usize {
 
         let where_ = format!("{name}: broken after {cut} of {} records", plan.steps.len());
         assert!(device.is_quiet(), "{where_}: a transfer survived the link");
-        // 1. The catalog is exactly what the records that landed produced. A commit is atomically
-        //    visible or it is not there, and there is no third image.
+        // 1. The catalog is exactly what the records that landed produced: a commit is atomically
+        //    visible or it is not there.
         assert_eq!(catalog_image(&disk), images[cut], "{where_}: the catalog is not the one those records produce");
         assert_eq!(settled(&device), catalogs[cut], "{where_}: the entries are not the ones those records produce");
 
-        // 2. Nothing leaked. A fresh mount rebuilds the free map from the catalog and can see no
-        //    reservation and no hold, so it is the answer the broken store must already agree with —
-        //    a released allocation, a closed handle, and nothing held over.
+        // 2. Nothing leaked. A fresh mount rebuilds the free map from the catalog and sees no
+        //    reservation and no hold, so it is the answer the broken store must already agree with.
         let expected_free = boot(&disk).free_extents();
         assert_eq!(device.free_extents(), expected_free, "{where_}: a reservation or a hold outlived the link");
         // Both reservation rows are free: a leaked row is invisible in the extent count once its
-        // extents came back, and there are only two.
+        // extents came back.
         let first = device.hog(1_024);
         let second = device.hog(1_024);
         device.release(first);
         device.release(second);
         assert_eq!(device.free_extents(), expected_free, "{where_}: the reservation probe changed the card");
 
-        // 3. §3.4: the reconcile path answers the catalog's own truth, in all four of its fields — a
-        //    state that agreed while the length or the CRC did not would send a client to re-download
-        //    bytes it already has, or to trust bytes it does not.
+        // 3. The reconcile path answers the catalog's own truth in all four fields: a state that
+        //    agreed while the length or CRC did not would send a client to re-download, or to trust
+        //    bytes it should not.
         let answer = Answer::of(device.control(&client::status(0x5EED, plan.subject.0, plan.subject.1)).answer());
         assert!(!answer.is_error(), "{where_}: STATUS refused");
         let answered = (answer.body[0], answer.u64_at(4), answer.u64_at(12), answer.u32_at(20));
         assert_eq!(answered, truth(&device, plan.subject), "{where_}: STATUS does not reconcile");
 
         // The hold table let go: a handle the engine failed to close keeps the entry's extents out
-        // of the allocator when it is removed. The subject is in the catalog in every state a flow
-        // that never removes it can reach, so for those the probe is unconditional.
+        // of the allocator when it is removed.
         if plan.subject_survives {
             assert!(
                 device.entry(plan.subject.0).is_some(),
@@ -235,7 +218,7 @@ fn replace(device: &mut Plain<'_>) -> Plan {
     let (id, revision) = device.seed(ObjectKind::Route, &payload(600), "first");
     let mut steps = vec![Step::Control(client::put(1, id, revision, &bytes, ROUTE, "second"))];
     steps.extend(stream_steps(1, &bytes));
-    // §3.6: an ordinary replace leaves the object with a head and nothing else.
+    // An ordinary replace leaves the object with a head and nothing else.
     Plan::new(steps, (id, revision + 1), true, vec![(id, revision + 1, false)])
 }
 
@@ -278,14 +261,12 @@ fn paged_listing(device: &mut Plain<'_>) -> Plan {
     Plan::new(steps, (1, 1), true, (1..=5).map(|id| (id, 1, false)).collect())
 }
 
-/// The one flow whose commit is the device's rather than a client's: §4 step 2 commits a rollback
-/// reserve of kind 8. A break can land before the `ARM` or after its answer, and not between the
-/// commit and the boot handoff — those are one engine call, so that window is unbreakable *here* and
-/// is covered instead by `a_failed_boot_handoff_takes_its_own_reserve_back` and its double-fault
-/// twin in `flat_engine.rs`, which drive the refusal directly.
+/// The one flow whose commit is the device's rather than a client's: `ARM` commits a rollback
+/// reserve. A break can land before the `ARM` or after its answer, but not between the commit and
+/// the boot handoff, which are one engine call; `flat_engine.rs` drives that refusal directly.
 fn arm_succeeds(device: &mut Plain<'_>) -> Plan {
     let (id, revision) = device.seed(ObjectKind::UpdatePackage, &payload(4_096), "v2");
-    // §4 step 2: one entry of kind 8 with `RESERVED`, beside the package it will roll back to.
+    // One rollback-reserve entry with `RESERVED`, beside the package it will roll back to.
     let mut plan = Plan::new(
         vec![Step::Arm(client::arm(1, id, revision))],
         (id, revision),
@@ -299,7 +280,7 @@ fn arm_succeeds(device: &mut Plain<'_>) -> Plan {
 
 fn arm_refused(device: &mut Plain<'_>) -> Plan {
     let (id, revision) = device.seed(ObjectKind::UpdatePackage, &payload(4_096), "v2");
-    // The harness device has no update path, so §4 step 1 refuses and nothing is committed.
+    // The harness device has no update path, so validation refuses and nothing is committed.
     Plan::new(vec![Step::Control(client::arm(1, id, revision))], (id, revision), true, vec![(id, revision, false)])
 }
 
@@ -330,8 +311,8 @@ fn every_flow_survives_a_break_at_every_step() {
     assert_eq!(points, 45, "the matrix's own size, so a flow that stopped being covered is visible");
 }
 
-/// The other half of §3.6's sentence: after a break the client restarts from zero, and the restart
-/// lands on a card that never heard of the first attempt — for every break **before** the commit.
+/// After a break the client restarts from zero, and for every break before the commit the restart
+/// lands on a card that never heard of the first attempt.
 #[test]
 fn a_client_restarts_from_zero_after_every_break() {
     let bytes = payload(2_600);
@@ -352,9 +333,8 @@ fn a_client_restarts_from_zero_after_every_break() {
     }
 }
 
-/// §3.4's one hole, stated as a test: a create whose response was lost cannot be reconciled with
-/// `STATUS`, because the client never learned the assigned id. It restarts, the card takes the
-/// upload again, and the cost is exactly one duplicate object — which the client then removes.
+/// The one hole in reconciling with `STATUS`: a create whose response was lost cannot be, because
+/// the client never learned the assigned id. It restarts, and the cost is one duplicate object.
 #[test]
 fn a_create_whose_answer_was_lost_costs_one_duplicate_and_no_more() {
     let disk = formatted_card(8);

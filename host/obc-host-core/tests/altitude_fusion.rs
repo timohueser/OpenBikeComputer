@@ -1,21 +1,19 @@
-//! The map-referenced altimeter on a **real replay** (elevation epic #1068, EL8 / #1076).
+//! The map-referenced altimeter on a real replay.
 //!
 //! The unit tests in `obc-app`'s `altitude.rs` pin the estimator's arithmetic against synthetic
-//! residuals. This file pins the thing those cannot: that the whole chain — GPX fixes → `App::tick`
-//! → `App::sample_terrain` → the mounted `grimsel.obcd` raster → the Elevation tile's number —
-//! actually cancels the one error the device's barometer really has.
+//! residuals. This file pins what those cannot: that the whole chain — GPX fixes, `App::tick`,
+//! `App::sample_terrain`, the mounted `grimsel.obcd` raster, the Elevation tile's number — cancels
+//! the one error the device's barometer really has.
 //!
-//! The experiment is a **paired replay**: the same 35 minutes of the Grimsel climb, ridden twice,
+//! The experiment is a paired replay: the same 35 minutes of the Grimsel climb, ridden twice,
 //! differing only in a synthetic barometric air pressure drift injected through
-//! [`BaroSensor::set_drift`]. The control ride has none. Then:
+//! [`BaroSensor::set_drift`]. The control ride has none. The raw barometric reading must diverge
+//! between the two by exactly the injected drift, which is what an air pressure front does to a
+//! fixed-`P0` altitude; the shown elevation must not, because the terrain under each fix keeps
+//! re-pinning it.
 //!
-//! - the **raw** barometric reading must diverge between the two by exactly the injected drift —
-//!   that is what a air pressure front does to `bmp581.rs`'s fixed-`P0` altitude, and why the Elevation
-//!   tile could not be trusted before this epic;
-//! - the **shown** elevation must not, because the terrain under each fix keeps re-pinning it.
-//!
-//! Fixes are stepped at 1 Hz, the device's default `fix_interval_s` — the estimator's τ is
-//! expressed per fix, so a coarser replay step would stretch it and understate the correction.
+//! Fixes are stepped at 1 Hz, the device's default `fix_interval_s`: the estimator's τ is expressed
+//! per fix, so a coarser replay step would stretch it and understate the correction.
 
 #![cfg(feature = "external-fixtures")]
 
@@ -72,7 +70,7 @@ fn ride(drift_m_per_h: f32, at_s: &[f64], map: &[u8], terrain_bytes: &[u8], gpx:
     while next < at_s.len() {
         let (ride, sensors) = replay_advance(&mut player, &mut baro, None, FIX_DT_S, ReplaySensors::default());
         app.tick(ride, sensors, None);
-        // The EL8 drain: one terrain read per fresh fix, never per frame.
+        // One terrain read per fresh fix, never per frame.
         app.sample_terrain(&mut terrain);
         t += FIX_DT_S;
         if t >= at_s[next] {
@@ -91,11 +89,11 @@ fn ride(drift_m_per_h: f32, at_s: &[f64], map: &[u8], terrain_bytes: &[u8], gpx:
     out
 }
 
-/// **The evidence.** A drifting barometer walks away from the truth by the full injected amount;
-/// the map-referenced reading the tile shows stays put.
+/// The evidence. A drifting barometer walks away from the truth by the full injected amount; the
+/// map-referenced reading the tile shows stays put.
 ///
-/// Run with `cargo test -p obc-host-core --test altitude_fusion -- --nocapture` to print the table
-/// that goes in the PR.
+/// Run with `cargo test -p obc-host-core --test altitude_fusion -- --nocapture` to print the
+/// table.
 #[test]
 fn injected_pressure_drift_walks_the_barometer_away_but_not_the_shown_elevation() {
     // −60 m/h ≈ −7 hPa/h: a front several times harsher than the classic storm threshold, chosen so
@@ -135,10 +133,10 @@ fn injected_pressure_drift_walks_the_barometer_away_but_not_the_shown_elevation(
             "at {:.0}s the raw barometer must carry the full {injected:.1} m of drift, carried {raw_delta:.1} m",
             d.t_s
         );
-        // The tile does not. Its residual error is the EMA's steady-state lag against a
-        // *continuously* drifting reference — `rate × τ` = 60 m/h × 5 min = **5 m**, a constant,
-        // whatever the ride's length. (Real air pressure at ~8 m/h leaves ~0.7 m, under the tile's own
-        // 1 m rounding.) That constant-vs-linear split is the whole result.
+        // The tile does not. Its residual error is the EMA's steady-state lag against a continuously
+        // drifting reference — `rate × τ` = 60 m/h × 5 min = 5 m, a constant, whatever the ride's
+        // length. Real air pressure at about 8 m/h leaves 0.7 m, under the tile's own 1 m rounding.
+        // That constant-against-linear split is the whole result.
         assert!(
             shown_delta.abs() < 6.0,
             "at {:.0}s the shown elevation must stay on the map (moved {shown_delta:.1} m of the \
@@ -148,8 +146,7 @@ fn injected_pressure_drift_walks_the_barometer_away_but_not_the_shown_elevation(
     }
 
     // The claim stated as the shape of the two curves rather than a single number: the raw error
-    // **grows** with the ride, the shown error **plateaus**. Compare the 15-minute checkpoint with
-    // the 35-minute one.
+    // grows with the ride, the shown error plateaus.
     let (mid_c, mid_d) = (control[2], drifted[2]); // 900 s
     let (end_c, end_d) = (*control.last().unwrap(), *drifted.last().unwrap()); // 2100 s
     let (raw_mid, raw_end) = ((mid_d.raw_m - mid_c.raw_m).abs(), (end_d.raw_m - end_c.raw_m).abs());
@@ -175,9 +172,9 @@ fn injected_pressure_drift_walks_the_barometer_away_but_not_the_shown_elevation(
     );
 }
 
-/// The other half of the contract: with **no** terrain beside the map the estimator never settles,
-/// so the shown elevation is the raw barometric reading, bit for bit — the pre-epic behaviour, and
-/// the reason a terrain file stays removable.
+/// The other half of the contract: with no terrain beside the map the estimator never settles, so
+/// the shown elevation is the raw barometric reading, bit for bit — and the reason a terrain file
+/// stays removable.
 #[test]
 fn without_terrain_the_shown_elevation_is_the_raw_barometer() {
     let (map, _terrain, gpx) = fixtures();

@@ -1,5 +1,5 @@
-//! `obc-route`'s integration tests. One binary; each module below was a
-//! top-level `tests/*.rs` file and keeps its own name, helpers and assertions.
+//! `obc-route`'s integration tests: one binary, one module per area, each keeping its own
+//! helpers and assertions.
 
 mod common;
 

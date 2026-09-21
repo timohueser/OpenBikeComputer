@@ -1,16 +1,9 @@
-//! The trip **cascade-delete** confirm dialog (epic #526, TR3). Reached from the Route menu's top
-//! level by long-pressing a trip folder row; confirming here deletes the trip **and every route
-//! inside it** (locked: the on-device delete cascades — it's post-trip cleanup, not an ungroup).
+//! The confirm dialog for a trip delete, reached by a long press on a trip folder row. The delete
+//! cascades: it removes the trip and every route in it.
 //!
-//! Modelled on the [`RouteSwapScreen`](super::RouteSwapScreen) guarded-action family: an opaque
-//! full-frame card naming the trip, with a warning-red hold-guarded **Delete** row and a plain
-//! **Cancel** row. The guarded hold is the exact idiom the Route overview's Delete-route row uses —
-//! a completed [`Gesture::Hold`] with the Delete row selected records the request. The screen holds
-//! only the trip's **durable object id** (its own device counter), so a catalog rescan racing the
-//! confirm can't retarget it: the id is drained verbatim by
-//! the pass and the host cascade-deletes the
-//! `TP{id}.OBT` + member route files, then rescans + re-feeds — the folder disappears and the menu
-//! regroups. Back / Cancel pops to the top level, leaving the trip intact.
+//! The screen holds only the durable object id of the trip, so a catalog rescan that races the
+//! confirm cannot retarget it. A completed hold on the Delete row records the request, the host
+//! deletes the trip file and its member routes, and the menu regroups on the next scan.
 
 use embedded_graphics::prelude::Point;
 use obc_render::{
@@ -35,31 +28,24 @@ const GUARDS: [bool; 2] = [true, false];
 const DELETE: usize = 0;
 const CANCEL: usize = 1;
 
-/// The confirm dialog. Carries the trip's durable object id (what the host deletes), its name (for
-/// the card body), and the highlighted option.
 #[derive(Debug)]
 pub struct TripDeleteScreen {
-    /// The trip's durable object id — drained verbatim by
-    /// the pass.
+    /// The durable object id of the trip, which the host drains verbatim.
     trip_id: crate::CatalogObjectId,
     name: heapless::String<NAME_CAP>,
     actions: ActionRows,
 }
 
 impl TripDeleteScreen {
-    /// A confirm for the trip with durable id `trip_id` and display `name`. Entry selects the guarded
-    /// Delete row's *neighbour* — the cursor starts on Cancel so an accidental double-hold on the way
-    /// in can't delete; the rider steps onto Delete deliberately, then holds (mirrors the Route
-    /// overview / Pause-menu idiom, where entry never lands armed on the destructive row).
+    /// A confirm for the trip with durable id `trip_id`. The cursor starts on Cancel, so a second
+    /// hold on the way in cannot delete.
     pub fn new(trip_id: crate::CatalogObjectId, name: &str) -> Self {
         let mut n = heapless::String::new();
         let _ = n.push_str(fit_to_cap(name));
         TripDeleteScreen { trip_id, name: n, actions: ActionRows::new(CANCEL) }
     }
 
-    /// True while the highlighted option needs a hold: its row fills with the live hold progress in
-    /// `draw`, so [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) reports a charging
-    /// hold as worth repainting here.
+    /// True when the highlighted row fills for a hold, which makes the app repaint that fill.
     pub fn selection_is_guarded(&self) -> bool {
         self.actions.selection_is_guarded(&GUARDS)
     }
@@ -73,9 +59,6 @@ impl TripDeleteScreen {
 
         match self.actions.handle(g, &GUARDS) {
             CardEvent::Activate(DELETE) => {
-                // Record the cascade-delete against the trip's durable id and pop back to the top
-                // level. The host drains it, deletes the `TP{id}.OBT` + member routes, rescans, and
-                // re-feeds — the folder is gone and the menu regroups on the next draw.
                 cx.activity.request_trip_delete(self.trip_id);
                 Transition::Pop
             }
@@ -88,21 +71,17 @@ impl TripDeleteScreen {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
 
-        // Opaque full-frame prompt: the trip name under a DELETE TRIP title, a one-line warning, then
-        // the two option rows.
         title_frame(cv, w, h, rx.t(Msg::TripDeleteTitle), "");
 
-        // The trip name, centred, scrolled when it overflows the card width.
         let max = (((w - 24) / Font::Body.char_width() as i32).max(6)) as usize;
         let name_row = rect(12, TITLE_BAR_H + 12, w - 24, Font::Body.line_height() as i32);
         let name = rx.marquee.fit(&self.name, max, Some(name_row));
         cv.text(&name, Point::new(w / 2, TITLE_BAR_H + 12), Font::Body, TextAlign::Center, INK);
 
-        // The warning line — what the confirm actually does (deletes the routes too), word-wrapped in
-        // the olive sub-text so the longer translations don't clip. Returns the y past the last line.
+        // The warning line wraps, so the longer translations do not clip. It returns the y below
+        // the last line.
         let warn_end = wrapped(cv, rx.t(Msg::TripDeleteWarn), w / 2, TITLE_BAR_H + 40, w - 24, Font::Label, SUBTEXT);
 
-        // The guarded Delete row fills warning-red (this IS destructive); Cancel is a plain amber row.
         let geo = GuardedRowsGeometry::card(w, warn_end + 8);
         let items = [
             MenuItem { label: rx.t(Msg::TripDeleteConfirm), guard: GUARDS[0] },
@@ -112,8 +91,7 @@ impl TripDeleteScreen {
     }
 }
 
-/// The longest prefix of `s` that fits [`NAME_CAP`] bytes without splitting a multi-byte char — the
-/// name is copied into the screen's own buffer, so a longer scanned name can't overflow it.
+/// The longest prefix of `s` that fits [`NAME_CAP`] bytes and splits no multi-byte character.
 fn fit_to_cap(s: &str) -> &str {
     let mut end = s.len().min(NAME_CAP);
     while end > 0 && !s.is_char_boundary(end) {
@@ -136,8 +114,6 @@ mod tests {
         scr.handle(g, &mut cx)
     }
 
-    /// Entry lands on Cancel (never armed on the destructive row); a hold there pops — Cancel
-    /// answers both gestures, so no input is dead air.
     #[test]
     fn entry_is_not_armed_on_delete() {
         let mut scr = TripDeleteScreen::new(7, "Alpen Traverse");
@@ -148,7 +124,6 @@ mod tests {
         assert_eq!(act.take_trip_delete(), None);
     }
 
-    /// A completed hold with the cursor on the Delete row records the trip's durable id and pops.
     #[test]
     fn hold_on_delete_records_the_trip_id_and_pops() {
         let mut scr = TripDeleteScreen::new(7, "Alpen Traverse");
@@ -160,7 +135,6 @@ mod tests {
         assert_eq!(act.take_trip_delete(), Some(7), "records the trip's durable id verbatim");
     }
 
-    /// A plain press on Cancel pops without recording anything.
     #[test]
     fn cancel_pops_without_deleting() {
         let mut scr = TripDeleteScreen::new(7, "Alpen Traverse");

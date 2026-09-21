@@ -1,7 +1,6 @@
-//! OBCR waypoint-section tests: the hand-built format contract (`OBCR_Spec.md` §1.1 / §4), the
-//! converter's `<wpt>` emission (category from `<sym>`/`<type>`, signed lateral offset), and the
-//! storage-only guarantee — a waypoint-bearing route loads and rides **identically** to the same
-//! route without waypoints.
+//! OBCR waypoint-section tests: the hand-built format contract from `OBCR_Spec.md`, the converter's
+//! `<wpt>` emission (category from `<sym>`/`<type>`, signed lateral offset), and the storage-only
+//! guarantee that a waypoint-bearing route rides identically to the same route without waypoints.
 
 use obc_formats::io::SliceSource;
 use obc_formats::obcr::{WAYPOINT_ELE_NONE, WAYPOINT_LEN};
@@ -19,9 +18,8 @@ fn waypoints(bytes: &[u8]) -> Vec<Waypoint> {
     out
 }
 
-/// Build a `.obcr` by hand, mirroring the spec's byte layout independently of the converter (the
-/// `format.rs` philosophy): a 128-byte header, one 2-point chunk `(1000, 2000, 100)` →
-/// `(1500, 2500, 110)`, the index, then the §4 waypoint table.
+/// Build a `.obcr` by hand, mirroring the spec's byte layout independently of the converter: a
+/// 128-byte header, one 2-point chunk, the index, then the waypoint table.
 fn v3_route(wps: &[WpRec]) -> Vec<u8> {
     build_obcr(&RouteSpec {
         name: "Alps",
@@ -38,15 +36,15 @@ fn v3_route(wps: &[WpRec]) -> Vec<u8> {
     .0
 }
 
-/// A forged `Waypoint Offset` near `u32::MAX` must come back as the truncated-file error, not
-/// wrap the per-record offset arithmetic back inside the buffer (or panic in debug builds).
-/// Browser-supplied bytes reach this walk through `obc-web-convert`, so the header is untrusted.
+/// A forged `Waypoint Offset` near `u32::MAX` must read as a truncated file, and must not wrap the
+/// per-record offset arithmetic back inside the buffer. Browser-supplied bytes reach this walk, so
+/// the header is untrusted.
 #[test]
 fn a_forged_waypoint_offset_near_u32_max_reads_as_truncation() {
     for forged in [u32::MAX, u32::MAX - WAYPOINT_LEN as u32 + 1, u32::MAX - 43] {
         let mut bytes =
             v3_route(&[(0, 1_000, 2_010, 213, 1, 8, 0, b"Fountain"), (70, 1_490, 2_500, 0, 0, 6, 0, b"Summit")]);
-        bytes[112..116].copy_from_slice(&forged.to_le_bytes()); // §1.1 Waypoint Offset
+        bytes[112..116].copy_from_slice(&forged.to_le_bytes()); // the header's Waypoint Offset
         let err = for_each_waypoint(&SliceSource(&bytes), |_| panic!("no forged record may decode"))
             .expect_err("a wrapped offset must be an error");
         assert_eq!(err, obc_formats::io::Error::BadOffset, "offset {forged:#x}");
@@ -81,8 +79,8 @@ fn record_contract_reads_every_field() {
     assert_eq!((wps[1].category(), wps[1].lateral_offset_m), (None, 0));
 }
 
-/// The v3 bump is breaking on purpose: the same bytes labelled v1 or v2 are rejected outright
-/// (record layouts moved), so a stored pre-v3 route re-imports from GPX rather than mis-decoding.
+/// The v3 bump is breaking on purpose: the same bytes labelled v1 or v2 are rejected outright, so
+/// a stored pre-v3 route re-imports from GPX instead of mis-decoding.
 #[test]
 fn pre_v3_routes_are_rejected() {
     let bytes = v3_route(&[(0, 1_000, 2_010, 213, 1, 8, 0, b"Fountain")]);
@@ -95,8 +93,8 @@ fn pre_v3_routes_are_rejected() {
     }
 }
 
-/// A category byte outside the six wire ids reads as generic (the spec's read-tolerance rule) while
-/// the raw byte stays available for a rewrite to carry through.
+/// A category byte outside the wire ids reads as generic, and the raw byte stays available for a
+/// rewrite to carry through.
 #[test]
 fn unknown_category_byte_reads_as_generic() {
     let bytes = v3_route(&[(0, 1_000, 2_000, 100, 42, 2, 0, b"ok")]);
@@ -114,8 +112,8 @@ fn lying_name_len_is_clamped_not_overrun() {
     assert!(wps[0].name.len() <= 24);
 }
 
-/// The convert-test STRAIGHT track (rolling eastward at 48°N, ~670 m), with two
-/// out-of-ride-order waypoints ahead of the track — as GPX carries them.
+/// A straight eastward track at 48°N (~670 m), with two waypoints listed out of ride order, as
+/// GPX carries them.
 const WPT_GPX: &str = r#"<?xml version="1.0"?>
 <gpx>
   <wpt lat="48.0000" lon="7.8090"><name>Summit Cafe</name></wpt>
@@ -127,7 +125,6 @@ const WPT_GPX: &str = r#"<?xml version="1.0"?>
     <trkpt lat="48.0000" lon="7.8090"><ele>215.0</ele></trkpt>
   </trkseg></trk></gpx>"#;
 
-/// The same GPX without its `<wpt>` elements.
 fn strip_wpts(gpx: &str) -> String {
     let mut out = String::new();
     for line in gpx.lines() {
@@ -148,8 +145,7 @@ fn converter_places_and_sorts_waypoints() {
 
     let wps = waypoints(&sink.buf);
     assert_eq!(wps.len(), 2);
-    // Sorted into ride order (the GPX listed them reversed): the fountain sits by the
-    // first track point (along 0), the cafe by the last (along = total distance).
+    // Sorted into ride order; the GPX listed them reversed.
     assert_eq!(wps[0].name, "Start Fountain");
     assert_eq!(wps[0].dist_along_m, 0);
     assert_eq!(wps[0].ele, 212);
@@ -160,9 +156,7 @@ fn converter_places_and_sorts_waypoints() {
     assert_eq!(wps[1].category_id, 0); // neither <wpt> carries a symbol
 }
 
-// --- categories from `<sym>`/`<type>` (#947) ---
-
-/// One `<wpt>` with the given inner XML, on the STRAIGHT eastward track, converted and read back.
+/// One `<wpt>` with the given inner XML, on a straight eastward track, converted and read back.
 fn convert_one_wpt(inner: &str) -> Waypoint {
     let gpx = format!(
         r#"<gpx>
@@ -179,17 +173,15 @@ fn convert_one_wpt(inner: &str) -> Waypoint {
 
 #[test]
 fn converter_maps_sym_and_type_onto_categories() {
-    // `<sym>` — the Garmin-style spelling most planners copy.
+    // `<sym>`: the Garmin-style spelling most planners copy.
     assert_eq!(convert_one_wpt("<name>Brunnen</name><sym>Water</sym>").category(), Some(PoiCategory::Water));
-    // `<type>` — RideWithGPS / Komoot write the class here instead.
+    // `<type>`: RideWithGPS and Komoot write the class here instead.
     assert_eq!(convert_one_wpt("<name>Camp</name><type>Campground</type>").category(), Some(PoiCategory::Campsite));
-    // Case and separators don't matter.
     assert_eq!(
         convert_one_wpt("<name>Shop</name><sym>BICYCLE_SHOP</sym>").category(),
         Some(PoiCategory::BikeShop),
         "matching is case- and separator-insensitive"
     );
-    // Unmapped, and absent: generic — and the waypoint is still stored either way.
     assert_eq!(convert_one_wpt("<name>Turn</name><sym>Flag, Blue</sym>").category(), None);
     assert_eq!(convert_one_wpt("<name>Turn</name>").category(), None);
     assert_eq!(convert_one_wpt("<name>Turn</name><sym>Flag, Blue</sym>").name, "Turn", "never dropped for a symbol");
@@ -204,9 +196,7 @@ fn sym_takes_precedence_over_type() {
     assert_eq!(empty_sym.category(), Some(PoiCategory::Campsite));
 }
 
-// --- the signed lateral offset (#946 amendment) ---
-
-/// A GPX with one `<wpt>` at `(lat, lon)` beside a straight **eastward** track at 48°N.
+/// A GPX with one `<wpt>` at `(lat, lon)` beside a straight eastward track at 48°N.
 fn offset_of(lat: f64, lon: f64) -> i16 {
     let gpx = format!(
         r#"<gpx>
@@ -222,8 +212,8 @@ fn offset_of(lat: f64, lon: f64) -> i16 {
     waypoints(&bytes).pop().expect("one waypoint").lateral_offset_m
 }
 
-/// Riding east, north is **left** (negative) and south is **right** (positive); a waypoint sitting
-/// on a track vertex is on-route (0). One µdeg of latitude is ~0.111 m, so 0.0002° ≈ 22 m.
+/// Riding east, north is left (negative) and south is right (positive). One µdeg of latitude is
+/// ~0.111 m, so 0.0002° is ~22 m.
 #[test]
 fn converter_signs_the_lateral_offset_by_side_of_travel() {
     let north = offset_of(48.0002, 7.8060);
@@ -233,16 +223,15 @@ fn converter_signs_the_lateral_offset_by_side_of_travel() {
     assert_eq!(offset_of(48.0000, 7.8060), 0, "a waypoint on the line is on-route");
 }
 
-/// The side is honest even when the winning point is the track's **first**, which has no incoming
-/// segment: the sign resolves from the outgoing one instead.
+/// The track's first point has no incoming segment, so the sign resolves from the outgoing one.
 #[test]
 fn offset_at_the_first_track_point_still_takes_a_side() {
     assert_eq!(offset_of(48.0002, 7.8000), -22, "beside the start, north = left");
     assert_eq!(offset_of(47.9998, 7.8000), 22, "beside the start, south = right");
 }
 
-/// The magnitude is the distance to the placement point, saturating rather than wrapping — a
-/// waypoint dropped a long way off route reads as "very far", never as the opposite side.
+/// The magnitude saturates instead of wrapping, so a waypoint far off route reads as very far,
+/// never as the opposite side.
 #[test]
 fn far_offsets_saturate() {
     let far = offset_of(48.5000, 7.8060); // ~55 km north of the track
@@ -296,8 +285,6 @@ fn waypoint_bearing_route_rides_identically() {
     let idx_w = RouteIndex::read(&src_w).unwrap();
     let idx_o = RouteIndex::read(&src_o).unwrap();
 
-    // Everything the ride path consumes is identical: summary fields, chunk metas,
-    // and every decoded chunk.
     assert_eq!(idx_w.name(), idx_o.name());
     assert_eq!(
         (idx_w.point_count, idx_w.total_distance_m, idx_w.total_ascent_m),
@@ -310,19 +297,15 @@ fn waypoint_bearing_route_rides_identically() {
     }
 }
 
-// --- the resident `Waypoints` table (`RouteReader::load_waypoints`, #569) ---
-//
-// The table is the waypoint UI's data layer: it distils the raw stored section into named,
-// windowed, capped entries. These pin the filter/window/cap policy over hand-built byte routes.
+// The resident `Waypoints` table (`RouteReader::load_waypoints`) is the waypoint UI's data layer:
+// it distils the stored section into named, windowed, capped entries.
 
-/// Build a `RouteReader` over `bytes` and load its resident table windowed at `min_dist_m`.
 fn load(bytes: &[u8], min_dist_m: u32) -> Waypoints {
     let src = SliceSource(bytes);
     let idx = RouteIndex::read(&src).unwrap();
     RouteReader::new(&idx, &src).load_waypoints(min_dist_m)
 }
 
-/// The names, in order, of a loaded table — the shape most assertions want.
 fn names(w: &Waypoints) -> Vec<&str> {
     w.as_slice().iter().map(|e| e.name.as_str()).collect()
 }
@@ -338,10 +321,9 @@ fn load_waypoints_drops_unnamed_and_whitespace_only() {
         (40, 1_000, 2_000, 100, 0, 6, 0, b"Summit"),
     ]);
     let w = load(&bytes, 0);
-    // Only the two genuinely-named waypoints survive; the blank/whitespace ones surface nowhere.
     assert_eq!(names(&w), ["Fountain", "Summit"]);
     assert!(!w.truncated);
-    // The compact entry mirrors the record's along/coord/category/offset (only `ele` is dropped).
+    // The compact entry mirrors the record, except that `ele` is dropped.
     assert_eq!(w.as_slice()[0].dist_along_m, 0);
     assert_eq!((w.as_slice()[0].lon, w.as_slice()[0].lat), (1_000, 2_000));
     assert_eq!(w.as_slice()[0].category, Some(PoiCategory::Campsite));
@@ -356,33 +338,29 @@ fn load_waypoints_windows_by_min_dist() {
         (500, 1_000, 2_000, 100, 0, 1, 0, b"B"),
         (1_000, 1_000, 2_000, 100, 0, 1, 0, b"C"),
     ]);
-    // No window: everything ahead of 0.
     assert_eq!(names(&load(&bytes, 0)), ["A", "B", "C"]);
-    // A window at 500 keeps `dist_along_m >= 500` (B and C); the boundary is inclusive.
+    // The boundary is inclusive: a window at 500 keeps B and C.
     assert_eq!(names(&load(&bytes, 500)), ["B", "C"]);
-    // A window past the last waypoint yields an empty, non-truncated table.
     let past = load(&bytes, 1_001);
     assert!(past.is_empty() && !past.truncated);
 }
 
 #[test]
 fn load_waypoints_caps_first_by_distance_and_flags_truncation() {
-    // MAX_WAYPOINTS + 5 named waypoints at strictly increasing distance (the name is irrelevant to
-    // the cap, only that it's non-empty — one shared literal keeps the builder simple).
+    // MAX_WAYPOINTS + 5 named waypoints at strictly increasing distance. Only a non-empty name
+    // matters to the cap.
     let recs: Vec<WpRec> =
         (0..(MAX_WAYPOINTS + 5) as u32).map(|k| (k * 100, 1_000, 2_000, 100, 0, 1, 0, b"w".as_slice())).collect();
     let bytes = v3_route(&recs);
 
     let w = load(&bytes, 0);
-    // Exactly the cap is resident, and it's the *first* MAX_WAYPOINTS by distance (0, 100, …).
     assert_eq!(w.len(), MAX_WAYPOINTS);
     assert!(w.truncated, "an over-cap file must flag truncation");
     assert_eq!(w.as_slice().first().unwrap().dist_along_m, 0);
     assert_eq!(w.as_slice().last().unwrap().dist_along_m, (MAX_WAYPOINTS as u32 - 1) * 100);
 
-    // Sliding the window forward past the resident tail re-captures the truncated remainder — the
-    // re-window the app performs on exhaustion. Starting just past entry 4 drops 5 and keeps the
-    // rest, so the (previously truncated) tail now fits.
+    // Sliding the window forward re-captures the truncated remainder, which is what the app does
+    // on exhaustion. Starting just past entry 4 drops 5, and the rest then fits.
     let slid = load(&bytes, 5 * 100);
     assert_eq!(slid.as_slice().first().unwrap().dist_along_m, 5 * 100);
     assert!(!slid.truncated, "the remaining tail now fits under the cap");
@@ -394,9 +372,8 @@ fn load_waypoints_of_a_waypoint_free_route_is_empty() {
     assert!(w.is_empty() && !w.truncated);
 }
 
-/// Smoke-read the committed vector (2 named waypoints: `Brunnen` @ 0, `Pass Summit` mid-route) the
-/// way the shared vector tests reach it. Soft-skips if the repo-root fixture isn't reachable from
-/// the crate (the same tolerance the issue calls for), so the unit contract above is authoritative.
+/// Read the committed vector the way the shared vector tests reach it. It soft-skips when the
+/// fixture is not reachable from the crate, so the unit contract above stays authoritative.
 #[test]
 fn load_waypoints_reads_the_committed_vector() {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../specs/vectors/route-waypoints.obcr");
@@ -408,12 +385,10 @@ fn load_waypoints_reads_the_committed_vector() {
     assert_eq!(names(&w), ["Brunnen", "Pass Summit"]);
     assert_eq!(w.as_slice()[0].dist_along_m, 0);
     assert!(w.as_slice()[1].dist_along_m > 0, "the summit sits mid-route");
-    // The vector pins both halves of the symbol mapping and a signed offset (#947): the fountain's
-    // `<sym>Drinking Water</sym>` is Water and it sits 13 m left of travel; the summit's
-    // `<type>Viewpoint</type>` is unmapped (generic) and it sits on a track vertex.
+    // The vector pins both halves of the symbol mapping: the fountain's `<sym>Drinking Water</sym>`
+    // is Water, 13 m left of travel; the summit's `<type>Viewpoint</type>` is unmapped.
     assert_eq!((w.as_slice()[0].category, w.as_slice()[0].lateral_offset_m), (Some(PoiCategory::Water), -13));
     assert_eq!((w.as_slice()[1].category, w.as_slice()[1].lateral_offset_m), (None, 0));
     assert!(!w.truncated);
-    // Windowing past the first waypoint drops it.
     assert_eq!(names(&load(&bytes, 1)), ["Pass Summit"]);
 }

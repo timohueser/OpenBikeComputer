@@ -1,17 +1,14 @@
-//! Full-screen **boot faults** — the unrecoverable bring-up failures that leave nothing else to
-//! draw: no SD card, no map file on the card, or a map the reader can't parse. Unlike the
-//! dismissable [warnings](crate::screen::WarningScreen), these are drawn *without* an [`App`] (there
-//! is no map to build one around) and never dismiss — the device sits on the message until the
-//! rider fixes the card and reboots.
+//! Full-screen boot faults — the unrecoverable bring-up failures that leave nothing else to draw:
+//! no SD card, no map file on the card, or a map the reader cannot parse. Unlike the dismissable
+//! [warnings](crate::screen::WarningScreen), these are drawn without an [`App`], because there is no
+//! map to build one around, and they never dismiss.
 //!
-//! A host with a live display calls [`draw_boot_fault`] once, then idles (a heartbeat LED, say):
-//! the frame persists on glass with no further work. The copy is a parallel two-line family —
-//! line 1 ink = *what's wrong*, line 2 olive = *the fix*, no jargon (the "TooFragmented" /
-//! parse-error detail stays in the log) — under the shared SD-card pictogram in the glyph slot
-//! (dialog anatomy, epic #678 T1).
+//! A host with a live display calls [`draw_boot_fault`] once and then idles; the frame persists on
+//! glass with no further work. The copy is a parallel two-line family: the ink line says what is
+//! wrong, the olive line says the fix, and no jargon appears on either.
 //!
-//! Kept in `obc-app` (not the board crate) so the simulator draws the identical screen and the copy
-//! is unit-tested here, next to the [warnings](crate::screen::warning) it mirrors.
+//! It is kept in `obc-app` rather than the board crate, so the simulator draws the identical screen
+//! and the copy is unit-tested here.
 
 use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
 use obc_render::{
@@ -30,36 +27,32 @@ use crate::{t, Msg};
 /// that fails [`obc_reader`]'s header parse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BootFault {
-    /// Card identification never completed — no card, an unpowered socket, or a broken bus. This is
-    /// the *narrow* class: it means the host came up and the card did not answer. A storage
-    /// subsystem that never got as far as asking is [`StorageFault`](Self::StorageFault), because
-    /// telling someone their card is missing when the reader never started sends them to the wrong
-    /// place entirely.
+    /// Card identification never completed: no card, an unpowered socket, or a broken bus. It is
+    /// the narrow class — the host came up and the card did not answer. A storage subsystem that
+    /// never got as far as asking is [`StorageFault`](Self::StorageFault), because telling a rider
+    /// their card is missing when the reader never started sends them to the wrong place.
     NoCard,
-    /// The card answered but is not an SDHC/SDXC (CSD v2) card. SDSC is byte-addressed and caps at
-    /// 2 GB — no map this device stores fits — so it is rejected outright. Distinct from
-    /// [`NoCard`](Self::NoCard) on purpose: the card is *present and working*, just too small, and a
-    /// card that worked over the retired SPI path lands here.
+    /// The card answered but is not an SDHC or SDXC card. SDSC is byte-addressed and caps at 2 GB,
+    /// which no map this device stores fits, so it is rejected outright. It is distinct from
+    /// [`NoCard`](Self::NoCard) because the card is present and working, just too small.
     CardUnsupported,
     /// The storage subsystem itself failed: the sEMMC soft peripheral would not boot, a barrier
-    /// never echoed, or the volume would not mount. The honest superset for "something below the
-    /// filesystem broke, and it was not the card's absence".
+    /// never echoed, or the volume would not mount. The superset for "something below the filesystem
+    /// broke, and it was not the card's absence".
     StorageFault,
     /// The card mounted but holds no `.obcm` map file.
     NoMap,
-    /// A map file is present but isn't valid OBCM (truncated / corrupt / wrong format).
+    /// A map file is present but is not valid OBCM.
     BadMap,
 }
 
 impl BootFault {
-    /// The card's `(title, what, fix)` — the wood-bar title, the ink *what's wrong* line, and the
-    /// olive *fix* line (word-wrapped at draw time). Pinned by [`tests`].
+    /// The card's `(title, what, fix)`: the wood-bar title, the ink what-is-wrong line, and the
+    /// olive fix line, which is word-wrapped at draw time.
     ///
-    /// The what/fix pair lives in the Msg catalog (so the repertoire test pins it and the
-    /// translations exist), but a boot fault is drawn by [`draw_boot_fault`] **before**
-    /// `App`/`Settings` exist — there is no `settings.language` to read this early in the boot
-    /// path — so it renders the English column in every language build, the same intentionally-
-    /// English diagnostics decision as epic #602's.
+    /// The what and fix pair lives in the Msg catalog, but a boot fault is drawn before `App` and
+    /// `Settings` exist, so there is no `settings.language` to read this early. It renders the
+    /// English column in every language build.
     pub fn copy(self) -> (&'static str, &'static str, &'static str) {
         const EN: Language = Language::En;
         match self {
@@ -76,10 +69,9 @@ impl BootFault {
     }
 }
 
-/// Draw a full-screen boot fault into `target`. Standalone (no [`App`](crate::App)): the shared wood
-/// frame, the SD-card glyph, and the centred what/fix pair, so it reads as part of the same UI while
-/// needing nothing but a display. Push it once and hold it; it draws no animation and expects no
-/// input.
+/// Draw a full-screen boot fault into `target`, with no [`App`](crate::App): the shared wood frame,
+/// the SD-card glyph, and the centred what and fix pair. Push it once and hold it; it draws no
+/// animation and expects no input.
 pub fn draw_boot_fault<D, F>(target: &mut D, w: i32, h: i32, color_fn: F, fault: BootFault)
 where
     D: DrawTarget,
@@ -89,9 +81,7 @@ where
     let mut cv = Canvas::new(target, &color_fn);
     let (title, what, fix) = fault.copy();
     title_frame(&mut cv, w, h, title, "");
-    // The SD-card pictogram in the glyph slot — the one pictogram all three storage faults share.
     sd_card_glyph(&mut cv, Point::new(w / 2, TITLE_BAR_H + 56));
-    // What's wrong (ink, Body), then the fix (olive, Label, wrapped) — the parallel two-line family.
     let y = h * 42 / 100;
     cv.text(what, Point::new(w / 2, y), Font::Body, TextAlign::Center, INK);
     wrapped(&mut cv, fix, w / 2, y + Font::Body.line_height() as i32 + 6, w - 40, Font::Label, SUBTEXT);
@@ -129,14 +119,10 @@ fn sd_card_glyph(cv: &mut impl Surface, c: Point) {
 mod tests {
     use super::*;
 
-    /// The four shipped languages — every catalogued fault line must fit in each (the card renders
-    /// English pre-app today, but the catalog columns are real translations and must not clip if a
-    /// future boot path learns the language).
+    /// The four shipped languages. Every catalogued fault line must fit in each, although the card
+    /// renders English before the app exists.
     const LANGS: [Language; 4] = [Language::En, Language::De, Language::Fr, Language::Es];
 
-    /// Every fault has a short, non-empty, distinct title plus the what/fix pair — the plain-copy
-    /// contract (a rider must read what's wrong and what to do without the log), across all four
-    /// catalog columns.
     #[test]
     fn copy_is_present_and_distinct() {
         let all = [
@@ -160,23 +146,21 @@ mod tests {
             assert!(title.len() <= 16, "{f:?} title too long for the bar: {title:?}");
             for lang in LANGS {
                 let (what, fix) = (t(what_key, lang), t(fix_key, lang));
-                // The *what* line draws unwrapped at Font::Body, centred on the 240 px panel:
-                // 16 cells = 224 px is the safe budget (measured on glass: 18 chars touched the
-                // border) — this pins the fix so a future copy edit can't silently clip.
+                // The what line draws unwrapped at Font::Body on the 240 px panel, where 16 cells
+                // is the safe budget: 18 chars touched the border on glass.
                 assert!(what.chars().count() <= 16, "{f:?}/{lang:?} what-line too wide: {what:?}");
-                // The *fix* line word-wraps at Font::Label within `w - 40` (16 cells): no single
-                // word may overflow a line, and the whole line stays short enough for the card.
+                // The fix line word-wraps at Font::Label within `w - 40`, so no single word may
+                // overflow a line.
                 for word in fix.split(' ') {
                     assert!(word.chars().count() <= 16, "{f:?}/{lang:?} fix word too wide: {word:?}");
                 }
                 assert!(fix.chars().count() <= 56, "{f:?}/{lang:?} fix too long for the card: {fix:?}");
             }
-            // The English column is what the pre-app card actually renders.
+            // The English column is what the pre-app card renders.
             assert_eq!((what, fix), (t(what_key, Language::En), t(fix_key, Language::En)));
         }
-        // Distinct titles so every fatal site is told apart on glass. `NoCard` vs `StorageFault` vs
-        // `CardUnsupported` is the point of the #1163 review's P3: a reader that never started and a
-        // 2 GB card must not both read as "NO SD CARD".
+        // Distinct titles, so every fatal site is told apart on glass: a reader that never started
+        // and a 2 GB card must not both read as "NO SD CARD".
         let titles: heapless::Vec<&str, 8> = all.into_iter().map(|f| f.copy().0).collect();
         for (i, a) in titles.iter().enumerate() {
             for b in titles.iter().skip(i + 1) {

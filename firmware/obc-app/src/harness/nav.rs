@@ -13,14 +13,14 @@ use obcm_testkit::{build_poi_map, PoiSpec};
 use super::support as common;
 use common::{Buf, Planner};
 
-/// The fixture map bbox `(min_lon, min_lat, max_lon, max_lat)` and query point — `poi.rs`'s.
+/// The fixture map bbox `(min_lon, min_lat, max_lon, max_lat)` and query point.
 const BBOX: (i32, i32, i32, i32) = (7_000_000, 43_000_000, 8_000_000, 44_000_000);
 const POS: (i32, i32) = (7_500_000, 43_500_000);
 /// The nearest Water POI's coordinate (lon, lat µdeg) — what the confirm's request targets.
 const POI: (i32, i32) = (7_500_000, 43_500_500);
 
-/// A v7+ map with one named Water POI due north of [`POS`] and one unnamed Campsite (subtype 5 →
-/// the "Campsite" fallback label), for the name-fallback path.
+/// A map with one named Water POI due north of [`POS`] and one unnamed Campsite (subtype 5 → the
+/// "Campsite" fallback label), for the name-fallback path.
 fn fixture() -> Vec<u8> {
     let water = vec![PoiSpec { lat: POI.1, lon: POI.0, subtype: 1, name: "Fountain North".into(), payload: 0xFFFF }];
     let campsite = vec![PoiSpec { lat: 43_501_000, lon: 7_500_000, subtype: 5, name: String::new(), payload: 0xFFFF }];
@@ -224,9 +224,8 @@ fn mid_ride_accept_opens_the_save_swap_prompt() {
 #[test]
 fn failure_tiers_swap_the_confirm_for_the_right_card() {
     let bytes = fixture();
-    // With no distance cap, **exhaustion is the range tier**: running out of the router's fixed
-    // table is the device's honest "too far", so it (and only it) shows "Too far to route here";
-    // everything else is the generic "Couldn't find a route."
+    // With no distance cap, exhaustion is the range tier: running out of the router's fixed table
+    // is the device's honest "too far", so it and only it shows "Too far to route here".
     for (err, tier, expect_too_far) in
         [(NavError::Exhausted, "range (exhausted)", true), (NavError::NoPath, "generic", false)]
     {
@@ -281,9 +280,8 @@ fn back_on_planning_cancels_cleanly() {
     assert!(took_cancel(&mut app, &mut host), "the cancel one-shot rings for the host");
     assert!(!took_cancel(&mut app, &mut host), "…exactly once");
 
-    // A late answer (the executor may have finished its search before it saw the release — it
-    // shouldn't answer after an abort, but stay defensive) carries the abandoned operation's
-    // token, which Navigator no longer holds: dropped.
+    // A late answer (defensive: the executor should not answer after an abort) carries the
+    // abandoned operation's token, which Navigator no longer holds, so it is dropped.
     nav_catalog(&mut app);
     host.answer_late(&mut app, |token| NavigatorOutcome::PlanFinished { token, route: 7 });
     assert!(matches!(app.top_screen(), Screen::PoiDetail(_)), "a post-cancel answer is dropped");
@@ -293,11 +291,10 @@ fn back_on_planning_cancels_cleanly() {
 #[test]
 fn planning_spinner_throttles_repaints_to_its_cadence() {
     use obc_app::screen::NavPlanningScreen;
-    // #500: during a plan the ride loop ticks the screen once per planner step — every ~8 ms —
-    // and each claimed repaint costs a full chrome render + push (~40 ms on glass). The spinner
-    // must claim `changed` at most once per its 66 ms frame cadence, not per tick, or the
-    // repaints starve the plan they're decorating. (The needle still advances by real elapsed
-    // time, so a throttled frame just shows a larger sweep.)
+    // During a plan the ride loop ticks the screen once per planner step, every ~8 ms, and each
+    // claimed repaint costs a full chrome render + push (~40 ms on glass). The spinner must claim
+    // `changed` at most once per its 66 ms frame cadence, or the repaints starve the plan they
+    // decorate. The needle advances by real elapsed time, so a throttled frame shows a larger sweep.
     let mut s = NavPlanningScreen::new("Fountain North");
     let first = s.tick_timers(1_000, 240, 320); // anchors the clocks; nothing elapsed yet
     assert!(!first.changed, "no time elapsed, nothing to repaint");
@@ -311,10 +308,9 @@ fn planning_spinner_throttles_repaints_to_its_cadence() {
 
 #[test]
 fn needle_region_covers_the_spin() {
-    // The region-scoped repaint's contract (#500 follow-up): while a plan runs, successive
-    // full-repaint frames differ **only inside** the reported `needle_region`. The on-device
-    // repaint clips to that region and *discards* every write outside it, so a changing pixel
-    // out there would go stale on glass — this sweep is what makes the clip safe.
+    // The region-scoped repaint's contract: while a plan runs, successive full-repaint frames
+    // differ only inside the reported `needle_region`. The on-device repaint clips to that region
+    // and discards every write outside it, so a changing pixel out there would go stale on glass.
     use embedded_graphics::prelude::Point;
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
@@ -353,11 +349,9 @@ fn needle_region_covers_the_spin() {
 #[test]
 fn clipped_replay_matches_the_full_render_inside_the_region() {
     // The Canvas-level primitive rejection (`App::set_render_clip`): a clipped repaint replayed
-    // over the previous frame must be byte-identical to a full render **inside** the region —
-    // outside it the device framebuffer discards writes (obc-platform's clip tests), so inside
-    // is the half the app owns. Rejection being conservative (only fully-disjoint primitives
-    // skip) is exactly what this pins: a wrongly-rejected straddler would leave stale needle
-    // pixels in the region.
+    // over the previous frame must be byte-identical to a full render inside the region; outside
+    // it the device framebuffer discards writes. Rejection is conservative, only fully-disjoint
+    // primitives skip, and a wrongly-rejected straddler would leave stale needle pixels.
     use embedded_graphics::prelude::Point;
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
@@ -397,9 +391,9 @@ fn clipped_replay_matches_the_full_render_inside_the_region() {
 
 #[test]
 fn planning_region_scopes_take_dirty() {
-    // The seam the board's clipped repaint hangs off: a spinner tick's dirt drains as
-    // `map: true` **with** the needle region; any full-frame demand in the same window folds
-    // the region away; and before a first frame states the panel size, the spinner abstains.
+    // The seam the board's clipped repaint hangs off: a spinner tick's dirt drains as `map: true`
+    // with the needle region; any full-frame demand in the same window folds the region away; and
+    // before a first frame states the panel size, the spinner abstains.
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
     common::mount_store(&mut app);
@@ -438,8 +432,8 @@ fn planning_region_scopes_take_dirty() {
 
 #[test]
 fn overview_after_debug_plan_goes_quiet() {
-    // The #500 bench flow: planning pushed over Home (debug_start_nav), answered with a
-    // resolvable id → overview. The app must then go quiet: no repaint claims, no short wake.
+    // The bench flow: planning pushed over Home (debug_start_nav), answered with a resolvable id
+    // → overview. The app must then go quiet: no repaint claims, no short wake.
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
     common::mount_store(&mut app);
     let mut host = Planner::default();
@@ -467,7 +461,7 @@ fn overview_after_debug_plan_goes_quiet() {
 #[test]
 fn repeated_debug_requests_stack_one_planning_screen() {
     // The bench host repeats the `N` line against the flaky VCOM; only one planning screen may
-    // result, or the host's answer strands the extras spinning forever (the #500 bench artifact).
+    // result, or the host's answer strands the extras spinning forever.
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
     common::mount_store(&mut app);
     let mut host = Planner::default();
@@ -493,10 +487,9 @@ fn repeated_debug_requests_stack_one_planning_screen() {
     assert!(app.ms_until_next_wake(2_000).is_none(), "…or holds a short wake armed");
 }
 
-/// The shape-preview seam (#685 §4): a successful answer opens the computed overview
-/// **preview-missing** — the host's cue to decimate and hand the ≤ 64-point copy in — and
-/// `set_nav_preview` satisfies it (dirtying the frame). The cue never fires without a computed
-/// overview on the stack, and a rider leaving the overview retires it.
+/// The shape-preview seam: a successful answer opens the computed overview preview-missing — the
+/// host's cue to decimate and hand the ≤ 64-point copy in — and `set_nav_preview` satisfies it. The
+/// cue never fires without a computed overview on the stack, and leaving the overview retires it.
 #[test]
 fn nav_preview_seam_fires_once_per_plan() {
     let bytes = fixture();

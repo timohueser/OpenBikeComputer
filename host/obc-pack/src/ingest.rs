@@ -1,86 +1,31 @@
-//! `ingest.rs` — read one or more `.osm.pbf` files into styled features (lines,
-//! closed-way polygons, and multipolygon/`boundary` relation areas). Two `osmpbf`
-//! passes — three with a `--bbox`, which prepends a **pass 0** (see the cropping
-//! section at the end of this doc):
+//! Read one or more `.osm.pbf` files into styled features: lines, closed-way polygons, and
+//! multipolygon or `boundary` relation areas.
 //!
-//!   - **Pass 1** builds the `node_id → coord` store and collects qualifying area
-//!     relations. Relations sit last in a sorted PBF, so one whole-file read sees
-//!     them after the nodes — no extra pass. Tagged nodes are also matched
-//!     against the POI table here ([`crate::poi`]).
-//!   - **Pass 2** resolves ways into features + coastlines and captures the
-//!     geometry of any way that is a relation member. Closed ways matching the
-//!     POI table yield centroid POIs.
+//! Pass 1 builds the `node_id -> coord` store, matches tagged nodes against the POI table, and
+//! collects qualifying area relations — relations sit last in a sorted PBF, so one read sees them
+//! after the nodes. Pass 2 resolves ways into features and coastlines and captures the geometry of
+//! any way a relation needs; [`assemble_multipolygon`] then builds the relation areas. Assembly is
+//! additive: a tagged closed way that is also a relation member yields its own polygon and
+//! contributes to the relation. A closed `highway=residential` loop is a line only, never a blob.
 //!
-//! Each relation's member ways are then assembled into polygons-with-holes via
-//! [`assemble_multipolygon`]. Assembly is additive: a tagged closed way that is
-//! also a relation member yields its own polygon *and* contributes to the relation.
-//! A closed `highway=residential` loop is a line only, never a filled blob.
+//! Coordinates use `decimicro / 1e7`, never `* 1e-7`, so the f64 lon/lat match osmium's exactly.
 //!
-//! Coordinates use `decimicro / 1e7`, never `* 1e-7`, so the f64 lon/lat match
-//! osmium's exactly and everything downstream lines up.
+//! Given more than one source, every pass reads every source and the results are folded together.
+//! On a duplicate the first source on the command line wins, decided on the `(type, id)` alone, so
+//! the winner is a whole object and never a mix of two. The fold then restores ascending id order
+//! per type, which is what a merged sorted file would have handed to the same pass: feature order
+//! decides which quadtree chunk a feature lands in, and therefore the packed bytes. A single source
+//! is left strictly alone, untagged and unsorted. Sources are read in parallel ([`par_sources`])
+//! and the fold is sequential in command-line order, so the result never depends on which thread
+//! finished first.
 //!
-//! # Merging several sources ([`Keyed`], [`par_sources`])
-//!
-//! Given more than one `.pbf`, every pass reads **every** source and the results
-//! are folded together — there is no merged intermediate file, and nothing is
-//! buffered to be sorted afterwards. Two rules define the merge, and both are
-//! chosen rather than inherited:
-//!
-//! - **Duplicates: the first source on the command line wins, decided on the
-//!   `(type, id)` alone.** Adjacent Geofabrik extracts genuinely share their
-//!   border features, and the shared copies can differ — different tags, a
-//!   different version, even a moved node — if the two files were downloaded on
-//!   different days. Deciding on the id means a way whose *first* copy carries no
-//!   style still shadows a later, tagged copy: the winner is a whole object, never
-//!   a mix of two. `osmium merge` is explicitly **undefined** here (its own manual
-//!   says so, and it is observably inconsistent between object types), and worse,
-//!   it keeps *both* copies when their versions differ — which made the old path
-//!   emit the same road twice. So there is no behaviour to match, only one to pick.
-//! - **Order: ascending id, per type** — what a merged, sorted file would have
-//!   handed to the same pass. This is not cosmetic. Feature order decides which
-//!   quadtree chunk a feature lands in and therefore the packed bytes, so the
-//!   sources' outputs are tagged with the id that produced them ([`Keyed`]) and
-//!   put back in that order after the fold. A single source is already in file
-//!   order and is left strictly alone — untagged, unsorted, byte-for-byte as
-//!   before.
-//!
-//! Sources are read in parallel ([`par_sources`]); the fold that combines them is
-//! sequential and in command-line order, so the result never depends on which
-//! thread finished first.
-//!
-//! # Cropping to a `--bbox` ([`Bbox`], [`select_crop`])
-//!
-//! With a bbox the ingest gains a **pass 0** that reproduces `osmium extract
-//! --bbox` in-process, so a cropped build needs no second C++ tool on `PATH`.
-//! The selection is a renderer-aware variant of osmium's **`smart`** strategy,
-//! and the distinction from its default `complete_ways` matters:
-//!
-//! - **`simple`** (keep the nodes inside the box, keep the ways touching it, and
-//!   resolve nothing outside) is the naive filter, and it is actively wrong here.
-//!   A way crossing the boundary would be missing node locations, and
-//!   [`resolve_coords`] drops such a way *whole* — it does not trim it at the
-//!   border. Every road leaving the box would disappear back to its last node
-//!   inside, taking its nav-graph edges with it: the map would fray inwards and
-//!   the router would lose real exits, not just geometry.
-//! - **`complete_ways`** pulls in the nodes a kept way needs even when they lie
-//!   outside the box. Ways stay whole, so the nav graph keeps whole edges too —
-//!   an edge ends where the *way* ends, never at an arbitrary vertex on the box
-//!   edge, so no phantom junction or dead-end is invented at the boundary.
-//! - **`smart`** additionally completes a kept area relation's member ways (and
-//!   those ways' nodes). Without that closure a multipolygon is dropped whole as
-//!   soon as one ring segment lies outside the box. That made large residential,
-//!   forest, and farmland areas disappear *inside* small preview crops even
-//!   though the relation itself covered the view.
-//!
-//! Only area relations the active config can render are completed. Route and
-//! administrative-boundary relations stay out of the crop, so this fixes filled
-//! geometry without turning a small map into a continent-sized relation pull.
-//!
-//! The cost is one extra id-only whole-file read plus a way-section rescan for
-//! newly reached relation members. What it buys is the property that makes
-//! osmium's extract multi-pass in the first place: both the id sets and the
-//! pass-1 coordinate store are bounded by the selected area, not by the source
-//! file, so cropping a country-sized `.pbf` stays affordable.
+//! A `--bbox` adds a pass 0 ([`select_crop`]) that reproduces `osmium extract --bbox` in-process,
+//! as a renderer-aware variant of osmium's `smart` strategy. A way touching the box is kept whole,
+//! with the outside nodes it needs, because [`resolve_coords`] drops a way with a missing node
+//! rather than trimming it at the border, and because a nav edge must end where the way ends. The
+//! member ways of a kept area relation are completed too, or a multipolygon would be dropped whole
+//! as soon as one ring segment lay outside the box. Only area relations the active config can
+//! render are completed, so a small crop never pulls in a continent-sized route relation.
 
 use std::collections::{HashMap, HashSet};
 
@@ -100,10 +45,7 @@ pub struct IngestFeature {
     pub geom: Geom,
 }
 
-/// Coastlines are captured separately (always) — they feed the bbox and land/sea.
-/// POIs are the classified + deduped point-of-interest set ([`crate::poi`]),
-/// serialized into the OBCM POI section (§7). `nav_graph` is the in-memory
-/// routable graph ([`crate::nav`]), serialized into the v8 nav-graph section (§8).
+/// Coastlines are captured separately and always: they feed the bbox and the land/sea split.
 pub struct Ingested {
     pub features: Vec<IngestFeature>,
     pub coastlines: Vec<Vec<(f64, f64)>>,
@@ -116,13 +58,12 @@ pub struct Ingested {
 struct PendingRelation {
     style_id: u8,
     min_lod: usize,
-    /// Member **way** ids in member order. Roles are dropped — `build_area`
-    /// classifies outer/inner by geometry.
+    /// Member way ids in member order. Roles are dropped — `build_area` classifies outer and inner
+    /// by geometry.
     member_ways: Vec<i64>,
 }
 
-/// The tags whose presence (with `area != no`) classifies a *closed* way as a
-/// polygon.
+/// The tags whose presence (with `area != no`) classifies a closed way as a polygon.
 const AREA_TAGS: [&str; 6] = ["building", "landuse", "amenity", "leisure", "natural", "waterway"];
 
 /// `decimicro / 1e7`, never `* 1e-7`, so coords match osmium exactly.
@@ -131,11 +72,9 @@ fn to_deg(decimicro: i32) -> f64 {
     decimicro as f64 / 1e7
 }
 
-/// A `--bbox` crop region, held in the PBF's own **decimicro-degree** (`1e-7`)
-/// integer grid — the same fixed point `osmium::Location` stores. Keeping the
-/// edges on that grid makes [`Bbox::contains`] an integer comparison, so the
-/// in-process crop cannot disagree with `osmium extract` over a node sitting a
-/// float ULP from the boundary.
+/// A `--bbox` crop region, held in the PBF's own decimicro-degree integer grid — the fixed point
+/// `osmium::Location` stores. [`Bbox::contains`] is then an integer comparison, so the in-process
+/// crop cannot disagree with `osmium extract` about a node sitting a float ULP from the boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bbox {
     min_lon: i32,
@@ -152,15 +91,11 @@ fn to_fix(deg: f64) -> i32 {
 }
 
 impl Bbox {
-    /// Parse a `W,S,E,N` degrees spec, as strictly as `osmium extract` parses its
-    /// own `--bbox`: four finite in-range numbers, west **strictly** west of east
-    /// and south strictly south of north.
+    /// Parse a `W,S,E,N` degrees spec, as strictly as `osmium extract` parses its own `--bbox`:
+    /// four finite in-range numbers, west strictly west of east and south strictly south of north.
     ///
-    /// A box wrapping the antimeridian is rejected rather than quietly packed
-    /// inside-out. Every stage downstream — the header bbox, the quadtree's
-    /// root box, the land clip — assumes `min < max` in plain degrees, so
-    /// accepting a wrapping box would be a contract we cannot honor; osmium
-    /// refuses it too. Riders who want both sides of 180° pass two boxes.
+    /// A box wrapping the antimeridian is rejected. Every stage downstream — the header bbox, the
+    /// quadtree root box, the land clip — assumes `min < max` in plain degrees.
     pub fn parse(spec: &str) -> Result<Self, String> {
         let parts: Vec<&str> = spec.split(',').map(str::trim).collect();
         if parts.len() != 4 {
@@ -192,9 +127,8 @@ impl Bbox {
         Ok(Bbox { min_lon: to_fix(w), min_lat: to_fix(s), max_lon: to_fix(e), max_lat: to_fix(n) })
     }
 
-    /// The box back in degrees, snapped to the decimicro grid it was parsed onto.
-    /// Handed to `osmium extract` on the multi-input merge path so both croppers
-    /// see the identical box.
+    /// The box back in degrees, snapped to the decimicro grid it was parsed onto. Handed to
+    /// `osmium extract` on the multi-input merge path, so both croppers see the identical box.
     pub fn to_degrees(self) -> (f64, f64, f64, f64) {
         (to_deg(self.min_lon), to_deg(self.min_lat), to_deg(self.max_lon), to_deg(self.max_lat))
     }
@@ -216,11 +150,8 @@ impl Bbox {
     }
 }
 
-/// The area of a `W,S,E,N` degree box on the sphere, in km².
-///
-/// This is how big a region is, and the pack time follows it far more closely
-/// than the source file does: the Grimsel box out of the 512 MB Switzerland
-/// extract packs in seconds, because the box decides how much survives ingest.
+/// The area of a `W,S,E,N` degree box on the sphere, in km². Pack time follows the region size far
+/// more closely than the source file size does: the box decides how much survives ingest.
 pub fn box_area_km2((w, s, e, n): (f64, f64, f64, f64)) -> f64 {
     const EARTH_RADIUS_KM: f64 = 6371.0088;
     let lon_span = (e - w).to_radians();
@@ -228,11 +159,8 @@ pub fn box_area_km2((w, s, e, n): (f64, f64, f64, f64)) -> f64 {
     EARTH_RADIUS_KM * EARTH_RADIUS_KM * lon_span * lat_band
 }
 
-/// The `W,S,E,N` box a source declares in its PBF header, if it declares one.
-///
-/// Every extract tool writes it, and it is the first blob of the file, so the
-/// answer costs one read. A source without it is not an error; the caller then
-/// knows nothing about the region and says so.
+/// The `W,S,E,N` box a source declares in its PBF header, if it declares one. It is the first blob
+/// of the file, so the answer costs one read. A source without it is not an error.
 pub fn declared_bbox(path: &str) -> Result<Option<(f64, f64, f64, f64)>, String> {
     let mut reader = BlobReader::from_path(path).map_err(|e| format!("open {path}: {e}"))?;
     let Some(blob) = reader.next() else { return Ok(None) };
@@ -247,49 +175,25 @@ pub fn declared_bbox(path: &str) -> Result<Option<(f64, f64, f64, f64)>, String>
 
 /// What a blob scan should do after the element it was just handed.
 enum Scan {
-    /// Keep going.
     Continue,
-    /// Stop here. [`scan_blobs`] returns the offset of the blob this element came
-    /// from, so a later pass can resume at exactly this point.
+    /// Stop here. [`scan_blobs`] returns the offset of the blob this element came from, so a later
+    /// pass can resume at exactly this point.
     StopAtThisBlob,
 }
 
-/// Stream a `.pbf`'s data blobs — from `start`, or from the beginning — handing
-/// every element to `f`, and return the offset of the blob the scan stopped in
-/// (`None` if it ran to the end of the file).
+/// Stream a `.pbf`'s data blobs — from `start`, or from the beginning — handing every element to
+/// `f`, and return the offset of the blob the scan stopped in (`None` if it ran to the end).
 ///
-/// This is `ElementReader::for_each` plus the two things the passes want from the
-/// file's *structure* rather than its contents: the ability to stop, and the
-/// ability to resume. A sorted PBF stores nodes, then ways, then relations, and
-/// the node section is ~85 % of the bytes — so a pass that only wants ways skips
-/// straight to them instead of inflating and discarding every node blob. Blob
-/// offsets come from the seekable reader; `start` is always an offset this
-/// function returned earlier for the same file.
+/// This is `ElementReader::for_each` plus the ability to stop and to resume. A sorted PBF stores
+/// nodes, then ways, then relations, and the node section is about 85 % of the bytes, so a pass that
+/// only wants ways skips straight to them. The blob boundary is also the ingest's cancellation
+/// checkpoint, and every reading pass goes through here.
 ///
-/// The blob boundary is also the ingest's cancellation checkpoint: it is the
-/// coarsest unit that is still small (a few thousand elements, low single-digit
-/// milliseconds), and every reading pass goes through here, so one check covers
-/// passes 0, 1 and 2 on every source at once.
-///
-/// # Parallel decode, sequential fold
-///
-/// Decompressing and protobuf-parsing a blob is the expensive, embarrassingly
-/// parallel part of a scan — each blob is self-contained — while `f` is a
-/// stateful fold that must see elements in exactly file order (feature order
-/// decides the packed bytes; see the module docs on merging). So the scan runs
-/// as a chunked pipeline: read up to [`chunk_len`] raw (still-compressed) blobs
-/// off the file, decode them on the rayon pool, then hand the decoded blocks to
-/// `f` one after another in file order, and only then read the next chunk. `f`
-/// therefore observes the identical element sequence the old one-blob-at-a-time
-/// loop produced — parallelism never reorders, drops, or duplicates anything it
-/// sees — and memory stays bounded by the chunk, not the file.
-///
-/// A chunk can overshoot a [`Scan::StopAtThisBlob`]: blobs past the stop may
-/// already be read and decoded. That work is discarded unhandled — the returned
-/// resume offset is still the offset of the blob the stopping element came
-/// from, and decode/read *errors* in the overshoot are discarded with it (the
-/// sequential loop would never have read those blobs), so a stopping scan
-/// succeeds or fails exactly as it did before.
+/// Blobs are decoded on the rayon pool a chunk at a time, but `f` is a stateful fold that must see
+/// elements in file order, so the decoded blocks reach it one after another in that order and
+/// memory stays bounded by the chunk. A chunk can overshoot a [`Scan::StopAtThisBlob`]: that work
+/// is discarded unhandled, together with any read or decode error inside it, so a stopping scan
+/// succeeds or fails exactly as a sequential one would.
 fn scan_blobs<F>(
     path: &str,
     start: Option<ByteOffset>,
@@ -306,10 +210,8 @@ where
     let chunk = chunk_len();
     let mut raw: Vec<Blob> = Vec::with_capacity(chunk);
     loop {
-        // --- Read the next chunk of raw blobs (no decoding yet). A read error
-        // ends the chunk but is only reported after the blobs before it are
-        // handled — and not at all if the scan stops first, matching the lazy
-        // sequential reader. ---
+        // A read error ends the chunk but is only reported after the blobs before it are handled,
+        // and not at all if the scan stops first — matching the lazy sequential reader.
         raw.clear();
         let mut read_err: Option<String> = None;
         while raw.len() < chunk {
@@ -325,12 +227,10 @@ where
             }
         }
 
-        // --- Decode the chunk in parallel. Errors are captured per blob and
-        // surfaced below, only if the scan actually reaches the failing blob. ---
+        // Decode in parallel; an error surfaces below, only if the scan reaches the failing blob.
         progress.check()?;
         let blocks: Vec<_> = raw.par_iter().map(|b| (b.offset(), b.to_primitiveblock())).collect();
 
-        // --- The fold: strictly sequential, strictly in file order. ---
         for (offset, block) in blocks {
             progress.check()?;
             let block = block.map_err(|e| format!("decode {path}: {e}"))?;
@@ -344,28 +244,19 @@ where
             return Err(e);
         }
         if raw.len() < chunk {
-            // The reader is exhausted; the scan ran to the end of the file.
             return Ok(None);
         }
     }
 }
 
-/// How many raw blobs one [`scan_blobs`] chunk holds: enough to keep every
-/// rayon worker busy through a decode round (2× so the pool never idles on the
-/// tail of a chunk), small enough that the in-flight raw + decoded blobs stay
-/// tens of megabytes, not the file.
+/// How many raw blobs one [`scan_blobs`] chunk holds: enough to keep every rayon worker busy
+/// through a decode round, small enough that the in-flight blobs stay tens of megabytes.
 fn chunk_len() -> usize {
     2 * rayon::current_num_threads().max(1)
 }
 
-/// Run `f` over every source in parallel, collecting the results **in source
-/// order**.
-///
-/// The sources are the natural unit of parallelism here: each pass reads each
-/// file independently, and only the fold that combines them has to be ordered.
-/// It is also where the wall clock the old `osmium merge` path got from
-/// multi-core blob decoding comes back — one thread per input rather than one
-/// thread per blob.
+/// Run `f` over every source in parallel, collecting the results in source order. Each pass reads
+/// each file independently, and only the fold that combines them has to be ordered.
 fn par_sources<T, F>(paths: &[String], f: F) -> Result<Vec<T>, String>
 where
     T: Send,
@@ -376,12 +267,10 @@ where
 
 /// Per-element output tagged with the id of the OSM object that produced it.
 ///
-/// The tag is what lets several `.pbf`s be read independently and still come out
-/// exactly as one merged file would have produced them: later copies of an
-/// already-seen object dropped ([`Keyed::retain_keys`]), everything back in id
-/// order ([`Keyed::sort`]). With a single source there is nothing to merge, so
-/// nothing is tagged and this is a plain `Vec<T>` — an uncropped country pack
-/// must not start paying 8 bytes per feature for a merge it isn't doing.
+/// The tag is what lets several `.pbf`s be read independently and still come out as one merged file
+/// would have produced them: later copies of an already-seen object dropped
+/// ([`Keyed::retain_keys`]), everything back in id order ([`Keyed::sort`]). With a single source
+/// nothing is tagged and this is a plain `Vec<T>`, so an uncropped country pack pays nothing.
 struct Keyed<T> {
     tagged: bool,
     keys: Vec<i64>,
@@ -407,8 +296,8 @@ impl<T> Keyed<T> {
         self.items.append(&mut other.items);
     }
 
-    /// Drop every item whose key `keep` rejects, preserving order. Tagged only —
-    /// it is a merge operation and never runs on a single-source ingest.
+    /// Drop every item whose key `keep` rejects, preserving order. Tagged only: it is a merge
+    /// operation and never runs on a single-source ingest.
     fn retain_keys(&mut self, mut keep: impl FnMut(i64) -> bool) {
         debug_assert!(self.tagged && self.keys.len() == self.items.len());
         let mut w = 0;
@@ -425,18 +314,12 @@ impl<T> Keyed<T> {
         self.items.truncate(w);
     }
 
-    /// Put the items back in ascending-id order — the order a merged, sorted
-    /// `.pbf` would have handed them to the same pass.
+    /// Put the items back in ascending-id order — the order a merged, sorted `.pbf` would have
+    /// handed them to the same pass.
     ///
-    /// The sort is **stable**, so a file that repeats an id inside itself (a
-    /// history file, which the fold's cross-source dedup never sees) keeps its own
-    /// order instead of picking one arbitrarily. Determinism is the whole point of
-    /// this function; it must not have a case where it flips a coin.
-    ///
-    /// The already-sorted check is not just an optimization: sources are normally
-    /// sorted and mostly disjoint, so the common case is a couple of runs that are
-    /// already in order, and skipping keeps the transient pair vector — the only
-    /// copy of the payload this whole merge makes — out of the picture entirely.
+    /// The sort is stable, so a file that repeats an id inside itself keeps its own order instead
+    /// of picking one arbitrarily. The already-sorted check keeps the transient pair vector — the
+    /// only copy of the payload this merge makes — out of the common case.
     fn sort(&mut self) {
         debug_assert!(self.tagged && self.keys.len() == self.items.len());
         if self.keys.is_sorted() {
@@ -454,13 +337,10 @@ impl<T> Keyed<T> {
     }
 }
 
-/// A grow-then-freeze set of OSM ids, backed by a sorted `Vec`.
-///
-/// The crop's id sets are the memory floor of a `--bbox` run over a large
-/// source, so this trades a `HashSet`'s per-entry overhead for 8 flat bytes and a
-/// binary search. It works because each set is filled in one pass and only read
-/// in a later one; [`IdSet::freeze`] runs at that seam. `contains` on an unfrozen
-/// set would silently lie, so freezing is the type's one rule.
+/// A grow-then-freeze set of OSM ids, backed by a sorted `Vec`: 8 flat bytes and a binary search
+/// instead of a `HashSet`'s per-entry overhead, because these sets are the memory floor of a
+/// `--bbox` run over a large source. Each set is filled in one pass and read in a later one, and
+/// `contains` on an unfrozen set would silently lie, so freezing is the type's one rule.
 #[derive(Default)]
 struct IdSet(Vec<i64>);
 
@@ -469,8 +349,7 @@ impl IdSet {
         self.0.push(id);
     }
 
-    /// Take another source's ids wholesale. Moves the first batch instead of
-    /// copying it, so the single-source case allocates once.
+    /// Take another source's ids wholesale, moving the first batch instead of copying it.
     fn absorb(&mut self, mut ids: Vec<i64>) {
         if self.0.is_empty() {
             self.0 = ids;
@@ -479,9 +358,8 @@ impl IdSet {
         }
     }
 
-    /// End the fill phase. Idempotent, so pass 0 can freeze the node set early
-    /// (the first way needs it) and freeze the rest at the end without tracking
-    /// which already happened.
+    /// End the fill phase. Idempotent, so pass 0 can freeze the node set early (the first way
+    /// needs it) and freeze the rest at the end.
     fn freeze(&mut self) {
         self.0.sort_unstable();
         self.0.dedup();
@@ -498,16 +376,15 @@ impl IdSet {
     }
 }
 
-/// The id sets that define a `--bbox` crop — a renderer-aware `smart` selection
-/// for area relations, computed in-process (see the module docs).
+/// The id sets that define a `--bbox` crop.
 pub struct Crop {
     /// Nodes whose location falls inside the box.
     inside: IdSet,
-    /// Nodes *outside* the box that a kept way still references — the halo that
-    /// keeps boundary-crossing ways whole.
+    /// Nodes outside the box that a kept way still references — the halo that keeps
+    /// boundary-crossing ways whole.
     halo: IdSet,
-    /// Ways with at least one node inside the box, plus every member way of a
-    /// renderable area relation touched by one of those ways.
+    /// Ways with at least one node inside the box, plus every member way of a renderable area
+    /// relation touched by one of those ways.
     ways: IdSet,
     /// Renderable area relations reached from a way touching the box.
     relations: IdSet,
@@ -530,34 +407,25 @@ impl Crop {
         self.relations.contains(id)
     }
 
-    /// Nothing at all inside the box *and* no way reaching into it — the caller
-    /// should fail loudly rather than pack an empty map.
+    /// Nothing inside the box and no way reaching into it — the caller should fail loudly rather
+    /// than pack an empty map.
     fn is_empty(&self) -> bool {
         self.inside.len() == 0 && self.ways.len() == 0
     }
 }
 
-/// **Pass 0** — select the crop across every source: nodes inside `bbox`, ways
-/// touching one of them, complete members of renderable area relations reached
-/// by those ways, and the outside nodes all selected ways still need. Also
-/// returns, per source, the offset of the first blob that holds a way — pass 2
-/// resumes there instead of decoding the node section a third time.
+/// Pass 0 — select the crop across every source: nodes inside `bbox`, ways touching one of them,
+/// complete members of renderable area relations reached by those ways, and the outside nodes all
+/// selected ways still need. Also returns, per source, the offset of the first blob that holds a
+/// way, so pass 2 resumes there instead of decoding the node section again.
 ///
-/// The first two phases rather than one sweep are a merge requirement rather than
-/// a refactor: a way in one file can have its only in-box node in *another* file
-/// (adjacent extracts share their border, and one side may hold the node while
-/// the other holds the way), so the node phase has to finish across **all**
-/// sources before any file's ways can be judged. The split costs nothing,
-/// because it falls where the file is already split: phase A walks the node
-/// section and stops at the first way-bearing blob, phase B resumes exactly
-/// there. A final way-section scan collects nodes for relation members discovered
-/// in phase C; it never decodes the source's much larger node section.
+/// The node phase has to finish across all sources before any file's ways can be judged: a way in
+/// one file can have its only in-box node in another. The split costs nothing, because it falls
+/// where the file is already split — phase A walks the node section and stops at the first
+/// way-bearing blob, phase B resumes exactly there, phase C completes the area relations.
 ///
-/// Passes 1 and 2 don't care about element order (they are separate reads, and
-/// relations only carry ids), so this is the one place that does: phase A stops
-/// at the first way, so a node *after* a way would be silently skipped. Phase B
-/// sees the whole tail and turns that into an error rather than a quietly wrong
-/// crop.
+/// This is the one pass that needs the source type-sorted, because phase A stops at the first way.
+/// An element out of that order is reported as an error rather than silently skipped.
 fn select_crop(
     paths: &[String],
     bbox: Bbox,
@@ -565,7 +433,7 @@ fn select_crop(
     progress: &Progress,
 ) -> Result<(Crop, Vec<Option<ByteOffset>>), String> {
     progress.stage(Phase::Ingest, "Pass 0: selecting bbox...");
-    // --- Phase A: the in-box node ids, from every source. ---
+    // Phase A: the in-box node ids, from every source.
     let scans = par_sources(paths, |_, path| {
         let mut ids: Vec<i64> = Vec::new();
         let mut saw_relation = false;
@@ -584,8 +452,8 @@ fn select_crop(
                 in_box(n.decimicro_lon(), n.decimicro_lat(), n.id());
                 Scan::Continue
             }
-            // The first way: the node section is behind us and phase B takes over
-            // from this blob. (A file with no ways at all just runs to the end.)
+            // The first way: the node section is behind us and phase B takes over from this blob.
+            // A file with no ways at all just runs to the end.
             Element::Way(_) => {
                 out_of_order |= saw_relation;
                 Scan::StopAtThisBlob
@@ -611,9 +479,8 @@ fn select_crop(
     }
     inside.freeze();
 
-    // --- Phase B: ways touching the box and their halo. Stop at the first
-    // relation-bearing blob; phase C resumes there after the global way set is
-    // known, so relation member lists never accumulate for the whole source. ---
+    // Phase B: ways touching the box and their halo. Stop at the first relation-bearing blob, so
+    // relation member lists never accumulate for the whole source.
     let scans = par_sources(paths, |i, path| {
         let (mut ways, mut halo) = (Vec::new(), Vec::new());
         let (mut saw_way, mut out_of_order) = (false, false);
@@ -623,9 +490,9 @@ fn select_crop(
                     saw_way = true;
                     if w.refs().any(|r| inside.contains(r)) {
                         ways.push(w.id());
-                        // The halo: every other node this way needs. Ids already
-                        // `inside` are skipped — `keeps_node` checks both sets, and a
-                        // dense urban box would otherwise store most of its nodes twice.
+                        // The halo: every other node this way needs. Ids already `inside` are
+                        // skipped — `keeps_node` checks both sets, and a dense urban box would
+                        // otherwise store most of its nodes twice.
                         for r in w.refs() {
                             if !inside.contains(r) {
                                 halo.push(r);
@@ -633,8 +500,8 @@ fn select_crop(
                         }
                     }
                 }
-                // Nodes before the first way of the resume blob are ones phase A
-                // already saw; anything after a way means the file isn't sorted.
+                // Nodes before the first way of the resume blob are ones phase A already saw;
+                // anything after a way means the file is not sorted.
                 Element::Node(_) | Element::DenseNode(_) => out_of_order |= saw_way,
                 Element::Relation(_) => return Scan::StopAtThisBlob,
             }
@@ -657,9 +524,9 @@ fn select_crop(
     }
     ways.freeze();
 
-    // --- Phase C: complete every renderable area relation reached by a touching
-    // way. Relations are streamed in source order to match the ingest merge
-    // rule: on duplicate relation ids the first renderable copy wins. ---
+    // Phase C: complete every renderable area relation reached by a touching way. Relations are
+    // streamed in source order to match the ingest merge rule: on a duplicate relation id the first
+    // renderable copy wins.
     let touching_ways = ways.len();
     let mut seen_relations = HashSet::new();
     let mut relation_ways = IdSet::default();
@@ -681,9 +548,8 @@ fn select_crop(
                         }
                     }
                 }
-                // The resume blob can contain its final ways before its first
-                // relation. Any object of an earlier type after that relation is
-                // genuinely out of order and would make the crop ambiguous.
+                // The resume blob can hold its final ways before its first relation. An object of
+                // an earlier type after that relation is genuinely out of order.
                 Element::Node(_) | Element::DenseNode(_) | Element::Way(_) => out_of_order |= saw_relation,
             }
             Scan::Continue
@@ -698,8 +564,8 @@ fn select_crop(
     relation_ids.freeze();
     relation_ways.freeze();
 
-    // Relation completion can introduce ways that never touch an in-box node.
-    // Read only the way section again to collect every node those ways require.
+    // Relation completion can introduce ways that never touch an in-box node. Read only the way
+    // section again to collect every node those ways require.
     if relation_ways.len() != 0 {
         let scans = par_sources(paths, |i, path| {
             let mut relation_halo = Vec::new();
@@ -751,27 +617,23 @@ struct WayScan {
     pois: Keyed<Poi>,
     routable: Keyed<RoutableWay>,
     member_geom: HashMap<i64, Vec<(f64, f64)>>,
-    /// Every way id this source processed — **including** the ones that produced
-    /// nothing at all. Ownership is decided on the id alone, so an untagged or
-    /// unresolvable copy here still has to shadow a later source's copy; a list
-    /// of what actually came *out* could not say that. Left empty for a single
-    /// source, which claims everything by definition.
+    /// Every way id this source processed, including the ones that produced nothing at all.
+    /// Ownership is decided on the id alone, so an untagged or unresolvable copy here still has to
+    /// shadow a later source's copy. Left empty for a single source, which claims everything.
     claimed: Vec<i64>,
 }
 
 /// What an ingest does with the routable ways it collected.
 enum NavMode {
-    /// Build the whole-extract nav graph and drop the ways — the ordinary pack.
+    /// Build the whole-extract nav graph and drop the ways: the ordinary pack.
     Graph,
-    /// Keep the ways and build no graph: the cell cutter builds **one graph per cell** from them
-    /// (OBCA §3.4), so a whole-extract graph would be wasted work whose island pruning is also the
-    /// wrong shape for a cell.
+    /// Keep the ways and build no graph: the cell cutter builds one graph per cell from them, so a
+    /// whole-extract graph would be wasted work whose island pruning is the wrong shape for a cell.
     KeepWays,
 }
 
-/// Two-pass ingest of one or more `.osm.pbf`s (lines + closed-way polygons +
-/// relation-assembled area polygons), merged as described in the module docs.
-/// `bbox` crops the inputs to a box first (a third, id-only pass).
+/// Two-pass ingest of one or more `.osm.pbf`s, merged as described in the module docs. `bbox` crops
+/// the inputs to a box first, in a third, id-only pass.
 pub fn ingest_osm(
     paths: &[String],
     config: &Config,
@@ -781,10 +643,9 @@ pub fn ingest_osm(
     ingest_inner(paths, config, bbox, progress, NavMode::Graph).map(|(ing, _)| ing)
 }
 
-/// [`ingest_osm`], but returning the **routable ways** instead of a built nav graph — what
-/// [`crate::cut`] needs, because a cell classifies junctions from the source snapshot's whole way set
-/// and cuts the ways itself at the cell edges. The returned [`Ingested`] carries an empty
-/// `nav_graph`.
+/// [`ingest_osm`], but returning the routable ways instead of a built nav graph — what
+/// [`crate::cut`] needs, because a cell classifies junctions from the whole way set and cuts the
+/// ways itself at the cell edges. The returned [`Ingested`] carries an empty `nav_graph`.
 pub fn ingest_osm_ways(
     paths: &[String],
     config: &Config,
@@ -804,9 +665,8 @@ fn ingest_inner(
     if paths.is_empty() {
         return Err("no .osm.pbf input given".into());
     }
-    // More than one source ⇒ every output gets tagged with the id that produced
-    // it, which is what the fold needs to drop duplicates and restore the order a
-    // single merged file would have had.
+    // More than one source means every output is tagged with the id that produced it, which is
+    // what the fold needs to drop duplicates and restore a single merged file's order.
     let merging = paths.len() > 1;
     if merging {
         progress.stage(
@@ -815,8 +675,7 @@ fn ingest_inner(
         );
     }
 
-    // --- Pass 0 (only with --bbox): the relation-complete id selection, plus the
-    // per-source offset where the ways begin (pass 2 resumes there). ---
+    // Pass 0 (only with --bbox): the id selection, plus the per-source offset where the ways begin.
     let (crop, ways_at) = match bbox {
         Some(bb) => {
             let (crop, ways_at) = select_crop(paths, bb, config, progress)?;
@@ -829,17 +688,15 @@ fn ingest_inner(
         None => (None, vec![None; paths.len()]),
     };
 
-    // --- Pass 1: node-location store + relation collection, per source. ---
-    // The stage strings reach the build UI (scraped from stdout by the dev server,
-    // delivered as events by the desktop app) — report each when its pass actually
-    // starts, not both up front.
+    // Pass 1: node-location store and relation collection, per source. The stage strings reach the
+    // build UI, so each is reported when its pass actually starts, not both up front.
     progress.stage(Phase::Ingest, "Pass 1: reading nodes...");
     let scans = par_sources(paths, |_, path| read_nodes(path, config, crop.as_ref(), merging, progress))?;
     let NodeScan { nodes, pois: node_pois, rels, links } = fold_node_scans(scans, merging);
     let pending = rels.into_items();
     let needed_ways: HashSet<i64> = pending.iter().flat_map(|r| r.member_ways.iter().copied()).collect();
 
-    // --- Pass 2: ways → features + coastlines, plus member-way geometry capture. ---
+    // Pass 2: ways into features and coastlines, plus member-way geometry capture.
     progress.stage(Phase::Ingest, "Pass 2: processing ways...");
     let scans = par_sources(paths, |i, path| {
         read_ways(path, ways_at[i], config, crop.as_ref(), &nodes, &needed_ways, merging, progress)
@@ -848,17 +705,15 @@ fn ingest_inner(
     let mut features = features.into_items();
     let coastlines = coastlines.into_items();
     let routable_ways = routable.into_items();
-    // POI candidates from both passes, deduped after assembly — node candidates
-    // first, then way centroids, the order a single sorted file produces them in.
-    // Classification is config-free (hardcoded table — locked decision on #115).
+    // POI candidates from both passes, deduped after assembly — node candidates first, then way
+    // centroids, the order a single sorted file produces them in.
     let mut poi_cands = node_pois.into_items();
     poi_cands.extend(way_pois.into_items());
 
-    // --- Assemble relation areas from captured member geometry. ---
-    // Each outer ring (+ nested holes) becomes one polygon, styled by the relation.
-    // **Completeness:** like osmium, only assemble when ALL member ways are present;
-    // an incomplete relation (a member clipped out of the extract) is dropped, not
-    // assembled from survivors — that would emit a phantom boundary-crossing polygon.
+    // Assemble relation areas from the captured member geometry: each outer ring plus its nested
+    // holes becomes one polygon, styled by the relation. Like osmium, assemble only when ALL member
+    // ways are present; an incomplete relation is dropped rather than assembled from survivors,
+    // which would emit a phantom boundary-crossing polygon.
     for pr in &pending {
         let mut members = Vec::with_capacity(pr.member_ways.len());
         let mut complete = true;
@@ -879,7 +734,7 @@ fn ingest_inner(
         }
     }
 
-    // --- POIs: collapse OSM double-mapping, then log per-category counts. ---
+    // POIs: collapse OSM double-mapping, then log per-category counts.
     let (mut pois, poi_dropped) = poi::dedupe(poi_cands);
     poi::resolve_approaches(&mut pois, &routable_ways, &config.routing.profiles);
     let mut landmark_links: Vec<_> =
@@ -888,10 +743,8 @@ fn ingest_inner(
     pois.retain(|p| p.subtype != 0);
     progress.log(poi::format_counts(&pois, poi_dropped));
 
-    // --- Nav graph: junctions + deduped edges from the routable ways, then
-    // island pruning (`routing.min_component_edges`) + v9-guarantee edge splits
-    // ([`nav::build_graph_with`]). Serialized into the §8 nav section. Logged (with
-    // component + kinds stats) alongside POIs.
+    // Nav graph: junctions and deduped edges from the routable ways, then island pruning and the
+    // edge splits the format guarantees.
     let (nav_graph, kept_ways) = match nav_mode {
         NavMode::Graph => {
             let (graph, stats) = nav::build_graph_with(&routable_ways, config.routing.min_component_edges);
@@ -907,17 +760,13 @@ fn ingest_inner(
     Ok((Ingested { features, coastlines, pois, landmark_links, nav_graph }, kept_ways))
 }
 
-/// **Pass 1**, one source: node-location store + node POIs + area relations.
+/// Pass 1, one source: node-location store, node POIs and area relations.
 ///
-/// Cropped, this keeps only the nodes the extract would contain — which includes
-/// the halo, so a tagged node just outside the box that a kept way needs becomes
-/// a POI here exactly as it would in an `osmium extract` output (osmium writes
-/// those nodes whole, tags and all). Matching that is the point.
-///
-/// Cropped runs collect only the renderable relations selected in pass 0, which
-/// completed every member way for areas touched by the box. The normal
-/// all-members-present rule below still rejects relations already incomplete at
-/// the source extract's own edge.
+/// Cropped, this keeps only the nodes the extract would contain, halo included, so a tagged node
+/// just outside the box that a kept way needs becomes a POI here exactly as it would in an `osmium
+/// extract` output. Cropped runs collect only the relations pass 0 selected; the
+/// all-members-present rule below still rejects relations already incomplete at the source
+/// extract's own edge.
 fn read_nodes(
     path: &str,
     config: &Config,
@@ -977,9 +826,8 @@ fn fold_node_scans(scans: Vec<NodeScan>, merging: bool) -> NodeScan {
     let mut seen_rels: HashSet<i64> = acc.rels.keys.iter().copied().collect();
     let mut seen_links: HashSet<i64> = acc.links.keys.iter().copied().collect();
     for mut next in it {
-        // Ownership is tested BEFORE this source's nodes land in `acc`, so the
-        // question is "did an earlier source already have this node?" — and the
-        // whole object loses, tags and all, not just its coordinate.
+        // Ownership is tested BEFORE this source's nodes land in `acc`, so the question is whether
+        // an earlier source already had this node — and the whole object loses, tags and all.
         next.pois.retain_keys(|id| !acc.nodes.contains_key(&id));
         next.rels.retain_keys(|id| seen_rels.insert(id));
         next.links.retain_keys(|id| seen_links.insert(id));
@@ -998,13 +846,12 @@ fn fold_node_scans(scans: Vec<NodeScan>, merging: bool) -> NodeScan {
     acc
 }
 
-/// **Pass 2**, one source: ways → features + coastlines + POIs + routable
-/// topology, and the geometry of any way a relation needs.
+/// Pass 2, one source: ways into features, coastlines, POIs and routable topology, plus the geometry
+/// of any way a relation needs.
 ///
-/// `ways_at` is where pass 0 found this file's first way; starting there skips
-/// re-decoding the node section, which is the bulk of a `.pbf`'s bytes. Without a
-/// `--bbox` there is no pass 0 and hence no offset, and the scan starts at the
-/// beginning — which is also what keeps an uncropped ingest order-agnostic.
+/// `ways_at` is where pass 0 found this file's first way; starting there skips re-decoding the node
+/// section. Without a `--bbox` there is no offset and the scan starts at the beginning, which is
+/// also what keeps an uncropped ingest order-agnostic.
 #[allow(clippy::too_many_arguments)]
 fn read_ways(
     path: &str,
@@ -1019,9 +866,8 @@ fn read_ways(
     let mut features = Keyed::new(tagged);
     let mut coastlines = Keyed::new(tagged);
     let mut pois = Keyed::new(tagged);
-    // Routable-way topology for the nav graph ([`crate::nav`]). We keep the OSM node
-    // ids here (which the render path drops) so shared nodes can be recovered as
-    // junctions after the pass; the graph is built from these once all ways are seen.
+    // Routable-way topology for the nav graph. The OSM node ids are kept here (the render path
+    // drops them) so shared nodes can be recovered as junctions after the pass.
     let mut routable = Keyed::new(tagged);
     let mut member_geom: HashMap<i64, Vec<(f64, f64)>> = HashMap::new();
     let mut claimed: Vec<i64> = Vec::new();
@@ -1029,14 +875,13 @@ fn read_ways(
     scan_blobs(path, ways_at, progress, |el| {
         if let Element::Way(w) = el {
             if keeps_way(w.id()) {
-                // Claimed on sight, before anything can go wrong with it: a way
-                // this source could not resolve still shadows a later copy.
+                // Claimed on sight, before anything can go wrong with it: a way this source could
+                // not resolve still shadows a later copy.
                 if tagged {
                     claimed.push(w.id());
                 }
                 let refs: Vec<i64> = w.refs().collect();
-                // A missing node aborts the whole way — osmium would raise
-                // `InvalidLocationError` here, and the way is dropped.
+                // A missing node aborts the whole way, as osmium's `InvalidLocationError` would.
                 if let Some(coords) = resolve_coords(&refs, nodes) {
                     push_routable_way(w.id(), &w, &refs, &coords, &mut routable);
                     process_way(&w, &refs, &coords, config, &mut features, &mut coastlines, &mut pois);
@@ -1052,9 +897,8 @@ fn read_ways(
     Ok(WayScan { features, coastlines, pois, routable, member_geom, claimed })
 }
 
-/// Combine the sources' pass-2 harvests, in command-line order: a later source
-/// contributes only the ways no earlier source claimed, and the survivors are put
-/// back in way-id order.
+/// Combine the sources' pass-2 harvests, in command-line order: a later source contributes only the
+/// ways no earlier source claimed, and the survivors go back in way-id order.
 fn fold_way_scans(scans: Vec<WayScan>, merging: bool) -> WayScan {
     let mut it = scans.into_iter();
     let mut acc = it.next().expect("at least one source");
@@ -1088,25 +932,21 @@ fn fold_way_scans(scans: Vec<WayScan>, merging: bool) -> WayScan {
     acc
 }
 
-/// Capture a routable way's node-id sequence + µdeg coords for the nav graph.
-/// Routability is tag-based ([`nav::is_routable`]) and independent of styling — a
-/// way can be routable without a render style and vice-versa. Ways with fewer than
-/// two nodes carry no edge and are skipped. `coords` is the way's f64-degree
-/// geometry from [`resolve_coords`]; it is snapped to the µdeg grid here (the same
-/// grid POIs and the serializer use) so edge lengths and later serialization agree.
+/// Capture a routable way's node-id sequence and µdeg coords for the nav graph. Routability is
+/// tag-based ([`nav::is_routable`]) and independent of styling. `coords` is snapped here to the µdeg
+/// grid POIs and the serializer use, so edge lengths and later serialization agree.
 fn push_routable_way(id: i64, w: &osmpbf::Way, refs: &[i64], coords: &[(f64, f64)], out: &mut Keyed<RoutableWay>) {
     if refs.len() < 2 {
         return;
     }
-    // Classify once (routability + way-kind byte). `None` ⇒ not routable — this is
-    // the only place tags exist, so the kind is captured here or never.
+    // Classify once (routability plus the way-kind byte). This is the only place tags exist, so
+    // the kind is captured here or never.
     let Some(kind) = nav::classify(w.tags()) else { return };
     let coords_udeg = coords.iter().map(|&(x, y)| (poi::to_udeg(x), poi::to_udeg(y))).collect();
     out.push(id, RoutableWay { node_ids: refs.to_vec(), coords: coords_udeg, kind });
 }
 
 /// Classify one node's tags against the POI table; push a candidate on match.
-/// The overwhelmingly common untagged-node case falls straight through.
 fn push_node_poi<'a, I>(id: i64, tags: I, decimicro_lon: i32, decimicro_lat: i32, out: &mut Keyed<Poi>)
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
@@ -1138,8 +978,8 @@ where
     }
 }
 
-/// Resolve a way's node refs to degree coordinates. `None` iff any node is missing
-/// — the caller drops the way (osmium's `InvalidLocationError`).
+/// Resolve a way's node refs to degree coordinates. `None` if any node is missing, and the caller
+/// then drops the way (osmium's `InvalidLocationError`).
 fn resolve_coords(refs: &[i64], nodes: &HashMap<i64, (i32, i32)>) -> Option<Vec<(f64, f64)>> {
     let mut coords = Vec::with_capacity(refs.len());
     for r in refs {
@@ -1149,9 +989,9 @@ fn resolve_coords(refs: &[i64], nodes: &HashMap<i64, (i32, i32)>) -> Option<Vec<
     Some(coords)
 }
 
-/// Classify a `type=multipolygon`/`type=boundary` relation (skipping
-/// `admin_level`) for area assembly. Shared by crop selection and pass 1 so the
-/// crop completes exactly the relations the renderer can consume.
+/// Classify a `type=multipolygon` or `type=boundary` relation (skipping `admin_level`) for area
+/// assembly. Shared by crop selection and pass 1, so the crop completes exactly the relations the
+/// renderer can consume.
 fn pending_relation(r: &osmpbf::Relation, config: &Config) -> Option<PendingRelation> {
     let tags: HashMap<&str, &str> = r.tags().collect();
     match tags.get("type").copied() {
@@ -1171,16 +1011,16 @@ fn pending_relation(r: &osmpbf::Relation, config: &Config) -> Option<PendingRela
     Some(PendingRelation { style_id: style.id, min_lod: style.min_lod, member_ways })
 }
 
-/// Collect a renderable area relation for pass-2 assembly. Roles are ignored;
-/// non-way members are skipped.
+/// Collect a renderable area relation for pass-2 assembly. Roles are ignored; non-way members are
+/// skipped.
 fn collect_relation(r: &osmpbf::Relation, config: &Config, pending: &mut Keyed<PendingRelation>) {
     if let Some(relation) = pending_relation(r, config) {
         pending.push(r.id(), relation);
     }
 }
 
-/// One way: capture coastline always, then style + classify into a single
-/// polygon-or-line emission. `refs`/`coords` are pre-resolved.
+/// One way: capture the coastline always, then style and classify into a single polygon-or-line
+/// emission. `refs` and `coords` are pre-resolved.
 fn process_way(
     w: &osmpbf::Way,
     refs: &[i64],
@@ -1193,16 +1033,13 @@ fn process_way(
     let tags: HashMap<&str, &str> = w.tags().collect();
     let is_closed = refs.len() >= 2 && refs.first() == refs.last();
 
-    // Coastlines are captured ALWAYS — even if the way is also closed/styled — and
-    // as lines, never areas.
+    // Coastlines are captured ALWAYS — even if the way is also closed and styled — and as lines.
     if tags.get("natural") == Some(&"coastline") && coords.len() >= 2 {
         coastlines.push(w.id(), coords.to_vec());
     }
 
-    // A closed way matching the POI table yields a POI at the ring centroid —
-    // independent of styling (a bare `shop=supermarket` outline has no style at
-    // all). The building-tagged supermarket way and the area campsite are the
-    // motivating cases; relations are out of scope (#115).
+    // A closed way matching the POI table yields a POI at the ring centroid, independent of
+    // styling: a bare `shop=supermarket` outline has no style at all. Relations are out of scope.
     if is_closed || tags.contains_key("wikidata") || tags.contains_key("wikipedia") {
         if let Some(poi::Classification { subtype, name, raw_hours, elevation_m, population }) =
             poi::classify_linked(tags.iter().map(|(&k, &v)| (k, v)))
@@ -1241,8 +1078,8 @@ fn process_way(
         if tags.contains_key("admin_level") {
             return;
         }
-        // Skip rings osmium's assembler would reject as invalid (e.g. a
-        // self-intersecting building); no polygon and no line (line branch returned).
+        // Skip rings osmium's assembler would reject as invalid, such as a self-intersecting
+        // building: no polygon and no line.
         if coords.len() >= 3 && polygon_is_valid(coords, &[]) {
             features.push(
                 w.id(),
@@ -1265,8 +1102,8 @@ fn process_way(
     }
 }
 
-/// Closed-way area heuristic: `area=yes` ⇒ area; `area=no` ⇒ never; otherwise
-/// area iff it carries any [`AREA_TAGS`] key. Cliff rims remain lines.
+/// Closed-way area heuristic: `area=yes` is an area, `area=no` never is, otherwise it is an area iff
+/// it carries any [`AREA_TAGS`] key.
 fn is_area(tags: &HashMap<&str, &str>) -> bool {
     // A cliff can form a closed rim, but it still marks an edge, not a filled area.
     if tags.get("natural") == Some(&"cliff") {
@@ -1289,20 +1126,16 @@ mod tests {
         matches!(g, Geom::Polygon { .. })
     }
 
-    /// `ingest_osm` takes the whole source list; most tests hand it exactly one.
     fn sources(paths: &[&str]) -> Vec<String> {
         paths.iter().map(|p| (*p).to_string()).collect()
     }
 
-    /// No test here watches the narration or cancels a run; cancellation has its
-    /// own tests in [`crate::pipeline`], where a whole pack can be stopped.
     fn quiet() -> Progress {
         Progress::silent()
     }
 
-    /// Everything an ingest produced, flattened into one comparable value —
-    /// enough to say "these two runs are the same map", including *order*, which
-    /// decides the packed bytes downstream.
+    /// Everything an ingest produced, flattened into one comparable value — enough to say "these
+    /// two runs are the same map", including order, which decides the packed bytes downstream.
     fn shape(ing: &Ingested) -> Vec<String> {
         let mut out: Vec<String> =
             ing.features.iter().map(|f| format!("F {} {} {:?}", f.style_id, f.min_lod, f.geom.bounds())).collect();
@@ -1312,12 +1145,11 @@ mod tests {
         out
     }
 
-    /// The `tiny.osm` truth table: relations assembled (R1's lake with a hole, R2's
-    /// two forest outers) plus lines and closed-way polygons → 10 features.
+    /// The `tiny.osm` truth table: relations assembled (R1's lake with a hole, R2's two forest
+    /// outers) plus lines and closed-way polygons, giving 10 features.
     #[test]
     fn tiny_truth_table() {
-        // The fixture is committed in-repo (source of truth `tiny/tiny.osm`); a
-        // missing fixture is a hard failure, not a skip.
+        // The fixture is committed in-repo; a missing one is a hard failure, not a skip.
         assert!(
             std::path::Path::new(TINY_PBF).exists(),
             "corpus fixture missing: {TINY_PBF}. It is committed; rebuild from tiny/tiny.osm via \
@@ -1354,16 +1186,13 @@ mod tests {
             _ => unreachable!(),
         }
 
-        // The fixes/omissions we MUST honor:
         assert_eq!(n(12, true), 0, "no residential blob (closed-line-way fix)");
         // 5 polygons (3 forest, 1 pedestrian, 1 water lake) + 5 lines.
         assert_eq!(ing.features.len(), 10, "10 features total");
     }
 
-    /// End-to-end POI extraction over the hand-authored `poi.osm` fixture (its
-    /// header comment is the truth table): node + closed-way classification,
-    /// name folding, and both dedup pairs (node-beats-centroid, named-beats-
-    /// unnamed). See builder/tests/corpus/poi/poi.osm.
+    /// End-to-end POI extraction over the hand-authored `poi.osm` fixture, whose header comment is
+    /// the truth table: node and closed-way classification, name folding, and both dedup pairs.
     #[test]
     fn poi_fixture_end_to_end() {
         const POI_PBF: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/tests/corpus/data/poi.osm.pbf");
@@ -1419,8 +1248,6 @@ mod tests {
         assert_eq!(crate::poi::format_counts(&ing.pois, 0).matches("settlement 7").count(), 1);
     }
 
-    /// The `--bbox` contract is user-facing, so the parser is as strict as
-    /// `osmium extract`'s: four in-range numbers, west of east, south of north.
     #[test]
     fn bbox_parse_is_strict_about_the_box() {
         let ok = Bbox::parse("7.39,43.71,7.47,43.77").expect("valid box");
@@ -1452,9 +1279,6 @@ mod tests {
         assert!(msg.contains("antimeridian"), "wrap error should explain itself: {msg}");
     }
 
-    /// The size gate measures a region from a box, so the box must measure right
-    /// where it matters: a degree of longitude carries less area the further it
-    /// sits from the equator.
     #[test]
     fn box_area_shrinks_with_latitude() {
         let one_degree_at_equator = box_area_km2((0.0, 0.0, 1.0, 1.0));
@@ -1467,24 +1291,15 @@ mod tests {
         assert!((600.0..700.0).contains(&grimsel), "{grimsel} km²");
     }
 
-    /// A source that declares no box reads as "unknown", not as an error and not
-    /// as a box of zero: the gate then lets the pack go ahead.
     #[test]
     fn a_source_without_a_declared_box_reads_as_unknown() {
         assert_eq!(declared_bbox(TINY_PBF), Ok(None));
     }
 
-    /// The relation-complete crop, over the `tiny.osm` truth table. The box covers
-    /// R1 whole, takes only one of R2's two outer rings, and clips the middle of
-    /// both open highways:
-    ///
-    /// - **ways stay whole**: W7b (trunk) reaches to lon 7.855, far outside the
-    ///   box, because one of its nodes is inside. That is the property `simple`
-    ///   would lose — and losing it would delete the way outright here, since
-    ///   [`resolve_coords`] drops a way with any unresolvable node.
-    /// - **relations stay whole**: R2's in-box W3 pulls in its outside W4 member,
-    ///   so both forest outers assemble instead of the residential/forest class
-    ///   of bug where one distant member makes the whole area disappear.
+    /// The relation-complete crop, over the `tiny.osm` truth table. The box covers R1 whole, takes
+    /// only one of R2's two outer rings, and clips the middle of both open highways. Ways stay
+    /// whole: W7b reaches far outside the box because one of its nodes is inside. Relations stay
+    /// whole: R2's in-box W3 pulls in its outside W4 member, so both forest outers assemble.
     #[test]
     fn bbox_crop_keeps_ways_whole_and_completes_area_relations() {
         let cfg =
@@ -1521,8 +1336,8 @@ mod tests {
         assert_eq!(n(36, false), 1, "W12 water line is inside");
         assert_eq!(ing.features.len(), 6, "1 lake + 2 forest polygons + 3 lines");
 
-        // The headline: the trunk is not trimmed at the box edge (lon 7.809) — it
-        // keeps its far node at 7.855, exactly as `osmium extract` would emit it.
+        // The headline: the trunk is not trimmed at the box edge (lon 7.809) — it keeps its far
+        // node at 7.855, exactly as `osmium extract` would emit it.
         let trunk = ing.features.iter().find(|f| f.style_id == 3).expect("trunk line");
         let (_, _, maxx, _) = trunk.geom.bounds();
         assert!((maxx - 7.855).abs() < 1e-9, "trunk must reach its real end at 7.855, got {maxx}");
@@ -1540,7 +1355,6 @@ mod tests {
     }
 
     /// A box that swallows the whole file must change nothing — the crop path is
-    /// a filter, not a second code path with its own behaviour.
     #[test]
     fn bbox_covering_everything_is_a_no_op() {
         let cfg =
@@ -1557,8 +1371,6 @@ mod tests {
         }
     }
 
-    /// A box over empty water fails with a sentence naming the box, rather than
-    /// packing a valid-but-empty `.obcm` the rider only discovers on the device.
     #[test]
     fn bbox_missing_the_data_is_an_error() {
         let cfg =
@@ -1571,9 +1383,9 @@ mod tests {
         assert!(err.contains("does not overlap"), "unexpected message: {err}");
     }
 
-    /// Pass 0 is the one place that needs the PBF type-sorted, and a file that
-    /// isn't would otherwise select nothing at all and pack a silently empty map.
-    /// The committed `unsorted.osm.pbf` writes its way before its nodes.
+    /// Pass 0 is the one place that needs the PBF type-sorted, and a file that is not would
+    /// otherwise select nothing at all and pack a silently empty map. The committed
+    /// `unsorted.osm.pbf` writes its way before its nodes.
     #[test]
     fn bbox_refuses_an_unsorted_pbf() {
         const UNSORTED_PBF: &str =
@@ -1591,17 +1403,14 @@ mod tests {
             panic!("an unsorted .pbf must not be cropped silently");
         };
         assert!(err.contains("not sorted"), "unexpected message: {err}");
-        // Without a box the ingest is order-agnostic (passes 1 and 2 are separate
-        // reads), so the same file still packs — the refusal is scoped to --bbox.
+        // Without a box the ingest is order-agnostic, so the same file still packs.
         let ing =
             ingest_osm(&sources(&[UNSORTED_PBF]), &cfg, None, &quiet()).expect("uncropped ingest is order-agnostic");
         assert_eq!(ing.features.len(), 1, "the primary way survives without a box");
     }
 
-    /// The same file listed twice is the sharpest duplicate case there is: every
-    /// single object is a duplicate. If the merge is right, the result is exactly
-    /// the one-source ingest — same features, same order, same POIs, same graph —
-    /// and if it is wrong, everything is doubled.
+    /// The same file listed twice is the sharpest duplicate case there is: every single object is a
+    /// duplicate, so a right merge gives exactly the one-source ingest and a wrong one doubles it.
     #[test]
     fn merging_a_source_with_itself_changes_nothing() {
         let cfg =
@@ -1617,11 +1426,10 @@ mod tests {
         assert_eq!(shape(&once), shape(&twice), "cropped, too");
     }
 
-    /// Two halves of `tiny.osm` that overlap in the middle must ingest to exactly
-    /// what the whole file ingests to — the real merge, not the degenerate one.
-    /// The split is deliberately awkward: `tiny_west` holds R1 and the long ways,
-    /// `tiny_east` holds R2 and repeats three of the shared objects, so the merge
-    /// has to interleave two id runs *and* drop duplicates, not just concatenate.
+    /// Two halves of `tiny.osm` that overlap in the middle must ingest to exactly what the whole
+    /// file does. The split is awkward on purpose: `tiny_west` holds R1 and the long ways,
+    /// `tiny_east` holds R2 and repeats three shared objects, so the merge has to interleave two id
+    /// runs and drop duplicates, not just concatenate.
     #[test]
     fn merging_two_overlapping_halves_rebuilds_the_whole() {
         const WEST: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/tests/corpus/data/tiny_west.osm.pbf");
@@ -1638,19 +1446,17 @@ mod tests {
         let halves = ingest_osm(&sources(&[WEST, EAST]), &cfg, None, &quiet()).expect("ingest");
         assert_eq!(shape(&whole), shape(&halves), "west + east must rebuild tiny.osm exactly");
 
-        // Cropped: pass 0's node phase has to finish across BOTH files before
-        // either one's ways can be judged. W7/W7b start west and run east, so a
-        // per-file selection would come out with a different set.
+        // Cropped: pass 0's node phase has to finish across BOTH files before either one's ways
+        // can be judged. W7/W7b start west and run east, so a per-file selection would differ.
         let bbox = Bbox::parse("7.798,47.979,7.809,47.995").expect("box");
         let whole = ingest_osm(&sources(&[TINY_PBF]), &cfg, Some(bbox), &quiet()).expect("ingest");
         let halves = ingest_osm(&sources(&[WEST, EAST]), &cfg, Some(bbox), &quiet()).expect("ingest");
         assert_eq!(shape(&whole), shape(&halves), "west + east must rebuild the cropped tiny.osm exactly");
     }
 
-    /// The tie-break, pinned: the **first** source that carries an id wins the
-    /// whole object. `tiny_east` re-states way 107 as a `highway=track` (style 22,
-    /// dropped by the preset's LOD table? no — it simply differs from primary=5),
-    /// so listing it first changes the style and listing it second changes nothing.
+    /// The tie-break: the first source that carries an id wins the whole object. `tiny_east`
+    /// re-states way 107 with a different style, so listing it first changes the style and listing
+    /// it second changes nothing.
     #[test]
     fn the_first_source_carrying_an_id_wins_it() {
         const WEST: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/tests/corpus/data/tiny_west.osm.pbf");
@@ -1674,18 +1480,14 @@ mod tests {
         assert_eq!(west_first, style_of_107(&[WEST]).expect("way 107"), "west first ⇒ west's copy");
         assert_eq!(east_first, style_of_107(&[EAST]).expect("way 107"), "east first ⇒ east's copy");
 
-        // And on a node, where the loser is the copy carrying the tags: east's
-        // node 25 is a drinking-water POI, west's is bare. Losing on the id means
-        // losing the tags too, so with west first that POI does not exist.
+        // And on a node, where the loser is the copy carrying the tags: east's node 25 is a
+        // drinking-water POI and west's is bare, so with west first that POI does not exist.
         let pois = |paths: &[&str]| ingest_osm(&sources(paths), &cfg, None, &quiet()).expect("ingest").pois.len();
         assert_eq!(pois(&[EAST]), pois(&[WEST]) + 1, "only east's node 25 is a POI");
         assert_eq!(pois(&[WEST, EAST]), pois(&[WEST]), "west first ⇒ east's tagged copy contributes nothing");
         assert_eq!(pois(&[EAST, WEST]), pois(&[EAST]), "east first ⇒ its POI survives");
     }
 
-    /// [`Keyed`] is the merge's whole ordering and dedup mechanism, so its two
-    /// operations are pinned directly: `retain_keys` keeps order while dropping,
-    /// and `sort` restores ascending-id order over interleaved source runs.
     #[test]
     fn keyed_retains_in_order_and_sorts_by_id() {
         let mut k = Keyed::new(true);
@@ -1707,8 +1509,7 @@ mod tests {
         assert_eq!(plain.into_items(), ["a", "b"], "and keeps file order");
     }
 
-    /// [`IdSet`] is only correct if `freeze` runs between filling and querying —
-    /// and `freeze` must be safe to call twice (pass 0 freezes the node set early).
+    /// `freeze` must be safe to call twice, because pass 0 freezes the node set early.
     #[test]
     fn id_set_freezes_and_dedupes() {
         let mut s = IdSet::default();
@@ -1729,9 +1530,8 @@ mod tests {
         pairs.iter().copied().collect()
     }
 
-    /// The closed-way polygon/line gate: `area=yes` forces area even with no
-    /// AREA_TAGS key; `area=no` forces a line even with one present (the W12
-    /// `natural=water area=no` case); absent `area` falls back to any AREA_TAGS key.
+    /// The closed-way polygon/line gate: `area=yes` forces an area even with no AREA_TAGS key,
+    /// `area=no` forces a line even with one present, and an absent `area` falls back to the keys.
     #[test]
     fn is_area_overrides_and_tag_fallback() {
         assert!(is_area(&tags(&[("area", "yes")])), "area=yes ⇒ area regardless of other tags");
