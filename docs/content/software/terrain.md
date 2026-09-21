@@ -218,6 +218,10 @@ A cell with no finer coverage is identical to a cell baked without one.
 Each finer model keeps its own attribution, which must travel with the map. A change of finer
 model changes the baked heights, so it is a new terrain revision.
 
+Six photographs of the Engelberg mountains measure the result. Each one records the skyline the
+owner saw from a known position, and a test draws the panorama there and compares the two. See
+[the fixture package](src:fixtures/sources/peak-view/photos/README.md).
+
 ## One sampling truth
 
 The packer samples OBCT tiles to calculate navigation-edge ascent.
