@@ -787,9 +787,10 @@ impl Caps {
 
 /// The one screen table. Each row is `Variant(StateType) => Caps`; the macro expands it into the
 /// [`Screen`] enum, the `handle`/`draw` delegation matches, and the per-screen capability metadata.
-/// Adding a screen is adding one row here plus its own module, so there is no second list to keep
-/// in sync and a cross-cutting policy is an explicit capability on the row rather than a forgotten
-/// `matches!` elsewhere. Deliberately a dumb token-pasting table, not a framework.
+/// There is no second list of variants to keep in sync, and a cross-cutting policy is an explicit
+/// capability on the row rather than a forgotten `matches!` elsewhere. A row and its module are not
+/// the whole of a new screen: it also needs its strings in the four catalogs, a way in, and a sweep
+/// frame with its digest row. Deliberately a dumb token-pasting table, not a framework.
 macro_rules! screens {
     ($( $(#[$doc:meta])* $variant:ident($state:ty) => $caps:expr, )+) => {
         /// The on-device screens. Each variant owns its typed state and forwards to that screen's
