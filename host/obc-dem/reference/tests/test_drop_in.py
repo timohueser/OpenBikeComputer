@@ -13,6 +13,7 @@ import os
 import sys
 import unittest
 import urllib.error
+import urllib.parse
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -261,6 +262,55 @@ class Deliveries(unittest.TestCase):
                                  parse(box_of(DELIVERIES["it-tn"])), self.root / "work")
         self.assertIn("names no CRS", str(refusal.exception))
 
+    def test_a_zip_of_documents_beside_the_dem_is_an_ordinary_delivery(self):
+        """An order ships its paperwork as a zip too, and the data is what matters.
+
+        A zip inside the zip is only a refusal when this level holds no raster at all.
+        """
+
+        delivery = DELIVERIES["au"]
+        inputs = self.root / "with-docs"
+        inputs.mkdir()
+        raster = geotiff(self.root / "dem.tif", delivery, TOWER)
+        papers = self.root / "docs.zip"
+        with zipfile.ZipFile(papers, "w") as bundle:
+            bundle.writestr("readme.txt", "licence")
+        with zipfile.ZipFile(inputs / delivery["zip"], "w") as bundle:
+            bundle.write(raster, "DEM/dem.tif")
+            bundle.write(papers, "metadata/docs.zip")
+
+        kept = ingest.local_rasters(ingest.SOURCES["au"], inputs, parse(box_of(delivery)),
+                                    self.root / "work")
+        self.assertEqual([path.name for path in kept], ["dem.tif"])
+
+    def test_a_zip_that_holds_only_another_zip_is_refused_by_its_name(self):
+        delivery = DELIVERIES["au"]
+        inputs = self.root / "only-nested"
+        inputs.mkdir()
+        inner = self.root / "inner.zip"
+        with zipfile.ZipFile(inner, "w") as bundle:
+            bundle.writestr("readme.txt", "licence")
+        with zipfile.ZipFile(inputs / delivery["zip"], "w") as bundle:
+            bundle.write(inner, "orders/inner.zip")
+        with self.assertRaises(ingest.Refuse) as refusal:
+            ingest.local_rasters(ingest.SOURCES["au"], inputs, parse(box_of(delivery)),
+                                 self.root / "work")
+        self.assertIn("orders/inner.zip", str(refusal.exception))
+
+    def test_a_work_directory_inside_the_delivery_is_refused(self):
+        """The tool writes into the work directory, so it cannot be the owner's download."""
+
+        delivery = DELIVERIES["dk"]
+        inputs = self.root / "dk" / "delivery"
+        inputs.mkdir(parents=True)
+        deliver(inputs, delivery)
+        for work in (inputs, inputs / "unpacked"):
+            with self.subTest(str(work)):
+                code = ingest.main(["ingest", "dk", "--bbox", box_of(delivery),
+                                    "--archive", str(self.root / "a"),
+                                    "--input", str(inputs), "--work", str(work)])
+                self.assertEqual(code, 1)
+
     def test_a_directory_that_holds_nothing_the_portal_delivers_says_so(self):
         inputs = self.root / "empty"
         inputs.mkdir()
@@ -403,6 +453,18 @@ class Credentials(unittest.TestCase):
         self.assertEqual(sent, [])
         self.assertNotIn("secret", message)
 
+    def test_an_index_that_names_a_plain_http_download_does_not_get_the_password(self):
+        """HTTP Basic is the password in clear text, so the scheme is not negotiable."""
+
+        self.set("OBC_REFERENCE_SE_USER", "consumer")
+        self.set("OBC_REFERENCE_SE_PASSWORD", "secret")
+        sweden = ingest.SOURCES["se"]
+        with self.assertRaises(ingest.Refuse) as refusal:
+            sweden.headers_for("http://dl1.lantmateriet.se/hojd/data/m1.tif")
+        message = str(refusal.exception)
+        self.assertIn("not https", message)
+        self.assertNotIn("secret", message)
+
     def test_a_row_whose_adapter_cannot_carry_its_credential_is_refused(self):
         """A credential the fetch path never reads is a request that goes out unsigned."""
 
@@ -420,9 +482,13 @@ class Credentials(unittest.TestCase):
 
 
 class Redaction(unittest.TestCase):
-    """A refusal quotes what came off the wire, so it must not quote the token."""
+    """A refusal quotes what came off the wire, so it must not quote the token.
 
-    SECRET = "s3cret-token-value"
+    The secret holds a `/`, an `=` and a `+`, because a token rides in a URL and a server
+    that echoes the request echoes it percent-escaped: the plain form would not match.
+    """
+
+    SECRET = "tok/en=with+specials"
 
     def setUp(self):
         os.environ["OBC_REFERENCE_FI_TOKEN"] = self.SECRET
@@ -450,21 +516,32 @@ class Redaction(unittest.TestCase):
         return str(refusal.exception)
 
     def quoting_error(self, code):
-        """A service that answers by quoting the request it refused, token and all."""
+        """A service that answers by quoting the request it refused, token and all.
 
-        body = io.BytesIO(f"refused: {self.source.url(self.box)}&api-key={self.SECRET}"
-                          .encode())
+        The token is quoted as it travelled, which is percent-escaped, because that is
+        what a server echoing a URL gives back.
+        """
+
+        body = io.BytesIO(f"refused: {self.source.url(self.box)}"
+                          f"{self.source.credential.query()}".encode())
         return urllib.error.HTTPError("http://x", code, "no", {}, body)
+
+    def assert_clean(self, message):
+        """No form of the credential is left in the message, plain or escaped."""
+
+        for form in (self.SECRET, urllib.parse.quote(self.SECRET, safe=""),
+                     urllib.parse.quote_plus(self.SECRET)):
+            self.assertNotIn(form, message)
 
     def test_a_4xx_that_quotes_the_request_does_not_quote_the_token(self):
         message = self.refusal_for(self.quoting_error(403))
-        self.assertNotIn(self.SECRET, message)
+        self.assert_clean(message)
         self.assertIn("<redacted>", message)
         self.assertIn("fi (25.0", message)
 
     def test_a_5xx_after_the_retries_does_not_quote_the_token(self):
         message = self.refusal_for(self.quoting_error(503))
-        self.assertNotIn(self.SECRET, message)
+        self.assert_clean(message)
         self.assertIn("after 0 retries", message)
 
     def test_an_xml_error_with_a_200_does_not_quote_the_token_either(self):
@@ -473,20 +550,28 @@ class Redaction(unittest.TestCase):
 
         real = ingest.sources.protocols.http_get
         self.addCleanup(setattr, ingest.sources.protocols, "http_get", real)
-        quoted = f"<ExceptionReport>bad token in api-key={self.SECRET}</ExceptionReport>"
+        escaped = urllib.parse.quote(self.SECRET, safe="")
+        quoted = f"<ExceptionReport>bad token in api-key={escaped}</ExceptionReport>"
         ingest.sources.protocols.http_get = lambda url, what=None: quoted.encode()
         with self.assertRaises(ingest.Refuse) as refusal:
             self.source.request(self.box)
         message = str(refusal.exception)
-        self.assertNotIn(self.SECRET, message)
+        self.assert_clean(message)
         self.assertIn("<redacted>", message)
         self.assertIn("did not answer with a TIFF", message)
 
     def test_a_dropped_connection_names_the_source_and_not_the_url(self):
         message = self.refusal_for(urllib.error.URLError(
-            f"cannot reach {self.source.url(self.box)}&api-key={self.SECRET}"))
-        self.assertNotIn(self.SECRET, message)
+            f"cannot reach {self.source.url(self.box)}{self.source.credential.query()}"))
+        self.assert_clean(message)
         self.assertIn("fi (25.0", message)
+
+    def test_a_credential_too_short_to_look_like_one_is_redacted_all_the_same(self):
+        """A short credential is still a credential, so there is no length floor."""
+
+        os.environ["OBC_REFERENCE_FI_TOKEN"] = "ab"
+        self.assertIn("ab", ingest.sources.base.secrets())
+        self.assertEqual(ingest.sources.base.redact("token=ab"), "token=<redacted>")
 
 
 class RedirectHandler(BaseHTTPRequestHandler):

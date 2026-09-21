@@ -61,14 +61,25 @@ ELLIPSOIDAL = ("ellipsoid", "wgs84 h", "wgs 84 h", "nad83 h", "grs80 h")
 
 
 def secrets() -> tuple[str, ...]:
-    """Every credential the environment holds, longest first.
+    """Every credential the environment holds, and every form it travels in, longest first.
 
     The whole `OBC_REFERENCE_*` namespace is read, not one row's variables, because a
-    message is redacted wherever it comes from and a token is a token.
+    message is redacted wherever it comes from and a token is a token, however short.
+
+    A token rides in a URL, so a server that echoes the request echoes it **encoded**: a
+    credential with a `/` or a `=` in it comes back percent-escaped and would not match
+    its own plain form. Both escapings `urlencode` can produce are therefore redacted as
+    well, and the longest form is replaced first so no partial match is left behind.
     """
 
-    held = {value.strip() for name, value in os.environ.items()
-            if name.startswith("OBC_REFERENCE_") and len(value.strip()) >= 4}
+    held = set()
+    for name, value in os.environ.items():
+        if not name.startswith("OBC_REFERENCE_"):
+            continue
+        value = value.strip()
+        if value:
+            held.update({value, urllib.parse.quote(value, safe=""),
+                         urllib.parse.quote_plus(value)})
     return tuple(sorted(held, key=len, reverse=True))
 
 
@@ -241,16 +252,19 @@ def unpack(archive: Path, into: Path, suffixes=RASTER_SUFFIXES, sidecars=(".prj"
     so two tiles of the same name cannot collide, and a member that names a path outside
     the directory is refused rather than written. `sidecars` are extracted and not
     returned: a `.prj` is where an ESRI ASCII grid keeps the CRS its own format cannot.
+
+    A zip inside the zip is only a problem when this level holds no raster of its own: an
+    order that ships its documents as `metadata/docs.zip` beside the DEM is an ordinary
+    delivery, and refusing it would be refusing the data over the paperwork.
     """
 
-    rasters = []
+    rasters, nested = [], []
     with zipfile.ZipFile(archive) as bundle:
         for member in bundle.namelist():
             suffix = Path(member).suffix.lower()
             if suffix == ".zip":
-                raise Refuse(f"{archive}: it holds another archive, `{member}`. Unpack that "
-                             "one yourself and pass the directory it is in: a zip inside a "
-                             "zip is not a delivery shape the registry reads")
+                nested.append(member)
+                continue
             if suffix not in set(suffixes) | set(sidecars):
                 continue
             if Path(member).is_absolute() or ".." in Path(member).parts:
@@ -259,6 +273,10 @@ def unpack(archive: Path, into: Path, suffixes=RASTER_SUFFIXES, sidecars=(".prj"
             extract(bundle, member, target, archive)
             if suffix in suffixes:
                 rasters.append(target)
+    if not rasters and nested:
+        raise Refuse(f"{archive}: it holds no raster of its own, only another archive, "
+                     f"`{nested[0]}`. Unpack that one yourself and pass the directory it is "
+                     "in: a zip inside a zip is not a delivery shape the registry reads")
     if not rasters:
         raise Refuse(f"{archive}: holds no raster; it is not what the registry expected")
     return sorted(rasters)
@@ -448,6 +466,9 @@ class Source:
 
         if self.credential is None or not self.credential.headers():
             return {}
+        if urllib.parse.urlsplit(url).scheme != "https":
+            raise Refuse(f"{self.key}: the index named `{url}`, which is not https, and HTTP "
+                         "Basic is the password in clear text; it is not sent there")
         if not any(inside(url, suffix) for suffix in self.credential_hosts):
             raise Refuse(f"{self.key}: the index named `{host_of(url) or url}`, which is not "
                          f"one of this source's hosts ({', '.join(self.credential_hosts)}), "
