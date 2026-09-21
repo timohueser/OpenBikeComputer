@@ -55,6 +55,7 @@ usage:
         --landmarks FILE     embed compiled landmark content.json and its photos
         --peaks FILE         embed compiled peak peaks.json and its photos
         --dem-sources DIR    source DEM GeoTIFFs for it (default: fetched into <cache>/dem)
+        --reference DIR      reference archive mirror for the terrain stage's crest lifts
 
       A bake runs the terrain stage FIRST, automatically: contours are traced and the
       nav graph's ascents integrated from the terrain in the tree, so a bake without
@@ -72,6 +73,12 @@ usage:
         --terrain-revision N    terrain store revision (default: 1)
         --posting-log2 P        sample lattice, µdeg log2 (default: 9)
         --cell-log2 S           terrain cell size, µdeg log2 (default: 19)
+        --reference DIR         reference archive mirror: `index.json` plus the tiles of the
+                                box, from host/obc-dem/reference/ingest.py. Where it covers a
+                                crest, the baked samples carry the finer model's height
+                                (OBCT_Spec.md §9), each cell records the sources it used, and
+                                their credits reach the catalog. A reference change is a
+                                terrain revision bump (OBCC_Spec.md §13.2).
         --regions FILE          curated region list
         --base-url URL          catalog object base
         --generated-at TS       pin the catalog's generated_at
@@ -195,6 +202,7 @@ fn run_bake(args: &[String]) -> Result<(), String> {
             "summary-json",
             "base-url",
             "dem-sources",
+            "reference",
             "landmarks",
             "peaks",
         ],
@@ -282,14 +290,17 @@ fn run_cell_bake(
                 cell_log2: obc_dem::bake::V1_CELL_LOG2,
                 revision: 1,
                 attribution: obc_elevation::COPERNICUS_ATTRIBUTION.to_string(),
+                references: Vec::new(),
             }
         };
         let sources = match flags.get("dem-sources") {
             Some(dir) => PathBuf::from(dir),
             None => ensure_dem_sources(&regions, source.as_ref(), &cache, doc.cell_log2)?,
         };
-        let dem = obc_bake::terrain::DemCutter::open(&sources)?;
+        let reference = flags.get("reference").map(PathBuf::from);
+        let dem = obc_bake::terrain::DemCutter::open(&sources, reference.as_deref())?;
         println!("{} source DEM tile(s) from {}", dem.tiles(), sources.display());
+        report_reference(&dem, reference.as_deref());
         let summary = obc_bake::terrain::TerrainBakery {
             regions: &regions,
             source: source.as_ref(),
@@ -487,6 +498,16 @@ fn terrain_source_bbox(coverages: &[obc_bake::coverage::Coverage], cell_log2: u8
     })
 }
 
+/// What the terrain stage's reference archive gives this run, in one line per source.
+fn report_reference(cutter: &obc_bake::terrain::DemCutter, root: Option<&Path>) {
+    use obc_bake::terrain::TerrainCutter as _;
+    let (Some(root), Some(tiles)) = (root, cutter.reference_tiles()) else { return };
+    println!("{tiles} reference tile(s) indexed in {}", root.display());
+    for source in cutter.reference_credits() {
+        println!("  {}: {} — {} ({})", source.key, source.product, source.attribution, source.licence);
+    }
+}
+
 fn run_terrain(args: &[String]) -> Result<(), String> {
     let (flags, positional) = Flags::parse(
         args,
@@ -494,6 +515,7 @@ fn run_terrain(args: &[String]) -> Result<(), String> {
         &[
             "out",
             "sources",
+            "reference",
             "dataset-id",
             "dataset-version",
             "terrain-revision",
@@ -538,6 +560,9 @@ fn run_terrain(args: &[String]) -> Result<(), String> {
         // The credit is a licence obligation and is never retyped here: it comes from the one
         // `const` in `obc-elevation`, travels into the catalog, and a consumer reads it from there.
         attribution: obc_elevation::COPERNICUS_ATTRIBUTION.to_string(),
+        // Filled from the archive by the run itself: the wording lives in its `index.json`, and a
+        // credit an operator could retype here is one that can go stale.
+        references: Vec::new(),
     };
 
     let cache = flags.get("cache").map(PathBuf::from).unwrap_or_else(default_cache_dir);
@@ -548,8 +573,10 @@ fn run_terrain(args: &[String]) -> Result<(), String> {
         Some(dir) => PathBuf::from(dir),
         None => ensure_dem_sources(&regions, source.as_ref(), &cache, doc.cell_log2)?,
     };
-    let cutter = obc_bake::terrain::DemCutter::open(&sources)?;
+    let reference = flags.get("reference").map(PathBuf::from);
+    let cutter = obc_bake::terrain::DemCutter::open(&sources, reference.as_deref())?;
     println!("{} source DEM tile(s) from {}", cutter.tiles(), sources.display());
+    report_reference(&cutter, reference.as_deref());
 
     let summary = obc_bake::terrain::TerrainBakery {
         regions: &regions,
