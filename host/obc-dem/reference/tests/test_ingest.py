@@ -75,6 +75,18 @@ def archive_pixel(transform, row, col):
     return ingest.tile_index(r), ingest.tile_index(c), r, c
 
 
+def wgs84_grid(step_u, ti=4812, tj=4223, row=100, col=100):
+    """A source already in EPSG:4326, on lattice lines, with a whole-microdegree step.
+
+    With `step_u = 128` every pixel centre sits **exactly** on a lattice line, which is the
+    case a projection cannot round-trip and a float floor can put on the wrong side.
+    """
+
+    lon0 = ingest.GRID_ORIGIN + tj * ingest.TILE + col * ingest.STEP
+    lat_top = ingest.GRID_ORIGIN + (ti + 1) * ingest.TILE - row * ingest.STEP
+    return Affine(step_u / 1e6, 0, lon0 / 1e6, 0, -step_u / 1e6, lat_top / 1e6), lon0, lat_top
+
+
 def local_source(key, country="Testland"):
     return ingest.Source(key, country, f"{key} test product", 1.0, "CC0", f"© {key}", "EGM2008",
                          (-180, -90, 180, 90))
@@ -158,6 +170,40 @@ class Ingest(ArchiveCase):
                 self.assertEqual(int((data == round(TOWER)).sum()), 1)
                 self.assertEqual(int(data[(ti + 1) * ingest.TILE_PX - 1 - r, c - tj * ingest.TILE_PX]),
                                  round(TOWER))
+
+    def test_a_degree_source_on_lattice_lines_is_placed_exactly(self):
+        """Every centre of a 128 µdeg EPSG:4326 source is on a lattice line, and lands right.
+
+        Consecutive centres are two lattice pixels apart, so each source pixel gets an
+        archive pixel of its own: one pixel short of 100 x 100 would mean two centres
+        collapsed onto one lattice line.
+        """
+
+        transform, lon0, lat_top = wgs84_grid(128)
+        values = np.full((100, 100), 1000.0, dtype="float32")
+        values[50, 50] = TOWER
+        directory = self.root / "wgs84"
+        directory.mkdir()
+        raster = source_raster(directory / "wgs84.tif", values, transform=transform)
+        with rasterio.open(raster, "r+") as dst:
+            dst.crs = ingest.WGS84
+        self.archive = self.root / "archive-wgs84"
+        self.ingest("ch", raster, inputs=directory)
+        tile, _ = self.only_tile()
+        with rasterio.open(ingest.tile_path(self.archive, *(int(x) for x in tile.split("/")))) as src:
+            data = src.read(1)
+
+        self.assertEqual(int((data != ingest.NODATA).sum()), 100 * 100)
+        self.assertEqual(int((data == round(TOWER)).sum()), 1)
+        # The centre of source pixel (50, 50), in microdegrees, is a lattice line itself.
+        lon_u = lon0 + 128 * 50 + 64
+        lat_u = lat_top - 128 * 50 - 64
+        self.assertEqual(lon_u % ingest.STEP, 0)
+        row, col = ingest.pixel_index(lat_u), ingest.pixel_index(lon_u)
+        ti, tj = ingest.tile_index(row), ingest.tile_index(col)
+        self.assertEqual(tile, ingest.tile_id(ti, tj))
+        self.assertEqual(int(data[(ti + 1) * ingest.TILE_PX - 1 - row, col - tj * ingest.TILE_PX]),
+                         round(TOWER))
 
     def test_a_rotated_source_loses_nothing(self):
         """A centre is a point, so a 30° rotated grid pools like any other."""
@@ -537,6 +583,19 @@ class RcloneSeam(ArchiveCase):
         self.assertEqual(self.listing, [f"16/{next(iter(self.index()['tiles']))}.tif"])
         wanted = Path(copy[copy.index("--files-from") + 1])
         self.assertFalse(wanted.exists())  # the listing is temporary, not archive content
+
+    def test_a_box_on_tile_lines_needs_its_own_tiles_and_one_ring(self):
+        """A cell is 8 x 8 tiles, so a mirror of one cell is 10 x 10, not 11 x 11."""
+
+        west = (ingest.GRID_ORIGIN + 4223 * ingest.TILE) / 1e6
+        south = (ingest.GRID_ORIGIN + 4812 * ingest.TILE) / 1e6
+        east = west + 8 * ingest.TILE / 1e6
+        north = south + 8 * ingest.TILE / 1e6
+        needed = ingest.box_tiles((west, south, east, north))
+        self.assertEqual(len(needed), 100)
+        self.assertIn(ingest.tile_id(4812, 4223), needed)
+        self.assertIn(ingest.tile_id(4811, 4222), needed)  # the ring
+        self.assertNotIn(ingest.tile_id(4810, 4223), needed)  # and nothing past it
 
     def test_the_mirror_halo_is_one_tile_on_every_side(self):
         tile = next(iter(self.index()["tiles"]))

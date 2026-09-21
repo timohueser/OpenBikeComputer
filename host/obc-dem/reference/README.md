@@ -113,7 +113,7 @@ It needs `rasterio`, `pyproj` and `numpy` (`tools/requirements-bake.txt`, or
 | `index` | Rebuilds `index.json` from the manifests in `sources/`. |
 | `check` | Opens every tile and holds it against the contract — size, dtype, nodata, CRS, the exact transform, the digest — and refuses a tile the index does not name. |
 | `publish` | `rclone copy` of the archive to `<bucket>/reference/v1/`: tiles and manifests first, then the index, which goes up as the merge of the index already on R2 with this archive's. Additive and idempotent: a publish never deletes. |
-| `mirror` | `rclone copy` of the index plus the tiles one box needs, into a local directory. The box is padded by one tile on every side, because the baker's node halo reads over a cell edge. It prints how many of the needed tiles the archive does not hold. This is what a bakery run does before `obc-dem bake --reference`. |
+| `mirror` | `rclone copy` of the index plus the tiles one box needs, into a local directory. The box is padded by one tile on every side, because the baker's node halo reads over a cell edge. It names the needed tiles the archive does not hold. This is what a bakery run does before `obc-dem bake --reference`. |
 
 ### What the shared tail does
 
@@ -167,7 +167,13 @@ The tail is deliberately blunt, because the sources are not uniform:
 
 - **Any CRS.** A projected national grid (LV95, ETRS89/UTM) and EPSG:4326 are both one transform
   of the pixel centres. Bounds are transformed with densified edges and the window is padded by one
-  pixel, so a curved projection edge cannot push a centre out of the window.
+  pixel, so a curved projection edge cannot push a centre out of the window; the run prints how
+  many centres fell outside it anyway, which must be none.
+- **A source already in degrees is placed by integer arithmetic.** When the transform's terms are
+  whole microdegrees — a national product on a round step — twice each pixel centre is a whole
+  number of microdegrees, so a centre on a lattice line goes to the pixel the half-open square says
+  and not to the one the last floating-point bit says. Everywhere else a tolerance of 1e-12 degrees
+  does the same job.
 - **A rotated or sheared transform is accepted.** A pixel centre is a point, and the affine gives
   it whatever the raster's grid is turned to. No `gdalwarp` step is needed first.
 - **Any dtype.** `float32` with NaN, `int16` with a sentinel, and an undeclared void all mean
