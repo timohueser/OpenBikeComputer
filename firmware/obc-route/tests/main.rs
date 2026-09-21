@@ -29,6 +29,8 @@ mod nav;
 mod profile;
 #[path = "cases/ride.rs"]
 mod ride;
+#[path = "cases/route_import.rs"]
+mod route_import;
 #[path = "cases/track.rs"]
 mod track;
 #[path = "cases/transform.rs"]
