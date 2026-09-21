@@ -102,6 +102,13 @@ def tile_window(ti: int, tj: int) -> Window:
     return Window(ti * TILE_PX, tj * TILE_PX, TILE_PX, TILE_PX)
 
 
+def tile_bounds(ti: int, tj: int) -> tuple[float, float, float, float]:
+    """One tile's box in degrees, west, south, east, north, the shape a source's `fetch` takes."""
+
+    west, south = (GRID_ORIGIN + tj * TILE) / DEGREE, (GRID_ORIGIN + ti * TILE) / DEGREE
+    return west, south, west + TILE / DEGREE, south + TILE / DEGREE
+
+
 class Refuse(Exception):
     """A condition the tool refuses to guess about, reported to the caller by name."""
 

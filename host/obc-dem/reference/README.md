@@ -13,7 +13,8 @@ protocols. So there is **one archive with one format**, and one offline tool tha
   `ingest/sources/`. It runs once per source release, never during a bake.
 - The archive holds max-pooled bare-earth height on the OBCT lattice, as `int16` metres, in
   GeoTIFF tiles. The baker streams the tiles of one cell and reads nothing else.
-- The archive lives on R2 under `reference/v1/`. A bakery run mirrors the tiles its box needs.
+- The archive lives on R2 under `reference/v1/`, beside the catalog prefix. The bakery reads a
+  local copy: the owner's full archive, or a mirror of one box.
 
 ## The archive tile contract
 
@@ -111,7 +112,7 @@ It needs `rasterio`, `pyproj` and `numpy` (`tools/requirements-bake.txt`, or
 
 | subcommand | what it does |
 | --- | --- |
-| `ingest <key>` | The source adapter obtains rasters for the box; the shared tail writes tiles. `--input <dir>` takes hand-fetched files instead of the service. `--work <dir>` is where fetched rasters are cached, so a second run of the same box downloads nothing. |
+| `ingest <key>` | The source adapter obtains rasters for the box; the shared tail writes tiles. `--input <dir>` takes hand-fetched files instead of the service. `--work <dir>` is where fetched rasters are cached, so a second run of the same box downloads nothing. `--per-tile` asks the service one archive tile at a time and wipes the work directory after each, so disk holds one tile's rasters however large the box; a tile done is recorded in the source's manifest, so a stopped run resumes where it was. |
 | `wizard <key>` | Walks the account and download steps of a source behind a login, one step at a time, checks what landed, and then runs `ingest <key> --input <dir>`. It automates no part of a login. |
 | `index` | Rebuilds `index.json` from the manifests in `sources/`. |
 | `check` | Opens every tile and holds it against the contract — size, dtype, nodata, CRS, band count, `AREA_OR_POINT`, deflate, 256 × 256 blocks, little-endian, the exact transform, the pixel digest and the contributors entry — and refuses a tile the index does not name. |
@@ -265,11 +266,9 @@ The tail is deliberately blunt, because the sources are not uniform:
   re-flies it, and the STAC listing answers with every year. The archive keeps the maximum, which
   is the rule the whole archive is built on.
 
-Memory is one source raster plus the tiles it touches. That is small for a product that publishes
-per tile — swisstopo publishes one square kilometre at a time — and a country-sized ingest of such a
-product never holds more. A **monolithic** raster, such as a whole-state DGM of several gigabytes,
-is held whole: read it in blocks, or cut it up with `gdal_retile` before the ingest. Blockwise
-reading in the tail is a follow-up.
+Memory is one source raster plus the tiles it touches, so a product published per square
+kilometre never holds more. A **monolithic** raster, such as a whole-state DGM of several
+gigabytes, is held whole: cut it up with `gdal_retile` before the ingest.
 
 ## Sources
 
@@ -308,35 +307,25 @@ open, and the table says what each one answered.
 | `de-sn` | Germany, Saxony | 1 m | DGM1 | dl-de/by-2-0 | `GeoSN` | 2 km tile grid |
 | `de-th` | Germany, Thuringia | 1 m | DGM1 (2020–2025) | dl-de/by-2-0 | `© GDI-Th, Freistaat Thüringen` | 1 km tile grid |
 
-`de-sn` and `de-th` carry the shortest Quellenvermerk their services state, because neither agency
-publishes a full attribution sentence the way Bavaria and NRW do. **The owner has to confirm both
-with GeoSN and GDI-Th** before a published map carries them.
+`de-sn` and `de-th` carry the Quellenvermerk their services state, which is all either agency
+publishes.
 | `de-ni` | Germany, Lower Saxony | 1 m | DGM1 | CC BY 4.0 | `© LGLN` | STAC search |
 
 Germany publishes elevation per state, each on its own service, so `de-*` is a family of rows and
 not one adapter. Eight of the sixteen states answer a keyless WCS and eight are a download; where
 the protocol is the same the code is the same.
 
-### Two indexes that turned out to be arithmetic
+### Two indexes that are arithmetic
 
-`it-tn` and `nz` were rows without an adapter, each because its index looked like a new kind.
-Neither is:
-
-- **Trentino** reaches its DTM through an asynchronous merge service: a WFS index of 25 201
-  half-kilometre tiles, a POST that starts a job, a poll and a zip of zips. The same tiles are
-  published as plain files under
-  `siatservices.provincia.tn.it/stemdata/2014_lidar_dtm_asc/`, keyless, one ESRI ASCII grid of
-  1000 × 1000 posts per square, and the WFS index says the name is the square's corner in
-  hundreds of metres: the square at EPSG:25832 (643 500, 5 112 000) is `5h643551120_DTM.asc`.
-  So the adapter is a grid of names, the same shape a German state's is, and the merge service
-  is not used. A square the survey did not reach answers 404, which is a coverage edge.
-- **New Zealand** names its tiles after NZTopo50 map sheets, and the static STAC carries 424
-  item links with no box in the collection. NZTopo50 is a regular grid in NZTM2000, 24 km east
-  by 36 km north: sheet `AS21` runs from (1 492 000, 6 198 000) and `BX15`, the sheet Aoraki
-  stands on, from (1 348 000, 5 154 000). `sources/nz.py` holds those constants, so the sheet a
-  box needs is arithmetic and the LINZ Data Service key that would fetch the sheet outlines is
-  not needed. A wrong constant names a sheet whose window misses the box, which refuses rather
-  than writing the wrong heights, and a test holds the constants against five published sheets.
+- **Trentino** publishes its half-kilometre squares as plain ESRI ASCII files under
+  `siatservices.provincia.tn.it/stemdata/2014_lidar_dtm_asc/`, named by the square's corner in
+  hundreds of metres: EPSG:25832 (643 500, 5 112 000) is `5h643551120_DTM.asc`. The adapter is a
+  grid of names, like a German state's; the geoportal's merge service is not used. A square the
+  survey did not reach answers 404, which is a coverage edge.
+- **New Zealand** names its tiles after NZTopo50 sheets, a regular NZTM2000 grid of 24 km by
+  36 km: `AS21` runs from (1 492 000, 6 198 000) and `BX15` from (1 348 000, 5 154 000).
+  `sources/nz.py` holds those constants, so no LINZ key is needed. A wrong constant names a sheet
+  whose window misses the box, which refuses; a test holds the constants against five sheets.
 
 An ESRI ASCII grid states its origin and its step and never its CRS, so a row published or
 delivered as one names the grid in `grid_epsg` and the tool writes the `.prj` beside the file.
@@ -570,11 +559,19 @@ python3 ingest.py ingest au --bbox 150.3050,-33.4200,150.3270,-33.4054 --archive
     --input $W/au-order --datum AHD
 ```
 
-A **country-scale** ingest is the same command with the country's box, and it is an owner-run job:
-it moves hundreds of gigabytes and takes days per country. Run one source at a time, keep the work
-directory on a disk with room for the source rasters, and `check` the archive before `publish`. The
-tail holds one source raster plus the tiles it touches, so cost per box is flat for a product that
-publishes per tile, per square kilometre or per window.
+A **country-scale** ingest is the same command with the country's box and `--per-tile`, and it is
+an owner-run job: it moves hundreds of gigabytes and takes days per country. Run one source at a
+time, and `check` the archive before `publish`. Per tile, the tool fetches the tile's box, pools
+it, records the tile as done in the source's manifest and wipes the work directory, so disk holds
+one tile's rasters and a run that stopped resumes at the tile it was on:
+
+```sh
+python3 ingest.py ingest ch --bbox 5.9,45.8,10.5,47.9 --archive $A --work $W/ch --per-tile
+```
+
+A square that straddles two tiles is fetched twice, the price of a flat disk. The index is
+rebuilt once at the end, because it digests every tile, so `check` on a stopped run names tiles
+the index lacks until the run is resumed.
 
 Five of the sources need a word about scale:
 
@@ -582,9 +579,9 @@ Five of the sources need a word about scale:
   one read is never larger than the pixel cap however large the box is, and a country-scale run
   costs one small request per sub-box rather than one square in memory. The date in its URL is the
   BEV delivery the row points at; a new delivery is a new date in `ingest/sources/at.py`.
-- **`de-by`, `de-sn`, `de-th`** download whole grid squares. Bavaria alone is 71 979 squares, so a
-  whole-state run wants the work directory on a big disk. Each state publishes an index with a
-  SHA-256 per square, which is the way to check a bulk download that the tool does not do for you.
+- **`de-by`, `de-sn`, `de-th`** download whole grid squares. Bavaria alone is 71 979 squares. Each
+  state publishes an index with a SHA-256 per square, which is the way to check a bulk download
+  that the tool does not do for you.
 - **`nl`** is a 0.5 m product, so a box is four times the requests of a 1 m one, and `it-tn` and
   `dk` are finer still. One Trentino square is 8.0 MB of ESRI ASCII, the 2 km verification box
   needs 16 of them and so costs 123 MB, and the province is 25 201 squares, about 200 GB.
@@ -619,12 +616,14 @@ is readable by every process on the box. The variables come from `tools/obc.loca
 
 ```
 OBC_R2_ACCOUNT_ID        Cloudflare account id (builds the endpoint)
-OBC_R2_BUCKET            bucket name
-OBC_R2_PREFIX            optional key prefix inside the bucket
+OBC_R2_BUCKET            bucket name; the archive is at <bucket>/reference/v1/
 OBC_R2_ACCESS_KEY_ID     R2 API token id
 OBC_R2_SECRET_ACCESS_KEY
 OBC_R2_ENDPOINT          optional, overrides the derived endpoint (an S3 test double)
 ```
+
+The archive sits beside the catalog prefix and not under it: `obc bake clean-r2` purges the
+catalog prefix before a fresh publish, and the archive is days of ingest that no bake rebuilds.
 
 The owner publishes an ingested archive with:
 
@@ -643,7 +642,11 @@ every other region visible.
 A tile that must leave R2 is a deliberate step by hand: remove the object, then publish a full
 archive again.
 
-A bakery run mirrors before it bakes:
+The bakery reads a local archive. On the machine that ingested it, that is the archive itself,
+named once as `OBC_REFERENCE_ARCHIVE` in `tools/obc.local`, which `obc bake` passes as
+`--reference` on every run. A bake that forgets the flag re-bakes every lifted cell without its
+lifts, which is why the name lives in `obc.local` and not on the command line. Another machine
+mirrors the box it bakes first:
 
 ```sh
 python3 host/obc-dem/reference/ingest.py mirror --archive ref/ --bbox 8.30,46.75,8.60,46.95

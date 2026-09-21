@@ -389,6 +389,76 @@ class Ingest(ArchiveCase):
         self.assertEqual(int(((data != 1234) & (data != ingest.NODATA)).sum()), 0)
 
 
+class BoxService(ingest.Source):
+    """A service that answers a box with the columns of one EPSG:4326 raster inside it."""
+
+    def __init__(self, raster):
+        super().__init__("ch", "Testland", "box service", 1.0, "CC0", "© box", "EGM2008",
+                         (-180, -90, 180, 90))
+        self.raster, self.boxes = raster, []
+
+    def fetch(self, bbox, workdir):
+        self.boxes.append(bbox)
+        west, _, east, _ = bbox
+        with rasterio.open(self.raster) as src:
+            values, t = src.read(1), src.transform
+        centres = t.c * 1e6 + (np.arange(values.shape[1]) + 0.5) * t.a * 1e6
+        cols = np.flatnonzero((centres >= west * 1e6) & (centres < east * 1e6))
+        if cols.size == 0:
+            return []
+        workdir.mkdir(parents=True, exist_ok=True)
+        path = source_raster(workdir / f"{len(self.boxes)}.tif", values[:, cols[0]:cols[-1] + 1],
+                             transform=t * Affine.translation(int(cols[0]), 0))
+        with rasterio.open(path, "r+") as dst:
+            dst.crs = ingest.WGS84
+        return [path]
+
+
+class PerTile(ArchiveCase):
+    def test_a_per_tile_run_matches_the_one_box_run_and_resumes(self):
+        """`--per-tile` asks the service one tile's box at a time, keeps nothing on disk
+        between tiles, and a second run asks for nothing."""
+
+        # A 128 µdeg source that straddles two tiles, with a tower in each.
+        transform, _, _ = wgs84_grid(128, col=ingest.TILE_PX - 50)
+        values = np.full((100, 100), 1000.0, dtype="float32")
+        values[50, 10] = values[50, 60] = TOWER
+        raster = source_raster(self.inputs / "wide.tif", values, transform=transform)
+        with rasterio.open(raster, "r+") as dst:
+            dst.crs = ingest.WGS84
+        service = BoxService(raster)
+        real = ingest.SOURCES["ch"]
+        ingest.SOURCES["ch"] = service
+        self.addCleanup(lambda: ingest.SOURCES.__setitem__("ch", real))
+        work = self.root / "work"
+
+        whole = self.root / "whole"
+        self.assertEqual(ingest.main(["ingest", "ch", "--bbox", bbox_of(raster), "--archive", str(whole),
+                                      "--work", str(work)]), 0)
+        self.assertEqual(len(service.boxes), 1)
+
+        run = ["ingest", "ch", "--bbox", bbox_of(raster), "--archive", str(self.archive),
+               "--work", str(work), "--per-tile"]
+        self.assertEqual(ingest.main(run), 0)
+        tiles = sorted(self.index()["tiles"])
+        self.assertEqual(len(tiles), 2)
+        self.assertEqual(service.boxes[1:], [ingest.tile_bounds(*(int(p) for p in t.split("/"))) for t in tiles])
+        self.assertEqual(self.index()["sha256"],
+                         json.loads((whole / "index.json").read_text(encoding="utf-8"))["sha256"])
+        manifest = json.loads((self.archive / "sources" / "ch.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["done"], tiles)
+        self.assertEqual(manifest["tiles"], tiles)
+        self.assertFalse(work.exists())
+
+        self.assertEqual(ingest.main(run), 0)
+        self.assertEqual(len(service.boxes), 3)  # every tile was done, so nothing was asked for
+
+    def test_per_tile_refuses_a_delivery(self):
+        code = ingest.main(["ingest", "ch", "--bbox", "8,46,9,47", "--archive", str(self.archive),
+                            "--input", str(self.inputs), "--per-tile"])
+        self.assertEqual(code, 1)
+
+
 class Check(ArchiveCase):
     def setUp(self):
         super().setUp()
@@ -524,10 +594,10 @@ class RcloneSeam(ArchiveCase):
         self.assertEqual(listing[0], "lsf")
         self.assertNotIn("--delete", [word for argv, _ in self.calls for word in argv])
 
-        self.assertEqual(upload[1:3], [str(self.archive), "OBCR2:maps/obc/reference/v1"])
+        self.assertEqual(upload[1:3], [str(self.archive), "OBCR2:maps/reference/v1"])
         self.assertEqual(upload[upload.index("--exclude") + 1], "/index.json")
-        self.assertEqual(fetch[1], "OBCR2:maps/obc/reference/v1")  # the index R2 already has
-        self.assertEqual(publish[2], "OBCR2:maps/obc/reference/v1")
+        self.assertEqual(fetch[1], "OBCR2:maps/reference/v1")  # the index R2 already has
+        self.assertEqual(publish[2], "OBCR2:maps/reference/v1")
         self.assertTrue(publish[1].endswith("index.json"), publish)
         self.assertNotEqual(Path(publish[1]).parent, self.archive)  # the merge is not the local index
 
@@ -587,7 +657,7 @@ class RcloneSeam(ArchiveCase):
         bbox = bbox_of(self.inputs / "tower.tif")
         self.assertEqual(ingest.main(["mirror", "--archive", str(target), "--bbox", bbox]), 0)
         copyto, copy = (argv for argv, _ in self.calls)
-        self.assertEqual(copyto[1], "OBCR2:maps/obc/reference/v1/index.json")
+        self.assertEqual(copyto[1], "OBCR2:maps/reference/v1/index.json")
         # The box needs its own tile and the ring around it; only the one is in the index.
         self.assertGreaterEqual(len(ingest.box_tiles(ingest.parse_bbox(bbox))), 9)
         self.assertEqual(self.listing, [f"16/{next(iter(self.index()['tiles']))}.tif"])
