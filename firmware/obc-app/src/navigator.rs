@@ -1,19 +1,17 @@
-//! The **Navigator** domain: route following, route planning, detour planning, preview and commit.
+//! The Navigator domain: route following, route planning, detour planning, preview and commit.
 //!
 //! Navigator owns the whole planning lifecycle — `Idle → Planning → PreviewReady → Committing →
 //! Active` (or `Failed`) — and the rules a platform executor must never decide: when a plan is
 //! cancelled, when a replacement supersedes an in-flight one, and when a late planner answer is too
 //! old to matter. The executor is left with five bounded mechanisms: take the sources and the
-//! workspace, run **one** planner step, commit a route, commit a detour, give the resources back.
+//! workspace, run one planner step, commit a route, commit a detour, give the resources back.
 //!
-//! [`NavigatorMachine`] is that owner. It holds the rider's request until an executor takes it, the
-//! [`OperationToken`] the answer must come back with, and the per-family phase. It is also the only
-//! writer of [`CoreMode`]'s two **search levels** — the fact "the executor holds the nav arm" — which
-//! it sets and clears at the three transitions below and nowhere else.
+//! [`NavigatorMachine`] is that owner, and the only writer of [`CoreMode`]'s two search levels, the
+//! fact "the executor holds the nav arm".
 //!
-//! Bulk stays out: the emitted OBCR bytes, the corridor blacklist and the detour preview *polyline*
+//! Bulk stays out: the emitted OBCR bytes, the corridor blacklist and the detour preview polyline
 //! never ride an effect or an outcome. What crosses is an identity, a bounded request, and the
-//! preview *figures* the HUD prints.
+//! preview figures the HUD prints.
 
 mod following;
 mod review;
@@ -44,9 +42,8 @@ pub enum PlanFamily {
     Detour,
 }
 
-/// What the rider (through `UiRuntime`) asks navigation to do. An intent is a *product request*:
-/// Navigator decides whether it is admissible, what physical work it implies, and what the rider
-/// then sees.
+/// What the rider asks navigation to do. An intent is a product request: Navigator decides whether
+/// it is admissible and what physical work it implies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavigatorIntent {
     AcceptAssistant {
@@ -57,29 +54,25 @@ pub enum NavigatorIntent {
     ResumeAssistant {
         origin: ReviewOrigin,
     },
-    /// Plan a route from the rider's fix to a chosen point.
     PlanRoute(NavRequest),
     /// Abandon the in-flight route plan. Navigator invalidates its token, so the planner's eventual
     /// answer is rejected rather than committing a route nobody is waiting for.
     CancelPlan,
     /// Plan a detour that rejoins the active route ahead.
     PlanDetour(DetourRequest),
-    /// Abandon the in-flight detour plan **and** any planned-but-uncommitted detour.
+    /// Abandon the in-flight detour plan and any planned-but-uncommitted detour.
     CancelDetour,
     /// Commit the previewed detour: splice it into the active route and make the result active.
     CommitDetour,
 }
 
-/// Which search the acquired workspace is for — the only thing the executor needs in order to open
-/// the right sources. Bounded by construction: [`NavRequest`]'s name is a fixed inline buffer and
-/// [`DetourRequest`] is four numbers.
+/// Which search the acquired workspace is for: the only thing the executor needs in order to open
+/// the right sources. Bounded by construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlannerWork {
     AssistantRoute(NavRequest),
     RestoreReview(obc_formats::obcr::RouteSourceKey),
-    /// A full route plan from a fix to a goal.
     Route(NavRequest),
-    /// A detour around the span ahead of the rider.
     Detour(DetourRequest),
 }
 
@@ -89,7 +82,7 @@ pub enum PlannerWork {
 pub enum NavigatorEffect {
     /// Open the map and route sources and claim the planner workspace for `work`.
     Acquire { token: OperationToken<NavigatorTag>, work: PlannerWork },
-    /// Run **one** bounded planner step. Navigator paces the search: a step is a unit of work, not
+    /// Run one bounded planner step. Navigator paces the search: a step is a unit of work, not
     /// a whole search, so a plan never monopolises a pass.
     Step { token: OperationToken<NavigatorTag> },
     /// Write the finished search as a route object and commit it to the store.
@@ -102,7 +95,6 @@ pub enum NavigatorEffect {
 }
 
 impl NavigatorEffect {
-    /// The operation this effect belongs to.
     pub fn token(&self) -> OperationToken<NavigatorTag> {
         match self {
             NavigatorEffect::Acquire { token, .. }
@@ -114,8 +106,8 @@ impl NavigatorEffect {
     }
 }
 
-/// How far one [`Step`](NavigatorEffect::Step) got. Navigator — not the executor — decides what to
-/// do next: keep stepping, or commit.
+/// How far one [`Step`](NavigatorEffect::Step) got. Navigator, not the executor, decides what to do
+/// next: keep stepping, or commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlannerProgress {
     /// The frontier is still open; another step is worthwhile.
@@ -127,10 +119,9 @@ pub enum PlannerProgress {
 /// Why a navigation operation failed, in Navigator's own vocabulary.
 ///
 /// [`Plan`](NavigatorError::Plan) reuses the shared planner's [`NavError`] rather than restating
-/// it: the same `obc-route` search runs on every platform (#1433 §7.2), so its two honest verdicts
-/// are the same everywhere. An **unsupported** detour is not in this enum at all — that is a
-/// missing [`NavigatorCapabilities::plan_detour`](crate::device_core::NavigatorCapabilities), and a
-/// device without the planner must never report it as `NoPath`.
+/// it. An unsupported detour is not in this enum at all: that is a missing
+/// [`NavigatorCapabilities::plan_detour`](crate::device_core::NavigatorCapabilities), and a device
+/// without the planner must never report it as `NoPath`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavigatorError {
     /// The search itself failed: no path, or the fixed scratch exhausted.
@@ -161,7 +152,6 @@ pub enum NavigatorOutcome {
     Acquired {
         token: OperationToken<NavigatorTag>,
     },
-    /// One planner step ran.
     Stepped {
         token: OperationToken<NavigatorTag>,
         progress: PlannerProgress,
@@ -186,7 +176,6 @@ pub enum NavigatorOutcome {
     Released {
         token: OperationToken<NavigatorTag>,
     },
-    /// The operation failed.
     Failed {
         token: OperationToken<NavigatorTag>,
         error: NavigatorError,
@@ -215,9 +204,7 @@ impl NavigatorOutcome {
     }
 }
 
-// Layout tripwires: a navigation message is a request, an identity, or a handful of figures. The
-// dominating effect variant is `Acquire`'s `PlannerWork` (a `NavRequest` with its fixed name
-// buffer) and the dominating outcome is the four-figure `DetourPreview`.
+// Layout tripwires: a navigation message is a request, an identity, or a handful of figures.
 const _: () = assert!(core::mem::size_of::<NavigatorIntent>() <= 48, "an intent is a bounded request");
 const _: () = assert!(core::mem::size_of::<NavigatorEffect>() <= 56, "the planner request plus a token");
 const _: () =
@@ -226,22 +213,18 @@ const _: () = assert!(core::mem::size_of::<NavigatorError>() <= 2, "a verdict, n
 const _: () = assert!(core::mem::size_of::<PlannerWork>() <= 48, "the largest planner request");
 const _: () = assert!(core::mem::size_of::<PlannerProgress>() <= 1, "a two-state answer");
 
-// ==================== the Navigator state machine (#1397 S2) ====================
-
 /// Where one planning family is in the lifecycle Navigator owns.
 ///
-/// Two families run this independently — a route search and a detour search take the same nav arm
-/// but have their own commands, their own answers and their own failure tiers, and conflating them
-/// is the #1146 regression (see [`PlanFamily`]). The route family never reaches
-/// [`PreviewReady`](PlanPhase::PreviewReady) or [`Committing`](PlanPhase::Committing): a planned
-/// route is adopted straight from its answer, while a detour is previewed and then spliced.
+/// Two families run this independently: a route search and a detour search take the same nav arm but
+/// have their own commands, answers and failure tiers. The route family never reaches
+/// [`PreviewReady`](PlanPhase::PreviewReady) or [`Committing`](PlanPhase::Committing), because a
+/// planned route is adopted straight from its answer while a detour is previewed and then spliced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum PlanPhase {
-    /// Nothing asked for, nothing running.
     #[default]
     Idle,
-    /// The rider asked; no executor has taken the work yet. A cancel here **annihilates** the
-    /// request (#499) — the net intent is "no plan", so nothing is ever started.
+    /// The rider asked; no executor has taken the work yet. A cancel here annihilates the request:
+    /// the net intent is "no plan", so nothing is ever started.
     Requested,
     /// An executor holds the operation under the machine's current token.
     Planning,
@@ -271,58 +254,45 @@ enum OperationPhase {
     Releasing,
 }
 
-// The phase and cancellation mask replace the two per-family cancellation booleans.
+// The phase and the cancellation mask must stay as small as the two booleans they encode.
 const _: () = assert!(core::mem::size_of::<(OperationPhase, u8)>() == core::mem::size_of::<[bool; 2]>());
 const _: () = assert!(core::mem::align_of::<(OperationPhase, u8)>() == core::mem::align_of::<[bool; 2]>());
 
 /// The domain that owns active-route following, route planning, detour planning, preview, and
 /// commit.
 ///
-/// Persistent route identity, match and guidance state, route caches, seam state, and travel
-/// heading live here. Screens borrow [`RouteState`] directly. The short-lived
-/// [`Prepare`](crate::screen::Prepare) context copies only the route facts that one pre-draw pass
-/// needs; it is not an owner.
+/// Persistent route identity, match and guidance state, route caches, seam state, and travel heading
+/// live here. Screens borrow [`RouteState`] directly; the short-lived
+/// [`Prepare`](crate::screen::Prepare) context copies only the route facts one pre-draw pass needs.
 ///
-/// Everything one rider request passes through lives here and nowhere else: the undelivered
-/// request, the cancel that annihilates it, the phase, the operation token, and the [`CoreMode`]
-/// search level the planner's liveness drives. Both compositions reach it through the same three-method seam —
-/// [`admit_intent`](Self::admit_intent), [`next_effect`](Self::next_effect),
-/// `App::apply_navigator_outcome`.
+/// Everything one rider request passes through lives here and nowhere else: the undelivered request,
+/// the cancel that annihilates it, the phase, the operation token, and the [`CoreMode`] search level
+/// the planner's liveness drives.
 pub struct NavigatorMachine {
-    /// The one operation token, and it is genuinely **one**:
+    /// The one operation token, and it is genuinely one:
     /// [`TokenSource::issue`](crate::device_core::TokenSource::issue) bumps a single generation, so
-    /// only the newest operation is ever current *across both families*. A second concurrent
-    /// operation would therefore make the first one's answer stale, `accepts` would refuse it, and
-    /// its family's search level would never be released — a map that never redraws again.
-    /// That is why [`next_plan_effect`](Self::next_plan_effect) and
-    /// [`next_commit_effect`](Self::next_commit_effect) hand out **at most one operation at a
-    /// time**: the constraint is enforced where the token is minted, not assumed.
+    /// only the newest operation is ever current across both families. A second concurrent operation
+    /// would make the first one's answer stale, `accepts` would refuse it, and its family's search
+    /// level would never be released. That is why [`next_plan_effect`](Self::next_plan_effect) and
+    /// [`next_commit_effect`](Self::next_commit_effect) hand out at most one operation at a time.
     ///
-    /// [`CoreMode`]'s two search levels are not the same question. They track *edges* — which
-    /// family's terminal edge may release what — and they stay per-family (#1146) whatever the
-    /// token layer allows.
+    /// [`CoreMode`]'s two search levels are not the same question: they track which family's
+    /// terminal edge may release what, and stay per-family whatever the token layer allows.
     ops: TokenSource<NavigatorTag>,
     review: ReviewState,
     visit: visit::VisitState,
     /// The family that owns physical work, through the acknowledged release.
     live: Option<PlanFamily>,
-    /// The route family's phase.
     route: PlanPhase,
-    /// The detour family's phase.
     detour: PlanPhase,
-    /// The rider's route-plan request, until an executor takes it.
     route_request: Option<NavRequest>,
-    /// The rider's detour-plan request, until an executor takes it.
     detour_request: Option<DetourRequest>,
     phase: OperationPhase,
     // Bits 0–1: family cleanup owed. Bit 2: outstanding release retains a preview.
     cancel_mask: u8,
-    /// The previewed detour's commit, until an executor takes it.
     detour_commit: bool,
-    /// The visible active-route identity and guidance result. Screens borrow this value directly;
-    /// no copied mirror exists in [`crate::Activity`].
     following: RouteState,
-    /// Resident per-route caches. Their separate keys remain until epic slice N2.
+    /// Resident per-route caches, each with its own build key.
     profile: Option<Profile>,
     profile_route: Option<usize>,
     climbs: Climbs,
@@ -339,7 +309,6 @@ pub struct NavigatorMachine {
 
 impl NavigatorMachine {
     define_placement_constructors!(
-        /// The boot state: no active route, no derived cache, and no planning work.
         pub(crate) fn new();
         /// Initialize the Navigator in place. Its route caches are too large for a device stack
         /// temporary, so the board and [`crate::App`] use this path.
@@ -370,8 +339,6 @@ impl NavigatorMachine {
             matched_route: None,
         }
     );
-
-    // ---- the operation seam ----
 
     /// Admit one rider request. Navigator decides what it means; nothing here can fail, because
     /// every intent either supersedes what came before or annihilates it.
@@ -629,10 +596,6 @@ impl NavigatorMachine {
         self.detour = if committed { PlanPhase::Active } else { PlanPhase::PreviewReady };
     }
 
-    // ---- fixture observations ----
-
-    /// Whether `family` has an undelivered cancellation — the `CancelRoutePlan` / `CancelDetour`
-    /// peek.
     #[cfg(test)]
     pub(crate) fn cancel_pending(&self, family: PlanFamily) -> bool {
         match family {
@@ -653,9 +616,7 @@ impl NavigatorMachine {
         }
     }
 
-    // ---- catalog identity ----
-
-    /// Follow the undelivered detour request through a route-catalog rescan by durable identity; a
+    /// Follow the undelivered detour request through a route-catalog rescan by durable identity. A
     /// vanished route drops it, exactly as it drops the caches keyed on that route.
     pub(crate) fn remap_detour_route(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
         self.detour_request =
@@ -670,8 +631,6 @@ impl NavigatorMachine {
         self.detour = PlanPhase::Idle;
     }
 
-    /// The undelivered detour request itself — the durable-identity tests pin the remap through it
-    /// without consuming the request.
     #[cfg(test)]
     pub(crate) fn pending_detour_request(&self) -> Option<DetourRequest> {
         self.detour_request
@@ -787,8 +746,8 @@ mod machine_tests {
         DetourRequest { route: 0, from: (0, 0), progress_m: 1_000, target_m: 1_600 }
     }
 
-    /// The name of what an effect asks for, so a test can say what it expects without matching on
-    /// a token it never chose.
+    /// The name of what an effect asks for, so a test can say what it expects without matching on a
+    /// token it never chose.
     fn acquired(effect: Option<NavigatorEffect>) -> Option<PlannerWork> {
         match effect {
             Some(NavigatorEffect::Acquire { work, .. }) => Some(work),

@@ -1,46 +1,38 @@
-//! The host→app BLE **event/state seam** (epic #447, P1): the small app-vocabulary snapshot the
-//! host feeds in each pass, plus the store-change signal the object store raises on a commit/delete.
+//! The host-to-app BLE event and state seam: the small app-vocabulary snapshot the host feeds in
+//! each pass, plus the store-change signal the object store raises on a commit or delete.
 //!
-//! `obc-app` stays oblivious to the radio: no `obc-ble` (or board) type crosses this boundary. The
-//! host — the board's BLE plane, or the simulator's control panel — distils its link into a
-//! [`BleStatus`] and pushes it through [`App::set_ble_status`](crate::App::set_ble_status); the
-//! object-store commit/delete paths ring the pass's fact stage.
-//! The app's own consumers (the connected indicator, the Bluetooth settings screen's status line,
-//! the passkey card, the live catalog) read only these app-side types.
+//! `obc-app` stays oblivious to the radio, and no `obc-ble` or board type crosses this boundary.
+//! The host distils its link into a [`BleStatus`] and pushes it through
+//! [`App::set_ble_status`](crate::App::set_ble_status). The app's own consumers read only these
+//! app-side types.
 
-/// The radio's link phase, in app vocabulary — what the Bluetooth settings screen's status line
-/// shows (P8, #455). Three states, deliberately coarser than the board's own `LinkState`: the UI
-/// never needs "stack coming up" (that reads as [`Advertising`](BleLink::Advertising)).
+/// The radio's link phase in app vocabulary, as the Bluetooth settings screen's status line shows
+/// it. Three states, deliberately coarser than the board's own: the UI never needs "stack coming
+/// up", which reads as [`Advertising`](BleLink::Advertising).
 ///
-/// The connected **indicator** (the title-bar/Home rune, P1) keys on
-/// [`Connected`](BleLink::Connected) only — `Off` and `Advertising` both draw nothing there.
+/// The connected indicator keys on [`Connected`](BleLink::Connected) only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BleLink {
-    /// The radio is disabled (the Bluetooth setting is off): nothing advertises, nothing connects.
+    /// The radio is disabled: nothing advertises, nothing connects.
     Off,
-    /// Powered and unconnected — advertising, connectable. The steady state, and the boot default
+    /// Powered and unconnected: advertising and connectable. The steady state, and the boot default
     /// until the host feeds the first real snapshot.
     #[default]
     Advertising,
-    /// A central holds the (single) link.
+    /// A central holds the single link.
     Connected,
 }
 
-/// The link state the device UI shows — the whole of what `obc-app` knows about the BLE link.
-///
-/// Distilled by the host from its radio state (the board's `ble::state` snapshot, or the sim's
-/// control panel) and fed in each pass via [`App::set_ble_status`](crate::App::set_ble_status).
-/// Deliberately tiny: everything the UI needs, nothing about descriptors, MTUs, or peers.
+/// The whole of what `obc-app` knows about the BLE link. Distilled by the host from its radio state
+/// and fed in each pass. Deliberately tiny: everything the UI needs, nothing about descriptors,
+/// MTUs or peers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BleStatus {
-    /// The radio's link phase. [`Connected`](BleLink::Connected) drives the connected indicator
-    /// (menu title bar + Home); the full three states drive the Bluetooth screen's status line.
     pub link: BleLink,
-    /// The 6-digit LESC passkey to show while pairing, or `None` otherwise. Drives the passkey
-    /// card (P2, #449): [`App::set_ble_status`](crate::App::set_ble_status) opens a
+    /// The 6-digit LESC passkey to show while pairing, or `None` otherwise.
+    /// [`App::set_ble_status`](crate::App::set_ble_status) opens a
     /// [`PasskeyScreen`](crate::screen::PasskeyScreen) when this goes `Some` and closes it when it
-    /// clears. The board publishes it from the pairing exchange; the sim injects it from the
-    /// control panel.
+    /// clears.
     pub passkey: Option<u32>,
     /// The platform's paired state. It is not a durable deletion receipt.
     pub paired: bool,
@@ -51,25 +43,22 @@ impl BleStatus {
     /// until the host feeds the first real snapshot.
     pub const DISCONNECTED: BleStatus = BleStatus { link: BleLink::Advertising, passkey: None, paired: false };
 
-    /// Whether a central holds the link — the connected indicator's one question.
+    /// Whether a central holds the link: the connected indicator's one question.
     pub fn connected(&self) -> bool {
         self.link == BleLink::Connected
     }
 }
 
-// ==================== the Bond domain protocol (#1436) ====================
-//
-// Forgetting a phone is one bounded platform operation, but its user-visible lifecycle is
-// DeviceCore's: the confirm hold, the "not paired" row afterwards, and the fact that the *link*
-// dropping is a separate external fact ([`ExternalFacts::link`](crate::device_core::ExternalFacts))
-// rather than part of this answer.
+// The bond domain protocol. Forgetting a phone is one bounded platform operation, but its
+// user-visible lifecycle is DeviceCore's: the confirm hold, the "not paired" row afterwards, and
+// the fact that the link dropping is a separate external fact rather than part of this answer.
 
 use crate::device_core::{BondTag, OperationToken};
 
 /// What the rider asks of the bond store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BondIntent {
-    /// Forget the paired phone — the guarded hold on the Bluetooth screen.
+    /// Forget the paired phone: the guarded hold on the Bluetooth screen.
     ForgetRequested,
 }
 
@@ -81,7 +70,6 @@ pub enum BondEffect {
 }
 
 impl BondEffect {
-    /// The operation this effect belongs to.
     pub fn token(&self) -> OperationToken<BondTag> {
         match self {
             BondEffect::Forget { token } => *token,

@@ -13,7 +13,6 @@ pub struct RideFinalized {
 pub struct FaultNotices(WarningFlags);
 
 impl FaultNotices {
-    /// Nothing raised.
     pub const NONE: FaultNotices = FaultNotices(WarningFlags::NONE);
 
     /// Raise `flags`. Never displaces what another domain already raised.
@@ -21,7 +20,6 @@ impl FaultNotices {
         self.0 |= flags;
     }
 
-    /// Take everything raised this pass, clearing the set.
     pub fn take(&mut self) -> WarningFlags {
         core::mem::replace(&mut self.0, WarningFlags::NONE)
     }

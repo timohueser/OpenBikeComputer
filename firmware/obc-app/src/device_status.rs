@@ -6,14 +6,12 @@ use crate::BleLink;
 pub struct DeviceStatus {
     /// Battery charge on the app's `0..=100` percent scale.
     pub battery_pct: u8,
-    /// Current phone-link phase.
     pub ble_link: BleLink,
     /// Whether the host has a stored phone bond.
     pub ble_paired: bool,
 }
 
 impl DeviceStatus {
-    /// Whether a phone currently holds the BLE link.
     #[inline]
     pub const fn ble_connected(self) -> bool {
         matches!(self.ble_link, BleLink::Connected)

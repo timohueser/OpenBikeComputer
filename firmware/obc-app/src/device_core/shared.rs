@@ -1,19 +1,8 @@
-//! The shared DeviceCore vocabulary: operation tokens, capabilities, and external facts (#1435).
+//! The shared DeviceCore vocabulary: operation tokens, capabilities, and external facts. Nothing
+//! here performs work.
 //!
-//! Nothing here performs work. These are the three small contracts every domain state machine and
-//! every platform executor agrees on:
-//!
-//! | Contract | Question it answers |
-//! |---|---|
-//! | [`OperationToken`] | Is this result still the one I asked for? |
-//! | [`Capabilities`] | Can this device do this operation *at all*? |
-//! | [`ExternalFacts`] | What changed underneath me that nobody asked for? |
-//!
-//! Every type here is bounded and free of platform handles, paths and unbounded collections — a
-//! value in this module can cross the DeviceCore ↔ executor seam on any platform. All of them are
-//! `Copy` except [`UpdateResult`] and the [`ExternalFacts`] that holds it: an update result carries
-//! `Version` strings ([`heapless::String`], fixed 32-byte buffers), which are bounded but not
-//! `Copy`. Those two are `Clone` instead — bounded either way, and neither ever allocates.
+//! Every type here is bounded and free of platform handles, paths and unbounded collections, so a
+//! value in this module can cross the DeviceCore ↔ executor seam on any platform.
 
 use core::marker::PhantomData;
 
@@ -22,49 +11,33 @@ use crate::dfu::{DfuFailure, Version};
 use crate::screen::WarningFlags;
 use crate::CatalogObjectId;
 
-// ==================== operation tokens ====================
+// The domain tags an `OperationToken` is typed by, one per domain that owns asynchronous work.
+// They are uninhabited: a tag is a name at the type level, never a value.
 
-// The domain tags an `OperationToken` is typed by — one per domain that owns asynchronous work
-// (the effect/outcome slots of epic #1433 §5). They are uninhabited: a tag is a *name at the type
-// level*, never a value, so no trait impl on one could ever be called. `UiRuntime`, `CoreMode` and
-// `FaultState` have no tag because they issue no effects and therefore own no operation.
-
-/// Catalog revisions, refresh, deletion, and the trip cascade.
 pub enum CatalogTag {}
 /// Assistant checkpoint writes.
 pub enum MetadataTag {}
-/// Ride samples, checkpoints, finalize and discard.
 pub enum RecorderTag {}
-/// Route planning, detour planning, preview and commit.
 pub enum NavigatorTag {}
-/// The settings persist handshake.
 pub enum SettingsTag {}
 
-/// Firmware-update scan and install arming.
 pub enum DfuTag {}
-/// Bond removal.
 pub enum BondTag {}
-/// Free-space measurement.
 pub enum StorageInfoTag {}
 
 /// The identity of one in-flight operation, typed by its owning domain.
 ///
 /// Every effect carries the token its domain issued, and every outcome carries it back. The domain
-/// owner accepts an outcome only while [`TokenSource::is_current`] holds — that single equality is
-/// how a *superseded* result (cancelled, replaced, or belonging to an operation the domain has
-/// since moved past) is rejected without the executor knowing any product rule.
+/// owner accepts an outcome only while [`TokenSource::is_current`] holds, which is how a superseded
+/// result is rejected without the executor knowing any product rule.
 ///
-/// **What equality alone does not reject.** The generation keeps standing after the operation ends,
-/// so a duplicate or post-terminal outcome carrying the same token still compares current. Closing
-/// that is the domain owner's obligation, and it is one line: **invalidate when you accept a
-/// terminal outcome** ([`TokenSource::invalidate`]), exactly as cancellation and replacement do.
-/// An owner that skips it will reprocess a repeated result, and the bug will look like a state
-/// machine bug rather than the contract gap it is.
+/// Equality alone does not reject a duplicate or post-terminal outcome, because the generation
+/// keeps standing after the operation ends. The owner must call [`TokenSource::invalidate`] when it
+/// accepts a terminal outcome, exactly as cancellation and replacement do.
 ///
-/// The generation is private and never zero, so a token cannot be forged, minted by an executor, or
-/// confused with "no operation". `PhantomData<fn() -> Tag>` keeps the tag invariant-free (the token
-/// stays `Copy` and `Send` regardless of the tag) while making a token of one domain unusable as a
-/// token of another:
+/// The generation is private and never zero, so a token cannot be forged or confused with "no
+/// operation". `PhantomData<fn() -> Tag>` makes a token of one domain unusable as a token of
+/// another:
 ///
 /// ```compile_fail
 /// use obc_app::device_core::{CatalogTag, NavigatorTag, OperationToken, TokenSource};
@@ -100,20 +73,16 @@ impl<Tag> core::fmt::Debug for OperationToken<Tag> {
     }
 }
 
-/// The single minter of one domain's [`OperationToken`]s — a domain state machine owns exactly one
-/// and no executor ever holds it.
-///
-/// Generation `0` is the boot state "nothing was ever issued", so a token can never equal it: the
-/// wrap in [`issue`](Self::issue) skips back to `1`. Wrapping is sound because only the *latest*
-/// generation is ever current — a stale token would have to survive 2³² further operations of the
-/// same domain to be mistaken for it.
+/// The single minter of one domain's [`OperationToken`]s. A domain state machine owns exactly one,
+/// and no executor ever holds it. Generation `0` is the boot state "nothing was ever issued", so
+/// [`issue`](Self::issue) skips back to `1` on wrap; only the latest generation is ever current, so
+/// the wrap cannot resurrect a stale token.
 pub struct TokenSource<Tag> {
     generation: u32,
     tag: PhantomData<fn() -> Tag>,
 }
 
 impl<Tag> TokenSource<Tag> {
-    /// A source that has issued nothing.
     pub const fn new() -> Self {
         TokenSource { generation: 0, tag: PhantomData }
     }
@@ -129,16 +98,14 @@ impl<Tag> TokenSource<Tag> {
     }
 
     /// Cancel, replace, or close out a finished operation without starting new work: outstanding
-    /// tokens stop being current, so their outcomes are rejected when they finally land. A domain
-    /// owner calls this on cancellation, on replacement, **and** when it accepts a terminal outcome
-    /// — see [`OperationToken`] for why the last one is not optional.
+    /// tokens stop being current, so their outcomes are rejected when they land. A domain owner
+    /// calls this on cancellation, on replacement, and when it accepts a terminal outcome.
     pub fn invalidate(&mut self) {
         let _ = self.issue();
     }
 
-    /// Whether `token` identifies the operation this source last issued — the domain owner's accept
-    /// test for an incoming outcome. It answers "not superseded", not "not yet answered": an owner
-    /// that has accepted the terminal outcome must have called [`invalidate`](Self::invalidate).
+    /// Whether `token` identifies the operation this source last issued. It answers "not
+    /// superseded", not "not yet answered".
     pub fn is_current(&self, token: OperationToken<Tag>) -> bool {
         token.generation == self.generation
     }
@@ -156,132 +123,84 @@ impl<Tag> core::fmt::Debug for TokenSource<Tag> {
     }
 }
 
-// ==================== capabilities ====================
-
-/// What this firmware image and its hardware implement **at all** — constant for a boot.
+/// What this firmware image and its hardware implement at all. Constant for a boot: the platform
+/// executor reports it once at start-up and [`Capabilities::calculate`] consumes it.
 ///
-/// Producer: the platform executor, once at start-up. Consumer: [`Capabilities::calculate`].
-///
-/// This is where "the board has no detour planner" and "the web demo has no persistent store" are
-/// stated honestly, instead of surfacing later as a routing failure or a save that silently never
-/// happens.
-///
-/// There is deliberately no `route_planning` field: #1433 §7.2 requires the same `obc-route`
-/// algorithms on every platform, so route planning rests on live facts (a routing graph, a store to
-/// commit into, admission) alone. Detour is the one navigation split that actually exists today.
+/// There is deliberately no `route_planning` field. Every platform runs the same `obc-route`
+/// algorithms, so route planning rests on live facts alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PlatformSupport {
     /// The detour planner and the splice-commit path are present.
     pub detour: bool,
-    /// A durable settings store exists (the web demo has none).
     pub settings_persistence: bool,
-    /// A firmware-update path exists.
     pub dfu: bool,
 
-    /// A radio with a bond store exists.
     pub bonding: bool,
-    /// Free space on the storage medium can be measured.
     pub storage_space_report: bool,
 }
 
-/// The live facts capabilities depend on — mounted data and heavy-operation admission.
-///
-/// Producer: DeviceCore, from [`ExternalFacts`], the mounted map/store and `CoreMode`. Consumer:
-/// [`Capabilities::calculate`].
+/// The live facts capabilities depend on: mounted data and heavy-operation admission. DeviceCore
+/// produces them for [`Capabilities::calculate`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DeviceFacts {
-    /// A writable object store is mounted — the precondition for every catalog mutation, ride
-    /// recording and route commit.
-    ///
-    /// **What it actually reads is "a store has reported a revision", and the two are not the same
-    /// thing.** [`ExternalFacts`] has one store fact, [`StoreRevision`], and a revision says a store
-    /// is *there*, not that it will accept a write: a flat card that is read-only because its
-    /// revision or sequence space is exhausted still reports one, so a ride opens on it and the
-    /// first write fails. Nor can the level fall — there is no unmount fact to retract it with, so a
-    /// pulled card still admits a new ride.
-    ///
-    /// Both gaps are in the **fact vocabulary**, not in the calculation, and both are honest the
-    /// moment a store can report writability and an unmount. Until then the failure lands where it
-    /// always did: as a refused write the executor answers with a typed error, and the rider sees
-    /// the recording warning rather than a silently lost ride.
+    /// A writable object store is mounted: the precondition for every catalog mutation, ride
+    /// recording and route commit. What it reads is "a store has reported a revision", and there is
+    /// no unmount fact to make the level fall again.
     pub store_writable: bool,
-    /// The mounted map carries a routing graph.
     pub nav_graph: bool,
 
     pub link_connected: bool,
     pub ride_recording: bool,
-    /// [`CoreMode`](crate::device_core::core_mode::CoreMode)'s verdict on heavy work — a transfer
-    /// holding the store, or a planner run holding the nav arm. This field carries the verdict, not
-    /// that list: read `CoreMode` for the current conditions rather than re-deriving them here.
+    /// [`CoreMode`](crate::device_core::core_mode::CoreMode)'s verdict on heavy work. This field
+    /// carries the verdict, not the conditions behind it: read `CoreMode` for those.
     pub heavy_operations: bool,
 }
 
-/// Whether the catalog may change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CatalogCapabilities {
     /// Routes, trips and rides can be deleted and re-committed.
     pub mutate: bool,
 }
 
-/// Whether a ride can be recorded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RecorderCapabilities {
-    /// A ride can be started and its samples persisted.
     pub record: bool,
 }
 
-/// What navigation work this device can start. Absence is a *level*, not a failure: a device
-/// without [`plan_detour`](Self::plan_detour) never enters the planning path at all, so the rider
-/// is never told "no path" about a route the device never tried to find.
+/// What navigation work this device can start. Absence is a level, not a failure: a device without
+/// [`plan_detour`](Self::plan_detour) never enters the planning path, so the rider is never told
+/// "no path" about a route the device never tried to find.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct NavigatorCapabilities {
-    /// A route can be planned from the mounted map.
     pub plan_route: bool,
-    /// A detour around the route ahead can be planned.
     pub plan_detour: bool,
-    /// A planned detour can be spliced and committed.
     pub commit_detour: bool,
 }
 
-/// Whether settings edits can be made durable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SettingsCapabilities {
-    /// A settings revision can be written to durable storage.
     pub persist: bool,
 }
 
-/// What the firmware-update domain can offer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DfuCapabilities {
-    /// A staged image can be scanned and reported.
     pub scan: bool,
-    /// An install can be armed.
     pub install: bool,
 }
 
-/// Whether the paired phone can be forgotten.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BondCapabilities {
-    /// The bond store can be cleared.
     pub remove: bool,
 }
 
-/// Whether storage occupancy can be reported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct StorageInfoCapabilities {
-    /// Free space can be measured.
     pub report_free_space: bool,
 }
 
-/// Everything this device can currently do, one nested value per domain.
-///
-/// Producer: DeviceCore, by [`calculate`](Self::calculate) on every pass whose inputs changed.
-/// Consumer: `UiRuntime` — a screen hides or dims an operation whose capability is absent, and
-/// reads a named field rather than testing a bit number.
-///
-/// A capability is a *level*, recalculated from the current inputs; it is never latched, and an
-/// executor must never report an unsupported operation as [`NoPath`](obc_route::nav::NavError) or
-/// any other normal failure.
+/// Everything this device can currently do, one nested value per domain. A capability is a level,
+/// recalculated from the current inputs and never latched: an executor must never report an
+/// unsupported operation as [`NoPath`](obc_route::nav::NavError) or any other normal failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capabilities {
     pub catalog: CatalogCapabilities,
@@ -295,7 +214,6 @@ pub struct Capabilities {
 }
 
 impl Capabilities {
-    /// Every capability absent — the boot value, before the first calculation.
     pub const NONE: Capabilities = Capabilities {
         catalog: CatalogCapabilities { mutate: false },
         recorder: RecorderCapabilities { record: false },
@@ -334,8 +252,6 @@ impl Default for Capabilities {
     }
 }
 
-// ==================== external facts ====================
-
 /// The opaque identity of a mounted store. DeviceCore compares it; only the executor knows what it
 /// names, so no path or storage handle crosses the seam.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -358,7 +274,7 @@ impl StoreIdentity {
     }
 }
 
-/// A monotonic revision of a store or data set — the flat store's `u64` width, so no identity has
+/// A monotonic revision of a store or data set, at the flat store's `u64` width, so no identity has
 /// to be narrowed to reach DeviceCore.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Revision(u64);
@@ -368,66 +284,55 @@ impl Revision {
         self.0
     }
 
-    /// The revision of a store that has committed nothing.
     pub const ZERO: Revision = Revision(0);
 
-    /// Name a revision.
     pub const fn new(raw: u64) -> Self {
         Revision(raw)
     }
 
-    /// The next revision — how a DeviceCore-side generation (a derived view, a locally-known commit)
-    /// moves forward. Saturating rather than wrapping: a revision is compared with `>` as well as
-    /// `==`, so a wrap would let an ancient value read as newer. 2⁶⁴ commits is not a reachable
-    /// device lifetime, and saturating simply stops the counter instead of lying about order.
+    /// The next revision. Saturating rather than wrapping: a revision is compared with `>` as well
+    /// as `==`, so a wrap would let an ancient value read as newer.
     pub const fn next(self) -> Revision {
         Revision(self.0.saturating_add(1))
     }
 }
 
-/// The mounted store moved. Producer: the store executor on every commit or delete. Consumer:
-/// `CatalogMachine`, which decides *when* to refresh — the fact itself never orders one.
+/// The mounted store moved. `CatalogMachine` decides when to refresh; the fact itself never orders
+/// one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StoreRevision {
     /// Which store this revision belongs to; a different identity is a different mount.
     pub store: StoreIdentity,
-    /// The store's revision after the commit.
     pub revision: Revision,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransferState {
-    /// No transfer holds the store.
     Idle,
-    /// A transfer is streaming.
     Active,
 }
 
-/// A route upload committed to the store. Producer: the upload executor, after the catalog already
-/// saw the commit. Consumer: `CatalogMachine` (identity remap) and `UiRuntime` (the received card).
+/// A route upload committed to the store, after the catalog already saw the commit. `CatalogMachine`
+/// remaps the identity and `UiRuntime` raises the received card.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RouteUpload {
-    /// The committed route's durable object identity.
     pub id: CatalogObjectId,
     /// The upload replaced the bytes of a stored route.
     pub replaced: bool,
     /// The commit-time mini elevation sparkline, or `None` when the route carries no elevation.
-    /// Bounded by construction and already the card's content — it is not a preview polyline.
     pub elevation: Option<[u8; obc_route::SPARKLINE_BUCKETS]>,
 }
 
-/// A trip upload committed to the store. Producer and consumers as [`RouteUpload`]; a trip always
-/// arrives after its member routes, which is why one slot serves both.
+/// A trip upload committed to the store. A trip always arrives after its member routes, which is
+/// why one slot serves both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TripUpload {
-    /// The committed trip's durable object identity.
     pub id: CatalogObjectId,
-    /// The upload replaced a stored trip at the same identity.
     pub replaced: bool,
 }
 
-/// What this boot has to say about the previous firmware update. Producer: the boot path, exactly
-/// once. Consumer: `DfuState`, which turns it into the post-update toast or the failure card.
+/// What this boot has to say about the previous firmware update. Reported exactly once, and
+/// `DfuState` turns it into the post-update toast or the failure card.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateResult {
     /// A freshly installed image is running; the version is the running one.
@@ -437,7 +342,6 @@ pub enum UpdateResult {
     Failed { why: DfuFailure, staged: Option<Version> },
 }
 
-/// Why a fact could not be merged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FactMergeError {
     /// A second boot update result arrived while the first was still unconsumed. There is one boot
@@ -458,8 +362,6 @@ pub struct ExternalFacts {
 }
 
 impl ExternalFacts {
-    /// Nothing reported and nothing pending — the boot accumulator and every executor's empty
-    /// batch.
     pub const NONE: ExternalFacts = ExternalFacts {
         store_revision: None,
         transfer: None,
@@ -472,8 +374,8 @@ impl ExternalFacts {
     };
 
     /// Fold `incoming` in, field by field, under the rules documented on this type. The only
-    /// rejection is a second unconsumed [`UpdateResult`]; every other field merges, so a partial
-    /// failure cannot lose a warning or an upload.
+    /// rejection is a second unconsumed [`UpdateResult`], so a partial failure cannot lose a warning
+    /// or an upload.
     pub fn merge(&mut self, incoming: ExternalFacts) -> Result<(), FactMergeError> {
         if let Some(fact) = incoming.store_revision {
             self.note_store_revision(fact);
@@ -502,12 +404,8 @@ impl ExternalFacts {
     /// level backwards. Different store: it replaces, because revisions of two different stores have
     /// no order to compare.
     ///
-    /// **Producer obligation.** Because a different identity always wins, an executor must not
-    /// report a store it has unmounted. A late report from the previous mount would otherwise
-    /// overwrite the live one and leave [`store_revision`](Self::store_revision) naming a dead
-    /// store. The executor is the only party that can honour this — it is the one that knows the
-    /// unmount happened — so it drains or drops its pending store reports before it reports the new
-    /// mount.
+    /// Because a different identity always wins, an executor must drain or drop the pending reports
+    /// of a mount it has unmounted. A late one would otherwise name a dead store.
     pub fn note_store_revision(&mut self, fact: StoreRevision) {
         let keep =
             matches!(self.store_revision, Some(have) if have.store == fact.store && have.revision > fact.revision);
@@ -526,8 +424,7 @@ impl ExternalFacts {
         self.link = Some(status);
     }
 
-    /// Raise warning flags. They accumulate — a second warning in the same pass never displaces the
-    /// first, and nothing clears until DeviceCore takes them.
+    /// Raise warning flags. They accumulate: nothing clears until DeviceCore takes them.
     pub fn raise_warnings(&mut self, flags: WarningFlags) {
         self.warnings |= flags;
     }
@@ -553,37 +450,30 @@ impl ExternalFacts {
         Ok(())
     }
 
-    /// The newest store identity and revision, or `None` when no store has reported yet.
     pub fn store_revision(&self) -> Option<StoreRevision> {
         self.store_revision
     }
 
-    /// The newest transfer state, or `None` when none was reported yet.
     pub fn transfer(&self) -> Option<TransferState> {
         self.transfer
     }
 
-    /// The newest link state, or `None` when none was reported yet.
     pub fn link(&self) -> Option<BleStatus> {
         self.link
     }
 
-    /// Take the accumulated warning flags, clearing them.
     pub fn take_warnings(&mut self) -> WarningFlags {
         core::mem::replace(&mut self.warnings, WarningFlags::NONE)
     }
 
-    /// Take the pending route upload, clearing the slot.
     pub fn take_route_upload(&mut self) -> Option<RouteUpload> {
         self.route_upload.take()
     }
 
-    /// Take the pending trip upload, clearing the slot.
     pub fn take_trip_upload(&mut self) -> Option<TripUpload> {
         self.trip_upload.take()
     }
 
-    /// Take this boot's update result, clearing the one-shot slot.
     pub fn take_update_result(&mut self) -> Option<UpdateResult> {
         self.update_result.take()
     }
@@ -595,11 +485,9 @@ impl Default for ExternalFacts {
     }
 }
 
-// ==================== layout tripwires ====================
-//
-// Sizes are 64-bit host ceilings (the device's 32-bit `usize` makes the `Version`-carrying values
-// smaller, never larger). A growth here is a design change, not an accident: every value below
-// crosses the DeviceCore ↔ executor seam and, for `ExternalFacts`, stays resident.
+// Layout tripwires. Sizes are 64-bit host ceilings (the device's 32-bit `usize` makes the
+// `Version`-carrying values smaller, never larger). A growth here is a design change: every value
+// below crosses the DeviceCore ↔ executor seam and, for `ExternalFacts`, stays resident.
 const _: () = assert!(core::mem::size_of::<OperationToken<CatalogTag>>() == 4, "a token is one generation");
 const _: () = assert!(core::mem::size_of::<TokenSource<CatalogTag>>() == 4, "a token source is one generation");
 const _: () = assert!(core::mem::size_of::<PlatformSupport>() <= 8, "platform support is a handful of bools");
@@ -625,8 +513,6 @@ mod tests {
         StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(revision) }
     }
 
-    /// The whole point of a token: only the newest operation's result is accepted. Issuing,
-    /// cancelling and replacing all move the generation, so every earlier token goes stale.
     #[test]
     fn tokens_go_stale_on_issue_cancel_and_replacement() {
         let mut nav: TokenSource<NavigatorTag> = TokenSource::new();
@@ -646,8 +532,8 @@ mod tests {
         assert!(nav.is_current(again));
     }
 
-    /// Wrapping is fine, but generation `0` means "nothing issued" — a wrapped token must never
-    /// collide with the boot state of a fresh source.
+    /// Generation `0` means "nothing issued", so a wrapped token must never collide with the boot
+    /// state of a fresh source.
     #[test]
     fn generation_skips_zero_on_wrap() {
         let mut source: TokenSource<CatalogTag> = TokenSource::new();
@@ -682,8 +568,8 @@ mod tests {
         assert!(facts.take_warnings().is_empty(), "taking clears the set");
     }
 
-    /// Levels describe the world: the newest report wins, except that a store cannot walk its own
-    /// revision backwards. A remount (a different identity) always replaces.
+    /// The newest report wins, except that a store cannot walk its own revision backwards. A
+    /// remount is a different identity, and always replaces.
     #[test]
     fn latest_levels_replace_older_values() {
         let mut facts = ExternalFacts::NONE;
@@ -721,9 +607,9 @@ mod tests {
         assert_eq!(facts.take_update_result(), Some(second), "the slot is free once consumed");
     }
 
-    /// A batch merges field by field, under exactly the rules the `note_*` methods apply — and an
-    /// absent field in the batch changes nothing, so an executor reporting one fact cannot wipe a
-    /// level it knows nothing about.
+    /// A batch merges field by field under the rules the `note_*` methods apply. An absent field in
+    /// the batch changes nothing, so an executor reporting one fact cannot wipe a level it knows
+    /// nothing about.
     #[test]
     fn merge_folds_every_field_and_leaves_absent_ones_alone() {
         let mut facts = ExternalFacts::NONE;
@@ -768,8 +654,8 @@ mod tests {
         assert_eq!(facts.link(), Some(connected));
     }
 
-    /// The documented partial-failure guarantee: a batch whose update result is rejected still
-    /// delivers every other fact, so the rejection cannot cost a warning or an upload.
+    /// A batch whose update result is rejected still delivers every other fact, so the rejection
+    /// cannot cost a warning or an upload.
     #[test]
     fn a_rejected_update_result_does_not_lose_the_rest_of_the_batch() {
         let first = UpdateResult::Confirmed(crate::dfu::clamp("v1"));
@@ -833,8 +719,8 @@ mod tests {
         }
     }
 
-    /// Capabilities are a pure level of their inputs — every field, written out, so a rule flipped
-    /// in `calculate` fails here rather than passing a "same inputs, same output" tautology.
+    /// Every field is written out, so a rule flipped in `calculate` fails here rather than passing a
+    /// "same inputs, same output" tautology.
     #[test]
     fn capabilities_are_the_written_out_level_of_their_inputs() {
         assert_eq!(
@@ -889,9 +775,8 @@ mod tests {
         assert_eq!(Capabilities::calculate(board(), mounted()), full);
     }
 
-    /// An unsupported detour is a missing capability, not a planning failure: no combination of
-    /// live facts can turn it on, so the UI hides it and the rider is never told "no path" about a
-    /// search the device cannot run.
+    /// An unsupported detour is a missing capability, not a planning failure: no combination of live
+    /// facts can turn it on.
     #[test]
     fn unsupported_detour_never_enters_the_planning_path() {
         let support = PlatformSupport { detour: false, ..board() };

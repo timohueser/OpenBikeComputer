@@ -1,20 +1,9 @@
-//! i18n catalog guards (epic #602, L5).
-//!
-//! `obc shot` renders every screen in de/fr/es to eyeball translations, but it is a manual
-//! dev tool — not wired into CI. This binary is the CI-green net for the one failure mode a PNG
-//! can't assert cheaply: a translation carrying a char **outside the device font's repertoire**,
-//! which the text path renders as a silent `?` (no panic, no error — see `obc-render::text`).
-//!
-//! The [`every_string_is_renderable`] guard walks the *whole* catalog
-//! ([`obc_app::i18n::TABLE`] — every `Msg` × every `Language`) plus the handful of endonyms that
-//! live outside the table, and asserts each `char` maps to a real glyph via
-//! [`obc_render::glyph_supported`] — i.e. against the **actual** Latin-1 + Latin Extended-A strip
-//! shipped by #489/#601, not a hand-copied range. Any future translation that reaches for a curly
-//! quote, em-dash, ellipsis, or a non-Latin letter fails the build here, before it can ship as a
-//! `?` on-glass.
-//!
-//! [`render_smoke`] adds a couple of stateless render→assert cases: construct `Settings { language,
-//! .. }`, drive to the text-heavy Menu, and assert the frame draws without panicking.
+//! i18n catalog guards. The one failure mode a rendered PNG cannot assert cheaply is a translation
+//! carrying a char outside the device font's repertoire, which the text path renders as a silent
+//! `?`. [`every_string_is_renderable`] walks the whole catalog ([`obc_app::i18n::TABLE`], every
+//! `Msg` × every `Language`) plus the endonyms that live outside it, and checks each char against
+//! [`obc_render::glyph_supported`]. [`render_smoke`] drives each language to the text-heavy Menu
+//! and asserts the frame draws.
 
 use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::*;
@@ -29,8 +18,6 @@ use crate::common::{build_min_obcm, build_min_obcm_profiles, keys, render_120};
 /// [`obc_app::i18n::TABLE`].
 const LANGS: [Language; 4] = [Language::En, Language::De, Language::Fr, Language::Es];
 
-/// Every string the UI can show must be renderable by the device font — no char that falls back to
-/// the silent `?` slot. Walks the full catalog plus the out-of-table endonyms.
 #[test]
 fn every_string_is_renderable() {
     let mut offenders: Vec<String> = Vec::new();
@@ -71,9 +58,6 @@ fn check_str(offenders: &mut Vec<String>, s: &str, where_: &str) {
     }
 }
 
-/// A tiny sanity check that the repertoire assertion is real: a known bad char (a curly
-/// apostrophe, which #601's Latin strip deliberately omits) is *not* renderable, while the ASCII
-/// apostrophe the catalog is authored with is.
 #[test]
 fn guard_rejects_out_of_repertoire_chars() {
     assert!(!obc_render::glyph_supported('\u{2019}'), "curly ' must be rejected");
@@ -84,12 +68,11 @@ fn guard_rejects_out_of_repertoire_chars() {
     assert!(obc_render::glyph_supported('?'), "'?' itself is a real glyph");
 }
 
-/// Catalog values that flow into a **fixed `heapless` buffer** whose `push_str`/`write!` result is
-/// discarded. A `heapless` overflow is an atomic no-op, so an over-length caption renders *fully
-/// blank* on-glass — a failure the repertoire test above can't see (every glyph is fine; there are
-/// just too many). This bounds each such key's byte length across all four languages, at the budget
-/// its call site leaves after the glued unit/number. No current value overflows; the guard is for
-/// the future accented edit that would (#614).
+/// Catalog values that flow into a fixed `heapless` buffer whose `push_str`/`write!` result is
+/// discarded. A `heapless` overflow is an atomic no-op, so an over-length caption renders fully
+/// blank on-glass — a failure the repertoire test above cannot see. This bounds each such key's byte
+/// length across all four languages, at the budget its call site leaves after the glued unit or
+/// number.
 #[test]
 fn fixed_buffer_captions_fit() {
     // (key, byte budget, where the buffer lives). Budget = buffer capacity − the largest thing
@@ -107,8 +90,7 @@ fn fixed_buffer_captions_fit() {
         (Msg::MapOffRoute, 13, "map.rs off-route pill (String<20>, ≤7-byte distance follows)"),
         // The quick drawer's brightness title: `draw_brightness` writes this plus " 100%" into a
         // `String<24>` and discards the result, so a caption past the budget silently loses its
-        // trailing fragments (the write is atomic per fragment, not per call). Current worst is
-        // de "HELLIGKEIT" at 10 — a guard, not a fix.
+        // trailing fragments. The current worst is de "HELLIGKEIT" at 10.
         (Msg::QuickBrightness, 19, "quick_drawer.rs draw_brightness title (String<24>, ' 100%' follows)"),
     ];
 
@@ -130,9 +112,8 @@ fn fixed_buffer_captions_fit() {
     );
 }
 
-/// Stateless render→assert per language: seed `Settings.language`, open the Menu (its title bar is
-/// translated — `MENU` / `MENÜ` / …), render, and assert the frame drew without panicking. Guards
-/// the draw path against a translated string blowing up, not just the catalog data.
+/// Stateless render→assert per language: seed `Settings.language`, open the Menu, whose title bar
+/// is translated, render, and assert the frame drew. Guards the draw path, not just the data.
 #[test]
 fn render_smoke() {
     let bytes = build_min_obcm(0xF800);
@@ -152,10 +133,9 @@ fn render_smoke() {
     }
 }
 
-/// The Up-ahead timeline's own copy (epic #946, U3) is translated — not four English placeholders
-/// — and every one of its states renders through each catalog column without a font/buffer failure:
-/// the route-less empty state, the merged list's title, and the timeline's own context sheet with
-/// its nested filter editor (#1515 D4a).
+/// The Up-ahead timeline's own copy is translated, not four English placeholders, and every one of
+/// its states renders through each catalog column: the route-less empty state, the merged list's
+/// title, and the timeline's own context sheet with its nested filter editor.
 #[test]
 fn up_ahead_copy_is_localized_and_every_state_renders() {
     // The context row label the timeline reuses as its title, and the empty-state sentence under it.
@@ -175,10 +155,9 @@ fn up_ahead_copy_is_localized_and_every_state_renders() {
         ("up_ahead.none_sub", Msg::UpAheadNoneSub),
         ("up_ahead.none_category_sub", Msg::UpAheadNoneCategorySub),
         ("up_ahead.no_route_sub", Msg::UpAheadNoRouteSub),
-        // The two D4a row labels are **deliberately absent**: "Filter" is the German word and
+        // The two filter row labels are deliberately absent: "Filter" is the German word and
         // "Sources" the French one, so both would fail this net for being right. They are covered
-        // instead by the four-language render sweep below and by `context_drawer`'s width test,
-        // which reads every label and every choice out of all four columns.
+        // instead by the render sweep below and by `context_drawer`'s width test.
         ("poi_detail.side_left", Msg::PoiDetailSideLeft),
         ("poi_detail.side_right", Msg::PoiDetailSideRight),
     ] {
@@ -200,8 +179,6 @@ fn up_ahead_copy_is_localized_and_every_state_renders() {
         assert!(buf.px.iter().any(|&p| p != Rgb888::BLACK), "route-less Up-ahead state rendered blank in {lang:?}");
 
         app.apply_gesture(Gesture::Press); // Explore ahead owns the filter drawer.
-                                           // The timeline declares its own context (#1515 D4a): the sheet's two value rows, then the
-                                           // nested filter editor a press opens.
         assert!(app.apply_chord(obc_app::Chord::Context));
         assert!(matches!(app.top_screen(), Screen::ContextDrawer(_)));
         let buf = render_120(&mut app, &bytes);
@@ -214,14 +191,10 @@ fn up_ahead_copy_is_localized_and_every_state_renders() {
     }
 }
 
-/// The **map sheet's** own copy (#1515 D4c) is translated in all four columns, and both of its
-/// states render through each of them: the five-row map table over the riding Map, and the
-/// three-switch display sheet its last row swaps in.
+/// The map sheet's own copy is translated in all four columns, and both of its states render: the
+/// five-row map table over the riding Map, and the three-switch display sheet its last row swaps in.
 #[test]
 fn the_map_sheet_is_localized_and_every_state_renders() {
-    // All four labels differ from English everywhere. The three switches lost the settings row's
-    // sub-caption line when they moved onto the sheet, so `fr`/`es` needed a one-line reading for
-    // "contours" — this is where a translation that quietly stayed English would show up.
     for (key, msg) in [
         ("map_context.map_display", Msg::MapContextMapDisplay),
         ("map_context.clock", Msg::MapContextClock),
@@ -250,26 +223,20 @@ fn the_map_sheet_is_localized_and_every_state_renders() {
     }
 }
 
-/// The **route-plan sheet's** one row label (#1515 D4d) is translated in all four columns, and both
-/// of its states render through each of them: the one-row table over the create-route confirm card,
-/// and the nested bike-type editor a press opens.
+/// The route-plan sheet's one row label is translated in all four columns, and both of its states
+/// render: the one-row table over the create-route confirm card, and the nested bike-type editor.
 ///
-/// The editor's choices are deliberately **not** in the copy net: they are the loaded map's §8.6
-/// profile names, byte-identical in every column. The width they must fit is pinned at the format's
-/// own name cap by `context_drawer`'s width test rather than measured here per language.
-///
-/// Two fixtures, because the walk needs two unrelated things a map carries: POIs to browse to a
-/// confirm card through the real gestures, and a profile table with more than one entry (without a
-/// choice the row is inert by design and no editor opens). `set_nav_profiles` is the host's own
-/// map-load mirror, so seeding it from the second fixture is the seam a host uses.
+/// The editor's choices are deliberately not in the copy net: they are the loaded map's profile
+/// names, byte-identical in every column, and their width is pinned by `context_drawer`'s width
+/// test. Two fixtures, because the walk needs two unrelated things a map carries: POIs to browse to
+/// a confirm card, and a profile table with more than one entry, without which the row is inert.
 #[test]
 fn the_route_plan_sheet_is_localized_and_every_state_renders() {
     use obc_ports::Fix;
     use obcm_testkit::{build_poi_map, PoiSpec};
 
-    // "Type de vélo" / "Tipo de bici" are 12 monospace characters — 168 px in `Font::Body`, which
-    // the centred row's 172 px label budget holds (the width test in `context_drawer` pins both
-    // numbers). The clipped "Type vélo" / "Tipo bici" the row used to force are gone.
+    // "Type de vélo" / "Tipo de bici" are 12 monospace characters, 168 px in `Font::Body`, which
+    // the centred row's 172 px label budget holds (`context_drawer`'s width test pins both numbers).
     assert_eq!(t(Msg::RouteContextBikeType, Language::Fr), "Type de v\u{e9}lo");
     assert_eq!(t(Msg::RouteContextBikeType, Language::Es), "Tipo de bici");
     for lang in [Language::De, Language::Fr, Language::Es] {
@@ -285,8 +252,7 @@ fn the_route_plan_sheet_is_localized_and_every_state_renders() {
     let water = vec![PoiSpec { lat: 43_500_500, lon: 7_500_000, subtype: 1, name: "Fontaine".into(), payload: 0xFFFF }];
     let bytes = build_poi_map(BBOX, 512, &[(1, water)]);
 
-    // The profile names a host mirrors on map load — Road / Gravel / MTB / Touring, the set both
-    // snapshot fixtures carry.
+    // The profile names a host mirrors on map load, the set both snapshot fixtures carry.
     let profile_map = build_min_obcm_profiles(0, &["Road", "Gravel", "MTB", "Touring"]);
     let src = obc_reader::SliceSource(&profile_map);
     let tables = obc_reader::MapTables::parse(&src).expect("valid fixture");

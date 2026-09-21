@@ -1,47 +1,27 @@
-//! Who owns the scratch arena, and what each claimant must prove first (issue #1146, P2).
+//! Who owns the scratch arena, and what each claimant must prove first.
 //!
-//! The board time-shares **one** RAM block between three arms that are never live together — the
-//! per-frame render scratch, the nav block (`NavScratch` + `NavTileCache` + `NavPlanner`), and the
-//! USB staging buffer. The union itself is device-only (`obc-fw-nrf54l`'s `arena.rs`, the one place
-//! `unsafe` lives); *who may hold it, and when* is plain bookkeeping, and it lives here because the
-//! board crate has no `test` harness in CI, and "a claim while a search is running must be refused"
-//! is exactly the kind of statement that should be asserted rather than reviewed.
+//! The board time-shares one RAM block between arms that are never live together: the per-frame
+//! render scratch, the nav block, the USB staging buffer, the panorama cache and the photo decoder.
+//! The union itself is device-only, in the board crate's `arena.rs`. Who may hold it, and when, is
+//! plain bookkeeping, and it lives here because the board crate has no test harness in CI.
 //!
-//! # The arms are disjoint because the product says so
-//!
-//! Nothing about the memory makes these three mutually exclusive — three **product rules** do, and
-//! each one is a gate on the claim that needs it:
-//!
-//! | Pair | Rule | Encoded as |
-//! |---|---|---|
-//! | render ⊥ nav | the map does not redraw while a planner run is live | [`MapQuiesced`] |
-//! | render ⊥ usb | a map upload shows the transfer screen, not the map | [`TransferReady`] |
-//! | nav ⊥ usb | no route search while the cable owns upload scratch | [`TransferReady`] |
-//!
-//! A gate that is merely *documented* is a gate that gets skipped, so each precondition is a token
+//! Three product rules make the arms disjoint, and each is a gate on the claim that needs it: the
+//! map does not redraw while a planner run is live ([`MapQuiesced`]); a map upload shows the
+//! transfer screen and not the map; and no route search runs while the cable owns the upload
+//! scratch (the last two are [`TransferReady`]). A gate that is merely documented is a gate that
+//! gets skipped, so each precondition is a token
 //! [`CoreMode`](crate::device_core::core_mode::CoreMode) mints: [`claim_nav`](ArenaGate::claim_nav)
-//! cannot even be *called* without evidence that the map plane is quiesced, and there is exactly one
-//! place that decides the token is owed.
+//! cannot even be called without evidence that the map plane is quiesced.
 //!
-//! How far that goes, precisely: the `mint` constructors are `pub(crate)`, not private, because this
-//! module's own tests need them — so another `obc-app` module *could* assemble a proof without
-//! asking `CoreMode`. Nothing does, and the point of the tightening is that doing so would be a
-//! visible edit to a named constructor rather than a one-line re-derivation of the facts.
-//!
-//! # No atomics
-//!
-//! [`ArenaGate`] takes `&mut self` because the **ride loop is the sole owner-switcher** — the USB
-//! plane never claims directly, it raises a request the loop grants between frames (the #677
-//! async-frame discipline: guards are `!Send` and never held across an `.await` where another
-//! claimant could run). If a second switcher ever appears, this becomes an `AtomicU8`
-//! compare-exchange — and the `&mut` is what makes that a *compile* error to skip rather than a
-//! race to debug.
-//!
-//! # The bug class this creates
+//! [`ArenaGate`] takes `&mut self` because the ride loop is the sole owner-switcher: the USB plane
+//! never claims directly, it raises a request the loop grants between frames. Guards are `!Send`
+//! and are never held across an `.await` where another claimant could run. A second switcher would
+//! make this an `AtomicU8` compare-exchange, and the `&mut` is what makes skipping that a compile
+//! error rather than a race to debug.
 //!
 //! Durable state lives outside the arena. The photo decoder may resume only when
-//! `ArenaInit::Skippable` proves that no other arm used its bytes. Otherwise it
-//! restarts from the selected source and clears the photo rectangle.
+//! `ArenaInit::Skippable` proves that no other arm used its bytes. Otherwise it restarts from the
+//! selected source and clears the photo rectangle.
 
 /// Which arm currently owns the arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -65,30 +45,28 @@ pub enum ArenaOwner {
 /// `Err` — loud, never silent: a wrong-owner access reads another arm's bytes as its own type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArenaError {
-    /// Someone else holds the arena. Carries the holder so the caller can log *who* (a render frame
-    /// refused by a live search is normal and expected; one refused by a transfer is a UI bug).
+    /// Someone else holds the arena. Carries the holder, so the caller can log who: a render frame
+    /// refused by a live search is expected, one refused by a transfer is a UI bug.
     Busy(ArenaOwner),
-    /// A release naming an arm that does not hold the arena. Carries the actual owner. Never a
-    /// silent no-op: there is exactly one owner-switcher here, so a mismatched release means the
-    /// caller lost track of its own guard.
+    /// A release naming an arm that does not hold the arena. Carries the actual owner. There is
+    /// exactly one owner-switcher, so a mismatched release means the caller lost track of its own
+    /// guard.
     NotHeld(ArenaOwner),
 }
 
-/// Proof that the **map plane will not draw this pass** — the precondition on
+/// Proof that the map plane will not draw this pass: the precondition on
 /// [`claim_nav`](ArenaGate::claim_nav), since the nav arm overwrites the render scratch's bytes.
 ///
-/// Two ways to be quiesced, and the second is why this is a token rather than a bool: menu planning
-/// happens on a chrome base (`NavPlanning` is opaque, so there is no map underneath to freeze), and
-/// a mid-ride detour plan happens over a **map** base — the Recalculating freeze is what makes the
-/// second case as safe as the first. Both are decided in one place,
+/// It is a token rather than a bool because there are two ways to be quiesced: menu planning runs
+/// over an opaque chrome base, and a mid-ride detour plan runs over a map base held by the
+/// Recalculating freeze. Both are decided in one place,
 /// [`CoreMode::nav_precondition`](crate::device_core::core_mode::CoreMode).
 #[derive(Debug, Clone, Copy)]
 pub struct MapQuiesced(());
 
 impl MapQuiesced {
-    /// The mint, crate-private so [`CoreMode`](crate::device_core::core_mode::CoreMode) is the only
-    /// thing that decides *when*. Reach it from outside through
-    /// [`App::nav_arena_precondition`](crate::App::nav_arena_precondition).
+    /// The mint, crate-private so [`CoreMode`](crate::device_core::core_mode::CoreMode) is the
+    /// only thing that decides when.
     pub(crate) const fn mint() -> MapQuiesced {
         MapQuiesced(())
     }
@@ -100,66 +78,56 @@ impl MapQuiesced {
 pub struct TransferReady(());
 
 impl TransferReady {
-    /// The mint, crate-private for the same reason [`MapQuiesced::mint`] is. Reach it through
-    /// [`App::usb_stage_precondition`](crate::App::usb_stage_precondition).
+    /// The mint, crate-private for the same reason [`MapQuiesced::mint`] is.
     pub(crate) const fn mint() -> TransferReady {
         TransferReady(())
     }
 
-    /// The one named escape: the card-recovery USB boot path, where **no ride loop, no renderer and
-    /// no planner exist**. There is no `App` to ask, and nothing that could draw a map or start a
-    /// search — the two facts the mint would check are true by the absence of the code that could
-    /// falsify them.
+    /// The one named escape: the card-recovery USB boot path, where no ride loop, no renderer and
+    /// no planner exist. The two facts the mint would check are true by the absence of the code
+    /// that could falsify them.
     pub const fn recovery_boot() -> TransferReady {
         TransferReady(())
     }
 }
 
-/// Whether a successful claim must **initialize the block in place** before anything reads it.
+/// Whether a successful claim must initialize the block in place before anything reads it.
 ///
-/// The arms are not types of the same shape: each claim writes the block's bytes into its own arm's
-/// valid state first (a `RenderScratch`'s all-zero empty vectors, the nav arm's zero fill plus the
-/// tile cache's `u32::MAX` tags), because the bytes it inherits are the *previous* arm's — and a
-/// `heapless::Vec` whose `len` is a stale A\* node count would read past its own contents.
-///
-/// The exception is worth a type rather than a comment: when the previous claimant was the **same
-/// arm**, the bytes are already that arm's valid state, and re-initializing is a ~117 KB `memset`
-/// per map frame for nothing.
+/// Each claim writes the block's bytes into its own arm's valid state first, because the bytes it
+/// inherits are the previous arm's, and a `heapless::Vec` whose `len` is a stale A\* node count
+/// would read past its own contents. The exception is worth a type: when the previous claimant was
+/// the same arm, the bytes are already that arm's valid state, and re-initializing is a ~117 KB
+/// `memset` per map frame for nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArenaInit {
     /// The block is another arm's (or boot garbage, on the first-ever claim): initialize it.
     Required,
-    /// The block already holds this arm's initialized state — the last claimant was this same arm
+    /// The block already holds this arm's initialized state: the last claimant was this same arm
     /// and gave it back intact. Render scratch can be reused; photo work can resume.
     Skippable,
 }
 
-/// The arena's owner state machine: idle, or held by exactly one arm — plus which arm the block's
-/// bytes were last *initialized* as.
-///
-/// Pure bookkeeping — it holds no memory and hands out no references. The board pairs it with the
-/// union and turns each successful claim into a guard whose `Drop` calls [`release`](Self::release).
+/// The arena's owner state machine: idle, or held by exactly one arm, plus which arm the block's
+/// bytes were last initialized as. It holds no memory and hands out no references; the board pairs
+/// it with the union and turns each successful claim into a guard whose `Drop` calls
+/// [`release`](Self::release).
 #[derive(Debug, Default)]
 pub struct ArenaGate {
     owner: ArenaOwner,
-    /// Which arm the block's bytes are currently set up as — **not** who holds it (`owner` is
-    /// `None` between every two claims). This is what makes [`ArenaInit::Skippable`] decidable, and
-    /// it lives here rather than beside the union so the rule is host-tested with the rest of them.
+    /// Which arm the block's bytes are currently set up as, not who holds it (`owner` is `None`
+    /// between every two claims). This is what makes [`ArenaInit::Skippable`] decidable.
     initialized_as: ArenaOwner,
 }
 
 impl ArenaGate {
-    /// An idle gate — the boot state, and the state between every two claims.
     pub const fn new() -> ArenaGate {
         ArenaGate { owner: ArenaOwner::None, initialized_as: ArenaOwner::None }
     }
 
-    /// Who holds the arena right now.
     pub fn owner(&self) -> ArenaOwner {
         self.owner
     }
 
-    /// Whether nobody holds it (any claim would pass the ownership half of its gate).
     pub fn is_idle(&self) -> bool {
         self.owner == ArenaOwner::None
     }
@@ -169,37 +137,30 @@ impl ArenaGate {
         self.take(ArenaOwner::Photo)
     }
 
-    /// Claim the arena for a **map render**, for the span of that render only.
+    /// Claim the arena for a map render, for the span of that render only.
     ///
-    /// The only precondition is that the arena is free — which is the whole render ⊥ nav / render ⊥
-    /// usb enforcement, and it needs no token because a live search or a live transfer *is* the
-    /// holder. Two invariants ride on that: a search claims [`Nav`](ArenaOwner::Nav) for its whole
-    /// duration (not per step), and a render claims for its
-    /// duration — so a frame that would draw a map while either runs is refused here rather than
-    /// silently reading a half-written A* table as span records.
-    ///
-    /// A refusal is not a crash: the host skips the map redraw for that pass (the frozen map stays
-    /// on glass) and tries again next frame.
+    /// The only precondition is that the arena is free, which is the whole exclusion: a live search
+    /// or a live transfer is the holder. A search claims [`Nav`](ArenaOwner::Nav) for its whole
+    /// duration, not per step, so a frame that would draw a map while either runs is refused here
+    /// rather than silently reading a half-written A* table as span records. A refusal is not a
+    /// crash: the host skips the map redraw for that pass and tries again next frame.
     ///
     /// Returns whether the scratch must be re-initialized ([`ArenaInit`]). This is the one arm that
-    /// can skip it: a render span leaves behind a fully valid, empty-on-next-use `RenderScratch`
-    /// (every buffer is written before it is read within a frame), which is exactly why the
-    /// pre-arena resident static could be zeroed once at boot and reused for every frame of the
-    /// device's life. Frames follow frames, so on the dominant path this is `Skippable` and the map
-    /// pays no `memset` at all.
+    /// can skip it, because a render span leaves behind a fully valid `RenderScratch`. Frames
+    /// follow frames, so on the dominant path the map pays no `memset` at all.
     pub fn claim_render(&mut self) -> Result<ArenaInit, ArenaError> {
         self.take(ArenaOwner::Render)
     }
 
-    /// Claim the arena for a **route search**, for the whole search.
+    /// Claim the arena for a route search, for the whole search.
     ///
-    /// Requires [`MapQuiesced`]: the map plane must already have stopped drawing *before* the nav
-    /// arm overwrites the render scratch. The freeze is engaged by the app when the plan starts, so
-    /// the token is minted from state that is already true — never as a side effect of claiming.
+    /// Requires [`MapQuiesced`]: the map plane must already have stopped drawing before the nav arm
+    /// overwrites the render scratch. The token is minted from state that is already true, never as
+    /// a side effect of claiming.
     ///
-    /// No [`ArenaInit`]: the nav arm re-initializes unconditionally. Two searches back to back would
-    /// report `Skippable`, and it would be wrong — the block would hold the *previous* search's A\*
-    /// table and its finished planner, which is state, not an empty arm.
+    /// No [`ArenaInit`]: the nav arm re-initializes unconditionally. Two searches back to back
+    /// would report `Skippable`, and it would be wrong, because the block would hold the previous
+    /// search's A\* table and its finished planner.
     pub fn claim_nav(&mut self, _map_quiesced: MapQuiesced) -> Result<(), ArenaError> {
         self.take(ArenaOwner::Nav).map(|_| ())
     }
@@ -214,7 +175,7 @@ impl ArenaGate {
         self.take(ArenaOwner::PeakView).map(|_| ())
     }
 
-    /// Release the arena — **only** the arm that holds it. Releasing anything else is an
+    /// Release the arena, only from the arm that holds it. Releasing anything else is an
     /// [`ArenaError::NotHeld`], because with one owner-switcher there is no benign reason for it.
     pub fn release(&mut self, owner: ArenaOwner) -> Result<(), ArenaError> {
         if owner == ArenaOwner::None || self.owner != owner {
@@ -225,7 +186,7 @@ impl ArenaGate {
     }
 
     /// The one transition: idle → `owner`, or `Busy(holder)`. A claimant re-claiming what it
-    /// already holds is refused too — an arm may re-initialize in place on claim, so a double-claim
+    /// already holds is refused too: an arm may re-initialize in place on claim, so a double-claim
     /// would reset a buffer someone upstack is mid-way through.
     fn take(&mut self, owner: ArenaOwner) -> Result<ArenaInit, ArenaError> {
         if self.owner != ArenaOwner::None {
@@ -273,9 +234,8 @@ mod tests {
         assert!(gate.is_idle(), "the render span ends and the arena is dead again");
     }
 
-    /// **The regression.** A search holds the nav arm across *many* frames, and the ride loop keeps
-    /// producing frames. Without this refusal the next map frame would collect spans into the
-    /// planner's live A* table.
+    /// A search holds the nav arm across many frames, and the ride loop keeps producing frames.
+    /// Without this refusal the next map frame would collect spans into the planner's live A* table.
     #[test]
     fn a_live_search_refuses_every_render_claim_until_it_finishes() {
         let mut gate = ArenaGate::new();
@@ -302,8 +262,8 @@ mod tests {
         assert_eq!(gate.release(ArenaOwner::Usb), Ok(()));
     }
 
-    /// A render span is short but it is still a span: a search that started inside one (the answer
-    /// to a plan the rider queued a frame earlier) must wait for the frame to finish.
+    /// A render span is short but it is still a span: a search that started inside one must wait
+    /// for the frame to finish.
     #[test]
     fn a_render_in_progress_refuses_a_search_and_a_transfer() {
         let mut gate = ArenaGate::new();
@@ -323,9 +283,8 @@ mod tests {
         assert_eq!(gate.owner(), ArenaOwner::Render, "and the first claim still holds");
     }
 
-    /// **The regression** a wrong release would cause: the render frame ends, drops its guard, and
-    /// (with a mismatched arm) hands the arena to nobody while the search still reads it. Loud
-    /// rather than silent: there is one owner-switcher, so there is no benign mismatched release.
+    /// A wrong release would hand the arena to nobody while the search still reads it. Loud rather
+    /// than silent: there is one owner-switcher, so there is no benign mismatched release.
     #[test]
     fn releasing_an_arm_that_does_not_hold_the_arena_is_an_error() {
         let mut gate = ArenaGate::new();
@@ -350,11 +309,10 @@ mod tests {
         assert_eq!(gate.claim_render(), Ok(ArenaInit::Skippable), "…still holding the last render's scratch");
     }
 
-    /// The **~117 KB `memset` per map frame** this exists to avoid, and the two halves of when it is
-    /// safe. A render span hands the block back as a valid `RenderScratch`, so frame after frame
-    /// skips the re-init; anything that hands it to another arm — a search, a cable transfer — makes
-    /// the next render pay for it again. The first-ever claim pays too, which is what keeps
-    /// `.uninit`'s boot garbage from ever being read as a scratch.
+    /// The ~117 KB `memset` per map frame this exists to avoid, and the two halves of when skipping
+    /// it is safe. A render span hands the block back as a valid `RenderScratch`, so frame after
+    /// frame skips the re-init; anything that hands it to another arm makes the next render pay
+    /// again. The first-ever claim pays too, which keeps boot garbage from being read as a scratch.
     #[test]
     fn only_a_render_following_a_render_may_skip_the_re_init() {
         let mut gate = ArenaGate::new();
@@ -365,10 +323,6 @@ mod tests {
             assert_eq!(gate.release(ArenaOwner::Render), Ok(()));
         }
 
-        // **The nav arm, and there is only one other arm to check.** This was a loop over every
-        // foreign owner while the USB staging arm existed; with two arms the loop is the nav case
-        // written awkwardly, so it is written plainly. If a third arm is ever added, this becomes a
-        // loop again — and the const assert in `arena.rs` is what will say so first.
         assert_eq!(gate.claim_nav(MapQuiesced::mint()), Ok(()));
         assert_eq!(gate.release(ArenaOwner::Nav), Ok(()));
         assert_eq!(gate.claim_render(), Ok(ArenaInit::Required), "the nav arm left its own bytes behind");
@@ -376,7 +330,7 @@ mod tests {
     }
 
     /// The full ride-loop cycle the on-glass soak walks: frames render, a reroute takes over, the
-    /// answer lands, frames render again, the cable takes over, and back.
+    /// answer lands, and frames render again.
     #[test]
     fn the_ride_loop_hands_the_arena_around_one_arm_at_a_time() {
         let mut gate = ArenaGate::new();

@@ -1,21 +1,14 @@
 //! The one settings-blob table.
 //!
-//! Every persisted settings *field* used to be the same seven things restated: a struct field, a
-//! `DEFAULT` entry, a link in the offset chain, an `encode` line, a `decode` line, maybe a
-//! `sanitize` clamp, maybe an `adopt_ble_fields` assignment. [`settings_table!`] takes one row per
-//! field and writes all seven, so **the declaration is the contract**: the blob's layout is the
-//! table's order, and a field can no longer be declared in one place and forgotten in another.
+//! [`settings_table!`] takes one row per persisted field and writes the struct field, the `DEFAULT`
+//! entry, the link in the offset chain, the `encode` and `decode` lines, and any `sanitize` clamp
+//! or `adopt_ble_fields` assignment. The declaration is the contract: the blob's layout is the
+//! table's order, so a field cannot be declared in one place and forgotten in another.
 //!
-//! Deliberately a dumb token-pasting table, not a framework — the sibling of
-//! [`setting_enum!`](crate::settings_enum) and [`screens!`](crate::screen). The macro knows
-//! nothing about *bytes*: how a value packs is [`SettingCodec`], one impl per field kind, all of
-//! them below — so the blob's six kinds are readable in one place instead of spread through a
-//! 76-line `encode`.
-//!
-//! What is **not** here: the version byte's meaning, the supported floor, the CRC and the
-//! `ENCODED_LEN` rounding all stay in [`settings`](crate::settings) next to the migration rule they
-//! belong to. The macro emits the fixed framing (`b[0] = VERSION`, the trailing CRC, the
-//! `MIN_SUPPORTED..=VERSION` gate) and the per-field loops between them.
+//! The macro knows nothing about bytes. How a value packs is [`SettingCodec`], one impl per field
+//! kind, all of them below. The version byte's meaning, the supported floor, the CRC and the
+//! `ENCODED_LEN` rounding stay in [`settings`](crate::settings); the macro emits the fixed framing
+//! and the per-field loops between them.
 
 use crate::settings::{DeviceName, SavedSensor, DEVICE_NAME_MAX, SENSOR_SLOTS};
 use crate::stat_fields::{StatFieldList, MAX_STAT_FIELDS};
@@ -24,18 +17,15 @@ use obc_ports::DateTime;
 /// How one settings field packs into its own slice of the blob.
 ///
 /// The slice handed to [`write`](SettingCodec::write) and [`read`](SettingCodec::read) is exactly
-/// [`LEN`](SettingCodec::LEN) bytes — the field's span, already cut by the generated codec — so an
-/// impl never does offset arithmetic and cannot reach a neighbour's bytes. `LEN` is an associated
-/// const, which is what lets the generated offset chain stay `const`.
+/// [`LEN`](SettingCodec::LEN) bytes, already cut by the generated codec, so an impl never does
+/// offset arithmetic and cannot reach a neighbour's bytes.
 ///
-/// `read` is total: a corrupt-but-CRC-valid byte sanitises to something usable (the stored value's
-/// own fallback), never a panic and never garbage — the blob is device state, and a bit-flip the
-/// CRC missed must still boot the device.
+/// `read` is total: a corrupt-but-CRC-valid byte sanitises to something usable, never a panic and
+/// never garbage. The blob is device state, and a bit-flip the CRC missed must still boot the
+/// device.
 ///
-/// `write` is handed a **zeroed** span — the generated `encode` is its only caller and always
-/// starts from a fresh zeroed blob — so an impl writes only the bytes it has content for and
-/// leaves an absent slot, a short name's padding, or a reserved byte as the zeros they already
-/// are. That is the layout on disk, not an accident of the buffer.
+/// `write` is handed a zeroed span, so an impl writes only the bytes it has content for and leaves
+/// an absent slot, a short name's padding, or a reserved byte as the zeros they already are.
 pub(crate) trait SettingCodec: Sized {
     /// The field's byte length in the blob.
     const LEN: usize;
@@ -63,14 +53,14 @@ impl SettingCodec for bool {
     fn write(&self, dst: &mut [u8]) {
         dst[0] = *self as u8;
     }
-    /// Any non-zero byte reads as `true` — a stored flag is never "corrupt", only set or clear.
+    /// Any non-zero byte reads as `true`: a stored flag is never corrupt, only set or clear.
     #[inline]
     fn read(src: &[u8]) -> Self {
         src[0] != 0
     }
 }
 
-/// The little-endian integer kinds — identical but for the type, so they are written once.
+/// The little-endian integer kinds, identical but for the type.
 macro_rules! impl_le_scalar {
     ($($T:ty),+) => { $(
         impl SettingCodec for $T {
@@ -99,8 +89,8 @@ impl SettingCodec for DateTime {
         dst[4] = self.hour;
         dst[5] = self.minute;
     }
-    /// Read verbatim — the storage range (2020–2099, a leap-aware day) is app policy, applied by
-    /// the table's `sanitize_with` hook after the whole blob is read.
+    /// Read verbatim. The storage range is app policy, applied by the table's `sanitize_with` hook
+    /// after the whole blob is read.
     #[inline]
     fn read(src: &[u8]) -> Self {
         DateTime {
@@ -123,8 +113,8 @@ impl SettingCodec for DeviceName {
         dst[1..1 + name.len()].copy_from_slice(name);
     }
 
-    /// A stored length past the cap (corrupt-but-CRC-valid input) sanitises to the factory name,
-    /// exactly like invalid UTF-8 inside [`DeviceName::from_bytes`] — never a garbage prefix.
+    /// A stored length past the cap sanitises to the factory name, like invalid UTF-8 inside
+    /// [`DeviceName::from_bytes`], never to a garbage prefix.
     #[inline]
     fn read(src: &[u8]) -> Self {
         match src[0] as usize {
@@ -144,7 +134,7 @@ impl SettingCodec for StatFieldList {
         dst[1..].copy_from_slice(&ids);
     }
 
-    /// The selection sanitises inside [`StatFieldList::decode`] as it is parsed — an unknown
+    /// The selection sanitises inside [`StatFieldList::decode`] as it is parsed: an unknown
     /// discriminant is dropped rather than loaded as a garbage tile.
     #[inline]
     fn read(src: &[u8]) -> Self {
@@ -168,10 +158,9 @@ impl SettingCodec for [SavedSensor; SENSOR_SLOTS] {
         }
     }
 
-    /// An absent slot (`present == 0`) reads as [`SavedSensor::EMPTY`] regardless of the stored
-    /// address; a present slot keeps its address and normalises `addr_kind` to `0`/`1` (`!= 0` =
-    /// random), matching how the board maps it to `AddrKind` — so a bit-flip never mis-picks the
-    /// address kind.
+    /// An absent slot reads as [`SavedSensor::EMPTY`] whatever address is stored. A present slot
+    /// keeps its address and normalises `addr_kind` to `0` or `1`, matching how the board maps it
+    /// to `AddrKind`, so a bit-flip never mis-picks the address kind.
     #[inline]
     fn read(src: &[u8]) -> Self {
         let mut slots = [SavedSensor::EMPTY; SENSOR_SLOTS];
@@ -187,8 +176,8 @@ impl SettingCodec for [SavedSensor; SENSOR_SLOTS] {
     }
 }
 /// Give a [`setting_enum!`](crate::settings_enum) type its one-byte codec: the declared
-/// discriminant *is* the stored byte, and an unknown byte sanitises to the enum's default through
-/// `from_byte`. Invoked once by `setting_enum!`, so a declared enum is settings-blob-ready.
+/// discriminant is the stored byte, and an unknown byte sanitises to the enum's default through
+/// `from_byte`.
 macro_rules! setting_enum_codec {
     ($Name:ident) => {
         impl $crate::settings_table::SettingCodec for $Name {
@@ -205,44 +194,29 @@ macro_rules! setting_enum_codec {
     };
 }
 
-/// Declare the persisted settings set: one row per field, in **blob order**.
+/// Declare the persisted settings set: one row per field, in blob order. The live declaration is
+/// [`Settings`](crate::settings::Settings) in `settings.rs`.
 ///
-/// The live declaration is [`Settings`](crate::settings::Settings) in `settings.rs` — read that
-/// for the real thing. One row of each shape:
-///
-/// ```ignore
-/// /// Metric or imperial readouts.
-/// units: Units = Units::Metric, since(16), ble_writable, reserved(1);
-/// /// Local time's offset from UTC, in minutes.
-/// utc_offset_min: i16 = 0, since(16), range(UTC_OFFSET_MIN, UTC_OFFSET_MAX);
-/// /// The last time source's UTC set-point.
-/// clock: DateTime = DateTime::DEFAULT, since(16), sanitize_with(DateTimeEditorExt::sanitize);
-/// ```
-///
-/// A row is `name: Type = default, since(v)` — `since` is **required** and positional, because a
-/// marker whose absence silently means "v1" is a default nobody can see. It is the version that
-/// first wrote this field's bytes: a blob stamped older than that decodes the field as its declared
-/// `default` instead of reading bytes the writer never wrote (see the generated `decode`). Rows are
-/// in append order, so the column is non-decreasing and no greater than `VERSION` — both are
-/// compile errors.
+/// A row is `name: Type = default, since(v)`. `since` is required and positional, because a marker
+/// whose absence silently means "v1" is a default nobody can see. It is the version that first
+/// wrote this field's bytes: a blob stamped older than that decodes the field as its declared
+/// `default` instead of reading bytes the writer never wrote. Rows are in append order, so the
+/// column is non-decreasing and no greater than `VERSION`; both are compile errors.
 ///
 /// After `since` come any of four optional markers:
 ///
 /// - `ble_writable` — the phone owns this field, so the generated `adopt_ble_fields` pulls it
 ///   across. Its absence is what makes every other field device-only.
-/// - `range(MIN, MAX)` — clamp on decode. Its **absence is meaningful**: a field with no `range`
-///   is deliberately never clamped, and says why in its own doc.
+/// - `range(MIN, MAX)` — clamp on decode. Its absence is meaningful: a field with no `range` is
+///   deliberately never clamped, and says why in its own doc.
 /// - `sanitize_with(path::to::fn)` — call `f(&mut field)` on decode instead of a clamp.
 /// - `reserved(n)` — `n` frozen bytes follow this field in the blob: a retired field's tombstone,
 ///   written as zeros and ignored on decode, holding the layout of every field after it.
 ///
-/// Generated: the struct (with every row's doc verbatim), `Default`, the named `const` default,
-/// the `off::…` offset chain and `off::END`, `payload_len`, `encode`, `decode`, `sanitize` and
-/// `adopt_ble_fields`. The last five sections carry only their doc and name — the prose about
-/// *this* blob belongs at the declaration, not in the generator.
-///
-/// The offset chain starts at byte 1: byte 0 is the version, which is not a field and is written
-/// by the generated `encode` directly.
+/// Generated: the struct with every row's doc, `Default`, the named `const` default, the `off::…`
+/// offset chain and `off::END`, `payload_len`, `encode`, `decode`, `sanitize` and
+/// `adopt_ble_fields`. The offset chain starts at byte 1, because byte 0 is the version, which is
+/// not a field.
 macro_rules! settings_table {
     (
         $(#[$sm:meta])*
@@ -296,22 +270,19 @@ macro_rules! settings_table {
                 $($( $( $crate::settings_table::settings_table!(@sanitize $mk $(( $($arg)* ))?, self, $name); )+ )?)+
             }
 
-            /// Visit every declared field by name, in blob order. The table is the only place a
-            /// field's name and its value sit together, so a reader of a stored blob asks here.
+            /// Visit every declared field by name, in blob order.
             pub fn for_each_field(&self, mut visit: impl FnMut(&'static str, &dyn core::fmt::Debug)) {
                 $( visit(stringify!($name), &self.$name); )+
             }
 
-            /// Table-driven coverage for every declared field (see the one settings-table test):
-            /// `other` moves **every** row off `base`, and `adopted` — `base` after
+            /// Table-driven coverage for every declared field: `other` moves every row off `base`,
+            /// and `adopted` — `base` after
             #[doc = concat!("[`", stringify!($adopt), "`](Self::", stringify!($adopt), ") of `other` — took the fields named in `ble_writable` and no others.")]
             ///
             /// Generated with the table so a new row is covered the moment it is declared, but the
-            /// **expectation is not**: `ble_writable` is a hand-written list of names, held against
-            /// the generated behaviour the same way the hand-written offset literals are held
-            /// against the generated chain. Deriving it from the row's marker would only restate
-            /// the token that produced the behaviour, and could not fail. Adding or dropping a
-            /// marker without editing that list fails here, by field name.
+            /// expectation is not: `ble_writable` is a hand-written list of names. Deriving it from
+            /// the row's marker would restate the token that produced the behaviour and could not
+            /// fail.
             #[cfg(test)]
             pub(crate) fn assert_field_table(base: &$S, other: &$S, adopted: &$S, ble_writable: &[&str]) {
                 let mut named = 0;
@@ -328,9 +299,9 @@ macro_rules! settings_table {
             }
         }
 
-        /// Each field's byte offset in the blob, summed from the table's declared lengths — the
-        /// chain that used to be twenty-two hand-linked consts. `END` is the first byte past the
-        /// last field. Pinned against hand-written literals at the declaration.
+        /// Each field's byte offset in the blob, summed from the table's declared lengths. `END` is
+        /// the first byte past the last field. Pinned against hand-written literals at the
+        /// declaration.
         #[allow(non_upper_case_globals)]
         mod off {
             use super::*;
@@ -338,8 +309,8 @@ macro_rules! settings_table {
         }
 
         /// The append-only law as build errors. No assert restates the token that generated it:
-        /// each holds the generated `since` column against a **different** declaration — the row
-        /// above it, and the hand-written `VERSION` / `MIN_SUPPORTED` consts.
+        /// each holds the generated `since` column against a different declaration, either the row
+        /// above it or the hand-written `VERSION` and `MIN_SUPPORTED` consts.
         const _: () = {
             const SINCE: &[u8] = &[ $( $sv, )+ ];
             assert!(MIN_SUPPORTED <= VERSION, "the supported floor is newer than the version being written");
@@ -356,12 +327,11 @@ macro_rules! settings_table {
         };
 
         /// The payload length of a blob written by version `v`: the offset past the last row that
-        /// version declared. A running sum in declaration order, like the `off::…` chain — and
-        /// pinned against hand-written literals at the declaration for the same reason it is, since
-        /// an assert derived from the `since` column could not fail.
+        /// version declared. Pinned against hand-written literals at the declaration, because an
+        /// assert derived from the `since` column could not fail.
         ///
-        /// Only `MIN_SUPPORTED..=VERSION` is ever decoded; a lower `v` still answers, which is what
-        /// gives the literal block something to catch a mistyped `since` with.
+        /// Only `MIN_SUPPORTED..=VERSION` is ever decoded; a lower `v` still answers, which gives
+        /// the literal block something to catch a mistyped `since` with.
         const fn payload_len(v: u8) -> usize {
             let mut len = 1; // byte 0 is the version, which is not a field
             $(
@@ -391,9 +361,9 @@ macro_rules! settings_table {
 
         $(#[$cm])*
         $cvis fn $decode(bytes: &[u8]) -> Option<$S> {
-            // Everything below is relative to the **stored** version, not the running one: its
-            // payload length, its encoded length, and the span its CRC covers. That is what lets a
-            // blob written before the last field was appended still be read.
+            // Everything below is relative to the stored version, not the running one: its payload
+            // length, its encoded length, and the span its CRC covers. That is what lets a blob
+            // written before the last field was appended still be read.
             let v = *bytes.first()?;
             if !(MIN_SUPPORTED..=VERSION).contains(&v) {
                 return None;
@@ -414,9 +384,8 @@ macro_rules! settings_table {
                             &b[off::$name..off::$name + <$ty as $crate::settings_table::SettingCodec>::LEN],
                         )
                     } else {
-                        // The declared default, verbatim — the same token `DEFAULT` is built from,
-                        // so a tail-defaulted field costs no `.rodata` projection of the whole
-                        // struct.
+                        // The declared default, verbatim: the same token `DEFAULT` is built from,
+                        // so a tail-defaulted field costs no `.rodata` projection of the struct.
                         $default
                     },
                 )+
@@ -426,10 +395,10 @@ macro_rules! settings_table {
         }
     };
 
-    // The offset chain: each row's offset is the previous one plus that field's `SettingCodec::LEN`
-    // plus any `reserved` bytes it carries. A muncher, so every link is written once.
+    // Each row's offset is the previous one plus that field's `SettingCodec::LEN` plus any
+    // `reserved` bytes it carries. A muncher, so every link is written once.
     (@offsets $acc:expr;) => {
-        /// The first byte past the last declared field — the payload length.
+        /// The first byte past the last declared field, which is the payload length.
         pub const END: usize = $acc;
     };
     (@offsets $acc:expr; $name:ident: $ty:ty, [ $( $mk:ident $(( $($arg:tt)* ))? , )* ]; $($rest:tt)*) => {
@@ -441,7 +410,7 @@ macro_rules! settings_table {
         );
     };
 
-    // Marker dispatch. Each pass asks every marker what it contributes and gets nothing from the
+    // Marker dispatch: each pass asks every marker what it contributes, and gets nothing from the
     // markers that belong to another pass.
     (@gap reserved($n:literal)) => { $n };
     (@gap $mk:ident $(( $($arg:tt)* ))?) => { 0 };
