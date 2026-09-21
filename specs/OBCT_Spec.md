@@ -698,11 +698,15 @@ half-posting cell — the square reaching half an interval from the node on both
 
 A node is **selected** when both of these hold:
 
-1. `node_max` stands more than **10 m** above the native bilinear surface, measured at the point
-   inside the node's own cell where the reference attains it.
+1. The largest **gap** over the node's cell is more than **10 m**. The gap at a point is the
+   reference height there minus the native bilinear surface there, so the largest gap is
+   `max(reference - surface)` over the cell. This maximum and `node_max` are taken independently and
+   need not occur at the same point: the gap is what makes a node a crest, and `node_max` is the
+   height it is lifted to.
 2. `node_max` exceeds the mean of its four neighbours' `node_max` by more than **3 m**.
 
-The selection is then **dilated by one node**: a node that touches a selected node is lifted too.
+The selection is then **dilated by one node**, 8-connected: a node that touches a selected node,
+including at a corner, is lifted too.
 
 The lift at a lifted node is
 
@@ -710,8 +714,18 @@ The lift at a lifted node is
 lift = max(0, round(node_max) - native)   whole metres
 ```
 
-and the baked sample is `native + lift`. A `NODATA` native sample stays `NODATA`: a lift describes a
-height, and there is none at a hole.
+and the baked sample is `native + lift`. `round` is half away from zero, the rule section 5.2 pins
+for the read side.
+
+A node with `NODATA` anywhere in the 3 × 3 native lattice around it MUST NOT be lifted, not even by
+the dilation. There is no bilinear surface there to measure a gap against, so a hole keeps a
+one-node rim of unlifted ground around it rather than a height the rule cannot justify.
+
+`node_max` and the gap are sampled on a probe grid the producer chooses. The v1 bakery uses
+32 × 32 sub-samples, centred in the node's cell, which puts the probe step below 2 m at the v1
+posting. This document therefore does **not** promise that two producers agree byte for byte on a
+lifted cell. It promises the identity of section 9.2: where there is no coverage, there is no
+difference.
 
 Each test earns its place. The gap is measured against the bilinear surface, not against the node,
 because that surface is what a consumer draws. The convexity test is what leaves a steep planar
@@ -742,10 +756,13 @@ other correction; a systematic disagreement with the source is a re-bake of the 
 
 There is **no ceiling** on a lift, and a producer MUST NOT cap one. Measured over Engelberg the
 largest lift is 413 m, where Copernicus GLO-30 reads a notch in a rock wall that the 2 m reference
-does not; the reference is the better measurement there, so a clamp would put the error back. A
-spike in a reference looks the same from here, though, so a producer MUST report the largest lift of
-a run, the node it is at, and how many lifts exceed 200 m. That is how an operator sees a broken
-reference, instead of finding it in a drawn panorama.
+does not; the reference is the better measurement there, so a clamp would put the error back.
+
+A spike in a reference looks the same from here, though. A producer SHOULD therefore report the
+largest lift of a run, the node it is at, and how many lifts exceed 200 m, so that an operator sees
+a broken reference instead of finding it in a drawn panorama. This is guidance, not a byte
+requirement: nothing in a container records it, and no reader can check it. `obc-dem bake` prints
+it.
 
 A change of reference archive changes the baked samples, so it is a terrain revision bump and hence
 a navigation re-bake (`OBCC_Spec.md` §13.4). The reference DEM keeps its own attribution, which
