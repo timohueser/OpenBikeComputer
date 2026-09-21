@@ -30,6 +30,7 @@ import ingest.sources.cog  # noqa: E402
 import ingest.sources.stac  # noqa: E402
 from ingest.sources import fr as fr_module  # noqa: E402
 from ingest.sources.grid import grid_squares  # noqa: E402
+from ingest.sources.nz import sheets as nz_sheets  # noqa: E402
 from ingest.sources.protocols import MAX_PIXELS, request_boxes  # noqa: E402
 
 BOX = (6.8255, 45.9257, 6.8495, 45.9417)  # about 1.9 x 1.8 km over Chamonix
@@ -57,6 +58,11 @@ BOXES = {
     "de-sn": (12.9432, 50.4213, 12.9652, 50.4359),
     "de-th": (10.7351, 50.6524, 10.7571, 50.6670),
     "de-ni": (10.6084, 51.7508, 10.6304, 51.7654),
+    "dk": (9.8220, 56.2948, 9.8440, 56.3094),
+    "se": (18.4830, 67.8955, 18.5050, 67.9101),
+    "fi": (21.2576, 69.2995, 21.2796, 69.3141),
+    "nz": (170.1310, -43.6020, 170.1530, -43.5880),
+    "it-tn": (10.8620, 46.1510, 10.8840, 46.1656),
 }
 
 
@@ -184,17 +190,22 @@ class Requests(unittest.TestCase):
             self.assertGreaterEqual(float(subsets["y"][1]), y)
 
     def test_the_wcs_10_request_states_a_bbox_with_a_width_and_a_height(self):
-        """Norway answers WCS 1.0.0, which sizes its grid differently from 2.0.1."""
+        """Norway and Denmark answer WCS 1.0.0, which sizes its grid differently from
+        2.0.1 and names a format with the server's own word rather than a media type."""
 
-        source = ingest.SOURCES["no"]
-        _, values = query(source.url(split("no")[0]))
-        self.assertEqual(values["version"], ["1.0.0"])
-        self.assertEqual(values["coverage"], ["nhm_dtm_topo_25833"])
-        self.assertEqual(values["crs"], ["EPSG:25833"])
-        self.assertEqual(values["format"], ["GeoTIFF"])
-        self.assertNotIn("subset", values)
-        self.assertEqual(len(values["bbox"][0].split(",")), 4)
-        self.assertLessEqual(max(int(values["width"][0]), int(values["height"][0])), MAX_PIXELS)
+        for key, coverage, epsg, image in (("no", "nhm_dtm_topo_25833", 25833, "GeoTIFF"),
+                                           ("dk", "dhm_terraen", 25832, "GTiff")):
+            with self.subTest(key):
+                source = ingest.SOURCES[key]
+                _, values = query(source.url(split(key)[0]))
+                self.assertEqual(values["version"], ["1.0.0"])
+                self.assertEqual(values["coverage"], [coverage])
+                self.assertEqual(values["crs"], [f"EPSG:{epsg}"])
+                self.assertEqual(values["format"], [image])
+                self.assertNotIn("subset", values)
+                self.assertEqual(len(values["bbox"][0].split(",")), 4)
+                self.assertLessEqual(max(int(values["width"][0]), int(values["height"][0])),
+                                     MAX_PIXELS)
 
     def test_a_coverage_that_refuses_scalesize_is_asked_without_it(self):
         """Several servers answer `ScaleAxisUndefined` however the axes are named, so those
@@ -266,6 +277,59 @@ class NamedGrids(unittest.TestCase):
             parts = name.split("_")
             east, north = int(parts[1][2:]), int(parts[2])
             self.assertEqual((east % 2, north % 2), (0, 0), name)
+
+    def test_the_nztopo50_sheet_of_a_box_is_the_one_linz_publishes(self):
+        """New Zealand's index is arithmetic, so these constants are the whole adapter.
+
+        The corners are read off the published tiles: sheet `AS21` runs from NZTM2000
+        (1 492 000, 6 198 000), and `BX15`, the sheet Aoraki stands on, from
+        (1 348 000, 5 154 000). A wrong constant names a sheet whose window misses the
+        box, which refuses rather than writing the wrong heights, and this holds it
+        before that.
+        """
+
+        to_wgs84 = Transformer.from_crs(2193, 4326, always_xy=True)
+        for sheet, (east, north) in (("AS21", (1_492_000, 6_198_000)),
+                                     ("AS22", (1_516_000, 6_198_000)),
+                                     ("AT21", (1_492_000, 6_162_000)),
+                                     ("BX15", (1_348_000, 5_154_000)),
+                                     ("CJ21", (1_492_000, 4_758_000))):
+            with self.subTest(sheet):
+                # A small box well inside the sheet, so only that one sheet is named.
+                lon, lat = to_wgs84.transform(east + 12_000, north + 18_000)
+                self.assertEqual(nz_sheets((lon - 0.002, lat - 0.002, lon + 0.002, lat + 0.002)),
+                                 [sheet])
+
+        # Aoraki's own box, which the live probe was measured over.
+        source = ingest.SOURCES["nz"]
+        self.assertEqual([name for name, _ in source.urls(BOXES["nz"])], ["BX15.tiff"])
+        self.assertTrue(source.urls(BOXES["nz"])[0][1].endswith(
+            "/new-zealand/new-zealand/dem_1m/2193/BX15.tiff"))
+
+    def test_the_trentino_grid_square_is_named_after_its_corner(self):
+        """Trentino's file name is the square's corner in hundreds of metres.
+
+        That is what the province's own WFS index says: the square at EPSG:25832
+        (643 500, 5 112 000) is `5h643551120_DTM.asc`. So no index has to be read.
+        """
+
+        source = ingest.SOURCES["it-tn"]
+        to_wgs84 = Transformer.from_crs(25832, 4326, always_xy=True)
+        lon, lat = to_wgs84.transform(643_500 + 250, 5_112_000 + 250)
+        inside = (lon - 0.0005, lat - 0.0005, lon + 0.0005, lat + 0.0005)
+        self.assertEqual([name for name, _ in source.files(inside)],
+                         ["5h643551120_DTM.asc"])
+
+        names = [name for name, _ in source.files(BOXES["it-tn"])]
+        self.assertEqual(sorted(names), names)
+        self.assertEqual(len(names), len(set(names)))
+        for name, url in source.files(BOXES["it-tn"]):
+            self.assertRegex(name, r"^5h\d{4}\d{5}_DTM\.asc$")
+            self.assertEqual(url,
+                             "https://siatservices.provincia.tn.it/stemdata/"
+                             f"2014_lidar_dtm_asc/{name}")
+        # A square the survey did not reach answers 404, which is a coverage edge.
+        self.assertTrue(source.skip_missing)
 
     def test_the_squares_of_a_box_are_on_the_grid_and_distinct(self):
         squares = list(grid_squares((10.97, 47.41, 11.00, 47.43), 25832, 1000))
@@ -468,7 +532,7 @@ class FrenchBil(unittest.TestCase):
         self.addCleanup(lambda: setattr(fr_module, "http_get", real))
 
     def answer(self, body):
-        fr_module.http_get = lambda url: body
+        fr_module.http_get = lambda url, what=None: body
 
     def test_the_raw_float32_band_becomes_a_placed_geotiff(self):
         """The bytes carry no header, so the size and the box the request stated place them."""
@@ -600,7 +664,8 @@ class Registry(unittest.TestCase):
 
         real = ingest.sources.protocols.http_get
         self.addCleanup(lambda: setattr(ingest.sources.protocols, "http_get", real))
-        ingest.sources.protocols.http_get = lambda url: b"<ExceptionReport>no such coverage</ExceptionReport>"
+        ingest.sources.protocols.http_get = (
+            lambda url, what=None: b"<ExceptionReport>no such coverage</ExceptionReport>")
         with self.assertRaises(ingest.Refuse) as refusal:
             ingest.SOURCES["de-nw"].request(BOX)
         self.assertIn("no such coverage", str(refusal.exception))

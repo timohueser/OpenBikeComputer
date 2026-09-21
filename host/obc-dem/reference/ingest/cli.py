@@ -22,26 +22,67 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import publish
+from . import publish, wizard
 from .archive import (contributors, ingest_raster, load_manifests, local_rasters, rebuild_index,
                       read_index, tile_path, tile_problems, tile_digest, write_manifest)
 from .lattice import Refuse, box_tiles, check_world, tile_id
+from .pool import open_raster
 from .sources import SOURCES
+
+
+def registered(key: str):
+    if key not in SOURCES:
+        raise Refuse(f"unknown source `{key}`; this tool implements {', '.join(sorted(SOURCES))}")
+    return SOURCES[key]
+
+
+def source_step(path: Path) -> str:
+    """The step one delivered raster is on, in the units of its own CRS."""
+
+    with open_raster(path) as src:
+        step = abs(src.transform.a)
+        unit = "°" if src.crs and src.crs.is_geographic else "m"
+    return f"{step:.3g} {unit}"
+
+
+def require_datum(source, given) -> None:
+    """Refuse a delivery whose datum nobody has read.
+
+    One portal publishes orthometric and ellipsoidal products side by side, and the two
+    stand tens of metres apart, which is the size of a lift. No row can tell which an
+    order held, so the owner reads the order's metadata and says so.
+    """
+
+    if source.confirm_datum is None or given == source.confirm_datum:
+        return
+    raise Refuse(
+        f"{source.key} delivers more than one vertical datum, and the archive is "
+        f"orthometric metres on {source.vertical_datum}. Read the order's metadata and "
+        f"pass --datum {source.confirm_datum} when it says so; an order on an ellipsoidal "
+        f"height has to be converted before the ingest, which nothing here does"
+    )
 
 
 def command_ingest(args) -> int:
     bbox = parse_bbox(args.bbox)
     check_world(bbox, "--bbox")
-    if args.source not in SOURCES:
-        raise Refuse(f"unknown source `{args.source}`; this tool implements {', '.join(sorted(SOURCES))}")
-    source = SOURCES[args.source]
+    source = registered(args.source)
     if not source.covers(bbox):
         print(f"warning: {args.bbox} looks outside {source.country}", file=sys.stderr)
     root = Path(args.archive)
+    work = Path(args.work) if args.work else Path(tempfile.gettempdir()) / f"obc-reference-{source.key}"
     if args.input:
-        rasters = local_rasters(Path(args.input), bbox)
+        require_datum(source, getattr(args, "datum", None))
+        inputs = Path(args.input)
+        # The work directory is where the tool writes and the delivery directory is what
+        # the owner downloaded. Writing into the delivery would also make the next run
+        # read its own unpacked members as if the portal had delivered them.
+        if work.resolve() == inputs.resolve() or inputs.resolve() in work.resolve().parents:
+            raise Refuse(f"--work {work} is inside --input {inputs}; the tool writes into the "
+                         "work directory and never into a delivery, so name another one")
+        rasters = local_rasters(source, inputs, bbox, work)
     else:
-        work = Path(args.work) if args.work else Path(tempfile.gettempdir()) / f"obc-reference-{source.key}"
+        source.require_credential()
         rasters = source.fetch(bbox, work)
     if not rasters:
         raise Refuse("no rasters cover that box")
@@ -54,8 +95,13 @@ def command_ingest(args) -> int:
         written, voided, dropped = ingest_raster(path, source, root, held)
         touched.update(written)
         outside += dropped
-        print(f"  [{i}/{len(rasters)}] {path.name}: {len(written)} tile(s), {voided:.1%} void")
+        # A row that states no step gets the delivered one printed, because the step of
+        # an order is a fact about the delivery and not about the row.
+        step = "" if source.resolution_m else f", {source_step(path)}"
+        print(f"  [{i}/{len(rasters)}] {path.name}: {len(written)} tile(s), "
+              f"{voided:.1%} void{step}")
 
+    fetched = datetime.now(timezone.utc).date().isoformat()
     mine = sorted(tile for tile, keys in held.items() if source.key in keys)
     write_manifest(root, {
         "key": source.key,
@@ -63,9 +109,9 @@ def command_ingest(args) -> int:
         "product": source.product,
         "resolution_m": source.resolution_m,
         "licence": source.licence,
-        "attribution": source.attribution,
+        "attribution": source.credit(fetched),
         "vertical_datum": source.vertical_datum,
-        "fetched": datetime.now(timezone.utc).date().isoformat(),
+        "fetched": fetched,
         "tiles": mine,
     })
     for key, manifest in manifests.items():
@@ -78,8 +124,29 @@ def command_ingest(args) -> int:
     total = sum(tile_path(root, *(int(p) for p in tile.split("/"))).stat().st_size for tile in index["tiles"])
     print(f"{root}: {len(index['tiles'])} tile(s), {total} bytes, {len(touched)} written this run")
     print(f"  {outside} source pixel centre(s) fell outside their lattice window")
-    print(f"Attribution: {source.attribution} ({source.licence})")
+    print(f"Attribution: {source.credit(fetched)} ({source.licence})")
     return 0
+
+
+def command_wizard(args, ask=input, say=print) -> int:
+    """Walk one portal's download, then ingest what it delivered."""
+
+    source = registered(args.source)
+    if not source.steps:
+        raise Refuse(f"{source.key} needs no account: run `ingest {source.key}` directly")
+    if not wizard.walk(source, ask, say):
+        return 1
+    if wizard.take_credential(source, ask, say):
+        args.input = None
+        return command_ingest(args)
+    directory = wizard.input_directory(source, args.input, ask, say)
+    if directory is None:
+        return 1
+    args.datum = wizard.confirmed_datum(source, ask, say)
+    if source.confirm_datum and args.datum is None:
+        return 1
+    args.input = directory
+    return command_ingest(args)
 
 
 def command_index(args) -> int:
@@ -215,12 +282,19 @@ def main(argv=None) -> int:
         sub.add_argument("--archive", required=True, help="the archive root")
         return sub
 
-    ingest = with_archive("ingest", "warp a source's rasters onto the lattice and write tiles")
-    ingest.add_argument("source", help=f"source key: {', '.join(sorted(SOURCES))}")
-    ingest.add_argument("--bbox", required=True, help="min_lon,min_lat,max_lon,max_lat")
-    ingest.add_argument("--input", help="a directory of hand-fetched rasters, instead of the service")
-    ingest.add_argument("--work", help="where fetched rasters are cached (default: the system temp dir)")
-    ingest.set_defaults(run=command_ingest)
+    def for_source(name, help_text, run):
+        sub = with_archive(name, help_text)
+        sub.add_argument("source", help=f"source key: {', '.join(sorted(SOURCES))}")
+        sub.add_argument("--bbox", required=True, help="min_lon,min_lat,max_lon,max_lat")
+        sub.add_argument("--input", help="a directory of hand-fetched files, instead of the service")
+        sub.add_argument("--work", help="where fetched rasters are cached (default: the system temp dir)")
+        sub.add_argument("--datum", help="the vertical datum the delivery states, for a source "
+                                         "whose portal publishes more than one")
+        sub.set_defaults(run=run)
+
+    for_source("ingest", "warp a source's rasters onto the lattice and write tiles", command_ingest)
+    for_source("wizard", "walk the account and download steps of a source behind a login",
+               command_wizard)
 
     with_archive("index", "rebuild index.json from the source manifests").set_defaults(run=command_index)
     with_archive("check", "hold every tile against the contract").set_defaults(run=command_check)

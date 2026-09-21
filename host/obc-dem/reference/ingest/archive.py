@@ -15,17 +15,17 @@ from rasterio.warp import transform_bounds
 from .lattice import (NODATA, Refuse, TILE_PX, WGS84, Window, check_world, covering_window,
                       tile_id, tile_path, tile_window)
 from .pool import open_raster, pool_onto_lattice, read_source, to_int16
-from .sources.base import Source
+from .sources.base import READABLE, Source, digest_of, placed, unpack
 
 
 # Priority, finest and best-maintained national product first. Where two sources cover the
 # same pixel, the one earlier in this list keeps it. Keys with no adapter yet are listed so
 # the ranking does not move when an adapter lands.
 PRIORITY = (
-    "nl", "it-tn",
+    "dk", "nl", "it-tn",
     "de-nw", "de-he", "de-ni", "de-by", "de-sn", "de-th", "de-mv", "de-st", "de-bw",
-    "fr", "at", "no", "uk", "us", "ca", "nz",
-    "ch", "it-bz", "es",
+    "fr", "at", "no", "uk", "se", "us", "ca", "nz",
+    "ch", "fi", "it-bz", "es", "au",
 )
 
 def priority_rank(key: str) -> int:
@@ -140,14 +140,46 @@ def ingest_raster(path: Path, source: Source, root: Path, held: dict[str, set[st
     return touched, voided, dropped
 
 
-def local_rasters(directory: Path, bbox) -> list[Path]:
-    """Hand-fetched rasters from `--input` that touch the box, in any CRS."""
+def opened_as(archive: Path, directory: Path) -> Path:
+    """Where one delivered archive is unpacked: its own place, and its own bytes.
 
-    paths = sorted(p for p in directory.rglob("*") if p.suffix.lower() in {".tif", ".tiff"})
-    if not paths:
-        raise Refuse(f"{directory}: no .tif files")
+    The name is the path inside the delivery plus the digest of the file, so two orders
+    that the portal both called `order.zip` are two directories and the second one is
+    ingested. Nothing else distinguishes them: a portal re-issues a name freely.
+    """
+
+    inside = archive.relative_to(directory).as_posix().replace("/", "_")
+    return Path("delivery") / f"{inside}-{digest_of(archive)[:12]}.d"
+
+
+def local_rasters(source: Source, directory: Path, bbox, into: Path) -> list[Path]:
+    """The files `--input` points at, as rasters that touch the box, in any CRS.
+
+    A portal delivers a zip as often as a bare raster, and an ESRI ASCII grid arrives
+    without the CRS the tail needs to place it, so the delivery is opened and placed
+    first. Everything the tool writes goes into `into`, the work directory: the delivery
+    directory is left exactly as the portal left it.
+
+    A zip is unpacked under its own path and the digest of its bytes, so the work of a run
+    is reused and a **re-issued** delivery under the same file name is a different
+    directory and reaches the archive. Keying on the name alone is what would silently
+    ingest the old tiles again.
+    """
+
+    delivered = sorted(path for path in directory.rglob("*")
+                       if path.suffix.lower() in READABLE | {".zip"})
+    if not delivered:
+        raise Refuse(f"{directory}: holds no .tif, .asc or .zip, so it is not what "
+                     f"`{source.key}` is delivered as; README.md names the format")
+    paths = []
+    for path in delivered:
+        if path.suffix.lower() == ".zip":
+            paths.extend(unpack(path, into / opened_as(path, directory), READABLE))
+        else:
+            paths.append(path)
     keep = []
     for path in paths:
+        path = placed(path, source, into)
         with open_raster(path) as src:
             if src.crs is None:
                 raise Refuse(f"{path}: the raster has no CRS, so it cannot be placed")

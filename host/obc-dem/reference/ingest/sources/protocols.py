@@ -17,7 +17,7 @@ from rasterio.crs import CRS
 from rasterio.warp import transform_bounds
 
 from ..lattice import Refuse, WGS84
-from .base import Source, http_get
+from .base import Source, http_get, redact
 
 # One request per sub-box. A failed 4000 x 4000 request wastes far more time than four
 # 2000 x 2000 ones, and every service here caps the pixels it will answer with.
@@ -99,17 +99,24 @@ def raster_bytes(url: str, what: str) -> bytes:
 
     Every service here answers an error as an XML document with a 200, so the only way to
     tell a raster from a service that has moved or is out of coverage is the TIFF magic.
+    `what` is the source and the box, and it is what a refusal names: a keyed service
+    reads its token out of the URL, so the URL is not something to put in a message.
     """
 
-    body = http_get(url)
+    body = http_get(url, what=what)
     if body[:4] not in (b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+"):
+        # These services answer an error with a 200 and an XML document that quotes the
+        # request, token and all, so the body is redacted like any other message.
         text = body[:400].decode("utf-8", "replace").replace("\n", " ").strip()
-        raise Refuse(f"{what}: the service did not answer with a TIFF but with: {text}")
+        raise Refuse(redact(f"{what}: the service did not answer with a TIFF but with: {text}"))
     return body
 
 
 class TiledService(Source):
     """A service that answers one box at a time, cached per request in the work directory."""
+
+    #: These services read a key out of the query, which `request` appends.
+    credential_style = "query"
 
     #: The grid a request is stated in, when it is not degrees. The split is measured
     #: there, so a request can never overrun the pixel cap and come back coarsened.
@@ -133,7 +140,15 @@ class TiledService(Source):
         return paths
 
     def request(self, box) -> bytes:
-        raise NotImplementedError
+        """One raster, asked for as the protocol states it and as the portal lets it be.
+
+        A portal behind an account reads its key out of the query, so the credential is
+        appended here rather than inside every protocol's `url`: the request a keyed WCS
+        sends is the request the keyless one sends, plus one parameter.
+        """
+
+        credential = self.credential.query() if self.credential else ""
+        return raster_bytes(self.url(box) + credential, f"{self.key} {box}")
 
     def url(self, box) -> str:
         raise NotImplementedError
@@ -154,9 +169,6 @@ class ArcGisSource(TiledService):
             "interpolation": "RSP_BilinearInterpolation", "f": "image",
         })
         return f"{self.service}?{query}"
-
-    def request(self, box) -> bytes:
-        return raster_bytes(self.url(box), f"{self.key} {box}")
 
 
 class Wcs20Source(TiledService):
@@ -191,26 +203,27 @@ class Wcs20Source(TiledService):
             query += f"&scalesize={ax}({px}),{ay}({py})"
         return query + "&format=image/tiff"
 
-    def request(self, box) -> bytes:
-        return raster_bytes(self.url(box), f"{self.key} {box}")
-
 
 class Wcs10Source(TiledService):
-    """WCS 1.0.0 `GetCoverage`, which states the grid as a bbox plus a width and height."""
+    """WCS 1.0.0 `GetCoverage`, which states the grid as a bbox plus a width and height.
 
-    def __init__(self, *args, url, coverage, epsg, **kw):
+    `image_format` is the format name the coverage's own capabilities offer, because 1.0.0
+    names a format with the server's word for it rather than a media type: Kartverket
+    answers to `GeoTIFF` and Denmark's MapServer to `GTiff`.
+    """
+
+    def __init__(self, *args, url, coverage, epsg, image_format="GeoTIFF", **kw):
         super().__init__(*args, **kw)
         self.service, self.coverage, self.epsg = url, coverage, epsg
+        self.image_format = image_format
 
     def url(self, box) -> str:
         (lo_x, lo_y, hi_x, hi_y), _ = projected_box(box, self.epsg)
         px, py = output_size(box, self.resolution_m, f"{self.key} {box}", self.epsg)
         return (f"{self.service}?service=WCS&version=1.0.0&request=GetCoverage"
                 f"&coverage={self.coverage}&crs=EPSG:{self.epsg}"
-                f"&bbox={lo_x},{lo_y},{hi_x},{hi_y}&width={px}&height={py}&format=GeoTIFF")
-
-    def request(self, box) -> bytes:
-        return raster_bytes(self.url(box), f"{self.key} {box}")
+                f"&bbox={lo_x},{lo_y},{hi_x},{hi_y}&width={px}&height={py}"
+                f"&format={self.image_format}")
 
 
 class Wcs11Source(TiledService):
@@ -239,6 +252,3 @@ class Wcs11Source(TiledService):
                 f"&gridcs=urn:ogc:def:cs:OGC:0.0:Grid2dSquareCS"
                 f"&gridtype=urn:ogc:def:method:WCS:1.1:2dSimpleGrid"
                 f"&gridorigin={lo_x},{hi_y}&gridoffsets={step},-{step}")
-
-    def request(self, box) -> bytes:
-        return raster_bytes(self.url(box), f"{self.key} {box}")

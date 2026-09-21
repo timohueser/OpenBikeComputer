@@ -10,7 +10,7 @@ the index. The files are one square kilometre each, so they are downloaded whole
 import json
 
 from ..lattice import Refuse
-from .base import http_get
+from .base import http_get, redact
 from .bulk import BulkSource
 
 
@@ -30,7 +30,7 @@ def stac_items(url: str):
         seen.add(url)
         page = json.loads(http_get(url))
         if "features" not in page:
-            raise Refuse(f"{url}: not a STAC answer: {str(page)[:200]}")
+            raise Refuse(redact(f"{url}: not a STAC answer: {str(page)[:200]}"))
         yield from page["features"]
         url = next((link["href"] for link in page.get("links", [])
                     if link.get("rel") == "next"), None)
