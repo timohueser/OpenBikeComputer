@@ -18,7 +18,8 @@ pub struct Patch {
     pub cross: f32,
 }
 impl Patch {
-    fn from_corners([a, b, c, d]: [i16; 4]) -> Option<Self> {
+    /// `None` when a corner is [`NODATA`]: a hole has no bilinear surface over it.
+    pub fn from_corners([a, b, c, d]: [i16; 4]) -> Option<Self> {
         if [a, b, c, d].contains(&NODATA) {
             return None;
         }
@@ -209,8 +210,14 @@ impl<'a> SurfaceReader<'a> {
 
     /// Global sample-lattice coordinates of the patch's southwest corner.
     pub fn patch(&self, cache: &mut SurfaceCache, level: usize, y: u32, x: u32) -> Option<Patch> {
+        Patch::from_corners(self.corners(cache, level, y, x)?)
+    }
+
+    /// The patch's four corner samples, `NODATA` kept. A caller that can stand on a hole reads
+    /// these; a surface needs all four.
+    pub fn corners(&self, cache: &mut SurfaceCache, level: usize, y: u32, x: u32) -> Option<[i16; 4]> {
         let level = self.levels.get(level)?.as_ref()?.layout;
-        match self.patch_inner(cache, level, y, x) {
+        match self.corners_inner(cache, level, y, x) {
             Ok(value) => value,
             Err(_) => {
                 cache.failed = true;
@@ -303,13 +310,13 @@ impl<'a> SurfaceReader<'a> {
         }
     }
 
-    fn patch_inner(
+    fn corners_inner(
         &self,
         cache: &mut SurfaceCache,
         level: SurfaceLevel,
         y: u32,
         x: u32,
-    ) -> Result<Option<Patch>, Error> {
+    ) -> Result<Option<[i16; 4]>, Error> {
         let cy = y >> level.samples_log2;
         let cx = x >> level.samples_log2;
         let Some(home) = self.cell(cache, cy, cx)? else { return Ok(None) };
@@ -321,7 +328,7 @@ impl<'a> SurfaceReader<'a> {
             let (slot, base) = self.height_slot(cache, level, start, tile)?;
             let at = base + ((ly & 15) * 16 + (lx & 15)) as usize * 2;
             let bank = &cache.heights;
-            return Ok(Patch::from_corners([
+            return Ok(Some([
                 bank.word(slot, at),
                 bank.word(slot, at + 2),
                 bank.word(slot, at + 32),
@@ -332,7 +339,7 @@ impl<'a> SurfaceReader<'a> {
         let b = self.corner(cache, level, (cy, cx, home), y, x + 1)?;
         let c = self.corner(cache, level, (cy, cx, home), y + 1, x)?;
         let d = self.corner(cache, level, (cy, cx, home), y + 1, x + 1)?;
-        Ok(Patch::from_corners([a, b, c, d]))
+        Ok(Some([a, b, c, d]))
     }
 
     fn corner(
