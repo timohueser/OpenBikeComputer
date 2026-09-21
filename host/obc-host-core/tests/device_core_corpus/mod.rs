@@ -1,11 +1,11 @@
-//! The shared DeviceCore behaviour corpus (#1434 DC1, #1440 DC7).
+//! The shared DeviceCore behaviour corpus.
 //!
 //! One scenario table, one set of fixtures and one [`CorpusState`], shared by every runner in
 //! `device_core_conformance`. Keeping the corpus here is what makes "the same scenario, a different
 //! runner" a fact about the code rather than about hand-kept copies of a table.
 //!
 //! Nothing here decides policy: [`CorpusState::apply_input`] applies real `App` operations and real
-//! gestures, and the runner in `obc_host_core::trace` only controls *when* completed outcomes are
+//! gestures, and the runner in `obc_host_core::trace` only controls when completed outcomes are
 //! delivered.
 
 // A shared test corpus is compiled into every binary that includes it, and each uses a subset.
@@ -31,8 +31,8 @@ use obc_map_scene::BBox;
 use obc_ports::{Fix, InputClock, LocationSource, RideClock, Sensors};
 use obc_route::{gpx_to_obcr, NavError, RouteIndex, RouteReader};
 
-/// Every behavior row locked by DC1.  Keeping the inventory typed makes adding a scenario without
-/// the corresponding acceptance row (or silently dropping a row during later refactors) fail.
+/// Every locked behaviour row. Keeping the inventory typed makes adding a scenario without the
+/// corresponding acceptance row, or silently dropping a row, fail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Requirement {
     CatalogStoreChange,
@@ -40,11 +40,11 @@ pub enum Requirement {
     CatalogRouteDelete,
     CatalogRideDelete,
     CatalogTripCascade,
-    /// A completed removal is followed by the re-read the **domain** orders (#1541). The executor
-    /// re-feeds nothing, so the rider's menu loses the row only when that read lands.
+    /// A completed removal is followed by the re-read the domain orders. The executor re-feeds
+    /// nothing, so the rider's menu loses the row only when that read lands.
     CatalogDeleteOrdersRefresh,
-    /// A read the store could not answer is re-offered until it lands (#1541) — the retry the board
-    /// used to keep privately, now every host's.
+    /// A read the store could not answer is re-offered until it lands — every host's retry, not one
+    /// the board keeps privately.
     CatalogRefreshRetry,
     CatalogUploadOrder,
     CatalogIdentityRemap,
@@ -63,7 +63,7 @@ pub enum Requirement {
     RecorderSessionReplacement,
     RecorderCheckpointCadence,
     /// A ride's assembled samples leave as one [`Append`](obc_app::recorder::RecorderEffect) and are
-    /// retired by the answer, not by having been offered (#1553).
+    /// retired by the answer, not by having been offered.
     RecorderAppend,
     /// An append the medium only partly took leaves the rest staged, and the next one carries them.
     RecorderPartialAppend,
@@ -209,7 +209,7 @@ pub enum ScreenState {
     Warning,
 
     /// Any screen the projection does not name, carrying its variant name so two runners resting on
-    /// *different* unnamed screens still compare unequal.
+    /// different unnamed screens still compare unequal.
     Other(&'static str),
 }
 
@@ -248,10 +248,10 @@ pub enum PendingSettingsResult {
 /// The corpus's shared state: the `App` every runner drives, the repositories behind it, and the
 /// scripted completions a runner answers with.
 ///
-/// Inputs are real public app operations or UI gestures. Planner, detour-commit,
-/// recorder-finalize and derived-fill completions are *scripted* here rather than computed, because
-/// this is a fast behaviour corpus and not a second planner: the real planner/repository path is
-/// exercised by the fixture-backed suites and by the simulator.
+/// Inputs are real public app operations or UI gestures. Planner, detour-commit, recorder-finalize
+/// and derived-fill completions are scripted here rather than computed, because this is a fast
+/// behaviour corpus and not a second planner: the real planner and repository path is exercised by
+/// the fixture-backed suites and by the simulator.
 pub struct CorpusState {
     pub app: App,
     pub routes: Vec<RouteSummary>,
@@ -287,13 +287,13 @@ pub struct CorpusState {
     /// executor mints a monotonic one per commit and per read — exactly what `HostLoop` does.
     pub store_revision: u64,
     /// The navigation operation the executor is holding. The corpus scripts a detour search's answer
-    /// and the splice's answer at the *action* that produces them rather than at the request, so
-    /// they are built against whatever is actually running.
+    /// and the splice's answer at the action that produces them rather than at the request, so they
+    /// are built against whatever is actually running.
     pub nav_token: Option<OperationToken<NavigatorTag>>,
     pub abandoned_nav_token: Option<OperationToken<NavigatorTag>>,
     pub late_nav: Option<NavigatorOutcome>,
     /// The settings write the executor is holding, for the same reason: a scripted answer may be a
-    /// *stale* ack for a revision a newer edit already superseded.
+    /// stale ack for a revision a newer edit already superseded.
     pub settings_token: Option<OperationToken<SettingsTag>>,
 }
 
@@ -407,8 +407,8 @@ impl CorpusState {
 
     /// Report the card this fixture's repositories are, through one real pass — the level that
     /// admits a catalog mutation, a route plan and a ride recording. A fresh `App` has never been
-    /// told it has a store, and `Capabilities` is the pass *before*'s level, so this has to run
-    /// before any gesture that depends on one.
+    /// told it has a store, and `Capabilities` is the pass before's level, so this has to run before
+    /// any gesture that depends on one.
     pub fn mount_store(&mut self) {
         struct NoFix;
         impl LocationSource for NoFix {
@@ -466,7 +466,7 @@ impl CorpusState {
     fn open_detour_plan(&mut self) {
         if !matches!(self.app.top_screen(), Screen::Detour(_)) {
             self.reset_to_riding_map();
-            // The ride context sheet (#1515 D3), then its Detour row.
+            // The ride context sheet, then its Detour row.
             assert!(self.app.apply_chord(obc_app::Chord::Context), "a riding view declares the ride context");
             self.app.apply_gesture(Gesture::Step(1));
             self.app.apply_gesture(Gesture::Press);
@@ -475,16 +475,16 @@ impl CorpusState {
     }
 
     /// Apply one rider input. Shared by every runner: the corpus's inputs are real public app
-    /// operations and UI gestures, so what a runner *is* differs only in how the work they produce
-    /// is served.
+    /// operations and UI gestures, so what a runner is differs only in how the work they produce is
+    /// served.
     pub fn apply_input(&mut self, action: &Action, trace: &mut TraceRecorder<VisibleState>) {
         match action {
             Action::Settle => {}
             Action::StoreChanged => self.note_store_commit(),
             Action::RefreshCatalogs => {}
-            // The burst is three actions, not one, and that is the whole point of the row: the
-            // upload slot is single and most-recent-wins, so two uploads reported before one pass
-            // consumes it would leave the first one unobserved and the *order* untested.
+            // The burst is three actions, not one, and that is the point of the row: the upload
+            // slot is single and most-recent-wins, so two uploads reported before one pass consumes
+            // it would leave the first one unobserved and the order untested.
             Action::UploadFirstRoute => {
                 self.feed_routes("upload.routes", trace);
                 self.facts.note_route_upload(RouteUpload { id: 10, replaced: false, elevation: None });
@@ -518,7 +518,7 @@ impl CorpusState {
                 self.app.apply_gesture(Gesture::Press);
                 self.app.apply_gesture(Gesture::Hold);
             }
-            // The store moved and the *first* read of it will not answer. The rename is what makes
+            // The store moved and the first read of it will not answer. The rename is what makes
             // the retry rider-visible: until a read lands, the menu still shows the old name, so a
             // re-offer that never happened is a scenario that settles on stale rows.
             Action::RetryCatalogRead => self.app.advance_animations(InputClock(30_010)),
@@ -570,7 +570,7 @@ impl CorpusState {
                 self.app.apply_gesture(Gesture::Back);
             }
             // Three fixes from one spot: the corpus's clock moves a millisecond per pass, so a
-            // rider who *moved* between two of them would read as a teleport. A rider stopped at a
+            // rider who moved between two of them would read as a teleport. A rider stopped at a
             // light is the honest scripted ride here, and their log records every second of it.
             Action::RideFixes => self.pending_fixes.extend([road_fix(0.31); 3]),
             Action::PartialAppend => self.partial_append_once = true,
@@ -1037,7 +1037,7 @@ pub const SCENARIOS: &[Scenario] = &[
             Requirement::RecorderCheckpointCadence,
         ],
         // `StoreChanged` first, and it is not scenery: a ride needs somewhere to put it, and
-        // `Capabilities::recorder` is the pass *before*'s level — so the card has to be reported one
+        // `Capabilities::recorder` is the pass before's level, so the card has to be reported one
         // action ahead of the rider asking to record.
         actions: &[
             Action::StoreChanged,
@@ -1050,9 +1050,9 @@ pub const SCENARIOS: &[Scenario] = &[
     Scenario {
         name: "recorder.samples",
         requirements: &[Requirement::RecorderAppend, Requirement::RecorderPartialAppend],
-        // The riding view first, and it is not scenery: a sample exists only inside a ride the
-        // rider actually started, so the scenario opens the one the append is about. `Settle` gives
-        // the kept Start the pass it needs to become a session before the fixes arrive.
+        // The riding view first, and it is not scenery: a sample exists only inside a ride the rider
+        // actually started, so the scenario opens the one the append is about. `Settle` gives the
+        // kept Start the pass it needs to become a session before the fixes arrive.
         actions: &[
             Action::RideTheRoad,
             Action::Settle,
@@ -1149,19 +1149,19 @@ pub const SETTINGS_FAILURE_RETRY_MS: u32 = 6_003;
 
 /// The `InputClock` an action advances the app's animation clock to, or `0` for one that does not.
 ///
-/// The legacy harness has no clock of its own — a handful of actions drive the app's directly, to
-/// step past a bounded retry window. A runner that *does* own a pass clock keeps it at or above
-/// these marks, so the window it just stepped past cannot reopen behind it.
+/// A handful of actions drive the app's clock directly, to step past a bounded retry window. A
+/// runner that owns a pass clock of its own keeps it at or above these marks, so the window it just
+/// stepped past cannot reopen behind it.
 pub fn clock_watermark(action: Action) -> u32 {
     match action {
-        // The recorder cadence is a ten-second deadline the domain owns (#1552), and the corpus
-        // clock otherwise advances one millisecond per pass. The mark puts the ride's first pass
-        // past it, so the scenario exercises one real checkpoint rather than none.
+        // The recorder cadence is a ten-second deadline the domain owns, and the corpus clock
+        // otherwise advances one millisecond per pass. The mark puts the ride's first pass past it,
+        // so the scenario exercises one real checkpoint rather than none.
         Action::StartRecorder => 10_001,
         // The same ten-second deadline, for the same reason and one more: the checkpoint it forces
         // holds the one operation slot for a pass, so the fixes that land meanwhile pile up and the
-        // append that follows is a **batch**. A scenario whose every append carried one sample
-        // could not be shortened, and the partial-write row would never be reached.
+        // append that follows is a batch. A scenario whose every append carried one sample could
+        // not be shortened, and the partial-write row would never be reached.
         Action::RideFixes => 10_001,
         Action::RetrySettingsPersist => 4_002,
         Action::RetryCatalogRead => 30_010,

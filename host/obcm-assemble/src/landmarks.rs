@@ -132,7 +132,8 @@ fn set_references(record: &mut LandmarkRecord, refs: [ContentRef; 4]) {
     [record.name, record.articles, record.photo, record.photo_attribution] = refs;
 }
 
-/// Resolve file-local schedules before records or pools are laid out. Content precedence is independent of cell order.
+/// Resolve file-local schedules before records or pools are laid out. Content precedence is
+/// independent of cell order.
 pub fn merge(cells: &[&Cell<'_>], pois: &mut MergedPois) -> Result<LandmarkSection> {
     let mut winners = BTreeMap::<u64, Candidate>::new();
     for (cell_index, cell) in cells.iter().enumerate() {

@@ -1,44 +1,27 @@
-//! The point quadtree the POI section (`OBCM_Spec.md` §7.2) and the nav node index (§8.2) share.
+//! The point quadtree the POI section and the nav node index share.
 //!
-//! Both are the §4 encoding over the file's global bbox, built with floor-division midpoints in
-//! NW/NE/SW/SE order and a 10 µdeg recursion floor — the same split geometry `obc-pack`'s
-//! `build_poi_tree` / `build_nav_tree` use, because the reader's `walk_leaves` resolves exactly one
-//! subdivision rule and a second one would put records outside the leaf that indexes them.
+//! Both are the same encoding over the file's global bbox, built with floor-division midpoints in
+//! NW/NE/SW/SE order and a 10 µdeg recursion floor — the same split geometry `obc-pack` uses,
+//! because the reader's `walk_leaves` resolves exactly one subdivision rule and a second one would
+//! put records outside the leaf that indexes them.
 //!
-//! The two differ only in what "a leaf is full" means (POI: 14 fixed records; nav: 512 packed bytes)
-//! and in how leaves map to chunks (POI: one each; nav: first-fit bin packing), so both are
+//! The two differ only in what "a leaf is full" means (POI: 14 fixed records; nav: 512 packed
+//! bytes) and in how leaves map to chunks (POI: one each; nav: first-fit bin packing), so both are
 //! parameters here rather than two copies of a tree.
 //!
-//! # …and the same tree without the points (#1116 D4)
+//! [`build`] takes its points by value and [`flatten`] packs every chunk into a `Vec<u8>`, so
+//! together they hold the whole node set and the whole output at once. [`flatten_streaming`] is the
+//! same tree over a stream: the shape is a pure function of the points' coordinates, their record
+//! sizes, the capacity and the floor, so it can be recovered from a stream sorted in tree order
+//! ([`tree_key`]) without the points ever being addressable. A leaf is a contiguous run of that
+//! stream, and the two walks below turn the runs into the index, the bin packing and a placement
+//! plan the caller emits chunks from. `the_streaming_tree_is_the_tree_build_and_flatten_make`
+//! compares the two paths' index and chunk bytes.
 //!
-//! [`build`] takes its points **by value** and [`flatten`] packs every chunk into a `Vec<u8>`, so
-//! together they are the whole node set plus the whole §8.2/§8.3 output resident at once — a
-//! gigabyte and change at DACH scale, and the last thing in the merge that was.
-//!
-//! [`flatten_streaming`] is the same tree over a *stream*. The shape is a pure function of the
-//! points' coordinates, their record sizes, the capacity and the recursion floor, so it can be
-//! recovered from a stream sorted in **tree order** ([`tree_key`] — the quadrant digits of the
-//! descent, concatenated) without the points ever being addressable: a leaf is a contiguous run of
-//! that stream, and the two walks below turn the runs into the index, the bin packing and a
-//! placement plan the caller emits chunks from.
-//!
-//! The equivalence is not argued, it is *tested*: `the_streaming_tree_is_the_tree_build_and_flatten_
-//! make` runs both over the same random point sets and compares the index and the chunk bytes.
-//!
-//! # Which path is which, since D6
-//!
-//! The nav section — the one that is gigabytes at DACH scale, and the reason D4 happened — goes
-//! through [`flatten_streaming`] exclusively. [`build`] + [`flatten`] survive for two reasons and
-//! only two:
-//!
-//! - they are the **oracle** the equivalence test above measures the streaming path against, and
-//! - the POI section ([`crate::poi::layout`]) still uses them. That is deliberate, not an
-//!   oversight: §7.3 gives each non-empty leaf its **own** padded chunk (`bin_pack = false`), a
-//!   policy [`flatten_streaming`] does not implement, and a whole country's POIs are a few tens of
-//!   thousands of 36-byte records — tens of megabytes at the very worst, against a nav graph's
-//!   gigabytes. The in-memory path is where the cheap rebuild belongs; moving it would mean
-//!   teaching the streaming walk a second chunk policy to save nothing.
-
+//! The nav section, which is gigabytes at DACH scale, goes through [`flatten_streaming`]
+//! exclusively. [`build`] and [`flatten`] survive as that test's oracle and for the POI section,
+//! which gives each non-empty leaf its own padded chunk — a policy [`flatten_streaming`] does not
+//! implement, for an input that is tens of megabytes at the very worst.
 use obc_formats::obcm::{BRANCH_BIT, EMPTY_LEAF};
 
 use crate::extsort::{ExternalSort, SpillWriter};
@@ -47,10 +30,8 @@ use crate::scratch::{ScratchId, ScratchStore};
 use crate::{Error, Result};
 
 /// Recursion floor, µdeg (~1 m): below this a leaf keeps whatever it holds. Identical to the
-/// packer's own literal in `build_poi_tree` / `build_nav_tree` (`host/obc-pack/src/serialize.rs`),
-/// so a dense cluster stops recursing at the same place in both — and pinned by
-/// `tests/pinning.rs::the_split_floor_matches_the_packers`, because a silent divergence here would
-/// put records outside the leaf that indexes them.
+/// packer's own literal and pinned by `tests/pinning.rs::the_split_floor_matches_the_packers`,
+/// because a silent divergence would put records outside the leaf that indexes them.
 pub const SPLIT_FLOOR: i64 = 10;
 
 /// A record the tree can bin: it has an absolute coordinate and an on-wire size.
@@ -81,12 +62,9 @@ pub enum Tree<T> {
     Branch(Box<[Tree<T>; 4]>),
 }
 
-/// Build the tree over `bbox`, splitting a leaf once its records exceed `capacity` **bytes**
-/// (`Point::record_len` summed). A point exactly on a midline lands in the East / North child, which
-/// keeps it inside that child's bbox for the query.
-///
-/// Pre-D6 in the sense that the nav section no longer comes through here — see the module header for
-/// what still does (the POI section, and the streaming path's equivalence oracle) and why.
+/// Build the tree over `bbox`, splitting a leaf once its records exceed `capacity` bytes
+/// (`Point::record_len` summed). A point exactly on a midline lands in the East / North child,
+/// which keeps it inside that child's bbox for the query.
 pub fn build<T: Point>(points: Vec<T>, bbox: UBox, capacity: usize) -> Tree<T> {
     let (min_lon, min_lat, max_lon, max_lat) = bbox;
     let packed: usize = points.iter().map(Point::record_len).sum();
@@ -116,21 +94,17 @@ pub fn build<T: Point>(points: Vec<T>, bbox: UBox, capacity: usize) -> Tree<T> {
 
 /// "First bin, in creation order, with at least `want` bytes free" in `O(log n)`.
 ///
-/// The predicate is the *only* thing this accelerates: [`flatten`]'s placement is byte-for-byte the
-/// linear scan `bins.iter().position(|b| b.len() + leaf_len <= chunk_size)` it replaces, and the
-/// packer's own `flatten_nav_tree` still spells out. The scan is what made the nav rewrite
-/// `O(leaves × chunks)` — at a country's ~250 k node chunks that is tens of billions of comparisons,
-/// which measured as most of the assembler's nav phase.
+/// The predicate is the only thing this accelerates: the placement is byte-for-byte the linear scan
+/// `bins.iter().position(|b| b.len() + leaf_len <= chunk_size)` it replaces. That scan is
+/// `O(leaves × chunks)`, which at a country's quarter-million node chunks is most of the nav phase.
 ///
 /// A segment tree over per-bin free space, laid out as a complete binary tree with the bins at the
-/// leaves: each internal node keeps the **maximum** free space below it, so the descent takes the
-/// left child whenever it can hold the record and the right one otherwise — the leftmost, i.e.
-/// first-created, bin that fits.
+/// leaves: each internal node keeps the maximum free space below it, so the descent takes the left
+/// child whenever it can hold the record — the leftmost, first-created bin that fits.
 ///
-/// The free-space counters are `u32` rather than `usize`: a chunk is 512 bytes, and at a country's
-/// millions of bins the halved node width is the difference between the accelerator being a rounding
-/// error and it being tens of megabytes (#1116 D4, where it is the one structure left that is sized
-/// by the *output*).
+/// The free-space counters are `u32` rather than `usize` because this is the one structure left
+/// that is sized by the output, and at millions of bins the halved node width is tens of
+/// megabytes.
 struct FirstFit {
     /// `1`-based complete binary tree; `tree[1]` is the root, leaf `k` lives at `leaves + k`.
     tree: Vec<u32>,
@@ -201,20 +175,19 @@ impl FirstFit {
 
 /// BFS-flatten a tree into `(index bytes, node count, chunk bytes, chunk count, dropped)`.
 ///
-/// `pack_one` writes **one** record into the chunk buffer it is handed; this function owns the
-/// capacity bound, exactly as the packer's `pack_poi_chunk` / `flatten_nav_tree` do. A record that
-/// would not fit its chunk is **dropped and counted**, never written past `chunk_size` — the tree
-/// already split every leaf to at most one chunk, so `dropped` is the safety net for the one case
-/// the tree cannot split away (co-located records inside the [`SPLIT_FLOOR`] recursion floor).
+/// `pack_one` writes one record into the chunk buffer it is handed; this function owns the capacity
+/// bound. A record that would not fit its chunk is dropped and counted, never written past
+/// `chunk_size` — the tree already split every leaf to at most one chunk, so `dropped` is the
+/// safety net for the one case it cannot split away, co-located records inside the [`SPLIT_FLOOR`].
 /// Truncating a chunk silently would be worse than losing a record: a nav chunk with no `0xFF`
-/// sentinel violates `OBCM_Spec.md` §8.3's no-straddle rule and decodes as garbage.
+/// sentinel decodes as garbage.
 ///
 /// `bin_pack` selects the chunk policy:
 ///
-/// - `false` — one chunk per non-empty leaf, padded to `chunk_size` (the §7.3 POI stride);
-/// - `true` — **first-fit** over already-open chunks (the §8.2 v9 bin packing), so distinct leaves
-///   may share a chunk id and a walk may hand a consumer the same record twice. That is the
-///   documented contract, and the reason every consumer of nav records must be idempotent.
+/// - `false` — one chunk per non-empty leaf, padded to `chunk_size`, which is the POI stride;
+/// - `true` — first-fit over already-open chunks, so distinct leaves may share a chunk id and a
+///   walk may hand a consumer the same record twice. That is the documented contract, and the
+///   reason every consumer of nav records must be idempotent.
 pub fn flatten<T: Point>(
     root: &Tree<T>,
     chunk_size: usize,
@@ -276,16 +249,12 @@ pub fn flatten<T: Point>(
     (index_bytes, index.len() as u32, chunks, chunk_count, dropped)
 }
 
-// -------------------------------------------------------------------------------------------------
-// The same tree, over a stream (#1116 D4)
-// -------------------------------------------------------------------------------------------------
-
 /// Levels the [`tree_key`] descent can encode: two bits each in a `u64`.
 ///
-/// The assembly bbox is a square of `2^span` µdeg with `span ≤ 29` (`grid.rs`), and the [`SPLIT_FLOOR`]
-/// stops the descent once a side is under 10 — so a real tree is at most 27 deep and this is a
-/// bound, not a policy. A box that would need more is refused rather than silently truncated, because
-/// two points whose keys agreed only because the key ran out of bits would swap places.
+/// The assembly bbox is a square of `2^span` µdeg with `span ≤ 29`, and the [`SPLIT_FLOOR`] stops
+/// the descent once a side is under 10, so a real tree is at most 27 deep. A box that would need
+/// more is refused rather than silently truncated: two points whose keys agreed only because the
+/// key ran out of bits would swap places.
 const MAX_LEVELS: u32 = 32;
 
 /// The digit that selects a depth-`d + 1` node from its depth-`d` parent lives here.
@@ -321,14 +290,14 @@ fn children(bbox: UBox) -> [UBox; 4] {
     ]
 }
 
-/// **Tree order**: the quadrant digits of a point's descent through `bbox`, concatenated two bits at
-/// a time from the most significant end (NW = 0, NE = 1, SW = 2, SE = 3 — [`build`]'s child order).
+/// Tree order: the quadrant digits of a point's descent through `bbox`, concatenated two bits at a
+/// time from the most significant end (NW = 0, NE = 1, SW = 2, SE = 3).
 ///
 /// Sorting by this key puts every subtree's points in one contiguous run, in child order, which is
 /// what lets [`flatten_streaming`] recover the tree from a stream. The descent is [`build`]'s own,
-/// midline rule and floor included, so a point lands under exactly the prefix of the leaf that would
-/// hold it — and two points inside one floor-bounded box get the *same* key, which is why the sort
-/// key ends in the record's input order.
+/// midline rule and floor included, so a point lands under exactly the prefix of the leaf that
+/// would hold it — and two points inside one floor-bounded box get the same key, which is why the
+/// sort key ends in the record's input order.
 pub fn tree_key(lat: i32, lon: i32, bbox: UBox) -> u64 {
     let mut box_ = bbox;
     let mut key = 0u64;
@@ -368,8 +337,8 @@ pub fn depth_bound(bbox: UBox) -> Option<u32> {
 
 /// One record the streaming tree indexes: `key u64, ord u32, at u32, len u16`.
 ///
-/// `ord` is the record's position in the caller's **input** order, which is the order [`build`]'s
-/// partition preserves inside a leaf and therefore the order [`flatten`] packs a leaf in; `at` and
+/// `ord` is the record's position in the caller's input order, which is the order [`build`]'s
+/// partition preserves inside a leaf and therefore the order [`flatten`] packs a leaf in. `at` and
 /// `len` say where the packed bytes are, and the tree never looks at them.
 pub const TREE_REC: usize = 18;
 
@@ -398,7 +367,7 @@ pub fn rec_len(r: &[u8; TREE_REC]) -> u16 {
     u16::from_le_bytes(r[16..18].try_into().expect("2 bytes"))
 }
 
-/// Tree order, then input order — a **total** order, because `ord` is unique.
+/// Tree order, then input order — a total order, because `ord` is unique.
 pub fn by_tree_order(a: &[u8; TREE_REC], b: &[u8; TREE_REC]) -> std::cmp::Ordering {
     (rec_key(a), rec_ord(a)).cmp(&(rec_key(b), rec_ord(b)))
 }
@@ -439,12 +408,12 @@ fn by_placement(a: &[u8; PLACE_REC], b: &[u8; PLACE_REC]) -> std::cmp::Ordering 
 
 /// One node of the tree as the shape pass hands it to the index pass: `depth u8, prefix u64,
 /// kind u8, a u32, b u32, c u32`. For a branch `a` is its rank among the branches at its depth; for
-/// a leaf `(a, b, c)` is `(first, count, packed len)` — `first` a **position in the tree-ordered
-/// stream**, which is what a leaf's run is named by.
+/// a leaf `(a, b, c)` is `(first, count, packed len)`, where `first` is a position in the
+/// tree-ordered stream.
 ///
-/// Sorted by `(depth, prefix)`, which **is** the BFS order [`flatten`] numbers the index in: BFS
-/// visits a whole level before the next, and within a level left to right, which is prefix order by
-/// induction. A total order — two distinct nodes of one depth have distinct prefixes.
+/// Sorted by `(depth, prefix)`, which is the BFS order [`flatten`] numbers the index in: BFS visits
+/// a whole level before the next, and within a level left to right, which is prefix order by
+/// induction. A total order, because two distinct nodes of one depth have distinct prefixes.
 const NODE_REC: usize = 22;
 
 const KIND_BRANCH: u8 = 0;
@@ -494,7 +463,7 @@ struct Cur {
     prefix: u64,
 }
 
-/// A **committed branch** — a node already known to exceed the capacity — and which of its four
+/// A committed branch — a node already known to exceed the capacity — and which of its four
 /// children is currently open.
 struct Frame {
     bbox: UBox,
@@ -506,19 +475,19 @@ struct Frame {
 /// The shape pass: one forward walk of the tree-ordered stream that closes each node as it is
 /// passed, holding only the path to the current node and the points of the node currently open.
 ///
-/// The rule it reproduces is [`build`]'s, in the one direction a stream allows. [`build`] asks "is
-/// this node's *total* over the capacity?" before descending; this accumulates and splits the moment
-/// the running total passes it. That is the same verdict: a running total that passes the capacity
-/// proves the total does, and a node whose accumulation never passes it has a total that does not.
-/// The floor is checked on the node's own box, exactly as [`build`] checks it before splitting.
+/// The rule it reproduces is [`build`]'s, in the one direction a stream allows. [`build`] asks
+/// whether a node's total is over the capacity before descending; this accumulates and splits the
+/// moment the running total passes it. That is the same verdict: a running total that passes the
+/// capacity proves the total does, and a node whose accumulation never passes it has a total that
+/// does not.
 struct Shape<'s> {
     capacity: usize,
     cur: Cur,
     stack: Vec<Frame>,
-    /// The points accumulated into `cur` — at most a capacity's worth, except inside a floor-bounded
-    /// box, which is the one place [`build`] cannot split either. `(key, pos, len)`, where `pos` is
-    /// the point's **position in the tree-ordered stream**, not its `ord`: a leaf is named by its run
-    /// of that stream, and the stream is what [`read_run`] seeks into.
+    /// The points accumulated into `cur` — at most a capacity's worth, except inside a
+    /// floor-bounded box, which is the one place [`build`] cannot split either. `(key, pos, len)`,
+    /// where `pos` is the point's position in the tree-ordered stream, not its `ord`: a leaf is
+    /// named by its run of that stream.
     pending: Vec<(u64, u32, u16)>,
     packed: usize,
     /// Nodes closed at each depth, and branches committed at each depth — the two counters the BFS
@@ -625,8 +594,8 @@ impl<'s> Shape<'s> {
                 }
             }
             let Some(k) = split_at else { return Ok(()) };
-            // The points that had accumulated in the node just split move down into it, followed by
-            // the ones this batch had not reached yet — the stream's own order, preserved.
+            // The points accumulated in the node just split move down into it, followed by the
+            // ones this batch had not reached yet — the stream's own order, preserved.
             let mut next = std::mem::take(&mut self.pending);
             next.extend_from_slice(&batch[k..]);
             self.packed = 0;
@@ -648,36 +617,35 @@ impl<'s> Shape<'s> {
 }
 
 /// What [`flatten_streaming`] produces: the index and the placement plan, both on the scratch seam,
-/// plus the counters the §8.1 directory needs.
+/// plus the counters the directory needs.
 #[derive(Debug)]
 pub struct Flattened {
-    /// The §8.2 index, already in its wire form — `Node Count` little-endian `uint32`s.
+    /// The index, already in its wire form — `Node Count` little-endian `uint32`s.
     pub index: ScratchId,
     pub node_count: u32,
     pub chunk_count: u32,
     /// One [`PLACE_REC`] per non-empty leaf, in chunk-emission order.
     pub places: ScratchId,
     /// The tree-ordered point stream this was built from, handed back because the placement plan
-    /// names each leaf as a *run* of it — [`read_run`] is how the caller reads one back.
+    /// names each leaf as a run of it. [`read_run`] is how the caller reads one back.
     pub points: ScratchId,
     pub leaf_count: u64,
-    /// Records the §8.3 chunk-capacity guard refused — [`flatten`]'s own counter.
+    /// Records the chunk-capacity guard refused.
     pub dropped: usize,
 }
 
-/// [`build`] + [`flatten`] with `bin_pack`, over a stream: the tree's shape from a tree-ordered
-/// record stream, the §8.2 bin packing over its leaves, and a plan the caller emits chunk bytes from.
+/// [`build`] plus [`flatten`] with `bin_pack`, over a stream: the tree's shape from a tree-ordered
+/// record stream, the bin packing over its leaves, and a plan the caller emits chunk bytes from.
 ///
 /// `points` is a [`TREE_REC`] stream sorted by [`by_tree_order`]; nothing else about it is assumed,
-/// and it is read forward once here plus once per leaf (by range) later. The two walks are:
+/// and it is read forward once here plus once per leaf, by range, later. The two walks are:
 ///
-/// 1. **Shape** — one forward pass ([`Shape`]) that closes every node as the stream passes it,
-///    holding the path and the open node's points and nothing else, and files each closed node under
+/// 1. Shape — one forward pass ([`Shape`]) that closes every node as the stream passes it, holding
+///    the path and the open node's points and nothing else, and files each closed node under
 ///    `(depth, prefix)`.
-/// 2. **Index and bins** — that file read back in BFS order, which is the order [`flatten`] numbers
-///    the index in *and* the order it opens and fills chunks in. A branch's `First Child` is
-///    arithmetic (`start[depth + 1] + 4 × rank`), because children are laid out in groups of four in
-///    their parents' order; a leaf is first-fit into the open chunks exactly as before.
+/// 2. Index and bins — that file read back in BFS order, which is the order [`flatten`] numbers the
+///    index in and the order it opens and fills chunks in. A branch's `First Child` is arithmetic,
+///    because children are laid out in groups of four in their parents' order.
 pub fn flatten_streaming(
     scratch: &dyn ScratchStore,
     budget: usize,
@@ -696,9 +664,8 @@ pub fn flatten_streaming(
 
     // 1. The shape.
     let mut shape = Shape::new(bbox, capacity, ExternalSort::<NODE_REC>::new(scratch, budget / 2, by_bfs));
-    // The stream's **position** is what a leaf's run is named by, so that — not `ord` — is what goes
-    // into the shape pass. The two differ the moment the tree order is not the input order, which is
-    // the normal case.
+    // A leaf's run is named by stream position, not by `ord`, so that is what goes into the shape
+    // pass. The two differ the moment the tree order is not the input order.
     for (pos, rec) in crate::extsort::SpillReader::<TREE_REC>::open(scratch, points, share)?.enumerate() {
         let rec = rec?;
         let pos = u32::try_from(pos).map_err(|_| {
@@ -739,9 +706,8 @@ pub fn flatten_streaming(
                     }
                 };
                 let at = chunk_size - free.free(bin);
-                // The common leaf fits whole — the tree split it to at most a chunk, so the only
-                // leaf that can overflow is one the floor stopped it from splitting, and only that
-                // one has to be walked record by record to find out how much of it lands.
+                // The common leaf fits whole, because the tree split it to at most a chunk. Only a
+                // leaf the floor stopped from splitting has to be walked record by record.
                 let used = if leaf_len <= chunk_size - at {
                     at + leaf_len
                 } else {
@@ -782,8 +748,8 @@ pub fn flatten_streaming(
     })
 }
 
-/// One leaf's records, in the caller's **input** order — which is the order [`flatten`] packs a leaf
-/// in, and the order the tree-ordered stream does *not* hold them in when a leaf spans several keys.
+/// One leaf's records, in the caller's input order, which is the order [`flatten`] packs a leaf in
+/// and not the order the tree-ordered stream holds them in when a leaf spans several keys.
 ///
 /// A leaf is a chunk's worth of records, so this is a bounded read; the one exception is a leaf the
 /// floor could not split, which is also the only leaf that can overflow its chunk.
@@ -853,11 +819,10 @@ mod tests {
         assert_eq!((packed.4, unpacked.4), (0, 0), "nothing is dropped when every leaf fits");
     }
 
-    /// The accelerated first-fit must place **exactly** where the linear scan did: the first bin in
-    /// creation order with room, back-filling the slack an earlier large leaf left. This is the
-    /// property `perf` must not have changed, so it is asserted against the naive scan itself over a
-    /// deliberately awkward size sequence (large, small, large, small…, which is where next-fit and
-    /// best-fit both diverge from first-fit).
+    /// The accelerated first-fit must place exactly where the linear scan does: the first bin in
+    /// creation order with room, back-filling the slack an earlier large leaf left. Asserted
+    /// against the naive scan over a large, small, large, small… sequence, which is where next-fit
+    /// and best-fit both diverge from first-fit.
     #[test]
     fn first_fit_placement_matches_the_naive_scan() {
         let sizes: Vec<usize> = (0..400).map(|k| [500usize, 40, 300, 60, 120, 200][k % 6]).collect();
@@ -894,9 +859,9 @@ mod tests {
         assert_eq!(got, want, "the segment tree must reproduce the linear scan bin for bin");
     }
 
-    /// The guard the review restored: a leaf the tree could not split (co-located records past the
-    /// recursion floor) keeps what fits and **counts** the rest, rather than writing past the chunk
-    /// and having `resize` truncate it into a chunk with no sentinel.
+    /// A leaf the tree could not split, because its records are co-located past the recursion
+    /// floor, keeps what fits and counts the rest rather than writing past the chunk and having
+    /// `resize` truncate it into a chunk with no sentinel.
     #[test]
     fn an_unsplittable_leaf_drops_loudly_instead_of_overflowing() {
         // Twelve records of 60 bytes at one coordinate: 720 > 512, and the 10-µdeg floor stops the
@@ -909,10 +874,6 @@ mod tests {
         assert_eq!(dropped, 4, "8 × 60 = 480 fit; the other four are counted, not written");
         assert_eq!(chunks[480], obc_formats::obcm::CHUNK_END, "the padding sentinel survives");
     }
-
-    // ---------------------------------------------------------------------------------------------
-    // The streaming tree (#1116 D4)
-    // ---------------------------------------------------------------------------------------------
 
     /// A point that knows its own input position, so the packed bytes say **which** record they are
     /// and a chunk that holds the right records in the wrong order fails the comparison.
@@ -955,15 +916,13 @@ mod tests {
         buf
     }
 
-    /// **The equivalence.** [`flatten_streaming`] is worth nothing unless it is the *same* tree, so
-    /// this runs both formulations over the same pseudo-random point sets and compares the §8.2
-    /// index and the chunk bytes byte for byte — not the shape, the output.
+    /// The equivalence. [`flatten_streaming`] is worth nothing unless it is the same tree, so this
+    /// runs both formulations over the same pseudo-random point sets and compares the index and the
+    /// chunk bytes byte for byte.
     ///
-    /// The sets are chosen to hit the three things that could diverge: ordinary points (the tree's
-    /// shape and the BFS numbering), leaves small enough that first-fit back-fills an earlier chunk
-    /// (the bin packing), and a co-located cluster inside the [`SPLIT_FLOOR`] (the one leaf that can
-    /// overflow its chunk, which is the only place `dropped` is non-zero and the only place the
-    /// streaming path has to walk a leaf record by record).
+    /// The sets hit the three things that could diverge: ordinary points, for the shape and the BFS
+    /// numbering; leaves small enough that first-fit back-fills an earlier chunk; and a co-located
+    /// cluster inside the [`SPLIT_FLOOR`], the one leaf that can overflow its chunk.
     #[test]
     fn the_streaming_tree_is_the_tree_build_and_flatten_make() {
         const CHUNK: usize = 512;
@@ -988,12 +947,12 @@ mod tests {
                 }
             }
 
-            // The old formulation.
+            // The in-memory formulation, as the oracle.
             let tree = build(points.iter().collect::<Vec<&Q>>(), bbox, CHUNK);
             let (want_index, want_nodes, want_chunks, want_bins, want_dropped) =
                 flatten(&tree, CHUNK, true, &|p: &&Q, out: &mut Vec<u8>| pack_q(p, out));
 
-            // The new one, over the same points as a tree-ordered stream.
+            // …and the streaming one, over the same points as a tree-ordered stream.
             let scratch = crate::scratch::MemoryScratch::new();
             let mut recs: Vec<[u8; TREE_REC]> =
                 points.iter().map(|q| tree_record(tree_key(q.lat, q.lon, bbox), q.ord, 0, q.len as u16)).collect();
