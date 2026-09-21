@@ -9,49 +9,43 @@ import OBCUI
 import OBCMock
 #endif
 
-/// Composition root. The single place allowed to *choose* a `DeviceTransport`
-/// conformer — everything below `RootView` sees only the protocol.
+/// Composition root. The single place allowed to choose a `DeviceTransport` conformer;
+/// everything below `RootView` sees only the protocol.
 ///
-/// The golden rule (see companion-ios/CLAUDE.md): CoreBluetooth lives only in
-/// `BLETransport`; mock/panel code only inside `#if DEBUG`.
+/// CoreBluetooth lives only in `BLETransport`, and mock or panel code only inside `#if DEBUG`.
 @main
 struct OBCCompanionApp: App {
     #if DEBUG
-    /// The B1P launch surface, parsed once (`-OBCScenario …`, see CLAUDE.md).
+    /// The launch surface, parsed once.
     private static let launchOptions = MockLaunchOptions.parse()
-    /// The live control shared by the Debug transport, the dev panel, and the
-    /// HUD — `nil` when `-OBCTransport ble` forces the real path.
+    /// The live control shared by the Debug transport, the dev panel and the HUD. Nil when the
+    /// launch arguments force the real path.
     static let mockControl: MockControl? =
         launchOptions.useBLETransport ? nil : launchOptions.makeControl()
     #endif
 
     @MainActor private static let liveTransport = BLETransport()
 
-    /// The notification tap router (#773 U5). Held here because
-    /// `UNUserNotificationCenter.delegate` is a weak reference — a delegate created inline would be
-    /// released before the first tap ever arrived.
+    /// The notification tap router. Held here because `UNUserNotificationCenter.delegate` is a
+    /// weak reference, so a delegate created inline would be released before the first tap.
     private static let notificationDelegate = UpdateNotificationDelegate()
 
     init() {
-        // Field-guide nav chrome (serif large titles, parchment bar) — the one
-        // global UIKit-appearance call the B11 kit needs (§9 "Nav Bar").
+        // Field-guide nav chrome: the one global UIKit-appearance call the component kit needs.
         OBCNavigationChrome.apply()
-        // Tapping an update notice must land on the firmware screen even from a cold launch, so the
-        // delegate has to be in place before iOS delivers the pending response. Setting a delegate
-        // asks for **no** permission and shows nothing — the permission moment is the launch sheet
-        // (see `UpdateSurfaceModel`).
+        // Tapping an update notice must land on the firmware screen even from a cold launch, so
+        // the delegate has to be in place before iOS delivers the pending response. Setting a
+        // delegate asks for no permission and shows nothing.
         UNUserNotificationCenter.current().delegate = Self.notificationDelegate
         #if DEBUG
-        // `-OBCDisableAnimations` (#1212): the screenshot capture must never catch a transition
-        // mid-flight. UIKit's switch covers the presentation machinery SwiftUI drives underneath
-        // (sheets, full-screen covers, nav pushes); the SwiftUI-side transaction override lives on
-        // the root view below and covers implicit view-update animations.
+        // The screenshot capture must never catch a transition mid-flight. UIKit's switch covers
+        // the presentation machinery SwiftUI drives underneath; the SwiftUI-side transaction
+        // override lives on the root view below and covers implicit view-update animations.
         if Self.launchOptions.disableAnimations {
             UIView.setAnimationsEnabled(false)
         }
-        // Log a DEBUG-only symbol at launch so the mock-exclusion seam is exercised
-        // by a real build and lands in the Debug binary — but never the Release one
-        // (B0 acceptance). See CLAUDE.md → "Prove the seam".
+        // Log a DEBUG-only symbol at launch, so the mock-exclusion seam is exercised by a real
+        // build and lands in the Debug binary, never the Release one.
         print("[OBC] debug build · mock seam: \(obcMockBuildMarker)")
         #endif
     }
@@ -75,7 +69,7 @@ struct OBCCompanionApp: App {
                     showGalleryAtLaunch: Self.launchOptions.showUIGallery,
                     hideHUD: Self.launchOptions.hideMockHUD
                 )
-                // The SwiftUI half of `-OBCDisableAnimations`: every state change in this subtree
+                // The SwiftUI half of the animation switch: every state change in this subtree
                 // lands unanimated, presentations included. A no-op without the flag.
                 .transaction { transaction in
                     guard Self.launchOptions.disableAnimations else { return }
@@ -84,11 +78,10 @@ struct OBCCompanionApp: App {
                 }
             #endif
         }
-        // #773 U5 — the background update check. This modifier *is* the `BGTaskScheduler`
-        // registration (SwiftUI does it before the app finishes launching, which is the framework's
-        // hard requirement); the identifier must also be listed in
-        // `BGTaskSchedulerPermittedIdentifiers` (project.yml) or iOS traps at launch. Everything
-        // else about the wake — including the decision to say nothing — is
+        // This modifier is the `BGTaskScheduler` registration: SwiftUI does it before the app
+        // finishes launching, which is the framework's hard requirement, and the identifier must
+        // also be listed in `BGTaskSchedulerPermittedIdentifiers` or iOS traps at launch.
+        // Everything else about the wake, the decision to say nothing included, is
         // `BackgroundUpdateRefresh.run()`.
         .backgroundTask(.appRefresh(BackgroundUpdateRefresh.identifier)) {
             await BackgroundUpdateRefresh.run()
@@ -102,11 +95,9 @@ struct OBCCompanionApp: App {
         return UserDefaultsUpdateSurfaceStore()
     }
 
-    /// Debug defaults to the fixture-backed mock (no BLE in the simulator),
-    /// booted into whatever the launch arguments asked for; `-OBCTransport ble`
-    /// (or Release, always) wires the real `BLETransport`. This is the **only**
-    /// place a concrete transport is chosen — everything below sees
-    /// `any DeviceTransport`.
+    /// Debug defaults to the fixture-backed mock, because there is no BLE in the simulator, booted
+    /// into whatever the launch arguments asked for. A forced flag, or Release, wires the real
+    /// `BLETransport`. This is the only place a concrete transport is chosen.
     @MainActor static func makeTransport() -> any DeviceTransport {
         #if DEBUG
         if let mockControl { return MockTransport(control: mockControl) }
@@ -114,9 +105,8 @@ struct OBCCompanionApp: App {
         return Self.liveTransport
     }
 
-    /// The `-OBCImportSample [gpx|tcx|bad|grimsel]` hook: hand a bundled sample file to
-    /// the import path at launch, exactly as a Files pick would — the E1/H4/H5
-    /// XCUITests and demos run the real decoders. Debug-only, like every launch arg.
+    /// Hand a bundled sample file to the import path at launch, exactly as a Files pick would, so
+    /// the UI tests and demos run the real decoders. Debug-only, like every launch argument.
     static func launchImport() -> (data: Data, fileName: String)? {
         #if DEBUG
         guard let kind = launchOptions.importSample else { return nil }
@@ -126,10 +116,9 @@ struct OBCCompanionApp: App {
         #endif
     }
 
-    /// The `-OBCFirmwareDemo [send]` hook: a pre-staged sample update for the S7
-    /// screen, so the flow can be screenshotted/demoed without a real
-    /// `UPDATE.BIN` in Files. `send` also fires the transfer. Debug-only, and only
-    /// under the mock (a forced-BLE run ignores it).
+    /// A pre-staged sample update for the firmware screen, so the flow can be captured without a
+    /// real container in Files. The argument can also fire the transfer. Debug-only, and only under
+    /// the mock.
     static func launchFirmwareDemo() -> (data: Data, autoSend: Bool)? {
         #if DEBUG
         guard let stage = launchOptions.firmwareDemo, mockControl != nil else { return nil }
@@ -139,11 +128,11 @@ struct OBCCompanionApp: App {
         #endif
     }
 
-    /// The `-OBCHoldConfirmations` hook (#1212), sync half: the coordinator normally returns the
-    /// top-bar check to idle two seconds after a sync lands, and drops the "Synced N new rides just
-    /// now" line a minute later. Both beats are real product behaviour and both are wall clocks —
-    /// an automated capture aiming at one is racing, which is how the landing-page gate ended up
-    /// flaky. The flag parks them instead of expiring them. Ordinary runs get the shipped timing.
+    /// The confirmation hold, sync half: the coordinator normally returns the top-bar check to
+    /// idle two seconds after a sync lands, and drops the confirm line a minute later. Both beats
+    /// are real product behaviour and both are wall clocks, so an automated capture aiming at one
+    /// is racing. The flag parks them instead of expiring them, and ordinary runs get the shipped
+    /// timing.
     static func launchSyncTiming() -> RideSyncCoordinator.Timing {
         #if DEBUG
         if launchOptions.holdConfirmations {
@@ -153,11 +142,10 @@ struct OBCCompanionApp: App {
         return RideSyncCoordinator.Timing()
     }
 
-    /// The same hook's upload half: the B5 sheet dismisses **itself** 2.6 s after it says "On the
-    /// device", so the landing page's finished-upload screenshot has under three seconds to exist
-    /// in — the third instance of this bug class on these five screens. Read by the two upload
-    /// seams in `ScreenHosts`: they sit deep in the tree, and the launch surface is this module's
-    /// business, so they ask here rather than have a timing threaded down to them.
+    /// The same hook's upload half: the upload sheet dismisses itself a few seconds after it says
+    /// "On the device", so a finished-upload screenshot has a very short window to exist in. Read
+    /// by the two upload seams in `ScreenHosts`: they sit deep in the tree, and the launch surface
+    /// is this module's business, so they ask here rather than have a timing threaded down.
     static func launchUploadTiming() -> UploadSheetModel.Timing {
         #if DEBUG
         if launchOptions.holdConfirmations {
@@ -167,21 +155,18 @@ struct OBCCompanionApp: App {
         return UploadSheetModel.Timing()
     }
 
-    /// The phone-side library (B1S). Mock runs stay **in-memory** — every
-    /// scenario-driven launch (XCUITests, previews, demos) must start from its
-    /// fixtures alone, not whatever a previous run saved. The real path
+    /// The phone-side library. Mock runs stay in-memory, because every scenario-driven launch must
+    /// start from its fixtures alone and not from whatever a previous run saved. The real path
     /// persists to Application Support.
     static func makeLibraryStore() -> any LibraryStore {
         #if DEBUG
         if let mockControl {
             let store = InMemoryLibraryStore()
-            // The Planned list is library-first (#289): fixture routes exist as
-            // phone-side saves, with `deviceObjectID` marking the ones the mock
-            // device also holds (the C1 badge + `listRoutes()` reconcile).
+            // The Planned list is library-first: fixture routes exist as phone-side saves, with
+            // `deviceObjectID` marking the ones the mock device also holds.
             mockControl.seedLibrary(into: store)
-            // H9's premise is "everything already synced" — the synced set is
-            // the library's (B1S), so the scenario seeds it here and the FIRST
-            // sync reports up to date.
+            // This scenario's premise is "everything already synced", and the synced set is the
+            // library's, so it is seeded here and the first sync reports up to date.
             if mockControl.scenario == .syncUpToDate {
                 for entry in mockControl.fixtures.rides {
                     store.saveRide(entry.ride())
@@ -194,9 +179,8 @@ struct OBCCompanionApp: App {
         return FileLibraryStore.standard()
     }
 
-    /// The reachability seam behind the MapKit basemap (#294). The real path
-    /// watches `NWPathMonitor`; `-OBCNetwork offline|online` pins it for
-    /// automation (the grid-fallback XCUITest), Debug-only like every launch arg.
+    /// The reachability seam behind the basemap. The real path watches `NWPathMonitor`, and a
+    /// launch argument pins it for automation. Debug-only, like every launch argument.
     static func makeReachability() -> any NetworkReachability {
         #if DEBUG
         if let online = launchOptions.networkOnline { return ConstantReachability(online) }
@@ -204,9 +188,8 @@ struct OBCCompanionApp: App {
         return PathMonitorReachability()
     }
 
-    /// The bond record behind the B2 launch branch. Mock runs read it from the
-    /// scenario (`MockControl.bonded` — flip it in the dev panel to replay
-    /// first-run pairing); the real path persists it in `UserDefaults`.
+    /// The bond record behind the launch branch. Mock runs read it from the scenario, so the dev
+    /// panel can replay first-run pairing; the real path persists it in `UserDefaults`.
     static func makeBondStore() -> any BondStore {
         #if DEBUG
         if let mockControl { return MockBondStore(control: mockControl) }

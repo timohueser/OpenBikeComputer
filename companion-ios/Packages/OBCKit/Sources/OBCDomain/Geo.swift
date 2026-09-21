@@ -1,8 +1,7 @@
 import Foundation
 
-/// A WGS-84 geographic coordinate. A plain value type so it crosses the
-/// `DeviceTransport` boundary without dragging in CoreLocation (which `OBCDomain`
-/// deliberately avoids — see `companion-ios/CLAUDE.md` → layering).
+/// A WGS-84 geographic coordinate. A plain value type, so it crosses the `DeviceTransport`
+/// boundary without dragging in CoreLocation, which `OBCDomain` deliberately avoids.
 public struct Coordinate: Hashable, Sendable {
     public let latitude: Double
     public let longitude: Double
@@ -12,12 +11,10 @@ public struct Coordinate: Hashable, Sendable {
         self.longitude = longitude
     }
 
-    /// Whether both components are finite **and** within WGS-84 range
-    /// (lat ∈ [-90, 90], lon ∈ [-180, 180]). `init` stays cheap and
-    /// non-failing for the trusted paths (device decode, previews); the file
-    /// import edge validates against this so a malformed GPX/TCX throws
-    /// `FormatError.malformed` instead of a non-finite coordinate poisoning
-    /// `distance()` (→ NaN) and everything downstream of it (#304).
+    /// Whether both components are finite and within WGS-84 range. `init` stays cheap and
+    /// non-failing for the trusted paths, and the file-import edge validates against this, so a
+    /// malformed file throws instead of a non-finite coordinate poisoning `distance()`, and
+    /// everything downstream of it, with NaN.
     public var isValidGeographic: Bool {
         latitude.isFinite && longitude.isFinite
             && (-90.0...90.0).contains(latitude)
@@ -37,8 +34,8 @@ public struct Coordinate: Hashable, Sendable {
         return Double((x*x + y*y).squareRoot())
     }
 
-    /// Great-circle distance to `other` in metres (haversine, spherical Earth).
-    /// Plenty for route stats and waypoint placement; no CoreLocation.
+    /// Great-circle distance to `other` in metres, spherical Earth. Plenty for route stats and
+    /// waypoint placement, and no CoreLocation.
     public func distance(to other: Coordinate) -> Double {
         let earthRadius = 6_371_000.0
         let lat1 = latitude * .pi / 180
@@ -50,30 +47,25 @@ public struct Coordinate: Hashable, Sendable {
     }
 }
 
-/// A polyline for the `GPSTrackPreview` component (B11) to draw. Carries two
-/// parallel representations of the same downsampled track:
+/// A polyline for the track-preview component to draw. It carries two parallel representations of
+/// the same downsampled track: `points`, the unit-square, aspect-measured projection the grid
+/// fallback renderer draws directly, and `coordinates`, the source lat and lon, so the basemap
+/// preview can draw a real polyline and fit a camera to the track's bounds without re-deriving
+/// geography.
 ///
-///   • `points` — the unit-square, aspect-measured projection the **grid
-///     fallback** renderer draws directly (a dumb `Path` renderer, no basemap).
-///   • `coordinates` — the source WGS-84 lat/lon, so the **MapKit basemap**
-///     preview (#294) can draw a real `MapPolyline` and fit a camera to the
-///     track's bounds without re-deriving geography.
+/// The two arrays are the same length and index-aligned. The basemap path uses `coordinates`, and
+/// when it is empty, or the device is offline, the preview degrades to the grid. That is an
+/// intentional fallback, not a bug.
 ///
-/// The two arrays are the same length and index-aligned (same downsample). The
-/// basemap path uses `coordinates`; when it's empty (or the device is offline)
-/// the preview degrades to the `points` grid — an intentional fallback, not a
-/// bug (see `companion-ios/CLAUDE.md`).
-///
-/// Produced from route/ride geometry by both the mock fixtures (B1M) and the real
-/// decode path (`B1`/`BLEChannel`) — so the projection lives here, in the shared
-/// domain layer, not duplicated in each.
+/// Produced from route and ride geometry by both the mock fixtures and the real decode path, so
+/// the projection lives here in the shared domain layer rather than in each.
 public struct TrackPreview: Equatable, Sendable {
     /// A single point in unit space.
     public struct Point: Hashable, Sendable {
         /// 0…1, left → right.
         public let x: Double
-        /// 0…1, top → bottom (**y-down**, so it feeds SwiftUI `Path` directly;
-        /// north maps to the top).
+        /// 0 to 1, top to bottom. Y-down, so it feeds a SwiftUI `Path` directly and north maps to
+        /// the top.
         public let y: Double
 
         public init(x: Double, y: Double) {
@@ -84,13 +76,11 @@ public struct TrackPreview: Equatable, Sendable {
 
     /// The polyline in unit space. Empty when the source had no geometry.
     public let points: [Point]
-    /// The source WGS-84 coordinates for `points`, index-aligned (same
-    /// downsample). Empty when unknown (a legacy library file, or a source that
-    /// only kept the normalized shape) — the basemap preview then falls back to
-    /// the grid.
+    /// The source coordinates for `points`, index-aligned. Empty when unknown, such as an older
+    /// library file, and the basemap preview then falls back to the grid.
     public let coordinates: [Coordinate]
-    /// width ÷ height of the source bounding box, for aspect-correct letterboxing
-    /// (1 when there's nothing to draw or the track is a point).
+    /// Width divided by height of the source bounding box, for aspect-correct letterboxing. It is
+    /// 1 when there is nothing to draw, or the track is a point.
     public let aspectRatio: Double
 
     public init(points: [Point], aspectRatio: Double, coordinates: [Coordinate] = []) {
@@ -102,14 +92,12 @@ public struct TrackPreview: Equatable, Sendable {
     /// Empty preview — nothing to draw.
     public static let empty = TrackPreview(points: [], aspectRatio: 1)
 
-    /// Project + normalize a geographic polyline into the unit square, optionally
-    /// downsampling to at most `maxPoints` (uniform stride — enough for a thumbnail;
-    /// a shape-preserving simplifier is overkill for a preview).
+    /// Project and normalize a geographic polyline into the unit square, optionally downsampling
+    /// to at most `maxPoints` with a uniform stride, which is enough for a thumbnail.
     ///
-    /// Projection is equirectangular around the centroid latitude — the longitude
-    /// axis is scaled by `cos(lat)` so the aspect ratio looks right at any latitude.
-    /// Degenerate tracks (0/1 points, zero-width bbox) collapse to the centre
-    /// instead of dividing by zero.
+    /// The projection is equirectangular around the centroid latitude: the longitude axis is
+    /// scaled by the cosine of the latitude, so the aspect ratio looks right at any latitude. A
+    /// degenerate track collapses to the centre instead of dividing by zero.
     public static func normalizing(_ coordinates: [Coordinate], maxPoints: Int = 256) -> TrackPreview {
         guard !coordinates.isEmpty else { return .empty }
         guard coordinates.count > 1 else {
@@ -143,20 +131,16 @@ public struct TrackPreview: Equatable, Sendable {
             let v = spanY > 0 ? (p.y - minY) / spanY : 0.5
             return Point(x: u, y: 1 - v)  // flip so north is at the top
         }
-        // `sampled` is index-aligned with `points` (both come off the same
-        // downsample), so the basemap path can draw the real lat/lon polyline.
+        // `sampled` is index-aligned with `points`, because both come off the same downsample, so
+        // the basemap path can draw the real polyline.
         return TrackPreview(points: points, aspectRatio: aspect, coordinates: sampled)
     }
 
-    /// Project + normalize **several** tracks into **one shared** unit square so
-    /// they can be drawn overlaid and aligned — the trip card's multi-stage
-    /// preview (TR6). Every returned `TrackPreview` shares the same bounding box
-    /// and `aspectRatio` (one equirectangular projection around the *combined*
-    /// centroid latitude), so a single fitting transform lays all the stages out
-    /// in register. Each track is downsampled independently (its `points` and
-    /// `coordinates` stay index-aligned, like ``normalizing(_:maxPoints:)``); an
-    /// empty input track maps to `.empty`, and an all-empty input yields all
-    /// `.empty` (the grid-fallback renderer then draws nothing).
+    /// Project and normalize several tracks into one shared unit square, so they can be drawn
+    /// overlaid and aligned for a trip card's multi-stage preview. Every returned preview shares
+    /// the same bounding box and aspect ratio, from one projection around the combined centroid
+    /// latitude, so a single fitting transform lays all the stages out in register. Each track is
+    /// downsampled independently, and an empty input track maps to `.empty`.
     public static func normalizingShared(
         _ tracks: [[Coordinate]], maxPointsPerTrack: Int = 256
     ) -> [TrackPreview] {
@@ -189,8 +173,8 @@ public struct TrackPreview: Equatable, Sendable {
         }
     }
 
-    /// Uniform-stride downsample of a coordinate array, always keeping the last
-    /// point — the same rule ``normalizing(_:maxPoints:)`` applies inline.
+    /// Uniform-stride downsample of a coordinate array, always keeping the last point: the same
+    /// rule ``normalizing(_:maxPoints:)`` applies inline.
     private static func downsampleCoordinates(
         _ coordinates: [Coordinate], to maxPoints: Int
     ) -> [Coordinate] {
