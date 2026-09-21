@@ -139,9 +139,21 @@ pub fn bake_cell(
     cell_log2: u8,
     lift: Option<&LiftMap>,
 ) -> Option<Vec<u8>> {
+    fill_cell(ci, cj, posting_log2, cell_log2, lifted_sampler(mosaic, lift))
+}
+
+/// **The height every baker reads**: the mosaic as the lattice sees it, raised by a cell's §9 lifts.
+///
+/// Boxed rather than generic because there are two bakers over it — the native [`bake_cell`] here
+/// and `surface::bake_cell`, which the production bakery drives — and this is the one place the
+/// composition is written. A second copy of `lift.apply(native)` is the first place the published
+/// surface and the one a shard carries could stop being the same surface. The indirection costs one
+/// allocation and one vtable hop per sample, against a bilinear interpolation over a GeoTIFF mosaic.
+pub fn lifted_sampler<'a>(mosaic: &'a DemMosaic, lift: Option<&'a LiftMap>) -> Box<dyn FnMut(i32, i32) -> i16 + 'a> {
+    let native = lattice_sampler(mosaic);
     match lift {
-        Some(map) => fill_cell(ci, cj, posting_log2, cell_log2, map.apply(lattice_sampler(mosaic))),
-        None => fill_cell(ci, cj, posting_log2, cell_log2, lattice_sampler(mosaic)),
+        Some(map) => Box::new(map.apply(native)),
+        None => Box::new(native),
     }
 }
 
@@ -188,17 +200,20 @@ fn fill_cell(
 
 /// One cell's §9 lifts, or `None` when there is no reference or it selects nothing here.
 ///
-/// The lift map is a pure function of the cell and the two DEMs, so the same cell baked alone and
-/// inside a wide shard comes out byte-identical — the property the digest pin exists to protect.
-fn lift_map(
+/// The lift map is a pure function of the cell and the two DEMs, so the same cell baked alone,
+/// inside a wide shard and by another baker over the same square comes out identical — the property
+/// the digest pin exists to protect. It is `pub` for that last case: the production terrain bakery
+/// bakes the same lift the same way rather than a lift of its own.
+pub fn cell_lift(
     mosaic: &DemMosaic,
     ci: u32,
     cj: u32,
-    params: BakeParams,
+    posting_log2: u8,
+    cell_log2: u8,
     reference: Option<&ReferenceArchive>,
 ) -> Result<CellLift, String> {
     match reference {
-        Some(archive) => LiftMap::bake(ci, cj, params.posting_log2, params.cell_log2, lattice_sampler(mosaic), archive),
+        Some(archive) => LiftMap::bake(ci, cj, posting_log2, cell_log2, lattice_sampler(mosaic), archive),
         None => Ok(CellLift { map: None, absent_tiles: Vec::new() }),
     }
 }
@@ -238,7 +253,7 @@ pub fn bake_shard<W: Write + Seek>(
     let mut report = BakeReport { cells_total: total, samples_total: total * per_cell, ..BakeReport::default() };
 
     for (index, (ci, cj)) in rect.cells().enumerate() {
-        let lift = lift_map(mosaic, ci, cj, params, reference)?;
+        let lift = cell_lift(mosaic, ci, cj, params.posting_log2, params.cell_log2, reference)?;
         let block = bake_cell(mosaic, ci, cj, params.posting_log2, params.cell_log2, lift.map.as_ref());
         let lifted = lift.map.as_ref().map_or(0, |map| map.tally().nodes);
         record(&mut report, &lift);
@@ -320,7 +335,7 @@ pub fn bake_cells(
     let mut report = BakeReport { cells_total: total, samples_total: total * per_cell, ..BakeReport::default() };
 
     for (index, (ci, cj)) in rect.cells().enumerate() {
-        let lift = lift_map(mosaic, ci, cj, params, reference)?;
+        let lift = cell_lift(mosaic, ci, cj, params.posting_log2, params.cell_log2, reference)?;
         let block = bake_cell(mosaic, ci, cj, params.posting_log2, params.cell_log2, lift.map.as_ref());
         let lifted = lift.map.as_ref().map_or(0, |map| map.tally().nodes);
         record(&mut report, &lift);

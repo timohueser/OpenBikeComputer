@@ -165,6 +165,15 @@ pub fn catalog_schema() -> Value {
     terrain["terrain_revision"]["minimum"] = Value::from(1);
     terrain_log2_bounds(terrain);
 
+    // Every field of a reference entry is a licence obligation, so the shape is pinned here
+    // rather than only in §13.1's prose: an entry a consumer cannot display is a credit nobody
+    // sees, and the builder should not be the first thing that notices.
+    let reference = defs["ReferenceEntry"]["properties"].as_object_mut().expect("reference properties");
+    reference["key"]["pattern"] = Value::from(ID_PATTERN);
+    for field in ["product", "attribution", "licence"] {
+        reference[field]["minLength"] = Value::from(1);
+    }
+
     let terrain_ref = defs["TerrainIndexRef"]["properties"].as_object_mut().expect("terrain ref properties");
     terrain_ref["sha256"]["pattern"] = Value::from(SHA256_PATTERN);
     terrain_ref["url"]["pattern"] = Value::from(PINNED_URL_PATTERN);
