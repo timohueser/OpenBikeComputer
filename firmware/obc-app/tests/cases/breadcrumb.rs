@@ -1,7 +1,7 @@
-//! Breadcrumb bounds + decimation: the two tiers stay within fixed caps however long the ride, the
-//! start stays visible, `clear` empties it — and the coarse spine keeps the ride's shape without
-//! straight-lining a long stretch under budget pressure (issue #22). It simplifies by Visvalingam
-//! effective area, so the kept points spread along the whole ride instead of collapsing to a chord.
+//! Breadcrumb bounds and decimation: the two tiers stay within fixed caps however long the ride,
+//! the start stays visible, `clear` empties it, and the coarse spine keeps the ride's shape without
+//! straight-lining a long stretch under budget pressure. It simplifies by Visvalingam effective
+//! area, so the kept points spread along the whole ride instead of collapsing to a chord.
 
 use obc_app::Breadcrumb;
 
@@ -10,7 +10,7 @@ use obc_app::Breadcrumb;
 const LAT0: i32 = 0;
 const M_PER_UD: f64 = 0.111_320;
 /// Shape-error budget. The spine keeps the ride's bends within a few metres while it fits the
-/// point budget — far inside the chord-cuts the old designs produced.
+/// point budget.
 const SHAPE_TOL_M: f64 = 4.0;
 
 #[test]
@@ -60,8 +60,8 @@ fn straight_ride_is_drawn_exactly() {
 fn long_curvy_ride_distributes_and_stays_bounded() {
     let mut bc = Breadcrumb::new();
     // ~200 km continuously weaving — far past both caps, so the spine is budget-pressured the whole
-    // way. It must stay bounded, keep its start, follow the ride — and must NOT collapse a long
-    // stretch into one straight chord (the regression this guards).
+    // way. It must stay bounded, keep its start, follow the ride, and must not collapse a long
+    // stretch into one straight chord.
     let mut input = std::vec::Vec::new();
     let mut last = (0, 0);
     for i in 0..30_000i64 {
@@ -78,8 +78,8 @@ fn long_curvy_ride_distributes_and_stays_bounded() {
     assert_eq!(bc.points().next(), Some((0, LAT0)), "start preserved");
     assert_eq!(bc.points().last(), Some(last), "ends at the latest fix");
 
-    // No single spine segment may dominate: the bug drew one chord spanning most of the ride.
-    // A well-spread spine has every segment a small fraction of the whole.
+    // No single spine segment may dominate: a well-spread spine has every segment a small fraction
+    // of the whole.
     let (total, longest) = span_stats(&spine);
     assert!(longest <= total / 20.0, "one segment spans too much: {longest:.0} m of {total:.0} m");
 
@@ -113,8 +113,7 @@ fn curve_within_budget_is_faithful() {
 fn switchbacks_keep_their_corners() {
     let mut bc = Breadcrumb::new();
     // Straight legs joined by sharp turns — the corners carry large area, so Visvalingam spends the
-    // budget on them. The turns must survive; the old along-track gate cut them once its spacing
-    // relaxed (issue #22).
+    // budget on them, and the turns must survive.
     let mut input = std::vec::Vec::new();
     for i in 0..6_000i64 {
         let lon = (i * 60) as i32;

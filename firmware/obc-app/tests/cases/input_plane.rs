@@ -1,8 +1,7 @@
 //! The two-plane input decomposition ([`InputPlane`] + [`App::apply_gesture`] +
-//! [`App::advance_animations`], issue #48). Driving the app through the decomposed path (recognise on
-//! a standalone `InputPlane`, apply each gesture, advance animations) must be behaviour-identical to
-//! the single-call [`App::handle_input`] the simulator uses, with the firmware's own-plane overlay
-//! staying in lock-step with the gestures the map plane applies.
+//! [`App::advance_animations`]). Driving the app through the decomposed path must be
+//! behaviour-identical to the single-call [`App::handle_input`] the simulator uses, with the
+//! firmware's own-plane overlay staying in lock-step with the gestures the map plane applies.
 
 use obc_app::{App, AppState, Gesture, InputPlane, RouteSummary, Screen};
 use obc_map_scene::BBox;
@@ -18,7 +17,7 @@ fn one_route() -> RouteSummary {
     RouteSummary { name, distance_km: 5, climb_m: 50, bbox, start_lon: 500, start_lat: 500 }
 }
 
-/// Drive `app` through the **two-plane decomposition**: recognise this frame's input on a
+/// Drive `app` through the two-plane decomposition: recognise this frame's input on a
 /// standalone `InputPlane` (the firmware's high-priority plane), apply each recognised gesture,
 /// then advance the timed screen content — exactly what the firmware's map-plane loop does after
 /// draining the gesture channel.
