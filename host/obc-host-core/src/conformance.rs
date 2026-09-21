@@ -1,12 +1,10 @@
-//! The **shared repository conformance suite** (#801): one set of assertions every host store —
-//! the in-memory [`FlatRouteStore`](crate::FlatRouteStore) family and `obc-sim`'s folder-backed
-//! stores — must pass, so both shapes prove the same identity-remap / delete / active-replacement /
-//! nav-commit / track-lifecycle behaviour the shared dispatcher relies on. `obc-host-core`'s own
-//! tests run it against the `Mem*` stores; `obc-sim`'s tests run it against the folder stores.
+//! The shared repository conformance suite: one set of assertions every host store — the in-memory
+//! [`FlatRouteStore`](crate::FlatRouteStore) family and `obc-sim`'s folder-backed stores — must
+//! pass, so both shapes prove the same identity-remap, delete, active-replacement, nav-commit and
+//! track-lifecycle behaviour the shared dispatcher relies on.
 //!
-//! Each entry takes a repository already seeded by the caller (the two store families seed from the
-//! same committed route/ride object fixtures) plus the small extra facts a shape needs, and asserts the
-//! store-family-independent invariants.
+//! Each entry takes a repository already seeded by the caller plus the small extra facts a shape
+//! needs, and asserts the store-family-independent invariants.
 
 use obc_app::recorder::RideClose;
 use obc_app::{App, AppState};
@@ -168,8 +166,8 @@ mod tests {
     use crate::{FlatRouteStore, MemRideStore, MemTrackStore};
     use obc_app::RideSummary;
 
-    // Two distinct valid OBCR blobs the flat route store imports from (the committed climb route, twice —
-    // the bytes only need to parse as a `RouteSummary`; identity/index mechanics are what's under test).
+    // Two distinct valid OBCR blobs the flat route store imports from. The bytes only need to parse
+    // as a `RouteSummary`; identity and index mechanics are what is under test.
     const ROUTE: &[u8] = include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
 
     #[test]

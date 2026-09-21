@@ -1,38 +1,33 @@
-//! Shared **host-side** glue for the simulator shells — the code both hosts drive the shared
-//! `no_std` core with, factored out of `obc-sim`'s binary (epic #624, S6) so the desktop simulator
-//! (`obc-sim`) and the landing page's thin wasm host (`obc-web-demo`) reuse it instead of
-//! copy-pasting:
+//! Shared host-side glue for the simulator shells: the code both hosts drive the shared `no_std`
+//! core with, so the desktop simulator and the landing page's thin wasm host reuse it.
 //!
-//! - [`HostLoop`] / the [`RouteRepository`] · [`RideRepository`] · [`TrackRepository`] ·
-//!   [`TripCatalog`] traits — the shared typed executor the frame-stepped hosts (sim GUI, sim
-//!   headless, web demo) run `App::run_pass` behind, so the delete/rescan/nav/track sequencing
-//!   lives once here instead of once per shell.
-//! - [`ActiveRouteSession`] / [`fill_nav_preview`] — the resident parsed active route (no per-frame
-//!   `RouteIndex` reparse) and the shared overview-preview fill.
-//! - [`replay_step`] — advance a GPX replay and tick the app on the **playback** clock.
-//! - [`NavPlan`] / [`commit_nav_plan`] — the resumable route planner held across frames (one
-//!   bounded step per frame, the board's one-step-per-pass shape) and the shared commit tail,
-//!   generic over a host's route store via [`RouteRepository`].
-//! - [`flat_map`] / [`flat_store`] — map objects and revision-pinned readers on shared
-//!   memory, temporary-file, or explicitly opened persistent Unix card media.
+//! - [`HostLoop`] and the [`RouteRepository`], [`RideRepository`], [`TrackRepository`] and
+//!   [`TripCatalog`] traits — the shared typed executor the frame-stepped hosts run
+//!   `App::run_pass` behind, so the delete, rescan, nav and track sequencing lives once here.
+//! - [`ActiveRouteSession`] and [`fill_nav_preview`] — the resident parsed active route and the
+//!   shared overview-preview fill.
+//! - [`replay_step`] — advance a GPX replay and tick the app on the playback clock.
+//! - [`NavPlan`] and [`commit_nav_plan`] — the resumable route planner held across frames, one
+//!   bounded step per frame, and the shared commit tail.
+//! - [`flat_map`] and [`flat_store`] — map objects and revision-pinned readers on shared memory,
+//!   temporary-file, or explicitly opened persistent Unix card media.
 //! - [`terrain`] — bounded elevation sampling from the exact retained map on the shared card.
-//! - [`trace`] — typed, normalized in-memory behavior traces and policy-free immediate/delayed
-//!   outcome scheduling, which the DeviceCore conformance matrix is built on.
-//! - [`DeviceInput`] / [`FileSettingsStore`] / [`TrackStore`] — the four button edges a host turns
+//! - [`trace`] — typed, normalized in-memory behavior traces and policy-free outcome scheduling,
+//!   which the DeviceCore conformance matrix is built on.
+//! - [`DeviceInput`], [`FileSettingsStore`] and [`TrackStore`] — the four button edges a host turns
 //!   into raw input events, the persisted-settings file, and the card ride recorder that also
 //!   exports a committed ride as GPX.
 //! - [`peak_view`] — the cooperative panorama runtime the frame-stepped hosts build terrain with.
 //! - [`convert_gpx`] — a GPX file as OBCR bytes, attributed against the host's map.
-//! - [`VecSink`] — the in-memory [`ByteSink`](obc_formats::io::ByteSink) OBCR/GPX output collects into.
-//! - [`frame`] — the whole-frame draw every rendering host uses ([`frame::render`], the
-//!   [`frame::active_route`] re-open before it, [`frame::device_rgb888`]) and [`RgbaFrame`], the
-//!   in-memory RGBA8888 `DrawTarget` the browser hosts blit to a `<canvas>`.
+//! - [`VecSink`] — the in-memory [`ByteSink`](obc_formats::io::ByteSink) OBCR and GPX output
+//!   collects into.
+//! - [`frame`] — the whole-frame draw every rendering host uses, and [`RgbaFrame`], the in-memory
+//!   RGBA8888 `DrawTarget` the browser hosts blit to a `<canvas>`.
 //! - [`FlatRouteStore`] — routes on the shared host card, including a card that also owns maps.
-//! - [`MemRideStore`] / [`MemTrackStore`] — memory stores for browser hosts and tests.
+//! - [`MemRideStore`] and [`MemTrackStore`] — memory stores for browser hosts and tests.
 //!
-//! Deliberately **GUI-free**: no egui/eframe/winit here (that's the whole point — the web host's
-//! dependency tree must stay framework-free). Simulator maps use native temporary files; browser
-//! maps use memory. Persistent card APIs are available for host composition.
+//! Deliberately GUI-free: no egui, eframe or winit here, because the web host's dependency tree
+//! must stay framework-free. Simulator maps use native temporary files; browser maps use memory.
 
 pub mod conformance;
 mod device_input;
