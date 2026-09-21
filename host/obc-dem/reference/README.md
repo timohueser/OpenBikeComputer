@@ -367,9 +367,10 @@ account and the download, one step at a time, and ends by running the ingest.
 | `fi` | `OBC_REFERENCE_FI_TOKEN` | A free NLS account at `omatili.maanmittauslaitos.fi`, then `API keys`. | GeoTIFF, EPSG:3067, float32 metres, −9999, one 3 km square per file. | `wizard fi` |
 | `au` | none; ELVIS answers no box at all | An ELVIS order and the link it sends by e-mail. | The order's zip, or its `*_DEM.tif` unpacked. ELVIS publishes each state in its own MGA zone, so the file's own CRS places it; an ASCII order must keep its `.prj`. | `wizard au` |
 
-`ingest <key> --input` reads every `.tif`, `.tiff`, `.asc` and `.zip` under the directory, opens a
-zip into the work directory, and gives an ESRI ASCII grid the CRS its format cannot carry. The
-input directory is left as the portal left it.
+`ingest <key> --input` reads every `.tif`, `.tiff`, `.asc` and `.zip` under the directory. A zip is
+opened into the work directory, not into the input directory, so a second run unpacks nothing. The
+one thing the tool writes into the input directory is the `.prj` beside an ESRI ASCII grid that
+came without one, because that is where the format keeps a CRS.
 
 **Australia needs one check by hand.** Some ELVIS datasets are ellipsoidal, and an ellipsoidal
 height stands tens of metres from an orthometric one, which is the size of a lift. The row is AHD;
