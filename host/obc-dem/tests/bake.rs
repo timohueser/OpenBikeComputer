@@ -322,7 +322,7 @@ fn a_reference_composes_the_same_cell_bytes_in_all_three_bakes() {
     // the dilation or the iteration order has to arrive as a deliberate edit to this number.
     assert_eq!(
         common::sha256_hex(&shard),
-        "677d91af6c137de0dce25baf16a255d667999622605b19fb106db8ad88618982",
+        "011533526f3daf1d815c5bb7d3c9a60b68e1d0995d7739d78438ff28e2bf3846",
         "the lifted plane fixture's bytes changed — if that was intended, state why in the PR"
     );
     let plain = bake_plane_shard(PIXEL_IS_POINT);
@@ -446,6 +446,11 @@ fn a_reference_below_the_gate_lifts_nothing_however_steep_the_mountain() {
     let map =
         LiftMap::bake(ci, cj, POSTING_LOG2, CELL_LOG2, native, &archive).unwrap().map.expect("12 m clears the gate");
     assert_eq!(lift_at(&map, ci, cj, 8, 8), 12, "and the apex rises by exactly what the reference says");
+    // The neighbour the dilation reaches is on the plain slope, and its own half-posting cell
+    // reaches 20 m up the pyramid towards the apex. `node_max - native` would therefore raise it by
+    // 32 m over a reference that is 12 m above the ground everywhere, which is how lifting to
+    // `node_max` inflated the ground around every summit.
+    assert_eq!(lift_at(&map, ci, cj, 8, 9), 12, "a neighbour rises by the gap, not by the slope's own fall");
 }
 
 /// The whole point of the halo: a node two or four cells share is lifted by the same amount

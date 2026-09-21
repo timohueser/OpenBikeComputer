@@ -701,8 +701,8 @@ A node is **selected** when both of these hold:
 1. The largest **gap** over the node's cell is more than **10 m**. The gap at a point is the
    reference height there minus the native bilinear surface there, so the largest gap is
    `max(reference - surface)` over the cell. This maximum and `node_max` are taken independently and
-   need not occur at the same point: the gap is what makes a node a crest, and `node_max` is the
-   height it is lifted to.
+   need not occur at the same point: the gap is how far the node rises, and `node_max` is the
+   ceiling it may not pass.
 2. `node_max` exceeds the mean of its four neighbours' `node_max` by more than **3 m**.
 
 The selection is then **dilated by one node**, 8-connected: a node that touches a selected node,
@@ -711,11 +711,19 @@ including at a corner, is lifted too.
 The lift at a lifted node is
 
 ```
-lift = max(0, round(node_max) - native)   whole metres
+lift = max(0, min(round(node_max) - native, round(gap)))   whole metres
 ```
 
 and the baked sample is `native + lift`. `round` is half away from zero, the rule section 5.2 pins
 for the read side.
+
+A node rises by the **gap**, because that is the quantity the correction is about: how far the
+reference stands above the surface a consumer draws. `node_max - native` is a different quantity —
+a maximum over the node's cell against a point sample at its centre — and on a slope most of it is
+half a posting of fall rather than a crest, so lifting by it inflates the ground around a summit.
+The gap does not cap the lift on a summit, where the surface peaks at the node and the two agree.
+`node_max` still bounds the lift, because section 9 raises a sample to reference ground and never
+above the highest reference the node owns.
 
 A node with `NODATA` anywhere in the 3 × 3 native lattice around it MUST NOT be lifted, not even by
 the dilation. There is no bilinear surface there to measure a gap against, so a hole keeps a
@@ -732,7 +740,9 @@ square, so the gap the bakery credits it is `pixel − max(surface over the pixe
 against the surface at the pixel's centre instead, the gap reads high wherever the ground is steep —
 about 3 m on a 40° face, a third of the whole 10 m gate — and nodes the reference does not stand 10 m
 above are lifted. Measured against the highest point, the gap can only read low, which loses a
-correction rather than inventing ground.
+correction rather than inventing ground. Now that the gap is also *how far* a node rises, that
+conservatism costs a little height as well as a little selection: on the same 40° face a lift can
+come out about 3 m short. Losing 3 m of a 100 m correction is the right side of the trade.
 
 This document therefore does **not** promise that two producers agree byte for byte on a lifted cell.
 It promises the identity of section 9.2: where there is no coverage, there is no difference.
@@ -741,8 +751,14 @@ Each test earns its place. The gap is measured against the bilinear surface, not
 because that surface is what a consumer draws. The convexity test is what leaves a steep planar
 slope alone; without it a coarse lattice's honest under-sampling of a 40° face reads as a crest and
 the whole mountain inflates. It is also what leaves a saddle alone, so a pass does not move. The
-one-node dilation is what keeps a lifted crest from alternating with its unlifted neighbours, which
-a panorama shows as a sawtooth along the skyline.
+one-node dilation carries a crest along its whole length instead of lifting it at scattered points,
+which a panorama would otherwise show as a sawtooth along the skyline.
+
+The gap is what keeps that dilation honest. Over Engelberg the dilation reached 10,863 nodes — 11.5 %
+of the 94,379 the rule selected there — at which the reference stands at or below the surface we
+draw, and lifting them to `node_max` raised ground the reference gives no height for. Against the
+photographs the drawn skyline stood a third of a degree too high at two viewpoints for it. Bounded
+by the gap those nodes rise by nothing, and the drawn median comes back within 0.17°.
 
 Every part of the rule reads only a node's 2-ring of `node_max` values. A producer MUST therefore
 compute a lift from that neighbourhood alone, so that a node on a cell seam gets the same lift
@@ -764,15 +780,21 @@ A lift MUST NOT be negative: section 9 raises crests, and a reference that sits 
 a hollow is not a reason to edit the lattice there. A producer MUST NOT use a lift to carry any
 other correction; a systematic disagreement with the source is a re-bake of the source, not a lift.
 
-There is **no ceiling** on a lift, and a producer MUST NOT cap one. Measured over Engelberg the
-largest lift is 413 m, where Copernicus GLO-30 reads a notch in a rock wall that the 2 m reference
-does not; the reference is the better measurement there, so a clamp would put the error back.
+There is **no fixed ceiling** on a lift, and a producer MUST NOT impose one. The gap and `node_max`
+bound a lift, and nothing else may. Measured over Engelberg the largest lift is 391 m, where
+Copernicus GLO-30 reads a notch in a rock wall that the 2 m reference does not; the reference is the
+better measurement there, so a clamp would put the error back.
 
 A spike in a reference looks the same from here, though. A producer SHOULD therefore report the
 largest lift of a run, the node it is at, and how many lifts exceed 200 m, so that an operator sees
 a broken reference instead of finding it in a drawn panorama. This is guidance, not a byte
 requirement: nothing in a container records it, and no reader can check it. `obc-dem bake` prints
 it.
+
+That report is a weaker detector than it looks. A spike on steep ground raises its node by the gap,
+which is less than the spike's own height, so a reference fault can stay under the 200 m line. Over
+Engelberg the same archive gives 153 lifts past 200 m where lifting to `node_max` gave 269. A quiet
+report is not evidence of a clean reference.
 
 A change of reference archive changes the baked samples, so it is a terrain revision bump and hence
 a navigation re-bake (`OBCC_Spec.md` §13.4). The reference DEM keeps its own attribution, which
