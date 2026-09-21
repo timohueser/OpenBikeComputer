@@ -388,6 +388,10 @@ impl ReferenceArchive {
 
 /// `index.json`'s `sources` block as the credits a map owes, sorted by key.
 ///
+/// Sorted rather than left in the document's own order, because a bakery copies these into a
+/// published catalog: two archives that declare the same sources must produce the same list, or the
+/// catalog would differ by which order an ingest happened to write.
+///
 /// Every field is required and non-empty. A source that cannot state its product, its credit and
 /// its licence must not be published beside a map derived from it, and the archive is the only place
 /// that knows the wording — so the refusal belongs here, where it can name the index.
@@ -396,7 +400,7 @@ fn read_credits(index: &serde_json::Value, name: &impl Fn() -> String) -> Result
         .get("sources")
         .and_then(serde_json::Value::as_object)
         .ok_or_else(|| format!("{}: no `sources` map", name()))?;
-    sources
+    let mut credits: Vec<SourceCredit> = sources
         .iter()
         .map(|(key, entry)| {
             let field = |field: &str| -> Result<String, String> {
@@ -417,7 +421,9 @@ fn read_credits(index: &serde_json::Value, name: &impl Fn() -> String) -> Result
                 licence: field("licence")?,
             })
         })
-        .collect()
+        .collect::<Result<_, String>>()?;
+    credits.sort_by(|a, b| a.key.cmp(&b.key));
+    Ok(credits)
 }
 
 /// `"<ti>/<tj>"` as a tile id, or `None` when it names no square of the world box.
