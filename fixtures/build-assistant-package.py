@@ -105,7 +105,7 @@ def bake(region: str, work: Path, store: Store, bin_dir: Path, landmarks: Path |
         landmarks = store.package_root("assistant-switzerland-content") / "content.json"
     if landmarks is None:
         wiki = store.package_root("assistant-wiki")
-        run(bin_dir / "obc-bake", "landmarks", "--snapshot", wiki / "manifest.json", "--boundary", wiki / "regions.geojson", "--out", work / "landmarks")
+        run(bin_dir / "obc-bake", "landmark-content", "--snapshot", wiki / "manifest.json", "--boundary", wiki / "regions.geojson", "--out", work / "landmarks")
         landmarks = work / "landmarks/content.json"
     if peaks is None and region == "meiringen":
         peaks = store.package_root("peak-content") / "peaks.json"

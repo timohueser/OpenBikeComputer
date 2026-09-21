@@ -148,7 +148,7 @@ def select_candidates(executable: Path, snapshot: Path, boundary: Path, policy_s
     executable = executable.resolve()
     binary_hash = digest(executable.read_bytes())
     with tempfile.TemporaryDirectory(prefix="obc-landmark-selection-") as temporary:
-        subprocess.run([str(executable), "landmarks", "--snapshot", str(snapshot), "--boundary", str(boundary), "--out", temporary], check=True)
+        subprocess.run([str(executable), "landmark-content", "--snapshot", str(snapshot), "--boundary", str(boundary), "--out", temporary], check=True)
         if digest(executable.read_bytes()) != binary_hash:
             raise ValueError("compiler changed during selection; retry with a stable executable")
         content = json.loads((Path(temporary) / "content.json").read_text())
