@@ -237,8 +237,8 @@ fn styles_round_trip() {
     assert_eq!(s12.flags.line_style(), SceneLineStyle::Solid);
     assert_eq!(s12.color2, None);
 
-    // #1095's two bits survive the same round trip, and stay clear on the styles that don't set
-    // them — a bit that is always on is not a bit.
+    // The two flag bits survive the same round trip, and stay clear on the styles that do not set
+    // them: a bit that is always on is not a bit.
     let s20 = r.style(20).expect("style 20");
     assert_eq!((s20.z_index, s20.color, s20.weight, s20.priority), (8, 0xAD55, 1, 4));
     assert!(
@@ -419,11 +419,10 @@ fn assert_rectilinear_ring(ring: &[(i32, i32)]) {
     }
 }
 
-/// The PR #1299 wedge reproducer through every downstream geometry stage. The semantic vectorizer
-/// emits this shape as rectilinear coverage, then the production path unprojects it to degrees,
-/// clips it to the requested/canonical bbox, subdivides it, packs it, and decodes it. Before the
-/// hole-anchor fix, `pack_feature` densified the exterior-anchor -> hole jump into the hole itself;
-/// this test saw a diagonal bridge and a triangular false clearing with either chunk size.
+/// The wedge reproducer through every downstream geometry stage. The semantic vectorizer emits this
+/// shape as rectilinear coverage, then the production path unprojects it to degrees, clips it to the
+/// canonical bbox, subdivides it, packs it and decodes it. Densifying the exterior-anchor to hole
+/// jump turns the hole into a diagonal bridge and a triangular false clearing, at any chunk size.
 #[test]
 fn distant_hole_stays_local_through_clip_subdivide_pack_and_decode() {
     use obc_pack::geom::{clip_to_box, Geom};

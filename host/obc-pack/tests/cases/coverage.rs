@@ -5,7 +5,7 @@
 //! to close here is the thing the transform exists for — two abutting fills of different classes
 //! come out of a real pack with the identical seam vertices, with a control showing the per-feature
 //! path putting different ones there — and the two byte-identity guarantees: a tier with no
-//! participating fills packs exactly as it did before the pass existed, and the flag's mere presence
+//! participating fills packs exactly as a pack without the pass does, and the flag's mere presence
 //! in a config changes nothing.
 //!
 //! The last section is the degenerate-input and thread-safety sweeps over the raw GEOS wrapper, the

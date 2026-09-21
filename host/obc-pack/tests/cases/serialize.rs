@@ -104,7 +104,7 @@ fn pack_feature_8bit_line() {
     let node_bbox = (1_000_000, 1_000_000, 1_010_000, 1_010_000);
     let data = pack_feature(&f, node_bbox);
 
-    // v11 compact header: 2 vertices and a zero anchor both fit the narrow fields.
+    // Compact header: 2 vertices and a zero anchor both fit the narrow fields.
     assert_eq!(data.len(), 9); // compact header(7) + one 8-bit delta pair(2)
     assert_eq!(data[0], 10); // style
     assert_eq!(data[1], 0); // flags: line, 8-bit, compact (WIDE clear)

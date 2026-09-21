@@ -26,8 +26,6 @@ pub const GRID_ORIGIN: i64 = -(1 << 28);
 /// Side of the world box, µdeg: `2^29`, about ±268.435456°. Strictly larger than the geographic
 /// domain, and the grid does not wrap — cells may legally overhang ±90 / ±180 and producers MUST
 /// NOT clamp them.
-/// geographic domain, and the grid does **not** wrap — cells may legally overhang ±90 / ±180 and
-/// producers MUST NOT clamp them (§1.4).
 pub const WORLD_SIDE: i64 = 1 << 29;
 
 /// Smallest permitted cell size as `log2(µdeg)`.
@@ -47,7 +45,6 @@ pub type UBox = (i64, i64, i64, i64);
 
 /// One cell of the grid: a size (as `log2(µdeg)`) and its **latitude** index `i` and **longitude**
 /// index `j`. The canonical id is `<log2>/<i>/<j>`, latitude first.
-/// index `j` (OBCA §1.1/§1.3 — the canonical id is `<log2>/<i>/<j>`, latitude first).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CellId {
     pub log2: u32,

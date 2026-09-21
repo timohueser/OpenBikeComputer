@@ -198,8 +198,6 @@ fn each_class_costs_only_what_it_is_asked_for() {
     );
 }
 
-// --- the ladder reach, through the cutter (#1104) ----------------------------------------------
-
 /// The shipped ladder's shape (14 tiers) with the shipped reach: **both** classes from LOD 9. Only
 /// the numbers this test is about are the shipped ones — the styles are the minimum a contour class
 /// needs to be packed at all.
@@ -266,14 +264,13 @@ fn features_per_lod(bytes: &[u8]) -> BTreeMap<usize, BTreeMap<u8, usize>> {
 /// The reach reaches the **cutter**, not only the whole-extract pipeline — and in particular the
 /// `coarse` band traces contours at all.
 ///
-/// #1103 named this as a risk: #1094 wired contours in as "the mid/fine cells", and if the cutter
-/// had hard-wired a band set the coarse cells would be silently contour-free no matter what the
-/// preset said. It does not — contours are traced once over the extract and then filtered by the
-/// ordinary `min_lod <= lod` ladder rule — and this is the test that keeps it that way:
+/// A cutter with a hard-wired band set would leave the coarse cells silently contour-free whatever
+/// the preset said. It has none: contours are traced once over the extract and then filtered by the
+/// ordinary `min_lod <= lod` ladder rule.
 ///
-/// - LOD 9 (fine band) carries **both** classes, each with a positive count. The two travel
-///   together on purpose: index-only at that tier was tried and rejected on glass, because a solid
-///   grey line with no dashes around it reads as a path (#1104).
+/// - LOD 9 (fine band) carries both classes, each with a positive count. The two travel together on
+///   purpose: index-only at that tier reads as a path on glass, a solid grey line with no dashes
+///   around it.
 /// - LODs 0–8 carry neither: semantic overview tiers stay terrain-free.
 /// - LOD 10 keeps both, so the tier below is not accidentally emptied either.
 #[test]

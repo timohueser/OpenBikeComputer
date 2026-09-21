@@ -118,8 +118,8 @@ fn run() -> Result<(), String> {
     let args = parse_args()?;
     check_region(&args)?;
     let config = Config::load(&args.config)?;
-    // `Progress::stdout()` carries no cancel token, so the CLI's only way out is
-    // the one it always had: Ctrl-C, which takes the process with it.
+    // `Progress::stdout()` carries no cancel token, so the CLI's only way out is Ctrl-C, which
+    // takes the process with it.
     match pack(&args.pbfs, &config, Path::new(&args.output), &args.opts, &Progress::stdout()) {
         Ok(_) => Ok(()),
         Err(PackError::Failed(e)) => Err(e),
@@ -194,9 +194,9 @@ fn run_catalog(args: &[String]) -> Result<(), String> {
 /// `obc-pack cells <pbf...> <config.json> <out-dir> [flags]`
 ///
 /// Ingests the sources **once** and cuts the cell artifacts of every band that the extract touches
-/// (`OBCA_Spec.md` §3), plus the provenance sidecar the bakery turns into a catalog. Cell sizes come
-/// from the schema's band table — `--bands` to supply the catalog's own, the OBCA §1.5 recommended table
-/// otherwise.
+/// (`OBCA_Spec.md`), plus the provenance sidecar the bakery turns into a catalog. Cell sizes come
+/// from the schema's band table: `--bands` supplies the catalog's own, and the recommended table is
+/// the default.
 fn run_cells(args: &[String]) -> Result<(), String> {
     const USAGE: &str = "usage: obc-pack cells <pbf...> <config.json> <out-dir> [--bands <bands.json>] \
                          [--band <id>]... [--cell <log2/i/j>]... \

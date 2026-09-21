@@ -42,8 +42,8 @@ use obc_reader::{MapCache, MapTables, Reader, SliceSource};
 const DEFAULT_GRID_ORIGIN: i64 = -(1 << 28);
 
 /// Candidate cell sizes, as `log2(µdeg)`: 2^18 ≈ 0.26°, 2^19 ≈ 0.52°, 2^20 ≈ 1.05°, 2^21 ≈ 2.10°.
-/// The default spans the three sizes the v1 band table settled on plus the next one up, so a plain
-/// run reproduces the table and shows what the rejected step would have cost.
+/// The default spans the three sizes the shipped band table uses plus the next one up, so a plain
+/// run reproduces the table and shows what the next step would cost.
 const DEFAULT_CELL_LOG2: &[u32] = &[18, 19, 20, 21];
 
 /// Bytes attributed to one cell, keyed by `(lat index, lon index)` on the grid.
