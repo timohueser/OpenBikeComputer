@@ -20,7 +20,7 @@ use obc_formats::obct::{
 };
 
 use crate::container::{CellRect, ShardWriter};
-use crate::crest::LiftMap;
+use crate::crest::{LiftMap, LiftTally};
 use crate::geotiff::DemMosaic;
 use crate::BboxUdeg;
 
@@ -47,6 +47,8 @@ pub struct BakeReport {
     pub cells_written: u64,
     pub samples_total: u64,
     pub samples_nodata: u64,
+    /// What §9's rule did, over every cell. Zero when the bake had no reference.
+    pub lifts: LiftTally,
 }
 
 /// Quantise a source height in metres to an OBCT sample.
@@ -203,6 +205,9 @@ pub fn bake_shard<W: Write + Seek>(
     for (index, (ci, cj)) in rect.cells().enumerate() {
         let lift = lift_map(mosaic, ci, cj, params, reference);
         let block = bake_cell(mosaic, ci, cj, params.posting_log2, params.cell_log2, lift.as_ref());
+        if let Some(map) = &lift {
+            report.lifts = report.lifts.join(map.tally());
+        }
         match &block {
             Some(bytes) => {
                 report.cells_written += 1;
@@ -283,6 +288,9 @@ pub fn bake_cells(
     for (index, (ci, cj)) in rect.cells().enumerate() {
         let lift = lift_map(mosaic, ci, cj, params, reference);
         let block = bake_cell(mosaic, ci, cj, params.posting_log2, params.cell_log2, lift.as_ref());
+        if let Some(map) = &lift {
+            report.lifts = report.lifts.join(map.tally());
+        }
         match block {
             Some(bytes) => {
                 report.cells_written += 1;

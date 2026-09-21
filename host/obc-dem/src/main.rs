@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use obc_dem::bake::{bake_cells, bake_shard, BakeParams, BakeReport, V1_CELL_LOG2, V1_POSTING_LOG2};
+use obc_dem::crest::REPORT_M;
 use obc_dem::fetch::{fetch_tiles, Fetched};
 use obc_dem::geotiff::DemMosaic;
 use obc_dem::BboxUdeg;
@@ -190,10 +191,27 @@ fn bake(args: &[String]) -> Result<(), String> {
 }
 
 fn summarise(report: &BakeReport) {
-    let BakeReport { cells_total, cells_written, samples_total, samples_nodata } = *report;
+    let BakeReport { cells_total, cells_written, samples_total, samples_nodata, lifts } = *report;
     let covered = samples_total - samples_nodata;
     let pct = if samples_total == 0 { 0.0 } else { covered as f64 * 100.0 / samples_total as f64 };
     println!("{cells_written}/{cells_total} cells written, {covered}/{samples_total} samples covered ({pct:.1} %)");
+    if lifts.nodes == 0 {
+        return;
+    }
+    // §9 puts no ceiling on a lift, so the size of the largest one is the operator's only signal
+    // that a reference carries a spike rather than a cliff the source lost.
+    let (lat, lon) = lifts.max_at;
+    println!(
+        "{} sample(s) lifted, largest {} m at {:.5},{:.5}; {} above {REPORT_M} m",
+        lifts.nodes,
+        lifts.max_m,
+        f64::from(lat) / 1e6,
+        f64::from(lon) / 1e6,
+        lifts.over_report,
+    );
+    if lifts.over_report > 0 {
+        println!("A lift above {REPORT_M} m is a wall the source lost, or a broken reference. Check that position.");
+    }
 }
 
 fn parse_log2(text: &str) -> Result<u8, String> {
