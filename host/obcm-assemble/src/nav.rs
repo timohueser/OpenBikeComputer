@@ -1854,7 +1854,7 @@ mod tests {
             );
         }
 
-        assert_eq!(&bytes[NAV_DIR_LEN..NAV_DIR_LEN + 8], &[CHUNK_END; 8], "the fill byte behind the directory");
+        assert_eq!(&bytes[NAV_DIR_LEN..NAV_DIR_LEN + 8], &[CHUNK_END; 8], "§1.2's fill byte behind the directory");
         assert_eq!(past - AT, 104, "48 + one 56-byte profile record");
         assert_eq!(&bytes[104..], &[CHUNK_END; 8], "…and the run that carries 104 to 112");
         assert_eq!(bytes.len(), 112);
@@ -2241,7 +2241,7 @@ mod tests {
 
         assert_eq!(nav.stats.unified, 1, "the hub is the only coordinate both cells wrote");
         assert_eq!((nav.stats.nodes, nav.stats.edges), (SPOKES + 1, SPOKES));
-        assert_eq!(nav.stats.degree_truncated, SPOKES - NAV_MAX_DEGREE, "two entries past the cap");
+        assert_eq!(nav.stats.degree_truncated, SPOKES - NAV_MAX_DEGREE, "two entries past the §8.3 cap");
         let nodes = merged_nodes(&nav);
         let hub_node = nodes.iter().find(|node| node.0 == hub_lat).unwrap();
         let hub = &hub_node.3;
