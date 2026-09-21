@@ -64,10 +64,13 @@ fn native_map_and_routes_share_persistent_identity_and_revision_leases() {
     }
 }
 
+/// Every name the store left behind. An `._` sidecar belongs to a FAT volume itself,
+/// not to the store, and a temporary card is `.tmp` and six characters.
 fn names(dir: &std::path::Path) -> Vec<String> {
     let mut names: Vec<_> = std::fs::read_dir(dir)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| !name.starts_with("._"))
         .collect();
     names.sort();
     names
@@ -87,6 +90,25 @@ fn creation_publishes_one_card_name_and_refuses_an_occupied_one() {
     assert!(matches!(HostStore::create_file(absent), Err(ImportError::Io(e)) if e.kind() == io::ErrorKind::NotFound));
     assert_eq!(names(dir.path()), ["card.obc"]);
     assert_eq!(HostStore::open_file(&path).unwrap().store_id().unwrap(), identity);
+}
+
+/// The exclusive rename that `publish` prefers is unavailable on exFAT and on many network
+/// mounts, so the reserved-name path publishes those cards.
+#[cfg(unix)]
+#[test]
+fn a_reserved_card_name_takes_the_temporary_and_still_refuses_an_occupied_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("card.obc");
+    let mut temporary = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+    temporary.write_all(b"published bytes").unwrap();
+    reserve_and_rename(temporary.into_temp_path(), &path).unwrap();
+    assert_eq!(names(dir.path()), ["card.obc"]);
+    assert_eq!(std::fs::read(&path).unwrap(), b"published bytes");
+
+    let refused = tempfile::NamedTempFile::new_in(dir.path()).unwrap().into_temp_path();
+    assert_eq!(reserve_and_rename(refused, &path).unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+    assert_eq!(names(dir.path()), ["card.obc"]);
+    assert_eq!(std::fs::read(&path).unwrap(), b"published bytes");
 }
 
 #[test]

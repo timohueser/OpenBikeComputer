@@ -59,7 +59,6 @@ fn key(recorder: &FlatRideRecorder) -> Key {
         _ => panic!("no recording"),
     }
 }
-#[cfg(unix)]
 fn fail_sync(owner: &HostStore, n: usize) {
     let owner = owner.0.lock().unwrap();
     let crate::flat_store::HostMedia::File(card) = owner.card.device() else { panic!("file expected") };
@@ -93,7 +92,6 @@ fn batch_capacity_and_context_are_atomic_and_legacy_lifecycle_remains_compatible
 }
 
 #[test]
-#[cfg(unix)]
 fn reopen_continues_exact_object_clock_totals_with_all_reader_slots_full() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("card.obc");
@@ -140,7 +138,6 @@ fn reopen_continues_exact_object_clock_totals_with_all_reader_slots_full() {
 }
 
 #[test]
-#[cfg(unix)]
 fn failed_journal_replays_frozen_bytes_context_and_start_before_accepting_more() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("card.obc");
@@ -170,7 +167,6 @@ fn failed_journal_replays_frozen_bytes_context_and_start_before_accepting_more()
 }
 
 #[test]
-#[cfg(unix)]
 fn footer_recovery_is_terminal_and_failed_settlement_stops_startup() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("card.obc");
@@ -205,7 +201,6 @@ fn footer_recovery_is_terminal_and_failed_settlement_stops_startup() {
 }
 
 #[test]
-#[cfg(unix)]
 fn failed_open_and_live_remount_confirmation_never_authorize_new_writes() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("card.obc");
