@@ -59,7 +59,7 @@ impl BlockDevice for FlatCard {
     type Error = SemmcError;
 
     fn block_count(&self) -> Result<u64, SemmcError> {
-        crate::flpr_mux::with_storage(|sd| sd.num_blocks())?.map(u64::from)
+        crate::flpr_mux::with_storage(|sd| sd.num_blocks()).map(u64::from)
     }
 
     fn read(&self, lba: u64, buf: &mut [u8]) -> Result<(), SemmcError> {
@@ -90,8 +90,7 @@ impl BlockDevice for FlatCard {
                     Ok(())
                 })
             }
-        })
-        .and_then(core::convert::identity);
+        });
         #[cfg(feature = "sd-bench")]
         crate::card_io::note_read_perf(bench_started, addr, blocks);
         if let Err(error) = result {
@@ -130,7 +129,7 @@ impl BlockDevice for FlatCard {
                     Ok(())
                 })
             }
-        })?
+        })
     }
 
     /// Synchronous callers have nothing to flush. The staged USB path uses this as the explicit
@@ -141,7 +140,7 @@ impl BlockDevice for FlatCard {
     /// completion signal and every write is already durable when the store's next statement runs. A
     /// transport with a write-back cache would move that cost back here.
     fn sync(&self) -> Result<(), SemmcError> {
-        crate::flpr_mux::with_storage(|sd| sd.finish_write_blocks())?
+        crate::flpr_mux::with_storage(|sd| sd.finish_write_blocks())
     }
 }
 
@@ -1099,9 +1098,7 @@ fn serve(
             Ok(Outcome::Reacted { reaction, out })
         }
         Request::FinishUsbStage => {
-            crate::flpr_mux::with_storage(|sd| sd.finish_write_blocks())
-                .map_err(|_| StoreError::Media)?
-                .map_err(|_| StoreError::Media)?;
+            crate::flpr_mux::with_storage(|sd| sd.finish_write_blocks()).map_err(|_| StoreError::Media)?;
             Ok(Outcome::Done)
         }
         Request::Pump { link, out } => {

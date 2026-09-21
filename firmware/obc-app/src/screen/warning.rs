@@ -36,6 +36,10 @@ impl WarningFlags {
     /// A settings write did not reach the persistent store. The value stays live in RAM and the
     /// app retries, so this only tells the rider the edit is not durable yet.
     pub const SETTINGS_ERROR: WarningFlags = WarningFlags(1 << 5);
+    /// The card transport latched off mid-ride: enough operations failed in a row that the device
+    /// stopped attempting the card. It probes the card again on a cool-down, so this clears by
+    /// itself if the card comes back.
+    pub const STORAGE_ERROR: WarningFlags = WarningFlags(1 << 6);
 
     pub const fn is_empty(self) -> bool {
         self.0 == 0
@@ -144,6 +148,15 @@ impl WarningScreen {
         }
 
         // Keep these lines short: 18 characters at Font::Body clip the panel.
+        // The most severe line first: with storage latched off, every other advisory is downstream
+        // of it.
+        if self.flags.contains(WarningFlags::STORAGE_ERROR) {
+            cv.text("Storage stopped", Point::new(w / 2, y), Font::Body, TextAlign::Center, WARNING);
+            y += line + 2;
+            cv.text("Check the card", Point::new(w / 2, y), Font::Label, TextAlign::Center, SUBTEXT);
+            y += line + line / 2;
+        }
+
         if self.flags.contains(WarningFlags::MAP_SLOW) {
             cv.text("Slow map reads", Point::new(w / 2, y), Font::Body, TextAlign::Center, INK);
             y += line + 2;
