@@ -173,6 +173,23 @@ class ReadyPlanTests(unittest.TestCase):
         for gate in gates:
             self.assertTrue(gate.reason.strip(), gate.command)
 
+    def test_the_free_command_rule_reads_every_executable_a_command_names(self):
+        # Each row is a form a suite command can take. A separator the lexer does not cut out
+        # of its neighbour would hide the executable behind it, which is how a build slips in.
+        for command, free in (
+            ("python3 tools/check_one_home.py", True),
+            ("mkdir -p .artifacts && rm -rf .artifacts/x && python3 -m unittest discover", True),
+            ("PYTHONPATH=. python3 -m pytest builder/tests/", True),
+            ("python3 a.py; cargo build --release", False),
+            ("python3 a.py&&cargo build --release", False),
+            ("python3 a.py | cargo build --release", False),
+            ("python3 a.py & cargo build --release", False),
+            ("python3 a.py\ncargo build --release", False),
+            ("cd builder/app && npm test", False),
+            ("xvfb-run -a dbus-run-session -- python3 apps/obc-desktop/e2e/launch.py", False),
+        ):
+            self.assertEqual(ready.builds_nothing(command), free, command)
+
     def test_a_rendering_input_selects_the_sweep_when_no_suite_runs_it(self):
         self.assertIn(
             "obc shot --check", self.running("firmware/obc-app/i18n/de.toml", suites={"rust.obc-app"})

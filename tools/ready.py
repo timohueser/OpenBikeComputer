@@ -146,8 +146,13 @@ def builds_nothing(command: str) -> bool:
     may start a build, so every executable the command names must be a known free one.
     """
 
+    # `punctuation_chars` makes the lexer cut a separator out of the word it is glued to, so
+    # `a.py; cargo build` reports both executables and not one.
+    lexer = shlex.shlex(command.replace("\n", " ; "), posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
     try:
-        words = shlex.split(command.replace("\n", " ; "))
+        words = list(lexer)
     except ValueError:
         return False
     executables, expect = [], True
@@ -274,8 +279,11 @@ def plan(
     for gate in gates:
         if gate.run and gate.covered_by in identifiers:
             spoken.add(gate.covered_by)
-            if not builds_nothing(gate.command):
-                gate = replace(gate, run=False, reason=f"{gate.covered_by} is left to CI")
+            gate = (
+                replace(gate, reason=f"{gate.reason}, and it runs {gate.covered_by}")
+                if builds_nothing(gate.command)
+                else replace(gate, run=False, reason=f"{gate.covered_by} is left to CI")
+            )
         kept.append(gate)
     return kept + [
         _suite_gate(unit) for unit in selected if unit.command and unit.id not in spoken
