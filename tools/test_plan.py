@@ -419,9 +419,7 @@ def is_policy_path(path: str) -> bool:
     return any(glob_matches(path, pattern) for pattern in TEST_POLICY_PATTERNS)
 
 def looks_like_production(path: str) -> bool:
-    # `scratch/` is working material kept for the next reader, not production: nothing builds it
-    # and nothing depends on it. Each directory under it carries a README saying when to delete it.
-    if path.startswith(("docs/", "artifacts/", "scratch/", ".claude/", ".repowise/")):
+    if path.startswith(("docs/", "artifacts/", ".claude/", ".repowise/")):
         return False
     name = Path(path).name
     if name.startswith("test_") or "/tests/" in path or "/test/" in path:
