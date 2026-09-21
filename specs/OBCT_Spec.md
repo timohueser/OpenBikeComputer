@@ -711,11 +711,19 @@ including at a corner, is lifted too.
 The lift at a lifted node is
 
 ```
-lift = max(0, round(node_max) - native)   whole metres
+lift = max(0, min(round(node_max) - native, round(gap)))   whole metres
 ```
 
 and the baked sample is `native + lift`. `round` is half away from zero, the rule section 5.2 pins
 for the read side.
+
+A node rises by the **gap**, because that is the quantity the correction is about: how far the
+reference stands above the surface a consumer draws. `node_max - native` is a different quantity —
+a maximum over the node's cell against a point sample at its centre — and on a slope most of it is
+half a posting of fall rather than a crest, so lifting by it inflates the ground around a summit.
+The gap does not cap the lift on a summit, where the surface peaks at the node and the two agree.
+`node_max` still bounds the lift, because section 9 raises a sample to reference ground and never
+above the highest reference the node owns.
 
 A node with `NODATA` anywhere in the 3 × 3 native lattice around it MUST NOT be lifted, not even by
 the dilation. There is no bilinear surface there to measure a gap against, so a hole keeps a
@@ -765,7 +773,7 @@ a hollow is not a reason to edit the lattice there. A producer MUST NOT use a li
 other correction; a systematic disagreement with the source is a re-bake of the source, not a lift.
 
 There is **no ceiling** on a lift, and a producer MUST NOT cap one. Measured over Engelberg the
-largest lift is 413 m, where Copernicus GLO-30 reads a notch in a rock wall that the 2 m reference
+largest lift is 391 m, where Copernicus GLO-30 reads a notch in a rock wall that the 2 m reference
 does not; the reference is the better measurement there, so a clamp would put the error back.
 
 A spike in a reference looks the same from here, though. A producer SHOULD therefore report the
