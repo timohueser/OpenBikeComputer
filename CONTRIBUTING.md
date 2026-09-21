@@ -50,7 +50,9 @@ A foundation input such as `Cargo.toml`, or a change to the test policy, selects
 whole. That run is CI's, so `obc ready` does not start it. It keeps the selected suites that
 build nothing — the Python checks and guards — gives each one a line, and names every other suite
 as left to CI. A check that costs a fraction of a second then stays visible instead of hiding
-behind a run of the complete suite.
+behind a run of the complete suite. Those suites are the ones CI runs too, so install their
+reporters first with `pip install -r tools/requirements-test.txt`; a missing module stops the
+run at that gate.
 
 ```sh
 obc ready --dry-run

@@ -301,12 +301,14 @@ triggers = ["deny.toml"]
 
 # The other half of the dependency work, and a different job: the `test` job runs this script as
 # one step. It reads `cargo metadata` and compiles nothing, so a plan too large to run locally
-# still runs it. A new workspace crate must be classified here before CI accepts it.
+# still runs it. A new workspace crate must be classified here before CI accepts it, which is
+# why the workspace manifest selects it directly and not only through the job it rides.
 [[suite]]
 id = "ci.dependency-direction"
 route = "required"
 command = "python3 firmware/tools/check_dependencies.py"
 jobs = ["test"]
+foundation = true
 triggers = ["firmware/tools/check_dependencies.py", "firmware/tools/dependency_rules.json"]
 
 [[suite]]

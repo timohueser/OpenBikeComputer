@@ -122,7 +122,7 @@ class ReadyPlanTests(unittest.TestCase):
     def test_a_wholesale_selection_keeps_the_free_suites_and_leaves_the_rest_to_ci(self):
         # A foundation input selects the whole graph. That run is CI's, but the suites that
         # build nothing cost a fraction of a second, so they must not disappear with it.
-        tools_tests = "mkdir -p .artifacts && rm -rf .artifacts/python && python3 -m unittest discover"
+        tools_tests = "mkdir -p .artifacts && rm -rf .artifacts/python && PYTHONPATH=. python3 -m unittest discover"
         selected = [
             unit("rust.obc-app", reason=FOUNDATION),
             unit("ci.rust-clippy", "obc check clippy", FOUNDATION),
@@ -131,6 +131,7 @@ class ReadyPlanTests(unittest.TestCase):
             unit("ci.wasm-size", "bash builder/build-wasm-bridges.sh", FOUNDATION),
             unit("ci.licenses", "tools/licenses/gen-third-party.sh --check", FOUNDATION),
             unit("ci.ui-snapshots", "obc shot --check", FOUNDATION),
+            unit("ci.docs", "obc check docs", FOUNDATION),
             test_plan.Unit(
                 id="ios.checks",
                 jobs=["ios-unit"],
@@ -152,6 +153,12 @@ class ReadyPlanTests(unittest.TestCase):
         self.assertEqual(lines["bash builder/build-wasm-bridges.sh"].reason, "ci.wasm-size is left to CI")
         self.assertEqual(
             lines["python3 companion-ios/scripts/check.py"].reason, "ios.checks runs only on windows"
+        )
+        # Nothing under docs/ changed, so the documentation gate does not speak for ci.docs.
+        # A suite no running gate covers keeps its own line; that is the whole point here.
+        self.assertEqual(lines["obc check docs"].reason, "ci.docs is left to CI")
+        self.assertEqual(
+            lines["python3 docs/build_docs.py --check-links"].reason, "nothing under docs/ changed"
         )
         # The snapshot sweep stays CI's work: the budget gives it one run, and CI has it.
         self.assertEqual(lines["obc shot --check"].reason, "ci.ui-snapshots is left to CI")

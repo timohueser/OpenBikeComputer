@@ -63,7 +63,7 @@ SWEEP = "ci.ui-snapshots"
 FREE_EXECUTABLES = {"cd", "mkdir", "python", "python3", "rm"}
 
 #: The words that separate one command from the next inside a suite command.
-SEPARATORS = {"&&", "||", ";", "|"}
+SEPARATORS = {"&", "&&", "||", ";", "|"}
 
 
 @dataclass(frozen=True)
@@ -147,7 +147,7 @@ def builds_nothing(command: str) -> bool:
     """
 
     try:
-        words = shlex.split(command.replace("\n", " "))
+        words = shlex.split(command.replace("\n", " ; "))
     except ValueError:
         return False
     executables, expect = [], True
@@ -267,17 +267,18 @@ def plan(
             else gate
             for gate in gates
         ]
-    # The affected run is CI's, so this plan keeps only what builds nothing. A gate that
-    # repeats a selected suite speaks for that suite, so the suite gets no second line.
-    gates = [
-        replace(gate, run=False, reason=f"{gate.covered_by} is left to CI")
-        if gate.run and gate.covered_by in identifiers and not builds_nothing(gate.command)
-        else gate
-        for gate in gates
-    ]
-    covered = {gate.covered_by for gate in gates if gate.covered_by}
-    return gates + [
-        _suite_gate(unit) for unit in selected if unit.command and unit.id not in covered
+    # The affected run is CI's, so this plan keeps only what builds nothing. A gate that runs
+    # repeats a selected suite, so it speaks for that suite and the suite gets no second line.
+    # A gate its own rule already skipped speaks for nothing, and the suite keeps its line.
+    spoken, kept = set(), []
+    for gate in gates:
+        if gate.run and gate.covered_by in identifiers:
+            spoken.add(gate.covered_by)
+            if not builds_nothing(gate.command):
+                gate = replace(gate, run=False, reason=f"{gate.covered_by} is left to CI")
+        kept.append(gate)
+    return kept + [
+        _suite_gate(unit) for unit in selected if unit.command and unit.id not in spoken
     ]
 
 
