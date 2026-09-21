@@ -9,6 +9,11 @@ a pre-flight that runs everything is not a pre-flight.
 one of those suites is therefore skipped, and the line names the suite that does it. Nothing runs
 twice — the snapshot sweep least of all.
 
+A foundation input or the test policy selects the graph as a whole. That run is CI's, so the plan
+does not repeat it here: it keeps the selected suites that build nothing, gives each one a line,
+and names every other suite as left to CI. A check that costs a fraction of a second then stays
+visible instead of hiding behind an expensive one.
+
 The format gate writes. When it rewrites a file, the tree is no longer the tree that was about to
 be pushed, so the command names the files and stops instead of printing the skeleton.
 
@@ -18,11 +23,12 @@ The gates run in the order below: the static checks first, the compiling and ren
 from __future__ import annotations
 
 import argparse
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Collection, Iterable, Mapping, Sequence
+from typing import Iterable, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -50,6 +56,14 @@ DOCS_CONTENT = "docs/content/"
 
 #: The declared suite that owns the snapshot sweep. Its triggers define the rendering inputs.
 SWEEP = "ci.ui-snapshots"
+
+#: Executables that run a check instead of a build. A script can still start a compiler probe,
+#: but it does not build the repository, so it belongs in a pre-flight. Any other executable may
+#: drive a build behind a wrapper, so a command this table does not name is CI's work.
+FREE_EXECUTABLES = {"cd", "mkdir", "python", "python3", "rm"}
+
+#: The words that separate one command from the next inside a suite command.
+SEPARATORS = {"&", "&&", "||", ";", "|"}
 
 
 @dataclass(frozen=True)
@@ -125,18 +139,57 @@ def _first_match(changed: Iterable[str], predicate) -> str:
     return next((path for path in sorted(changed) if predicate(path)), "")
 
 
+def builds_nothing(command: str) -> bool:
+    """Whether a command runs a check instead of a build.
+
+    The executables decide it, not the suite name: an interpreter reads a script, and a wrapper
+    may start a build, so every executable the command names must be a known free one.
+    """
+
+    # `punctuation_chars` makes the lexer cut a separator out of the word it is glued to, so
+    # `a.py; cargo build` reports both executables and not one.
+    lexer = shlex.shlex(command.replace("\n", " ; "), posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        words = list(lexer)
+    except ValueError:
+        return False
+    executables, expect = [], True
+    for word in words:
+        if word in SEPARATORS:
+            expect = True
+        elif expect and "=" in word and not word.startswith(("./", "/")):
+            continue  # an environment prefix, not the executable
+        elif expect:
+            executables.append(word)
+            expect = False
+    return bool(executables) and all(word in FREE_EXECUTABLES for word in executables)
+
+
+def _suite_gate(unit: test_plan.Unit) -> Gate:
+    """The line one selected suite gets when the affected run is left to CI."""
+
+    if unit.platforms and test_plan.host_platform() not in unit.platforms:
+        return Gate(unit.command, f"{unit.id} runs only on {', '.join(unit.platforms)}", False)
+    if builds_nothing(unit.command):
+        return Gate(unit.command, f"{unit.id} builds nothing", True)
+    return Gate(unit.command, f"{unit.id} is left to CI", False)
+
+
 def plan(
     changed: Sequence[str],
     *,
     base: str,
     packages: Mapping[str, test_plan.Package],
-    suites: Collection[str],
+    selected: Sequence[test_plan.Unit],
     rendering: Sequence[str] = (),
 ) -> list[Gate]:
     """The gates the changed paths select, in the order they run.
 
-    `suites` is the set of unit IDs the test plan selects; it decides the `obc test affected`
-    gate and, through `covered_by`, which gates that run would repeat. `rendering` holds the
+    `selected` holds the units the test plan selects. It decides the `obc test affected` gate,
+    through `covered_by` which gates that run would repeat, and, when the selection took the
+    graph as a whole, which suites run here and which are left to CI. `rendering` holds the
     snapshot sweep's declared triggers, so the rendering inputs have one definition.
     """
 
@@ -186,11 +239,16 @@ def plan(
         )
     )
     gates.extend(_clippy_gates(changed, packages))
+    whole = test_plan.wholesale_reason(selected)
     gates.append(
         Gate(
             f"obc test affected --base {base}",
-            f"the plan selects {len(suites)} unit(s)" if suites else "the plan selects no unit",
-            bool(suites),
+            f"the plan selects {len(selected)} unit(s), and {whole} — that run is CI's"
+            if whole
+            else f"the plan selects {len(selected)} unit(s)"
+            if selected
+            else "the plan selects no unit",
+            bool(selected) and not whole,
         )
     )
     gates.append(
@@ -204,13 +262,31 @@ def plan(
         )
     )
 
-    if not suites:
+    if not selected:
         return gates
-    return [
-        replace(gate, run=False, reason=f"obc test affected runs it as {gate.covered_by}")
-        if gate.run and gate.covered_by in suites
-        else gate
-        for gate in gates
+    identifiers = {unit.id for unit in selected}
+    if not whole:
+        return [
+            replace(gate, run=False, reason=f"obc test affected runs it as {gate.covered_by}")
+            if gate.run and gate.covered_by in identifiers
+            else gate
+            for gate in gates
+        ]
+    # The affected run is CI's, so this plan keeps only what builds nothing. A gate that runs
+    # repeats a selected suite, so it speaks for that suite and the suite gets no second line.
+    # A gate its own rule already skipped speaks for nothing, and the suite keeps its line.
+    spoken, kept = set(), []
+    for gate in gates:
+        if gate.run and gate.covered_by in identifiers:
+            spoken.add(gate.covered_by)
+            gate = (
+                replace(gate, reason=f"{gate.reason}, and it runs {gate.covered_by}")
+                if builds_nothing(gate.command)
+                else replace(gate, run=False, reason=f"{gate.covered_by} is left to CI")
+            )
+        kept.append(gate)
+    return kept + [
+        _suite_gate(unit) for unit in selected if unit.command and unit.id not in spoken
     ]
 
 
@@ -319,7 +395,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         changed,
         base=args.base,
         packages=graph.packages,
-        suites={unit.id for unit in selection.selected},
+        selected=selection.selected,
         rendering=sweep.triggers if sweep else (),
     )
     print(render(gates, changed, args.base))
