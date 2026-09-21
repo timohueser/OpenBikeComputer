@@ -1,37 +1,28 @@
-// Drawing a cell set: the union's true stair-edged shape, as few shapes as
-// possible.
+// Drawing a cell set: the union's true stair-edged shape, as few shapes as possible.
 //
-// Epic #1016 §8 U1 decided both halves of this. There is **no grid on the map** —
-// cells are an implementation detail, never a lattice, never a wash, never a
-// legend — and the one thing that *is* drawn is "the actual coverage outline of
-// the current selection, which snaps outward to cell boundaries, drawn honestly
-// as its true stair-edged shape". That sentence is a geometry problem, and this
-// module is it.
+// There is **no grid on the map** — cells are an implementation detail, never a
+// lattice, never a wash, never a legend — and the one thing that *is* drawn is the
+// actual coverage outline of the current selection, which snaps outward to cell
+// boundaries and is drawn honestly as its true stair-edged shape.
 //
-// It is also a performance problem, which is the other reason this is not left
-// to the component. A DACH selection is tens of thousands of fine cells; handing
-// Leaflet 45 000 rectangles is not a plan, and handing it 45 000 rectangles that
-// share edges is not even an honest drawing — the shared edges show as seams
-// through the fill. Both functions here answer the same question in the two
-// shapes a map library wants:
+// It is also a performance problem, which is the other reason this is not left to the
+// component. A DACH selection is tens of thousands of fine cells; 45 000 rectangles
+// that share edges is not even an honest drawing, because the shared edges show as
+// seams through the fill. Both functions answer the same question in the two shapes a
+// map library wants:
 //
-//   * {@link mergeCellRects} — the union as a handful of maximal rectangles.
-//     Rows of adjacent cells become one rectangle, and identical runs in
-//     consecutive rows merge downward. A block of 200 × 200 cells is one
-//     rectangle. Cheap to compute, cheap to draw, no seams.
-//   * {@link coverageRings} — the union's boundary as closed rings, collinear
-//     points merged away, holes included and wound the other way. This is the
-//     outline proper: one stroked path per ring, which is what "drawn honestly
-//     as its true stair-edged shape" means when the shape has a hole in it.
+//   * {@link mergeCellRects} — the union as a handful of maximal rectangles. A block
+//     of 200 × 200 cells is one rectangle. Cheap to compute, cheap to draw, no seams.
+//   * {@link coverageRings} — the union's boundary as closed rings, collinear points
+//     merged away, holes included and wound the other way.
 //
-// Both take cells of **one** size. A band's cells are all one size by
-// construction (`OBCA_Spec.md` §1.2), and mixing two would make "the cell north
-// of this one" ambiguous — so it is refused rather than approximated.
-
+// Both take cells of **one** size. A band's cells are all one size by construction,
+// and mixing two would make "the cell north of this one" ambiguous, so it is refused
+// rather than approximated.
 import { cellSize, GRID_ORIGIN, GridError, type CellId, type UBox } from "./grid";
 
-/** A vertex of an outline: integer microdegrees, `[lat, lon]` — the catalog's
- *  own order for a boundary ring (`OBCC_Spec.md` §7). */
+/** A vertex of an outline: integer microdegrees, `[lat, lon]` — the catalog's own
+ *  order for a boundary ring. */
 export type RingPoint = [number, number];
 
 interface Lattice {
@@ -47,8 +38,8 @@ function lattice(cells: Iterable<CellId>): Lattice | null {
     let log2: number | null = null;
     const rows = new Map<number, number[]>();
     const keys = new Set<number>();
-    // Wide enough that `i * stride + j` is unique for every in-world index, and
-    // still exact in a double: 2^19 × 2^19 = 2^38.
+    // Wide enough that `i * stride + j` is unique for every in-world index, and still
+    // exact in a double: 2^19 × 2^19 = 2^38.
     const stride = 2 ** 19;
     for (const cell of cells) {
         if (log2 === null) log2 = cell.log2;
@@ -81,15 +72,14 @@ function runsOf(js: number[]): [number, number][] {
 }
 
 /**
- * The union of the cells' squares, as few axis-aligned rectangles as a
- * row-then-column merge gets it to.
+ * The union of the cells' squares, as few axis-aligned rectangles as a row-then-column
+ * merge gets it to.
  *
- * Not provably minimal — that is a harder problem than this is worth — but it
- * collapses the cases that matter: a solid block is one rectangle, a corridor
- * along a road is one per stair step rather than one per cell, and a country is
- * a few hundred instead of tens of thousands. The rectangles are disjoint and
- * their union is exactly the cells' union, so a fill drawn from them has no
- * seams and covers no ground the selection does not.
+ * Not provably minimal — that is a harder problem than this is worth — but it collapses
+ * the cases that matter: a solid block is one rectangle, a corridor along a road is one
+ * per stair step, and a country is a few hundred instead of tens of thousands. The
+ * rectangles are disjoint and their union is exactly the cells' union, so a fill drawn
+ * from them has no seams and covers no ground the selection does not.
  *
  * In ascending `(minLat, minLon)`.
  */
@@ -112,16 +102,16 @@ export function mergeCellRects(cells: Iterable<CellId>): UBox[] {
             maxLon: GRID_ORIGIN + (r.j1 + 1) * s,
         });
 
-    /** Rectangles still growing northward, keyed by the run they span — so a
-     *  row with a thousand runs costs a thousand lookups, not a million. */
+    /** Rectangles still growing northward, keyed by the run they span — so a row with a
+     *  thousand runs costs a thousand lookups, not a million. */
     let open = new Map<string, Open>();
     for (const i of [...grid.rows.keys()].sort((a, b) => a - b)) {
         const next = new Map<string, Open>();
         for (const [j0, j1] of runsOf(grid.rows.get(i)!)) {
             const key = `${j0} ${j1}`;
-            // A run that is exactly the run below it extends that rectangle;
-            // anything else starts a new one, which is what makes a staircase
-            // come out as steps rather than as cells.
+            // A run that is exactly the run below it extends that rectangle; anything
+            // else starts a new one, which is what makes a staircase come out as steps
+            // rather than as cells.
             const below = open.get(key);
             if (below && below.i1 === i - 1) {
                 below.i1 = i;
@@ -153,14 +143,13 @@ function corner(i: number, j: number, stride: number): number {
 /**
  * The boundary of the cells' union, as closed rings of `[lat, lon]` µdeg.
  *
- * Each ring's last point repeats its first, the way `OBCC_Spec.md` §7 spells
- * a region boundary — so the two kinds of outline a map draws are the same shape
- * of data. Outer rings run counter-clockwise and holes run clockwise, which is
- * what an even-odd or non-zero fill needs to leave a hole empty.
+ * Each ring's last point repeats its first, the way a region boundary is spelt, so the
+ * two kinds of outline a map draws are the same shape of data. Outer rings run
+ * counter-clockwise and holes run clockwise, which is what an even-odd or non-zero fill
+ * needs to leave a hole empty.
  *
- * Collinear vertices are dropped, so a straight run of forty cells is two
- * points, not forty-one. What survives is the staircase itself, which is the
- * part the user is being shown honestly.
+ * Collinear vertices are dropped, so a straight run of forty cells is two points, not
+ * forty-one. What survives is the staircase itself.
  */
 export function coverageRings(cells: Iterable<CellId>): RingPoint[][] {
     const grid = lattice(cells);
@@ -168,10 +157,9 @@ export function coverageRings(cells: Iterable<CellId>): RingPoint[][] {
     const { keys, stride } = grid;
     const filled = (i: number, j: number) => keys.has(i * stride + j);
 
-    // One directed edge per cell side with no neighbour behind it, wound so the
-    // interior is always on the left. That single convention is what makes
-    // outer rings come out counter-clockwise and holes clockwise, with no
-    // second pass to work out which is which.
+    // One directed edge per cell side with no neighbour behind it, wound so the interior
+    // is always on the left. That single convention is what makes outer rings come out
+    // counter-clockwise and holes clockwise, with no second pass to work out which.
     const outgoing = new Map<number, Edge[]>();
     const push = (from: number, to: number) => {
         const at = outgoing.get(from);
@@ -220,14 +208,13 @@ export function coverageRings(cells: Iterable<CellId>): RingPoint[][] {
 }
 
 /**
- * At a diagonal pinch — two cells meeting at one corner and nothing else — four
- * boundary edges share a vertex and the walk has a choice.
+ * At a diagonal pinch — two cells meeting at one corner and nothing else — four boundary
+ * edges share a vertex and the walk has a choice.
  *
- * Edges are wound with the interior on the left, so turning as far *left* as
- * possible is the turn that stays on the patch already being traced instead of
- * stepping across the corner into the other one. The pinch therefore comes out
- * as two rings touching at a point rather than one figure-of-eight — and a
- * figure-of-eight is not a polygon that any fill rule agrees about.
+ * Edges are wound with the interior on the left, so turning as far *left* as possible
+ * stays on the patch already being traced instead of stepping across the corner. The
+ * pinch therefore comes out as two rings touching at a point rather than one
+ * figure-of-eight, which is not a polygon any fill rule agrees about.
  */
 function sharpestLeft(
     incoming: Edge,
