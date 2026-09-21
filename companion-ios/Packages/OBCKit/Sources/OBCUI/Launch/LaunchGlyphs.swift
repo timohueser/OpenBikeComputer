@@ -1,12 +1,11 @@
 import SwiftUI
 
-// The drawn pieces of the launch/pairing screens (§4): the Bluetooth rune (SF
-// Symbols ships no Bluetooth glyph), the little device illustration, and the
-// scanning pulse rings. Kept together — they exist only for these screens.
+// The drawn pieces of the launch and pairing screens: the Bluetooth rune (SF Symbols
+// ships no Bluetooth glyph), the device illustration, and the scanning pulse rings.
 
-/// The design's Bluetooth rune, traced from its 24×24 SVG path
+/// The Bluetooth rune, traced from its 24×24 SVG path
 /// (`M6.5 6.5 17 17l-5 5V2l5 5L6.5 17.5`), plus the optional disabled slash.
-/// Stroke it like any shape; `strokeBorder`-free on purpose (it's an open path).
+/// It is an open path, so stroke it; `strokeBorder` does not apply.
 struct BluetoothRune: Shape {
     var slashed = false
 
@@ -33,19 +32,15 @@ struct BluetoothRune: Shape {
     }
 }
 
-/// The hardware drawing: the two-tone shell (forest body inside a concentric celadon rim), the
-/// black bezel around a white memory-LCD screen with the rust title bar, and the four side buttons
-/// — UP / DOWN on the left flank, SELECT / BACK on the right, the pair centred on the body's
-/// midpoint as on the real device.
-///
-/// Every dimension is derived from the shell **height** through [`Metrics`], off the same 308×470
-/// body / 240×320 panel proportions the simulator housing uses — so the glyph is the real device
-/// in miniature (≈0.65 w:h, a tall chin under the bezel) rather than a rounded square.
+/// The hardware drawing: the two-tone shell, the black bezel around a white
+/// memory-LCD screen, and the four side buttons. Every dimension derives from the
+/// shell height through `Metrics`, off the same 308×470 body and 240×320 panel
+/// proportions the simulator housing uses, so the glyph is the device in miniature.
 struct DeviceGlyphView: View {
     enum Variant {
-        /// A: named title bar + the amber track squiggle.
+        /// Named title bar and the amber track squiggle.
         case home(name: String)
-        /// D1: blank title bar + "PAIR" on screen. Drawn a little smaller.
+        /// Blank title bar and "PAIR" on screen. Drawn a little smaller.
         case pairing
     }
 
@@ -56,18 +51,17 @@ struct DeviceGlyphView: View {
         return false
     }
 
-    /// The device's real proportions, scaled to a given glyph height. Ratios are `dimension / 470`
-    /// (the body height in the housing's screen-pixel units).
+    /// The device's real proportions, scaled to a glyph height. Ratios are
+    /// `dimension / 470`, the body height in the housing's screen-pixel units.
     private struct Metrics {
         let height: CGFloat
 
         var width: CGFloat { height * 308 / 470 }
         var radius: CGFloat { height * 42 / 470 }
-        /// The celadon rim, even on all four sides.
         var lip: CGFloat { max(2, height * 6 / 470) }
         var screenWidth: CGFloat { height * 240 / 470 }
         var screenHeight: CGFloat { height * 320 / 470 }
-        /// Screen top, measured from the body's top edge — the chin below is much deeper.
+        /// Screen top, measured from the body's top edge; the chin below is deeper.
         var screenTop: CGFloat { height * 32 / 470 }
         var bezelGap: CGFloat { height * 16 / 470 }
         var bezelRadius: CGFloat { height * 26 / 470 }
@@ -75,7 +69,6 @@ struct DeviceGlyphView: View {
         var buttonWidth: CGFloat { max(4, height * 19 / 470) }
         var buttonHeight: CGFloat { height * 66 / 470 }
         var buttonGap: CGFloat { height * 22 / 470 }
-        /// How far a pad protrudes past the body edge.
         var buttonProtrude: CGFloat { height * 13 / 470 }
         /// The wordmark's baseline inset from the body's bottom edge, centring it in the chin.
         var chinInset: CGFloat { height * 30 / 470 }
@@ -95,7 +88,7 @@ struct DeviceGlyphView: View {
                 .fill(OBCTheme.deviceBody)
                 .shadow(color: OBCTheme.deviceBody.opacity(0.3), radius: 13, y: isHome ? 14 : 0)
 
-            // Bezel + screen, seated high in the body so the wordmark chin reads below them.
+            // Bezel and screen, seated high so the wordmark chin reads below them.
             RoundedRectangle(cornerRadius: m.bezelRadius)
                 .fill(OBCTheme.deviceBezel)
                 .frame(width: m.screenWidth + 2 * m.bezelGap, height: m.screenHeight + 2 * m.bezelGap)
@@ -107,7 +100,6 @@ struct DeviceGlyphView: View {
                 }
                 .padding(.top, m.screenTop - m.bezelGap)
 
-            // The wordmark embossed into the chin, as on the real shell.
             Text("OBC")
                 .font(.obcMono(size: m.width * 0.13, weight: .bold))
                 .kerning(m.width * 0.05)
@@ -153,9 +145,8 @@ struct DeviceGlyphView: View {
         }
     }
 
-    /// One flank's pair of buttons — the same shape on both sides, so the device reads symmetric
-    /// (UP / DOWN on the left, SELECT / BACK on the right). The `.leading`/`.trailing` overlay
-    /// alignment centres the pair on the body's vertical midpoint, matching the hardware.
+    /// One flank's pair of buttons. The `.leading`/`.trailing` overlay alignment
+    /// centres the pair on the body's vertical midpoint, as on the hardware.
     private var sideButtons: some View {
         let m = self.m
         return VStack(spacing: m.buttonGap) {
@@ -167,10 +158,11 @@ struct DeviceGlyphView: View {
         }
     }
 
-    /// The little route line on the home screen (the §4 SVG path, normalized).
+    /// The little route line on the home screen.
     private struct TrackSquiggle: Shape {
         func path(in rect: CGRect) -> Path {
-            // Source path in an 80×74 box: M12 60 C 20 40 34 44 40 52 C 48 62 60 40 68 20
+            // The source path is "M12 60 C 20 40 34 44 40 52 C 48 62 60 40 68 20" in
+            // an 80×74 box.
             func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
                 CGPoint(x: rect.minX + x / 80 * rect.width, y: rect.minY + y / 74 * rect.height)
             }
@@ -183,7 +175,7 @@ struct DeviceGlyphView: View {
     }
 }
 
-/// D2's pulsing forest rings around the Bluetooth tile.
+/// The pulsing forest rings around the Bluetooth tile.
 struct PulsingRings: View {
     @State private var animating = false
 
@@ -208,7 +200,6 @@ struct PulsingRings: View {
     }
 }
 
-/// The forest Bluetooth tile (D2 center, D3 backdrop).
 struct BluetoothTile: View {
     var body: some View {
         RoundedRectangle(cornerRadius: 20)

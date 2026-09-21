@@ -1,10 +1,10 @@
 import SwiftUI
 
-// The launch-side states around the pairing flow: A (bonded, quietly
-// reconnecting) and H7/H8 (radio blocked). Dumb views, design copy verbatim.
+// The launch-side states around the pairing flow: bonded and quietly reconnecting,
+// and radio blocked. Dumb views.
 
-/// A — bonded launch, connecting. Brief and non-blocking by contract: the flow
-/// model caps it (`Timing.connectGrace`) and always resolves to main.
+/// Bonded launch, connecting. Brief and non-blocking by contract: the flow model caps
+/// it with `Timing.connectGrace` and always resolves to main.
 struct LaunchConnectingView: View {
     let deviceName: String
 
@@ -36,7 +36,6 @@ struct LaunchConnectingView: View {
         }
     }
 
-    /// The OBC wordmark chip anchored at the bottom of the launch state.
     private var brandChip: some View {
         HStack(spacing: 8) {
             Text("OBC")
@@ -51,7 +50,7 @@ struct LaunchConnectingView: View {
         .background(OBCTheme.forest, in: RoundedRectangle(cornerRadius: 8))
     }
 
-    /// The design's animated trailing "···".
+    /// The animated trailing "···".
     private struct TrailingDots: View {
         var body: some View {
             TimelineView(.periodic(from: .now, by: 0.4)) { context in
@@ -69,10 +68,9 @@ struct LaunchConnectingView: View {
     }
 }
 
-/// A-timeout — the bonded device didn't answer within the connect grace
-/// window (asleep, out of range, powered off). Calm like D5, and never a
-/// trap: retry re-enters A, or head to the routes — the background connect
-/// keeps listening either way.
+/// The bonded device did not answer within the connect grace window: asleep, out of
+/// range, or powered off. Never a trap: retry re-enters connecting, or head to the
+/// routes, and the background connect keeps listening either way.
 struct LaunchConnectFailedView: View {
     let deviceName: String
     let onRetry: () -> Void
@@ -116,8 +114,8 @@ struct LaunchConnectFailedView: View {
     }
 }
 
-/// H8 (radio off) / the post-denial H7 state. Point to the fix; don't nag —
-/// and never trap the rider: the library stays reachable.
+/// Radio off, or the state after the rider denied Bluetooth. Point to the fix and
+/// never trap the rider: the library stays reachable.
 struct RadioBlockedView: View {
     let block: LaunchFlowModel.RadioBlock
     let onBrowseLibrary: () -> Void

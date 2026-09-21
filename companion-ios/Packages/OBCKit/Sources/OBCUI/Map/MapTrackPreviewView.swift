@@ -4,20 +4,16 @@ import OBCDomain
 import MapKit
 #endif
 
-/// **Track preview with a real basemap** (#294) — a drop-in for `TrackPreviewView`
-/// that draws the route/ride polyline over Apple Maps when there's a network path
-/// and real geometry, and falls back to the grid + parchment placeholder
-/// otherwise (offline, or a track that only kept its normalized shape). The
-/// fallback is intentional, not a failure state — see `companion-ios/CLAUDE.md`.
+/// A drop-in for `TrackPreviewView` that draws the track over Apple Maps when there
+/// is a network path and real geometry, and falls back to the grid placeholder
+/// otherwise. The fallback is intentional, not a failure state.
 ///
-/// Non-interactive at every size: the map ignores hits so a tap reaches the
-/// enclosing card/hero button (the detail hero opens the full interactive
-/// `TrackMapView`; a card still opens the detail screen).
+/// Non-interactive at every size: the map ignores hits, so a tap reaches the
+/// enclosing card or hero button.
 ///
-/// Pass `waypoints` (plus the total distance) to pin the middle waypoints as
-/// numbered amber markers — the detail hero does; the main-screen cards don't.
-/// On the basemap they annotate at their real coordinates; on the grid they
-/// fall back to the distance-fraction placement (`Marker.middleWaypointPins`).
+/// Pass `waypoints` and the total distance to pin the middle waypoints. On the
+/// basemap they sit at their real coordinates; on the grid they fall back to
+/// distance-fraction placement.
 public struct MapTrackPreviewView: View {
     let preview: TrackPreview?
     var style: TrackPreviewView.Style = .thumbnail
@@ -25,7 +21,7 @@ public struct MapTrackPreviewView: View {
     var tagColor: Color = OBCTheme.inkSoft
     var showsChrome: Bool = true
     var waypoints: [Waypoint] = []
-    /// Total route distance — only needed to place `waypoints` on the grid.
+    /// Only needed to place `waypoints` on the grid.
     var totalDistanceMeters: Double = 0
 
     @Environment(\.obcIsOnline) private var isOnline
@@ -82,12 +78,9 @@ public struct MapTrackPreviewView: View {
                 coordinates: coordinates, dotRadius: style.dotRadius, waypoints: waypoints
             )
         }
-        // Standard Apple Maps styling (the constraints rule out reskinning it),
-        // but always the light tile set — the design's field-guide palette is
-        // light throughout, and Maps' dark tiles clash with the parchment
-        // chrome around it regardless of the system appearance.
+        // Always the light tile set: the design's palette is light throughout, and
+        // Maps' dark tiles clash with the parchment chrome around it.
         .preferredColorScheme(.light)
-        // The preview never handles gestures — the tap belongs to the card/hero.
         .allowsHitTesting(false)
         .overlay(alignment: .topLeading) {
             if let tag { MapPreviewTag(tag, color: tagColor) }
@@ -111,10 +104,9 @@ public struct MapTrackPreviewView: View {
 }
 
 #if canImport(MapKit)
-/// The track polyline (halo + stroke) plus forest/coral start/end dots — shared
-/// by the preview and the full-screen `TrackMapView` so both look identical.
-/// `waypoints` pins the middle waypoints (the start/end already have dots) as
-/// the same numbered amber markers the grid preview draws.
+/// The track polyline and start/end dots, shared by the preview and the full-screen
+/// `TrackMapView` so both look identical. `waypoints` pins the middle waypoints; the
+/// start and end already have dots.
 struct TrackMapContent: MapContent {
     let coordinates: [Coordinate]
     var dotRadius: CGFloat = 5
@@ -122,7 +114,7 @@ struct TrackMapContent: MapContent {
 
     var body: some MapContent {
         let coords = MapGeometry.clLocations(coordinates)
-        // Halo casing under the stroke — mirrors the grid preview's 7 / 3.4 pt.
+        // Halo casing under the stroke, matching the grid preview's 7 / 3.4 pt.
         MapPolyline(coordinates: coords)
             .stroke(OBCTheme.trackHalo, style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))
         MapPolyline(coordinates: coords)
@@ -154,8 +146,8 @@ struct TrackMapContent: MapContent {
     }
 }
 
-/// W1's numbered waypoint pin as a live view (the grid preview draws the same
-/// mark in its `Canvas`): 9pt amber dot, panel ring, mono label.
+/// The numbered waypoint pin as a live view. The grid preview draws the same mark
+/// in its `Canvas`.
 struct WaypointPinBadge: View {
     let label: String
 
@@ -170,8 +162,8 @@ struct WaypointPinBadge: View {
 }
 #endif
 
-/// The corner tag badge, matching `TrackPreviewView`'s (mono uppercase on a
-/// panel chip) so a card reads the same whether it drew a map or the grid.
+/// The corner tag badge, matching `TrackPreviewView`'s so a card reads the same
+/// whether it drew a map or the grid.
 struct MapPreviewTag: View {
     let text: String
     let color: Color
@@ -203,7 +195,6 @@ struct MapPreviewTag: View {
         HStack(spacing: 16) {
             MapTrackPreviewView(.obcSample)
                 .frame(width: 128, height: 116)
-            // Forced offline → grid fallback.
             MapTrackPreviewView(.obcSample)
                 .frame(width: 128, height: 116)
                 .environment(\.obcIsOnline, false)

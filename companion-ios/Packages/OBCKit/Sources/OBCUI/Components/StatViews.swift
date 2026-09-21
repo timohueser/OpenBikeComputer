@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// One formatted statistic for the strips/grids: a mono value, an optional
-/// small unit, and an uppercase key ("62.4 km / DISTANCE").
+/// One formatted statistic for the strips and grids: a mono value, an optional small
+/// unit, and an uppercase key ("62.4 km / DISTANCE").
 public struct OBCStat: Identifiable {
     public let value: String
     public let unit: String?
@@ -16,17 +16,15 @@ public struct OBCStat: Identifiable {
     }
 }
 
-/// The inline **stat strip** on route/ride detail (E1–E3): equal-width stats in
-/// a panel card — 20pt mono value with a 12pt faint unit over a 9.5pt uppercase
-/// key.
+/// The inline stat strip on route and ride detail: equal-width stats in a panel card.
 public struct OBCStatStrip: View {
     let stats: [OBCStat]
 
     public init(_ stats: [OBCStat]) { self.stats = stats }
 
     public var body: some View {
-        // A fixed gutter between columns — equal-flex cells alone let a long
-        // value ("20.4 kph") run right up against its neighbour.
+        // A fixed gutter between columns: equal-flex cells alone let a long value
+        // ("20.4 kph") run right up against its neighbour.
         HStack(spacing: 10) {
             ForEach(stats) { stat in
                 VStack(alignment: .leading, spacing: 3) {
@@ -44,8 +42,7 @@ public struct OBCStatStrip: View {
     }
 }
 
-/// The 2-column **stat grid** under a full-bleed route card — hairline-divided
-/// panel cells with a 24pt value.
+/// The two-column stat grid under a full-bleed route card, in hairline-divided cells.
 public struct OBCStatGrid: View {
     let stats: [OBCStat]
 
@@ -81,7 +78,7 @@ public struct OBCStatGrid: View {
     }
 }
 
-/// Shared value/key text used by both stat layouts.
+/// Shared value and key text, used by both stat layouts.
 private func statValue(_ stat: OBCStat, size: CGFloat, unitSize: CGFloat) -> some View {
     (Text(stat.value)
         .font(.obcMono(size: size, weight: .medium))

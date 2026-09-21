@@ -1,11 +1,9 @@
 import SwiftUI
 import OBCDomain
 
-/// **Elevation Profile** (§9, NEW) — area + line over a faint horizontal grid,
-/// in a panel card (14pt radius; grid every 24pt; 2.4pt `trackStroke` line over
-/// an 18%-alpha area fill, plus high/low markers with their elevations).
-/// Renders plain elevation samples so any source (imported route, downloaded
-/// ride) feeds it after a cheap extraction.
+/// An elevation area and line over a faint grid, in a panel card, with high and low
+/// markers. Renders plain elevation samples, so any source feeds it after a cheap
+/// extraction.
 public struct ElevationProfileView: View {
     /// Elevation samples in metres, assumed evenly spaced along the route.
     let samples: [Double]
@@ -28,7 +26,6 @@ public struct ElevationProfileView: View {
 
     public var body: some View {
         Canvas { context, size in
-            // Horizontal gridlines every 24pt, edge to edge.
             var grid = Path()
             var y: CGFloat = 0
             while y < size.height {
@@ -42,8 +39,7 @@ public struct ElevationProfileView: View {
             let lo = samples.min()!
             let hi = samples.max()!
             let span = max(hi - lo, 1)
-            // Keep the line inside the card with a little headroom, like the
-            // design SVGs (top ~18%, bottom ~2pt above the baseline).
+            // Headroom keeps the line and its markers inside the card.
             let top = size.height * 0.15
             let bottom = size.height - 4
             let points = samples.enumerated().map { index, sample in
@@ -53,10 +49,9 @@ public struct ElevationProfileView: View {
                 )
             }
 
-            // The fill hangs from the curve to the card's floor. Built by
-            // hand: `addLines` opens a NEW subpath at its first point, so a
-            // prior corner `move` gets orphaned and `close` would draw a
-            // stray diagonal back onto the curve.
+            // The fill hangs from the curve to the card's floor, built by hand:
+            // `addLines` opens a new subpath at its first point, so a prior corner
+            // `move` is orphaned and `close` would draw a stray diagonal.
             var area = Path()
             area.move(to: CGPoint(x: points[0].x, y: size.height))
             for point in points { area.addLine(to: point) }
@@ -82,15 +77,13 @@ public struct ElevationProfileView: View {
         .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
         .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.line))
         .accessibilityLabel("Elevation profile")
-        // The card only exists once its samples do — on a tracked ride that's an
-        // async `rideDetail` read away (#1212). Automation waits on this to know
-        // the detail screen's layout is final before it captures.
+        // The card only exists once its samples do; on a tracked ride that is an async
+        // read away. Automation waits on this to know the layout is final.
         .accessibilityIdentifier("detail.elevationProfile")
     }
 
-    /// Dots + mono labels on the highest and lowest samples ("471 m" / "289 m").
-    /// The high label tucks below its dot (the dot rides the top of the card),
-    /// the low label above — both always have room.
+    /// Dots and mono labels on the highest and lowest samples. The high label tucks
+    /// below its dot and the low label above, so both always have room.
     private func drawExtremeMarkers(in context: inout GraphicsContext, points: [CGPoint], size: CGSize) {
         guard
             points.count == samples.count,
