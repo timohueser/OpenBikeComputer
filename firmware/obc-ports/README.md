@@ -1,30 +1,17 @@
 # obc-ports
 
-Dependency-light `#![no_std]` semantic boundaries shared by the application,
-platform adapters, and hosts. The crate owns fixes, GPS/calendar time, input
-events, recorded-track points/errors, capability-specific polling traits, and
-the `Sensors` bundle. It also owns the single `SettingsStore` contract, whose
-associated `Value` keeps the foundation independent of the app's settings
-model. It owns no drivers, buses, executor primitives, global mailboxes,
-UI/render policy, or allocation.
+Dependency-light `#![no_std]` semantic boundaries shared by the application, the platform
+adapters and the hosts: fixes, GPS/calendar time, input events, recorded-track points and errors,
+the capability polling traits, the `Sensors` bundle, and the `SettingsStore` contract. It owns no
+drivers, buses, executor primitives, UI or render policy, and no allocation.
 
-The app, route algorithms, platform adapters, board, simulator, shared host,
-replay, and USB implementations import their semantic contracts directly from
-this crate and declare direct `obc-ports` dependencies. Foundation values have
-one owning path; `obc-app` exposes app policy and `obc-route` exposes route
-algorithms rather than forwarding port types.
+The manifest has no dependencies, and it must stay that way: `tools/dependency_rules.json` puts
+`obc-ports` in the `foundation` allowlist, so a production edge to the app, the route algorithms,
+a platform adapter, the board or the bootloader fails the dependency check. The checker also reads
+the two standalone Cargo roots, so an edge from the board or the bootloader cannot evade it.
 
-`DateTime` exposes semantic Gregorian arithmetic (`add_minutes`, signed UTC
-offsets, Unix conversion) without an app year range. OpenBikeComputer's
-2020–2099 storage bounds and sanitising live in `obc_app::DateTimeEditorExt`;
-that storage-policy method is intentionally not an inherent method on the
-foundation value.
-
-The manifest has no dependencies. The workspace classifies `obc-ports` in the
-`foundation` allowlist in `tools/dependency_rules.json`, which rejects
-production edges to core algorithms, the app, platform adapters, and hosts.
-The checker also loads the excluded board and bootloader Cargo roots, so edges
-to either standalone package cannot evade the allowlist.
+`DateTime` has no app year range. The 2020–2099 storage bounds live in
+`obc_app::DateTimeEditorExt`.
 
 From `firmware/`:
 
