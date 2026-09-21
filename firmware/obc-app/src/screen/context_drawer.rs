@@ -29,7 +29,8 @@ use crate::navigator::RouteState;
 use crate::settings::UpAheadSource;
 use crate::{AppState, Msg, Settings};
 
-use super::vocab::{rows, sheet};
+use super::vocab::rows;
+use super::vocab::sheet::{self, Edge, SheetMotion, SheetTiming};
 use super::{palette, Ctx, DetourScreen, Render, RouteMenuScreen, Screen, ScreenTick, Transition};
 
 /// How long the sheet takes to slide up from the bottom edge on open (ms). Deliberately its own
@@ -41,6 +42,8 @@ const SLIDE_MS: u32 = 180;
 /// woken at (ms). This is the taller of the two sheets, so its deepest step costs more than the
 /// quick drawer's and the two keep their own numbers.
 const STEP_MS: u32 = 48;
+/// The motion the shared sheet engine runs this sheet on.
+pub(crate) const MOTION: SheetTiming = SheetTiming { open_ms: OPEN_MS, slide_ms: SLIDE_MS, step_ms: STEP_MS };
 
 /// One row's height, and the padding above the first row / below the last.
 const ROW_H: i32 = 44;
@@ -500,61 +503,28 @@ impl Page {
 /// The contextual drawer's whole state: when it opened, the table it was opened over, the cursor,
 /// the page, and the ordinal the editor has staged but not committed.
 pub struct ContextDrawerScreen {
-    /// When the open slide started: the clock of the first frame that could draw the sheet, and
-    /// `None` until one has.
-    ///
-    /// A chord is resolved above the pass, before the pass sets its `now_ms`, so a sheet stamped at
-    /// construction would carry the clock of the pass before the squeeze. On a host whose frames
-    /// gap that is seconds old, the first frame computes an elapsed far past [`OPEN_MS`], and the
-    /// sheet is drawn already landed. Starting the clock on the first tick makes the open begin
-    /// where it can first be seen.
-    opened_ms: Option<u32>,
+    /// The open, the page slide and the base-draw debt, on this sheet's own [`MOTION`].
+    pub(crate) motion: SheetMotion,
     menu: &'static ContextMenu,
-    /// When the page transition in flight started, or `None` when none is.
-    slide_ms: Option<u32>,
     selected: u8,
     page: Page,
     /// The choice the editor is previewing. Meaningful only on [`Page::Editor`]; off that page
     /// every reader falls back to the committed value, which is what makes Back-discards free.
     staged: u8,
-    /// How much of the sheet the last reported tick put on the panel, in device pixels; `-1` before
-    /// the first one. It is what makes the open motion rather than a cut: a step that would redraw
-    /// the sheet where it already stands is not reported at all.
-    shown_h: i16,
-    /// The draw of the screen below that this sheet owes — see [`needs_base`](Self::needs_base).
-    needs_base: bool,
 }
 
 impl ContextDrawerScreen {
     /// A drawer over `menu` that has begun to open, with the first row selected. Its slide starts
-    /// on the first frame that ticks it — see [`opened_ms`](Self::opened_ms).
+    /// on the first frame that ticks it, not on the pass the chord was resolved in.
     pub fn opening(menu: &'static ContextMenu) -> Self {
         debug_assert!(menu.rows.len() <= MAX_ROWS, "a context table is a sheet, not a page — see MAX_ROWS");
-        ContextDrawerScreen {
-            opened_ms: None,
-            menu,
-            slide_ms: None,
-            selected: 0,
-            page: Page::Root,
-            staged: 0,
-            shown_h: -1,
-            needs_base: false,
-        }
+        ContextDrawerScreen { motion: SheetMotion::opening(), menu, selected: 0, page: Page::Root, staged: 0 }
     }
 
-    /// A drawer over `menu` that is already landed: the sheet a row of another sheet swapped in. A
-    /// sheet that is on the panel does not make an entrance, and re-running the open to change
-    /// tables would read as a stutter, so the open's clock is stamped as spent.
-    ///
-    /// The sheet owes the screen below one draw from here, because the incoming sheet is shorter
-    /// than the one it replaced and gives back a band still holding the old sheet's ink. The debt
-    /// is armed here rather than at the first tick, which would be one frame late.
+    /// A drawer over `menu` that is already landed: the sheet a row of another sheet swapped in.
+    /// It makes no entrance, and it owes the screen below the band it gives back.
     pub fn swapped_in(menu: &'static ContextMenu, now_ms: u32) -> Self {
-        ContextDrawerScreen {
-            opened_ms: Some(now_ms.wrapping_sub(OPEN_MS)),
-            needs_base: true,
-            ..ContextDrawerScreen::opening(menu)
-        }
+        ContextDrawerScreen { motion: SheetMotion::landed(now_ms, MOTION), ..ContextDrawerScreen::opening(menu) }
     }
 
     /// The exact facts this drawer draws, for the pass's render key: the page, the selected row,
@@ -592,24 +562,13 @@ impl ContextDrawerScreen {
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         // A page transition owns the input while it runs: acting on a half-drawn page would let a
         // fast double-press land on a row the rider cannot see yet.
-        if self.slide_running(cx.now_ms) {
+        if self.motion.sliding(cx.now_ms, MOTION) {
             return Transition::None;
         }
         match self.page {
             Page::Root => self.handle_root(g, cx),
             Page::Editor => self.handle_editor(g, cx),
         }
-    }
-
-    /// Whether a page slide is still in flight at `now_ms`: the input gate's question, asked
-    /// without answering the tick's.
-    ///
-    /// Retiring a slide is [`settle`](Self::settle)'s edge, and that edge is what
-    /// [`tick_timers`](Self::tick_timers) reads to arm the base draw the settling frame owes. Input
-    /// runs first in a pass, so this gate must stay a pure read: a gesture that retired the slide
-    /// would leave the tick nothing to read, and the two pages would stay half-slid.
-    fn slide_running(&self, now_ms: u32) -> bool {
-        self.slide_ms.is_some_and(|s| now_ms.wrapping_sub(s) < SLIDE_MS)
     }
 
     fn handle_root(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
@@ -684,109 +643,29 @@ impl ContextDrawerScreen {
 
     /// The sheet's animation: the open slide, then any page slide, at the panel's step cadence.
     pub fn tick_timers(&mut self, now_ms: u32) -> ScreenTick {
-        // This frame is the open's origin if no frame has been one yet.
-        let opened_ms = *self.opened_ms.get_or_insert(now_ms);
-        let settled = self.settle(now_ms);
         let sheet_h = self.sheet_height(now_ms);
-        let visible = self.visible_height(now_ms, sheet_h);
-        // The open is over when the sheet has arrived, not when its clock runs out: the ease-out's
-        // last few per cent move no pixel, and the steps they would ask for push nothing.
-        let opening =
-            if sheet_h > 0 && visible >= sheet_h { 0 } else { OPEN_MS.saturating_sub(now_ms.wrapping_sub(opened_ms)) };
-        let sliding = self.slide_ms.map_or(0, |s| SLIDE_MS.saturating_sub(now_ms.wrapping_sub(s)));
-        let moved = visible != self.shown_h as i32;
-        // The base draw is a debt, so this adds to it and never clears it: a pass may tick and
-        // then draw no frame at all, and only a frame that drew the base ends the obligation.
-        self.needs_base |= sliding > 0 || settled;
-        self.shown_h = visible as i16;
-        // The wake is the time to the next step boundary, not a whole step from wherever this poll
-        // landed: asking for a full step off a boundary carries the offset to the end and finishes
-        // the open a step late.
-        let to_step = STEP_MS - now_ms.wrapping_sub(opened_ms) % STEP_MS;
-        match [opening, sliding].into_iter().filter(|r| *r > 0).min() {
-            // A page slide moves its two pages across a sheet that may not change height at all, so
-            // it is a change whether or not the sheet grew.
-            Some(remaining) => {
-                ScreenTick { changed: sliding > 0 || moved, next_wake_ms: Some(to_step.min(remaining)), region: None }
-            }
-            // The frame a slide ends on still differs from the one before it; the frame the open
-            // ends on differs only if it moved the sheet.
-            None if settled || moved => ScreenTick { changed: true, next_wake_ms: None, region: None },
-            None => ScreenTick::idle(),
-        }
-    }
-
-    /// Whether this sheet still owes the screen below a draw.
-    ///
-    /// A sheet owes one from the moment it stops purely covering the base. Two things do that: a
-    /// page slide, whose two pages travel through the inset margin either side of the sheet and
-    /// which shrinks the sheet when the pages differ in height, and a swapped-in sheet
-    /// ([`swapped_in`](Self::swapped_in)), which is shorter than the one it replaced.
-    ///
-    /// It is a debt, not a flag: nothing but [`clear_base_debt`](Self::clear_base_debt) ends it. A
-    /// tick that decided it per frame could have the obligation stolen by a pass that ticked and
-    /// drew nothing, or by input running first and retiring the slide before the tick saw the
-    /// edge.
-    pub(crate) fn needs_base(&self) -> bool {
-        self.needs_base
-    }
-
-    /// Discharge the debt: the frame that drew the base has put back everything this sheet was not
-    /// covering. Called at the frame boundary, which is the only place that answer exists.
-    pub(crate) fn clear_base_debt(&mut self) {
-        self.needs_base = false;
-    }
-
-    /// Take on the debt from outside: this sheet replaces the other drawer, whose rows are still
-    /// on the panel, so its first frame has to draw the base to take them off.
-    pub(crate) fn owe_base(&mut self) {
-        self.needs_base = true;
+        self.motion.tick(now_ms, MOTION, sheet_h)
     }
 
     /// Begin a horizontal transition to `to`, which becomes the live page at once (so `handle` and
     /// the render key already speak about the destination) while the slide draws both.
     fn slide_to(&mut self, to: Page, now_ms: u32) {
-        self.slide_ms = Some(now_ms);
         self.page = to;
-        // From this frame on the two pages travel outside the sheet's own footprint, so the base
-        // has to be under them. Armed here, because the next tick would be one frame late.
-        self.needs_base = true;
-    }
-
-    /// Retire a finished slide, and report whether this call retired it. In production only the
-    /// tick calls this: the edge it returns arms the settling frame's base draw.
-    fn settle(&mut self, now_ms: u32) -> bool {
-        let done = self.slide_ms.is_some_and(|s| now_ms.wrapping_sub(s) >= SLIDE_MS);
-        if done {
-            self.slide_ms = None;
-        }
-        done
+        self.motion.slide_to(now_ms);
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         let sheet_h = self.sheet_height(rx.now_ms);
-        let visible = self.visible_height(rx.now_ms, sheet_h);
+        let visible = self.motion.visible_height(rx.now_ms, MOTION, sheet_h);
         if visible == 0 {
             return;
         }
-        // The sheet stays attached to the bottom edge: it slides up by drawing its full height with
-        // its bottom off-screen, so the rounded top lip is what the rider sees arriving.
+        // The sheet hangs from the bottom edge: it slides up by drawing its full height with its
+        // bottom off-screen.
         let top = rx.h - visible;
-        cv.round(rect(4, top, rx.w - 8, sheet_h + 8), 10, palette::PARCHMENT);
-        cv.round_outline(rect(4, top, rx.w - 8, sheet_h + 8), 10, palette::WOOD_LIGHT);
-        // The grab lip, so the sheet reads as pulled up from the bottom rather than as a card.
-        cv.round(rect(rx.w / 2 - 18, top + 7, 36, 4), 2, palette::WOOD_LIGHT);
-
-        match self.slide_ms {
-            Some(started) => {
-                let t = sheet::slid(rx.now_ms, started, SLIDE_MS);
-                // Going deeper pushes the old page left; returning to the root pulls it right.
-                let back = self.page == Page::Root;
-                let (out, incoming) = if back {
-                    ((t * rx.w as f32) as i32, -((1.0 - t) * rx.w as f32) as i32)
-                } else {
-                    (-((t * rx.w as f32) as i32), ((1.0 - t) * rx.w as f32) as i32)
-                };
+        sheet::frame(cv, rx.w, top, sheet_h, Edge::Bottom);
+        match self.motion.page_offsets(rx.now_ms, MOTION, rx.w, self.page == Page::Root) {
+            Some((out, incoming)) => {
                 self.draw_page(cv, rx, self.other_page(), top, out);
                 self.draw_page(cv, rx, self.page, top, incoming);
             }
@@ -805,29 +684,7 @@ impl ContextDrawerScreen {
     /// The sheet height this frame: the page's own, or the interpolation between two pages' while a
     /// slide runs — which is how the sheet grows and shrinks with its content.
     fn sheet_height(&self, now_ms: u32) -> i32 {
-        let Some(started) = self.slide_ms else { return self.page.height(self.menu) };
-        let t = sheet::slid(now_ms, started, SLIDE_MS);
-        let (from, to) = (self.other_page().height(self.menu) as f32, self.page.height(self.menu) as f32);
-        (from + (to - from) * t + 0.5) as i32
-    }
-
-    /// How much of the sheet has arrived from the bottom edge, on the open animation's ease-out,
-    /// advanced in whole [`STEP_MS`] steps.
-    ///
-    /// The quantising is the pacing. A device wakes on more than its own timers, and a sheet that
-    /// answered the raw clock would give a busy host many one-pixel steps, each one a whole frame
-    /// the panel cannot finish. Reading the step boundary instead means the sheet moves exactly as
-    /// often as it asked to be woken.
-    fn visible_height(&self, now_ms: u32, sheet_h: i32) -> i32 {
-        // Before the first tick the open has not started, so a host that draws a sheet it has not
-        // ticked draws no sheet — which is the frame the open begins from anyway.
-        let Some(opened_ms) = self.opened_ms else { return 0 };
-        let elapsed = now_ms.wrapping_sub(opened_ms);
-        // The frame the sheet opens on is its first step, not a frame that draws nothing: the
-        // chord costs the host a repaint whatever this returns. So the boundary is counted from one
-        // step in.
-        let stepped = (elapsed / STEP_MS + 1) * STEP_MS;
-        (sheet_h as f32 * sheet::arrived(stepped, 0, OPEN_MS) + 0.5) as i32
+        self.motion.height(now_ms, MOTION, self.other_page().height(self.menu), self.page.height(self.menu))
     }
 
     fn draw_page(&self, cv: &mut impl Surface, rx: &Render, page: Page, top: i32, x: i32) {
@@ -1185,18 +1042,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_sheet_slides_up_monotonically_and_lands_exactly() {
-        let mut d = ContextDrawerScreen::opening(&RIDE);
-        d.tick_timers(1_000); // the frame the open starts on
-        let target = Page::Root.height(&RIDE);
-        let frames: heapless::Vec<i32, 8> =
-            [0, 55, 110, 165, OPEN_MS].iter().map(|dt| d.visible_height(1_000 + dt, target)).collect();
-        assert!(frames[0] > 0, "the sheet's first step is on the frame it opens on, not one step later");
-        assert_eq!(frames[4], target, "and the sheet lands exactly on its height");
-        assert!(frames.windows(2).all(|p| p[0] < p[1]), "monotonic: {frames:?}");
-    }
-
     /// The whole editor contract in one pass: a value row slides to its editor on the committed
     /// choice, Up/Down stages without committing, Select commits and returns, and the committed
     /// choice is what the row then reads.
@@ -1329,46 +1174,6 @@ mod tests {
         assert_eq!(d.page, Page::Editor);
     }
 
-    /// The open is paced by the two constants and nothing else: the sheet asks to be woken every
-    /// [`STEP_MS`], it takes about [`OPEN_MS`] to arrive, and every step it reports moves it.
-    #[test]
-    fn the_open_takes_open_ms_in_steps_of_step_ms_and_every_step_moves_the_sheet() {
-        let mut d = drawer();
-        let target = Page::Root.height(&RIDE);
-        let (mut ms, mut heights) = (0u32, std::vec::Vec::new());
-        // Poll at 1 ms, the finest any host could: a wake between two steps must cost nothing.
-        while ms < OPEN_MS * 2 {
-            if d.tick_timers(ms).changed {
-                heights.push(d.visible_height(ms, target));
-            }
-            ms += 1;
-        }
-        assert!(heights.windows(2).all(|p| p[0] < p[1]), "no step redraws the sheet where it stands: {heights:?}");
-        assert_eq!(heights.last(), Some(&target), "the last step is the sheet landed");
-        let steps = heights.len() as u32;
-        assert!(
-            (OPEN_MS / STEP_MS / 2..=OPEN_MS / STEP_MS + 1).contains(&steps),
-            "{steps} steps for a {OPEN_MS} ms open at a {STEP_MS} ms cadence"
-        );
-        assert!(steps >= 7, "an open that reads as motion is many steps, not the four the panel used to show");
-
-        // …and then it is silent, which is what the frozen base under it depends on.
-        for ms in OPEN_MS * 2..OPEN_MS * 2 + 300 {
-            assert_eq!(d.tick_timers(ms), ScreenTick::idle(), "a landed sheet is quiet at {ms} ms");
-        }
-        assert!(!d.needs_base(), "…and asks for nothing under it either");
-    }
-
-    /// The wake asks for the next step boundary, not a whole step from wherever the poll landed:
-    /// otherwise a device that wakes off-boundary finishes the open a step late.
-    #[test]
-    fn the_wake_lands_on_the_next_step_boundary() {
-        let mut d = drawer();
-        d.tick_timers(0); // the frame the open starts on
-        assert_eq!(d.tick_timers(STEP_MS + 5).next_wake_ms, Some(STEP_MS - 5), "five into a step, ask for the rest");
-        assert_eq!(d.tick_timers(STEP_MS * 2).next_wake_ms, Some(STEP_MS), "on a boundary, ask for a whole step");
-    }
-
     #[test]
     fn a_gesture_during_a_slide_is_ignored() {
         let mut w = World::riding();
@@ -1404,7 +1209,7 @@ mod tests {
         assert_eq!((grow[0], grow[4]), (root_h, EDITOR_H));
         assert!(grow.windows(2).all(|p| p[0] <= p[1]), "monotonic growth: {grow:?}");
 
-        d.settle(1_000 + SLIDE_MS);
+        d.tick_timers(1_000 + SLIDE_MS); // the frame the grow settles on
         d.slide_to(Page::Root, 2_000);
         let shrink: heapless::Vec<i32, 8> =
             [0, 45, 90, 135, SLIDE_MS].iter().map(|dt| d.sheet_height(2_000 + dt)).collect();
@@ -1543,8 +1348,8 @@ mod tests {
     /// because it uncovers a band the taller sheet held.
     ///
     /// What ends the obligation is the draw, not the next tick. The debt survives every tick until
-    /// [`clear_base_debt`](ContextDrawerScreen::clear_base_debt), and no tick after that re-arms
-    /// it, so the swap costs exactly one map draw.
+    /// [`clear_base_debt`](SheetMotion::clear_base_debt), and no tick after that re-arms it, so the
+    /// swap costs exactly one map draw.
     #[test]
     fn the_display_row_swaps_the_sheet_and_back_lands_on_the_map() {
         let mut w = World::riding();
@@ -1558,86 +1363,17 @@ mod tests {
         // reports no further wake — a second open animation would show up as both.
         let target = Page::Root.height(&MAP_DISPLAY);
         let first = swapped.tick_timers(w.now_ms);
-        assert_eq!(swapped.visible_height(w.now_ms, target), target, "the swapped-in sheet is already landed");
+        let visible = swapped.motion.visible_height(w.now_ms, MOTION, target);
+        assert_eq!(visible, target, "the swapped-in sheet is already landed");
         assert_eq!(first.next_wake_ms, None, "…so it asks for no open steps");
-        assert!(swapped.needs_base(), "its first frame uncovers the band the taller sheet held");
+        assert!(swapped.motion.needs_base(), "its first frame uncovers the band the taller sheet held");
         swapped.tick_timers(w.now_ms + 16);
-        assert!(swapped.needs_base(), "…and a tick that drew no frame does not put the band back");
-        swapped.clear_base_debt();
+        assert!(swapped.motion.needs_base(), "…and a tick that drew no frame does not put the band back");
+        swapped.motion.clear_base_debt();
         swapped.tick_timers(w.now_ms + 32);
-        assert!(!swapped.needs_base(), "the draw ends it, and nothing re-arms it: the swap costs exactly one");
+        assert!(!swapped.motion.needs_base(), "the draw ends it, and nothing re-arms it: the swap costs exactly one");
 
         assert!(matches!(w.press(&mut swapped, Gesture::Back), Transition::Pop), "Back closes onto the Map");
-    }
-
-    /// A gesture landing as the slide lands does not take the base draw with it. Input runs before
-    /// the tick in one pass, so a gesture that retired the slide itself would leave the tick no
-    /// edge to read.
-    ///
-    /// The sheet is the one-row `ROUTE_PLAN`, where the stealing gesture moves no render key at
-    /// all, so a lost edge shows as two pages left half-slid. Every frame of the slide is modelled
-    /// as it really runs: it draws the base, so it discharges the debt, and the next tick has to
-    /// arm it again.
-    #[test]
-    fn a_press_as_the_slide_lands_does_not_spend_the_base_draw_it_owes() {
-        let mut w = World::riding();
-        let mut d = route_plan_drawer();
-        d.tick_timers(w.now_ms.saturating_sub(OPEN_MS)); // the open's origin, so the sheet is landed
-        w.press(&mut d, Gesture::Press); // the bike-type editor; `press` steps the clock past it
-        assert_eq!(d.page, Page::Editor);
-
-        // Back out: the sheet shrinks, so this slide gives rows back as well as travelling through
-        // the margin.
-        let start = w.now_ms;
-        d.handle(
-            Gesture::Back,
-            &mut Ctx {
-                recorder: &mut w.recorder,
-                navigator: &mut w.navigator,
-
-                nav_profiles: &w.nav_profiles,
-                now_ms: start,
-                ..test_ctx(&mut w.state, &mut w.activity, &mut w.settings)
-            },
-        );
-        for ms in start..start + SLIDE_MS {
-            assert!(d.tick_timers(ms).changed, "a frame of the slide is a frame the host renders");
-            assert!(d.needs_base(), "…and it is drawn over the base, at {ms} ms");
-            d.clear_base_debt();
-        }
-
-        // The settling frame, with a gesture landing on exactly it.
-        let landed = start + SLIDE_MS;
-        d.handle(
-            Gesture::Step(1),
-            &mut Ctx {
-                recorder: &mut w.recorder,
-                navigator: &mut w.navigator,
-
-                nav_profiles: &w.nav_profiles,
-                now_ms: landed,
-                ..test_ctx(&mut w.state, &mut w.activity, &mut w.settings)
-            },
-        );
-        assert_eq!(d.selected, 0, "a one-row table: the gesture moves nothing the key can see");
-        let tick = d.tick_timers(landed);
-        assert!(d.needs_base(), "the settling frame still owes the margin the two pages travelled through");
-        assert!(tick.changed, "…and is still asked for, so the pages do not stay half-slid");
-    }
-
-    #[test]
-    fn the_base_draw_a_sheet_owes_outlives_a_pass_that_drew_no_frame() {
-        let mut swapped = ContextDrawerScreen::swapped_in(&MAP_DISPLAY, 1_000);
-        assert!(swapped.needs_base(), "the shorter sheet owes the band the taller one held");
-
-        swapped.tick_timers(1_000);
-        swapped.tick_timers(1_016);
-        assert!(swapped.needs_base(), "two passes that rendered nothing put no pixel back");
-
-        swapped.clear_base_debt();
-        assert!(!swapped.needs_base(), "the draw is what pays it");
-        swapped.tick_timers(1_032);
-        assert!(!swapped.needs_base(), "…and a settled sheet does not ask a second time");
     }
 
     /// The map's table is the ride's actions plus one door. The shared rows must stay
