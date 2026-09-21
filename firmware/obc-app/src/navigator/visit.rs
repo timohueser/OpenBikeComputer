@@ -198,7 +198,6 @@ impl NavigatorMachine {
 }
 
 impl crate::App {
-    /// Current eligibility from Navigator's matcher and a fresh position, for frozen reviews.
     /// Stage geometry from the exact published candidate after constructing its ReviewReady
     /// outcome. The buffer is shared with ordinary route overviews and remains hidden until ACK.
     pub fn set_assistant_preview_shape(

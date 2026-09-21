@@ -1,98 +1,50 @@
-//! The **per-category "next ahead" cache** the `Next: <category>` stat fields read (epic #946, U5).
+//! The per-category "next ahead" cache the `Next: <category>` stat fields read.
 //!
-//! A stat tile is a glance, not a browse: the six [`NextWater`](crate::StatField)-style fields each
-//! answer one question — *how far to the next water / campsite / … on my route?* — from the same two
-//! sources the [Up-ahead timeline](crate::screen::WhatsNextScreen) merges. The **waypoint** half is
-//! resident RAM and needs no cache at all (the tile walks the table every draw, ~32 entries, zero
-//! I/O). The **map-POI** half is an SD query, and this is the piece that keeps it off the frame
-//! path.
+//! The waypoint half of a `Next:` tile is resident RAM and needs no cache. The map-POI half is an SD
+//! query, and this is what keeps it off the frame path: the tile is fed one distilled
+//! `(dist_along_m, name)` per category and re-derives the distance from live progress every frame.
+//! The distillation is harvested out of the App-owned
+//! [`CorridorScratch`](crate::corridor::CorridorScratch), which is still the only thing that ever
+//! touches the card.
 //!
-//! # Why a cache and not a snapshot
+//! Each refresh arms the scratch for a single category ([`PoiCategorySet::only`]). That is a
+//! correctness requirement, not an optimisation: the corridor query caps at
+//! [`MAX_CORRIDOR_RESULTS`](obc_reader::MAX_CORRIDOR_RESULTS) entries across the whole filter, so a
+//! union query could return sixteen nearby fountains and never mention the pharmacy 12 km on.
+//! Filtered to one category, the nearest of it is entry `0` by construction.
 //!
-//! The Up-ahead list needs *membership and order* frozen (rows must not shift under the cursor —
-//! the #115/#425 contract). A stat tile needs neither: it shows exactly one entry, and the rider
-//! wants its distance to **count down** as they ride. So the tile is fed a distilled fact per
-//! category — `(dist_along_m, name)` — and re-derives the distance from live progress every frame.
-//! The snapshot machinery stays underneath, unchanged: the distillation is harvested out of the
-//! App-owned [`CorridorScratch`](crate::corridor::CorridorScratch), which is still the only thing
-//! that ever touches the card.
-//!
-//! # The refresh policy (locked in #951)
-//!
-//! A category's cached entry is re-taken only when
-//!
-//! 1. **nothing is cached yet** for it (first visit to the stats page with that tile placed),
-//! 2. matched progress has advanced [`REFRESH_STEP_M`] since the take that filled it,
-//! 3. matched progress has fallen more than [`REWIND_TOLERANCE_M`] **behind** that take — a
-//!    snapshot is only an answer for the axis *ahead of its anchor*, so progress moving back below
-//!    it leaves the cache blind to everything in between, or
-//! 4. **the cached entry was passed** (progress moved past its `dist_along_m`) — the one case where
-//!    a stale answer is actively wrong.
-//!
-//! and only for categories a `Next:` tile is actually **placed** on the grid, and only while the
-//! Statistics screen is the one being drawn. Everything else costs nothing: a rider with no such
-//! tile never runs the query, and neither does a rider on the map, in a menu, or with no route.
-//!
-//! # One category per query
-//!
-//! Each refresh arms the corridor scratch for a **single** category
-//! ([`PoiCategorySet::only`]). That is not an optimization, it is a correctness requirement: the
-//! corridor query caps at [`MAX_CORRIDOR_RESULTS`](obc_reader::MAX_CORRIDOR_RESULTS) entries across
-//! the whole filter, so a union query could return sixteen nearby fountains and never mention the
-//! pharmacy 12 km on — and the pharmacy tile would lie. Filtered to one category the nearest of it
-//! is entry `0` by construction. With `k` tiles placed the scheduler round-robins, so each category
-//! refreshes every `k` × [`REFRESH_STEP_M`] of riding at worst, and no category can starve.
-//!
-//! # Cost
-//!
-//! One corridor query per refresh, i.e. per category per [`REFRESH_STEP_M`] of matched progress
-//! while the Statistics screen is up — 12 queries/km with all six tiles placed, 2/km with the
-//! typical one. The reader-build seam follows the same one-shot rule as everything else here: the
-//! request is what [`pending`](crate::corridor::CorridorScratch::pending) reports, so the host
-//! builds the `Reader` **only until the snapshot lands** and then stops. Off-route, with no fix, or
-//! with the query failing, the tile keeps showing the last cached entry (and `--` once nothing is
-//! cached) — it never blocks, spins, or re-queries per frame.
+//! Refreshes run only for categories a tile is placed for, and only while the Statistics screen is
+//! drawn. Off-route, with no fix, or with the query failing, the tile keeps the last cached entry.
 
 use obc_reader::{CorridorPoi, PoiCategory, PoiCategorySet};
 
 use crate::corridor::CorridorKey;
 
-/// How far the rider must ride before a cached category is re-taken. 500 m at typical touring speed
-/// is ~1.5 min, which is well inside the resolution a `2.4km` readout even shows — while being far
-/// enough that the query runs a handful of times per hour, not per frame.
+/// How far the rider must ride before a cached category is re-taken. 500 m is about 1.5 min at
+/// touring speed, well inside the resolution a `2.4km` readout even shows.
 pub const REFRESH_STEP_M: u32 = 500;
 
-/// How far matched progress may drift **backwards** below a take's anchor before the slot is
-/// re-taken.
+/// How far matched progress may drift backwards below a take's anchor before the slot is re-taken.
 ///
-/// Backward movement is not symmetric with riding on: the corridor query only returns entries
-/// *ahead of its anchor*, so once progress falls below that anchor the cache is blind to whatever
-/// sits in between — and a genuine rewind (a route re-upload or a second ride on the same route
-/// both zero `progress_m` while the route index stays put) would otherwise keep an old,
-/// far-along answer, or a `None`, for kilometres. So a rewind must re-take.
-///
-/// It cannot re-take on *any* backward step, though: the route matcher searches
-/// `BACK_SEGS` segments behind the cursor (`obc_route::matcher`), so ordinary re-matching wobbles
-/// progress back a few metres on GPS noise, and a zero-tolerance rule would burn a card query per
-/// wobble. 100 m is comfortably past that slack (three route segments of a decimated OBCR are well
-/// under it) while being a fifth of the forward step, so the blind window a tolerated rewind opens
-/// stays far smaller than the one riding on inside [`REFRESH_STEP_M`] already accepts.
+/// The corridor query only returns entries ahead of its anchor, so once progress falls below that
+/// anchor the cache is blind to whatever sits in between, and a genuine rewind (a route re-upload,
+/// or a second ride on the same route) must re-take. It cannot re-take on any backward step: the
+/// route matcher searches a few segments behind the cursor, so ordinary re-matching wobbles
+/// progress back a few metres on GPS noise, and a zero tolerance would burn a card query per wobble.
 pub const REWIND_TOLERANCE_M: u32 = 100;
 
-/// Longest cached POI name — the [`StatCell`](crate::stat_fields::StatCell) caption's capacity, so
-/// the tile can show whatever the cache holds and the tile drawer does the ellipsizing.
+/// Longest cached POI name: the [`StatCell`](crate::stat_fields::StatCell) caption's capacity, so
+/// the tile drawer does the ellipsizing.
 pub const NEXT_NAME_CAP: usize = 24;
 
-/// The number of POI categories the cache carries one slot for.
 const CATEGORIES: usize = PoiCategory::ALL.len();
 
 /// One cached "next map POI of this category ahead": where it sits on the route axis, and its row
-/// name (already resolved through the POI browser's subtype fallback, so an unnamed POI still reads
-/// as something).
+/// name, already resolved through the POI browser's subtype fallback.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NextPoi {
-    /// Along-route position, meters from the route start — the same axis waypoints use, so the tile
-    /// re-derives distance-to-go from live progress.
+    /// Along-route position in metres, the same axis waypoints use, so the tile re-derives
+    /// distance-to-go from live progress.
     pub dist_along_m: u32,
     /// The row name: the POI's own, or its subtype label.
     pub name: heapless::String<NEXT_NAME_CAP>,
@@ -101,7 +53,7 @@ pub struct NextPoi {
 /// One category's cache line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Slot {
-    /// The nearest map POI of this category ahead at the last take — `None` means "queried, nothing
+    /// The nearest map POI of this category ahead at the last take. `None` means "queried, nothing
     /// in the corridor", which is a real answer and not the same as never queried.
     poi: Option<NextPoi>,
     /// Progress the last take was anchored at; `None` until the first one lands.
@@ -112,19 +64,17 @@ impl Slot {
     const EMPTY: Slot = Slot { poi: None, taken_at_m: None };
 }
 
-/// The App-owned per-category cache + its refresh scheduler. Held once next to the corridor scratch
-/// (never inside a [`Screen`](crate::screen::Screen) — see [`CorridorScratch`]'s #425 note); a
+/// The App-owned per-category cache and its refresh scheduler. Held once next to the corridor
+/// scratch, never inside a [`Screen`](crate::screen::Screen); a
 /// [`Readout`](crate::stat_fields::Readout) borrows it read-only.
-///
-/// [`CorridorScratch`]: crate::corridor::CorridorScratch
 #[derive(Debug)]
 pub struct NextAhead {
     slots: [Slot; CATEGORIES],
     /// The refresh currently asked for: the corridor key (a single-category filter) and the slot it
     /// will fill. `None` when nothing needs re-taking — the normal, quiet state.
     want: Option<(usize, CorridorKey)>,
-    /// Round-robin cursor over the categories, so a busy grid refreshes them in turn rather than
-    /// starving the last one.
+    /// Round-robin cursor, so a busy grid refreshes the categories in turn rather than starving the
+    /// last one.
     turn: usize,
     /// The route the cached entries belong to. A different route (or none) empties the cache —
     /// along-route distances from another route are meaningless, not merely stale.
@@ -132,18 +82,14 @@ pub struct NextAhead {
 }
 
 impl NextAhead {
-    /// An empty cache — the `'static` stand-in a test or a non-`App` host hands a
-    /// [`Readout`](crate::stat_fields::Readout) when it has no cache of its own (the tiles then read
-    /// the resident waypoint table only).
+    /// An empty cache: the `'static` stand-in a test or a non-`App` host hands a
+    /// [`Readout`](crate::stat_fields::Readout) when it has no cache of its own.
     pub const EMPTY: NextAhead = NextAhead::new();
 
     pub const fn new() -> Self {
         NextAhead { slots: [Slot::EMPTY; CATEGORIES], want: None, turn: 0, route: None }
     }
 
-    /// The cached nearest map POI of `cat`, if one has been taken. The caller compares it against
-    /// the resident waypoint table and against live progress — this is a *fact about the route*,
-    /// not a rendered answer.
     #[inline]
     pub fn poi(&self, cat: PoiCategory) -> Option<&NextPoi> {
         self.slots[slot_of(cat)].poi.as_ref()
@@ -157,27 +103,19 @@ impl NextAhead {
         self.want.map(|(_, key)| key)
     }
 
-    /// The same request as the Statistics grid's render key names it (#1538): the category being
-    /// re-taken, and the progress the take is anchored at. `None` is the settled state.
-    ///
-    /// The key names the request rather than the six cached entries because a landing is distilled
-    /// inside the map render, ahead of the draw — the frame that fills a slot is the frame that
-    /// draws it. The **arming** is the half a pass-boundary comparison can see, and must: the query
-    /// runs only during a render, so a request armed on an otherwise quiet pass would never run.
+    /// The same request as the Statistics grid's render key names it: the category being re-taken,
+    /// and the progress the take is anchored at. The key names the request rather than the cached
+    /// entries because the query runs only during a render, so a request armed on an otherwise quiet
+    /// pass would never run.
     #[inline]
     pub(crate) fn pending_refresh(&self) -> Option<(PoiCategory, u32)> {
         self.want.map(|(i, key)| (PoiCategory::ALL[i], key.anchor_m))
     }
 
-    /// Drop every cached entry because the **geometry under the current route index changed** —
-    /// the same-index/new-bytes replace [`reconcile`](Self::reconcile) cannot see, because it keys
-    /// identity on the catalog index alone.
-    ///
-    /// Called from `App`'s `drop_route_derived_state` seam, alongside the matcher / profile /
-    /// climb / waypoint caches that are invalidated for exactly the same reason: an along-route
-    /// distance measured on the old bytes names a different place on the new ones. The route key
-    /// itself is left alone (the index really is unchanged), so the next
-    /// [`reconcile`](Self::reconcile) simply finds every placed category stale and re-takes it.
+    /// Drop every cached entry because the geometry under the current route index changed, which
+    /// [`reconcile`](Self::reconcile) cannot see: it keys identity on the catalog index alone. An
+    /// along-route distance measured on the old bytes names a different place on the new ones. The
+    /// route key itself is left alone, so the next reconcile finds every placed category stale.
     pub(crate) fn invalidate(&mut self) {
         self.clear();
     }
@@ -190,18 +128,13 @@ impl NextAhead {
         self.turn = 0;
     }
 
-    /// Re-decide what (if anything) needs re-taking. Called once per pass from
-    /// [`advance_animations`](crate::App::advance_animations), i.e. from the one hook every host
-    /// runs — never from a draw.
+    /// Re-decide what, if anything, needs re-taking. Called once per pass from
+    /// [`advance_animations`](crate::App::advance_animations), never from a draw. `placed` is the
+    /// categories with a `Next:` tile on the grid and `shown` whether the Statistics screen is the
+    /// one being drawn, so the query is scoped to where the answer is actually read.
     ///
-    /// * `placed` — the categories with a `Next:` tile on the grid. Empty ⇒ nothing to keep warm.
-    /// * `shown` — whether the Statistics screen is the one being drawn. The tiles are invisible
-    ///   anywhere else, so the query is scoped to where the answer is actually read.
-    /// * `active_route` / `progress_m` — the route the cache is keyed to and matched progress.
-    ///
-    /// An in-flight request is **kept as-is** while it is still wanted: re-deciding its anchor every
-    /// pass would re-key the scratch every pass, and re-keying is what re-queries (the #115 rule
-    /// the corridor key exists to enforce).
+    /// An in-flight request is kept as-is while it is still wanted: re-deciding its anchor every
+    /// pass would re-key the scratch every pass, and re-keying is what re-queries.
     pub(crate) fn reconcile(
         &mut self,
         placed: PoiCategorySet,
@@ -228,16 +161,15 @@ impl NextAhead {
         self.want = self.pick(placed, progress_m);
     }
 
-    /// Whether slot `i` needs re-taking at `progress_m` — the four locked triggers.
     fn is_stale(&self, i: usize, progress_m: u32) -> bool {
         let slot = &self.slots[i];
         match slot.taken_at_m {
-            None => true, // (a) nothing cached yet
+            None => true, // nothing cached yet
             Some(at) => {
-                progress_m.saturating_sub(at) >= REFRESH_STEP_M              // (b) rode on
-                    || at.saturating_sub(progress_m) > REWIND_TOLERANCE_M    // (c) rewound past the anchor
+                progress_m.saturating_sub(at) >= REFRESH_STEP_M              // rode on
+                    || at.saturating_sub(progress_m) > REWIND_TOLERANCE_M    // rewound past the anchor
                     || slot.poi.as_ref().is_some_and(|p| progress_m > p.dist_along_m)
-                // (d) passed it
+                // passed it
             }
         }
     }
@@ -266,12 +198,12 @@ impl NextAhead {
 
     /// Distil a landed corridor snapshot into the slot it was asked for. A no-op unless `key` is
     /// exactly the request in flight, so a snapshot taken for the Up-ahead list can never overwrite
-    /// a cache line with a differently-filtered (or differently-anchored) answer.
+    /// a cache line with a differently-filtered or differently-anchored answer.
     ///
     /// `entries` is ascending by along-route distance and filtered to the one category, so its first
-    /// element *is* the nearest of that category ahead of the anchor. An empty snapshot is a real
-    /// answer ("nothing of this kind on the route ahead") and settles the slot just the same — which
-    /// is what stops the query re-running every frame on a map with no pharmacies.
+    /// element is the nearest of that category ahead of the anchor. An empty snapshot is a real
+    /// answer and settles the slot just the same, which is what stops the query re-running on a map
+    /// with no pharmacies.
     pub(crate) fn harvest(&mut self, key: CorridorKey, entries: &[CorridorPoi]) {
         let Some((i, want)) = self.want else { return };
         if want != key {
@@ -299,7 +231,7 @@ impl Default for NextAhead {
     }
 }
 
-/// The cache slot index of `cat` — its position in [`PoiCategory::ALL`], which is also the
+/// The cache slot index of `cat`: its position in [`PoiCategory::ALL`], which is also the
 /// round-robin order.
 #[inline]
 fn slot_of(cat: PoiCategory) -> usize {
@@ -312,7 +244,6 @@ mod tests {
     use super::*;
     use obc_reader::Poi;
 
-    /// A corridor snapshot entry at `dist_along_m` with `name`.
     fn poi(dist_along_m: u32, name: &str, subtype: u8) -> CorridorPoi {
         let mut n = heapless::String::new();
         n.push_str(name).unwrap();
@@ -333,12 +264,11 @@ mod tests {
     }
 
     const WATER: u8 = 1;
-    /// Water + bike shop — the two-tile grid most of these tests schedule against.
+    /// Water + bike shop, the two-tile grid most of these tests schedule against.
     fn two() -> PoiCategorySet {
         PoiCategorySet::only(PoiCategory::Water).with(PoiCategory::BikeShop)
     }
 
-    /// Every category maps to its own slot, in `PoiCategory::ALL` order.
     #[test]
     fn slots_follow_the_canonical_category_order() {
         for (i, cat) in PoiCategory::ALL.iter().enumerate() {
@@ -346,8 +276,8 @@ mod tests {
         }
     }
 
-    /// The quiet states: nothing placed, no route, or the stats screen not up ⇒ no request at all,
-    /// so `reconcile_corridor` never arms the scratch and the host never builds a `Reader`.
+    /// Nothing placed, no route, or the stats screen not up means no request at all, so the host
+    /// never builds a `Reader`.
     #[test]
     fn nothing_placed_or_shown_asks_for_nothing() {
         let mut c = NextAhead::new();
@@ -359,8 +289,8 @@ mod tests {
         assert_eq!(c.request(), None, "no route ⇒ nothing is 'ahead'");
     }
 
-    /// A placed category with nothing cached asks for a **single-category** snapshot anchored at
-    /// live progress — the cap-correctness rule (a union query could bury a rare category).
+    /// A placed category with nothing cached asks for a single-category snapshot anchored at live
+    /// progress: a union query could bury a rare category under the result cap.
     #[test]
     fn a_fresh_category_asks_for_a_single_category_snapshot() {
         let mut c = NextAhead::new();
@@ -376,9 +306,8 @@ mod tests {
         );
     }
 
-    /// The whole refresh policy in one ride: a take settles the slot, riding on inside
-    /// `REFRESH_STEP_M` re-queries **nothing**, and crossing it re-arms — the "never per frame"
-    /// guarantee, asserted as a query count.
+    /// The whole refresh policy in one ride, with the "never per frame" guarantee asserted as a
+    /// query count.
     #[test]
     fn a_settled_category_does_not_re_query_until_the_progress_step() {
         let mut c = NextAhead::new();
@@ -411,8 +340,8 @@ mod tests {
         assert_eq!(queries, 2, "…and then goes quiet again");
     }
 
-    /// Trigger (c): riding past the cached entry re-arms immediately, without waiting for the
-    /// progress step — the one case where a stale answer is actively wrong.
+    /// Riding past the cached entry re-arms immediately: it is the one case where a stale answer is
+    /// actively wrong.
     #[test]
     fn passing_the_cached_entry_re_arms_at_once() {
         let mut c = NextAhead::new();
@@ -435,8 +364,8 @@ mod tests {
         );
     }
 
-    /// An **empty** snapshot is an answer, not a failure: the slot settles on "nothing of this kind"
-    /// and stops asking, instead of re-running the query every frame on a map without that category.
+    /// An empty snapshot is an answer, not a failure: the slot settles on "nothing of this kind"
+    /// instead of re-running the query every frame.
     #[test]
     fn an_empty_snapshot_settles_the_slot() {
         let mut c = NextAhead::new();
@@ -448,8 +377,8 @@ mod tests {
         assert_eq!(c.request(), None, "queried-and-empty is settled, not pending");
     }
 
-    /// An in-flight request keeps its key across passes — progress advancing under it must not
-    /// re-anchor (which would re-key the scratch and re-run the query every single frame).
+    /// An in-flight request keeps its key across passes. Re-anchoring would re-key the scratch and
+    /// re-run the query every frame.
     #[test]
     fn an_in_flight_request_keeps_its_anchor() {
         let mut c = NextAhead::new();
@@ -462,7 +391,6 @@ mod tests {
         }
     }
 
-    /// Two placed tiles are served in turn, one query per pass, and neither starves.
     #[test]
     fn the_scheduler_round_robins_placed_categories() {
         let mut c = NextAhead::new();
@@ -478,8 +406,8 @@ mod tests {
         assert_eq!(c.request(), None, "both settled ⇒ the reader seam goes quiet");
     }
 
-    /// A snapshot the cache didn't ask for never lands in it — the Up-ahead list re-keying the
-    /// shared scratch mid-refresh must not write a foreign answer into a tile.
+    /// The Up-ahead list re-keying the shared scratch mid-refresh must not write a foreign answer
+    /// into a tile.
     #[test]
     fn a_foreign_snapshot_is_ignored() {
         let mut c = NextAhead::new();
@@ -509,7 +437,7 @@ mod tests {
         assert_eq!(c.poi(PoiCategory::Water), None);
     }
 
-    /// A route swap empties the cache: along-route distances from another route aren't stale, they
+    /// A route swap empties the cache: along-route distances from another route are not stale, they
     /// are meaningless.
     #[test]
     fn a_route_change_empties_the_cache() {
@@ -524,11 +452,9 @@ mod tests {
         assert_eq!(c.request(), None, "and a route-less ride asks for nothing");
     }
 
-    /// Trigger (c): progress **rewinding** far below the take's anchor re-arms. The reachable case
-    /// is a route re-upload or a second ride on the same route — both zero `progress_m` while the
-    /// catalog index stays put, so the route-identity check sees nothing change. A snapshot only
-    /// answers for the axis ahead of its anchor, so keeping it would leave the tile blind (here:
-    /// showing `--`) all the way back up to the old anchor.
+    /// The reachable rewind is a route re-upload or a second ride on the same route: both zero
+    /// `progress_m` while the catalog index stays put, so the route-identity check sees nothing
+    /// change. A snapshot only answers for the axis ahead of its anchor.
     #[test]
     fn rewinding_past_the_anchor_re_arms() {
         let mut c = NextAhead::new();
@@ -570,8 +496,8 @@ mod tests {
         assert!(c.request().is_some(), "one metre past the tolerance is a real rewind");
     }
 
-    /// `invalidate` is the seam a **same-index/new-bytes** replace needs: the route key doesn't
-    /// move, so nothing else in here would notice, and the next reconcile must re-take.
+    /// `invalidate` is the seam a same-index, new-bytes replace needs: the route key does not move,
+    /// so nothing else in here would notice.
     #[test]
     fn invalidate_drops_the_cache_under_an_unchanged_route_key() {
         let mut c = NextAhead::new();
@@ -594,7 +520,6 @@ mod tests {
         );
     }
 
-    /// An unnamed POI caches its subtype label, so a tile never shows a blank caption.
     #[test]
     fn an_unnamed_poi_caches_its_subtype_label() {
         let mut c = NextAhead::new();
