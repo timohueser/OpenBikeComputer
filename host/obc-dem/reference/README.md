@@ -98,6 +98,7 @@ place while any earlier pixel survives, whoever wrote it.
 
 ```sh
 python3 ingest.py ingest ch --bbox 8.30,46.75,8.60,46.95 --archive ref/ --work /tmp/ch
+python3 ingest.py wizard se --bbox 18.48,67.89,18.51,67.91 --archive ref/
 python3 ingest.py index  --archive ref/
 python3 ingest.py check  --archive ref/
 python3 ingest.py publish --archive ref/
@@ -110,7 +111,8 @@ It needs `rasterio`, `pyproj` and `numpy` (`tools/requirements-bake.txt`, or
 
 | subcommand | what it does |
 | --- | --- |
-| `ingest <key>` | The source adapter obtains rasters for the box; the shared tail writes tiles. `--input <dir>` takes hand-fetched rasters instead of the service. `--work <dir>` is where fetched rasters are cached, so a second run of the same box downloads nothing. |
+| `ingest <key>` | The source adapter obtains rasters for the box; the shared tail writes tiles. `--input <dir>` takes hand-fetched files instead of the service. `--work <dir>` is where fetched rasters are cached, so a second run of the same box downloads nothing. |
+| `wizard <key>` | Walks the account and download steps of a source behind a login, one step at a time, checks what landed, and then runs `ingest <key> --input <dir>`. It automates no part of a login. |
 | `index` | Rebuilds `index.json` from the manifests in `sources/`. |
 | `check` | Opens every tile and holds it against the contract — size, dtype, nodata, CRS, band count, `AREA_OR_POINT`, deflate, 256 × 256 blocks, little-endian, the exact transform, the pixel digest and the contributors entry — and refuses a tile the index does not name. |
 | `publish` | `rclone copy` of the archive to `<bucket>/reference/v1/`: tiles and manifests first, then the index, which goes up as the merge of the index already on R2 with this archive's. Additive and idempotent: a publish never deletes. |
@@ -129,7 +131,15 @@ registry of sources.
 | `archive.py` | Tiles, the priority merge, the manifests, `index.json`, and `tile_problems`, which is the contract as code. |
 | `publish.py` | The rclone remote and the plans `publish` and `mirror` run. |
 | `sources/` | One module per country, and one row per product. `base.py` is what an adapter is, and `__init__.py` is the registry the CLI reads. The five publication models are `protocols.py` (a service that answers a box: ArcGIS, WCS 1.0.0, 1.1.1 and 2.0.1), `ch.py` (STAC items), `stac.py` (a STAC search), `grid.py` (tiles named on a national kilometre grid) and `cog.py` (a window out of a remote COG too large to download). |
+| `wizard.py` | The steps of a portal behind a login, and the check on what it delivered. |
 | `cli.py` | The subcommands, and nothing else. |
+
+A credential is one field on a row and one seam in the tool. `Credential` in `sources/base.py`
+reads it out of the environment — never out of argv, which every process on the box can read —
+and `require_credential` refuses before a request is made, naming the variable, `--input` and
+the wizard. A portal reads its key from the query or from an `Authorization` header, and those
+are the two shapes `Credential` has: the request a keyed WCS sends is the request the keyless
+one sends plus one parameter.
 
 Every request in the registry goes through `with_retry` in `sources/base.py`, so one rule covers
 all of them: a dropped connection, a 429 and a 5xx are retried three times; every other 4xx is the
@@ -167,17 +177,17 @@ Then the priority rule decides which pixels the tile keeps.
 product first. A test holds this block against the constant, so the two cannot drift:
 
 ```priority
-nl, it-tn,
+dk, nl, it-tn,
 de-nw, de-he, de-ni, de-by, de-sn, de-th, de-mv, de-st, de-bw,
-fr, at, no, uk, us, ca, nz,
-ch, it-bz, es
+fr, at, no, uk, se, us, ca, nz,
+ch, fi, it-bz, es, au
 ```
 
-The bands are the product's step and how much of it a service will part with: half a metre
-first, then the metre-grade national and state products, then two to two and a half metres,
-then five. `de-bw` is last of the German states because its service answers whole metres.
-`it-tn` and `nz` are rows without an adapter, and they are listed so the ranking does not move
-when one lands.
+The bands are the product's step and how much of it a service will part with: under half a
+metre first, then the metre-grade national and state products, then two to two and a half
+metres, then five. `de-bw` is last of the German states because its service answers whole
+metres. `au` is last of all: an ELVIS order is 1 m where a survey covers it and 5 m where
+none does, and one row cannot say which, so it never displaces a source whose step is known.
 
 The rule is per pixel, because coverage stops at borders and survey edges: a better source over one
 corner of a tile must not take the rest of the tile away from the source that does cover it.
@@ -240,8 +250,8 @@ later pass does not start from nothing.
 
 Alpine Italy was the border-ridge gap: a ridge along the Swiss or Austrian border was lifted on one
 side only, and that step shows in contours and in a profile. `it-bz` closes the Ortler and the
-Dolomites. Trentino, Lombardy, Piedmont and Aosta Valley are still open, and the table says what
-each one answered.
+Dolomites, and `it-tn` the Brenta and the Adamello. Lombardy, Piedmont and Aosta Valley are still
+open, and the table says what each one answered.
 
 ### Open services, no key
 
@@ -257,6 +267,8 @@ each one answered.
 | `at` | Austria | 1 m | ALS DTM (BEV) | CC BY 4.0 | `Bundesamt für Eich- und Vermessungswesen (BEV)` | remote COG window |
 | `ca` | Canada | 1 m | HRDEM DTM (NRCan) | OGL Canada 2.0 | `Contains information licensed under the Open Government Licence – Canada` | WCS 1.1.1 |
 | `it-bz` | Italy, South Tyrol | 2.5 m | DTM (Provincia autonoma di Bolzano) | CC0 1.0 | `Autonome Provinz Bozen – Provincia autonoma di Bolzano` | WCS 2.0.1 |
+| `it-tn` | Italy, Trentino | 0.5 m | DTM (Provincia autonoma di Trento) | CC BY 4.0 | `Provincia autonoma di Trento` | 0.5 km grid of ESRI ASCII |
+| `nz` | New Zealand | 1 m | LiDAR DEM (LINZ) | CC BY 4.0 | `Sourced from LINZ, CC BY 4.0` | remote COG window, NZTopo50 sheets |
 | `de-nw` | Germany, North Rhine-Westphalia | 1 m | DGM1 | dl-de/zero-2-0 | `© Geobasis NRW` | WCS 2.0.1 |
 | `de-he` | Germany, Hesse | 1 m | DGM1 | dl-de/zero-2-0 | `© HLBG Hessen` | WCS 2.0.1 |
 | `de-bw` | Germany, Baden-Württemberg | 1 m | DGM1 | dl-de/by-2-0 | `Datenquelle: LGL, www.lgl-bw.de, dl-de/by-2-0` | WCS 2.0.1 |
@@ -275,16 +287,31 @@ Germany publishes elevation per state, each on its own service, so `de-*` is a f
 not one adapter. Eight of the sixteen states answer a keyless WCS and eight are a download; where
 the protocol is the same the code is the same.
 
-### Rows without an adapter
+### Two indexes that turned out to be arithmetic
 
-These are registered so their licence, attribution and datum are recorded and `index.json` can
-name them. `ingest <key>` refuses and says why; `ingest <key> --input <dir>` takes the rasters once
-they are on disk.
+`it-tn` and `nz` were rows without an adapter, each because its index looked like a new kind.
+Neither is:
 
-| key | country | step | product | why there is no adapter |
-| --- | --- | --- | --- | --- |
-| `nz` | New Zealand | 1 m | LiDAR DEM (LINZ) | The open S3 tiles are named after NZTopo50 map sheets and the static STAC carries no box, so the sheet a bbox needs cannot be worked out yet. LERC-compressed COGs; GDAL reads them. |
-| `it-tn` | Italy, Trentino | 0.5 m | DTM (Provincia autonoma di Trento) | No working WCS. The tiles come out of an asynchronous merge service: a WFS index of 25 201 half-kilometre tiles, a POST that starts a job, a poll, and a zip of nested zips of ESRI ASCII grids. |
+- **Trentino** reaches its DTM through an asynchronous merge service: a WFS index of 25 201
+  half-kilometre tiles, a POST that starts a job, a poll and a zip of zips. The same tiles are
+  published as plain files under
+  `siatservices.provincia.tn.it/stemdata/2014_lidar_dtm_asc/`, keyless, one ESRI ASCII grid of
+  1000 × 1000 posts per square, and the WFS index says the name is the square's corner in
+  hundreds of metres: the square at EPSG:25832 (643 500, 5 112 000) is `5h643551120_DTM.asc`.
+  So the adapter is a grid of names, the same shape a German state's is, and the merge service
+  is not used. A square the survey did not reach answers 404, which is a coverage edge.
+- **New Zealand** names its tiles after NZTopo50 map sheets, and the static STAC carries 424
+  item links with no box in the collection. NZTopo50 is a regular grid in NZTM2000, 24 km east
+  by 36 km north: sheet `AS21` runs from (1 492 000, 6 198 000) and `BX15`, the sheet Aoraki
+  stands on, from (1 348 000, 5 154 000). `sources/nz.py` holds those constants, so the sheet a
+  box needs is arithmetic and the LINZ Data Service key that would fetch the sheet outlines is
+  not needed. A wrong constant names a sheet whose window misses the box, which refuses rather
+  than writing the wrong heights, and a test holds the constants against five published sheets.
+
+An ESRI ASCII grid states its origin and its step and never its CRS, so a row published or
+delivered as one names the grid in `grid_epsg` and the tool writes the `.prj` beside the file.
+A row that names none refuses the grid rather than guessing: a `.prj` guessed wrong puts a
+mountain in the wrong country.
 
 ### The vertical datum of each source
 
@@ -308,24 +335,51 @@ so no adapter here needs a geoid conversion.
 | `nz` | NZVD2016 (EPSG:7839) | EPSG: normal-orthometric, realised by NZGeoid2016. It is **not** in the GeoTIFFs; the row carries it. |
 | `it-bz`, `it-tn` | Italian levelling network | Both provinces publish "m s.l.m.", metres above sea level, and name no geoid model. |
 | `de-*` | DHHN2016 | the German height reference. Thuringia's earlier 2014–2019 delivery is on DHHN92, so the adapter takes the 2020–2025 one. |
+| `dk` | DVR90 | Klimadatastyrelsen's DHM/Terræn specification: heights are above mean sea level on DVR90, on the EPSG:25832 grid. |
+| `se` | RH2000 | The tiles say it themselves: each one is EPSG:5845, the compound CRS "SWEREF99 TM + RH2000 height". |
+| `fi` | N2000 | The NLS elevation model is levelled on N2000, the Finnish height system. |
+| `au` | AHD | ELVIS states the Australian Height Datum for the DEMs this row names. Some other ELVIS products are ellipsoidal and are out of scope. |
 
 An **ellipsoidal** product is a different matter, and it is refused rather than ingested: it stands
-tens of metres away from an orthometric height, which is the size of a lift. Converting one is
-CP6's concern, with the drop-in sources. Nothing in the registry needs it: the one product that is
-natively ellipsoidal, the ArcticDEM that fills northern Canada, is converted to CGVD2013 by NRCan
-before it is published.
+tens of metres away from an orthometric height, which is the size of a lift. Nothing in the
+registry needs a conversion. The one product that is natively ellipsoidal, the ArcticDEM that fills
+northern Canada, is converted to CGVD2013 by NRCan before it is published, and ELVIS's ellipsoidal
+datasets are out of the `au` row's scope, which the row and the wizard both say.
 
-### Sources that still need a key or a login
+### Sources behind an account
 
 These are open data, but a download needs registration, so an unattended bake cannot pull them.
-Fetch them by hand and pass `--input <dir>`; the tail treats them exactly like a fetched raster.
+Each one is a full row: with its credential in the environment `ingest <key>` fetches live, and
+without it `ingest <key> --input <dir>` takes what the portal delivered. `wizard <key>` walks the
+account and the download, one step at a time, and ends by running the ingest.
+
+| key | country | step | product | licence | attribution | datum |
+| --- | --- | --- | --- | --- | --- | --- |
+| `dk` | Denmark | 0.4 m | DHM/Terræn | Danish free geographic data, attribution required | `© Klimadatastyrelsen` | DVR90 |
+| `se` | Sweden | 1 m | Markhöjdmodell (Lantmäteriet) | CC BY 4.0 | `© Lantmäteriet` | RH2000 |
+| `fi` | Finland | 2 m | Korkeusmalli (NLS) | CC BY 4.0 | `© Maanmittauslaitos` | N2000 |
+| `au` | Australia | 1–5 m | ELVIS (per-area order) | CC BY 4.0, licensor per survey | `Sourced from ELVIS – Elevation and Depth, © the contributing agency` | AHD |
+
+| key | credential | how to obtain it | what `--input` takes | wizard |
+| --- | --- | --- | --- | --- |
+| `dk` | `OBC_REFERENCE_DK_TOKEN` | A free Dataforsyningen account, then `Min side` → `Token`. | GeoTIFF, EPSG:25832, float32 metres, −9999 for no data. | `wizard dk` |
+| `se` | `OBC_REFERENCE_SE_USER` and `OBC_REFERENCE_SE_PASSWORD` | A free Geotorget account, then order `Markhöjdmodell Nedladdning, grid 1+` and create the consumer user. | GeoTIFF (COG) named `m<sheet>.tif`, 10 000 × 10 000 at 1 m, EPSG:5845, float32, −9999. | `wizard se` |
+| `fi` | `OBC_REFERENCE_FI_TOKEN` | A free NLS account at `omatili.maanmittauslaitos.fi`, then `API keys`. | GeoTIFF, EPSG:3067, float32 metres, −9999, one 3 km square per file. | `wizard fi` |
+| `au` | none; ELVIS answers no box at all | An ELVIS order and the link it sends by e-mail. | The order's zip, or its `*_DEM.tif` unpacked. ELVIS publishes each state in its own MGA zone, so the file's own CRS places it; an ASCII order must keep its `.prj`. | `wizard au` |
+
+`ingest <key> --input` reads every `.tif`, `.tiff`, `.asc` and `.zip` under the directory, opens a
+zip into the work directory, and gives an ESRI ASCII grid the CRS its format cannot carry. The
+input directory is left as the portal left it.
+
+**Australia needs one check by hand.** Some ELVIS datasets are ellipsoidal, and an ellipsoidal
+height stands tens of metres from an orthometric one, which is the size of a lift. The row is AHD;
+an order whose metadata says otherwise must be converted before the ingest, and nothing here
+converts one.
+
+Two more are open data behind a login and are not rows, because neither answers a box at all:
 
 | country | step | product | how to get it |
 | --- | --- | --- | --- |
-| Denmark | 0.4 m | DHM/Terræn | Datafordeler account, WCS token |
-| Sweden | 1 m | Markhöjdmodell (Lantmäteriet) | Geotorget account |
-| Finland | 2 m | Korkeusmalli (NLS) | API key from the NLS file service |
-| Australia | 1–5 m | ELVIS (Geoscience Australia) | ELVIS portal, per-area order |
 | Italy, Lombardy | 1 m | regional LiDAR | request by email, one to four weeks |
 | Italy, Aosta Valley | 0.5 m | regional DTM | Italian identity login |
 
@@ -357,6 +411,13 @@ its adapter landed.
 | `de-sn` | Fichtelberg | 1215 m | 1215 m | |
 | `de-th` | Großer Beerberg | 983 m | 983 m | |
 | `de-ni` | Wurmberg | 971 m | 972 m | The search answered two revisions of one square, 2013 and 2018. The archive keeps the maximum, as it does for swisstopo. |
+| `it-tn` | Cima Tosa | 3136 m | 3135 m | The 3173 m the older maps carry included the summit ice cap; the province re-measured the rock at 3136 m with LiDAR, and this is the province's own LiDAR. 16 squares, none void. |
+| `nz` | Aoraki / Mount Cook | 3724 m | 3718 m | One window out of sheet `BX15`, found by arithmetic and not by an index. The published height is the snow summit; a bare-earth DTM reads the rock a few metres below. |
+
+`dk`, `se`, `fi` and `au` have no `got` column: this machine holds no credential for any of the
+four portals, so no summit was measured. What each service answers **without** a credential is in
+the next section, and each of the four is verified against a synthetic file in its own delivery
+format in `tests/test_drop_in.py`.
 
 ### What the other candidates answered
 
@@ -367,17 +428,35 @@ next pass does not start from nothing.
 | --- | --- |
 | **Tirol ImageServer** | Does not exist. `gis.tirol.gv.at/arcgis` has exactly one ImageServer, `HIK/HIK_MD`, and it is an 8-bit three-band image at 12 cm, not heights. The Tirol elevation services in `Basis` are MapServers, so they render relief. Tirol does publish a float32 0.5 m WCS, `Service_Public/terrain/MapServer/WCSServer`, coverage `Gelaendemodell_50cm_M28`, as multipart GML plus TIFF, and 0.5 m tiles under `gis.tirol.gv.at/geo/als/mosaik_50cm/`. Its vertical datum is not documented. |
 | **Austria, per state** | Every state publishes its own model, in eight horizontal CRSs and three height systems, and Vienna's is on Wiener Null, 156.68 m from sea level. One national grid in one CRS is the better row, so `at` takes the BEV product and the state downloads stay documented alternatives for `--input`: Styria 0.5 m 1 km tiles, Carinthia's STAC, Salzburg 1 m tiles, Upper Austria per municipality, Burgenland behind a signed link, Lower Austria 10 m only. Vorarlberg has no float endpoint at all. |
-| **Italy, Trentino WCS** | Answers, and lists no coverage. The data is behind an asynchronous merge service; the row above says what that takes. |
+| **Italy, Trentino WCS** | Answers, and lists no coverage. The geoportal reaches the data through an asynchronous merge service, which the `it-tn` row does not use: the same tiles are published as plain files. |
 | **Italy, Piedmont** | No 1–2 m product. A 5 m DTM answers WCS 1.0.0 at `geomap.reteunitaria.piemonte.it`, coverage `DTM`, EPSG:32632, CC BY 4.0 — but its vertical datum is not documented anywhere, so it cannot be registered. |
 | **Italy, Lombardy** | No. The 1 m LiDAR is an email request and takes one to four weeks. Only a 5 m picture service is open. |
 | **Italy, Aosta Valley** | No. The bulk download is behind an Italian identity login, its WCS is empty and its WMS is image only. |
 | **Italy, Tinitaly 10 m** | Answers WCS 2.0.1 nationwide, CC BY 4.0 with a required citation. The vertical datum is not documented, so it is not registered. It would be a gap-filler, not a source of contours. |
 | **UK Environment Agency** | The ArcGIS ImageServer was withdrawn at the end of 2024 and answers `{"code": 400, "message": "Invalid URL"}`. The WCS replaced it, and the endpoint no longer carries the survey year, so the `uk` row is stable. |
-| **LINZ** | Answers. `nz-elevation` on S3 is open and unsigned, the catalogue is a static STAC, and the licence names a different licensor per survey, which `capture-dates.geojson` carries. The row above says why there is no adapter yet. |
+| **LINZ** | Answers. `nz-elevation` on S3 is open and unsigned, and its listing names 424 published sheets under `new-zealand/new-zealand/dem_1m/2193/`. The licence names a different licensor per survey, which `capture-dates.geojson` carries. The LINZ Data Service WFS, which would answer the sheet outlines, needs a key — and the `nz` row does not need it, because the sheet grid is arithmetic. |
 | **Germany, Brandenburg** | Answers float32 metres at `isk.geobasis-bb.de/ows/dgm_wcs`, coverage `bb_dgm`, and names no CRS at all. Stamped with the EPSG:25833 the subset was stated in, its heights near two published Brandenburg summits come out 70 m low, so what grid it answers in is not understood and it is not a row. |
 | **Germany, Saarland** | Answers float32 **centimetres**, and its `ows:Fees` says any use beyond viewing "ist kostenpflichtig und bedarf einer vertraglichen Grundlage" while its catalogue entry says dl-de/by-2-0. The licence has to be settled with the LVGL before it can be a row. |
 | **Germany, Rhineland-Palatinate, Schleswig-Holstein, Hamburg, Bremen, Berlin** | All open and all a download. Rhineland-Palatinate has a 42 320-tile Metalink index, Schleswig-Holstein and Hamburg publish ASCII XYZ, Bremen publishes two whole-state archives, and Berlin is inside Brandenburg's coverage. None is a row yet. |
 | **Germany, national** | There is no national DGM service. BKG's 200 m grid is open and far too coarse for a crest. |
+
+### What the credentialed portals answer without a credential
+
+Each of the four rows above was probed with no key and no login, which is what can be verified
+from a machine that holds none. Each answer is what shaped the adapter.
+
+| portal | probe | answer |
+| --- | --- | --- |
+| **Denmark, Dataforsyningen** | `GET api.dataforsyningen.dk/dhm_wcs_DAF?service=WCS&request=GetCapabilities&token=` | **HTTP 200.** A WCS 1.0.0 capabilities document naming the coverages `dhm_terraen` and `dhm_overflade`, and the box 8.008, 54.435 → 15.598, 57.769, which is the row's extent. |
+| **Denmark, Dataforsyningen** | the same endpoint, `request=DescribeCoverage&coverage=dhm_terraen` | **HTTP 403 — `User not authorized`.** So the capabilities are open and the data is not, and `token=` is the one parameter the adapter adds. |
+| **Denmark, Datafordeler** | `GET wcs.datafordeler.dk/DHMNedboer/dhm_wcs/1.0.0/WCS?service=WCS&request=GetCapabilities` | **HTTP 401**, empty body. Datafordeler's own gateway wants a username and a password or an `apikey`. The row takes the Dataforsyningen gateway instead, because that is the one whose capabilities can be read and checked. |
+| **Sweden, Lantmäteriet** | `GET api.lantmateriet.se/stac-hojd/v1/collections` and `…/v1/search?bbox=…&collections=dtm-cog` | **HTTP 200.** The STAC index is open. The search over Kebnekaise answered two items, each with a `data` asset at `dl1.lantmateriet.se/hojd/data/grid/mhm/75_6/m75x_6x.tif`, and the keyless `info` asset states the tile: GTiff, float32, nodata −9999, 10 000 × 10 000 at 1 m, EPSG:5845 ("SWEREF99 TM + RH2000 height"). |
+| **Sweden, Lantmäteriet** | `HEAD dl1.lantmateriet.se/hojd/data/grid/mhm/75_6/m753_64.tif` | **HTTP 401** with `WWW-Authenticate: Basic realm="Authorization Server"`. So the index is open and only the download is signed, which is why `se` reads the index without a credential and sends HTTP Basic on the download. |
+| **Finland, NLS** | `GET avoin-karttakuva.maanmittauslaitos.fi/ortokuvat-ja-korkeusmallit/wcs/v2?service=WCS&request=GetCapabilities` | **HTTP 401**, empty body. `avoin-paikkatieto.maanmittauslaitos.fi` answers 401 as well, on both the WCS path and `tiedostopalvelu/ogcproc/v1/`. Nothing about the service can be read without a key, so the coverage id `korkeusmalli_2m`, the `E`/`N` subsets and EPSG:3067 come from the agency's technical description and are **not** probe-verified. |
+| **Australia, ELVIS** | `GET elevation.fsdf.org.au/` and any path under it | **HTTP 200**, and always the same 13 kB single-page application, including for `api/…` and for the bundle the page names. There is no endpoint that answers a box, so `au` has no adapter and never will have one. |
+
+Nothing below `HTTP 200` was reached with a credential, so the four rows' request shapes are held
+by their tests and by the agencies' documentation, not by a live answer.
 
 ### Ingesting a source
 
@@ -408,8 +487,28 @@ python3 ingest.py ingest de-by --bbox 10.9743,47.4138,10.9963,47.4284      --arc
 python3 ingest.py ingest de-sn --bbox 12.9432,50.4213,12.9652,50.4359      --archive $A --work $W/de-sn
 python3 ingest.py ingest de-th --bbox 10.7351,50.6524,10.7571,50.6670      --archive $A --work $W/de-th
 python3 ingest.py ingest de-ni --bbox 10.6084,51.7508,10.6304,51.7654      --archive $A --work $W/de-ni
+python3 ingest.py ingest it-tn --bbox 10.8620,46.1510,10.8840,46.1656      --archive $A --work $W/it-tn
+python3 ingest.py ingest nz    --bbox 170.1310,-43.6020,170.1530,-43.5880  --archive $A --work $W/nz
 
 python3 ingest.py check --archive $A
+```
+
+The four sources behind an account take the same command with their credential set. These are
+the boxes their tests name, and **none of them has been run**, because this machine holds no
+credential for any of the four portals:
+
+```sh
+export OBC_REFERENCE_DK_TOKEN=…        # Møllehøj, the highest natural point in Denmark
+python3 ingest.py ingest dk --bbox 9.8220,56.2948,9.8440,56.3094      --archive $A --work $W/dk
+
+export OBC_REFERENCE_SE_USER=…         # Kebnekaise
+export OBC_REFERENCE_SE_PASSWORD=…
+python3 ingest.py ingest se --bbox 18.4830,67.8955,18.5050,67.9101    --archive $A --work $W/se
+
+export OBC_REFERENCE_FI_TOKEN=…        # Halti, the highest point in Finland
+python3 ingest.py ingest fi --bbox 21.2576,69.2995,21.2796,69.3141    --archive $A --work $W/fi
+
+python3 ingest.py wizard au --bbox 150.3050,-33.4200,150.3270,-33.4054 --archive $A
 ```
 
 A **country-scale** ingest is the same command with the country's box, and it is an owner-run job:
@@ -418,7 +517,7 @@ directory on a disk with room for the source rasters, and `check` the archive be
 tail holds one source raster plus the tiles it touches, so cost per box is flat for a product that
 publishes per tile, per square kilometre or per window.
 
-Three of the sources need a word about scale:
+Five of the sources need a word about scale:
 
 - **`at`** reads a window out of a 7.7 GB square. The box is split before any window is read, so
   one read is never larger than the pixel cap however large the box is, and a country-scale run
@@ -427,7 +526,12 @@ Three of the sources need a word about scale:
 - **`de-by`, `de-sn`, `de-th`** download whole grid squares. Bavaria alone is 71 979 squares, so a
   whole-state run wants the work directory on a big disk. Each state publishes an index with a
   SHA-256 per square, which is the way to check a bulk download that the tool does not do for you.
-- **`nl`** is a 0.5 m product, so a box is four times the requests of a 1 m one.
+- **`nl`** is a 0.5 m product, so a box is four times the requests of a 1 m one, and `it-tn` and
+  `dk` are finer still.
+- **`nz`** reads a window out of one sheet of 864 M pixels, the same way `at` does, so the cost of
+  a box is the box and not the sheet.
+- **`se`** downloads a whole 10 km COG, a few hundred megabytes each, because that is what the
+  STAC index names. A 2 km box needs one to four of them.
 
 ### What makes a good reference
 
