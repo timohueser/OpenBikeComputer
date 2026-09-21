@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-# `obc governs` reads these two names. GOVERNS is the scope this guard actually walks;
-# RULE is the one sentence it enforces.
 GOVERNS = ['**']
 RULE = 'A deleted map-distribution API or version marker stays deleted.'
 

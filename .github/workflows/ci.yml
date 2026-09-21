@@ -116,6 +116,7 @@ jobs:
         with:
           ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
+          fetch-depth: 0 # the changelog check reads the merge history
       - name: Deleted catalog and bake APIs stay deleted
         run: python3 tools/check_retired_map_stack.py
       - name: Host-pushed cards are built only by the card scheduler

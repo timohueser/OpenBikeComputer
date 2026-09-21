@@ -8,6 +8,9 @@ depend on their consumers, while production `normal`/`build` dependencies must p
 
 from __future__ import annotations
 
+GOVERNS = ['**/Cargo.toml', 'firmware/tools/dependency_rules.json']
+RULE = 'Production dependencies point downward through the groups in dependency_rules.json.'
+
 import argparse
 import json
 import subprocess

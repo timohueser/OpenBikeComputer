@@ -12,8 +12,6 @@ under `screen/`, and each retired helper name stays retired.
 
 from __future__ import annotations
 
-# `obc governs` reads these two names. GOVERNS is the scope this guard actually walks;
-# RULE is the one sentence it enforces.
 GOVERNS = ['firmware/obc-app/src/screen/**/*.rs', 'firmware/obc-app/src/stat_fields.rs']
 RULE = 'A shared screen-drawing helper is defined once, under screen/vocab/.'
 
