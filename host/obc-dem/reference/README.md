@@ -9,15 +9,15 @@ the ascent, the profile and the altimeter.
 The bakery cannot hold a country-sized reference in memory, and it must not learn seven service
 protocols. So there is **one archive with one format**, and one offline tool that fills it:
 
-- `ingest.py` turns a national DTM into archive tiles. Every country branch is in it. It runs once
-  per source release, never during a bake.
+- `ingest.py` turns a national DTM into archive tiles. Every country branch is an adapter in
+  `ingest/sources/`. It runs once per source release, never during a bake.
 - The archive holds max-pooled bare-earth height on the OBCT lattice, as `int16` metres, in
   GeoTIFF tiles. The baker streams the tiles of one cell and reads nothing else.
 - The archive lives on R2 under `reference/v1/`. A bakery run mirrors the tiles its box needs.
 
 ## The archive tile contract
 
-This is the normative contract. The baker and `ingest.py` both hold to it.
+This is the normative contract. The baker and the ingest tool both hold to it.
 
 - **Lattice**: OBCT `GRID_ORIGIN` (−2^28 µdeg on both axes), step `2^6` µdeg on both axes
   (`REFERENCE_STEP_LOG2 = 6`, ≈ 7.1 m latitude, 4.9 m longitude at 47° N).
@@ -116,6 +116,23 @@ It needs `rasterio`, `pyproj` and `numpy` (`tools/requirements-bake.txt`, or
 | `publish` | `rclone copy` of the archive to `<bucket>/reference/v1/`: tiles and manifests first, then the index, which goes up as the merge of the index already on R2 with this archive's. Additive and idempotent: a publish never deletes. |
 | `mirror` | `rclone copy` of the index plus the tiles one box needs, into a local directory. The box is padded by one tile on every side, because the baker's node halo reads over a cell edge. It names the needed tiles the archive does not hold. This is what a bakery run does before `obc-dem bake --reference`. |
 
+### Where the code is
+
+`ingest.py` is the entry point only. The tool is the `ingest/` package beside it, and the split
+is the one the archive already had in it: a lattice, a pooling rule, an archive, a remote, and a
+registry of sources.
+
+| module | what is in it |
+| --- | --- |
+| `lattice.py` | Integer microdegrees: the grid, `Window`, the tile ids, and the refusals for a box the lattice cannot hold. |
+| `pool.py` | One source raster in, lattice `int16` metres out: the void convention and the pooling rule. |
+| `archive.py` | Tiles, the priority merge, the manifests, `index.json`, and `tile_problems`, which is the contract as code. |
+| `publish.py` | The rclone remote and the plans `publish` and `mirror` run. |
+| `sources/` | One module per country. `sources/base.py` is what an adapter is; `sources/__init__.py` is the registry the CLI reads. |
+| `cli.py` | The subcommands, and nothing else. |
+
+Adding a country is a module in `sources/` and a row in that registry. Nothing above it changes.
+
 ### What the shared tail does
 
 An adapter has one job: `fetch(bbox, workdir) -> list[Path]`, rasters in any CRS and any dtype.
@@ -140,7 +157,7 @@ Then the priority rule decides which pixels the tile keeps.
 
 ### Priority
 
-`PRIORITY` in `ingest.py` is the one constant, finest and best-maintained national product first:
+`PRIORITY` in `ingest/archive.py` is the one constant, finest and best-maintained national product first:
 
 ```
 nl, de-nw, fr, no, us, ch, es

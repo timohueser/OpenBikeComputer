@@ -475,9 +475,9 @@ class RcloneSeam(ArchiveCase):
             previous = os.environ.get(name)
             os.environ[name] = value
             self.addCleanup(lambda n=name, p=previous: os.environ.__setitem__(n, p) if p else os.environ.pop(n, None))
-        real = ingest.run_rclone
-        ingest.run_rclone = self.record
-        self.addCleanup(lambda: setattr(ingest, "run_rclone", real))
+        real = ingest.publish.run_rclone
+        ingest.publish.run_rclone = self.record
+        self.addCleanup(lambda: setattr(ingest.publish, "run_rclone", real))
 
     #: What the fake R2 already holds: another region's tile, from another source.
     PUBLISHED = {
