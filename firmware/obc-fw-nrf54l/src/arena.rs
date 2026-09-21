@@ -1,8 +1,8 @@
 //! The scratch arena: one block of RAM, several arms, one owner at a time.
 //!
-//! Some of the board's largest blocks are never live at the same moment, and each used to own its
-//! bytes permanently: the per-frame render scratch, the nav block ([`NavArm`]), the protocol-v4 USB
-//! write-combining stage, and the peak-view and photo arms. This module time-shares them through a
+//! Some of the board's largest blocks are never live at the same moment: the per-frame render
+//! scratch, the nav block ([`NavArm`]), the protocol-v4 USB write-combining stage, and the
+//! peak-view and photo arms. This module time-shares them through a
 //! `union`, so the board pays `max(arms)` instead of their sum. The USB arm sets the 128 KiB size:
 //! sixteen 4 KiB records share a 64 KiB bank, so the flat store issues one 128-block card command
 //! instead of sixteen short program cycles.

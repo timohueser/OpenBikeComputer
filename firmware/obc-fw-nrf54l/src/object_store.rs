@@ -1,4 +1,5 @@
-//! The remaining legacy control-plane state: RRAM-backed settings and the bond and config hand-off.
+//! The control-plane state that does not live in the flat store: RRAM-backed settings, and the
+//! bond and config hand-off.
 //!
 //! Route, trip, ride, transfer and catalog ownership all live in [`crate::flat_store`]. This module
 //! stays only for the surfaces that have not moved: config and bond state, and the on-glass DFU
@@ -66,7 +67,7 @@ pub(crate) fn take_dfu_install_ble() -> bool {
 // change is idempotent, so the worst case is a flag observed one pass late.
 
 /// Raised by a BLE Config write ([`ObjectStore::apply_config`]); the ride loop drains it and
-/// reloads the BLE-owned fields (units + name) into the live `App` settings **before** its next
+/// reloads the BLE-owned fields (units + name) into the live `App` settings before its next
 /// change-detection save, so the phone's write reaches the UI same-session and is never clobbered.
 static BLE_CONFIG_WRITTEN: AtomicBool = AtomicBool::new(false);
 

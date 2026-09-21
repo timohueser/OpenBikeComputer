@@ -304,7 +304,6 @@ pub(crate) enum Request {
         store: obc_app::device_core::StoreIdentity,
         active: Option<ObjectId>,
     },
-    /// The extent reservation.
     Allocate {
         bytes: u64,
     },
@@ -344,7 +343,6 @@ pub(crate) enum Request {
     Commit {
         batch: heapless::Vec<Mutation, MAX_BATCH>,
     },
-    /// The ride checkpoint.
     Journal {
         checkpoint: RideCheckpoint<'static>,
     },
@@ -443,7 +441,6 @@ pub(crate) enum Outcome {
     Removed {
         existed: bool,
     },
-    /// Nothing to hand back.
     Done,
     /// What the engine wants done, and the caller's buffer back with the bytes in it.
     Reacted {
@@ -554,7 +551,6 @@ impl Writer {
         Ticket(tag)
     }
 
-    /// Wait for a [`Writer::begin_call`]'s answer.
     pub(crate) async fn finish_call(&self, ticket: Ticket, reply: &'static Reply) -> Result<Outcome, StoreError> {
         self.result(ticket.0, reply).await
     }
@@ -708,7 +704,6 @@ static CATALOG_WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 static LIVE_TRANSFER: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
-/// Whether a bulk transfer is streaming into the store right now.
 pub(crate) fn transfer_active() -> bool {
     LIVE_TRANSFER.load(core::sync::atomic::Ordering::Relaxed)
 }
@@ -1238,7 +1233,6 @@ fn publish_upload(store: &'static FlatStore<FlatCard>, engine: &mut BoardEngine)
 /// at a depth this board measures.
 const ENGINE_STAGE: usize = 512;
 
-/// The one engine, bound to this board's store.
 pub(crate) type BoardEngine = Engine<FlatStore<FlatCard>, ENGINE_STAGE>;
 
 /// `.bss`, because an engine built by value inside [`storage_task`]'s async block is a permanent
@@ -1333,7 +1327,6 @@ pub(crate) fn report(store: &FlatStore<FlatCard>, mount_us: u64) -> Catalog {
     Catalog { maps: usize::from(maps), listing_complete }
 }
 
-/// The metadata of the first object of `kind`, or `None`.
 pub(crate) fn first_of(store: &FlatStore<FlatCard>, kind: ObjectKind) -> Option<EntryMeta> {
     store.entries().find(|entry| entry.kind == kind)
 }

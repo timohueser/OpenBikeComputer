@@ -192,7 +192,7 @@ struct NavRun {
     io_started: Instant,
     /// Wall time when the request was drained, which is the log line's user-perceived `total_ms`.
     t0: Instant,
-    /// Per-phase step time (µs), attributed by the planner's phase **before** each step:
+    /// Per-phase step time (µs), attributed by the planner's phase before each step:
     /// `[snap, search, emit]`.
     phase_us: [u64; 3],
     /// Store-task time spent flushing bounded output stages before the final checksum/commit.
@@ -390,11 +390,9 @@ fn nav_step(
 /// Finish a completed plan: hash and publish or cancel the flat-store reservation, and emit the one
 /// `nav route:` log line with the per-phase breakdown. The answer itself is the caller's.
 ///
-/// In that line, `total_ms` is wall time from the request drain, so it spans every pass the plan was
-/// spread over; `snap/search/emit_ms` is step time attributed to the planner's phase before each
-/// step; `write_ms` is the flat-store write, hash and commit; and `source_reads` is logical
-/// graph-chunk plus index-window fills. The stack high-water is force-rescanned here and still reads
-/// the in-step peak, because sentinel evidence is permanent.
+/// In that line, `total_ms` is wall time from the request drain, so it spans every pass the plan
+/// was spread over, and `snap/search/emit_ms` is step time attributed to the planner's phase before
+/// each step.
 #[cfg(has_nav)]
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]
@@ -482,7 +480,6 @@ fn gesture_name(g: obc_app::Gesture) -> &'static str {
     }
 }
 
-/// The drained chord's name, for the same log record as [`gesture_name`].
 fn chord_name(c: obc_app::Chord) -> &'static str {
     match c {
         obc_app::Chord::Quick => "Quick",
@@ -495,7 +492,6 @@ fn chord_name(c: obc_app::Chord) -> &'static str {
 /// present phase (push, guard-free). `None` means no frame was rendered this pass.
 struct RenderedFrame {
     needs_map: bool,
-    /// Whether this frame drew the **sheet and nothing else** — the base's draw was skipped, so its
     /// Whether this frame drew the sheet and nothing else. The base's draw was skipped, so its rows
     /// on the panel are the ones the sheet arrived over.
     sheet_only: bool,
@@ -535,13 +531,11 @@ static CATALOG_STORE_REPLY: crate::flat_store::Reply = embassy_sync::signal::Sig
 /// pass order is DeviceCore's.
 #[derive(Default)]
 struct RideExec {
-    /// What the executor finished, for the next pass's stage 1.
     outcomes: obc_app::device_core::OutcomeSlots,
     /// What moved underneath DeviceCore that nobody asked for, for the next pass's stage 2.
     facts: obc_app::device_core::ExternalFacts,
     /// The previous plan's derived needs, answered at the top of the next store phase.
     needs: obc_app::device_core::DerivedNeeds,
-    /// The bounded effects the previous pass decided, each served in its own physical phase.
     effects: obc_app::device_core::EffectSlots,
     /// The in-flight removal, held across passes and polled without parking.
     catalog: Option<CatalogRemoval>,
@@ -676,7 +670,6 @@ pub(crate) async fn run_app(
     // Battery: a fixed stand-in until the PMIC fuel gauge is wired in.
     let mut fuel = StubFuelGauge::new(75);
 
-    // The outcomes, facts and staged effects that live between two `App::run_pass` calls.
     let mut exec = RideExec::default();
     let mut ride_recorder = crate::flat_ride::Recorder::new(
         flat,
@@ -737,7 +730,6 @@ pub(crate) async fn run_app(
     // The level last handed to the backlight, so the PWM is touched on a change rather than every
     // pass. `u8::MAX` is never a real level, so the boot apply below always reaches the hardware.
     let mut backlight_level = u8::MAX;
-    // The panel-light capability, straight from the port that answers it.
     app.set_backlight_available(obc_ports::Backlight::available(&backlight));
     // The map plane is one resident framebuffer that the present scans out of, so every repaint is a
     // repaint over the last frame. That is what lets the app leave a frozen base's rows alone while
@@ -2237,7 +2229,6 @@ pub(crate) async fn run_app(
                 prev_route = active;
             }
 
-            // Reconcile geometry only when the active route changes.
             if active != prev_active {
                 let active_id = active.and_then(|i| app.route_ids().get(i).copied());
                 crate::flat_store::reconcile_route(flat, active_id);
@@ -2426,7 +2417,7 @@ pub(crate) async fn run_app(
                         clock: Some(&mut consumer.clock()), // SAM-M10Q UTC → the wall clock (always stamps; #641)
                         compass: Some(&mut consumer.compass()), // ICM-20948 / AK09916 heading while stopped
                         fuel: Some(&mut fuel),
-                        // The central manager (SE6) feeds the shared hub mailboxes.
+                        // The central manager feeds the shared hub mailboxes.
                         hr: Some(&mut consumer.hr()),
                         power: Some(&mut consumer.power()),
                         cadence: Some(&mut consumer.cadence()),
@@ -2626,9 +2617,6 @@ pub(crate) async fn run_app(
             // a still-running search has no plan edge in it at all. Keyed on the plan's edge, this
             // branch would find `dirty.overlay` already spent on the chrome frame and paint nothing
             // for the rest of the search.
-            //
-            // This is also what makes the arena's `render ⊥ nav` rule hold in practice rather than
-            // only at the gate: no map render is attempted while the nav arm is out.
             let frozen = app.reroute_freeze_active() || find_loading_painted;
             if frozen && dirty.map {
                 pending_map_redraw = true;
@@ -2663,7 +2651,6 @@ pub(crate) async fn run_app(
                         // only: the harness is its only reader.
                         #[cfg(feature = "debug-uart")]
                         defmt::info!("freeze: banner repaint rows {=u16}..{=u16}", y0, y0 + rows);
-                        // The banner is what this frame drew.
                         Some(RenderedFrame { needs_map: false, sheet_only: false, stats, render_us })
                     }
                     // Mid-freeze with no edge: nothing changed on either plane, so nothing to push.
@@ -2709,8 +2696,7 @@ pub(crate) async fn run_app(
                     } else {
                         // Render the whole frame into the resident plane, behind
                         // `MapDisplay::render_frame`. The present below, after the guard is gone,
-                        // scans it out and goes around a live bulge's rows. The hold bulge is not
-                        // composited here: it rides `present_bulge` on its own plane.
+                        // scans it out and goes around a live bulge's rows.
                         //
                         // A surviving `dirty.region` clips the render at both layers: the app's
                         // canvas rejects whole primitives whose bounds miss the region, and the
@@ -2719,8 +2705,7 @@ pub(crate) async fn run_app(
                         //
                         // `needs_map` reads "the `Reader` was built", which is narrower than "the
                         // base draws the map": a sheet-only frame over the riding Map skips the
-                        // base's draw, so it arrives here `false`, and the region arm is still the
-                        // right one for it.
+                        // base's draw, so it arrives here `false`.
                         let clip = if needs_map || photo_active { None } else { dirty.region };
                         app.set_render_clip(clip);
                         // Sampled before the render closure borrows `app`.

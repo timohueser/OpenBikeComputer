@@ -677,7 +677,7 @@ impl Recorder {
         }
     }
 
-    /// `debug-uart` only (#1591): arm the one-shot refusal of the next exact removal.
+    /// `debug-uart` only: arm the one-shot refusal of the next exact removal.
     #[cfg(feature = "debug-uart")]
     pub(crate) fn debug_arm_repair_failure(&mut self) {
         self.repair_fail_once = true;
