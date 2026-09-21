@@ -109,6 +109,18 @@ class ArchiveCase(unittest.TestCase):
     def index(self):
         return json.loads((self.archive / "index.json").read_text(encoding="utf-8"))
 
+    def stand_in(self, *keys):
+        """Put a local source under a registry key, so a priority test needs no service.
+
+        `nl` and `es` are the two ends of `PRIORITY`, and what the priority tests need is
+        that ranking, not the Dutch and Spanish services.
+        """
+
+        for key in keys:
+            real = ingest.SOURCES[key]
+            ingest.SOURCES[key] = local_source(key)
+            self.addCleanup(lambda k=key, s=real: ingest.SOURCES.__setitem__(k, s))
+
     def only_tile(self):
         index = self.index()
         self.assertEqual(len(index["tiles"]), 1, index["tiles"])
@@ -268,8 +280,7 @@ class Ingest(ArchiveCase):
         tile must not take the rest of the tile away from the source that does cover it.
         """
 
-        ingest.SOURCES.update({"nl": local_source("nl"), "es": local_source("es")})
-        self.addCleanup(lambda: [ingest.SOURCES.pop(key) for key in ("nl", "es")])
+        self.stand_in("nl", "es")
         coarse = source_raster(self.inputs / "coarse.tif", np.full((SIDE, SIDE), 1000.0, dtype="float32"))
         corner = self.root / "corner"
         corner.mkdir()
@@ -305,8 +316,7 @@ class Ingest(ArchiveCase):
     def test_a_source_whose_every_pixel_is_overwritten_loses_the_tile(self):
         """A better source over the whole tile takes it, and the manifest says so."""
 
-        ingest.SOURCES.update({"nl": local_source("nl"), "es": local_source("es")})
-        self.addCleanup(lambda: [ingest.SOURCES.pop(key) for key in ("nl", "es")])
+        self.stand_in("nl", "es")
         coarse = source_raster(self.inputs / "coarse.tif", np.full((SIDE, SIDE), 1000.0, dtype="float32"))
         fine = self.root / "fine"
         fine.mkdir()
