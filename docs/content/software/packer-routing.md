@@ -746,9 +746,10 @@ Landmarks are an artifact class of the bake, beside the map cells and the terrai
 them per curated region: the region's own boundary polygon selects the sources, a cache holds the
 raw capture, and the tree holds one compiled artifact for each region. The capture reads live
 sources, so it is the only step of a bake that two runs can disagree on. It is resumable, the run
-says when it starts one, and everything after it is a pure function of the bytes it wrote. A
-region is compiled again only when its captured sources, its boundary, or the category policy
-change.
+says when it starts one, and everything after it is a pure function of the bytes it wrote. Three
+documents decide what a region asks for: its boundary, the category policy, and the shared
+language set. A change in any of them is captured again, into its own directory, and a region is
+compiled again when its captured sources move.
 
 ## Attribution and share-alike
 
