@@ -215,9 +215,9 @@ mod tests {
     #[test]
     fn dach_fits_the_sunk_path_and_that_is_the_epic() {
         let e = streamed(catalog::DACH_NAV, catalog::DACH_CELLS, catalog::DACH_TERRAIN);
-        assert!(e.fits, "DACH must fit: {} B against {} B", e.peak_bytes, e.budget_bytes);
+        assert!(e.fits, "DACH must fit — {} B against {} B", e.peak_bytes, e.budget_bytes);
         assert!((e.peak_bytes - 0.877e9).abs() < 2e7, "{}", e.peak_bytes);
-        assert!(e.headroom_bytes > 0.5 * PRACTICAL_BUDGET, "with real headroom: {}", e.headroom_bytes);
+        assert!(e.headroom_bytes > 0.5 * PRACTICAL_BUDGET, "…with real headroom: {}", e.headroom_bytes);
         assert_eq!(e.output_bytes, 0.0, "a sunk map is never wasm's");
         // The engine term does not scale with the map: the two selections differ only in terrain.
         let f = streamed(catalog::FREIBURG_NAV, catalog::FREIBURG_CELLS, catalog::FREIBURG_TERRAIN);
@@ -295,8 +295,8 @@ mod tests {
             let headroom = (OUTPUT_PER_CELL_BYTE - measured) * cells;
             assert!(
                 headroom > 400.0 * REGION_GAP_BYTES,
-                "{cells} B of cells: {headroom} B of rounding headroom is not a comfortable margin over \
-                 the {REGION_GAP_BYTES} B of region gaps"
+                "{cells} B of cells: {headroom} B of rounding headroom is not a comfortable margin over the \
+                 {REGION_GAP_BYTES} B of §1.2 region gaps"
             );
         }
     }

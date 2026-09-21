@@ -55,7 +55,7 @@ def main() -> int:
                     failures.append(f"{rel}:{line_no}: `{match.group(0)}`")
 
     if failures:
-        print("A repaint mirror the declared render keys replaced has grown back:")
+        print("A repaint mirror deleted by #1447 has grown back:")
         print("\n".join(failures))
         print(
             "\nDeclare the fact in the screen's `RenderKeyKind` instead. If no key can see the\n"
