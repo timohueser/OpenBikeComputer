@@ -1,17 +1,13 @@
 // The pinning suite for the TS grid mirror.
 //
-// Every vector below is copied from `host/obc-pack/src/grid.rs`'s own tests —
-// the same ids, the same squares, the same edge cases, including the ones that
-// only fail when a division truncates toward zero instead of flooring. That is
-// deliberate and it is the point of the file: the builder resolves a drawn box
-// to cell ids, the bakery resolved ground to the *same* ids, and if the two
-// arithmetics ever drift the symptom is not an exception — it is a map with a
-// silent hole in it. Two implementations pinned to one set of numbers cannot
-// drift without one of these tests going red.
+// Every vector below is copied from `host/obc-pack/src/grid.rs`'s own tests — the same
+// ids, the same squares, the same edge cases, including the ones that only fail when a
+// division truncates toward zero instead of flooring. The builder resolves a drawn box
+// to cell ids and the bakery resolved ground to the *same* ids; if the two arithmetics
+// drift, the symptom is not an exception but a map with a silent hole in it.
 //
-// The Rust squares are quoted in that side's `(min_lon, min_lat, max_lon,
-// max_lat)` order in the comments; the assertions use this module's named
-// `lat/lon` object, so the re-ordering is visible rather than assumed.
+// The Rust squares are quoted in that side's `(min_lon, min_lat, max_lon, max_lat)`
+// order in the comments; the assertions use this module's named `lat/lon` object.
 
 import { describe, expect, it } from "vitest";
 import {
@@ -35,7 +31,6 @@ import {
 } from "./grid";
 
 describe("grid constants", () => {
-    // Rust: `grid_constants_and_nesting`.
     it("are OBCA §1.1's, and every permitted size nests", () => {
         expect(GRID_ORIGIN).toBe(-268_435_456);
         expect(WORLD_SIDE).toBe(536_870_912);
@@ -54,19 +49,16 @@ describe("grid constants", () => {
     });
 
     it("keeps every coordinate inside the exact-integer range of a double", () => {
-        // The mirror's licence to use plain numbers: the largest value any
-        // function here computes is a world-box span, 2^29, and 2^53 is where
-        // integers stop being exact.
+            // The mirror's licence to use plain numbers: the largest value any function
+            // here computes is a world-box span, 2^29, well inside exact integers.
         expect(WORLD_SIDE).toBeLessThan(Number.MAX_SAFE_INTEGER);
         expect(Number.isSafeInteger(GRID_ORIGIN - WORLD_SIDE)).toBe(true);
     });
 });
 
 describe("cell identity", () => {
-    // Rust: `worked_example_squares` — OBCA §7's worked example.
     it("matches the spec's worked example to the microdegree", () => {
         const a = parseCellId("18/1204/1052");
-        // Rust: (7_340_032, 47_185_920, 7_602_176, 47_448_064).
         expect(cellSquare(a)).toEqual({
             minLat: 47_185_920,
             minLon: 7_340_032,
@@ -85,7 +77,6 @@ describe("cell identity", () => {
         expect(formatCellId(a)).toBe("18/1204/1052");
     });
 
-    // Rust: `half_open_ownership_is_exclusive`.
     it("owns its square half-open, so every point is in exactly one cell", () => {
         const a = parseCellId("18/1204/1052");
         const { minLat, minLon, maxLat, maxLon } = cellSquare(a);
@@ -97,7 +88,6 @@ describe("cell identity", () => {
         expect(cellContaining(18, maxLat - 1, maxLon - 1)).toEqual(a);
     });
 
-    // Rust: `id_padding_widths`.
     it("pads ids to §1.3's width, and widens rather than truncates", () => {
         expect(idWidth(20)).toBe(4);
         expect(idWidth(18)).toBe(4);
@@ -109,7 +99,6 @@ describe("cell identity", () => {
         expect(formatCellId(parseCellId("18/7/9"))).toBe("18/0007/0009");
     });
 
-    // Rust: `id_parse_rejects_out_of_range`.
     it.each([
         ["18/2048/0", "2^18 has 2048 cells per axis, so 2048 is past the end"],
         ["9/0/0", "2^9 is below the grid's minimum size"],
@@ -140,8 +129,8 @@ describe("cell identity", () => {
 });
 
 describe("the negative origin", () => {
-    // Rust: `alignment_theorem_holds_at_the_negative_origin` (the grid half of
-    // it — the quadtree half is the assembler's, not this client's).
+        // The grid half of the alignment theorem; the quadtree half is the assembler's,
+        // not this client's.
     it("floors rather than truncates at and below the origin", () => {
         const c = cellId(20, 0, 0);
         expect(cellSquare(c)).toEqual({
@@ -158,12 +147,10 @@ describe("the negative origin", () => {
     });
 
     it("floors *below* the origin, which is the only place trunc differs", () => {
-        // The vector that earns `floorDiv` its keep. Everything else in this
-        // describe block is at or above the origin, where the dividend is
-        // non-negative and `Math.trunc` gives the same answer — as it does for
-        // every coordinate a catalog can contain, the origin being −2^28 and the
-        // geographic domain ±180°. So this is defence-in-depth, deliberately
-        // reaching outside the world box to state what the division does there.
+            // The vector that earns `floorDiv` its keep. Everything else in this describe
+            // block is at or above the origin, where `Math.trunc` gives the same answer,
+            // so this deliberately reaches outside the world box to state what the
+            // division does there.
         expect(cellContaining(20, GRID_ORIGIN - 1, GRID_ORIGIN - 1)).toEqual({ log2: 20, i: -1, j: -1 });
         // One µdeg past a whole cell below the origin: floor says the second
         // cell down, trunc says the first.
@@ -177,7 +164,6 @@ describe("the negative origin", () => {
         expect(() => cellId(18, -1, 0)).toThrow(GridError);
     });
 
-    // Rust: `cells_south_of_the_equator`.
     it("puts Cape Town in a cell whose square really contains it", () => {
         const c = cellContaining(18, -33_900_000, 18_400_000);
         const { minLat, minLon, maxLat, maxLon } = cellSquare(c);
@@ -192,7 +178,6 @@ describe("the negative origin", () => {
 });
 
 describe("cellsIntersecting", () => {
-    // Rust: `cells_intersecting_covers_the_box_and_its_edges`.
     it("covers the box and the cells its edges fall in", () => {
         const a = parseCellId("18/1204/1052");
         const { minLat, minLon, maxLat, maxLon } = cellSquare(a);
@@ -293,7 +278,6 @@ describe("cellsIntersecting", () => {
 });
 
 describe("onGridLine", () => {
-    // Rust: `on_grid_line_only_at_the_lines`.
     it("is true only on the lines, and coarse lines are also fine lines", () => {
         const s = 2 ** 18;
         expect(onGridLine(GRID_ORIGIN, 18)).toBe(true);
@@ -322,12 +306,11 @@ describe("coverageBbox", () => {
     });
 
     it("is a viewport, not a cell set — it does not round-trip", () => {
-        // Worth pinning, because the trap is inviting. Two diagonal cells have
-        // a bounding box spanning four — and re-resolving it yields *nine*,
-        // because the box's `max` edges sit exactly on grid lines and a vertex
-        // on the line belongs to the cell above and east of it. A caller that
-        // stored the box instead of the set would widen a two-cell selection
-        // into nine cells' worth of download.
+            // Worth pinning, because the trap is inviting. Two diagonal cells have a
+            // bounding box spanning four — and re-resolving it yields *nine*, because the
+            // box's `max` edges sit exactly on grid lines and a vertex on the line belongs
+            // to the cell above and east of it. A caller that stored the box instead of the
+            // set would widen a two-cell selection into nine cells' worth of download.
         const diagonal = [parseCellId("18/1204/1052"), parseCellId("18/1205/1053")];
         expect(cellsIntersecting(18, coverageBbox(diagonal)!)).toHaveLength(9);
     });
@@ -346,9 +329,8 @@ describe("the properties the vectors above are examples of", () => {
     }
 
     it("round-trips every id through format and parse", () => {
-        // The canonical spelling is this app's map key, so `parse ∘ format` not
-        // being the identity would be two entries for one cell — in an index,
-        // in a union, in a download plan.
+            // The canonical spelling is this app's map key, so `parse ∘ format` not being
+            // the identity would be two entries for one cell.
         const rnd = seededRandom(0x1203_1052);
         for (let n = 0; n < 500; n++) {
             const log2 = MIN_CELL_LOG2 + Math.floor(rnd() * (MAX_CELL_LOG2 - MIN_CELL_LOG2 + 1));
@@ -364,10 +346,10 @@ describe("the properties the vectors above are examples of", () => {
     });
 
     it("puts every point's own cell inside the covering of any box around it", () => {
-        // `cellContaining ⊆ cellsIntersecting`: the one relation a selection
-        // depends on, since a box is resolved with the second and a route point
-        // is reasoned about with the first. A drift between them is a hole
-        // exactly where the user pointed.
+            // `cellContaining ⊆ cellsIntersecting`: the one relation a selection depends
+            // on, since a box is resolved with the second and a route point is reasoned
+            // about with the first. A drift between them is a hole exactly where the user
+            // pointed.
         const rnd = seededRandom(0x4718_5920);
         const between = (lo: number, hi: number) => Math.round(lo + rnd() * (hi - lo));
         for (let n = 0; n < 500; n++) {
