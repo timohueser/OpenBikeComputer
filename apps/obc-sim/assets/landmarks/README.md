@@ -2,7 +2,6 @@
 
 Fixed 216 × 240 RGB222 assets for the simulator sample sets, 51,840 bytes each. Source images were
 resized, padded white and ordered dithered (4 × 4), without cropping.
-[Selection and source revisions](../../../../docs/assets/ride-assistant/glacier-pass-study/README.md).
 
 Each adaptation keeps its source licence. The credits and links are also in the simulator Sources
 drawer.

@@ -6,9 +6,8 @@ copy: ai
 
 # OpenBikeComputer documentation
 
-OpenBikeComputer is an open-source bikepacking computer. It provides offline maps, route navigation, and ride recording.
-
-The device, simulator, and web demo use the same application and rendering code. These pages describe the system boundaries and data paths.
+OpenBikeComputer is an open-source bikepacking computer. It provides offline maps, route
+navigation, and ride recording, with no network on the ride.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -51,7 +50,8 @@ The device, simulator, and web demo use the same application and rendering code.
 <figcaption>The tools convert maps and routes to compact binary files. The device, simulator, and web demo use the same application and rendering code. Device sensors supply live data.</figcaption>
 </figure>
 
-The device reads compact binary formats directly from storage. It does not convert JSON or XML while it operates.
+The device reads compact binary formats straight from storage. The conversion work happens on a
+computer, before the ride.
 
 ## Where to find what
 
@@ -100,8 +100,8 @@ The device reads compact binary formats directly from storage. It does not conve
 | Conversion bridge | [`obc-web-convert`](src:apps/obc-web-convert) | Converts GPX and OBCR data in the browser. |
 | Assembly bridge | [`obc-web-assemble`](src:apps/obc-web-assemble) | Assembles and verifies map cells in the browser. |
 
-Start with [System architecture](software/architecture/). Then read [Rendering pipeline](software/rendering/) and [Data formats](software/formats/).
+Start with [System architecture](software/architecture/). Then read
+[Rendering pipeline](software/rendering/) and [Data formats](software/formats/).
 
-## Scope
-
-These pages explain architecture and behavior. The [`specs/`](src:specs) directory defines exact binary and wire contracts.
+These pages explain how the system works and why. The [`specs/`](src:specs) directory defines the
+exact binary and wire contracts.
