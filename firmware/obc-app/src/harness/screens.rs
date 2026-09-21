@@ -22,6 +22,19 @@ fn positional_ids(n: usize) -> Vec<crate::CatalogObjectId> {
     (0..n as crate::CatalogObjectId).collect()
 }
 
+/// A stored ride, enough of one for a list row and its detail page.
+fn test_ride(name: &str) -> crate::RideSummary {
+    crate::RideSummary {
+        name: heapless::String::try_from(name).unwrap(),
+        start_time: 1_720_000_000,
+        distance_m: 12_000,
+        moving_time_s: 2_400,
+        climb_m: 180,
+        synced: false,
+        synced_at_utc: 0,
+    }
+}
+
 /// The durable object id one pass asks the store to remove, if a guarded hold requested a delete.
 fn took_route_delete(app: &mut App) -> Option<crate::CatalogObjectId> {
     match quiet_pass(app, 0).effects.catalog.take() {
@@ -1259,6 +1272,82 @@ fn laps_of_escape_and_re_descent_leave_room_for_a_host_card() {
 
     app.on_warning(WarningFlags::REC_ERROR);
     assert!(matches!(app.top_screen(), Screen::Warning(_)), "the host warning must still fit over the escape");
+}
+
+/// The deepest screen stack the navigating gestures reach, found by walking the tree instead of by
+/// one hand-written descent. `MAX_DEPTH` is not a wall: `apply` drops the push behind a
+/// `debug_assert`, so a release build loses the screen without a sound. The pin below is what keeps
+/// the reserved host-card slots real.
+#[test]
+fn the_deepest_reachable_stack_leaves_the_host_card_slots_free() {
+    /// Steps taken on a page before its Press, so the walk reaches every row of the longest list.
+    const ROWS: i32 = 16;
+    /// A tree that outgrows this is no longer the one the pin describes.
+    const VISITS: usize = 4_000;
+    /// Deepest rider path: Home, Map, Menu, Settings, Ride, Data fields, Add field.
+    const DEEPEST: usize = 7;
+
+    fn seeded() -> App {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map], riding
+        app.test_mount_store();
+        app.set_backlight_available(true);
+        app.set_routes_with_ids(&test_routes(), &IDS3);
+        app.set_rides(&[
+            crate::RideEntry { id: 7, summary: test_ride("Ride A") },
+            crate::RideEntry { id: 9, summary: test_ride("Ride B") },
+        ]);
+        // The escape is the way into the tree from a riding view, and [Home, Map, Menu] is the
+        // deepest root any descent starts from. On the Map itself a step zooms and a press pauses.
+        app.apply_gesture(Gesture::BackHold);
+        app
+    }
+
+    /// One path replayed from a fresh device: on each page, `k` steps and then a Press.
+    fn walk(path: &[i32]) -> App {
+        let mut app = seeded();
+        for &k in path {
+            for _ in 0..k {
+                app.apply_gesture(Gesture::Step(1));
+            }
+            app.apply_gesture(Gesture::Press);
+        }
+        app
+    }
+
+    // A stack is visited once per shape: its rows are then all pressed from that one representative.
+    let mut seen: std::collections::BTreeSet<Vec<&'static str>> = std::collections::BTreeSet::new();
+    let mut pending: Vec<Vec<i32>> = vec![Vec::new()];
+    let mut deepest: Vec<&'static str> = Vec::new();
+    let mut visits = 0usize;
+    while let Some(path) = pending.pop() {
+        visits += 1;
+        assert!(visits < VISITS, "the walk outgrew its budget on {path:?}");
+        let app = walk(&path);
+        let here: Vec<&'static str> = app.ui.stack.iter().map(Screen::name).collect();
+        if !seen.insert(here.clone()) {
+            continue;
+        }
+        if here.len() > deepest.len() {
+            deepest = here;
+        }
+        pending.extend((0..ROWS).map(|k| {
+            let mut next = path.clone();
+            next.push(k);
+            next
+        }));
+    }
+
+    assert!(seen.len() >= 20, "the walk reached only {} stacks — it stopped early", seen.len());
+    assert!(
+        seen.contains(&vec!["Home", "Map", "Menu", "Settings", "Ride", "StatFields", "AddField"]),
+        "the walk missed the documented deepest path"
+    );
+    assert_eq!(deepest.len(), DEEPEST, "the deepest reachable stack is now {deepest:?}");
+    assert_eq!(
+        crate::screen::MAX_DEPTH - deepest.len(),
+        3,
+        "the host-pushed cards lost a reserved slot to a deeper rider path"
+    );
 }
 
 /// A shutdown in progress is not cancellable by either device-wide input. It cannot be expressed

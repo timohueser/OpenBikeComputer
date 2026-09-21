@@ -171,7 +171,6 @@ mod tests {
             None,
             &mut frame,
             Some(reader),
-            Some(reader),
             None,
             None,
             240.0,

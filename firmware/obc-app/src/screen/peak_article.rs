@@ -35,11 +35,10 @@ impl PeakArticleScreen {
             _ => Transition::None,
         }
     }
-    pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
+    pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, '_>)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
-        S: obc_map_scene::MapScene,
     {
         super::landmarks::reading(cv, rx, false);
     }
