@@ -202,7 +202,7 @@ fn summarise(report: &BakeReport) {
     // that a reference carries a spike rather than a cliff the source lost.
     let (lat, lon) = lifts.max_at;
     println!(
-        "{} sample(s) lifted, largest {} m at {:.5},{:.5}; {} above {REPORT_M} m",
+        "{} sample(s) lifted, largest {} m at {:.6},{:.6}; {} above {REPORT_M} m",
         lifts.nodes,
         lifts.max_m,
         f64::from(lat) / 1e6,
