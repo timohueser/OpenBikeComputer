@@ -1,56 +1,42 @@
 //! LS021B7DD02 source-bus wire pack: the host-tested RGB222 to panel-wire transform the FLPR
-//! backend drains.
+//! backend drains. The area-gradation split, the odd/even column interleave and the pre-shift to
+//! GPIO bit positions live here, so the FLPR side stays a dumb `store → pulse BCK` loop.
 //!
-//! Where [`device64_to_rgb565`](crate::device64_to_rgb565) expands a device-64
-//! ([`FbDevice64`](crate::FbDevice64)) byte back to RGB565, this packs a whole row of device-64
-//! bytes into the LS021's parallel source-bus words, the format the FLPR clocks out over
-//! `BSP`/`BCK` and the 6 data lines. The area-gradation split, the odd/even column interleave and
-//! the pre-shift to GPIO bit positions live here, unit-tested against a longhand re-derivation of
-//! the analyzer-verified protocol, so the FLPR side stays a dumb `store → pulse BCK` loop.
-//!
-//! A packed row: the panel writes each pixel row as two area planes selected by the gate clock's
-//! level, an MSB plane (the 2/3-area block) and an LSB plane (the 1/3-area block). Each plane is
-//! shifted in as one sub-line of [`BCK_PER_SUBLINE`] words, so one row packs to [`ROW_WORDS`]
-//! u32s: the MSB sub-line at `[0..BCK_PER_SUBLINE)`, then the LSB sub-line, which is exactly how
-//! the FLPR reads `buf[i].ptr`.
+//! The panel writes each pixel row as two area planes selected by the gate clock's level, an MSB
+//! plane (the 2/3-area block) and an LSB plane (the 1/3-area block), each shifted in as one
+//! sub-line of [`BCK_PER_SUBLINE`] words. One row packs to [`ROW_WORDS`] u32s, MSB sub-line first.
 //!
 //! One word is one pixel pair: the even-`x` pixel on the `*0` lines and the odd-`x` pixel on the
-//! `*1` lines. A packed word holds those 6 data bits already shifted to their P2 GPIO positions
-//! (`DATA_MASK 0x751`), so the FLPR presents a column with one `OUTCLR` and one `OUTSET` and no
-//! bit-twiddling. `BCK` is not in the word; it is the FLPR's own pulse. The 4 trailing dummy
-//! columns of each sub-line are black.
+//! `*1` lines, with the 6 data bits already shifted to their P2 GPIO positions (`DATA_MASK`), so
+//! the FLPR presents a column with one `OUTCLR` and one `OUTSET`. `BCK` is the FLPR's own pulse,
+//! not part of the word, and the 4 trailing dummy columns are black.
 //!
-//! The positions are sparse because the six fixed sEMMC card pads own `P2.00–05`: the display data
-//! lines live on the four pins the SD-SPI path freed, plus the two pads time-shared with the
-//! card's `D3` and `D1`, whose `CTRLSEL` hands them to the display blob or to the sEMMC soft
-//! peripheral per mode. The two never run at once.
+//! The positions are sparse because the six sEMMC card pads own `P2.00–05`: the display lines live
+//! on the four pins the SD-SPI path freed plus two pads time-shared with the card, whose `CTRLSEL`
+//! hands them to the display blob or the sEMMC peripheral per mode. The two never run at once.
 //!
 //! | line | `R0` | `R1` | `G0` | `G1` | `B0` | `B1` |
 //! |---|---|---|---|---|---|---|
 //! | P2 pin | `.06` | `.08` | `.09` | `.10` | `.00` (`D3`) | `.04` (`D1`) |
 //! | word bit | 6 | 8 | 9 | 10 | 0 | 4 |
 //!
-//! This module is the normative definition of that layout; the FLPR's C port
-//! (`obc-fw-nrf54l/src/flpr/flpr_scan.c`, `pack_word` and `DATA_MASK`) mirrors it bit for bit, and
-//! the goldens below pin the host side.
+//! This module is the normative definition of that layout, and the FLPR's C port
+//! (`obc-fw-nrf54l/src/flpr/flpr_scan.c`) mirrors it bit for bit.
 //!
-//! The panel is DDR: it latches the source bus on both `BCK` edges, so the FLPR drains these words
-//! one per edge, word `2k` before the rising edge and `2k+1` before the falling, clocking the 120
-//! pairs out in about 60 `BCK` cycles. The pack itself is edge-agnostic; the rising and falling
-//! split lives in the FLPR's `drive_subline`.
+//! The panel is DDR: it latches the source bus on both `BCK` edges, so the FLPR drains one word
+//! per edge and clocks the 120 pairs out in about 60 cycles. The pack is edge-agnostic.
 //!
-//! Area-gradation split: each channel's device-64 level is 2 bits, so the MSB plane carries the
-//! high bit (`level >> 1`) and the LSB plane the low bit (`level & 1`). A logic analyzer proved
-//! this split; the test module re-derives it longhand and asserts byte-for-byte agreement.
+//! Area-gradation split: each channel's level is 2 bits, so the MSB plane carries `level >> 1` and
+//! the LSB plane `level & 1`. A logic analyzer proved this split, and the tests re-derive it.
 
-/// Panel width in pixels — 240 columns, clocked as 120 pixel pairs per sub-line.
+/// Panel width in pixels, clocked as 120 pixel pairs per sub-line.
 pub const WIDTH: usize = 240;
-/// Data columns clocked per sub-line: `WIDTH / 2` pixels-per-`BCK` = **120**.
+/// Data columns clocked per sub-line.
 pub const COLS_PER_SUBLINE: usize = WIDTH / 2;
-/// `BCK` words per sub-line: 120 data columns plus 4 trailing dummy columns that push the last
-/// pixels through the source shift register. Also the FLPR's per-sub-line `len`.
+/// `BCK` words per sub-line: 120 data columns plus 4 dummy columns that push the last pixels
+/// through the source shift register. Also the FLPR's per-sub-line `len`.
 pub const BCK_PER_SUBLINE: usize = COLS_PER_SUBLINE + 4;
-/// Words in one full **row** buffer: the MSB sub-line followed by the LSB sub-line.
+/// Words in one full row buffer: the MSB sub-line followed by the LSB sub-line.
 pub const ROW_WORDS: usize = 2 * BCK_PER_SUBLINE;
 
 /// Pack one pixel pair (two device-64 bytes, `0b00_RR_GG_BB`) into one source-bus word for the
@@ -64,19 +50,16 @@ fn pack_pair(even: u8, odd: u8, msb: bool) -> u32 {
     let (re, ge, be) = (bit(even, 4), bit(even, 2), bit(even, 0)); // even x → R0/G0/B0
     let (ro, go, bo) = (bit(odd, 4), bit(odd, 2), bit(odd, 0)); // odd  x → R1/G1/B1
 
-    // Shifted straight to the P2 pin positions of the rehomed bus (module doc's pin table):
-    // R0→P2.06, R1→P2.08, G0→P2.09, G1→P2.10, B0→P2.00, B1→P2.04.
+    // Shifted straight to the P2 pin positions of the bus; see the module doc's pin table.
     (re << 6) | (ro << 8) | (ge << 9) | (go << 10) | be | (bo << 4)
 }
 
-/// Pack one row of device-64 ([`FbDevice64`](crate::FbDevice64)) pixels into the LS021 FLPR
-/// write-buffer words: the MSB sub-line into `out[0..BCK_PER_SUBLINE]` and the LSB sub-line into
-/// `out[BCK_PER_SUBLINE..ROW_WORDS]`. `row` is one framebuffer row of [`WIDTH`] device-64 bytes.
-/// The 4 trailing dummy columns of each sub-line are black.
+/// Pack one row of device-64 pixels into the FLPR write-buffer words: the MSB sub-line into
+/// `out[0..BCK_PER_SUBLINE]` and the LSB sub-line after it. The 4 trailing dummy columns are
+/// black.
 ///
-/// Panics if `row.len() < WIDTH` or `out.len() < ROW_WORDS`, which is a buffer-wiring bug. The
-/// words are written but not fenced: the caller owns the cross-core barrier and the buffer-ready
-/// handshake.
+/// Panics if a buffer is too small, which is a wiring bug. The words are written but not fenced:
+/// the caller owns the cross-core barrier and the buffer-ready handshake.
 pub fn pack_row(row: &[u8], out: &mut [u32]) {
     assert!(row.len() >= WIDTH, "row shorter than the panel width");
     assert!(out.len() >= ROW_WORDS, "out shorter than a full row buffer");
@@ -108,8 +91,7 @@ mod tests {
     }
 
     /// The source-bus pin map, written as P2 pin indexes rather than word shifts: a packed word's
-    /// bit position is the pin index, so re-deriving the goldens from these catches a bit-position
-    /// slip in `pack_pair` instead of mirroring it.
+    /// bit position is the pin index, so re-deriving the goldens catches a slip in `pack_pair`.
     const R0_PIN: u32 = 6; // P2.06 (was SD-SPI SCK)
     const R1_PIN: u32 = 8; // P2.08 (was SD-SPI MOSI)
     const G0_PIN: u32 = 9; // P2.09 (was SD-SPI MISO)
@@ -117,8 +99,7 @@ mod tests {
     const B0_PIN: u32 = 0; // P2.00, time-shared with sEMMC D3
     const B1_PIN: u32 = 4; // P2.04, time-shared with sEMMC D1
 
-    /// The six data lines together: the FLPR's `OUTCLR` and `OUTSET` mask, and the packed word of
-    /// a solid-white column.
+    /// The six data lines together: the FLPR's mask, and a solid-white column's packed word.
     const DATA_MASK: u32 =
         (1 << R0_PIN) | (1 << R1_PIN) | (1 << G0_PIN) | (1 << G1_PIN) | (1 << B0_PIN) | (1 << B1_PIN);
     /// Per-channel line pairs (`*0` even + `*1` odd), derived from the pin map above.
@@ -127,8 +108,7 @@ mod tests {
     const BLUE_LINES: u32 = (1 << B0_PIN) | (1 << B1_PIN);
 
     /// Cross-language pin: the mask this module packs to must be the literal the FLPR blob clears
-    /// and sets. A failure means `flpr_scan.c`'s `DATA_MASK` and the pin map above have diverged,
-    /// and the panel would show garbage on glass.
+    /// and sets. A failure means the two have diverged and the panel would show garbage.
     #[test]
     fn data_mask_matches_the_flpr_blob() {
         assert_eq!(DATA_MASK, 0x751, "DATA_MASK must equal flpr_scan.c's 0x751");
@@ -137,22 +117,16 @@ mod tests {
         assert_eq!(BLUE_LINES, 0x011);
     }
 
-    // Nothing else in CI pins the C blob. An edit to `flpr_scan.c` that keeps `DATA_MASK 0x751`
-    // but permutes `pack_word`'s shifts scrambles the panel and passes the whole host suite,
-    // because the host pack and the blob are two independent encodings of one layout. So read the
-    // C source at compile time and assert its `DATA_MASK` and its six `pack_word` shift amounts
-    // against the pin map above.
-    //
-    // The parse tolerates whitespace and parentheses but is strict on structure: a missing define,
-    // a missing `pack_word`, a reworded return expression or a moved file fails the test loudly
-    // rather than silently passing on nothing.
+    // Nothing else in CI pins the C blob, and an edit that keeps `DATA_MASK` but permutes
+    // `pack_word`'s shifts scrambles the panel while passing the whole host suite, because the
+    // two are independent encodings of one layout. So read the C source at compile time and assert
+    // its mask and its six shift amounts against the pin map. The parse is strict on structure: a
+    // missing define, a reworded return or a moved file fails the test loudly.
 
-    /// The FLPR scan blob's C source, embedded at test-compile time. It is a `cfg(test)` item, so
-    /// no device build ever sees it.
+    /// The FLPR scan blob's C source, embedded at test-compile time, under `cfg(test)`.
     const FLPR_SCAN_C: &str = include_str!("../../../obc-fw-nrf54l/src/flpr/flpr_scan.c");
 
-    /// `#define DATA_MASK 0x751u` → `0x751`. Panics (= test failure) if the define is gone or is
-    /// not a `0x`-prefixed literal.
+    /// `#define DATA_MASK 0x751u` to `0x751`. Fails the test if the define is gone or malformed.
     fn c_data_mask(src: &str) -> u32 {
         let line = src
             .lines()
@@ -170,9 +144,8 @@ mod tests {
             .unwrap_or_else(|e| panic!("flpr_scan.c: DATA_MASK `{tok}` is not a hex literal: {e}"))
     }
 
-    /// The `name << shift` terms of `pack_word`'s return expression, in source order. A bare term
-    /// (`be`) is shift 0. Panics (= test failure) unless there are exactly six single-variable
-    /// terms.
+    /// The `name << shift` terms of `pack_word`'s return expression, in source order; a bare term
+    /// is shift 0. Fails the test unless there are exactly six single-variable terms.
     fn c_pack_word_shifts(src: &str) -> Vec<(String, u32)> {
         let fn_at = src
             .find("uint32_t pack_word(")
@@ -206,8 +179,8 @@ mod tests {
         terms
     }
 
-    /// The blob and this module must encode the *same* pin map — mask **and** per-line positions.
-    /// This is the only thing standing between a permuted `pack_word` and a scrambled panel.
+    /// The blob and this module must encode the same pin map, mask and per-line positions alike:
+    /// the only thing between a permuted `pack_word` and a scrambled panel.
     #[test]
     fn flpr_blob_carries_the_same_pin_map() {
         assert_eq!(c_data_mask(FLPR_SCAN_C), DATA_MASK, "flpr_scan.c's DATA_MASK disagrees with this module's pin map");
@@ -224,8 +197,8 @@ mod tests {
         }
     }
 
-    /// Independent longhand re-derivation of the golden reference word (the analyzer-verified
-    /// plane split + the `R0..B1` pin map above), so the test fails if `pack_pair` drifts.
+    /// Independent longhand re-derivation of the golden reference word, so the test fails if
+    /// `pack_pair` drifts.
     fn golden_word(even: (u8, u8, u8), odd: (u8, u8, u8), msb: bool) -> u32 {
         // plane_bits: MSB plane = level>>1, LSB plane = level&1.
         let plane = |l: u8| if msb { (l >> 1) & 1 } else { l & 1 } as u32;
@@ -249,9 +222,8 @@ mod tests {
         assert!(out.iter().all(|&w| w == 0), "black row must pack to all-zero words");
     }
 
-    /// Solid white: every data column is `DATA_MASK` in both planes, all six lines high and odd
-    /// equal to even, and the 4 dummy columns are `0`. It also proves the pack never sets a bit
-    /// outside the six data lines, which would be an `OUTSET` on a pin the FLPR does not own.
+    /// Solid white: every data column is `DATA_MASK` in both planes and the dummy columns are `0`.
+    /// It also proves the pack never sets a bit outside the six data lines.
     #[test]
     fn solid_white_matches_pack_solid() {
         let row = [dev64(3, 3, 3); WIDTH];
@@ -267,9 +239,8 @@ mod tests {
         }
     }
 
-    /// Pure channels at level 3 land on the right line pairs (catches an R/G/B swap): red lights
-    /// only `R0|R1` (bits 6,8 → `0x140`), green only `G0|G1` (bits 9,10 → `0x600`), blue only
-    /// `B0|B1` (bits 0,4 → `0x011`). At full level both planes carry the bit.
+    /// Pure channels at level 3 land on the right line pairs, which catches an R/G/B swap. At full
+    /// level both planes carry the bit.
     #[test]
     fn pure_channels_hit_the_right_lines() {
         for (level, mask) in [((3, 0, 0), RED_LINES), ((0, 3, 0), GREEN_LINES), ((0, 0, 3), BLUE_LINES)] {
@@ -281,9 +252,7 @@ mod tests {
         }
     }
 
-    /// The area-gradation split: level 2 is MSB-only (2/3 block), level 1 is LSB-only (1/3 block).
-    /// A red `(2,0,0)` pixel ⇒ `R0|R1` set in the MSB plane, nothing in the LSB plane; `(1,0,0)`
-    /// the reverse.
+    /// The area-gradation split: level 2 is MSB-only and level 1 is LSB-only.
     #[test]
     fn mid_levels_split_across_planes() {
         let two = [dev64(2, 0, 0); WIDTH];
@@ -298,9 +267,8 @@ mod tests {
         assert_eq!(out[BCK_PER_SUBLINE], RED_LINES, "level 1 → LSB plane only");
     }
 
-    /// Odd and even columns are distinct lines: a row whose even pixels are red and odd pixels are
-    /// blue must put red only on `R0` (bit6 = P2.06) and blue only on `B1` (bit4 = P2.04) —
-    /// proves no odd/even interleave error and that the pair maps `even→*0, odd→*1`.
+    /// Odd and even columns are distinct lines, so a row of red even pixels and blue odd pixels
+    /// must light only `R0` and `B1`: no interleave error, and the pair maps even to `*0`.
     #[test]
     fn odd_even_interleave_is_distinct() {
         let mut row = empty_row();
@@ -314,14 +282,11 @@ mod tests {
         assert_eq!(out[0], 0x50);
     }
 
-    /// The pin map, one line at a time: light exactly one channel of exactly one parity, and the
-    /// packed word must be exactly that line's bit. Six one-hot assertions covering all six pins,
-    /// and the tightest pin on the map: the pattern test below compares only pairs, where a
-    /// `G0`↔`G1` or `B0`↔`B1` swap can hide whenever the two pixels carry the same level.
-    ///
-    /// Each case also asserts the literal word. The derived `1 << *_PIN` form alone would survive
-    /// a joint swap that moves `pack_pair`'s shift and the pin constant together, so the literals
-    /// are hand-computed from the pin numbers.
+    /// The pin map, one line at a time: light one channel of one parity, and the packed word must
+    /// be exactly that line's bit. The tightest pin on the map, because the pattern test below
+    /// compares only pairs, where a same-channel swap can hide. Each case also asserts the literal
+    /// word, hand-computed from the pin numbers, because the derived form would survive a joint
+    /// swap of the shift and the pin constant.
     #[test]
     fn each_line_is_addressable_on_its_own() {
         // (even pixel RGB, odd pixel RGB, the line's bit, that bit written out longhand)
@@ -348,9 +313,9 @@ mod tests {
         }
     }
 
-    /// Full-row agreement against the longhand golden re-derivation, over an arbitrary spatial
-    /// pattern in both planes: the catch-all for any bit-position or plane drift. Every channel
-    /// changes level between neighbouring pixels, so an odd/even swap on any line shows up here.
+    /// Full-row agreement against the longhand re-derivation over an arbitrary pattern in both
+    /// planes: the catch-all for any bit-position or plane drift. Every channel changes level
+    /// between neighbouring pixels, so an odd/even swap shows up here.
     #[test]
     fn matches_golden_reference_over_a_pattern() {
         let mut row = empty_row();
