@@ -53,12 +53,15 @@ const plans: CoveragePlan[] = [
 ];
 const credential = createAgentToken(owner, 'Local coverage demo agent', new Date(Date.now() + 86_400_000).toISOString()).token;
 const cookies = { get: () => undefined } as unknown as RequestEvent['cookies'];
-async function propose(index: number, procedures: VerificationTest[] = []) {
-  const request = new Request(`${process.env.ORIGIN}/api/coverage-proposals`, { method: 'POST', headers: { authorization: `Bearer ${credential}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ baseRevision: db.latestRevision().id, requirementId: requirements[index].id, sourceSha, plan: plans[index], ...(procedures.length ? { procedures } : {}) }) });
-  const response = await api({ request, params: { path: 'coverage-proposals' }, locals: { actor: authenticate(request, cookies) }, cookies } as unknown as RequestEvent);
+async function agentPost(path: string, body: Record<string, unknown>) {
+  const request = new Request(`${process.env.ORIGIN}/api/${path}`, { method: 'POST', headers: { authorization: `Bearer ${credential}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ baseRevision: db.latestRevision().id, sourceSha, ...body }) });
+  const response = await api({ request, params: { path }, locals: { actor: authenticate(request, cookies) }, cookies } as unknown as RequestEvent);
   if (!response.ok) throw new Error(await response.text());
   return await response.json();
+}
+function propose(index: number, procedures: VerificationTest[] = []) {
+  return agentPost('coverage-proposals', { requirementId: requirements[index].id, plan: plans[index], ...(procedures.length ? { procedures } : {}) });
 }
 db.saveRevision(db.latestRevision().id, 'Local demo setup', requirements);
 for (let i = 0; i < plans.length; i++) {
@@ -88,8 +91,15 @@ db.saveRevision(changed.id, 'Demo requirement edit', changed.requirements);
 plans[1].criteria.push({ id: 'zoom', statement: 'Returning preserves the selected zoom level.', evidence: [], gap: 'Add an assertion for the new zoom-preservation obligation. This obligation is added only in the demo.' });
 plans[1].rationale = 'The requirement gained a zoom-preservation clause. Keep the existing Back-action evidence and record the new gap.';
 await propose(1);
+// An agent suggests a requirement, and a change to one. The owner writes the prose and ticks them off.
+await agentPost('requirement-suggestions', { title: 'Export timestamps', group: 'Ride export',
+  statement: 'Exported GPX files shall keep the recorded time of every sample that has one. A sample without a valid time shall be exported without a time element, not with an invented one.',
+  reason: 'The Rust exporter and the companion exporter both omit point times. No requirement in this revision states the obligation, so nothing gates the fix and no coverage plan can cite it.' });
+await agentPost('requirement-suggestions', { requirementId: 'SYS-030', title: 'Say what happens without a fix',
+  statement: 'The user shall be able to exit pan/zoom mode with one action. This shall restore following mode and center the map back on the user position. Without a position fix, the map shall follow the last known position and show that the fix is missing.',
+  reason: 'The return action only recenters when a fix is present. Without one the map still leaves pan mode and follows the last known position. The statement does not say so, so the criterion cannot be tested for that case.' });
 db.db.close();
 const child = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'dev', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: resolve(import.meta.dirname, '..'), env: process.env, stdio: 'inherit' });
-console.log(`\nLocal coverage demo: ${process.env.ORIGIN}\nUsername: demo\nPassword: ${password}\nDisposable database: ${directory}\nSYS-039: approve or edit the proposed evidence replacement. SYS-030: a proposal records a demo requirement addition as a gap. The release candidate retains the earlier snapshot. New demo tests and all results are illustrative.\n`);
+console.log(`\nLocal coverage demo: ${process.env.ORIGIN}\nUsername: demo\nPassword: ${password}\nDisposable database: ${directory}\nSuggestions: one new requirement and one change to SYS-030 wait in the panel.\nSYS-039: approve or edit the proposed evidence replacement. SYS-030: a proposal records a demo requirement addition as a gap. The release candidate retains the earlier snapshot. New demo tests and all results are illustrative.\n`);
 for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => child.kill(signal));
 child.on('exit', code => { rmSync(directory, { recursive: true, force: true }); process.exitCode = code ?? 0; });
