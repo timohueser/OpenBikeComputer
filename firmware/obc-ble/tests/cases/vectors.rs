@@ -1,7 +1,6 @@
-//! `obc-ble`'s **production** codecs against the shared `specs/vectors/` fixtures — the same
-//! files the app's `swift test` pins and `obc-vectors` builds from the spec. `obc-vectors` proves
-//! the *bytes* match spec-derived builders; this proves the shipped codecs decode and re-encode
-//! those bytes exactly. A drift fails here, there, and on the Swift side.
+//! The production codecs against the shared `specs/vectors/` fixtures, the same files the app's
+//! `swift test` pins. `obc-vectors` proves the bytes match spec-derived builders; this proves the
+//! shipped codecs decode and re-encode those bytes exactly.
 
 use obc_ble::descriptor::{ObjectType, Op, StatusMessage, TransferStatus};
 use obc_ble::{Config, StoreChanged, TransferControl, TransferResult, VersionRead};
@@ -14,8 +13,7 @@ fn fixture(name: &str) -> Vec<u8> {
     })
 }
 
-/// The production CRC agrees with `obc-vectors`' independent spec reference on a real object, and
-/// both agree with the descriptor's announced CRC — one number tying the three implementations.
+/// One number ties the production CRC, the `obc-vectors` reference, and the descriptor's announce.
 #[test]
 fn production_crc_matches_reference_and_descriptor() {
     let route = fixture("route-waypoints.obcr");
@@ -39,7 +37,6 @@ fn transfer_control_vectors_round_trip() {
         assert_eq!(desc.op, op, "{name} op");
         assert_eq!(desc.ty, ty, "{name} type");
         assert_eq!(desc.object_id, id, "{name} id");
-        // Re-encoding the decoded descriptor reproduces the fixture byte-for-byte.
         assert_eq!(&desc.encode()[..], &bytes[..], "{name} re-encode");
     }
 }
@@ -61,11 +58,8 @@ fn version_read_vector() {
     assert_eq!(&enc[..len], &bytes[..], "re-encode");
 }
 
-/// The **pre-E1** read (spec §1): `version u16 · store_epoch u32`, no `obcm_version` — an older
-/// firmware talking to a newer host. It decodes cleanly (the epoch is there, so the ack gate is
-/// open) with `obcm_version = None`, and re-encodes to the same 6 bytes. `None`, not `Some(0)`: a
-/// fabricated `0` would read as "this device supports OBCM v0" and refuse every real map, the same
-/// class of mistake as fabricating store epoch `0`.
+/// A read without `obcm_version`: it decodes with `obcm_version = None` and re-encodes to the same
+/// 6 bytes. `None`, not `Some(0)`, which would read as OBCM v0 and refuse every real map.
 #[test]
 fn version_read_noobcm_vector() {
     let bytes = fixture("version-read-noobcm.bin");
@@ -78,10 +72,8 @@ fn version_read_noobcm_vector() {
     assert_eq!(&enc[..len], &bytes[..], "re-encode stays 6 bytes — the encoder does not invent the byte either");
 }
 
-/// The version-only `protocolVersion` read (spec §1, card-resident epoch #776): a device with no
-/// mounted store serves just the 2-byte version. It carries the protocol version, but the full
-/// [`VersionRead`] decode **rejects** it as truncated — exactly the app's "short read ⇒ storeEpoch
-/// nil ⇒ ack fail-closed" gate. Unchanged by E1: the no-store read never grew a byte.
+/// A device with no mounted store serves only the 2-byte version. A full [`VersionRead`] decode
+/// rejects that as truncated, which is the app's fail-closed ack gate.
 #[test]
 fn version_read_nostore_vector() {
     let bytes = fixture("version-read-nostore.bin");
@@ -90,9 +82,7 @@ fn version_read_nostore_vector() {
     assert!(VersionRead::decode(&bytes).is_err(), "a short read is not a full VersionRead — the app fail-closes");
 }
 
-/// The append-only rule this field rode in on (§1): a decoder takes the fields it knows and
-/// **ignores** bytes past them, so a future firmware appending another trailing field does not
-/// break this build — which is exactly why `obcm_version` needs no `PROTOCOL_VERSION` bump.
+/// The append-only rule: a decoder takes the fields it knows and ignores the bytes past them.
 #[test]
 fn version_read_ignores_unknown_trailing_bytes() {
     let mut bytes = fixture("version-read.bin");
@@ -103,9 +93,7 @@ fn version_read_ignores_unknown_trailing_bytes() {
     assert_eq!(vr.obcm_version, Some(obc_formats::obcm::VERSION));
 }
 
-/// The download announce (status `msg = 4`): the `msg` byte + the 12-byte descriptor. The
-/// production codec decodes it back through the shared `StatusMessage` envelope and the descriptor
-/// carries the download's size + CRC (matching the waypoint route).
+/// The download announce (`msg = 4`): the `msg` byte and the 12-byte descriptor.
 #[test]
 fn download_announce_vector() {
     let route = fixture("route-waypoints.obcr");
@@ -121,14 +109,12 @@ fn download_announce_vector() {
     assert_eq!(desc.total_len as usize, route.len());
     assert_eq!(desc.crc32, Crc32::checksum(&route));
 
-    // Re-encode reproduces the fixture byte-for-byte.
     let (buf, len) = Msg::DownloadAnnounce(desc).encode();
     assert_eq!(&buf[..len], &bytes[..]);
 }
 
-/// A *known* discriminator with a short body is a decode **error** (`Truncated`), while an unknown
-/// discriminator stays `Ok(None)` (ignored) — the forward-compat rule cuts exactly between the two.
-/// Pinned for `msg = 4`: every truncation of the announce frame is rejected, never misread.
+/// A known discriminator with a short body is a decode error, while an unknown discriminator stays
+/// `Ok(None)`. The forward-compatibility rule cuts exactly between the two.
 #[test]
 fn truncated_download_announce_is_rejected() {
     use obc_ble::DescriptorError;
@@ -155,15 +141,13 @@ fn status_transfer_result_vector() {
     assert_eq!(result.status, TransferStatus::Committed);
     assert_eq!(result.committed_offset, route_len);
 
-    // Re-encode reproduces the fixture.
     let rebuilt = Msg::TransferResult(TransferResult::new(7, TransferStatus::Committed, route_len));
     let (buf, len) = rebuilt.encode();
     assert_eq!(&buf[..len], &bytes[..]);
 }
 
-/// The storage-full reject fixture: a new-route upload (id `0xFFFF`) refused at descriptor-open
-/// time because the catalog is full. `status = 6` (`StorageFull`), nothing committed. Pins the
-/// discriminant byte so the Swift half decodes the same value.
+/// A new-route upload refused at descriptor-open time because the catalog is full. Pins the
+/// `storageFull` discriminant so the Swift half decodes the same value.
 #[test]
 fn status_transfer_storage_full_vector() {
     let bytes = fixture("status-transfer-storage-full.bin");
@@ -177,7 +161,6 @@ fn status_transfer_storage_full_vector() {
     assert_eq!(result.status, TransferStatus::StorageFull);
     assert_eq!(result.committed_offset, 0, "nothing committed");
 
-    // Re-encode reproduces the fixture byte-for-byte.
     let rebuilt = Msg::TransferResult(TransferResult::new(0xFFFF, TransferStatus::StorageFull, 0));
     let (buf, len) = rebuilt.encode();
     assert_eq!(&buf[..len], &bytes[..]);
@@ -196,9 +179,8 @@ fn status_store_changed_vector() {
     assert_eq!(&buf[..len], &bytes[..]);
 }
 
-/// The `ackRides` command fixture (spec §4.4, cmd 2) decodes through the production codec, its
-/// answer fixture decodes as the documented `commandResult` (detail = newly-flagged count), and
-/// re-encoding both reproduces the files byte-for-byte — the Swift side pins the same bytes.
+/// The `ackRides` command and its `commandResult` answer, both round-tripped through the
+/// production codec.
 #[test]
 fn command_ack_rides_vector() {
     use obc_ble::{AckRides, CommandResult, CommandStatus, CMD_ACK_RIDES};
@@ -212,7 +194,7 @@ fn command_ack_rides_vector() {
     let len = AckRides::encode(&[3, 5, 9], &mut out).unwrap();
     assert_eq!(&out[..len], &bytes[..], "re-encode");
 
-    // The answer: commandResult{cmd 2, ok, detail 3} — detail is the newly-flagged count.
+    // The answer: commandResult{cmd 2, ok, detail 3}; detail is the newly-flagged count.
     let result_bytes = fixture("status-command-result-ack.bin");
     let StatusMessage::CommandResult(r) = StatusMessage::decode(&result_bytes).unwrap().unwrap() else {
         panic!("expected commandResult")
@@ -222,17 +204,14 @@ fn command_ack_rides_vector() {
     assert_eq!(&buf[..len], &result_bytes[..]);
 }
 
-/// `forgetBond` (§4.4 cmd 4, #756): the command is a bare id (no args), and its answer is a plain
-/// `commandResult{cmd 4, ok}`. Pins the command byte and the round-trip through the production
-/// `commandResult` codec — the Swift side writes `Data([4])` and reads the same envelope back.
+/// `forgetBond` is a bare command byte, and its answer is a plain `commandResult{cmd 4, ok}`.
 #[test]
 fn command_forget_bond_round_trip() {
     use obc_ble::{CommandResult, CommandStatus, CMD_FORGET_BOND};
 
     assert_eq!(CMD_FORGET_BOND, 4, "the wire command id is pinned by the spec (§4.4)");
 
-    // The answer the firmware sends before it clears the bond + drops the link: commandResult(ok),
-    // no detail. Round-trips byte-for-byte through the shared codec.
+    // The firmware sends this answer before it clears the bond and drops the link.
     let (buf, len) = Msg::CommandResult(CommandResult::new(CMD_FORGET_BOND, CommandStatus::Ok)).encode();
     let StatusMessage::CommandResult(r) = StatusMessage::decode(&buf[..len]).unwrap().unwrap() else {
         panic!("expected commandResult")
@@ -240,10 +219,8 @@ fn command_forget_bond_round_trip() {
     assert_eq!((r.command, r.status, r.detail), (CMD_FORGET_BOND, CommandStatus::Ok, 0));
 }
 
-/// `setClock` (§4.4 cmd 5, epic #638 S2): the shared fixture decodes as the documented
-/// `(utc, offset_min)` and re-encodes to the same 7 bytes — the Swift side pins the same file. Like
-/// `forgetBond`, its answer is a bare `commandResult(ok)` with no store movement (the clock is not an
-/// object — no `storeChanged`, no revision bump).
+/// The `setClock` fixture decodes as `(utc, offset_min)` and re-encodes to the same 7 bytes. Its
+/// answer is a bare `commandResult(ok)`: the clock is not an object, so no `storeChanged` follows.
 #[test]
 fn command_set_clock_vector() {
     use obc_ble::{CommandResult, CommandStatus, SetClock, CMD_SET_CLOCK};
@@ -260,7 +237,7 @@ fn command_set_clock_vector() {
     let len = SetClock::encode(sc.utc, sc.offset_min, &mut out).unwrap();
     assert_eq!(&out[..len], &bytes[..], "re-encode");
 
-    // The device's answer (no `detail`, no companion `storeChanged`): commandResult{cmd 5, ok}.
+    // The device's answer: commandResult{cmd 5, ok}, with no detail.
     let (buf, len) = Msg::CommandResult(CommandResult::new(CMD_SET_CLOCK, CommandStatus::Ok)).encode();
     let StatusMessage::CommandResult(r) = StatusMessage::decode(&buf[..len]).unwrap().unwrap() else {
         panic!("expected commandResult")
@@ -268,9 +245,8 @@ fn command_set_clock_vector() {
     assert_eq!((r.command, r.status, r.detail), (CMD_SET_CLOCK, CommandStatus::Ok, 0));
 }
 
-/// `setClock` decode rejects every write a bad phone clock (or a wrong-length frame) would produce —
-/// each maps to `commandResult error` (§4.4). The plausibility gates live in the shared codec so the
-/// firmware and the iOS mirror agree on "valid".
+/// `setClock` rejects every write a bad phone clock or a wrong length would produce. The gates live
+/// in the shared codec, so the firmware and the iOS mirror agree on what is valid.
 #[test]
 fn set_clock_decode_edges() {
     use obc_ble::{SetClock, SET_CLOCK_MAX_OFFSET_MIN, SET_CLOCK_MIN_UTC};
@@ -281,15 +257,14 @@ fn set_clock_decode_edges() {
         b
     };
 
-    // Short and long writes are both malformed — setClock has no variable tail, so exactly 7 bytes.
+    // setClock has no variable tail, so the write is exactly 7 bytes.
     assert!(SetClock::decode(&[5, 0, 0, 0, 0, 0]).is_err(), "6 bytes: short");
     assert!(SetClock::decode(&[5, 0, 0, 0, 0, 0, 0, 0]).is_err(), "8 bytes: trailing is malformed");
-    // A wrong command byte is refused.
     assert!(SetClock::decode(&valid_cmd(4, SET_CLOCK_MIN_UTC, 0)).is_err(), "cmd 4 is not setClock");
     // A pre-2020 UTC is a bogus phone clock.
     assert!(SetClock::decode(&valid(SET_CLOCK_MIN_UTC - 1, 0)).is_err(), "utc before 2020-01-01");
     assert!(SetClock::decode(&valid(0, 0)).is_err(), "utc = 0");
-    // Offsets beyond ±14 h are rejected; the exact bounds (−12:00…+14:00 both hit ±840 here) pass.
+    // Offsets beyond ±14 h are rejected; the bounds themselves pass.
     assert!(SetClock::decode(&valid(SET_CLOCK_MIN_UTC, SET_CLOCK_MAX_OFFSET_MIN + 1)).is_err(), "offset > +840");
     assert!(SetClock::decode(&valid(SET_CLOCK_MIN_UTC, -SET_CLOCK_MAX_OFFSET_MIN - 1)).is_err(), "offset < −840");
     assert!(SetClock::decode(&valid(SET_CLOCK_MIN_UTC, SET_CLOCK_MAX_OFFSET_MIN)).is_ok(), "+840 is in range");
@@ -297,7 +272,7 @@ fn set_clock_decode_edges() {
     assert!(SetClock::decode(&valid(SET_CLOCK_MIN_UTC, 0)).is_ok(), "the 2020 epoch itself is accepted");
 }
 
-/// Build a 7-byte setClock frame with an arbitrary leading command byte (for the wrong-command edge).
+/// Build a 7-byte setClock frame with an arbitrary leading command byte.
 fn valid_cmd(cmd: u8, utc: u32, offset_min: i16) -> [u8; 7] {
     let mut b = [0u8; 7];
     b[0] = cmd;
@@ -305,8 +280,6 @@ fn valid_cmd(cmd: u8, utc: u32, offset_min: i16) -> [u8; 7] {
     b[5..7].copy_from_slice(&offset_min.to_le_bytes());
     b
 }
-/// `ackRides` decode edges: a `count` promising more ids than the write carries is truncated; a
-/// wrong command byte is refused; an empty ack and ignored trailing bytes are both fine.
 #[test]
 fn ack_rides_decode_edges() {
     use obc_ble::{AckRides, DescriptorError};
@@ -331,9 +304,7 @@ fn config_vector() {
     assert_eq!(&out[..len], &bytes[..]);
 }
 
-/// Every `TransferStatus` variant round-trips through `as_u8`/`from_u8` and survives a full
-/// `transferResult` encode→decode. Pins the discriminant values (`StorageFull == 6`) so a rename
-/// or reorder can't silently shift the wire byte.
+/// Pins the discriminant values, so a rename or a reorder cannot shift the wire byte.
 #[test]
 fn transfer_status_round_trips_all_variants() {
     use TransferStatus::*;
@@ -351,10 +322,8 @@ fn transfer_status_round_trips_all_variants() {
     }
 }
 
-/// An unknown `status` discriminator inside a well-formed `transferResult` envelope is an error
-/// (the discriminator IS known — only the status byte is out of range). Forward-compat for the
-/// status field lives on the *decoding* side (the app treats a decode failure / unknown status as
-/// a generic error); the codec itself rejects a byte it can't name.
+/// An unknown status byte inside a well-formed `transferResult` is an error: the discriminator is
+/// known, only the status byte is out of range, and the codec rejects a byte it cannot name.
 #[test]
 fn unknown_transfer_status_byte_is_rejected() {
     let (mut buf, len) = Msg::TransferResult(TransferResult::new(0xFFFF, TransferStatus::Committed, 0)).encode();
@@ -362,17 +331,16 @@ fn unknown_transfer_status_byte_is_rejected() {
     assert!(StatusMessage::decode(&buf[..len]).is_err());
 }
 
-/// The descriptor-open reject rule (issue #452), as a truth table. This is the exact classifier the
-/// board crate's `ObjectStore::upload_open` calls; the board crate can't host-test (bare-metal, no
-/// `test` crate), so the rule is pinned here.
+/// The descriptor-open reject rule as a truth table. The board crate cannot host-test, so the
+/// classifier its `ObjectStore::upload_open` calls is pinned here.
 #[test]
 fn upload_open_reject_rule() {
     use obc_ble::TransferControl;
-    let new = TransferControl::NEW_OBJECT_ID; // 0xFFFF
+    let new = TransferControl::NEW_OBJECT_ID;
     let known = 7u16; // a route the device holds
-    let unknown = 42u16; // a named id the device does NOT hold
+    let unknown = 42u16; // a named id the device does not hold
 
-    // Not full: new + replace both proceed; a named-but-unknown id is a genuine client error.
+    // Not full: new and replace both proceed; a named-but-unknown id is a client error.
     assert_eq!(TransferStatus::upload_open_reject(new, false, false), None, "new, room → arm");
     assert_eq!(TransferStatus::upload_open_reject(known, true, false), None, "replace, room → arm");
     assert_eq!(
@@ -381,23 +349,21 @@ fn upload_open_reject_rule() {
         "named-but-unknown id, room → notFound"
     );
 
-    // Full: a new upload is rejected up front; a replace-by-id of an existing route is EXEMPT.
+    // Full: a new upload is rejected up front; a replace by id is exempt.
     assert_eq!(
         TransferStatus::upload_open_reject(new, false, true),
         Some(TransferStatus::StorageFull),
         "new + full → storageFull"
     );
     assert_eq!(TransferStatus::upload_open_reject(known, true, true), None, "replace at the cap still commits");
-    // At the cap, even a named-but-unknown id reads as storage-full (it would grow the catalog).
+    // At the cap, a named-but-unknown id reads as storage-full: it would grow the catalog.
     assert_eq!(
         TransferStatus::upload_open_reject(unknown, false, true),
         Some(TransferStatus::StorageFull),
         "unknown id + full → storageFull"
     );
 
-    // The rule is object-type-agnostic (epic #526 TR4): the board's `upload_open_trip` passes the
-    // *trip* catalog's `catalog_full`/`id_known` into the exact same classifier — a new trip past the
-    // 16-trip cap → storageFull before any byte streams, a replace-by-id of a stored trip is exempt.
+    // The rule is type-agnostic: the board passes the trip catalog's flags to the same classifier.
     assert_eq!(
         TransferStatus::upload_open_reject(new, false, true),
         Some(TransferStatus::StorageFull),
@@ -406,29 +372,26 @@ fn upload_open_reject_rule() {
     assert_eq!(TransferStatus::upload_open_reject(known, true, true), None, "replace trip at the cap still commits");
 }
 
-/// The **map** announce-time reject rule (issue #927), as a truth table — the exact classifier the
-/// board's `ObjectStore::map_upload_open` calls before a single byte of a several-hundred-megabyte
-/// transfer moves. Pinned here for the same reason as `upload_open_reject_rule`: the board crate's
-/// own tests never run in CI.
+/// The map announce-time reject rule as a truth table, pinned here for the same reason as
+/// `upload_open_reject_rule`: the board crate's own tests never run in CI.
 #[test]
 fn map_announce_reject_rule() {
     use obc_ble::TransferControl;
-    const HEADER: u32 = 40; // obc_formats::obcm::HEADER_LEN — the board passes it in
+    const HEADER: u32 = 40; // obc_formats::obcm::HEADER_LEN; the board passes it in
     const HEADROOM: u64 = 8 << 20;
     let new = TransferControl::NEW_OBJECT_ID;
     let map = |id, len, free| TransferStatus::map_announce_reject(id, len, HEADER, free, HEADROOM);
 
-    // The happy path: a new map that fits, on a card whose free count we can read.
+    // A new map that fits, on a card whose free count is readable.
     assert_eq!(map(new, 300_000_000, Some(600 << 20)), None, "new map with room → arm");
 
-    // New-only. Every named id is refused — the device never rewrites a stored map in place, so
-    // there is no id an upload may target. (Contrast `upload_open_reject`, where a known id is the
-    // *exempt* case.)
+    // New-only: the device never rewrites a stored map in place, so no named id is a target. In
+    // `upload_open_reject`, by contrast, a known id is the exempt case.
     assert_eq!(map(0, 1_000, Some(u64::MAX)), Some(TransferStatus::NotFound), "id 0 → notFound");
     assert_eq!(map(7, 1_000, Some(u64::MAX)), Some(TransferStatus::NotFound), "a named id → notFound");
     assert_eq!(map(0xFF00, 1_000, Some(u64::MAX)), Some(TransferStatus::NotFound), "even a session-band id → notFound");
 
-    // Too short to be an OBCM at all — rejected before the free-space arithmetic.
+    // Too short to be an OBCM: rejected before the free-space arithmetic.
     assert_eq!(map(new, 0, Some(u64::MAX)), Some(TransferStatus::Error), "an empty map → error");
     assert_eq!(map(new, HEADER - 1, Some(u64::MAX)), Some(TransferStatus::Error), "shorter than a header → error");
     assert_eq!(map(new, HEADER, Some(u64::MAX)), None, "exactly a header is structurally acceptable");
@@ -448,8 +411,8 @@ fn map_announce_reject_rule() {
     assert_eq!(map(new, u32::MAX, None), None, "unknown free space → arm (fail late, not never)");
 }
 
-/// The held-back magic of a direct-to-final streamed upload (issue #927): the first four payload
-/// bytes are withheld from the write and replayed at commit, whatever the host's segmentation.
+/// The first four payload bytes are withheld from the write and replayed at commit, whatever the
+/// host's segmentation.
 #[test]
 fn held_magic_withholds_the_first_four_bytes() {
     use obc_ble::{HeldMagic, MAGIC_LEN};
@@ -479,24 +442,19 @@ fn held_magic_withholds_the_first_four_bytes() {
         assert_eq!(h.take(), Some(*b"OBCM"), "split at {split}: the magic still reassembles");
     }
 
-    // An object shorter than a magic never yields one (the announce guard rejects those first).
+    // An object shorter than a magic never yields one; the announce guard rejects those first.
     let mut h = HeldMagic::new();
     assert_eq!(h.feed(b"OB"), b"");
     assert_eq!(h.take(), None, "a 2-byte object has no magic to replay");
 }
 
-/// An unknown `status` discriminator decodes to `None` (ignored), never an error — forward
-/// compatibility.
 #[test]
 fn unknown_status_discriminator_is_ignored() {
     assert_eq!(StatusMessage::decode(&[0xEE, 0, 0, 0]), Ok(None));
 }
 
-/// The `tripList` fixture (spec §7.4) decodes through the production list codec: a 6-byte v2 header
-/// (entry_len 76) + one 76-byte entry whose totals sum the trip's two **resolvable** stages
-/// (2×2207 m / 2×76 m) while `stage_count` counts all three stored stages (the third is dangling),
-/// and whose trailing `crc32` is the trip file's whole-object CRC-32. Re-encoding reproduces the
-/// file byte-for-byte — the Swift `TripCodecTests` pin the same bytes.
+/// The `tripList` fixture: a 6-byte header and one 76-byte entry whose totals sum the trip's two
+/// resolvable stages, while `stage_count` counts all three stored stages.
 #[test]
 fn trip_list_vector() {
     use obc_ble::{ListHeader, TripListEntry};
@@ -523,9 +481,7 @@ fn trip_list_vector() {
     assert_eq!(rebuilt, bytes, "re-encode");
 }
 
-/// The trip object type + tripList type decode from the wire `type` byte (spec §4.1: trip = 9,
-/// tripList = 10). Pins the discriminants so a reorder can't silently shift the wire byte, and that
-/// a download-request descriptor for the tripList round-trips.
+/// Pins trip = 9 and tripList = 10, so a reorder cannot shift the wire byte.
 #[test]
 fn trip_object_types_and_descriptor() {
     assert_eq!(ObjectType::from_u8(9).unwrap(), ObjectType::Trip);
@@ -533,16 +489,11 @@ fn trip_object_types_and_descriptor() {
     assert_eq!(ObjectType::Trip.as_u8(), 9);
     assert_eq!(ObjectType::TripList.as_u8(), 10);
 
-    // A tripList download request (op=2, type=10, id 0) round-trips through the production codec.
     let desc = TransferControl { op: Op::Download, ty: ObjectType::TripList, object_id: 0, total_len: 0, crc32: 0 };
     assert_eq!(TransferControl::decode(&desc.encode()).unwrap(), desc);
 }
 
-/// The `map` object type (#889): the USB transport introduces it, because a map is far too large to
-/// have ever crossed BLE. Pins **16**, pins that the `11`–`15` sensor-reserved band still rejects —
-/// the reason 16 was chosen over the next free number — and that an upload descriptor for it
-/// round-trips through the production codec, so host and device agree on the byte before the device
-/// side can accept one.
+/// Pins the `map` type byte at 16, and that the 11-15 reserved band keeps rejecting.
 #[test]
 fn map_object_type_and_reserved_band() {
     assert_eq!(ObjectType::from_u8(16).unwrap(), ObjectType::Map);
@@ -561,14 +512,8 @@ fn map_object_type_and_reserved_band() {
     assert_eq!(TransferControl::decode(&desc.encode()).unwrap(), desc);
 }
 
-/// The object-type band the map upload lives in. Pins the bytes, that the reserved sensor band
-/// still rejects, and that `map` classifies as map payload — the property the board's
-/// held-back-magic streaming path keys on.
-///
-/// **The volume-set types are gone** (OBCM v14, #1420): `mapShard` 17, `mapSet` 18 and
-/// `terrainShard` 19 named files of a multi-file map, and a map is one file now. Their values are
-/// not re-issued to anything else — same no-reuse discipline as a retired GATT UUID — so `from_u8`
-/// refuses them along with everything else unallocated.
+/// The object-type band the map upload lives in. The values 17-19 named the files of a multi-file
+/// map; they are not re-issued, in the same way a retired GATT UUID is not.
 #[test]
 fn map_object_types() {
     assert_eq!(ObjectType::from_u8(16).unwrap(), ObjectType::Map);

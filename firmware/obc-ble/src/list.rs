@@ -1,39 +1,33 @@
-//! The `routeList` / `rideList` object codecs — the CoC-downloaded catalogs that outgrow the
-//! 512-byte ATT attribute cap. Shared shape: a 6-byte [`ListHeader`] + fixed entries, so entry `k`
-//! sits at `6 + entry_len·k` — O(1) indexing, no string scanning. In protocol v2 the list types
-//! **differ in entry length** (`routeList` 84 bytes, `rideList` 72, `tripList` 76), so the entry size
-//! is per-type ([`RouteListEntry::ENTRY_LEN`] / [`RideListEntry::ENTRY_LEN`]) and travels on the wire
-//! in the header's `entry_len` byte — there is no single shared entry-length constant.
+//! The `routeList`, `rideList` and `tripList` object codecs: the catalogs that outgrow the 512-byte
+//! ATT attribute cap and travel over the CoC. Each is a 6-byte [`ListHeader`] and fixed-size
+//! entries, so entry `k` sits at `6 + entry_len·k`. The entry length differs per type and travels
+//! in the header, so there is no shared entry-length constant.
 
 use crate::descriptor::DescriptorError;
 
 const ROUTE_ENTRY_LEN: usize = 76;
-/// `rideList` entry size — unchanged from v1.
 const RIDE_ENTRY_LEN: usize = 72;
 const TRIP_ENTRY_LEN: usize = 76;
 
-/// The smallest entry length any list type uses (`rideList` at [`RideListEntry::ENTRY_LEN`]) — the
-/// header decoder's floor sanity-check. A future entry growth appends fields and bumps the header's
-/// `entry_len`; an old reader steps by the announced length and decodes the prefix it knows.
+/// The header decoder's floor: the smallest entry length any list type uses. A reader steps by the
+/// header's announced `entry_len`, so a longer entry decodes as the prefix the reader knows.
 pub const MIN_LIST_ENTRY_LEN: usize = RIDE_ENTRY_LEN;
 
-/// The 6-byte header both list objects share (protocol v2, epic #632 item 7).
+/// The 6-byte header every list object shares.
 ///
 /// ```text
 ///   version    u8   = 2
-///   entry_len  u8   the entry size (76 routeList · 72 rideList); readers step by it, not a constant
-///   count      u16  entries actually in this object (after the MAX_RIDES / MAX_ROUTES cap)
-///   total      u16  full catalog size BEFORE the cap — truncated iff total > count
+///   entry_len  u8   the entry size; readers step by it, not by a constant
+///   count      u16  entries in this object, after the catalog cap
+///   total      u16  full catalog size before the cap; truncated iff total > count
 /// ```
 ///
-/// `total` makes a >`MAX_RIDES` (or >`MAX_ROUTES`) truncation visible on the wire: the device
-/// dropped `total - count` entries in FAT order, and the app surfaces a one-line warning instead of
-/// silently answering "up to date".
+/// `total` makes a truncation visible on the wire: the device dropped `total - count` entries in
+/// FAT order, and the app warns instead of answering "up to date".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ListHeader {
     pub count: u16,
-    /// Full catalog size before the `MAX_RIDES`/`MAX_ROUTES` cap. Equal to `count` when nothing was
-    /// dropped; greater when the object is truncated.
+    /// Equal to `count` when nothing was dropped, greater when the object is truncated.
     pub total: u16,
 }
 
@@ -41,8 +35,6 @@ impl ListHeader {
     pub const ENCODED_LEN: usize = 6;
     pub const VERSION: u8 = 2;
 
-    /// Encode the header. `entry_len` is the per-type entry size the entries that follow use
-    /// ([`RouteListEntry::ENTRY_LEN`] / [`RideListEntry::ENTRY_LEN`]).
     pub fn encode(&self, entry_len: u8) -> [u8; Self::ENCODED_LEN] {
         let mut b = [0u8; Self::ENCODED_LEN];
         b[0] = Self::VERSION;
@@ -52,9 +44,8 @@ impl ListHeader {
         b
     }
 
-    /// Decode a list header, rejecting an unknown version or an `entry_len` below the smallest a list
-    /// entry can be ([`MIN_LIST_ENTRY_LEN`]). The returned `entry_len` may *exceed* the type's own —
-    /// forward compatibility: step by it, decode the prefix you know.
+    /// Rejects an unknown version, or an `entry_len` below [`MIN_LIST_ENTRY_LEN`]. The returned
+    /// `entry_len` can exceed the type's own: step by it and decode the prefix you know.
     pub fn decode(data: &[u8]) -> Result<(Self, usize), DescriptorError> {
         if data.len() < Self::ENCODED_LEN {
             return Err(DescriptorError::Truncated);
@@ -72,25 +63,21 @@ impl ListHeader {
         ))
     }
 
-    /// Whether this list is truncated — the device dropped `total - count` entries at the cap.
+    /// True when the device dropped `total - count` entries at the cap.
     pub const fn is_truncated(&self) -> bool {
         self.total > self.count
     }
 
-    /// Byte offset of entry `k`, given the per-type `entry_len`.
     pub const fn entry_offset(k: usize, entry_len: usize) -> usize {
         Self::ENCODED_LEN + k * entry_len
     }
 
-    /// The whole encoded object's size for `count` entries of `entry_len` bytes.
     pub const fn object_len(count: usize, entry_len: usize) -> usize {
         Self::ENCODED_LEN + count * entry_len
     }
 
-    /// The bounds-checked slot for entry `k`, given the header's announced `entry_len`. `None` when
-    /// the object is shorter than `count` claims — `decode` reads only the 6-byte header and can't
-    /// police `count`; this guards the walk from slicing past the buffer. Pass the slice straight to
-    /// `RouteListEntry`/`RideListEntry::decode`.
+    /// The bounds-checked slot for entry `k`. `None` when the object is shorter than `count`
+    /// claims: `decode` reads only the header and cannot police `count`.
     pub fn entry_slice(data: &[u8], k: usize, entry_len: usize) -> Option<&[u8]> {
         let off = Self::ENCODED_LEN + k * entry_len;
         data.get(off..off.checked_add(entry_len)?)
@@ -105,20 +92,17 @@ pub struct RouteListEntry<'a> {
     pub ascent_m: u32,
     pub point_count: u32,
     pub waypoint_count: u16,
-    /// UTF-8, ≤ [`RouteListEntry::MAX_NAME`] bytes (the OBCR route-name cap); over-long input is
-    /// truncated at encode.
+    /// UTF-8, at most [`RouteListEntry::MAX_NAME`] bytes; over-long input is cut at encode.
     pub name: &'a [u8],
-    /// Whole-object CRC-32/IEEE of the stored OBCR bytes — the content fingerprint the app matches
-    /// against its `uploadedCRC32` record. `0` = unknown (e.g. a side-loaded file not yet
-    /// fingerprinted; the device fills it lazily at first list build).
+    /// Whole-object CRC-32/IEEE of the stored OBCR bytes, the content fingerprint the app matches
+    /// against its own record. `0` = unknown; the device fills it in at the first list build.
     pub crc32: u32,
 }
 
 impl<'a> RouteListEntry<'a> {
-    /// The name cap (matches the OBCR route-name field).
+    /// Matches the OBCR route-name field.
     pub const MAX_NAME: usize = 48;
     pub const ENTRY_LEN: usize = ROUTE_ENTRY_LEN;
-    /// Sentinel for an unknown content CRC (side-loaded file not yet fingerprinted).
     pub const CRC_UNKNOWN: u32 = 0;
 
     pub fn encode(&self) -> [u8; ROUTE_ENTRY_LEN] {
@@ -138,8 +122,8 @@ impl<'a> RouteListEntry<'a> {
         b
     }
 
-    /// Decode one entry from the first [`ENTRY_LEN`](Self::ENTRY_LEN) bytes of a slot — a longer
-    /// future entry's tail is ignored.
+    /// Decodes the first [`ENTRY_LEN`](Self::ENTRY_LEN) bytes of a slot; a longer entry's tail is
+    /// ignored.
     pub fn decode(data: &'a [u8]) -> Result<Self, DescriptorError> {
         if data.len() < Self::ENTRY_LEN {
             return Err(DescriptorError::Truncated);
@@ -158,7 +142,7 @@ impl<'a> RouteListEntry<'a> {
     }
 }
 
-/// One `rideList` entry — from the stored ride-object header.
+/// One `rideList` entry, built from the stored ride-object header.
 ///
 /// ```text
 ///   object_id      u16
@@ -181,15 +165,13 @@ pub struct RideListEntry<'a> {
     pub moving_time_s: u32,
     pub avg_speed_cms: u16,
     pub climb_m: u16,
-    /// UTF-8, ≤ [`RideListEntry::MAX_NAME`] bytes; over-long input is truncated at encode.
+    /// UTF-8, at most [`RideListEntry::MAX_NAME`] bytes; over-long input is cut at encode.
     pub name: &'a [u8],
 }
 
 impl<'a> RideListEntry<'a> {
-    /// One byte shorter than the route's — the fixed fields take one more.
+    /// One byte shorter than the route's: the fixed fields take one more.
     pub const MAX_NAME: usize = 47;
-    /// This entry's on-wire size. Unchanged from v1 (72 bytes); `routeList` grew, `rideList` did
-    /// not, which is why the entry length is now per-type. Carried in the header's `entry_len`.
     pub const ENTRY_LEN: usize = RIDE_ENTRY_LEN;
 
     pub fn encode(&self) -> [u8; RIDE_ENTRY_LEN] {
@@ -208,7 +190,6 @@ impl<'a> RideListEntry<'a> {
         b
     }
 
-    /// Decode one entry (prefix of an entry slot, like [`RouteListEntry::decode`]).
     pub fn decode(data: &'a [u8]) -> Result<Self, DescriptorError> {
         if data.len() < Self::ENTRY_LEN {
             return Err(DescriptorError::Truncated);
@@ -227,10 +208,9 @@ impl<'a> RideListEntry<'a> {
     }
 }
 
-/// One `tripList` entry — from the stored trip object (§7.7). **76 bytes**, mirroring
-/// [`RouteListEntry`]: the same trailing whole-object `crc32`, so the app's identity /
-/// outdated-copy machinery works on trips exactly as on routes (a stage reorder changes neither
-/// `byte_len` nor `name`, so only the `crc32` reveals it).
+/// One `tripList` entry, built from the stored trip object. It mirrors [`RouteListEntry`], with the
+/// same trailing whole-object `crc32`: a stage reorder changes neither `byte_len` nor `name`, so
+/// only the CRC reveals it.
 ///
 /// ```text
 ///   object_id         u16
@@ -246,9 +226,8 @@ impl<'a> RideListEntry<'a> {
 ///   crc32             u32  whole-object CRC-32 of the stored trip bytes · 0 = unknown
 /// ```
 ///
-/// `total_*` are summed over the trip's **resolvable** stages (a dangling ref contributes nothing),
-/// while `stage_count` counts every stored stage — so `stage_count` can exceed the number the totals
-/// drew from.
+/// The totals sum the trip's resolvable stages only, while `stage_count` counts every stored stage,
+/// so `stage_count` can exceed the number of stages the totals drew from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TripListEntry<'a> {
     pub object_id: u16,
@@ -256,20 +235,17 @@ pub struct TripListEntry<'a> {
     pub total_distance_m: u32,
     pub total_ascent_m: u32,
     pub stage_count: u16,
-    /// UTF-8, ≤ [`TripListEntry::MAX_NAME`] bytes (the trip-object name cap); over-long input is
-    /// truncated at encode.
+    /// UTF-8, at most [`TripListEntry::MAX_NAME`] bytes; over-long input is cut at encode.
     pub name: &'a [u8],
-    /// Whole-object CRC-32/IEEE of the stored trip bytes — the content fingerprint. `0` = unknown
-    /// (a side-loaded trip not yet fingerprinted; the device fills it lazily at first list build).
+    /// Whole-object CRC-32/IEEE of the stored trip bytes. `0` = unknown; the device fills it in at
+    /// the first list build.
     pub crc32: u32,
 }
 
 impl<'a> TripListEntry<'a> {
-    /// The name cap (matches the trip object's name field).
+    /// Matches the trip object's name field.
     pub const MAX_NAME: usize = 48;
-    /// This entry's on-wire size (spec §7.4). Carried in the list header's `entry_len`.
     pub const ENTRY_LEN: usize = TRIP_ENTRY_LEN;
-    /// Sentinel for an unknown content CRC (side-loaded trip not yet fingerprinted).
     pub const CRC_UNKNOWN: u32 = 0;
 
     pub fn encode(&self) -> [u8; TRIP_ENTRY_LEN] {
@@ -289,8 +265,8 @@ impl<'a> TripListEntry<'a> {
         b
     }
 
-    /// Decode one entry from the first [`ENTRY_LEN`](Self::ENTRY_LEN) bytes of a slot — a longer
-    /// future entry's tail is ignored.
+    /// Decodes the first [`ENTRY_LEN`](Self::ENTRY_LEN) bytes of a slot; a longer entry's tail is
+    /// ignored.
     pub fn decode(data: &'a [u8]) -> Result<Self, DescriptorError> {
         if data.len() < Self::ENTRY_LEN {
             return Err(DescriptorError::Truncated);
