@@ -114,3 +114,6 @@ fixtures/build/
 # Scratch Peak View binaries (see scratch/peak-view/README.md — temporary)
 scratch/peak-view/pano/target/
 scratch/peak-view/pano/Cargo.lock
+
+# repowise local index and session cache — never committed.
+/.repowise/
