@@ -86,12 +86,10 @@ pub const USB_RECORD_CEILING: usize = 8_208;
 /// times, which is the boundary worth exercising.
 const STAGE: usize = 1_024;
 
-/// A blank card of the given geometry.
 pub fn blank_card(blocks: u64, seed: u64) -> obc_storage::flat::sim::SparseDisk {
     obc_storage::flat::sim::SparseDisk::blank(blocks, seed)
 }
 
-/// A card formatted with [`STORE`].
 pub fn formatted_card(blocks: u64, seed: u64) -> obc_storage::flat::sim::SparseDisk {
     let disk = blank_card(blocks, seed);
     FlatStore::initialize(&disk, STORE).expect("the test card formats");
@@ -330,7 +328,6 @@ impl<D: BlockDevice> Device<D> {
 
     // --- what the card holds ---------------------------------------------------
 
-    /// The catalog commit sequence.
     pub fn commit_sequence(&self) -> u64 {
         self.store.sequence()
     }

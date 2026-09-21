@@ -185,7 +185,6 @@ pub fn merge(cells: &[&Cell<'_>]) -> Result<MergedPois> {
     Ok(MergedPois { pois, pool, duplicates })
 }
 
-/// Read one cell's hours pool.
 pub(crate) fn read_hours_pool(cell: &Cell<'_>) -> Result<Vec<[u8; POI_HOURS_BLOB_LEN]>> {
     let count = cell.pois.hours_pool_count;
     if count == 0 {

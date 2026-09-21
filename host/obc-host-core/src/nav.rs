@@ -23,7 +23,7 @@ pub struct NavPlan {
 
 impl NavPlan {
     /// Begin a plan for a drained [`NavRequest`](obc_app::NavRequest) under bike profile
-    /// `profile_idx` (the rider's [`Settings::bike_profile_idx`](obc_app::Settings), N5 §8.6).
+    /// `profile_idx` (the rider's [`Settings::bike_profile_idx`](obc_app::Settings)).
     pub fn start(req: &obc_app::NavRequest, profile_idx: u8) -> Self {
         NavPlan {
             planner: Box::new(obc_route::NavPlanner::new(req.from, req.to, req.name(), profile_idx)),

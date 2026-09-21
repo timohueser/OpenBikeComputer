@@ -406,7 +406,6 @@ pub struct StyleRecord {
     pub color2: Option<u16>,
     /// The weight is used verbatim on screen, off the zoom width ramp.
     pub fixed_width: bool,
-    /// Part of the suppressible terrain layer.
     pub terrain_layer: bool,
 }
 
