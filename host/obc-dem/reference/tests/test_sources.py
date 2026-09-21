@@ -20,6 +20,7 @@ from pyproj import Transformer
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import ingest  # noqa: E402
 import ingest.sources.base  # noqa: E402
+import ingest.sources.bulk  # noqa: E402
 from ingest.sources import fr as fr_module  # noqa: E402
 from ingest.sources.protocols import MAX_PIXELS, request_boxes  # noqa: E402
 
@@ -214,6 +215,36 @@ class BulkArchives(unittest.TestCase):
             with self.assertRaises(ingest.Refuse) as refusal:
                 ingest.sources.base.unpack(archive, Path(directory) / "unpacked")
             self.assertIn("reaches outside", str(refusal.exception))
+
+    def test_a_bulk_source_downloads_unpacks_and_caches(self):
+        """`files` is the whole adapter; the download, the unpack and the cache are shared."""
+
+        class Fake(ingest.sources.bulk.BulkSource):
+            def files(self, bbox):
+                return [("state.zip", f"file://{self.served}")]
+
+        with TemporaryDirectory() as directory:
+            served = self.bundle(directory, {"dgm/tile_01.tif": b"II*\x00", "readme.txt": b"x"})
+            source = Fake("xx", "Nowhere", "DGM 1 m", 1.0, "CC BY 4.0", "© Nowhere",
+                          "DHHN2016", (-180, -90, 180, 90))
+            source.served = served
+            work = Path(directory) / "work"
+            rasters = source.fetch((0, 0, 1, 1), work)
+            self.assertEqual([path.name for path in rasters], ["tile_01.tif"])
+
+            # The cache: the second run reads the downloaded zip and fetches nothing.
+            served.unlink()
+            self.assertEqual(source.fetch((0, 0, 1, 1), work), rasters)
+
+    def test_a_bulk_source_that_covers_nothing_says_so(self):
+        class Empty(ingest.sources.bulk.BulkSource):
+            def files(self, bbox):
+                return []
+
+        source = Empty("xx", "Nowhere", "p", 1.0, "l", "a", "d", (-180, -90, 180, 90))
+        with self.assertRaises(ingest.Refuse) as refusal:
+            source.fetch((0, 0, 1, 1), Path("/nonexistent"))
+        self.assertIn("nothing published covers", str(refusal.exception))
 
     def test_an_archive_with_no_raster_says_so(self):
         with TemporaryDirectory() as directory:

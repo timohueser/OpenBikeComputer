@@ -282,7 +282,7 @@ the step between a lifted and an unlifted node in contours and profiles.
 Every adapter is verified against one published summit. The box is about 2 km on a side, the
 ingest is the command in the next section, and **got** is the maximum the archive tile holds
 after max-pooling — not the service's own raster, so the number below is the one the baker
-would read.
+would read. `ch` is not in the table: it was verified when its adapter landed.
 
 | key | summit | expected | got | note |
 | --- | --- | --- | --- | --- |
