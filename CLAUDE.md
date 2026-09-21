@@ -27,7 +27,7 @@ The goal for this codebase is to make this a robust and extendable open source m
 | `specs/` | Normative binary, wire, and vector contracts. |
 | `fixtures/` | Scenario registry, input provenance, and fixture builders. |
 | `docs/` | Public conceptual documentation and blog source. |
-| `ops/`, `hardware/`, `tools/` | Operations runbooks, hardware design, and repository tooling. |
+| `hardware/`, `tools/` | Hardware design and repository tooling. |
 
 The root Cargo workspace contains the shared `firmware/`, `host/`, and `apps/` crates. Keep
 device-reachable dependencies in `firmware/`; keep host policy and native-heavy dependencies out
