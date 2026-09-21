@@ -45,7 +45,8 @@ impl Platform for Hook<'_, '_> {
         let Some(source) = job.source else { return false };
         let mut profile = PeakViewProfile::at(position.0, position.1, 0);
         profile.default_heading_q4 = app.peak_view_heading_q4();
-        let Some(arm) = crate::arena::claim_peak(&mut profile, source, self.reader) else {
+        let measured = app.recorder.fused_elevation_m();
+        let Some(arm) = crate::arena::claim_peak(&mut profile, source, self.reader, measured) else {
             defmt::warn!("peak-view: could not start at {=i32},{=i32}", position.0, position.1);
             return false;
         };
