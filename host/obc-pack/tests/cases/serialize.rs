@@ -99,7 +99,6 @@ fn pack_style_dict_fixed_width_and_terrain_layer_bits() {
 
 #[test]
 fn pack_feature_8bit_line() {
-    // A 2-point line, anchor at the node min corner.
     let f = line(10, &[(1.0, 1.0), (1.0001, 1.0001)]);
     let node_bbox = (1_000_000, 1_000_000, 1_010_000, 1_010_000);
     let data = pack_feature(&f, node_bbox);
@@ -177,7 +176,6 @@ fn integer_collinear_vertices_are_not_serialized() {
 
 #[test]
 fn serialize_lods_header_single_empty_leaf() {
-    // One LOD, one empty leaf, no styles.
     let lods = vec![LodLayer {
         max_mpp: None,
         chunk_size: 2048,
@@ -454,7 +452,6 @@ fn pack_chunk_drops_overflowing_feature_and_the_rest() {
     // gone too (break, not continue).
     assert_eq!(chunk[0], 10, "the one feature that fit is `a`");
     assert_eq!(chunk[9], 0xFF, "the sentinel closes the stream right after `a`");
-    // Specifically, style ids 11 and 12 never appear.
     assert!(!chunk.contains(&11) && !chunk.contains(&12), "overflowing features b/c were dropped, not packed");
 }
 

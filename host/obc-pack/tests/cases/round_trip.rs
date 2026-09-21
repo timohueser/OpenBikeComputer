@@ -249,7 +249,6 @@ fn styles_round_trip() {
         assert!(!s.flags.fixed_width() && !s.flags.terrain_layer(), "style {} sets neither new bit", s.id);
     }
 
-    // Unused ids are absent.
     assert!(r.style(2).is_none());
 
     // Backdrop is the lowest z_index (id 1), independent of style id ordering.
@@ -326,7 +325,6 @@ fn query_finds_the_leaf() {
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].1, r.bbox);
 
-    // A view fully outside the bbox hits nothing.
     let outside = BBox { min_lon: 9_000_000, min_lat: 9_000_000, max_lon: 9_001_000, max_lat: 9_001_000 };
     assert!(query_all(&r, 0, &outside).is_empty());
 }

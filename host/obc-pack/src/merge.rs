@@ -206,7 +206,7 @@ pub fn merge_fills_with(
         })
         .collect();
 
-    // --- Phase 3: emit in slot order. ---
+    // Phase 3: emit in slot order.
     let mut out = Vec::with_capacity(slots.len());
     let mut stats = MergeStats::default();
     for slot in slots {
@@ -330,7 +330,7 @@ fn merge_lines_mode(
         })
         .collect();
 
-    // --- Phase 3: emit in slot order. ---
+    // Phase 3: emit in slot order.
     let mut out = Vec::with_capacity(slots.len());
     let mut stats = MergeStats::default();
     for slot in slots {
