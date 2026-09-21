@@ -1,20 +1,14 @@
-//! The **Detour** flow (#882, superseding the pure Skip-ahead of #788): pick a rejoin point on
-//! the active route, let the host plan an A* detour around the skipped span (its corridor
-//! blacklisted on the nav graph), preview the detour's shape + distance cost, and commit a
-//! full-splice derived route.
+//! The Detour flow: pick a rejoin point on the active route, let the host plan an A* detour around
+//! the skipped span, preview the detour's shape and cost, and commit a full-splice derived route.
 //!
-//! Two screens live here:
-//! - [`DetourScreen`] — the Up/Down-stepped rejoin chooser (unchanged mechanics from #788: the
-//!   screen streams only the highlighted interval, fits a local north-up camera, Hold toggles a
-//!   rejoin-inspection camera). **Press now posts a plan request** and pushes the shared planning
-//!   spinner; there is no pure skip.
-//! - [`DetourPreviewScreen`] — the planned detour drawn over the map (skipped span in warning
-//!   ink, the detour in blue) with a signed "±X km" cost line. Press commits the splice;
-//!   Back cancels back to the chooser with steps intact.
+//! [`DetourScreen`] is the Up/Down-stepped rejoin chooser. It streams only the highlighted
+//! interval, fits a local north-up camera, and Hold toggles a rejoin-inspection camera. Press posts
+//! a plan request and pushes the shared planning spinner. [`DetourPreviewScreen`] draws the planned
+//! detour over the map with its signed cost figures; Press commits the splice, and Back cancels
+//! back to the chooser with the steps intact.
 //!
-//! The chooser holds **no route geometry** — only the entry anchor, Up/Down step count, compact
-//! inspection zoom state, and one prepared coordinate/bounds record; the preview additionally
-//! reads the host-fed decimated detour polyline through [`Render::detour_preview`].
+//! The chooser holds no route geometry: only the entry anchor, the step count, the inspection zoom
+//! state, and one prepared coordinate and bounds record.
 
 use embedded_graphics::{draw_target::DrawTarget, prelude::Point, primitives::Rectangle};
 use obc_map_scene::{cos_lat, BBox};
@@ -38,17 +32,16 @@ use super::vocab::fmt::{distance_short, elevation_delta};
 use super::{Ctx, Prepare, Render, RenderFrame, Screen, Transition};
 
 /// One Up/Down step changes the requested along-route rejoin distance by 100 m. A detour is for
-/// nearby closures and trail problems, so finer control matters more than spanning many
-/// kilometres; the route-end clamp still displays/commits the exact non-multiple remainder.
+/// nearby closures and trail problems, so fine control matters more than spanning many kilometres.
+/// The route-end clamp still shows and commits the exact remainder.
 pub(crate) const DETOUR_STEP_M: u32 = 100;
-/// The minimum rejoin distance — [`obc_route::MIN_DETOUR_SPAN_M`]: below it the corridor's
-/// endpoint-exemption discs swallow the whole span and a "detour" would just re-follow the route,
-/// so the chooser refuses to select shorter spans (and a shorter remainder is "Route ends here").
+/// The minimum rejoin distance. Below it the corridor's endpoint-exemption discs swallow the whole
+/// span and a detour would only re-follow the route, so the chooser refuses shorter spans.
 pub(crate) const MIN_DETOUR_M: u32 = obc_route::MIN_DETOUR_SPAN_M;
-/// The chooser's lower step bound (`MIN_DETOUR_M` expressed in steps).
+/// The chooser's lower step bound, in steps.
 const MIN_STEPS: u16 = MIN_DETOUR_M.div_ceil(DETOUR_STEP_M) as u16;
-/// Enter inspection at roughly 2.5× the overview scale: enough to resolve the candidate's local
-/// junction without making the Hold transition visually disorienting.
+/// Enter inspection at about 2.5 times the overview scale: enough to resolve the candidate's local
+/// junction without making the Hold transition disorienting.
 const INSPECT_MIN_EXP: i8 = -2;
 const INSPECT_ENTRY_EXP: i8 = 5;
 const INSPECT_MAX_EXP: i8 = 13;
@@ -58,7 +51,7 @@ const HUD_H: i32 = 76;
 const HUD_MARGIN: i32 = 10;
 const FIT_MARGIN: f32 = 24.0;
 
-/// The bottom pill both Detour screens draw over the map — the box a settlement name keeps off.
+/// The bottom pill both Detour screens draw over the map: the box a settlement name keeps off.
 fn hud_box(w: i32, h: i32) -> Rectangle {
     rect(HUD_MARGIN, h - HUD_H - HUD_MARGIN, w - 2 * HUD_MARGIN, HUD_H)
 }
@@ -70,30 +63,28 @@ struct PreparedDetour {
     bounds: BBox,
 }
 
-/// Screen-local chooser state. No route geometry is retained: only the entry anchor, Up/Down step
-/// count, compact inspection zoom state, and one prepared coordinate/bounds record live in the
-/// screen stack. `Copy`, so the planned-answer router can lift the request context into the
-/// preview screen without a back-channel.
+/// Screen-local chooser state: the entry anchor, the step count, the inspection zoom state, and
+/// one prepared coordinate and bounds record. `Copy`, so the planned-answer router can lift the
+/// request context into the preview screen without a back-channel.
 #[derive(Debug, Clone, Copy)]
 pub struct DetourScreen {
     route: Option<usize>,
     start_m: u32,
     total_m: u32,
     steps: u16,
-    /// `0` = overview/distance adjustment; `1..=INSPECT_MAX_LEVEL` = rejoin inspection. Level one
-    /// starts two zoom steps wider than the fitted overview; higher levels move progressively in.
+    /// `0` is overview and distance adjustment; `1..=INSPECT_MAX_LEVEL` is rejoin inspection.
+    /// Level one starts two zoom steps wider than the fitted overview, and higher levels move in.
     inspect_level: u8,
     prepared: Option<PreparedDetour>,
 }
 
-/// Whether the rejoin chooser can be **entered at all** (#882): a ride is being recorded, the map
-/// carries a nav graph, a route is active, and the rider is on it. The chooser's own
-/// [`available`](DetourScreen::available) is this plus the two facts only an open chooser has, so
-/// the two agree by construction rather than by review.
+/// Whether the rejoin chooser can be entered at all: a ride is being recorded, the map carries a
+/// nav graph, a route is active, and the rider is on it. The chooser's own
+/// [`available`](DetourScreen::available) is this plus the two facts only an open chooser has.
 ///
-/// It exists because the [ride context](super::context_drawer) draws a Detour row that *opens* the
+/// It exists because the [ride context](super::context_drawer) draws a Detour row that opens the
 /// chooser, and a row whose availability disagreed with its destination's would be an enabled door
-/// onto an inert screen. This is the half they share, in one place.
+/// onto an inert screen.
 pub(crate) fn reachable(navigation: &RouteState, recording: bool, has_nav_graph: bool) -> bool {
     recording && has_nav_graph && navigation.active_route.is_some() && !navigation.off_route
 }
@@ -111,7 +102,7 @@ impl DetourScreen {
     }
 
     /// Re-point the chooser's held catalog slot after a live route rescan. A surviving route keeps
-    /// the selection by identity; a vanished one becomes unavailable and cannot start a plan.
+    /// the selection; a vanished one becomes unavailable and cannot start a plan.
     pub(crate) fn remap_routes(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
         self.route = self.route.and_then(remap);
         self.prepared = None;
@@ -145,18 +136,18 @@ impl DetourScreen {
         zoom
     }
 
-    /// Whether *this* chooser can act: the shared entry conditions ([`reachable`]) plus the two
-    /// facts only an open chooser has — that its own route slot is still the active one, and that a
-    /// span has resolved.
+    /// Whether this chooser can act: the shared entry conditions ([`reachable`]) plus the two facts
+    /// only an open chooser has, that its own route slot is still the active one and that a span
+    /// has resolved.
     fn available(&self, navigation: &RouteState, recording: bool, has_nav_graph: bool) -> bool {
         reachable(navigation, recording, has_nav_graph)
             && navigation.active_route == self.route
             && self.actual_detour_m().is_some()
     }
 
-    /// Move the selected stretch's start to the latest matched rider progress while preserving the
-    /// requested step count. This keeps HUD distance, prepared ink and Press semantics aligned even
-    /// when the rider keeps moving with the chooser open.
+    /// Move the selected stretch's start to the latest matched rider progress, keeping the step
+    /// count. This keeps the HUD distance, the prepared ink and the Press aligned while the rider
+    /// keeps moving with the chooser open.
     fn refresh_anchor(&mut self, navigation: &RouteState) {
         if navigation.active_route == self.route
             && (navigation.progress_m != self.start_m || navigation.route_total_m != self.total_m)
@@ -186,10 +177,10 @@ impl DetourScreen {
                 Transition::None
             }
             Gesture::Press if available => {
-                // Derive from the current step count here — never from `prepared`, which can still
+                // Derive from the current step count, never from `prepared`, which can still
                 // describe the previous frame when Step and Press arrive in one input drain. The
-                // request freezes the corridor/prefix anchor at this instant; the host resolves
-                // the rejoin coordinate itself (it owns the RouteReader).
+                // request freezes the anchor at this instant; the host owns the `RouteReader` and
+                // resolves the rejoin coordinate itself.
                 if let (Some(route), Some(target), Some(fix)) = (self.route, self.target_m(), cx.state.user_fix) {
                     cx.navigator.admit_intent(NavigatorIntent::PlanDetour(DetourRequest {
                         route,
@@ -197,21 +188,21 @@ impl DetourScreen {
                         progress_m: self.start_m,
                         target_m: target,
                     }));
-                    // Push (not Replace): Back from the planning spinner or the preview returns
-                    // here with steps intact.
+                    // Push rather than Replace, so Back from the spinner or the preview returns
+                    // here with the steps intact.
                     Transition::Push(Screen::NavPlanning(NavPlanningScreen::detour()))
                 } else {
                     Transition::None
                 }
             }
-            // The Select hold is unused by the chooser otherwise. Toggle between the spatial
-            // overview and a candidate-centred inspection camera without changing the selection.
+            // Toggle between the overview and a candidate-centred inspection camera, without
+            // changing the selection.
             Gesture::Hold if available => {
                 self.inspect_level = if self.inspecting() { 0 } else { INSPECT_ENTRY_LEVEL };
                 Transition::None
             }
-            // Cancel consumes both chooser and ride-menu caller, restoring the riding view without
-            // planning anything or changing progress/session/mode.
+            // Cancel restores the riding view without planning anything, and without changing the
+            // progress, the session or the mode.
             Gesture::Back => Transition::Pop,
             Gesture::Step(_) | Gesture::Press | Gesture::Hold | Gesture::BackHold => Transition::None,
         }
@@ -312,51 +303,48 @@ impl DetourScreen {
     }
 }
 
-/// The planned-detour preview (#882): the skipped span and the detour's decimated polyline over a
-/// fitted map, with **two** signed cost figures — distance and, since #1091, climb. **Press
-/// commits** the splice (the host answers `DetourCommitted` and the app lands back on the riding
-/// view); **Back cancels** to the chooser. The figures and polyline describe the plan frozen at the
-/// chooser's Press — the anchor is deliberately not re-derived here.
+/// The planned-detour preview: the skipped span and the detour's decimated polyline over a fitted
+/// map, with two signed cost figures, distance and climb. Press commits the splice and Back cancels
+/// to the chooser. The figures and the polyline describe the plan frozen at the chooser's Press;
+/// the anchor is deliberately not re-derived here.
 #[derive(Debug, Clone, Copy)]
 pub struct DetourPreviewScreen {
     route: Option<usize>,
-    /// The frozen prefix/corridor anchor (the chooser's `start_m` at Press) — the splice seam the
-    /// commit handler re-anchors the matcher at.
+    /// The frozen anchor, which is the chooser's `start_m` at Press: the splice seam the commit
+    /// handler re-anchors the matcher at.
     anchor_m: u32,
-    /// The chosen rejoin distance (for the skipped-span overlay + staleness checks).
+    /// The chosen rejoin distance, for the skipped-span overlay and the staleness checks.
     target_m: u32,
-    /// Where the plan actually rejoins ([`DetourPreview::rejoin_m`]) — `target_m`, or farther when
-    /// the approach was trimmed. The climb figure's replaced span is `[anchor_m, rejoin_m]`, so it
-    /// prices exactly the swap the distance figure does. The overlay deliberately keeps drawing the
-    /// *chosen* span, which is what the rider picked.
+    /// Where the plan rejoins: `target_m`, or farther when the approach was trimmed. The climb
+    /// figure's replaced span is `[anchor_m, rejoin_m]`, so it prices exactly the swap the distance
+    /// figure does. The overlay keeps drawing the chosen span, which is what the rider picked.
     rejoin_m: u32,
-    /// The plan's cost delta, meters, signed (see [`DetourPreview::cost_delta_m`]).
+    /// The plan's cost delta in metres, signed.
     cost_delta_m: i32,
-    /// The planned detour's own ascent, or `None` when the terrain never answered for it
-    /// ([`DetourPreview::ascent_m`]).
+    /// The planned detour's own ascent, or `None` when the terrain never answered for it.
     detour_ascent_m: Option<u32>,
-    /// Does the *original* route carry elevation? Read once in [`prepare`](Self::prepare) off the
-    /// streamed route ([`RouteReader::has_elevation`](obc_route::RouteReader)). The climb figure
-    /// needs both sides, so either side missing renders `--`.
+    /// Whether the original route carries elevation, read once in [`prepare`](Self::prepare) off
+    /// the streamed route. The climb figure needs both sides, so either side missing renders
+    /// `--`.
     route_has_elevation: bool,
-    /// Press posted the commit; further Presses are no-ops while the host works.
+    /// Press posted the commit, so further presses are no-ops while the host works.
     committing: bool,
-    /// The commit failed host-side — the old route is untouched; shown inline on the HUD.
+    /// The commit failed on the host, so the old route is untouched. Shown inline on the HUD.
     error: bool,
     prepared: Option<PreparedDetour>,
 }
 
 impl DetourPreviewScreen {
-    /// The preview for a completed plan: request context lifted from the chooser (still on the
-    /// stack below), figures from the host's [`DetourPreview`] answer.
+    /// The preview for a completed plan: the request context lifted from the chooser still on the
+    /// stack below, and the figures from the host's [`DetourPreview`] answer.
     pub(crate) fn new(chooser: &DetourScreen, preview: DetourPreview) -> Self {
         let target_m = chooser.target_m().unwrap_or(chooser.total_m);
         DetourPreviewScreen {
             route: chooser.route,
             anchor_m: chooser.start_m,
             target_m,
-            // A trim only ever moves the rejoin *forward*; clamp defensively so the replaced span
-            // can never be read backwards.
+            // A trim only moves the rejoin forward, so clamp and the replaced span can never read
+            // backwards.
             rejoin_m: preview.rejoin_m.max(target_m),
             cost_delta_m: preview.cost_delta_m,
             detour_ascent_m: preview.ascent_m,
@@ -367,29 +355,28 @@ impl DetourPreviewScreen {
         }
     }
 
-    /// The frozen splice-seam anchor — what the commit handler queues the matcher re-anchor at.
+    /// The frozen splice-seam anchor the commit handler queues the matcher re-anchor at.
     pub(crate) fn anchor_m(&self) -> u32 {
         self.anchor_m
     }
 
-    /// Mark the commit failed (the splice's failure answer):
-    /// stay up, show the inline error, allow another Press or Back.
+    /// Mark the commit failed: stay up, show the inline error, and allow another Press or Back.
     pub(crate) fn set_commit_failed(&mut self) {
         self.committing = false;
         self.error = true;
     }
 
-    /// Re-point the held catalog slot after a live route rescan (vanished route → the staleness
-    /// guard in [`handle`](Self::handle) cancels out).
+    /// Re-point the held catalog slot after a live route rescan. A vanished route makes the
+    /// staleness guard in [`handle`](Self::handle) cancel out.
     pub(crate) fn remap_routes(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
         self.route = self.route.and_then(remap);
         self.prepared = None;
     }
 
-    /// The plan went stale under the preview: its route vanished/swapped, the rider rode past the
-    /// rejoin point, or went off-route. Checked on every gesture — the commit itself is safe
-    /// under drift (the splice uses the frozen anchor and the matcher re-locks from the live
-    /// fix), so staleness only gates *starting* one.
+    /// The plan went stale under the preview: its route vanished or swapped, or the rider rode past
+    /// the rejoin point or went off-route. The commit itself is safe under drift, because the splice
+    /// uses the frozen anchor and the matcher re-locks from the live fix, so staleness only gates
+    /// starting one.
     fn stale(&self, navigation: &RouteState) -> bool {
         self.route.is_none()
             || navigation.active_route != self.route
@@ -399,7 +386,7 @@ impl DetourPreviewScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         if self.stale(cx.navigator.route_state()) {
-            // Cancel out to the chooser, which re-anchors to live progress; the host drops the
+            // Cancel out to the chooser, which re-anchors to live progress. The host drops the
             // held detour bytes.
             cx.navigator.admit_intent(NavigatorIntent::CancelDetour);
             return Transition::Pop;
@@ -424,8 +411,8 @@ impl DetourPreviewScreen {
             return;
         }
         let Some(route) = px.route else { return };
-        // The other half of the climb figure's "both sides have elevation" gate. Read here, with
-        // the streamed route in hand, rather than at draw time.
+        // The other half of the climb figure's elevation gate, read here with the streamed route
+        // in hand rather than at draw time.
         self.route_has_elevation = route.has_elevation();
         let Some(candidate) = route.position_at(self.target_m) else { return };
         let mut bounds =
@@ -482,15 +469,13 @@ impl DetourPreviewScreen {
             );
             return;
         }
-        // Two signed cost figures on one baseline, each centred in its half of the card: what the
-        // detour costs in **distance** and what it costs in **climb**. Same chrome, same sign
-        // convention, same warning ink — the climb one wears the ledger's up-triangle so it reads
-        // as a climb without a caption row the 76 px card has no space for (and the device font has
-        // no arrow glyph, so it is drawn, exactly as the Up-ahead side hint's arrow is).
+        // Two signed cost figures on one baseline: what the detour costs in distance and what it
+        // costs in climb. The climb figure wears the ledger's up-triangle, so it reads as a climb
+        // without a caption row the card has no space for.
         //
-        // Edge-anchored rather than centred in halves: each figure then owns everything up to the
-        // other, so an imperial climb (`+820ft`) beside a long distance still fits where two fixed
-        // half-width slots would have clipped both.
+        // They are edge-anchored rather than centred in halves, so each figure owns everything up
+        // to the other and a long pair still fits where two fixed half-width slots would clip
+        // both.
         let fy = y + 36;
         let inset = 14;
 
@@ -505,15 +490,13 @@ impl DetourPreviewScreen {
         draw_climb_figure(cv, x + w - inset, fy, elevation_delta(delta, rx.settings.units).as_str());
     }
 
-    /// The climb the detour costs: **its own ascent minus the replaced span's**, or `None` when
-    /// either side of that subtraction is missing — the detour's terrain never answered, the route
-    /// carries no elevation, or its profile hasn't been built yet.
+    /// The climb the detour costs: its own ascent minus the replaced span's, or `None` when either
+    /// side of that subtraction is missing.
     ///
-    /// The replaced span is `[anchor_m, rejoin_m]` read through
-    /// [`Profile::ascent_between_m`](obc_route::Profile) — the one "climb between here and there"
-    /// lookup the Up-ahead rows, the `TO CLIMB` tile and the ETA model all share, so this figure
-    /// cannot drift from them. Both terms are dead-banded the same way, so the difference is a
-    /// like-for-like swap rather than two conventions subtracted.
+    /// The replaced span is `[anchor_m, rejoin_m]`, read through
+    /// [`Profile::ascent_between_m`](obc_route::Profile), which is the one lookup the Up-ahead
+    /// rows, the `TO CLIMB` tile and the ETA model all share, so this figure cannot drift from
+    /// them. Both terms are dead-banded the same way, so the difference is a like-for-like swap.
     fn climb_delta_m(&self, profile: Option<&obc_route::Profile>, route_total_m: u32) -> Option<i32> {
         let detour_m = self.detour_ascent_m?;
         let profile = profile.filter(|_| self.route_has_elevation)?;
@@ -522,10 +505,10 @@ impl DetourPreviewScreen {
     }
 }
 
-/// Draw the climb figure — an ink up-triangle followed by `text` — as one group ending at `right`,
-/// its baseline shared with the distance figure. The triangle is the same 13-wide mark
-/// [`ledger_row`](super::vocab::rows::ledger_row) draws for a CLIMB row, and it is *drawn* rather than typed
-/// because the device font's Latin strip has no arrow glyph.
+/// Draw the climb figure, an ink up-triangle followed by `text`, as one group ending at `right`
+/// with its baseline shared with the distance figure. The triangle is the same mark
+/// [`ledger_row`](super::vocab::rows::ledger_row) draws for a CLIMB row, and it is drawn rather
+/// than typed because the device font has no arrow glyph.
 fn draw_climb_figure(cv: &mut impl Surface, right: i32, y: i32, text: &str) {
     use super::palette::*;
     const TRI_W: i32 = 13;
@@ -544,9 +527,9 @@ fn extend_bounds(b: &mut BBox, lon: i32, lat: i32) {
     b.max_lat = b.max_lat.max(lat);
 }
 
-/// North-up camera fitting the whole rider→candidate selected path above the bottom HUD with a
-/// fixed pixel margin. The camera is shifted south so the bounds centre lands in the usable map
-/// region rather than behind the panel.
+/// North-up camera fitting the whole selected path above the bottom HUD, with a fixed pixel
+/// margin. The camera is shifted south, so the bounds centre lands in the usable map region rather
+/// than behind the panel.
 fn fit_viewport(w: i32, h: i32, b: BBox) -> Viewport {
     let cam_lon = b.min_lon + (b.max_lon - b.min_lon) / 2;
     let centre_lat = b.min_lat + (b.max_lat - b.min_lat) / 2;
@@ -565,7 +548,7 @@ fn fit_viewport(w: i32, h: i32, b: BBox) -> Viewport {
 }
 
 /// Candidate-centred north-up camera for the inspection sub-mode. The ring sits at the same usable
-/// map-area centre as the overview bounds, never behind the floating HUD.
+/// map-area centre as the overview bounds, so it is never behind the floating HUD.
 fn inspect_viewport(w: i32, h: i32, candidate: (i32, i32), overview_zoom: f32, factor: f32) -> Viewport {
     let zoom = (overview_zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
     let usable_bottom = (h - HUD_H - 2 * HUD_MARGIN) as f32;
@@ -593,8 +576,8 @@ mod tests {
         with_state_ctx(navigation, rec, nav, AppState::new(0, 0, 1.0), f)
     }
 
-    /// A `Ctx` whose `AppState` has a nav graph, a fix, and whatever the test staged — over the
-    /// caller's own Navigator, so the test can read back the request the screen posted to it.
+    /// A `Ctx` with a nav graph, a fix, and whatever the test staged, over the caller's own
+    /// Navigator, so the test can read back the request the screen posted to it.
     fn with_state_ctx<T>(
         navigation: &mut RouteState,
         rec: &mut crate::RecorderMachine,
@@ -613,9 +596,8 @@ mod tests {
         answer
     }
 
-    /// The detour-plan request Navigator holds, taken as an executor would. The search level rides
-    /// on the app's `CoreMode`; these tests read the request, not the mode, so a scratch one is
-    /// enough.
+    /// The detour-plan request Navigator holds, taken as an executor would. These tests read the
+    /// request rather than the mode, so a scratch `CoreMode` is enough.
     fn drained_detour(nav: &mut NavigatorMachine) -> Option<DetourRequest> {
         match nav.next_plan_effect(PlanFamily::Detour, &mut CoreMode::new()) {
             Some(NavigatorEffect::Acquire { work: PlannerWork::Detour(req), .. }) => Some(req),
@@ -645,7 +627,7 @@ mod tests {
         a
     }
 
-    /// A Recorder with a ride open — the detour screen is only available mid-ride.
+    /// A Recorder with a ride open, because the detour screen is only available mid-ride.
     fn recording() -> crate::RecorderMachine {
         let mut rec = crate::RecorderMachine::new();
         rec.test_open();
@@ -664,7 +646,7 @@ mod tests {
 
     #[test]
     fn near_end_has_no_rejoin_candidate() {
-        // Below MIN_DETOUR_M of remaining route there is no non-degenerate detour.
+        // Below MIN_DETOUR_M of remaining route no detour is non-degenerate.
         let mut a = tracking_activity(950, 1_500);
         a.active_route = Some(0);
         assert_eq!(DetourScreen::new(&a).actual_detour_m(), None);
@@ -700,10 +682,10 @@ mod tests {
         let mut nav_a = NavigatorMachine::new();
         let mut a = tracking_activity(1_000, 5_000);
         let mut s = DetourScreen::new(&a);
-        // No nav graph: unavailable outright.
+        // No nav graph, so the screen is unavailable outright.
         assert!(matches!(with_ctx(&mut a, &mut rec, &mut nav_a, |cx| s.handle(Gesture::Press, cx)), Transition::None));
         assert!(drained_detour(&mut nav_a).is_none());
-        // Graph but no fix: available() passes, the Press guard refuses to send a garbage start.
+        // A graph but no fix: `available` passes, and the Press guard refuses a garbage start.
         let mut state = nav_state();
         state.user_fix = None;
         assert!(matches!(
@@ -772,13 +754,14 @@ mod tests {
         let mut nav_a = NavigatorMachine::new();
         let mut a = tracking_activity(1_000, 5_000);
         let mut s = DetourScreen::new(&a);
-        // Rider advances before a Step; that input refreshes the live anchor and adds 100 m.
+        // The rider advances before a Step, and that input refreshes the live anchor and adds
+        // 100 m.
         a.progress_m = 1_200;
         with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| {
             let _ = s.handle(Gesture::Step(1), cx);
         });
         assert_eq!((s.start_m, s.target_m()), (1_200, Some(1_900)));
-        // Another 100 m before Press: the request is still a 700 m span, now from 1.3 km.
+        // Another 100 m before Press: the request is still a 700 m span, but from 1.3 km.
         a.progress_m = 1_300;
         let t = with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| s.handle(Gesture::Press, cx));
         assert!(matches!(t, Transition::Push(Screen::NavPlanning(_))));
@@ -828,8 +811,6 @@ mod tests {
         assert_eq!(drained_detour(&mut nav_a).unwrap().target_m, target);
     }
 
-    // ---- the preview screen ----
-
     fn preview_for(a: &RouteState) -> DetourPreviewScreen {
         preview_with(a, DetourPreview { cost_delta_m: 4_200, total_distance_m: 5_000, rejoin_m: 0, ascent_m: None })
     }
@@ -856,7 +837,7 @@ mod tests {
         let t = with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| p.handle(Gesture::Press, cx));
         assert!(matches!(t, Transition::None), "commit keeps the preview up until the host answers");
         assert!(drained_commit(&mut nav_a), "the commit one-shot is queued");
-        // A second Press while committing is a no-op.
+        // A second Press while committing does nothing.
         let _ = with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| p.handle(Gesture::Press, cx));
         assert!(!drained_commit(&mut nav_a), "no double commit");
 
@@ -875,8 +856,8 @@ mod tests {
         let mut p = preview_for(&a);
         let _ = with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| p.handle(Gesture::Press, cx));
         assert!(drained_commit(&mut nav_a));
-        // The splice answered — a failure, which returns the preview to the rider *and* frees
-        // Navigator, so the retry has an operation slot to go out in.
+        // A failure answer returns the preview to the rider and frees Navigator, so the retry has
+        // an operation slot to go out in.
         nav_a.note_commit(false);
         let mut mode = CoreMode::new();
         assert!(matches!(nav_a.next_effect(&mut mode), Some(NavigatorEffect::Release { .. })));
@@ -907,10 +888,8 @@ mod tests {
         assert!(nav_b.cancel_pending(PlanFamily::Detour));
     }
 
-    // ---- the preview's climb figure (#1091) ----
-
-    /// A 4 km route that climbs 200 m in its first half and comes back down in its second — enough
-    /// shape that `ascent_between_m` over different spans gives different answers.
+    /// A 4 km route that climbs 200 m in its first half and comes back down in its second, so
+    /// `ascent_between_m` over different spans gives different answers.
     const HILL_GPX: &str = r#"<gpx><trk><trkseg>
     <trkpt lat="47.0000" lon="8.0000"><ele>500</ele></trkpt>
     <trkpt lat="47.0000" lon="8.0130"><ele>600</ele></trkpt>
@@ -919,7 +898,7 @@ mod tests {
     <trkpt lat="47.0000" lon="8.0520"><ele>500</ele></trkpt>
   </trkseg></trk></gpx>"#;
 
-    /// Convert [`HILL_GPX`] and run `f` with the route + its profile, exactly as the App holds them.
+    /// Convert [`HILL_GPX`] and run `f` with the route and its profile, as the App holds them.
     fn with_hill_route<R>(f: impl FnOnce(&obc_route::RouteReader, &obc_route::Profile) -> R) -> R {
         use obc_formats::io::{ByteSink, Error, SliceSource};
         #[derive(Default)]
@@ -950,21 +929,20 @@ mod tests {
             &a,
             DetourPreview { cost_delta_m: 0, total_distance_m: 0, rejoin_m, ascent_m: detour_ascent_m },
         );
-        // `prepare` is what reads the route's own elevation presence off the streamed route; stage
-        // it directly so the arithmetic under test isn't hidden behind a whole prepare pass.
+        // `prepare` reads the route's own elevation presence off the streamed route. Stage it
+        // directly, so the arithmetic under test is not hidden behind a whole prepare pass.
         p.route_has_elevation = true;
         p.anchor_m = anchor_m;
         p.rejoin_m = rejoin_m;
         p
     }
 
-    /// The figure is `detour ascent − replaced-span ascent`, signed, using the shared
-    /// `ascent_between_m` lookup — a detour that climbs less than the stretch it replaces reads
-    /// negative.
+    /// The figure is `detour ascent − replaced-span ascent`, signed, so a detour that climbs less
+    /// than the stretch it replaces reads negative.
     #[test]
     fn climb_figure_prices_the_swap_against_the_replaced_span() {
         with_hill_route(|_, profile| {
-            // The whole up-slope, ~2 km of route: +200 m of it is replaced.
+            // The whole up-slope, about 2 km of route, so +200 m of it is replaced.
             let replaced = profile.ascent_between_m(0, 2_000, 4_000);
             assert!(replaced > 150, "fixture check: the replaced span really climbs (got {replaced})");
 
@@ -976,14 +954,15 @@ mod tests {
             assert_eq!(cheaper.climb_delta_m(Some(profile), 4_000), Some(-40), "a flatter one saves it");
             assert_eq!(elevation_delta(Some(-40), Settings::default().units).as_str(), "-40m");
 
-            // The descent-only second half books no ascent, so a flat detour around it is a wash.
+            // The descent-only second half books no ascent, so a flat detour around it costs
+            // nothing.
             let wash = hill_preview(Some(0), 2_000, 4_000);
             assert_eq!(wash.climb_delta_m(Some(profile), 4_000), Some(0), "no climb either side is +0, not `--`");
         });
     }
 
-    /// `--` on the explicit signal only: no terrain for the detour, or no elevation on the route.
-    /// A genuinely flat detour still shows `+0` — `0 m` of climb is an answer, not a missing one.
+    /// `--` only on an explicit signal: no terrain for the detour, or no elevation on the route. A
+    /// flat detour still shows `+0`, because no climb is an answer and not a missing one.
     #[test]
     fn climb_figure_is_dashes_only_when_a_side_is_genuinely_missing() {
         with_hill_route(|_, profile| {
@@ -1002,8 +981,8 @@ mod tests {
         });
     }
 
-    /// A trim moves the rejoin **forward**, and the climb figure must price the span that actually
-    /// gets replaced — the same one `cost_delta_m` prices — not the distance the rider dialled in.
+    /// A trim moves the rejoin forward, and the climb figure must price the span that is actually
+    /// replaced, which is the one `cost_delta_m` prices, not the distance the rider dialled in.
     #[test]
     fn climb_figure_uses_the_trimmed_rejoin_not_the_chosen_target() {
         with_hill_route(|_, profile| {

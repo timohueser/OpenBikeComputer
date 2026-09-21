@@ -1,19 +1,14 @@
-//! The Map screen — the Riding view. The camera lives in [`AppState`](crate::AppState) (shared with
-//! the host's pan/zoom); the screen itself holds only a [`MinuteTicker`] for the clock overlay. `draw`
-//! renders the base map plus the route, travel chevrons, breadcrumb, user marker, and the map chrome:
-//! floating top-centre clock digits, a bottom-centre one-slot warning chip, a bottom-left scale bar
-//! (stepping up above the chip while one is up), a low-battery cue in the top-left corner, and the
-//! pan HUD.
+//! The Map screen, the Riding view. The camera lives in [`AppState`](crate::AppState); the screen
+//! itself holds only a [`MinuteTicker`] for the clock overlay and the browse-map start hint. `draw`
+//! renders the base map plus the route, travel chevrons, breadcrumb, user marker, and the map
+//! chrome: the clock digits, one bottom chip slot, a bottom-left scale bar, a low-battery cue and
+//! the pan HUD.
 //!
-//! Bindings depend on whether a ride is being tracked. Shared in Follow: up/down = zoom, `hold` =
-//! enter Inspect, `back-hold` = Ride menu. Inspect keeps Back tap as the quick return to Follow:
-//! `press` toggles Move ↔ Zoom, Back-hold toggles Route ↔ the last Free axis, and Select-hold only
-//! toggles Free V ↔ Free H. Select-hold is inert in Zoom; Back-hold still switches Route/Free and
-//! lands in Move. **Tracking** (the riding map): `press` = pause → Ride control,
-//! `back` = the sibling Statistics view. **Not tracking** (the route-less browse map, reached from
-//! the Menu's Map station): `press` = the start card, `back` = pop back to the Menu (there's no
-//! Statistics sibling without a ride). Off-route chrome can't fire without a route, so the browse
-//! map shows only clock / scale-bar / low-battery.
+//! Bindings depend on whether a ride is being tracked. While tracking, `press` pauses into Ride
+//! control and `back` swaps to the sibling Statistics view. On the route-less browse map, `press`
+//! opens the start card and `back` pops to the Menu, because there is no Statistics sibling without
+//! a ride. Off-route chrome cannot fire without a route, so the browse map shows only the clock,
+//! the scale bar and the low-battery cue.
 
 use core::fmt::Write as _;
 
@@ -46,55 +41,47 @@ use placement::PointPlacement;
 /// Fallback backdrop when a map carries no backdrop style.
 const DEFAULT_BG_RGB565: u16 = 0x2104;
 
-/// Stroke width (px) of the active-route overlay — bold enough to out-weigh the heaviest base road
-/// (3 px), and sized so a direction chevron sits *inside* the line at riding zoom. `pub` so the
-/// render benchmark's route scene pins its stroke weight to this exact value (re-exported as
-/// [`crate::screen::ROUTE_WEIGHT`]).
+/// Stroke width (px) of the active-route overlay. Bold enough to out-weigh the heaviest base road,
+/// and sized so a direction chevron sits inside the line at riding zoom.
 pub const ROUTE_WEIGHT: u32 = 11;
-/// Narrower stroke painted inside the route line for the chooser's to-be-skipped stretch. The
-/// magenta edges remain visible, while warning-orange makes the selected interval unmistakable.
+/// Narrower stroke painted inside the route line for the chooser's to-be-skipped stretch, so the
+/// magenta edges stay visible around the warning-orange interval.
 const SKIPPED_WEIGHT: u32 = 7;
 
 /// Colour of the route direction chevrons — white, for contrast over the magenta route line. Drawn
 /// only at riding zoom (see [`CHEVRON_MAX_MPP`]).
 const ARROW_COLOR: u16 = super::palette::PARCHMENT;
 
-/// Zoom threshold (ground meters per pixel) at/below which the chevrons are drawn — roughly riding
-/// scale — fading out on wider overviews. A scale gate, independent of the map's LOD pyramid.
+/// Zoom threshold (ground metres per pixel) at or below which the chevrons draw. A scale gate,
+/// independent of the map's LOD pyramid.
 const CHEVRON_MAX_MPP: f32 = 4.0;
 
-/// Stroke width (px) of the breadcrumb — thinner than the route, so the route stays dominant where
+/// Stroke width (px) of the breadcrumb. Thinner than the route, so the route stays dominant where
 /// the two coincide.
 const BREADCRUMB_WEIGHT: u32 = 3;
 
-/// Half-diagonal (px) of a waypoint diamond — a ~9 px point-to-point ink rhombus, small map furniture
-/// on the route line (epic #523, part 2). No zoom gate (unlike the chevrons' [`CHEVRON_MAX_MPP`]):
-/// the resident table is ≤ `MAX_WAYPOINTS`, so even a wide overview shows only a calm handful of
-/// anchors — the "day at a glance" read.
+/// Half-diagonal (px) of a waypoint diamond. No zoom gate, unlike the chevrons: the resident table
+/// is at most `MAX_WAYPOINTS`, so even a wide overview shows only a handful of anchors.
 const WAYPOINT_DIAMOND_R: i32 = 4;
 
-/// The live map / Follow view. The camera is the shared [`AppState`](crate::AppState); the only
-/// screen-local state is the clock overlay's [`MinuteTicker`], which fires a region-clipped repaint
-/// of the clock digits once each minute the wall clock rolls over.
+/// The live map, or Follow view. The camera is the shared [`AppState`](crate::AppState).
 #[derive(Debug, Default)]
 pub struct MapScreen {
-    /// Fires a repaint of the clock digits each minute the wall clock rolls over (see
-    /// [`tick_timers`](MapScreen::tick_timers)) so `HH:MM` advances without a full map redraw.
+    /// Fires a region-clipped repaint of the clock digits each minute the wall clock rolls over, so
+    /// `HH:MM` advances without a full map redraw.
     ticker: MinuteTicker,
-    /// The route-less browse map's one-shot "press to start a ride" hint (T6, #684) — shown on
-    /// entry, auto-hidden after [`HINT_MS`]. A riding map's copy stays [`BrowseHint::Done`].
+    /// The route-less browse map's one-shot "press to start a ride" hint.
     hint: BrowseHint,
 }
 
 /// How long the browse-map start hint stays up after entry, in milliseconds.
 const HINT_MS: u32 = 4_000;
 
-/// The route-less browse map's one-shot start-hint chip state (T6, #684). A fresh `MapScreen`
-/// starts [`Fresh`](BrowseHint::Fresh); its first [`tick`](BrowseHint::tick) classifies it — a
-/// browse map (not tracking) starts the timer and shows the chip, a riding map goes straight to
-/// [`Done`](BrowseHint::Done) so the chip never shows there. Re-entering the browse map is a fresh
-/// `MapScreen`, so the hint returns; a pop back from the start card is the same instance, so it
-/// doesn't reappear once expired.
+/// The browse map's one-shot start-hint chip state. A fresh `MapScreen` starts
+/// [`Fresh`](BrowseHint::Fresh) and its first [`tick`](BrowseHint::tick) classifies it: a browse map
+/// starts the timer, a riding map goes straight to [`Done`](BrowseHint::Done). Re-entering the
+/// browse map is a fresh `MapScreen`, so the hint returns; a pop back from the start card is the
+/// same instance, so it does not.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum BrowseHint {
     /// Not yet classified (a just-constructed screen).
@@ -107,10 +94,9 @@ enum BrowseHint {
 }
 
 impl BrowseHint {
-    /// Advance the hint one poll against `now_ms`. Arms on the first poll of a browse map (`!tracking`),
-    /// suppresses on a riding map, and expires [`HINT_MS`] after arming. Returns
-    /// `(changed, next_wake_ms)`: `changed` is the single repaint that clears the chip on expiry; the
-    /// residual wake keeps an event-driven host armed to fire it from warm sleep.
+    /// Advance the hint one poll against `now_ms`. Arms on the first poll of a browse map,
+    /// suppresses on a riding map, and expires [`HINT_MS`] after arming. `changed` is the single
+    /// repaint that clears the chip; the residual wake keeps an event-driven host armed to fire it.
     fn tick(&mut self, now_ms: u32, tracking: bool) -> (bool, Option<u32>) {
         match *self {
             BrowseHint::Fresh if tracking => {
@@ -134,8 +120,8 @@ impl BrowseHint {
         }
     }
 
-    /// Whether the chip draws this frame — up while `Fresh` (the entry frame before the first tick)
-    /// or `Showing`. The caller still gates on `!tracking` / `!panning` / no higher-priority chip.
+    /// Whether the chip draws this frame. The caller still gates on tracking, panning and the
+    /// higher-priority chips.
     fn chip_up(self) -> bool {
         matches!(self, BrowseHint::Fresh | BrowseHint::Showing(_))
     }
@@ -146,13 +132,11 @@ impl MapScreen {
         MapScreen::default()
     }
 
-    /// Poll the clock overlay's minute tick — the Map's half of the screens' timed
-    /// [`tick_timers`](super::Screen::tick_timers) contract. When the clock is **visible** (the
-    /// `Clock on map` setting is on and we're not panning — the pan chevron owns the top-centre slot),
-    /// a minute rollover self-dirties just the [`clock_region`], and the host clips the repaint
-    /// to it (the region path from #500/#513) so the map plane isn't re-rendered. When the pill is
-    /// **hidden** the minute wake is not armed at all — a parked map isn't woken to no purpose.
-    #[allow(clippy::too_many_arguments)] // two timed tenants (clock overlay + browse hint) in one poll
+    /// Poll the Map's two timed tenants: the clock overlay's minute tick and the browse hint. With
+    /// the clock visible, a minute rollover self-dirties just the [`clock_region`], so the host
+    /// clips the repaint to it and the map plane is not re-rendered. With the pill hidden the
+    /// minute wake is not armed at all, so a parked map is not woken to no purpose.
+    #[allow(clippy::too_many_arguments)] // two timed tenants in one poll
     pub fn tick_timers(
         &mut self,
         now_ms: u32,
@@ -163,18 +147,15 @@ impl MapScreen {
         map_clock: bool,
         tracking: bool,
     ) -> ScreenTick {
-        // Clock overlay: a minute rollover self-dirties just the pill region, armed only while the
-        // pill is visible (setting on, not panning, a frame drawn). Hidden, still observe the minute
-        // so a later show doesn't fire a stale rollover.
+        // Hidden, the minute is still observed, so a later show does not fire a stale rollover.
         let (clk_changed, clk_wake, clk_region) = if !clock_cue(map_clock, pan_active) || w == 0 {
             let _ = self.ticker.changed(now);
             (false, None, None)
         } else {
             (self.ticker.changed(now), Some(ms_to_next_minute), Some(clock_region(w)))
         };
-        // Browse-map start hint (T6 #684): the one-shot bottom chip, armed on entry and expiring
-        // HINT_MS later. Its expiry repaints the chip band + steps the scale bar back down, so it's a
-        // full-frame change (region `None`) — unlike the clock's region-clipped digit tick.
+        // The hint's expiry repaints the chip band and steps the scale bar back down, so it is a
+        // full-frame change, unlike the clock's region-clipped digit tick.
         let (hint_changed, hint_wake) = self.hint.tick(now_ms, tracking);
         let next_wake_ms = match (clk_wake, hint_wake) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -188,8 +169,8 @@ impl MapScreen {
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
-        // Pan mode is a sub-mode of the Map: while the shared camera holds a `pan`,
-        // Select/Back drive panning instead of the Follow bindings below.
+        // Pan mode is a sub-mode of the Map: while the shared camera holds a `pan`, Select and Back
+        // drive panning instead of the Follow bindings below.
         if cx.state.pan.is_some() {
             return handle_pan(g, cx);
         }
@@ -198,21 +179,18 @@ impl MapScreen {
                 cx.state.zoom = step_zoom(cx.state.zoom, n, MIN_ZOOM, MAX_ZOOM);
                 Transition::None
             }
-            // hold = enter Pan mode: the camera detaches and the pan HUD appears.
+            // Enter Pan mode: the camera detaches and the pan HUD appears.
             Gesture::Hold => {
                 let navigation = cx.navigator.route_state();
                 cx.state.enter_pan(navigation.active_route.is_some(), navigation.progress_m);
                 Transition::None
             }
-            // `back`: while tracking, swap to the sibling Statistics view (its `back` swaps straight
-            // back here — the Map↔Statistics ring only exists mid-ride). On the route-less *browse*
-            // map (not tracking), there's no sibling to swap to, so `back` pops back to the Menu.
+            // The Map and Statistics ring only exists mid-ride, so on the browse map `back` has no
+            // sibling to swap to and pops to the Menu instead.
             Gesture::Back if cx.recorder.recording() => {
                 Transition::Replace(Screen::Statistics(StatisticsScreen::new()))
             }
             Gesture::Back => Transition::Pop,
-            // `press`: while tracking, pause → Ride control (the shared riding binding). On the
-            // browse map, open the small start card instead of the Paused page.
             Gesture::Press if !cx.recorder.recording() => {
                 Transition::Push(Screen::RideStart(super::RideStartScreen::new()))
             }
@@ -257,38 +235,27 @@ impl MapScreen {
             None
         };
 
-        // What this frame inks over the map after the names, top and bottom alike. Each piece is
-        // gated here by the same condition that draws it below, so the box that is reserved and the
-        // pixels that are drawn cannot drift. With no pill, no clock and no pan cue the panel is
-        // bare map, and a name is welcome to all of it.
+        // What this frame inks over the map after the names. Each piece is gated here by the same
+        // condition that draws it below, so the box that is reserved and the pixels that are drawn
+        // cannot drift.
         let clock_up = clock_cue(rx.settings.map_clock, panning);
         let low_battery = low_battery_cue(rx.state.device.battery_pct);
         let pan_hud = pan_hud_boxes(rx.w, rx.h, rx.state.pan, &vp, rx.state.user_fix);
         let chrome = map_chrome(rx.w, rx.h, chip_band, scale_bar.as_ref(), &pan_hud, clock_up, low_battery);
         let Some(marker565) = draw_map_scene(cv, rx, &vp, None, &chrome) else { return };
 
-        // The remaining chrome draws in the palette vocabulary, back through the canvas.
-        //
-        // Low-battery cue (top-left corner): a small warning-red battery glyph only when the charge
-        // has dropped below LOW_BATTERY_PCT — nothing above it, so there's no permanent map battery
-        // indicator. Shown in pan mode too (the top centre belongs to the pan HUD's cue).
+        // The remaining chrome draws in the palette vocabulary, back through the canvas. The
+        // low-battery cue shows in pan mode too, because the top centre belongs to the pan HUD.
         if low_battery {
             draw_low_battery(cv);
         }
 
-        // Clock (top-centre): a floating HH:MM — bare ink digits with a 1 px parchment halo, no
-        // pill, so it informs without drawing the eye. Shown when the setting is on. Hidden while
-        // panning — the pan HUD's top cue owns the top-centre slot — so it never fights the
-        // chevron; `tick_timers` mirrors that gate when arming the minute wake.
         if clock_up {
             draw_clock(cv, rx.w, rx.now);
         }
 
-        // Bottom-centre one-slot warning chip, shown only when there's something to say. "No GPS
-        // Fix" takes priority over off-route: with no fix the match is stale, so cross-track
-        // distance is meaningless. Suppressed while panning — the pan HUD's bottom chevron owns the
-        // bottom-centre slot (they'd collide), and panning is deliberate map inspection anyway; the
-        // chip returns the moment pan exits.
+        // "No GPS Fix" takes priority over off-route: with no fix the match is stale, so the
+        // cross-track distance is meaningless.
         if warning_up {
             if rx.no_fix {
                 draw_status_chip(cv, rx.w, rx.h, rx.t(Msg::MapNoGpsFix));
@@ -306,49 +273,42 @@ impl MapScreen {
             }
         }
 
-        // Waypoint chip (same bottom-centre slot): the calm `◆ NAME  <dist>` pill counting the
-        // along-route distance to the next named waypoint, governed by the `WaypointMode` setting.
-        // The warning chip keeps slot priority — the pure helper below only reports a chip when the
-        // warning chip is down (and not panning), so the two never collide.
+        // The warning chip keeps the bottom slot: `waypoint_chip` reports a chip only when the
+        // warning chip is down, so the two never collide.
         if let Some((k, dist_to_go)) = wpt_chip {
             let dist = super::vocab::fmt::distance_short(dist_to_go, rx.settings.units);
             draw_waypoint_chip(cv, rx.w, rx.h, rx.waypoints.as_slice()[k].name.as_str(), &dist);
         }
 
-        // Browse-map start hint (T6 #684): the lowest-priority bottom chip — `Press to start a ride`
-        // on the route-less browse map, shown on entry and auto-hidden after 4 s (the `hint` timer).
-        // Never while tracking or panning, and dropped whenever a warning / waypoint chip wants the
-        // slot (so it never collides). Its own timer drives the auto-hide; this only reads its state.
+        // The lowest-priority bottom chip: dropped whenever a warning or waypoint chip wants the
+        // slot. Its own timer drives the auto-hide; this only reads its state.
         if hint_up {
             draw_hint_chip(cv, rx.w, rx.h, rx.t(Msg::MapPressToStart));
         }
 
-        // Scale bar (bottom-left): the largest round distance that fits the target on-screen width
-        // at the current zoom, in the units setting's system. Right in the corner — except while a
-        // bottom chip is up (warning **or** waypoint), when it steps to just above the chip band so
-        // a wide chip ("off route 153km", "◆ Pass Summit  0.4km") never runs under it. Visible in
-        // pan mode too (where it's most useful) — the pan HUD's bottom chevron is centred, well
-        // clear of the corner.
+        // The bar steps above the chip band while a bottom chip is up, so a wide chip never runs
+        // under it. Visible in pan mode too: the pan HUD's bottom chevron is centred, clear of the
+        // corner.
         if let Some(bar) = &scale_bar {
             draw_scale_bar(cv, bar);
         }
 
-        // Pan-mode HUD. Drawn last so it sits over the map + marker, and only while panning.
+        // Drawn last, so the HUD sits over the map and the marker.
         if let Some(pan) = rx.state.pan {
             draw_pan_hud(cv, (rx.w as f32, rx.h as f32), pan, rx.state.user_fix, marker565, &vp);
         }
     }
 }
 
-/// Optional detour ink added to the shared map scene (#882): the skipped-span interval and rejoin
-/// candidate the chooser owns, plus (on the preview screen) the planned detour's decimated
-/// polyline. The normal Map passes `None` and pays no extra route decode.
+/// Optional detour ink added to the shared map scene: the skipped-span interval and rejoin
+/// candidate the chooser owns, plus the planned detour's decimated polyline on the preview screen.
+/// The normal Map passes `None` and pays no extra route decode.
 #[derive(Clone, Copy)]
 pub(crate) struct DetourMapOverlay<'a> {
     pub start_m: u32,
     pub end_m: u32,
     pub candidate: (i32, i32),
-    /// The planned detour's decimated polyline — empty on the chooser (nothing planned yet).
+    /// The planned detour's decimated polyline. Empty on the chooser, where nothing is planned.
     pub detour: &'a [(i32, i32)],
 }
 
@@ -373,10 +333,9 @@ where
 {
     let scene = rx.scene?;
     let rx = &mut rx.render;
-    // The only reader of the host's lent scratch (#1146 P2) — which is why every other screen may
-    // be drawn with `None`. Reaching here without one means the host called a render entry point
-    // with `None` under a map-drawing base: skip the map rather than invent one, and say so loudly
-    // in a debug build.
+    // The only reader of the host's lent scratch, which is why every other screen may be drawn
+    // with `None`. Reaching here without one means the host called a render entry point with `None`
+    // under a map-drawing base, so skip the map rather than invent one.
     let Some(scratch) = rx.scratch.as_deref_mut() else {
         debug_assert!(false, "a map-drawing base needs the host's RenderScratch, but none was lent");
         return None;
@@ -384,10 +343,9 @@ where
     let bg565 = scene.backdrop_style().map_or(DEFAULT_BG_RGB565, |style| style.color);
     let (target, color_fn) = cv.split();
     let bg = color_fn(bg565);
-    // #1096 (provisional): the rider's contour switch, restated every frame from `Settings` — the
-    // switch lives there, not in the scratch (#1146's Config/Scratch rule), so a flip on the Display
-    // screen lands on the very next map frame with no reload and nothing to reset. Suppression drops
-    // the terrain layer in the collect pass, so nothing is decoded, let alone drawn.
+    // The rider's contour switch, restated every frame from `Settings` rather than held in the
+    // scratch, so a flip lands on the next map frame with no reload and nothing to reset.
+    // Suppression drops the terrain layer in the collect pass, so nothing is decoded.
     let cfg = obc_render::RenderConfig { terrain_layer: rx.settings.map_contours };
     let mut stats = scratch.render_timed(target, scene, vp, bg, cfg, color_fn, rx.clock);
     rx.map_icons.draw(cv, vp, rx.state.user_fix.map(|fix| (fix.lon, fix.lat)), rx.waypoints.as_slice());
@@ -412,8 +370,8 @@ where
             route.visit_points_between(selected.start_m, selected.end_m, |pts| {
                 scratch.stroke_path(target, vp, pts.iter().copied(), color_fn(super::palette::WARNING), SKIPPED_WEIGHT);
             });
-            // The planned detour (#882): blue, so the replanned portion reads apart from the
-            // magenta route it will replace and the warning-colored span it avoids.
+            // Blue, so the replanned portion reads apart from the magenta route it replaces and
+            // the warning-coloured span it avoids.
             if selected.detour.len() >= 2 {
                 scratch.stroke_path(
                     target,
@@ -453,17 +411,13 @@ where
     Some(marker565)
 }
 
-// ---- Reserved chrome (for the settlement labels) --------------------------
-
-/// Side (px) of the box the rider mark owns — the chevron reaches 12 px ahead and 8 px out.
+/// Side (px) of the box the rider mark owns. The chevron reaches 12 px ahead and 8 px out.
 const RIDER_BOX_PX: i32 = 24;
 
-/// The most chrome boxes one screen hands to [`label_reserved`]. A **panning** Map frame is the
-/// widest, at five: the pan HUD's three ([`pan_hud_boxes`] — two Up/Down cues and the back-to-you
-/// marker), the low-battery cue and the scale bar. It cannot hold more, because pan mode suppresses
-/// the clock and every bottom pill. An **attached** frame comes to four: the clock digits, the
-/// low-battery cue, a bottom pill's band and the scale bar — and it draws no HUD. No other screen
-/// asks for more: the Detour hands one box, the browse screens two, and the visit review three.
+/// The most chrome boxes one screen hands to [`label_reserved`]. A panning Map frame is the widest,
+/// at five: the pan HUD's three, the low-battery cue and the scale bar. It cannot hold more, because
+/// pan mode suppresses the clock and every bottom pill. An attached frame comes to four and draws no
+/// HUD. No other screen asks for more.
 pub(crate) const MAX_CHROME: usize = 5;
 
 /// A screen's own chrome boxes, as [`label_reserved`] takes them.
@@ -480,8 +434,7 @@ pub(crate) fn label_reserved(
     fix: Option<Fix>,
     chrome: &[Rectangle],
 ) -> heapless::Vec<Rectangle, { MAX_CHROME + 1 }> {
-    // The rider mark is the one this function adds itself; the rest is `chrome`. Past the capacity
-    // a push is dropped, and a dropped rider box is a name over the rider.
+    // Past the capacity a push is dropped, and a dropped rider box is a name over the rider.
     debug_assert!(chrome.len() <= MAX_CHROME, "a screen handed more chrome than MAX_CHROME");
     let mut boxes = heapless::Vec::new();
     for r in chrome {
@@ -497,12 +450,9 @@ pub(crate) fn label_reserved(
     boxes
 }
 
-// ---- Waypoint diamonds (on the route line) --------------------------------
-
 /// The four screen vertices `(top, bottom, left, right)` of a waypoint diamond centred at
-/// `(cx, cy)`, or `None` when the centre lies more than one half-diagonal ([`WAYPOINT_DIAMOND_R`])
-/// outside the `w`×`h` panel — the off-panel cull. A diamond straddling an edge (centre within the
-/// margin) still draws; one wholly past it is dropped. Pure integer geometry, unit-tested below.
+/// `(cx, cy)`, or `None` when the centre lies more than one half-diagonal outside the `w`×`h`
+/// panel. A diamond straddling an edge still draws; one wholly past it is dropped.
 fn waypoint_diamond(cx: i32, cy: i32, w: i32, h: i32) -> Option<(Point, Point, Point, Point)> {
     let r = WAYPOINT_DIAMOND_R;
     if cx < -r || cx > w + r || cy < -r || cy > h + r {
@@ -511,11 +461,9 @@ fn waypoint_diamond(cx: i32, cy: i32, w: i32, h: i32) -> Option<(Point, Point, P
     Some((Point::new(cx, cy - r), Point::new(cx, cy + r), Point::new(cx - r, cy), Point::new(cx + r, cy)))
 }
 
-/// Draw the route's named waypoints as small filled-[`INK`](super::palette::INK) diamonds at each
-/// entry's own (`lon`, `lat`) — the stored coordinate, **not** snapped to the polyline (it may sit
-/// slightly off it). Each diamond is two [`triangle`](Surface::triangle)s (top + bottom halves
-/// sharing the left/right vertices), the way the rest of the map chrome draws. The table is empty
-/// with no route loaded, so this is a no-op then.
+/// Draw the route's named waypoints as small filled diamonds at each entry's own (`lon`, `lat`).
+/// That is the stored coordinate, not snapped to the polyline, so a diamond may sit slightly off
+/// it. The table is empty with no route loaded, so this is then a no-op.
 fn draw_waypoint_diamonds(cv: &mut impl Surface, vp: &Viewport, wpts: &[WptEntry], w: i32, h: i32) {
     for wp in wpts {
         let (sx, sy) = vp.to_screen(wp.lon, wp.lat);
@@ -527,10 +475,8 @@ fn draw_waypoint_diamonds(cv: &mut impl Surface, vp: &Viewport, wpts: &[WptEntry
 }
 
 /// Pan-mode gesture bindings, active while [`AppState::pan`](crate::AppState::pan) is `Some`.
-/// Up/Down applies the active Move/Zoom tool; `press` advances the **mode ring** — Route Move →
-/// Free Move → Zoom, see [`cycle_pan_mode`](crate::AppState::cycle_pan_mode) — and Select-hold
-/// changes only an already-active Free axis, inert in Route and Zoom. `back` exits to Follow.
-/// Back-hold is the global escape (#1515 D3) and never arrives here.
+/// Up/Down applies the active Move or Zoom tool; `press` advances the mode ring; Select-hold
+/// changes only an already-active Free axis and is inert in Route and Zoom. `back` exits to Follow.
 pub(super) fn handle_pan(g: Gesture, cx: &mut Ctx) -> Transition {
     let has_route = cx.navigator.route_state().active_route.is_some();
     match g {
@@ -543,10 +489,8 @@ pub(super) fn handle_pan(g: Gesture, cx: &mut Ctx) -> Transition {
     Transition::None
 }
 
-/// A compact **bottom-centre** status chip ("No GPS Fix", "off route NNNm") — the one warning slot
-/// on the map, kept away from the top's clock + low-battery chrome. The caller owns the priority
-/// rule of what to say; the chip vanishes the moment there's nothing to report. Warning-orange, so
-/// it reads as an alert (the quieter clock uses bare ink).
+/// A compact bottom-centre status chip, the one warning slot on the map. The caller owns the
+/// priority rule of what to say. Warning-orange, so it reads as an alert.
 fn draw_status_chip(cv: &mut impl Surface, w: i32, h: i32, s: &str) {
     use super::palette::*;
     let font = Font::Body;
@@ -564,12 +508,10 @@ const HINT_LINE_PITCH: i32 = 22;
 /// Padding between the pill edge and the first/last visible text pixels.
 const HINT_PAD_Y: i32 = 8;
 
-/// The browse-map **start hint** pill (T6 #684): calm ink on parchment — warning-orange stays
-/// reserved for the alert chip, matching the muted clock — at [`Font::Label`], the sentence wrapped
-/// to two centred lines (the full `Press to start a ride` cannot fit one line at 240 px in even the
-/// smallest font). The pill height derives from the wrapped line count and the text block centres
-/// in it, including accents and descenders (see [`HINT_PAD_Y`]). The pill is taller than
-/// [`draw_status_chip`] but uses the same rounded shape. Lowest chip priority; the caller only reaches here when no warning / waypoint chip is up.
+/// The browse-map start hint pill: calm ink on parchment, because warning-orange stays reserved for
+/// the alert chip. The sentence wraps to two centred lines, because it cannot fit one line at 240 px
+/// in even the smallest font. The pill height derives from the wrapped ink, so accents and
+/// descenders are inside it.
 fn draw_hint_chip(cv: &mut impl Surface, w: i32, h: i32, s: &str) {
     use super::palette::*;
     let font = Font::Label;
@@ -608,10 +550,9 @@ fn hint_chip_height(s: &str) -> i32 {
     ink.end - ink.start + 2 * HINT_PAD_Y
 }
 
-/// Split `s` into two balanced centred lines for the hint pill: pick the word break (space) whose
-/// resulting first line is closest to half the string (in characters), so neither line orphans a
-/// single word. A string with no space falls through as one line (never happens for the catalog
-/// copy). Char-count balance is a fine proxy for width here — the font is monospace.
+/// Split `s` into two balanced centred lines for the hint pill: the word break whose first line is
+/// closest to half the string, so neither line orphans a single word. A string with no space falls
+/// through as one line. Character count is a good proxy for width, because the font is monospace.
 fn wrap2(s: &str) -> (&str, &str) {
     let mid = s.chars().count() as i32 / 2;
     let mut best: Option<(usize, i32)> = None; // (byte index of the space, |line1_len - mid|)
@@ -629,15 +570,13 @@ fn wrap2(s: &str) -> (&str, &str) {
     }
 }
 
-/// The status chip's band height and its inset from the bottom edge (above the panel frame, below
-/// where the pan bottom chevron would draw — the two never coexist; the chip is pan-suppressed).
+/// The status chip's band height and its inset from the bottom edge.
 pub(crate) const CHIP_H: i32 = 36;
 const CHIP_MARGIN: i32 = 10;
 
-/// The full-width band a bottom pill owns, for the frames where one is up. One box for all three
-/// pills, at the tallest any of them reaches: the hint's height is its wrapped text's own ink, so
-/// the bound takes a first line inked from the top of its cell and a second inked to the bottom of
-/// the next — taller than any real pair, in any language.
+/// The full-width band a bottom pill owns. One box for all three pills, at the tallest any of them
+/// reaches: a first line inked from the top of its cell and a second inked to the bottom of the
+/// next, which is taller than any real pair in any language.
 pub(crate) fn chip_band_box(w: i32, h: i32) -> Rectangle {
     let band = HINT_LINE_PITCH + Font::Label.line_height() as i32 + 2 * HINT_PAD_Y + CHIP_MARGIN;
     rect(0, h - band, w, band)
@@ -646,7 +585,6 @@ pub(crate) fn chip_band_box(w: i32, h: i32) -> Rectangle {
 /// The Up/Down cue boxes the pan HUD inks over the map. Zoom draws its plus and minus at the top
 /// and bottom; Free draws chevrons at the two edges of its axis; Route draws none, because the
 /// moving route is its own feedback. Never more than one pair, so two boxes is the exact bound.
-/// The box is the chevron's widest reach, which also covers the smaller zoom glyph.
 fn pan_cue_boxes(w: i32, h: i32, pan: Pan) -> heapless::Vec<Rectangle, 2> {
     use hud::*;
     let r = (CHEV_SPREAD + CHEV_HW + OUTLINE) as i32;
@@ -676,15 +614,12 @@ fn back_to_you_box(w: f32, h: f32, vp: &Viewport, fix: Fix) -> Option<Rectangle>
 }
 
 /// Everything the pan HUD inks over the map that a settlement name must keep off, read from the
-/// same values [`draw_pan_hud`] draws from: the Up/Down cues of the active tool, and the back-to-you
-/// marker once the rider leaves the panel. Empty with the camera attached, because then no HUD
+/// same values [`draw_pan_hud`] draws from. Empty with the camera attached, because then no HUD
 /// draws. Three boxes is the exact bound.
 ///
-/// The Inspect frame is deliberately not here. It traces the panel's own edge, three pixels deep,
-/// where a name is already clipped by the panel at the very pixels the frame inks. Reserving it
-/// would refuse the whole name to save those three columns, and at the label face that deletes
-/// every edge-anchored name the moment the rider enters pan mode — which is when they are reading
-/// the map for place names.
+/// The Inspect frame is deliberately not here. It traces the panel's own edge, where a name is
+/// already clipped at the very pixels the frame inks, so reserving it would delete every
+/// edge-anchored name for three columns.
 pub(crate) fn pan_hud_boxes(
     w: i32,
     h: i32,
@@ -703,13 +638,9 @@ pub(crate) fn pan_hud_boxes(
     boxes
 }
 
-/// Everything the Map screen will ink over the map after the settlement names: the clock digits and
-/// the low-battery cue at the top, the bottom pill's band when one is up, the scale bar, and the
-/// whole pan HUD ([`pan_hud_boxes`]) while panning. Each argument is the very thing that draws, so
-/// a piece of chrome the frame leaves out reserves nothing.
-///
-/// The widest set is [`MAX_CHROME`]; a box past it is dropped, which is a name over the chrome, so
-/// a debug build says so.
+/// Everything the Map screen will ink over the map after the settlement names. Each argument is the
+/// very thing that draws, so a piece of chrome the frame leaves out reserves nothing. The widest set
+/// is [`MAX_CHROME`]; a box past it is dropped, which would be a name over the chrome.
 fn map_chrome(
     w: i32,
     h: i32,
@@ -743,42 +674,30 @@ fn map_chrome(
     boxes
 }
 
-// ---- Waypoint chip (bottom-centre) ----------------------------------------
-
 /// Approach radius (metres): in [`WaypointMode::Approach`] the chip appears once the next waypoint
-/// is within this along-route distance ahead and counts down to it. `pub(crate)` so the setting's
-/// doc + the tests share the one value.
+/// is within this along-route distance ahead, and counts down to it.
 pub(crate) const WAYPOINT_APPROACH_M: u32 = 500;
 
-/// Half-diagonal (px) of the chip's ink diamond glyph — part 2's route diamond at chip scale.
+/// Half-diagonal (px) of the chip's ink diamond glyph.
 const WPT_CHIP_DIAMOND_R: i32 = 4;
-/// Horizontal inset (px) the pill may reach from each screen edge. Tighter than the status chip's
-/// centred band (#688): the name gets the full remaining width so a long-but-common label like
-/// `Pass Summit` reads whole beside its distance at 240 px, rather than truncating with slack.
+/// Horizontal inset (px) the pill may reach from each screen edge. Tight, so the name gets the full
+/// remaining width and a long-but-common label reads whole beside its distance at 240 px.
 const WPT_CHIP_INSET_X: i32 = 2;
 /// Horizontal pad inside the pill (each side).
 const WPT_CHIP_PAD_X: i32 = 4;
 /// Gap between the diamond glyph and the name.
 const WPT_CHIP_GAP_D: i32 = 3;
-/// Gap between the name and the right-aligned distance — the one "standard gap" the name budget
-/// reserves before the fixed-width distance.
+/// Gap between the name and the right-aligned distance, which the name budget reserves before the
+/// fixed-width distance.
 const WPT_CHIP_GAP_N: i32 = 4;
 
-/// Whether the Map waypoint chip shows this frame, and — if so — which resident waypoint it names
-/// and the along-route distance-to-go it reads. A **pure** helper (no render context) so the one
-/// visibility rule is unit-tested directly. Returns `Some((index, dist_to_go_m))` when the chip is
-/// up (the caller pairs `index` with `wpts[index].name`), or `None` when it stays down.
+/// Whether the Map waypoint chip shows this frame, and which resident waypoint it names with the
+/// along-route distance to go. Returns `Some((index, dist_to_go_m))` when the chip is up.
 ///
-/// Shows iff **all** of: not `panning`; the warning chip is **down** (`!no_fix && !off_route` — it
-/// keeps slot priority, and both its states also make the along-route distance stale/meaningless);
-/// `next_waypoint` is `Some(k)` and in range of `wpts`; and the `mode` allows — [`Always`] always,
-/// [`Approach`] only within [`WAYPOINT_APPROACH_M`], [`Off`] never. `dist_to_go` is
-/// `wpts[k].dist_along_m.saturating_sub(progress_m)`, so it clamps to `0` during the 100 m
-/// pass-linger (the wanted "you are here" readout until the index advances).
-///
-/// [`Always`]: WaypointMode::Always
-/// [`Approach`]: WaypointMode::Approach
-/// [`Off`]: WaypointMode::Off
+/// It shows only when all of these hold: the rider is not panning; the warning chip is down, which
+/// its two states also make the along-route distance meaningless; `next_waypoint` is in range of
+/// `wpts`; and the `mode` allows it. `dist_to_go` saturates, so it clamps to `0` during the
+/// pass-linger and reads as "you are here" until the index advances.
 fn waypoint_chip(
     mode: WaypointMode,
     panning: bool,
@@ -800,11 +719,9 @@ fn waypoint_chip(
     }
 }
 
-/// Draw the calm bottom-centre waypoint pill: `◆ NAME  <dist>` in [`INK`](super::palette::INK) on
-/// parchment (warning-orange stays reserved for the alert chip, matching the muted clock). Same
-/// pill geometry as [`draw_status_chip`]; a filled ink diamond at the left, the (truncated-to-fit)
-/// name, and the right-aligned distance. The whole pill is kept within `w − 2·WPT_CHIP_INSET_X` by
-/// shrinking the name only — the distance is measured first and never truncated.
+/// Draw the bottom-centre waypoint pill: a filled ink diamond, the name, and the right-aligned
+/// distance. The whole pill is kept inside the panel by shrinking the name only, because the
+/// distance is measured first and is never truncated.
 fn draw_waypoint_chip(cv: &mut impl Surface, w: i32, h: i32, name: &str, dist: &str) {
     use super::palette::*;
     let font = Font::Body;
@@ -822,7 +739,7 @@ fn draw_waypoint_chip(cv: &mut impl Surface, w: i32, h: i32, name: &str, dist: &
     cv.round(rect(px, py, pw, CHIP_H), 9, PARCHMENT);
     cv.round_outline(rect(px, py, pw, CHIP_H), 9, INK);
 
-    // Ink diamond, vertically centred — two triangles sharing the left/right vertices (part 2's idiom).
+    // Two triangles sharing the left and right vertices.
     let dcx = px + WPT_CHIP_PAD_X + WPT_CHIP_DIAMOND_R;
     let dcy = py + CHIP_H / 2;
     let r = WPT_CHIP_DIAMOND_R;
@@ -830,21 +747,15 @@ fn draw_waypoint_chip(cv: &mut impl Surface, w: i32, h: i32, name: &str, dist: &
     cv.triangle(Point::new(dcx, dcy - r), left, right, INK);
     cv.triangle(Point::new(dcx, dcy + r), left, right, INK);
 
-    // Name after the diamond (left-aligned), distance at the pill's right pad (right-aligned). Text
-    // top at `py + 5` centres Body in the 36 px band, matching `draw_status_chip`.
+    // A text top at `py + 5` centres Body in the band, matching `draw_status_chip`.
     let ty = py + 5;
     let name_x = px + WPT_CHIP_PAD_X + diamond_w + WPT_CHIP_GAP_D;
     cv.text(&name, Point::new(name_x, ty), font, TextAlign::Left, INK);
     cv.text(dist, Point::new(px + pw - WPT_CHIP_PAD_X, ty), font, TextAlign::Right, INK);
 }
 
-// ---- Haloed map text ------------------------------------------------------
-
-/// Draw `s` with a one-pixel halo, so it stays readable over any map fill: the string four times
-/// at ±1 px in `halo`, then once at `at` in `ink`.
-///
-/// The map chrome halos in [`palette::PARCHMENT`](super::palette::PARCHMENT) over
-/// [`palette::INK`](super::palette::INK), which reads over every fill the map draws.
+/// Draw `s` with a one-pixel halo, so it stays readable over any map fill: the string four times at
+/// ±1 px in `halo`, then once at `at` in `ink`.
 pub(crate) fn halo_text(cv: &mut impl Surface, s: &str, at: Point, font: Font, align: TextAlign, ink: u16, halo: u16) {
     for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
         cv.text(s, Point::new(at.x + dx, at.y + dy), font, align, halo);
@@ -852,57 +763,49 @@ pub(crate) fn halo_text(cv: &mut impl Surface, s: &str, at: Point, font: Font, a
     cv.text(s, at, font, align, ink);
 }
 
-// ---- Clock (top-centre) ---------------------------------------------------
-
 /// Top inset of the floating `HH:MM` digits.
 const CLOCK_TOP: i32 = 8;
 
-/// The rectangle the top-centre clock digits occupy, in panel pixels — the dirty region
-/// [`tick_timers`](MapScreen::tick_timers) reports so the host clips the minute repaint to just the
-/// digits instead of re-rendering the whole map plane. Sized for a fixed 5-glyph `HH:MM` in
-/// [`Font::Body`] — constant, so the region doesn't shift as the digits change (`11` vs `22`) —
-/// with two pixels of margin all round covering the halo strokes.
+/// The rectangle the top-centre clock digits occupy: the dirty region
+/// [`tick_timers`](MapScreen::tick_timers) reports, so the host clips the minute repaint to the
+/// digits instead of re-rendering the whole map plane. Sized for a fixed five-glyph `HH:MM`, so the
+/// region does not shift as the digits change, with two pixels of margin for the halo strokes.
 pub fn clock_region(w: i32) -> Rectangle {
     let tw = text_width("00:00", Font::Body) as i32;
     let th = Font::Body.line_height() as i32;
     Rectangle::new(Point::new((w - tw) / 2 - 2, CLOCK_TOP - 2), Size::new(tw as u32 + 4, th as u32 + 4))
 }
 
-/// Whether the map's clock digits are up: the `Clock on map` setting decides, and panning overrides
-/// it — the pan HUD's top cue owns the slot the digits would take. The one home of that rule, so
-/// the pixels drawn, the box reserved for them and the minute wake cannot disagree.
+/// Whether the map's clock digits are up: the setting decides, and panning overrides it, because
+/// the pan HUD's top cue owns the slot. The one home of that rule, so the pixels drawn, the box
+/// reserved for them and the minute wake cannot disagree.
 pub(crate) const fn clock_cue(map_clock: bool, panning: bool) -> bool {
     map_clock && !panning
 }
 
-/// Draw the top-centre `HH:MM` clock: bare ink digits floating on the map — no pill, no white
-/// backing, just the scale-bar label's 1 px parchment halo so they stay readable over dark terrain.
-/// One font step up from the rest of the map chrome ([`Font::Body`]) so the time reads at a glance;
-/// deliberately *muted* otherwise (the warning-orange of [`draw_status_chip`] stays reserved for
-/// alerts). "Small and simple, just readable."
+/// Draw the top-centre `HH:MM` clock: bare ink digits floating on the map, with a one-pixel
+/// parchment halo so they stay readable over dark terrain. One font step up from the rest of the
+/// map chrome, and muted, because warning-orange stays reserved for alerts.
 fn draw_clock(cv: &mut impl Surface, w: i32, now: DateTime) {
     use super::palette::*;
     let s = super::vocab::fmt::clock_hm(now.hour, now.minute);
     halo_text(cv, &s, Point::new(w / 2, CLOCK_TOP), Font::Body, TextAlign::Center, INK, PARCHMENT);
 }
 
-// ---- Low-battery cue (top-left corner) -----------------------------------
-
-/// Battery percentage below which the top-left warning glyph appears. At/above it the map shows no
-/// battery indicator at all.
+/// Battery percentage below which the top-left warning glyph appears. At or above it the map shows
+/// no battery indicator at all.
 const LOW_BATTERY_PCT: u8 = 10;
 
-/// Whether the map's low-battery cue is up at `battery_pct` — the *only* thing a map base draws off
+/// Whether the map's low-battery cue is up at `battery_pct`. The only thing a map base draws off
 /// the gauge, and therefore the only battery fact [`RenderKeyKind::Map`](super::RenderKeyKind)
-/// names. A boolean rather than the level, so a 30 s gauge tick that crosses nothing still costs a
-/// map base no render.
+/// names. A boolean rather than the level, so a gauge tick that crosses nothing costs no render.
 pub(crate) const fn low_battery_cue(battery_pct: u8) -> bool {
     battery_pct < LOW_BATTERY_PCT
 }
 
 /// Top-left origin of the low-battery glyph, its shell size and its nub width. One set of values
-/// answers both [`low_battery_box`] — the box a settlement name keeps off — and
-/// [`draw_low_battery`], so the box that is reserved and the pixels that are drawn cannot drift.
+/// answers both [`low_battery_box`] and [`draw_low_battery`], so the box that is reserved and the
+/// pixels that are drawn cannot drift.
 const BATTERY_AT: (i32, i32) = (10, 10);
 const BATTERY_SIZE: (i32, i32) = (26, 13);
 const BATTERY_NUB: i32 = 3;
@@ -914,44 +817,41 @@ fn low_battery_box() -> Rectangle {
     rect(x - 1, y - 1, bw + BATTERY_NUB + 1, bh + 2)
 }
 
-/// Draw the low-battery cue: a small warning-red battery silhouette in the top-left corner (a
-/// scaled-down cousin of the Home gauge's shell). Filled solid red — this is the "act now" state, not
-/// a level readout — with an ink halo behind it so it reads over any terrain.
+/// Draw the low-battery cue: a small warning-red battery silhouette in the top-left corner. Filled
+/// solid, because this is an alert and not a level readout, with an ink halo so it reads over any
+/// terrain.
 fn draw_low_battery(cv: &mut impl Surface) {
     use super::palette::*;
     let (x, y) = BATTERY_AT;
     let (bw, bh, nub) = (BATTERY_SIZE.0, BATTERY_SIZE.1, BATTERY_NUB);
-    // Ink halo (the shell + nub grown by 1px) so it reads over any map colour.
+    // The shell and nub grown by one pixel, so the glyph reads over any map colour.
     cv.round_outline(rect(x - 1, y - 1, bw + 2, bh + 2), 3, INK);
     cv.round_outline(rect(x, y, bw, bh), 3, WARNING);
     cv.round(rect(x + bw, y + bh / 3, nub, bh / 3), 1, WARNING);
-    // A solid red core inside the shell — the alert fill.
     cv.round(rect(x + 3, y + 3, bw - 6, bh - 6), 1, WARNING);
 }
 
-// ---- Scale bar (bottom-left) ---------------------------------------------
-
-/// Largest on-screen width (px) the scale bar may reach — the chosen round distance is the biggest
-/// `1/2/5 × 10ⁿ` that fits inside it (~⅓ of the 240px panel), long enough to read but short enough to
-/// clear the pan HUD's centred bottom chevron. The 1/2/5 steps keep the realised bar within ~40–90 px.
+/// Largest on-screen width (px) the scale bar may reach: the chosen round distance is the biggest
+/// `1/2/5 × 10ⁿ` that fits inside it. Long enough to read, short enough to clear the pan HUD's
+/// centred bottom chevron.
 const SCALE_TARGET_MAX_PX: f32 = 90.0;
 /// The scale bar's left inset and the tick half-height.
 const SCALE_MARGIN_X: i32 = 12;
-/// Baseline inset from the bottom edge — right in the corner normally, stepped up past the chip
-/// band (its height + inset + a gap) while a bottom chip is up.
+/// Baseline inset from the bottom edge. The bar sits in the corner, and steps up past the chip band
+/// while a bottom chip is up.
 const SCALE_MARGIN_Y: i32 = 12;
 /// Gap between a bottom chip band and the scale bar stepped above it.
 const SCALE_CHIP_GAP: i32 = 12;
 const SCALE_TICK_H: i32 = 5;
 
 /// The scale bar one frame draws: its chosen length, its label and the row it sits on. One value
-/// answers both [`ink`](ScaleBar::ink) — the box a settlement name keeps off — and
-/// [`draw_scale_bar`], so the box that is reserved and the pixels that are drawn cannot drift.
+/// answers both [`ink`](ScaleBar::ink) and [`draw_scale_bar`], so the box that is reserved and the
+/// pixels that are drawn cannot drift.
 pub(crate) struct ScaleBar {
     bar_px: i32,
     label: heapless::String<8>,
-    /// The baseline row: in the corner normally; stepped above the bottom chip band (its height +
-    /// inset + a gap) when a chip is up — a taller band (the two-line hint) steps it proportionally.
+    /// The baseline row: in the corner, or stepped above the bottom chip band when a chip is up. A
+    /// taller band steps it proportionally.
     y: i32,
 }
 
@@ -965,9 +865,8 @@ impl ScaleBar {
 
     /// The pixels the bar inks, parchment halo included: the label row above the end ticks and the
     /// baseline, from the halo's left column to the wider of the haloed bar and the haloed label.
-    ///
-    /// This is what a settlement name must keep off. It is a small box in the corner, not the
-    /// corner: 33 px tall and 40–90 px wide, wherever the chip band puts it.
+    /// This is what a settlement name must keep off, and it is a small box in the corner rather
+    /// than the whole corner.
     pub(crate) fn ink(&self) -> Rectangle {
         let top = self.y - SCALE_TICK_H - Font::Label.line_height() as i32 - 2;
         // The bar's right halo column is one past its end tick; the label's is one past its last
@@ -978,41 +877,36 @@ impl ScaleBar {
 }
 
 /// Draw the scale bar at the bottom-left: a horizontal ink line with end ticks and a length label,
-/// haloed in parchment so it reads over terrain. [`ScaleBar::new`] chose the distance: the largest
-/// 1/2/5 × 10ⁿ that fits [`SCALE_TARGET_MIN_PX`]..[`SCALE_TARGET_MAX_PX`] at the current metres per
-/// pixel, in the units setting's system.
+/// haloed in parchment so it reads over terrain. [`ScaleBar::new`] chose the distance.
 fn draw_scale_bar(cv: &mut impl Surface, bar: &ScaleBar) {
     use super::palette::*;
     let (bar_px, label, y) = (bar.bar_px, &bar.label, bar.y);
     let x0 = SCALE_MARGIN_X;
     let x1 = x0 + bar_px;
-    // Parchment halo: the same strokes one pixel thicker/offset, drawn first.
+    // Parchment halo: the same strokes offset by one pixel, drawn first.
     for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
         cv.line(Point::new(x0 + dx, y + dy), Point::new(x1 + dx, y + dy), PARCHMENT);
         cv.line(Point::new(x0 + dx, y - SCALE_TICK_H + dy), Point::new(x0 + dx, y + dy), PARCHMENT);
         cv.line(Point::new(x1 + dx, y - SCALE_TICK_H + dy), Point::new(x1 + dx, y + dy), PARCHMENT);
     }
-    // The ink bar: baseline + the two end ticks.
     cv.line(Point::new(x0, y), Point::new(x1, y), INK);
     cv.line(Point::new(x0, y - SCALE_TICK_H), Point::new(x0, y), INK);
     cv.line(Point::new(x1, y - SCALE_TICK_H), Point::new(x1, y), INK);
-    // The label sits just above the bar, left-aligned to its start. Halo it too, so it reads on terrain.
     let ly = y - SCALE_TICK_H - Font::Label.line_height() as i32 - 1;
     halo_text(cv, label, Point::new(x0, ly), Font::Label, TextAlign::Left, INK, PARCHMENT);
 }
 
-/// The nice 1/2/5 mantissa steps a scale bar chooses from, largest-first — the classic map-scale
-/// progression (…, 500, 200, 100, 50, 20, 10, …).
+/// The 1/2/5 mantissa steps a scale bar chooses from, largest first.
 const NICE_STEPS: [u32; 3] = [5, 2, 1];
 
-/// The largest `1/2/5 × 10ⁿ` at or below `max`, or `None` below 1 — the classic scale-bar rounding.
-/// Bounded loop (no libm log): at most a handful of decades across the whole zoom range.
+/// The largest `1/2/5 × 10ⁿ` at or below `max`, or `None` below 1. A bounded loop rather than a
+/// logarithm, because there is no libm here.
 fn nice_125(max: f32) -> Option<u32> {
     if max < 1.0 {
-        return None; // sub-unit scale — no sensible round value
+        return None; // a sub-unit scale has no sensible round value
     }
-    // Walk powers of ten up to the 10ⁿ at or just below `max`, then try 5·10ⁿ, 2·10ⁿ, 1·10ⁿ from the
-    // decade above down, taking the first (largest) that fits.
+    // Walk powers of ten up to the 10ⁿ at or just below `max`, then try 5·10ⁿ, 2·10ⁿ and 1·10ⁿ from
+    // the decade above down, taking the largest that fits.
     let mut pow: u32 = 1;
     while (pow as f32) * 10.0 <= max {
         pow = pow.saturating_mul(10);
@@ -1028,22 +922,20 @@ fn nice_125(max: f32) -> Option<u32> {
     None
 }
 
-/// Pick the scale bar's `(pixel width, label)` for the current `mpp` and unit system, or `None` for a
-/// non-finite / non-positive `mpp` (a degenerate camera). The rule: the **largest** round distance
-/// `1/2/5 × 10ⁿ` — in the display unit the label will use: metres/kilometres, or feet *below* a mile
-/// and whole miles above it (a bar says "2mi", never the feet-rounded "1.8mi") — whose on-screen
-/// width is at most [`SCALE_TARGET_MAX_PX`]. The distance math is derived straight from `mpp` (the
-/// render transform's metres-per-pixel), so the bar can never disagree with the map's true scale.
+/// Pick the scale bar's `(pixel width, label)` for the current `mpp` and unit system, or `None` for
+/// a degenerate camera. The rule is the largest round `1/2/5 × 10ⁿ` distance, in the display unit
+/// the label will use, whose on-screen width is at most [`SCALE_TARGET_MAX_PX`]. Imperial uses feet
+/// below a mile and whole miles above it, so a bar says "2mi" and never "1.8mi". The distance is
+/// derived straight from `mpp`, so the bar cannot disagree with the map's true scale.
 fn scale_bar_choice(mpp: f32, units: Units) -> Option<(i32, heapless::String<8>)> {
     if !(mpp.is_finite() && mpp > 0.0) {
         return None;
     }
-    // Work in the display unit's base: metres (metric) or feet (imperial). `unit_per_px` is how many
-    // of that base unit one screen pixel spans.
+    // Work in the display unit's base: metres, or feet in imperial. `unit_per_px` is how many of
+    // that base unit one screen pixel spans.
     let unit_per_px = if units.is_imperial() { mpp * crate::settings::FT_PER_M } else { mpp };
-    // The largest base-unit distance that still fits the target width.
     let max_dist = SCALE_TARGET_MAX_PX * unit_per_px;
-    // Imperial rounds in 1/2/5 miles once a mile fits; in feet below that. Metric in metres/km.
+    // Imperial rounds in 1/2/5 miles once a mile fits, and in feet below that.
     let dist = if units.is_imperial() && max_dist >= crate::settings::FT_PER_MI as f32 {
         nice_125(max_dist / crate::settings::FT_PER_MI as f32)?.saturating_mul(crate::settings::FT_PER_MI)
     } else {
@@ -1056,16 +948,15 @@ fn scale_bar_choice(mpp: f32, units: Units) -> Option<(i32, heapless::String<8>)
     None
 }
 
-/// Format a chosen scale distance (in the display base unit — metres or feet) as its bar label:
-/// `NNNm` / `N.Nkm` / `NNkm` in metric, `NNNft` / `N.Nmi` / `NNmi` in imperial. The `1/2/5` values
-/// keep the kilo/mile forms to at most one decimal.
+/// Format a chosen scale distance, in metres or feet, as its bar label. The `1/2/5` values keep the
+/// kilometre and mile forms to at most one decimal.
 fn scale_label(dist: u32, units: Units) -> heapless::String<8> {
     use crate::settings::FT_PER_MI;
     let mut s: heapless::String<8> = heapless::String::new();
     if units.is_imperial() {
         if dist >= FT_PER_MI {
-            // Whole miles for the round values that land there (5280·1 = 1mi, ·2, ·5…); the sub-mile
-            // 1/2/5×10ⁿ feet (2000, 5000) show a single decimal.
+            // Whole miles for the round values that land there; the sub-mile foot values show a
+            // single decimal.
             if dist.is_multiple_of(FT_PER_MI) {
                 let _ = write!(s, "{}mi", dist / FT_PER_MI);
             } else {
@@ -1086,11 +977,11 @@ fn scale_label(dist: u32, units: Units) -> heapless::String<8> {
     s
 }
 
-/// Pan-mode HUD geometry — every tunable pixel size in one place. (The camera-travel-per-step
-/// knob lives with the pan logic as [`crate::app::PAN_STEP_PX`].)
+/// Pan-mode HUD geometry: every tunable pixel size in one place. The camera-travel-per-step knob
+/// lives with the pan logic as [`crate::app::PAN_STEP_PX`].
 mod hud {
-    /// Active-axis chevron — an open, round-capped "Λ" caret: tip `REACH` ahead of the centre, back
-    /// corners `BACK` behind ± `SPREAD`, stroked at half-width `HW`, inset `INSET` from the edge.
+    /// Active-axis chevron: tip `REACH` ahead of the centre, back corners `BACK` behind and
+    /// ±`SPREAD` out, stroked at half-width `HW`, inset `INSET` from the edge.
     pub const CHEV_REACH: f32 = 9.0;
     pub const CHEV_BACK: f32 = 1.0;
     pub const CHEV_SPREAD: f32 = 10.0;
@@ -1098,19 +989,19 @@ mod hud {
     pub const CHEV_INSET: f32 = 20.0;
     /// Ink halo thickness drawn behind every glyph so it reads over any map.
     pub const OUTLINE: f32 = 2.0;
-    /// Persistent Inspect-state frame: two amber edge pixels and a one-pixel ink keyline inside.
-    /// Three pixels total is conspicuous on 240×320 without materially shrinking the map.
+    /// Inspect-state frame: two amber edge pixels and a one-pixel ink keyline inside. Three pixels
+    /// is conspicuous without materially shrinking the map.
     pub const FRAME_AMBER_W: i32 = 2;
     pub const FRAME_INK_W: i32 = 1;
-    /// Native-panel corner radius. This matches the simulator's 10 px display mask and leaves the
-    /// same gentle curve on the physical rounded-corner panel.
+    /// Native-panel corner radius. Matches the simulator's display mask and the physical panel's
+    /// rounded corners.
     pub const FRAME_RADIUS: u32 = 10;
     /// Zoom's bare plus/minus strokes use the same amber-with-ink-halo treatment as the chevrons.
     pub const ZOOM_GLYPH_HALF: f32 = 7.0;
     pub const ZOOM_GLYPH_HW: f32 = 2.5;
-    /// Back-to-you marker — a simple filled triangle in the rider's marker colour (so it
-    /// reads as "you" and stays distinct from the hollow amber chevrons). Its half-height
-    /// / half-width, inset from the edge, and how far off-screen the rider must be first.
+    /// Back-to-you marker: a filled triangle in the rider's marker colour, so it stays distinct
+    /// from the hollow amber chevrons. Its half-height and half-width, its inset from the edge, and
+    /// how far off-screen the rider must be first.
     pub const BACK_H: f32 = 8.0;
     pub const BACK_W: f32 = 7.0;
     pub const BACK_MARGIN: f32 = 14.0;
@@ -1123,8 +1014,8 @@ fn pt(x: f32, y: f32) -> Point {
 }
 
 /// The three screen vertices of an arrow centred at `center`, pointing along the unit direction
-/// `dir`, with half-height and base half-width `size`: the tip, then the two base corners. One
-/// value for the triangle that is drawn and the box reserved for it.
+/// `dir`, with half-height and base half-width `size`: the tip, then the two base corners. One value
+/// for the triangle that is drawn and the box reserved for it.
 fn arrow_vertices(center: (f32, f32), dir: (f32, f32), size: (f32, f32)) -> [Point; 3] {
     let ((cx, cy), (ux, uy), (h, w)) = (center, dir, size);
     let (perpx, perpy) = (-uy, ux);
@@ -1132,9 +1023,8 @@ fn arrow_vertices(center: (f32, f32), dir: (f32, f32), size: (f32, f32)) -> [Poi
     [pt(cx + ux * h, cy + uy * h), pt(bx + perpx * w, by + perpy * w), pt(bx - perpx * w, by - perpy * w)]
 }
 
-/// A filled, ink-outlined triangle pointing along `(ux, uy)` — the solid back-to-you marker.
-/// `h`/`w` are the half-height and base half-width; the outline is the same triangle grown by
-/// [`hud::OUTLINE`], drawn first.
+/// A filled, ink-outlined triangle pointing along `(ux, uy)`. `h` and `w` are the half-height and
+/// base half-width; the outline is the same triangle grown by [`hud::OUTLINE`], drawn first.
 fn outlined_arrow(
     cv: &mut impl Surface,
     center: (f32, f32),
@@ -1150,10 +1040,9 @@ fn outlined_arrow(
     cv.triangle(t, bl, br, fill);
 }
 
-/// Draw the Inspect HUD over the already-rendered map: a persistent amber frame, the active
-/// action's self-explanatory edge cues, and (once the rider is off-screen) a back-to-you marker.
-/// Route mode needs no label or false screen-space arrow: frame + movement along the visible route
-/// is the feedback. The viewport carries the frozen rotation used by the off-screen test.
+/// Draw the Inspect HUD over the already-rendered map: the amber frame, the active action's edge
+/// cues, and a back-to-you marker once the rider is off-screen. Route mode needs no arrow, because
+/// movement along the visible route is the feedback.
 pub(super) fn draw_pan_hud(
     cv: &mut impl Surface,
     size: (f32, f32),
@@ -1166,19 +1055,16 @@ pub(super) fn draw_pan_hud(
     use hud::*;
     let (w, h) = size;
 
-    // 1) Persistent Inspect frame. Unlike a Route-only label it communicates the important state —
-    //    this camera is detached — in Route, Free, and Zoom alike.
+    // The frame states the one thing every mode shares: this camera is detached.
     draw_inspect_frame(cv, w as i32, h as i32);
 
-    // 2) Back-to-you marker first, so the chevrons render over it where they overlap. A filled
-    //    triangle at the rider's bearing edge crossing.
+    // The marker draws first, so the chevrons render over it where they overlap.
     if let Some((bx, by, bux, buy)) = user_fix.and_then(|fix| back_to_you(w, h, vp, fix)) {
         outlined_arrow(cv, (bx, by), (bux, buy), (BACK_H, BACK_W), marker, INK);
     }
 
-    // 3) Up/Down cues. Free movement gets directional edge chevrons; Zoom gets unambiguous +/−
-    //    cues. Route movement deliberately gets no false screen-space arrow or explanatory chrome:
-    //    moving along the visible route is already direct feedback.
+    // Free movement gets directional edge chevrons and Zoom gets plus and minus cues. Route
+    // movement gets none: moving along the visible route is already direct feedback.
     if pan.tool == PanTool::Zoom {
         draw_zoom_cue(cv, (w / 2.0, CHEV_INSET), false);
         draw_zoom_cue(cv, (w / 2.0, h - CHEV_INSET), true);
@@ -1199,9 +1085,8 @@ pub(super) fn draw_pan_hud(
 }
 
 /// Draw the detached-camera frame: two concentric amber strokes follow the panel's rounded mask,
-/// and a thin ink keyline keeps them legible over orange roads and pale map fills. The input
-/// plane's hold bulge renders above this, so charging feedback still wins temporarily without
-/// erasing the persistent mode cue.
+/// and a thin ink keyline keeps them legible over orange roads and pale map fills. The input plane's
+/// hold bulge renders above this, so charging feedback wins temporarily without erasing the cue.
 fn draw_inspect_frame(cv: &mut impl Surface, w: i32, h: i32) {
     use super::palette::*;
     use hud::*;
@@ -1210,9 +1095,8 @@ fn draw_inspect_frame(cv: &mut impl Surface, w: i32, h: i32) {
         return;
     }
 
-    // Reducing the radius with each inset keeps the three strokes concentric instead of making
-    // the inner corners progressively squarer. At 240x320 the outer 10 px curve is the same curve
-    // used by the simulator's display texture and the intended device glass.
+    // Reducing the radius with each inset keeps the three strokes concentric, instead of making
+    // the inner corners progressively squarer.
     for inset in 0..FRAME_AMBER_W {
         cv.round_outline(
             rect(inset, inset, w - 2 * inset, h - 2 * inset),
@@ -1230,8 +1114,8 @@ fn draw_inspect_frame(cv: &mut impl Surface, w: i32, h: i32) {
     }
 }
 
-/// A bare +/- glyph with the same round-ended amber stroke and ink halo as the pan chevrons. The
-/// map remains visible around it; there is no white button disc competing with route furniture.
+/// A bare plus or minus glyph with the same round-ended amber stroke and ink halo as the pan
+/// chevrons. The map stays visible around it, with no button disc competing with route furniture.
 pub(super) fn draw_zoom_cue(cv: &mut impl Surface, center: (f32, f32), plus: bool) {
     use super::palette::*;
     use hud::*;
@@ -1244,9 +1128,9 @@ pub(super) fn draw_zoom_cue(cv: &mut impl Surface, center: (f32, f32), plus: boo
     }
 }
 
-/// Where to put the back-to-you marker for an off-screen rider — `(x, y, ux, uy)`, the
-/// edge crossing of their bearing plus the unit direction toward them — or `None` while
-/// the marker is on-screen (it's already drawn).
+/// Where to put the back-to-you marker for an off-screen rider: `(x, y, ux, uy)` is the edge
+/// crossing of their bearing plus the unit direction toward them. `None` while the rider's own
+/// marker is on-screen.
 fn back_to_you(w: f32, h: f32, vp: &Viewport, fix: Fix) -> Option<(f32, f32, f32, f32)> {
     use hud::*;
     let (sxi, syi) = vp.to_screen(fix.lon, fix.lat);
@@ -1257,16 +1141,16 @@ fn back_to_you(w: f32, h: f32, vp: &Viewport, fix: Fix) -> Option<(f32, f32, f32
         return None;
     }
     let (dx, dy) = (sx - w / 2.0, sy - h / 2.0);
-    // alpha-max-plus-beta-min: a cheap |v| (no sqrt/libm) to normalize the direction —
-    // ~4% off, invisible at this size.
+    // alpha-max-plus-beta-min: a cheap |v| with no sqrt or libm, about 4 % off and invisible at
+    // this size.
     let (adx, ady) = (dx.abs(), dy.abs());
     let mag = adx.max(ady) + 0.41 * adx.min(ady);
     if mag < 1.0 {
         return None;
     }
     let (ux, uy) = (dx / mag, dy / mag);
-    // Clamp the bearing to the inset screen rectangle: the nearer of the two border
-    // crossings (vertical vs horizontal) is where the marker sits.
+    // Clamp the bearing to the inset screen rectangle: the nearer of the two border crossings is
+    // where the marker sits.
     let (hw, hh) = (w / 2.0 - BACK_MARGIN, h / 2.0 - BACK_MARGIN);
     let tx = if adx > 0.01 { hw / adx } else { f32::MAX };
     let ty = if ady > 0.01 { hh / ady } else { f32::MAX };
@@ -1274,9 +1158,9 @@ fn back_to_you(w: f32, h: f32, vp: &Viewport, fix: Fix) -> Option<(f32, f32, f32
     Some((w / 2.0 + dx * t, h / 2.0 + dy * t, ux, uy))
 }
 
-/// Draw one active-axis chevron — an open, round-capped "Λ" caret pointing along `dir`, with an
-/// even ink halo. Two arm quads at half-width `hw` + round caps/join. Both passes share the
-/// centreline, so the halo stays uniform — unlike growing a filled polygon, which warps the arm angle.
+/// Draw one active-axis chevron pointing along `dir`, with an even ink halo. Both passes share the
+/// centreline, so the halo stays uniform; growing a filled polygon instead would warp the arm
+/// angle.
 fn chevron(cv: &mut impl Surface, center: (f32, f32), dir: (f32, f32), fill: u16, outline: u16) {
     use hud::*;
     let (cx, cy) = center;
@@ -1285,31 +1169,30 @@ fn chevron(cv: &mut impl Surface, center: (f32, f32), dir: (f32, f32), fill: u16
     let tip = (cx + ux * CHEV_REACH, cy + uy * CHEV_REACH);
     let lb = (cx - ux * CHEV_BACK - px * CHEV_SPREAD, cy - uy * CHEV_BACK - py * CHEV_SPREAD);
     let rb = (cx - ux * CHEV_BACK + px * CHEV_SPREAD, cy - uy * CHEV_BACK + py * CHEV_SPREAD);
-    // Ink halo first (wider), fill on top — same centreline, so the halo is even all round.
+    // Ink halo first and wider, then the fill on top, on the same centreline.
     for (hw, color) in [(CHEV_HW + OUTLINE, outline), (CHEV_HW, fill)] {
         rounded_arm(cv, lb, tip, hw, color);
         rounded_arm(cv, tip, rb, hw, color);
-        // The shared tip needs its own cap after the two strokes overlap, keeping the join as round
-        // and even as the standalone +/- glyphs' endpoints.
+        // The shared tip needs its own cap where the two strokes overlap, so the join is as round
+        // as the plus and minus glyphs' endpoints.
         let r = round_coord(hw - 0.5).max(1) as u32;
         cv.disc(pt(tip.0, tip.1), r, color);
     }
 }
 
-/// Stroke `a`→`b` with round caps. Shared by the directional chevrons and zoom glyphs so both
-/// affordances have exactly the same visual weight on the RGB222 panel.
+/// Stroke `a`→`b` with round caps. Shared by the directional chevrons and the zoom glyphs, so both
+/// have the same visual weight on the RGB222 panel.
 fn rounded_arm(cv: &mut impl Surface, a: (f32, f32), b: (f32, f32), hw: f32, color: u16) {
     arm(cv, a, b, hw, color);
-    // `disc(c, r)` spans diameter `2r+1` (true radius `r+0.5`), so pass `hw-0.5` to make the
-    // round cap exactly `hw` wide — matching the arm, not bulging half a pixel past it.
+    // `disc(c, r)` spans diameter `2r+1`, so pass `hw-0.5` to make the cap exactly `hw` wide and
+    // stop it bulging half a pixel past the arm.
     let r = round_coord(hw - 0.5).max(1) as u32;
     cv.disc(pt(a.0, a.1), r, color);
     cv.disc(pt(b.0, b.1), r, color);
 }
 
-/// Stroke segment `a`→`b` as a filled quad (two triangles) of half-width `hw`. The unit
-/// normal uses the alpha-max-plus-beta-min |v| approximation (no sqrt/libm; ~4% off,
-/// invisible here).
+/// Stroke segment `a`→`b` as a filled quad of half-width `hw`. The unit normal uses the
+/// alpha-max-plus-beta-min approximation, with no sqrt or libm.
 fn arm(cv: &mut impl Surface, a: (f32, f32), b: (f32, f32), hw: f32, color: u16) {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     let m = dx.abs().max(dy.abs()) + 0.41 * dx.abs().min(dy.abs());
@@ -1329,14 +1212,14 @@ mod tests {
     use crate::Settings;
     use embedded_graphics::pixelcolor::Rgb888;
 
-    /// The RGB565 → RGB888 map the snapshot buffers in this module draw through.
     fn shade(c: u16) -> Rgb888 {
         let (r, g, b) = obc_reader::rgb565_to_rgb888(c);
         Rgb888::new(r, g, b)
     }
 
     /// The `(left, top, right, bottom)` bounds of everything drawn into `buf`, taking the untouched
-    /// background as black. Panics on an empty buffer: a cue that draws nothing pins nothing.
+    /// background as black. Panics on an empty buffer, because a cue that draws nothing pins
+    /// nothing.
     fn drawn_box(buf: &Buf) -> (i32, i32, i32, i32) {
         let black = Rgb888::new(0, 0, 0);
         let mut drawn: Option<(i32, i32, i32, i32)> = None;
@@ -1352,8 +1235,8 @@ mod tests {
     }
 
     /// Assert the pixels a cue drew lie inside the box reserved for it. A settlement name may sit
-    /// flush against that box and the chrome draws after the names, so a column left out of it is a
-    /// column the cue's halo erases from a glyph stroke.
+    /// flush against that box, and the chrome draws after the names, so a column left out of it is
+    /// a column the cue's halo erases from a glyph stroke.
     fn assert_inside(drawn: (i32, i32, i32, i32), reserved: Rectangle, what: &str) {
         let (l, t, r, b) = drawn;
         let (bx, by) = (reserved.top_left.x, reserved.top_left.y);
@@ -1439,7 +1322,7 @@ mod tests {
                         );
                         (320 - CHIP_H - CHIP_MARGIN + 10)..(320 - CHIP_MARGIN - 10)
                     };
-                    // The whole text row must match the label-only chrome, including its centering.
+                    // The whole text row must match the label-only chrome, centring included.
                     for y in rows {
                         for x in 10..230 {
                             if statistics || (60..180).contains(&x) {
@@ -1488,16 +1371,13 @@ mod tests {
         MapScreen::new().handle(g, &mut cx)
     }
 
-    /// The **browse map** (not tracking): `back` pops back to the Menu — there's no Statistics
-    /// sibling without a ride.
     #[test]
     fn browse_map_back_pops() {
         let mut rec = crate::RecorderMachine::new();
-        let mut act = Activity::new(Mode::Idle); // no session → browse map
+        let mut act = Activity::new(Mode::Idle); // no session, so a browse map
         assert!(matches!(run(&mut act, &mut rec, Gesture::Back), Transition::Pop));
     }
 
-    /// The browse map's `press` opens the small start card instead of the Paused page.
     #[test]
     fn browse_map_press_opens_the_start_card() {
         let mut rec = crate::RecorderMachine::new();
@@ -1506,8 +1386,6 @@ mod tests {
         assert_eq!(act.mode, Mode::Idle, "opening the card doesn't touch the mode");
     }
 
-    /// The **riding map** (tracking): `back` swaps to the Statistics sibling, `press` pauses into
-    /// Ride control — the mid-ride bindings, unchanged.
     #[test]
     fn riding_map_keeps_the_sibling_and_pause_bindings() {
         let mut rec = crate::RecorderMachine::new();
@@ -1519,13 +1397,11 @@ mod tests {
         assert!(matches!(run(&mut act, &mut rec, Gesture::Press), Transition::Push(Screen::RideControl(_))));
     }
 
-    /// The chosen bar is always the largest 1/2/5×10ⁿ that fits the target width, so across the whole
-    /// zoom range the realised pixel width stays in a sane band: never wider than the target, and wide
-    /// enough to read (the 1/2/5 steps keep it above ~⅓ of the max). Concrete `1/2/5` values are pinned
-    /// by [`scale_bar_labels_are_correct`].
+    /// Across the whole zoom range the realised pixel width stays in a readable band: never wider
+    /// than the target, and never so short that the bar cannot be read.
     #[test]
     fn scale_bar_fits_the_target_across_the_zoom_range() {
-        // A sweep from riding-close (0.5 m/px) to overview (400 m/px), both unit systems.
+        // A sweep from riding-close to overview, in both unit systems.
         for &mpp in &[0.5f32, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 200.0, 400.0] {
             for units in [Units::Metric, Units::Imperial] {
                 let (px, _label) = scale_bar_choice(mpp, units).expect("a real zoom yields a bar");
@@ -1537,16 +1413,15 @@ mod tests {
         }
     }
 
-    /// Concrete labels at representative zooms — the metric metres↔km and imperial feet↔miles
-    /// cross-overs, so a regression in the rounding/format shows up as a wrong string.
+    /// Concrete labels at the metric and imperial cross-overs, so a change in the rounding or the
+    /// format shows up as a wrong string.
     #[test]
     fn scale_bar_labels_are_correct() {
         assert_eq!(scale_bar_choice(1.0, Units::Metric).unwrap().1.as_str(), "50m");
         assert_eq!(scale_bar_choice(10.0, Units::Metric).unwrap().1.as_str(), "500m");
         assert_eq!(scale_bar_choice(50.0, Units::Metric).unwrap().1.as_str(), "2km");
         assert_eq!(scale_bar_choice(200.0, Units::Metric).unwrap().1.as_str(), "10km");
-        // Imperial: sub-mile feet, then whole 1/2/5 miles past 5280 ft — never a feet-rounded
-        // fraction like "1.8mi".
+        // Imperial: sub-mile feet, then whole 1/2/5 miles past a mile, never "1.8mi".
         assert_eq!(scale_bar_choice(1.0, Units::Imperial).unwrap().1.as_str(), "200ft");
         assert_eq!(scale_bar_choice(10.0, Units::Imperial).unwrap().1.as_str(), "2000ft");
         assert_eq!(scale_bar_choice(50.0, Units::Imperial).unwrap().1.as_str(), "2mi");
@@ -1554,14 +1429,12 @@ mod tests {
     }
 
     /// The reserved box holds every pixel the bar draws, halo columns included, whether the bar or
-    /// its label is the wider of the two. A settlement name may sit flush against this box and the
-    /// bar draws after the names, so a column left out of it is a column the bar's parchment halo
-    /// erases from a glyph stroke.
+    /// its label is the wider of the two.
     #[test]
     fn the_scale_bar_ink_box_holds_every_pixel_the_bar_draws() {
         use obc_render::Canvas;
-        // `500m` over 50 px is a bar wider than its label; `2000ft` over 60 px is the other way
-        // round. The chip band only moves the bar up the panel, so one case takes each position.
+        // One case has a bar wider than its label and the other has it the other way round. The
+        // chip band only moves the bar up the panel, so one case takes each position.
         for (mpp, units, chip_band, bar_is_wider) in
             [(10.0f32, Units::Metric, 0, true), (10.0, Units::Imperial, CHIP_H, false)]
         {
@@ -1577,15 +1450,14 @@ mod tests {
             let (l, _, r, b) = drawn;
             let (bx, by) = (bar.ink().top_left.x, bar.ink().top_left.y);
             let (bw, bh) = (bar.ink().size.width as i32, bar.ink().size.height as i32);
-            // The baseline and its halo run the bar's whole width, so the three edges they set are
-            // exact. Only the top edge is loose, by the label's top bearing.
+            // The baseline and its halo run the bar's whole width, so three edges are exact. Only
+            // the top edge is loose, by the label's top bearing.
             assert_eq!((l, r, b), (bx, if bar_is_wider { bx + bw } else { r }, by + bh), "{case:?}: the tight edges");
         }
     }
 
-    /// Pan mode suppresses every bottom pill, so nothing else reserves the bottom of the panel —
-    /// but the pan HUD still inks its Up/Down cue there, after the names. The cue comes in as
-    /// chrome, so a name under it is refused rather than overprinted.
+    /// Pan mode suppresses every bottom pill, but the pan HUD still inks its Up/Down cue there,
+    /// after the names, so the cue comes in as chrome and a name under it is refused.
     #[test]
     fn the_pan_cue_keeps_a_settlement_name_off_the_bottom_of_the_panel() {
         let vp = Viewport::new(240.0, 320.0, 0, 0, 1.0);
@@ -1608,17 +1480,17 @@ mod tests {
             assert!(place.try_place(clear, 0), "{name}: one clear of it is placed");
         }
 
-        // Route movement draws no cue, and with no pill either the bottom is bare map.
+        // Route movement draws no cue, and with no pill either, the bottom is bare map.
         assert!(placer(Some(route)).try_place(under_cue, 0), "route movement inks no cue, so the corner is free");
 
-        // Free horizontal moves the pair to the sides, and the bottom centre comes back.
+        // Free horizontal moves the pair to the sides, so the bottom centre comes back.
         assert_eq!(pan_cue_boxes(240, 320, horizontal).len(), 2, "one cue box for each side");
         let mut place = placer(Some(horizontal));
         assert!(!place.try_place(rect(0, 148, 60, 24), 0), "a name under the left cue is refused");
         assert!(place.try_place(under_cue, 0), "and the bottom centre is free");
     }
 
-    /// The four real pan states, built the way the gestures build them, named for the assertions.
+    /// The four pan states, built the way the gestures build them.
     fn pan_states() -> [(&'static str, Pan); 4] {
         let mut st = crate::AppState::new(0, 0, 1.0);
         st.enter_pan(false, 0);
@@ -1638,10 +1510,9 @@ mod tests {
         [("free vertical", vertical), ("zoom", zoom), ("free horizontal", horizontal), ("route", route)]
     }
 
-    /// The top of the panel is measured, like the bottom: only what a frame really inks up there is
-    /// held back from the names. The clock answers to its setting, the low-battery cue to the
-    /// charge, and the pan HUD's top cue to pan mode — which hides the clock, so the cue is held
-    /// whatever the setting says. A bare top belongs to the names.
+    /// The top of the panel is measured like the bottom: only what a frame really inks up there is
+    /// held back from the names. Pan mode hides the clock, so its top cue is held whatever the
+    /// setting says.
     #[test]
     fn the_top_chrome_is_only_what_the_frame_inks() {
         let vp = Viewport::new(240.0, 320.0, 0, 0, 1.0);
@@ -1650,8 +1521,7 @@ mod tests {
             let hud = pan_hud_boxes(240, 320, pan, &vp, None);
             PointPlacement::new(&label_reserved(&vp, None, &map_chrome(240, 320, 0, None, &hud, clock, low_battery)))
         };
-        // One name under each piece of top chrome, each clear of the other two. They all sit inside
-        // the band the Map used to refuse outright.
+        // One name under each piece of top chrome, each clear of the other two.
         let under_clock = rect(90, 8, 60, 24);
         let under_battery = rect(10, 10, 26, 13);
         let under_top_cue = rect(100, 10, 40, 24);
@@ -1660,7 +1530,7 @@ mod tests {
             assert!(bottom <= CLOCK_TOP + Font::Body.line_height() as i32 + 2, "the case sits in the old top band");
         }
 
-        // The owner's case: the clock off and the charge healthy, and the whole band is map again.
+        // The clock off and the charge healthy: the whole band is map again.
         let mut bare = placer(false, false, None);
         assert!(bare.try_place(under_battery, 0), "the corner is free");
         assert!(bare.try_place(under_clock, 0), "and so is the centre");
@@ -1685,9 +1555,8 @@ mod tests {
         }
     }
 
-    /// The top boxes hold every pixel they protect: the clock digits, the low-battery cue and the
-    /// back-to-you marker, which points along the rider's bearing and so must fit the same box at
-    /// every angle.
+    /// The top boxes hold every pixel they protect. The back-to-you marker points along the rider's
+    /// bearing, so it must fit the same box at every angle.
     #[test]
     fn the_top_chrome_boxes_hold_every_pixel_they_draw() {
         use obc_render::Canvas;
@@ -1700,7 +1569,7 @@ mod tests {
         draw_low_battery(&mut Canvas::new(&mut battery, &shade));
         assert_inside(drawn_box(&battery), low_battery_box(), "the low-battery cue");
 
-        // The marker round the rider, each one drawn the way `draw_pan_hud` draws it.
+        // The marker around the rider, each one drawn the way `draw_pan_hud` draws it.
         let vp = Viewport::new(240.0, 320.0, 0, 0, 1.0);
         for (dx, dy) in [(0.0f32, -1.0f32), (0.7, -0.7), (1.0, 0.0), (0.7, 0.7), (0.0, 1.0), (-0.7, 0.7), (-1.0, 0.0)] {
             let fix = fix_at_screen(&vp, 120.0 + dx * 400.0, 160.0 + dy * 400.0);
@@ -1720,17 +1589,14 @@ mod tests {
         }
     }
 
-    /// A [`Fix`] that lands on the given screen point of `vp` — the readable way to put a rider off
-    /// the panel in a chosen direction.
+    /// A [`Fix`] that lands on the given screen point of `vp`.
     fn fix_at_screen(vp: &Viewport, x: f32, y: f32) -> Fix {
         let (lon, lat) = vp.to_map(x, y);
         Fix::at(lat, lon)
     }
 
-    /// The pan HUD's back-to-you marker is top ink as well: with the rider off the panel to the
-    /// north it draws a solid triangle around y 14, at whatever column their bearing crosses. It
-    /// draws after the names, so it comes in as chrome — in **every** pan state, including Route and
-    /// Free Horizontal, which ink no Up/Down cue at the top at all.
+    /// The back-to-you marker draws after the names, so it comes in as chrome in every pan state,
+    /// including the two that ink no Up/Down cue at the top at all.
     #[test]
     fn the_back_to_you_marker_keeps_a_name_off_its_box() {
         let vp = Viewport::new(240.0, 320.0, 0, 0, 1.0);
@@ -1756,16 +1622,16 @@ mod tests {
         assert!(back_to_you_box(240.0, 320.0, &vp, home).is_none(), "an on-panel rider needs no marker");
     }
 
-    /// [`MAX_CHROME`]'s two worst cases, so the capacity claim fails here rather than dropping a box
-    /// in a debug build nobody runs.
+    /// [`MAX_CHROME`]'s two worst cases, so the capacity claim fails here rather than dropping a
+    /// box in a debug build nobody runs.
     #[test]
     fn max_chrome_holds_the_widest_frame() {
         let vp = Viewport::new(240.0, 320.0, 0, 0, 1.0);
         let bar = ScaleBar::new(320, CHIP_H, 10.0, Units::Metric).expect("a real zoom yields a bar");
         // Attached: the clock digits, the low-battery cue, a bottom pill's band and the scale bar.
         assert_eq!(map_chrome(240, 320, CHIP_H, Some(&bar), &[], true, true).len(), 4);
-        // Panning: the whole HUD, the low-battery cue and the bar. Zoom is the widest HUD — cues at
-        // the top and the bottom — and the clock and every pill are suppressed.
+        // Panning: the whole HUD, the low-battery cue and the bar. Zoom is the widest HUD, and the
+        // clock and every pill are suppressed.
         let zoom = pan_states().into_iter().find(|(name, _)| *name == "zoom").expect("a zoom state").1;
         let away = fix_at_screen(&vp, 66.0, -400.0);
         let hud = pan_hud_boxes(240, 320, Some(zoom), &vp, Some(away));
@@ -1775,7 +1641,6 @@ mod tests {
         assert_eq!(MAX_CHROME, 5);
     }
 
-    /// A degenerate camera (non-finite or non-positive mpp) yields no bar, never a bogus one.
     #[test]
     fn scale_bar_rejects_degenerate_zoom() {
         assert!(scale_bar_choice(f32::NAN, Units::Metric).is_none());
@@ -1784,22 +1649,17 @@ mod tests {
         assert!(scale_bar_choice(-1.0, Units::Metric).is_none());
     }
 
-    /// The diamond helper: an on-panel centre yields the four rhombus vertices ±r about it; a centre
-    /// straddling an edge (within the half-diagonal margin) still draws; one wholly past the margin
-    /// culls to `None`.
     #[test]
     fn waypoint_diamond_vertices_and_cull() {
         let r = WAYPOINT_DIAMOND_R;
-        // On-panel: the four vertices sit ±r about the centre.
         let v = waypoint_diamond(100, 80, 240, 240).expect("on-panel centre draws");
         assert_eq!(
             v,
             (Point::new(100, 80 - r), Point::new(100, 80 + r), Point::new(100 - r, 80), Point::new(100 + r, 80))
         );
-        // Straddling an edge (centre exactly on the half-diagonal margin): still drawn.
+        // A centre exactly on the half-diagonal margin still draws.
         assert!(waypoint_diamond(-r, 120, 240, 240).is_some(), "just off the left edge still draws");
         assert!(waypoint_diamond(120, 240 + r, 240, 240).is_some(), "just past the bottom still draws");
-        // Wholly off-panel beyond the margin: culled.
         assert!(waypoint_diamond(-r - 1, 120, 240, 240).is_none(), "past the left margin culls");
         assert!(waypoint_diamond(240 + r + 1, 120, 240, 240).is_none(), "past the right margin culls");
         assert!(waypoint_diamond(120, -r - 1, 240, 240).is_none(), "above the top margin culls");
@@ -1809,40 +1669,36 @@ mod tests {
         DateTime { year: 2025, month: 6, day: 29, hour, minute }
     }
 
-    /// The clock overlay's minute tick: with the pill visible a rollover self-dirties **only** the
-    /// pill region and arms the next-minute wake; hidden (setting off or panning) it claims nothing
-    /// and arms no wake.
+    /// With the pill visible a rollover self-dirties only the pill region and arms the next-minute
+    /// wake; hidden, it claims nothing and arms no wake.
     #[test]
     fn clock_tick_is_region_scoped_and_gated() {
         let w = 240;
         let mut scr = MapScreen::new();
-        // `tracking = true` throughout so the browse hint retires to `Done` on the first poll and
-        // never contends for the wake — this case pins the clock overlay alone.
-        // First observation just initialises the baseline (no change), and arms the minute wake.
+        // `tracking = true` throughout, so the browse hint retires on the first poll and never
+        // contends for the wake. The first observation initialises the baseline.
         let t0 = scr.tick_timers(0, dt(14, 40), 20_000, w, false, true, true);
         assert!(!t0.changed);
         assert_eq!(t0.next_wake_ms, Some(20_000));
-        // A minute rollover fires, region-clipped to the pill (never a full-frame None).
+        // A minute rollover fires, region-clipped to the pill, never a full-frame `None`.
         let t1 = scr.tick_timers(1_000, dt(14, 41), 60_000, w, false, true, true);
         assert!(t1.changed);
         assert_eq!(t1.region, Some(clock_region(w)));
         assert!(t1.region.unwrap().size.width < w as u32, "the pill region is a small band, not the whole width");
-        // Hidden by the setting: no change, no wake, even across a rollover.
+        // Hidden by the setting: no change and no wake, even across a rollover.
         let off = scr.tick_timers(2_000, dt(14, 42), 60_000, w, false, false, true);
         assert_eq!(off, ScreenTick::idle());
-        // Hidden by pan: same — the pan chevron owns the slot.
+        // Hidden by pan, because the pan chevron owns the slot.
         let panned = scr.tick_timers(3_000, dt(14, 43), 60_000, w, true, true, true);
         assert_eq!(panned, ScreenTick::idle());
     }
 
-    /// The browse-map start hint (T6 #684): the first poll of a **browse** map (not tracking) arms it
-    /// — the chip is up and a wake is asked for `HINT_MS` out — and it fires exactly one clearing
-    /// repaint at expiry, then stays down. The clock is off here (`map_clock = false`) to isolate the
-    /// hint's own wake.
+    /// The first poll of a browse map arms the hint, and it fires exactly one clearing repaint at
+    /// expiry and then stays down. The clock is off here, to isolate the hint's own wake.
     #[test]
     fn browse_hint_arms_on_entry_and_expires_once() {
         let mut scr = MapScreen::new();
-        // Entry: armed, chip up, wake at HINT_MS — but nothing "changed" (it was drawn on entry).
+        // Armed, chip up, wake at HINT_MS, but nothing changed: it was drawn on entry.
         let t0 = scr.tick_timers(0, dt(14, 40), 60_000, 240, false, false, false);
         assert!(!t0.changed);
         assert_eq!(t0.next_wake_ms, Some(HINT_MS));
@@ -1852,20 +1708,20 @@ mod tests {
         assert!(!mid.changed);
         assert_eq!(mid.next_wake_ms, Some(1));
         assert!(scr.hint.chip_up());
-        // At the deadline: one clearing repaint (full-frame — the chip band + scale-bar step), then down.
+        // At the deadline: one full-frame clearing repaint, then down.
         let expire = scr.tick_timers(HINT_MS, dt(14, 40), 60_000, 240, false, false, false);
         assert!(expire.changed);
         assert_eq!(expire.region, None, "the expiry is a full-frame change, not a clock-region tick");
         assert_eq!(expire.next_wake_ms, None);
         assert!(!scr.hint.chip_up(), "the chip is down once expired");
-        // And it does not re-fire on a later poll (the same instance stays retired).
+        // And it does not re-fire on a later poll.
         let after = scr.tick_timers(HINT_MS + 5_000, dt(14, 40), 60_000, 240, false, false, false);
         assert!(!after.changed);
         assert!(!scr.hint.chip_up());
     }
 
-    /// A **riding** map (tracking) never shows the hint: the first poll retires it straight to `Done`,
-    /// so the chip is down from the start and arms no hint wake.
+    /// A riding map never shows the hint: the first poll retires it, so the chip is down from the
+    /// start and arms no hint wake.
     #[test]
     fn riding_map_never_shows_the_browse_hint() {
         let mut scr = MapScreen::new();
@@ -1880,31 +1736,29 @@ mod tests {
         WptEntry { dist_along_m, lon: 0, lat: 0, category: None, lateral_offset_m: 0, name: n }
     }
 
-    /// The waypoint chip's pure visibility helper: shown only when not panning, the warning chip is
-    /// down, a next waypoint exists and is in range, and the mode allows — with the approach radius
-    /// honoured to the exact metre.
+    /// The chip shows only when the rider is not panning, the warning chip is down, a next waypoint
+    /// is in range, and the mode allows it. The approach radius holds to the exact metre.
     #[test]
     fn waypoint_chip_visibility_rules() {
         let wpts = [wp(0, "Brunnen"), wp(1700, "Pass Summit")];
-        let next = Some(1); // the next waypoint is Pass Summit at 1700 m
+        let next = Some(1); // Pass Summit, at 1700 m
         let approach = |p| waypoint_chip(WaypointMode::Approach, false, false, false, next, &wpts, p);
         // Approach: hidden beyond the radius, shown from exactly 500 m out (not 501 m).
         assert_eq!(approach(1000), None, "700 m out: still hidden");
         assert_eq!(approach(1199), None, "501 m out: still hidden");
         assert_eq!(approach(1200), Some((1, 500)), "exactly 500 m out: shown, counting 500");
         assert_eq!(approach(1201), Some((1, 499)), "inside the radius: shown, counting down");
-        // Always: shown at any distance ahead; Off: never.
         assert_eq!(
             waypoint_chip(WaypointMode::Always, false, false, false, next, &wpts, 0),
             Some((1, 1700)),
             "Always shows the far waypoint too"
         );
         assert_eq!(waypoint_chip(WaypointMode::Off, false, false, false, next, &wpts, 1200), None, "Off never shows");
-        // The three suppressors, each over an Always frame that would otherwise show.
+        // The three suppressors, each over a frame that would otherwise show.
         assert_eq!(waypoint_chip(WaypointMode::Always, true, false, false, next, &wpts, 0), None, "panning hides it");
         assert_eq!(waypoint_chip(WaypointMode::Always, false, true, false, next, &wpts, 0), None, "no-fix hides it");
         assert_eq!(waypoint_chip(WaypointMode::Always, false, false, true, next, &wpts, 0), None, "off-route hides it");
-        // No next waypoint (route done / none loaded), and a stale index past the table, both cull safely.
+        // No next waypoint, and a stale index past the table, both cull safely.
         assert_eq!(waypoint_chip(WaypointMode::Always, false, false, false, None, &wpts, 0), None, "no next waypoint");
         assert_eq!(
             waypoint_chip(WaypointMode::Always, false, false, false, Some(9), &wpts, 0),
@@ -1913,21 +1767,19 @@ mod tests {
         );
     }
 
-    /// The pass-linger: for the ~100 m the resident index still points at a just-passed waypoint,
-    /// `dist_to_go` clamps to 0 — the "you are here" readout — so the chip shows `0m`, never a
-    /// wrapped/negative distance.
+    /// While the resident index still points at a just-passed waypoint, `dist_to_go` clamps to 0,
+    /// so the chip shows `0m` and never a wrapped distance.
     #[test]
     fn waypoint_chip_lingers_at_zero_past_the_waypoint() {
         let wpts = [wp(1700, "Pass Summit")];
-        // 50 m past the waypoint the index (still 0) lingers; the distance clamps to 0.
         let got = waypoint_chip(WaypointMode::Approach, false, false, false, Some(0), &wpts, 1750);
         assert_eq!(got, Some((0, 0)), "50 m past: visible, distance clamped to 0");
         assert_eq!(crate::screen::vocab::fmt::distance_short(0, Units::Metric).as_str(), "0m", "…rendering as 0m");
     }
 
-    /// The T10 acceptance case: the canonical `◆ Pass Summit  299m` chip on the 240 px panel gives
-    /// the name its whole remaining width, so "Pass Summit" reads in full — never a truncated
-    /// `Pass ..`. Recomputes the name budget the way [`draw_waypoint_chip`] does.
+    /// The chip gives the name its whole remaining width on the 240 px panel, so "Pass Summit"
+    /// reads in full rather than truncating. Recomputes the budget the way `draw_waypoint_chip`
+    /// does.
     #[test]
     fn pass_summit_fits_the_approach_chip_at_240px() {
         let w = 240;
@@ -1940,8 +1792,8 @@ mod tests {
         assert_eq!(fit("Pass Summit", chars).as_str(), "Pass Summit", "the full name fits, no ellipsis");
     }
 
-    /// The shared halo helper: the ink glyph is the last writer at the anchor, and every pixel one
-    /// step off it holds halo or ink — never the bare background.
+    /// The ink glyph is the last writer at the anchor, and every pixel one step off it holds halo
+    /// or ink, never the bare background.
     #[test]
     fn halo_text_writes_the_halo_under_the_ink() {
         use crate::harness::support::Buf;
