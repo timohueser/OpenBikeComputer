@@ -495,12 +495,17 @@ def best_contributor(keys: set[str]) -> str:
     return min(keys, key=priority_rank)
 
 
-def sha256_of(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
+def tile_digest(path: Path) -> str:
+    """The sha256 of a tile's pixels: row-major, little-endian `int16`.
+
+    Not of the file. Two GDAL or zlib builds deflate the same pixels into different bytes,
+    and the terrain bakery uses this digest as a skip key, so it has to mean "these heights"
+    and not "this compressed stream".
+    """
+
+    with open_raster(path) as src:
+        pixels = src.read(1)
+    return hashlib.sha256(np.ascontiguousarray(pixels.astype("<i2")).tobytes()).hexdigest()
 
 
 def rebuild_index(root: Path) -> dict:
@@ -517,7 +522,7 @@ def rebuild_index(root: Path) -> dict:
         if not path.is_file():
             raise Refuse(f"a source manifest names tile {tile}, which is not in the archive")
         tiles[tile] = best_contributor(held[tile])
-        digests[tile] = sha256_of(path)
+        digests[tile] = tile_digest(path)
     index = {
         "schema": 1,
         "step_log2": 6,
@@ -721,11 +726,17 @@ def command_check(args) -> int:
             problems.append(f"{tile}: the index names it, but {path} is missing")
             continue
         problems.extend(tile_problems(path, ti, tj))
-        if sha256_of(path) != index.get("sha256", {}).get(tile):
-            problems.append(f"{tile}: the sha256 in the index is not this file's")
+        if tile_digest(path) != index.get("sha256", {}).get(tile):
+            problems.append(f"{tile}: the sha256 in the index is not this tile's pixels")
     for path in sorted((root / "16").rglob("*.tif")) if (root / "16").is_dir() else []:
-        tile = tile_id(int(path.parent.name), int(path.stem))
-        if tile not in index.get("tiles", {}):
+        try:
+            ti, tj = int(path.parent.name), int(path.stem)
+        except ValueError:
+            problems.append(f"{path}: not a tile id; a tile is 16/<ti:04>/<tj:04>.tif")
+            continue
+        if tile_path(root, ti, tj) != path:
+            problems.append(f"{path}: a tile id is zero padded to four digits")
+        elif tile_id(ti, tj) not in index.get("tiles", {}):
             problems.append(f"{path}: not in the index, so no consumer can see it")
     for problem in problems:
         print(f"check: {problem}", file=sys.stderr)
@@ -736,10 +747,15 @@ def command_check(args) -> int:
 
 
 def tile_problems(path: Path, ti: int, tj: int) -> list[str]:
-    """Everything one tile must be: size, dtype, nodata, CRS, and the exact lattice."""
+    """Everything one tile must be, including how the bytes are laid out.
+
+    The layout is part of the contract because the reader streams tiles: a tile that is not
+    deflated in 256 x 256 blocks, or is big-endian, reads correctly but not the way the
+    baker was measured against.
+    """
 
     problems = []
-    with rasterio.open(path) as src:
+    with open_raster(path) as src:
         if (src.width, src.height) != (TILE_PX, TILE_PX):
             problems.append(f"{path}: {src.width}x{src.height}, not {TILE_PX}x{TILE_PX}")
         if src.dtypes[0] != "int16":
@@ -750,9 +766,19 @@ def tile_problems(path: Path, ti: int, tj: int) -> list[str]:
             problems.append(f"{path}: CRS {src.crs}, not EPSG:4326")
         if src.count != 1:
             problems.append(f"{path}: {src.count} bands, not 1")
+        if src.tags().get("AREA_OR_POINT") != "Area":
+            problems.append(f"{path}: AREA_OR_POINT is {src.tags().get('AREA_OR_POINT')}, not Area")
+        compression = src.compression.value.lower() if src.compression else "none"
+        if compression != "deflate":
+            problems.append(f"{path}: compression {compression}, not deflate")
+        if src.block_shapes[0] != (256, 256):
+            problems.append(f"{path}: internal blocks {src.block_shapes[0]}, not (256, 256)")
         expected = tile_window(ti, tj).transform
         if max(abs(a - b) for a, b in zip(src.transform[:6], expected[:6])) > 1e-9:
             problems.append(f"{path}: transform {src.transform!r} is not the lattice {expected!r}")
+    with path.open("rb") as handle:
+        if handle.read(2) != b"II":
+            problems.append(f"{path}: the TIFF header is not little-endian")
     return problems
 
 

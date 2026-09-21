@@ -72,8 +72,9 @@ tile file, under the same tile ids as `tiles`.
   "sha256": { "3410/2882": "9f86d0818…" } }
 ```
 
-The terrain bakery keys its skip decision on the reference a cell was baked from, and a digest is
-the only statement of "these bytes" that survives a re-ingest of the same box. `tiles` keeps the
+The digest is over the tile's **pixels** — row-major, little-endian `int16` — and not over the
+file. Two GDAL or zlib builds deflate the same heights into different bytes, and the terrain bakery
+keys its skip decision on this digest, so it has to mean "these heights". `tiles` keeps the
 shape the contract states, so a reader that wants the source key only reads one map, as before.
 
 `sources` holds the four fields the contract names, plus `vertical_datum`. The full facts of a
