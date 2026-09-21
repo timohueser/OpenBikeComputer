@@ -301,7 +301,7 @@ bake *args:
     if [[ -z "${OBC_PYOSMIUM_UP_TO_DATE:-}" && -x "$OBC_ROOT/.venv/bin/pyosmium-up-to-date" ]]; then
       export OBC_PYOSMIUM_UP_TO_DATE="$OBC_ROOT/.venv/bin/pyosmium-up-to-date"
     fi
-    export OBC_LANDMARK_CAPTURE="${OBC_LANDMARK_CAPTURE:-$OBC_ROOT/tools/landmark_capture.py}"
+    export OBC_LANDMARK_CAPTURE_TOOL="${OBC_LANDMARK_CAPTURE_TOOL:-$OBC_ROOT/tools/landmark_capture.py}"
     ( cd "$OBC_ROOT" && _run cargo build --release -p obc-bake )
     bin="$OBC_ROOT/target/release/obc-bake"
     tree="${OBC_BAKE_TREE:-$HOME/obc-bake}"

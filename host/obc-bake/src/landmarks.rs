@@ -3,9 +3,9 @@
 //! ```text
 //! regions.toml ──▶ .poly ──▶ coverage ──▶ boundary.geojson
 //!                                              │
-//!                     policy.json ─────────────┤
+//!           policy.json + content-languages ───┤
 //!                                              ▼
-//!                         <cache>/landmarks/<region>/     raw capture (network)
+//!                  <cache>/landmarks/<region>/<recipe>/   raw capture (network)
 //!                                              │
 //!                                              ▼
 //!                         <tree>/landmarks/<region id>/content.json + photos
@@ -25,16 +25,21 @@
 //! deterministic half alone over whatever the cache already holds.
 //!
 //! The capture tool owns resumption: each request is content-addressed and an interrupted run
-//! reuses every byte it already has. The stage only decides whether to call it, by reading the
-//! recipe the capture stamped — a capture made for a different boundary or a different policy is
-//! never compiled, it is re-captured into its own directory.
+//! reuses every byte it already has. It also refuses to reuse a directory whose recipe moved, so
+//! the stage gives each recipe its own directory under the region: a moved border, an edited
+//! policy or a new UI language is captured beside the old capture rather than into it, and the
+//! bytes an earlier one cost hours to fetch stay where they are.
 //!
 //! # What "unchanged" means here
 //!
-//! One key over the capture's own source digests, the boundary and the policy: exactly the bytes
-//! the compiler reads. The compiler's digest of itself is recorded beside the artifact rather than
-//! keyed on, because it is only known after a compile; [`LANDMARK_RECIPE_VERSION`] is what an
-//! operator moves when the compiled bytes must change for unchanged sources.
+//! One key over the capture's own source digests and the three documents that decide what is
+//! captured at all: the boundary, the category policy and the shared UI language set. The language
+//! set is not a detail of the compiler here — it decides which articles are fetched and which
+//! places are eligible, so adding a language must re-capture, not just re-compile.
+//!
+//! The compiler's digest of itself is recorded beside the artifact rather than keyed on, because
+//! it is only known after a compile; [`LANDMARK_RECIPE_VERSION`] is what an operator moves when
+//! the compiled bytes must change for unchanged sources.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -71,11 +76,14 @@ pub struct LandmarkDoc {
     pub fingerprint: String,
     pub policy_sha256: String,
     pub boundary_sha256: String,
+    pub language_sha256: String,
     /// The article languages the artifact stores, as the compiler reports them.
     pub languages: Vec<String>,
     /// The compiler's own digest of its rules, recorded for provenance rather than keyed on.
     pub compiler_policy_sha256: String,
-    pub content_sha256: String,
+    /// Over every file of the artifact, `content.json` and the photos alike. The photos are most
+    /// of it, so a digest of `content.json` alone would call an artifact with a lost photo intact.
+    pub artifact_sha256: String,
     pub built_at: String,
 }
 
@@ -106,12 +114,12 @@ pub struct PythonCapture {
 
 impl PythonCapture {
     pub fn from_env() -> Result<Self, String> {
-        let script = std::env::var_os("OBC_LANDMARK_CAPTURE")
+        let script = std::env::var_os("OBC_LANDMARK_CAPTURE_TOOL")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("tools/landmark_capture.py"));
         if !script.is_file() {
             return Err(format!(
-                "{} is not there — set OBC_LANDMARK_CAPTURE to tools/landmark_capture.py, or run `obc bake \
+                "{} is not there — set OBC_LANDMARK_CAPTURE_TOOL to tools/landmark_capture.py, or run `obc bake \
                  landmarks`, which sets it",
                 script.display()
             ));
@@ -258,12 +266,10 @@ impl LandmarkBakery<'_> {
         progress.log(format!("  capture: {}", self.capture.describe()));
 
         let policy = self.write_policy()?;
-        let policy_sha256 = crate::hash::bytes(obc_pack::landmarks::POLICY_BYTES);
-
         let mut warnings = Vec::new();
         let mut outcomes = Vec::new();
         for region in self.regions {
-            match self.one(region, &policy, &policy_sha256, progress) {
+            match self.one(region, &policy, progress) {
                 Ok(outcome) => outcomes.push(outcome),
                 Err(e) => {
                     progress.warn(format!("  {}: {e}", region.id));
@@ -290,23 +296,23 @@ impl LandmarkBakery<'_> {
         Ok(path)
     }
 
-    fn one(
-        &self,
-        region: &Region,
-        policy: &Path,
-        policy_sha256: &str,
-        progress: &Progress,
-    ) -> Result<LandmarkOutcome, String> {
+    fn one(&self, region: &Region, policy: &Path, progress: &Progress) -> Result<LandmarkOutcome, String> {
         let poly = self.source.fetch_poly(region, progress)?;
         let coverage = Coverage::parse_poly(&poly).map_err(|e| format!("{}.poly: {e}", region.id))?;
         let boundary_text = coverage.geojson();
-        let boundary_sha256 = crate::hash::text(&boundary_text);
-        let boundary = self.opts.cache.join(LANDMARKS_DIR).join(format!("{}.geojson", flat(region)));
+        let recipe = Recipe {
+            boundary_sha256: crate::hash::text(&boundary_text),
+            policy_sha256: crate::hash::bytes(obc_pack::landmarks::POLICY_BYTES),
+            language_sha256: crate::hash::bytes(obc_pack::landmarks::LANGUAGE_BYTES),
+        };
+        let region_cache = self.opts.cache.join(LANDMARKS_DIR).join(flat(region));
+        let capture_dir = region_cache.join(recipe.key());
+        let boundary = region_cache.join(format!("{}.geojson", recipe.key()));
+        std::fs::create_dir_all(&region_cache).map_err(|e| format!("{}: {e}", region_cache.display()))?;
         std::fs::write(&boundary, &boundary_text).map_err(|e| format!("{}: {e}", boundary.display()))?;
 
-        let capture_dir = self.opts.cache.join(LANDMARKS_DIR).join(flat(region));
         let mut status = LandmarkStatus::Compiled;
-        if !capture_current(&capture_dir, &boundary_sha256, policy_sha256)? {
+        if !capture_current(&capture_dir, &recipe)? {
             if self.opts.no_capture {
                 progress.log(format!("  {}: no current capture in {}", region.id, capture_dir.display()));
                 return Ok(LandmarkOutcome {
@@ -324,18 +330,18 @@ impl LandmarkBakery<'_> {
                 capture_dir.display()
             ));
             self.capture.capture(&boundary, policy, &capture_dir, progress)?;
-            if !capture_current(&capture_dir, &boundary_sha256, policy_sha256)? {
+            if !capture_current(&capture_dir, &recipe)? {
                 return Err(format!("{} captured no usable sources for this boundary", capture_dir.display()));
             }
             status = LandmarkStatus::Captured;
         }
 
         let manifest = capture_dir.join(CAPTURE_MANIFEST);
-        let fingerprint = fingerprint(&manifest, &boundary_sha256, policy_sha256)?;
+        let fingerprint = fingerprint(&manifest, &recipe)?;
         let artifact = self.artifact_dir(region);
         let skippable = !self.opts.force && status != LandmarkStatus::Captured;
         if skippable && read_current(&artifact, &fingerprint)? {
-            let (bytes, records, photos) = measure(&artifact)?;
+            let (records, photos, bytes) = measure(&artifact)?;
             return Ok(LandmarkOutcome {
                 region_id: region.id.clone(),
                 status: LandmarkStatus::Unchanged,
@@ -351,18 +357,18 @@ impl LandmarkBakery<'_> {
         let staging = artifact.with_extension("part");
         let _ = std::fs::remove_dir_all(&staging);
         let content = obc_pack::landmarks::compile(&manifest, &boundary, &staging)?;
-        let content_sha256 = crate::hash::file(&staging.join(CONTENT_DOC))?.1;
         write_json(
             &staging.join(LANDMARK_DOC),
             &LandmarkDoc {
                 region_id: region.id.clone(),
                 recipe_version: LANDMARK_RECIPE_VERSION,
                 fingerprint,
-                policy_sha256: policy_sha256.to_string(),
-                boundary_sha256,
+                policy_sha256: recipe.policy_sha256,
+                boundary_sha256: recipe.boundary_sha256,
+                language_sha256: recipe.language_sha256,
                 languages: content.languages.clone(),
                 compiler_policy_sha256: content.policy_sha256.clone(),
-                content_sha256,
+                artifact_sha256: artifact_digest(&staging)?.0,
                 built_at: obc_pack::catalog::now_timestamp(),
             },
         )?;
@@ -373,7 +379,7 @@ impl LandmarkBakery<'_> {
         std::fs::rename(&staging, &artifact)
             .map_err(|e| format!("{} -> {}: {e}", staging.display(), artifact.display()))?;
 
-        let (bytes, records, photos) = measure(&artifact)?;
+        let (records, photos, bytes) = measure(&artifact)?;
         Ok(LandmarkOutcome { region_id: region.id.clone(), status, records, photos, bytes })
     }
 
@@ -392,11 +398,38 @@ fn flat(region: &Region) -> String {
     region.id.replace('/', "_")
 }
 
+/// The three documents that decide what a capture asks for.
+///
+/// Together they are the capture's identity: the capture tool stamps them into its own
+/// `recipe.json` and refuses to reuse a directory they moved under, so the stage gives each of
+/// them its own directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Recipe {
+    boundary_sha256: String,
+    policy_sha256: String,
+    /// `specs/content-languages.json`. It decides which article editions are fetched and which
+    /// places are eligible at all, so it belongs here and not only in the compiler's own digest.
+    language_sha256: String,
+}
+
+impl Recipe {
+    /// The cache directory name: short, because it sits under the region's own directory and only
+    /// has to separate one recipe from the next.
+    fn key(&self) -> String {
+        crate::hash::text(&format!(
+            "boundary={}\npolicy={}\nlanguages={}\n",
+            self.boundary_sha256, self.policy_sha256, self.language_sha256
+        ))[..12]
+            .to_string()
+    }
+}
+
 /// What the capture stamped about itself.
 #[derive(Debug, Deserialize)]
 struct CaptureRecipe {
     boundary_sha256: String,
     policy_sha256: String,
+    language_sha256: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -417,16 +450,19 @@ struct CaptureCoverage {
     country_complete: bool,
 }
 
-/// Whether the cache holds a finished capture of exactly this boundary under exactly this policy.
+/// Whether this directory holds a finished capture made under exactly this recipe.
 ///
-/// The recipe check is the one that matters: a capture directory is named after a region, and a
-/// region's border or the policy's roots can move under it. Compiling such a capture would publish
-/// landmarks for ground the artifact no longer claims.
-fn capture_current(dir: &Path, boundary_sha256: &str, policy_sha256: &str) -> Result<bool, String> {
+/// The recipe is compared even though the directory is named after it: the name is a truncated
+/// digest, and a capture whose recipe disagrees must never be compiled — it would publish
+/// landmarks for ground or in languages the artifact does not claim.
+fn capture_current(dir: &Path, recipe: &Recipe) -> Result<bool, String> {
     let recipe_path = dir.join(CAPTURE_RECIPE);
     let Ok(text) = std::fs::read_to_string(&recipe_path) else { return Ok(false) };
-    let recipe: CaptureRecipe = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", recipe_path.display()))?;
-    if recipe.boundary_sha256 != boundary_sha256 || recipe.policy_sha256 != policy_sha256 {
+    let captured: CaptureRecipe = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", recipe_path.display()))?;
+    if captured.boundary_sha256 != recipe.boundary_sha256
+        || captured.policy_sha256 != recipe.policy_sha256
+        || captured.language_sha256 != recipe.language_sha256
+    {
         return Ok(false);
     }
     Ok(read_manifest(&dir.join(CAPTURE_MANIFEST))?.is_some_and(|m| m.coverage.country_complete))
@@ -437,43 +473,83 @@ fn read_manifest(path: &Path) -> Result<Option<CaptureManifest>, String> {
     serde_json::from_str(&text).map(Some).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// The skip key: every source byte the compiler will read, plus the boundary and the policy.
+/// The skip key: every source byte the compiler will read, plus the recipe they were fetched under.
 ///
 /// The digests are the capture's own, over the raw API responses, so a re-capture that fetched the
 /// same revisions again is not a re-compile.
-fn fingerprint(manifest: &Path, boundary_sha256: &str, policy_sha256: &str) -> Result<String, String> {
+fn fingerprint(manifest: &Path, recipe: &Recipe) -> Result<String, String> {
     let manifest =
         read_manifest(manifest)?.ok_or_else(|| format!("{}: no capture manifest to key on", manifest.display()))?;
     let sources: BTreeMap<String, String> = manifest.sources.into_iter().map(|s| (s.path, s.sha256)).collect();
-    let mut key =
-        format!("landmark-recipe={LANDMARK_RECIPE_VERSION}\nboundary={boundary_sha256}\npolicy={policy_sha256}\n");
+    let mut key = format!(
+        "landmark-recipe={LANDMARK_RECIPE_VERSION}\nboundary={}\npolicy={}\nlanguages={}\n",
+        recipe.boundary_sha256, recipe.policy_sha256, recipe.language_sha256
+    );
     for (path, sha256) in sources {
         key.push_str(&format!("{path}={sha256}\n"));
     }
     Ok(crate::hash::text(&key))
 }
 
-/// Whether the tree already holds this artifact, compiled from this key, with its bytes intact.
+/// Whether the tree already holds this artifact, compiled from this key, with every file intact.
 fn read_current(artifact: &Path, fingerprint: &str) -> Result<bool, String> {
     let Ok(text) = std::fs::read_to_string(artifact.join(LANDMARK_DOC)) else { return Ok(false) };
     let Ok(doc) = serde_json::from_str::<LandmarkDoc>(&text) else { return Ok(false) };
-    let content = artifact.join(CONTENT_DOC);
-    if doc.fingerprint != fingerprint || !content.is_file() {
+    if doc.fingerprint != fingerprint || !artifact.join(CONTENT_DOC).is_file() {
         return Ok(false);
     }
-    Ok(crate::hash::file(&content)?.1 == doc.content_sha256)
+    Ok(artifact_digest(artifact)?.0 == doc.artifact_sha256)
 }
 
-/// An artifact's size on disk, and what its `content.json` says it holds.
-fn measure(artifact: &Path) -> Result<(u64, usize, usize), String> {
-    let path = artifact.join(CONTENT_DOC);
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let content: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-    let count = |key: &str| content["counts"][key].as_u64().unwrap_or(0) as usize;
+/// One digest over every file of the artifact but its own declaration, and their total size.
+///
+/// Name and digest per file, so a photo that is lost, renamed or swapped moves the result. The
+/// declaration is excluded because it carries this digest.
+fn artifact_digest(artifact: &Path) -> Result<(String, u64), String> {
+    let mut files = BTreeMap::new();
     let mut bytes = 0;
     for entry in std::fs::read_dir(artifact).map_err(|e| format!("{}: {e}", artifact.display()))? {
-        let entry = entry.map_err(|e| format!("{}: {e}", artifact.display()))?;
-        bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
+        let path = entry.map_err(|e| format!("{}: {e}", artifact.display()))?.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+        if name == LANDMARK_DOC || !path.is_file() {
+            continue;
+        }
+        let (size, sha256) = crate::hash::file(&path)?;
+        bytes += size;
+        files.insert(name, sha256);
     }
-    Ok((bytes, content["records"].as_array().map_or(0, Vec::len), count("images")))
+    let listing: String = files.iter().map(|(name, sha256)| format!("{name}={sha256}\n")).collect();
+    Ok((crate::hash::text(&listing), bytes))
+}
+
+/// What an artifact holds: records, photos, and its size on disk.
+fn measure(artifact: &Path) -> Result<(usize, usize, u64), String> {
+    let path = artifact.join(CONTENT_DOC);
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let content: obc_pack::landmarks::Content =
+        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok((content.records.len(), content.counts.images, artifact_digest(artifact)?.1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The language set reaches both keys. The capture key is what gives a new language set its own
+    /// directory; the fingerprint is what re-compiles when the sources under it did not move —
+    /// which is exactly the case a capture with no places produces.
+    #[test]
+    fn the_language_set_moves_the_capture_key_and_the_fingerprint() {
+        let base =
+            Recipe { boundary_sha256: "b".into(), policy_sha256: "p".into(), language_sha256: "en-de-fr-es".into() };
+        let fifth = Recipe { language_sha256: "en-de-fr-es-it".into(), ..base.clone() };
+        assert_ne!(base.key(), fifth.key(), "a new language set captures into its own directory");
+
+        let dir = std::env::temp_dir().join(format!("obc-bake-landmark-key-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = dir.join(CAPTURE_MANIFEST);
+        std::fs::write(&manifest, r#"{"sources":[],"coverage":{"country_complete":true}}"#).unwrap();
+        assert_ne!(fingerprint(&manifest, &base).unwrap(), fingerprint(&manifest, &fifth).unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

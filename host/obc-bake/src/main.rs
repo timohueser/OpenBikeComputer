@@ -102,7 +102,7 @@ usage:
       The boundary is the region's own `.poly`, so nothing here is hand-drawn. The
       capture reads live Wikidata, Wikipedia and Commons: it is the one step of any
       bake that two runs can disagree on, it is resumable, and the run says when it
-      starts. `tools/landmark_capture.py` is found through OBC_LANDMARK_CAPTURE.
+      starts. `tools/landmark_capture.py` is found through OBC_LANDMARK_CAPTURE_TOOL.
 
   obc-bake publish TREE --base-url URL [flags]
       Regenerate and publish content first, then replace catalog.json last.
@@ -765,12 +765,23 @@ fn run_landmark_stage(args: &[String]) -> Result<(), String> {
     .run(&obc_pack::progress::Progress::stdout())?;
     print!("{}", summary.render());
     if summary.ok() {
-        Ok(())
-    } else if no_capture {
-        Err("some regions have no current capture — re-run without --no-capture to fetch them".into())
-    } else {
-        Err("some regions produced no landmark artifact — see the summary above".into())
+        return Ok(());
     }
+    // Named separately, because the two causes want different actions and a run can have both: a
+    // region the cache simply does not hold yet, and a region whose run said why it failed.
+    let missing =
+        summary.regions.iter().filter(|r| r.status == obc_bake::landmarks::LandmarkStatus::CaptureMissing).count();
+    let mut problems = Vec::new();
+    if missing > 0 {
+        problems.push(format!(
+            "{missing} region(s) have no current capture{}",
+            if no_capture { " — re-run without --no-capture to fetch them" } else { "" }
+        ));
+    }
+    if !summary.warnings.is_empty() {
+        problems.push(format!("{} region(s) failed — see the warning(s) above", summary.warnings.len()));
+    }
+    Err(problems.join("; "))
 }
 
 fn run_landmark_content(args: &[String]) -> Result<(), String> {
