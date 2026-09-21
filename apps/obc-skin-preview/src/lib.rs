@@ -1,14 +1,13 @@
-//! `obc-skin-preview` — the product skin editor's live, device-honest preview.
+//! The product skin editor's live, device-honest preview.
 //!
-//! The browser hands this bridge the bakery's canonical Teningen OBCM plus the
-//! catalog schema and a skin. The bridge resolves the skin with the same
-//! `obcm-assemble` code used for a real map, replaces only the style table and
-//! marker color, then draws a 240×240 scene through the same `obc-reader` +
-//! `obc-render` path as the nRF54L firmware. Camera changes stay in this bridge:
-//! browser callers ask to pan or zoom in screen pixels and receive the actual
-//! renderer LOD and frame-budget statistics rather than duplicating projection
-//! or LOD-selection policy in TypeScript. No geometry or LOD setting is editable
-//! here: this is intentionally a skin-space surface.
+//! The browser hands this bridge a canonical map plus the catalog schema and a skin. The bridge
+//! resolves the skin with the same `obcm-assemble` code a real map uses, replaces only the style
+//! table and the marker colour, then draws the scene through the same reader and renderer path the
+//! firmware runs.
+//!
+//! Camera changes stay in this bridge: browser callers ask to pan or zoom in screen pixels and
+//! receive the renderer's own LOD and frame-budget statistics, so no projection or LOD policy is
+//! duplicated in TypeScript. No geometry or LOD setting is editable here.
 
 mod preview;
 
@@ -49,14 +48,14 @@ mod web {
             crate::FRAME_H
         }
 
-        /// Restamp presentation bytes only. Geometry stays resident and is not
-        /// decoded or assembled again.
+        /// Restamp presentation bytes only. Geometry stays resident and is not decoded or
+        /// assembled again.
         pub fn set_skin(&mut self, skin_json: &str) -> Result<(), JsValue> {
             self.0.set_skin(skin_json).map_err(to_js)
         }
 
-        /// Move the map by a screen-space drag delta. Positive x/y moves the
-        /// rendered map right/down, like a physical sheet under the pointer.
+        /// Move the map by a screen-space drag delta. Positive values move the rendered map right
+        /// and down, like a sheet under the pointer.
         pub fn pan_by(&mut self, dx: f32, dy: f32) {
             self.0.pan_by(dx, dy);
         }
@@ -70,8 +69,8 @@ mod web {
             self.0.reset_camera();
         }
 
-        /// A transient RGBA view over wasm memory. The caller copies it into
-        /// `ImageData` before making another wasm call.
+        /// A transient RGBA view over wasm memory. The caller copies it into `ImageData` before
+        /// making another wasm call.
         pub fn frame(&mut self) -> js_sys::Uint8ClampedArray {
             use wasm_bindgen::JsCast as _;
             let buf = self.0.frame();
@@ -129,8 +128,8 @@ mod web {
         }
     }
 
-    /// Raw native-packed map for the localhost maintainer schema lab. It has no
-    /// skin mutation API: every edit must pass through obc-pack first.
+    /// Raw native-packed map for the maintainer schema lab. It has no skin mutation API: every
+    /// edit must pass through the packer first.
     #[wasm_bindgen(js_name = SchemaPreview)]
     pub struct JsSchemaPreview(SchemaMapPreview);
 
@@ -265,15 +264,13 @@ mod web {
         }
     }
 
-    /// Build the JS exception: a real `Error` instance (so it carries a stack and survives
-    /// `instanceof Error`), renamed, with the stable code hung off it as a plain property — the
-    /// same shape `obc-web-convert` and `obc-web-assemble` throw.
+    /// Build the JS exception as a real `Error` instance, so it carries a stack and survives
+    /// `instanceof Error`, with the stable code hung off it as a plain property.
     fn to_js(failure: PreviewFailure) -> JsValue {
         let err = js_sys::Error::new(&failure.message);
         err.set_name("ObcSkinPreviewError");
-        // `Reflect::set` only fails on a frozen/exotic target; `err` is a fresh object, so this
-        // cannot. Ignored rather than unwrapped so a surprise here still throws a usable Error
-        // (with a message) instead of trapping the module.
+        // `Reflect::set` only fails on a frozen target, and `err` is fresh. Ignored rather than
+        // unwrapped, so a surprise here still throws a usable Error instead of trapping the module.
         let _ = js_sys::Reflect::set(&err, &JsValue::from_str("code"), &JsValue::from_str(failure.code.as_str()));
         err.into()
     }
