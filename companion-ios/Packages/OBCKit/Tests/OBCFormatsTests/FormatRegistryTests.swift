@@ -2,9 +2,9 @@ import XCTest
 import OBCDomain
 @testable import OBCFormats
 
-// The format registries — the seams B6 (route import) and B7 (ride export) plug
-// into. Tested with stub codecs: the registries' job is routing by extension and
-// the H5 rejection, not parsing (each real decoder/encoder gets its own tests).
+// The format registries: the seams route import and ride export plug into. Stub codecs are
+// enough, because a registry only routes by extension and rejects what it cannot read; parsing
+// belongs to each decoder's own suite.
 
 private struct StubRouteDecoder: RouteFileDecoder {
     let fileExtensions: Set<String>
@@ -77,7 +77,7 @@ final class RideExporterTests: XCTestCase {
     }
 
     func testExportsExplicitFormat() throws {
-        // The GPX → FIT switch in miniature: same ride, different encoder, one arg.
+        // The GPX to FIT switch in miniature: the same ride, a different encoder, one argument.
         let file = try exporter.export(makeRide(), as: "FIT")
         XCTAssertEqual(file.fileExtension, "fit")
         XCTAssertEqual(String(decoding: file.data, as: UTF8.self), "fit:Morning loop:2")

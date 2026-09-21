@@ -3,9 +3,9 @@ import OBCDomain
 import OBCTransport
 @testable import OBCMock
 
-/// Tests run in Debug, so `#if DEBUG` is active and `OBCMock` is non-empty here.
-/// The transport surface: it serves fixtures, honors latency, and is stateful
-/// (delete/rename persist). All use a zero-latency control so the suite stays fast.
+/// The transport surface: it serves fixtures, honors latency, and is stateful, so a delete or a
+/// rename persists. Every case uses a zero-latency control. Tests run in Debug, so `#if DEBUG`
+/// is active and `OBCMock` is non-empty here.
 final class MockTransportTests: XCTestCase {
     private func fastControl(_ scenario: Scenario = .happyPath) -> MockControl {
         let control = MockControl(scenario: scenario)
@@ -34,9 +34,8 @@ final class MockTransportTests: XCTestCase {
     }
 
     func testListsTheDeviceHeldRoutesUnderDeviceNamespaceIDs() async throws {
-        // `listRoutes` is the device's catalog (reconcile input, #289): exactly
-        // the fixture routes with a `deviceObjectID`, listed under that id —
-        // never the whole library.
+        // `listRoutes` is the device's catalog: exactly the fixture routes that have a
+        // `deviceObjectID`, listed under that id, never the whole library.
         let transport = MockTransport(control: fastControl())
         let routes = try await transport.listRoutes()
         XCTAssertEqual(Set(routes.map(\.id)), [DeviceObjectID(7), DeviceObjectID(12)])
@@ -58,7 +57,7 @@ final class MockTransportTests: XCTestCase {
     }
 
     func testWriteConfigRenamesDeviceAndPersists() async throws {
-        // Delta 1: the device name lives in Config; renaming surfaces in DIS too.
+        // The device name lives in Config, so a rename surfaces in DIS too.
         let transport = MockTransport(control: fastControl())
         try await transport.writeConfig(DeviceConfig(name: "Ridgeline", units: .imperial))
         let config = try await transport.readConfig()

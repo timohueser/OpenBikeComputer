@@ -3,9 +3,9 @@ import OBCDomain
 import OBCTransport
 @testable import OBCMock
 
-// Shared async helpers for the mock tests — a timeout wrapper (streams never hang a
-// test), stream probes, and a payload-sized `RouteBlob` builder. Free functions (not
-// XCTestCase methods) so the `Task {}` probes don't capture a non-Sendable `self`.
+// Shared async helpers for the mock tests: a timeout wrapper so a stream never hangs a test,
+// stream probes, and a payload-sized `RouteBlob` builder. They are free functions so the
+// `Task {}` probes do not capture a non-Sendable `self`.
 
 private struct TimeoutError: Error {}
 
@@ -48,7 +48,7 @@ func awaitBattery(_ stream: AsyncStream<Int>, equals target: Int, timeout: Doubl
     }) ?? false)
 }
 
-/// A `RouteBlob` whose opaque payload is exactly `bytes` long — sizes an upload.
+/// A `RouteBlob` whose opaque payload is exactly `bytes` long, to size an upload.
 func makeRouteBlob(bytes: Int, id: String = "test-route") -> RouteBlob {
     RouteBlob(
         summary: RouteSummary(id: RouteID(id), name: "Test", distanceMeters: 1_000, elevationGainMeters: 10),

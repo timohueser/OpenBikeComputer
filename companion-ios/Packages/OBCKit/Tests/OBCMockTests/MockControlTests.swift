@@ -2,9 +2,9 @@ import XCTest
 import OBCDomain
 @testable import OBCMock
 
-/// The live fault-injection surface: forced states, one-shot faults, radio/pairing
-/// gates, and mid-session event injection — driven programmatically (feeds B1P + UI
-/// suites). One shared control instance drives both the panel and the transport.
+/// The live fault-injection surface: forced states, one-shot faults, radio and pairing gates, and
+/// mid-session event injection. One shared control instance drives both the panel and the
+/// transport.
 final class MockControlTests: XCTestCase {
     private func fastControl(_ scenario: Scenario = .happyPath) -> MockControl {
         let control = MockControl(scenario: scenario)
@@ -51,7 +51,7 @@ final class MockControlTests: XCTestCase {
         } catch let error as DeviceError {
             XCTAssertEqual(error, .readFailed)   // S3
         }
-        // Retry succeeds — the fault was one-shot.
+        // The retry succeeds because the fault was one-shot.
         let routes = try await transport.listRoutes()
         XCTAssertFalse(routes.isEmpty)
     }

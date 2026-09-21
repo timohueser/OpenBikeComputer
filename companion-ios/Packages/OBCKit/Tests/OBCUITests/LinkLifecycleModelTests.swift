@@ -6,11 +6,9 @@ import OBCMock
 import OBCTransport
 @testable import OBCUI
 
-/// #459 acceptance: the foreground-only link policy. A spy transport records
-/// exactly which lifecycle seam each transition used — the suspend must go
-/// through `suspendLink()` (drop **and pause the reconnect loop**) and the
-/// foreground return through `resumeLink()` (the bonded silent-reconnect
-/// path), never a bare `disconnect()`/`connect()`.
+/// The foreground-only link policy. A spy transport records which lifecycle seam each transition
+/// used: the suspend must go through `suspendLink()` (drop the link and pause the reconnect loop)
+/// and the foreground return through `resumeLink()`, never a bare `disconnect()` or `connect()`.
 @MainActor
 struct LinkLifecycleModelTests {
     private func make() -> (LinkLifecycleModel, SpyTransport, GraceSpy, TransferActivity) {
@@ -30,7 +28,7 @@ struct LinkLifecycleModelTests {
         try await waitFor("link mirror") { model.connection == .connected }
     }
 
-    // MARK: DoD — background mid-transfer drains, then disconnects
+    // MARK: Background mid-transfer drains, then suspends
 
     @Test func backgroundMidTransferDrainsThenSuspends() async throws {
         let (model, transport, grace, activity) = make()
@@ -55,7 +53,7 @@ struct LinkLifecycleModelTests {
         #expect(transport.count("disconnect") == 0, "the suspend uses the pausing seam, not a bare disconnect")
     }
 
-    // MARK: DoD — background while idle disconnects promptly
+    // MARK: Background while idle suspends promptly
 
     @Test func backgroundIdleSuspendsPromptly() async throws {
         let (model, transport, grace, _) = make()
@@ -68,7 +66,7 @@ struct LinkLifecycleModelTests {
         try await waitFor("grace window returned") { grace.ended == grace.begun }
     }
 
-    // MARK: DoD — foreground reconnects via the bonded silent-reconnect path
+    // MARK: Foreground reconnects via the bonded silent-reconnect path
 
     @Test func foregroundResumesViaBondedSilentReconnect() async throws {
         let (model, transport, _, _) = make()
@@ -82,11 +80,9 @@ struct LinkLifecycleModelTests {
         #expect(transport.count("connect") == 0, "never the pairing-capable connect path")
     }
 
-    /// The reconnect's `.disconnected → .connected` edge drives the existing
-    /// `MainScreenModel` reload — the mechanism that trues up anything that
-    /// changed on the device while the app was backgrounded (`storeChanged`
-    /// is not surfaced by the transport even in the foreground; freshness
-    /// comes from this reload and from explicit Sync).
+    /// The reconnect edge drives the `MainScreenModel` reload: that is what trues up whatever
+    /// changed on the device while the app was backgrounded. Freshness comes from this reload and
+    /// from an explicit Sync.
     @Test func foregroundReconnectTriggersMainScreenReload() async throws {
         let (model, transport, _, _) = make()
         let main = MainScreenModel(transport: transport)
@@ -101,7 +97,7 @@ struct LinkLifecycleModelTests {
         try await waitFor("reload on the reconnect edge") { transport.count("listRoutes") > baseline }
     }
 
-    // MARK: DoD — inactive flickers never churn the link
+    // MARK: Inactive flickers never churn the link
 
     @Test func inactiveFlickerNeverChurnsTheLink() async throws {
         let (model, transport, grace, _) = make()
@@ -120,7 +116,7 @@ struct LinkLifecycleModelTests {
         #expect(grace.begun.isEmpty, "a flicker must not even open a grace window")
     }
 
-    // MARK: DoD — the reconnect stays paused while backgrounded
+    // MARK: The reconnect stays paused while backgrounded
 
     @Test func reconnectStaysPausedWhileBackgrounded() async throws {
         let (model, transport, _, _) = make()
@@ -128,10 +124,8 @@ struct LinkLifecycleModelTests {
         model.scenePhaseChanged(to: .background)
         try await waitFor("suspended") { model.phase == .suspended }
 
-        // However long the app sits in the background, nothing re-raises the
-        // link: the suspend went through `suspendLink()` (whose contract is
-        // drop + pause the transport's own reconnect loop) and the model never
-        // resumes without a foreground transition.
+        // Nothing re-raises the link: `suspendLink()` also pauses the transport's own reconnect
+        // loop, and the model never resumes without a foreground transition.
         let stayedPaused = await neverHolds({
             transport.count("resumeLink") > 0 || transport.count("connect") > 0
         }, for: .milliseconds(120))
@@ -184,8 +178,7 @@ struct LinkLifecycleModelTests {
         #expect(model.phase == .suspended)
         #expect(grace.ended == grace.begun, "the expired window is given back at once")
 
-        // The stalled transfer resumes its story after the foreground
-        // reconnect (upload sheet / H10 banner); the link itself comes back.
+        // The stalled transfer resumes its story after the foreground reconnect; the link comes back.
         model.scenePhaseChanged(to: .active)
         try await waitFor("resume after a forced suspend") { transport.count("resumeLink") == 1 }
         activity.end(token)

@@ -3,9 +3,9 @@ import OBCDomain
 import OBCTransport
 @testable import OBCMock
 
-/// The simulated bulk-transfer path: throughput-paced progress, cancel teardown, and
-/// drop-at-fraction → resume — the B1M acceptance for uploads (F) and ride sync (H10),
-/// with no wire bytes. A high throughput keeps the paced sleeps sub-millisecond.
+/// The simulated bulk-transfer path: throughput-paced progress, cancel teardown, and a drop at a
+/// fraction with a resume, all without wire bytes. A high throughput keeps the paced sleeps
+/// sub-millisecond.
 final class MockTransferTests: XCTestCase {
     private func fastControl() -> MockControl {
         let control = MockControl(scenario: .happyPath)
@@ -76,9 +76,8 @@ final class MockTransferTests: XCTestCase {
             for try await ride in download.rides { out.append(ride) }
             return out
         }
-        // Every requested ride lands, in transfer order, carrying the real
-        // codec-encoded object (`downloadByteCount` only paces the progress —
-        // it is NOT the payload size).
+        // Every requested ride lands, in transfer order, carrying the real codec-encoded object.
+        // `downloadByteCount` only paces the progress; it is not the payload size.
         XCTAssertEqual(landed.map(\.id), ids)
         let entries = control.fixtures.rides
         for ride in landed {

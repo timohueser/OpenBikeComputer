@@ -2,9 +2,9 @@ import Testing
 import SwiftUI
 @testable import OBCUI
 
-/// TR5 — the app-only stage palette: `stageColor(index:)` is a pure, deterministic
-/// function of the stage's position in ride order (never persisted; the device
-/// never knows). Sourced entirely from `OBCTheme` accent tokens (no new colors).
+/// The app-only stage palette: `stageColor(index:)` is a pure function of the stage's position
+/// in ride order. It is never persisted and the device never knows it; the colors come from
+/// `OBCTheme` accent tokens.
 struct StagePaletteTests {
     @Test
     func sameIndexIsAlwaysTheSameColor() {
@@ -21,17 +21,15 @@ struct StagePaletteTests {
 
     @Test
     func earlyStagesAvoidTheDarkGreenTealPair() {
-        // The on-glass feedback (2026-07-13): forest (stage 1) and water (stage 3)
-        // were near-indistinguishable on a thin divider bar. The first three
-        // stages — where most trips live — must be the high-contrast trio; the
-        // dark teal may not appear before index 3.
+        // Forest (stage 1) and water (stage 3) are near-indistinguishable on a thin divider bar,
+        // so the first three stages must be the high-contrast trio: no dark teal before index 3.
         #expect(Array(OBCTheme.stagePalette.prefix(3)) == [OBCTheme.forest, OBCTheme.coral, OBCTheme.amber])
         #expect(OBCTheme.stagePalette.firstIndex(of: OBCTheme.water).map { $0 >= 3 } == true)
     }
 
     @Test
     func everyPaletteColorIsAThemeAccent() {
-        // No color outside the OBC accent tokens (#240).
+        // No color outside the OBC accent tokens.
         let accents: Set<Color> = [
             OBCTheme.forest, OBCTheme.forestDeep, OBCTheme.wood,
             OBCTheme.amber, OBCTheme.coral, OBCTheme.water,

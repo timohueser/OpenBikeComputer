@@ -4,25 +4,21 @@ import OBCDomain
 import OBCTransport
 @testable import OBCUI
 
-/// The S7 firmware-update view-model state machine, driven against a hand-built
-/// transfer stub so every transition is deterministic: idle → staged →
-/// transferring → awaiting-confirm → done, plus the failure branches (bad import,
-/// dropped transfer, and each non-`accepted` `installFw` reply).
+/// The firmware-update view-model state machine, driven against a hand-built transfer stub so
+/// every transition is deterministic.
 @MainActor
 struct FirmwareUpdateModelTests {
     // MARK: Helpers
 
-    /// A valid OBCU **v2** container tagged with `version` — both CRCs correct and the
-    /// signature marker set, so `StagedFirmware.validate` accepts it and reports
-    /// `version`. The trailer is a stand-in: the app never verifies signatures (the key
-    /// lives in the firmware — `OBCU_Spec.md` §1.4), it only has to carry them.
+    /// A valid OBCU v2 container tagged with `version`: both CRCs correct and the signature
+    /// marker set. The trailer is a stand-in; the app carries signatures but never verifies them.
     private func container(version: String, imageLen: Int = 96) -> Data {
         var image = Data()
         image.append(contentsOf: le32(0x2002_0000)) // plausible initial SP
         image.append(contentsOf: (4..<imageLen).map { UInt8($0 & 0xFF) })
         var header = Data(count: 64)
         header.replaceSubrange(0..<4, with: Array("OBCU".utf8))
-        header[4] = 1 // header_version LE — still 1 in a v2 container (§1.2)
+        header[4] = 1 // header_version, still 1 in a v2 container
         header.replaceSubrange(8..<12, with: le32(UInt32(image.count)))
         header.replaceSubrange(12..<16, with: le32(CRC32.checksum(image)))
         let v = Array(version.utf8.prefix(32))
@@ -66,22 +62,18 @@ struct FirmwareUpdateModelTests {
         model.start()
         try await waitFor(interval: .milliseconds(5)) { model.connection == .connected }
 
-        // idle → staged
         model.stage(container(version: "0.5.0"))
         #expect(model.phase == .staged)
 
-        // staged → transferring
         model.send()
         #expect(model.phase == .transferring)
 
-        // transferring → (commit) → installFw accepted → awaiting-confirm
         stub.installResult = .accepted
         stub.completeUpload()
         try await waitFor(interval: .milliseconds(5)) { model.phase == .awaitingConfirm }
         #expect(model.phase == .awaitingConfirm)
 
-        // awaiting-confirm: the device reboots (drop) then reconnects on the new
-        // version → done.
+        // The device reboots (a drop), then reconnects on the new version.
         stub.push(.outOfRange)
         stub.fwVersion = "0.5.0"
         stub.push(.connected)
@@ -99,9 +91,8 @@ struct FirmwareUpdateModelTests {
         stub.completeUpload()
         try await waitFor(interval: .milliseconds(5)) { model.phase == .awaitingConfirm }
 
-        // A reconnect that still reports the OLD version isn't "done". This is the
-        // negative case: `.done` must stay away for the whole window, so the
-        // window elapsing is the pass, not a timeout.
+        // The negative case: `.done` must stay away for the whole window, so the window
+        // elapsing is the pass, not a timeout.
         stub.push(.outOfRange)
         stub.fwVersion = "0.4.2"
         stub.push(.connected)
@@ -122,7 +113,7 @@ struct FirmwareUpdateModelTests {
         model.send()
         #expect(model.phase == .transferring)
 
-        stub.push(.outOfRange) // link drops mid-transfer
+        stub.push(.outOfRange)
         try await waitFor(interval: .milliseconds(5)) { model.phase == .interrupted }
         #expect(model.phase == .interrupted)
 
@@ -130,13 +121,9 @@ struct FirmwareUpdateModelTests {
         #expect(model.phase == .transferring)
     }
 
-    /// The tick and link-state watchers drain two independent streams, so under
-    /// scheduler load a pre-drop progress tick can be *delivered* after the drop
-    /// event. A stale tick must not read as "moving again" — it would resurrect
-    /// `.transferring` for a transfer whose link is already gone, hiding the
-    /// Resume affordance and wedging the sheet at a frozen percentage (the
-    /// parked transfer emits nothing further). Same race as the route-upload
-    /// sheet's `staleTickDeliveredAfterTheDropDoesNotReclaim`.
+    /// The tick and link-state watchers drain two independent streams, so a pre-drop progress
+    /// tick can arrive after the drop event. A stale tick must not resurrect `.transferring`:
+    /// that hides the Resume affordance and wedges the sheet at a frozen percentage.
     @Test func staleTickDeliveredAfterTheDropDoesNotResurrectTransferring() async throws {
         let stub = StubTransport()
         let model = FirmwareUpdateModel(transport: stub, deviceName: "Trailhead")
@@ -146,17 +133,15 @@ struct FirmwareUpdateModelTests {
         model.send()
         #expect(model.phase == .transferring)
 
-        // A live tick moves the bar (and proves the tick watcher is consuming).
+        // A live tick moves the bar and proves the tick watcher is consuming.
         stub.tick(TransferProgress(bytesDone: 10, total: 160))
         try await waitFor(interval: .milliseconds(5)) { model.progress.bytesDone == 10 }
 
-        // The link drops — the transfer parks behind Resume.
         stub.push(.outOfRange)
         try await waitFor(interval: .milliseconds(5)) { model.phase == .interrupted }
 
-        // A tick that was in flight before the drop lands late. Sequencing it
-        // after `.interrupted` reproduces deterministically what scheduler load
-        // produces by starving the MainActor.
+        // A tick in flight before the drop lands late. Sequencing it after `.interrupted` makes
+        // the race deterministic.
         stub.tick(TransferProgress(bytesDone: 20, total: 160))
         try await waitFor(interval: .milliseconds(5)) { model.progress.bytesDone == 20 }
         #expect(model.phase == .interrupted, "a stale pre-drop tick must not resurrect .transferring")
@@ -193,7 +178,7 @@ struct FirmwareUpdateModelTests {
         #expect(model.failureMessage?.contains(needle) == true)
     }
 
-    // MARK: The #459/#754 ledger claim
+    // MARK: The ledger claim
 
     @Test func firmwareSendClaimsWhileTransferringAndReleasesOnCommit() async throws {
         let activity = TransferActivity()
@@ -206,9 +191,8 @@ struct FirmwareUpdateModelTests {
         model.send()
         #expect(activity.isActive, "the claim opens with the transfer")
 
-        // Commit → installFw accepted → `.awaitingConfirm`: the byte-moving
-        // phase is over, so the claim releases (the on-glass confirm + reboot
-        // isn't a transfer the drain/idle-timer should wait on).
+        // The byte-moving phase is over at `.awaitingConfirm`, so the claim releases: the
+        // on-glass confirm and the reboot are not transfers the drain timer waits on.
         stub.completeUpload()
         try await waitFor(interval: .milliseconds(5)) { model.phase == .awaitingConfirm }
         #expect(!activity.isActive)
@@ -223,13 +207,12 @@ struct FirmwareUpdateModelTests {
         model.send()
         #expect(activity.isActive)
 
-        // A drop leaves it stalled-resumable — NOT in flight; the background
-        // drain must not wait on a transfer whose link is already gone.
+        // A drop leaves the transfer stalled-resumable, not in flight: the drain must not wait
+        // on a transfer whose link is already gone.
         stub.push(.outOfRange)
         try await waitFor(interval: .milliseconds(5)) { model.phase == .interrupted }
         #expect(!activity.isActive)
 
-        // Resume re-claims for the fresh attempt.
         model.resume()
         #expect(activity.isActive)
     }
@@ -257,10 +240,8 @@ struct FirmwareUpdateModelTests {
         model.send()
         #expect(activity.isActive)
 
-        // The screen popped mid-send — the claim must not leak (a `@MainActor`
-        // deinit can't reach the actor-isolated ledger, so `stop()` owns it),
-        // and the phase settles back to `.staged` (still validated, ready to
-        // re-send) — not a frozen `.transferring` on a dead handle.
+        // A `@MainActor` deinit cannot reach the actor-isolated ledger, so `stop()` must release
+        // the claim. The phase settles back to `.staged`: still validated, ready to re-send.
         model.stop()
         #expect(!activity.isActive)
         #expect(model.phase == .staged)
@@ -274,10 +255,8 @@ struct FirmwareUpdateModelTests {
         model.start()
         try await waitFor(interval: .milliseconds(5)) { model.connection == .connected }
 
-        // An onDisappear→onAppear cycle on a persisting model (a presentation
-        // pushed over the screen, a scene re-attach): the pair must be
-        // re-entrant, or the model comes back with a dead subscription and
-        // `connection`/`canSend` freeze.
+        // An onDisappear/onAppear cycle on a persisting model: the pair must be re-entrant, or
+        // the model comes back with a dead subscription and `connection`/`canSend` freeze.
         model.stop()
         model.start()
 
@@ -296,7 +275,7 @@ struct FirmwareUpdateModelTests {
         let stub = StubTransport()
         let model = FirmwareUpdateModel(transport: stub, deviceName: "Trailhead", activity: activity)
         model.start()
-        model.start()  // second call while live must be a no-op
+        model.start()
         model.stage(container(version: "0.5.0"))
         model.send()
         #expect(activity.isActive)
@@ -315,7 +294,6 @@ struct FirmwareUpdateModelTests {
         stub.completeUpload()
         try await waitFor(interval: .milliseconds(5)) { model.phase == .failed }
 
-        // The file is still staged — a retry re-enters transferring.
         stub.installResult = .accepted
         model.send()
         #expect(model.phase == .transferring)
@@ -325,14 +303,11 @@ struct FirmwareUpdateModelTests {
     }
 }
 
-/// A minimal link + update capability pair for the model tests: a controllable
-/// link-state stream, a settable running version, and a firmware transfer whose
-/// completion / failure and `installFw` reply the test drives.
+/// A controllable link and update stub: a link-state stream, a settable running version, and a
+/// firmware transfer whose completion, failure and `installFw` reply the test drives.
 private final class StubTransport: DeviceLink, DeviceUpdates, @unchecked Sendable {
-    /// Last-value multicast, like the real transports (`AsyncMulticast`): every
-    /// `state` access is a fresh subscription that replays the latest value —
-    /// what lets the model's re-entrant `stop()`/`start()` re-subscribe (a
-    /// single shared `AsyncStream` dies with its first canceled consumer).
+    /// Every `state` access is a fresh subscription that replays the latest value, like the real
+    /// transports. One shared `AsyncStream` would die with its first canceled consumer.
     private var stateConts: [AsyncStream<ConnectionState>.Continuation] = []
     private var lastState: ConnectionState = .connected
     var fwVersion = "0.4.2"
@@ -363,7 +338,7 @@ private final class StubTransport: DeviceLink, DeviceUpdates, @unchecked Sendabl
 
     var state: AsyncStream<ConnectionState> {
         AsyncStream { cont in
-            cont.yield(lastState)  // replay the latest, then live updates
+            cont.yield(lastState)
             stateConts.append(cont)
         }
     }

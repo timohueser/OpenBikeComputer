@@ -2,8 +2,8 @@ import XCTest
 import OBCDomain
 @testable import OBCUI
 
-/// The stat-line formatters must reproduce the design's strings exactly —
-/// these pin the C1/C2/E-series examples (locale fixed to en_US).
+/// The stat-line formatters must reproduce the design's strings exactly; the locale is fixed to
+/// en_US.
 final class OBCFormatTests: XCTestCase {
     private let en = Locale(identifier: "en_US")
     private var cal: Calendar {
@@ -46,9 +46,9 @@ final class OBCFormatTests: XCTestCase {
         let now = date(2026, 7, 1, hour: 12)  // a Wednesday
         XCTAssertEqual(OBCFormat.rideDay(date(2026, 7, 1), relativeTo: now, calendar: cal, locale: en), "Today")
         XCTAssertEqual(OBCFormat.rideDay(date(2026, 6, 30), relativeTo: now, calendar: cal, locale: en), "Yesterday")
-        // Friday inside the last week → short weekday.
+        // A Friday inside the last week shows a short weekday.
         XCTAssertEqual(OBCFormat.rideDay(date(2026, 6, 26), relativeTo: now, calendar: cal, locale: en), "Fri")
-        // Older than a week → short date.
+        // Older than a week shows a short date.
         XCTAssertEqual(OBCFormat.rideDay(date(2026, 6, 12), relativeTo: now, calendar: cal, locale: en), "Jun 12")
     }
 
@@ -89,7 +89,7 @@ final class OBCFormatTests: XCTestCase {
         )
     }
 
-    // MARK: Stat-strip parts (E1–E3 value/unit split)
+    // MARK: Stat-strip parts (the value and unit split)
 
     func testStatValuesMatchTheJoinedLines() {
         XCTAssertEqual(OBCFormat.distanceValue(meters: 62_400, locale: en), "62.4")
@@ -107,7 +107,7 @@ final class OBCFormatTests: XCTestCase {
         XCTAssertEqual(line.replacingOccurrences(of: "\u{202F}", with: " "), "Yesterday, 8:12 AM")
     }
 
-    // ------------------------------------------------------------- transfers (B5)
+    // MARK: Transfers
 
     func testMegabytesUseOneDecimal() {
         XCTAssertEqual(OBCFormat.megabytesValue(2_300_000, locale: en), "2.3")
@@ -128,7 +128,7 @@ final class OBCFormatTests: XCTestCase {
     }
 
     func testTransferSizeLineUsesKilobytesForRealRoutes() {
-        // A real OBCR route is tens of kB — MB would read a misleading "0.0".
+        // A real OBCR route is tens of kB; MB would read a misleading "0.0".
         XCTAssertEqual(
             OBCFormat.transferSizeLine(bytesDone: 12_000, totalBytes: 24_000, hasWaypoints: true, locale: en),
             "12 / 24 kB · route + waypoints"
