@@ -34,7 +34,7 @@ fn direct_multilingual_lookup_is_separate_and_generation_bound() {
     let bytes = map(&vector());
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).unwrap();
-    let cache = MapCache::new_boxed();
+    let cache = MapCache::new();
     let r = Reader::new(&src, &tables, &cache);
     assert!(obc_reader::landmarks::map_section(&src).unwrap().is_none());
     let first = r.peak_article(SourceId::osm(1, 101)).unwrap().unwrap();
@@ -67,7 +67,7 @@ fn corrupt_index_and_in_bounds_payload_swaps_fail_closed() {
         let bytes = map(&section);
         let src = SliceSource(&bytes);
         let t = MapTables::parse(&src).unwrap();
-        let c = MapCache::new_boxed();
+        let c = MapCache::new();
         let r = Reader::new(&src, &t, &c);
         assert!(r.peak_article(SourceId::osm(1, 101)).is_err(), "corruption at {at}");
     }

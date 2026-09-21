@@ -7,7 +7,7 @@ description = "OBCM map format reader (no_std + alloc) — pure-parse logic for 
 
 [features]
 # Pull in `alloc` for the heap-boxed cache constructor (`MapCache::new_boxed`). A small-stack
-# host — the wasm web demo — enables this to build the zeroed ~70 KB `MapCache` straight on
+# host — the wasm web demo — enables this to build the zeroed 37 KB `MapCache` straight on
 # the heap; the device never does (it `ptr::write`s its cache into a reserved region), so
 # `alloc` stays off by default. Mirrors `obc-route`'s `alloc` / `NavScratch::new_boxed`.
 alloc = []
