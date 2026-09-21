@@ -106,7 +106,7 @@ fn bake_plane_shard(raster_type: u16) -> Vec<u8> {
     let path = plane_source(raster_type).write(scratch.path(), "plane");
     mosaic.push(DemTile::open(&path).unwrap());
     let mut out = std::io::Cursor::new(Vec::new());
-    bake_shard(&mosaic, fixture_params(), &mut out, |_, _, _, _, _| {}).unwrap();
+    bake_shard(&mosaic, fixture_params(), None, &mut out, |_, _, _, _, _| {}).unwrap();
     out.into_inner()
 }
 
@@ -194,7 +194,8 @@ fn a_cell_is_the_same_bytes_alone_as_inside_a_shard() {
     assert_eq!(rect, CellRect { min_i: rect.min_i, min_j: rect.min_j, rows: 3, cols: 3 });
 
     for (slot, (ci, cj)) in rect.cells().enumerate() {
-        let alone = bake_cell(&mosaic, ci, cj, POSTING_LOG2, CELL_LOG2).expect("the plane covers every fixture cell");
+        let alone =
+            bake_cell(&mosaic, ci, cj, POSTING_LOG2, CELL_LOG2, None).expect("the plane covers every fixture cell");
         let offset = u32::from_le_bytes(shard[32 + slot * 4..36 + slot * 4].try_into().unwrap()) as usize;
         assert_ne!(offset, 0, "cell {ci}/{cj} should be present in the shard");
         assert_eq!(&shard[offset..offset + 512], &alone[..], "cell {ci}/{cj} differs between the two bakes");
@@ -253,7 +254,7 @@ fn a_source_void_propagates_all_the_way_to_none() {
     mosaic.push(DemTile::open(&path).unwrap());
 
     let mut out = std::io::Cursor::new(Vec::new());
-    bake_shard(&mosaic, fixture_params(), &mut out, |_, _, _, _, _| {}).unwrap();
+    bake_shard(&mosaic, fixture_params(), None, &mut out, |_, _, _, _, _| {}).unwrap();
     let bytes = out.into_inner();
 
     // The nearest lattice point to the hole is voided — the stencil that produced it had a NaN
@@ -314,7 +315,8 @@ fn cells_with_no_data_at_all_are_absent_rather_than_written() {
         max_lon: base_lon,
     };
     let mut out = std::io::Cursor::new(Vec::new());
-    let report = bake_shard(&mosaic, BakeParams { bbox, ..fixture_params() }, &mut out, |_, _, _, _, _| {}).unwrap();
+    let report =
+        bake_shard(&mosaic, BakeParams { bbox, ..fixture_params() }, None, &mut out, |_, _, _, _, _| {}).unwrap();
     let bytes = out.into_inner();
 
     assert_eq!(report.cells_total, 16, "a 4 × 4 rectangle");
@@ -338,7 +340,7 @@ fn per_cell_files_are_one_by_one_containers_of_the_same_bytes() {
     let mut mosaic = DemMosaic::default();
     mosaic.push(DemTile::open(&path).unwrap());
 
-    let report = bake_cells(&mosaic, fixture_params(), scratch.path(), |_, _, _, _, _| {}).unwrap();
+    let report = bake_cells(&mosaic, fixture_params(), None, scratch.path(), |_, _, _, _, _| {}).unwrap();
     assert_eq!((report.cells_total, report.cells_written), (9, 9));
 
     let rect = cell_rect(fixture_bbox(), POSTING_LOG2, CELL_LOG2).unwrap();
@@ -368,7 +370,7 @@ fn a_lone_cell_clamps_at_its_own_coverage_edge() {
     let path = plane_source(PIXEL_IS_POINT).write(source.path(), "plane");
     let mut mosaic = DemMosaic::default();
     mosaic.push(DemTile::open(&path).unwrap());
-    bake_cells(&mosaic, fixture_params(), scratch.path(), |_, _, _, _, _| {}).unwrap();
+    bake_cells(&mosaic, fixture_params(), None, scratch.path(), |_, _, _, _, _| {}).unwrap();
 
     let rect = cell_rect(fixture_bbox(), POSTING_LOG2, CELL_LOG2).unwrap();
     let (ci, cj) = (rect.min_i, rect.min_j);
