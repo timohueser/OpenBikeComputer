@@ -23,9 +23,9 @@ default *args:
 #
 # ── Simulator ────────────────────────────────────────────────────────────────
 
-# List, inspect, download, verify and prune the content-addressed fixture registry.
 # Common forms: `obc fixtures list`, `obc fixtures show grimsel`,
 # `obc fixtures sync sim`, `obc fixtures verify test`.
+# List, inspect, download, verify and prune the content-addressed fixture registry.
 [group('maps')]
 fixtures *args:
     #!/usr/bin/env bash
@@ -97,9 +97,8 @@ shot *args:
 
 # ── Board firmware ───────────────────────────────────────────────────────────
 
-# Destructively initialize the card inside one USB-connected device as an empty flat store.
 # Requires typing FORMAT unless --yes is passed. Use --serial when more than one device is attached.
-# Args: [--serial DEVICE_SERIAL] [--yes].
+# Destructively initialize the card in one USB-connected device as an empty flat store. Args: [--serial SERIAL] [--yes]
 [group('device')]
 format-card *args:
     #!/usr/bin/env bash
@@ -205,8 +204,8 @@ debug *args:
     _say "flashed — starting the feeder (Ctrl-C to stop)…"
     just --justfile '{{justfile()}}' uart ${gpx:+"$gpx"}
 
-# Board diagnostics or a direct operation on an exact ELF. Uses the shared Cargo runner.
-# Args: doctor | run ELF | download ELF | attach ELF | reset [--probe VID:PID:SERIAL]
+# Uses the shared Cargo runner.
+# Board diagnostics or a direct operation on an exact ELF. Args: doctor | run ELF | download ELF | attach ELF | reset [--probe VID:PID:SERIAL]
 [group('device')]
 board *args:
     #!/usr/bin/env bash
@@ -214,8 +213,8 @@ board *args:
     source "{{lib}}"; obc_init
     _run python3 "$OBC_TOOLS/board.py" "$@"
 
-# Attach without rebuilding or flashing. Pass the matching ELF when using another build.
-# Args: [ELF] [--probe VID:PID:SERIAL] [--log FILE]
+# Pass the matching ELF when using another build.
+# Attach RTT without rebuilding or flashing. Args: [ELF] [--probe VID:PID:SERIAL] [--log FILE]
 [group('device')]
 rtt *args:
     #!/usr/bin/env bash
@@ -491,8 +490,8 @@ ios-host *args:
     cd "$OBC_ROOT"
     _run "$OBC_TOOLS/build-ios-host.sh" "$@"
 
-# Build the OBCDevice app (the firmware on a phone) and install and launch it on a paired iPhone.
-# Args: [DEVICE] — a `devicectl` name or identifier; defaults to the only paired phone.
+# DEVICE is a `devicectl` name or identifier; it defaults to the only paired phone.
+# Build the OBCDevice app (the firmware on a phone) and install and launch it on a paired iPhone. Args: [DEVICE]
 [group('ios')]
 ios-device *args:
     #!/usr/bin/env bash
@@ -506,8 +505,8 @@ ios-device *args:
     _run "$OBC_TOOLS/build-ios-host.sh"
     ios_install OBCDevice Debug com.openbikecomputer.device "$device"
 
-# Build the companion app in Release (real Bluetooth, no mock) and install and launch it on a
-# paired iPhone. Args: [DEVICE] — a `devicectl` name or identifier; defaults to the only paired phone.
+# DEVICE is a `devicectl` name or identifier; it defaults to the only paired phone.
+# Build the companion app in Release (real Bluetooth, no mock) and install and launch it on a paired iPhone. Args: [DEVICE]
 [group('ios')]
 ios-companion *args:
     #!/usr/bin/env bash
@@ -609,9 +608,8 @@ build:
     source "{{lib}}"; obc_init; ensure_geos
     cd "$OBC_ROOT"; _run cargo build --release
 
-# Run focused host tests by default. A scope is required: `obc test -p obc-pack`.
-# The focused arm runs nextest and then the same scope's doctests; `--lib` runs the library
-# target alone and no doctests.
+# A scope is required: `obc test -p obc-pack` runs nextest and then the same scope's doctests;
+# `--lib` runs the library target alone and no doctests.
 # The plan selector runs the affected packages and suites and prints why:
 #
 #   obc test affected --base origin/develop [--head REF] [--dry-run]
@@ -619,6 +617,7 @@ build:
 # `obc test fixtures -p <crate>` keeps its scoped meaning (sync + external-fixtures) and
 # needs neither the plan nor Git. `full` stays the exceptional cross-cutting gate.
 # See docs/testing.md for the routes.
+# Run focused host tests. Args: -p CRATE [--lib] | fixtures -p CRATE | affected --base REF | full
 [group('test')]
 test *args:
     #!/usr/bin/env bash
@@ -742,6 +741,7 @@ check-device:
 #   obc check fmt         obc check test         obc check board docs
 #   obc check full        # cross-cutting changes only
 # The routes live in docs/testing.md.
+# Run selected CI gates locally. Args: GATE... | full
 [group('build')]
 check *args:
     #!/usr/bin/env bash
@@ -777,6 +777,7 @@ check *args:
       cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     if want test; then
       rm -rf .artifacts/python/repository-tools
+      step "firmware production dependency direction" python3 "$OBC_ROOT/firmware/tools/check_dependencies.py"
       step "fixture registry unit tests" python3 -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools
       step "test (fast hermetic binaries)" bash tools/ci/test.sh nextest-fast
       step "doctests (selected packages)" bash tools/ci/test.sh doctests
@@ -810,7 +811,6 @@ check *args:
       else _warn "skip frontend — npm not installed"; SKIPPED+=("frontend"); fi
     fi
     if want deny; then
-      step "firmware production dependency direction" python3 "$OBC_ROOT/firmware/tools/check_dependencies.py"
       if command -v cargo-deny >/dev/null 2>&1; then
         step "deny (workspace)"    cargo deny --manifest-path "$OBC_ROOT/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
         step "deny (board crate)"  cargo deny --manifest-path "$OBC_ROOT/firmware/obc-fw-nrf54l/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
@@ -837,9 +837,9 @@ check *args:
     if (( ${#FAILED[@]} )); then _err "failed:  ${FAILED[*]}"; exit 1; fi
     _ok "all run gates passed"
 
-# Inventory and safely remove stale worktrees, build outputs, and OBC test scratch.
 # Dry-run by default. Common forms: `obc clean`, `obc clean --apply`,
 # `obc clean --include-builds --days 14 --apply`.
+# Inventory and safely remove stale worktrees, build outputs, and OBC test scratch. Args: [--apply] [--include-builds] [--days N]
 [group('build')]
 clean *args:
     #!/usr/bin/env bash
@@ -852,6 +852,8 @@ clean *args:
 # Run the gates this change selects, then print a pull-request skeleton. The plan gives one line
 # and one reason for each gate, the skipped ones included, so the run stays proportional to the
 # change. `obc test affected` executes the declared suites, so a gate it covers is skipped there.
+# A selection that takes the whole graph is CI's run: the plan then keeps only the suites that
+# build nothing and names the rest as left to CI.
 #   obc ready --dry-run          obc ready --base origin/develop
 # Run the gates this change selects, then print a PR skeleton. Args: [--base REF] [--dry-run]
 [group('agent')]
@@ -862,9 +864,10 @@ ready *args:
     cd "$OBC_ROOT"
     _run python3 "$OBC_TOOLS/ready.py" "$@"
 
-# Read and write the verification console: `obc req SYS-003` prints one requirement with its
-# criteria numbered. Also `list`, `proposal ID`, `tests QUERY`, `changed --since rN`, and
-# `propose plan.json` (check it with --check first). Needs the agent token file; see tools/req.py.
+# `obc req SYS-003` prints one requirement with its criteria numbered. Also `list`, `proposal ID`,
+# `tests QUERY`, `changed --since rN`, and `propose plan.json` (check it with --check first).
+# Needs the agent token file; see tools/req.py.
+# Read and write the verification console. Args: SYS-nnn | list | proposal ID | tests QUERY | changed --since rN | propose plan.json
 [group('agent')]
 req *args:
     #!/usr/bin/env bash
@@ -872,9 +875,8 @@ req *args:
     source "{{lib}}"; obc_init
     _run python3 "$OBC_TOOLS/req.py" "$@"
 
-# Inspect the test selection plan from any directory.
 # The routes and the granularity policy live in docs/testing.md.
-# Args: check | select --base REF | run | gates | cargo-filter --tier TIER | validate-filters
+# Inspect the test selection plan from any directory. Args: check | select --base REF | run | gates | cargo-filter --tier TIER | validate-filters
 [group('agent')]
 suites *args:
     #!/usr/bin/env bash
@@ -882,8 +884,9 @@ suites *args:
     source "{{lib}}"; obc_init
     _run python3 "$OBC_TOOLS/test_plan.py" "$@"
 
-# Check your toolchain and report what's missing. Add --install to fix what it can
-# (rustup targets, just, probe-rs, the venv, replication client, and GEOS / RISC-V gcc via scripts/).
+# --install fixes what it can: rustup targets, just, probe-rs, the venv, the replication
+# client, and GEOS / RISC-V gcc via scripts/.
+# Check your toolchain and report what's missing. Args: [--install]
 [group('build')]
 doctor *args:
     #!/usr/bin/env bash

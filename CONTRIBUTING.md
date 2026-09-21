@@ -22,11 +22,13 @@ wrapper, use `./tools/obc` from the worktree root until the installed checkout h
 
 Each `obc` task declares a group. `obc` lists every group but `agent`, so the everyday list stays
 short, and the last line points at the rest. `obc --agent` lists the agent tasks and `obc --all`
-lists all of them. Every task runs by name, whatever its group. Bash completion offers the tasks
+lists all of them. `obc help TASK`, or `obc TASK --help`, prints the whole comment block above
+the recipe. Every task runs by name, whatever its group. Bash completion offers the tasks
 outside the `agent` group; `OBC_COMPLETE_ALL=1` offers all of them.
 
 A task belongs to `agent` when an automation is its main user. Give each new task a
-`[group('...')]` attribute in `tools/justfile`.
+`[group('...')]` attribute in `tools/justfile` and a comment block whose last line is the
+one-sentence summary the listing shows; the lines above it are the help text.
 
 For concurrent browser sessions, set `OBC_BROWSER_PORT` to a free port before the builder or web
 demo browser suite. For a separate builder frontend, start the backend with `obc web --port 8001`
@@ -45,6 +47,14 @@ with a pull-request skeleton. `obc ready --dry-run` prints the plan and stops. A
 a declared suite is skipped and names the suite, because `obc test affected` already runs it. The
 format gate writes: if it rewrites a file, the command names the file and stops, because the tree
 is no longer the tree you were about to push. Commit the file and run `obc ready` again.
+
+A foundation input such as `Cargo.toml`, or a change to the test policy, selects the graph as a
+whole. That run is CI's, so `obc ready` does not start it. It keeps the selected suites that
+build nothing — the Python checks and guards — gives each one a line, and names every other suite
+as left to CI. A check that costs a fraction of a second then stays visible instead of hiding
+behind a run of the complete suite. Those suites are the ones CI runs too, so install their
+reporters first with `pip install -r tools/requirements-test.txt`; a missing module stops the
+run at that gate.
 
 ```sh
 obc ready --dry-run
@@ -147,6 +157,13 @@ test scratch paths. Existing worktrees are eligible only when they are linked wo
 unlocked, merged into the configured base, not the current worktree, and older than the threshold.
 The main checkout, current checkout, dirty worktrees, and unmerged work are never removed. The
 default seven-day threshold also protects newly created or recently committed worktrees.
+
+Cargo never removes build artifacts it no longer uses, so every `target/` grows with each
+dependency bump, feature set, and toolchain update. `--include-builds` sweeps the artifacts that
+cargo has not rewritten within the threshold from every `target/`, the main checkout and locked
+agent worktrees included. The sweep is safe by construction: cargo recompiles whatever is missing,
+so a swept artifact costs a rebuild, never a stale binary. It holds each profile directory's
+`.cargo-lock` while it removes entries and skips a directory where a build is running.
 
 `--include-builds` additionally makes old `target/` directories in retained worktrees eligible.
 Those artifacts are reproducible but expensive to rebuild, so this is opt-in even with `--apply`.

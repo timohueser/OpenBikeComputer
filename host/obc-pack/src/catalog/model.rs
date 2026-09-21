@@ -443,8 +443,30 @@ pub struct TerrainEntry {
     /// The source licence's required credit, verbatim, so a consumer displays it from
     /// the catalog rather than hard-coding a string that can go stale (§13.5).
     pub attribution: String,
+    /// Every finer reference model a published cell's crest lifts are derived from
+    /// (§13.1). Absent when no cell used one, which is the common case. §13.5's
+    /// obligation covers each entry exactly as it covers `attribution`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub references: Option<Vec<ReferenceEntry>>,
     /// The single pinned terrain cell index.
     pub cell_index: TerrainIndexRef,
+}
+
+/// One reference elevation model a terrain cell's crest lifts came from (§13.1).
+///
+/// The wording is the archive's, copied through the bakery unchanged: only the archive
+/// knows what a national mapping agency requires, and a consumer that displays terrain
+/// credits every entry here beside `attribution`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ReferenceEntry {
+    /// The archive's source key, e.g. `ch`.
+    pub key: String,
+    /// The product it is, e.g. `swissALTI3D 2 m`.
+    pub product: String,
+    /// The credit the licence requires, verbatim.
+    pub attribution: String,
+    /// The licence the product is published under.
+    pub licence: String,
 }
 
 /// The root's pin on the terrain cell index — the §8 machinery, one document instead

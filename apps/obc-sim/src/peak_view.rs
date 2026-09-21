@@ -35,11 +35,9 @@ use obc_app::{
     peak_view::{surface::Builder, terrain::Terrain, Panorama},
     App,
 };
-use obc_formats::io::{ByteSource, Error};
+use obc_file_source::FileSource;
+use obc_formats::io::ByteSource;
 use std::{
-    cell::RefCell,
-    fs::File,
-    io::{Read, Seek, SeekFrom},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU16, Ordering},
@@ -47,22 +45,6 @@ use std::{
     },
     time::Instant,
 };
-
-struct FileSource {
-    file: RefCell<File>,
-    len: u64,
-}
-impl ByteSource for FileSource {
-    fn len(&self) -> u64 {
-        self.len
-    }
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
-        let mut file = self.file.borrow_mut();
-        file.seek(SeekFrom::Start(offset)).map_err(|_| Error::Io)?;
-        file.read_exact(buf).map_err(|_| Error::Io)?;
-        Ok(())
-    }
-}
 
 fn terrain_root() -> PathBuf {
     std::env::var_os("OBC_PEAK_TERRAIN_DIR")
@@ -101,7 +83,12 @@ impl Input {
     }
 }
 
-fn generate(input: Input, position: (i32, i32), worker: &Worker) -> Result<Box<Builder>, String> {
+fn generate(
+    input: Input,
+    position: (i32, i32),
+    measured_m: Option<f32>,
+    worker: &Worker,
+) -> Result<Box<Builder>, String> {
     let profile = input.profile();
     match input {
         Input::Map { source, offset, len } => {
@@ -109,7 +96,7 @@ fn generate(input: Input, position: (i32, i32), worker: &Worker) -> Result<Box<B
             let cache = Box::new(obc_reader::MapCache::new());
             let reader = obc_reader::Reader::new(&source, &tables, &cache);
             let window = obc_formats::io::WindowSource::new(&source, offset, len).ok_or("terrain outside map")?;
-            generate_surface(&window, Some(&reader), profile, position, worker)
+            generate_surface(&window, Some(&reader), profile, position, measured_m, worker)
         }
         Input::Fixture(preset) => {
             let key = match preset {
@@ -118,11 +105,9 @@ fn generate(input: Input, position: (i32, i32), worker: &Worker) -> Result<Box<B
                 Preset::Grossglockner => "glockner",
             };
             let path = terrain_root().join(format!("{key}.obcd"));
-            let file = File::open(&path)
+            let source = FileSource::open(&path)
                 .map_err(|e| format!("{}: {e}. Run obc fixtures sync sim-peak-view first.", path.display()))?;
-            let len = file.metadata().map_err(|e| e.to_string())?.len();
-            let source = FileSource { file: RefCell::new(file), len };
-            generate_surface(&source, None, *preset.profile(), position, worker)
+            generate_surface(&source, None, *preset.profile(), position, measured_m, worker)
         }
     }
 }
@@ -132,11 +117,12 @@ fn generate_surface(
     reader: Option<&obc_reader::Reader<'_>>,
     mut profile: PeakViewProfile<'_>,
     position: (i32, i32),
+    measured_m: Option<f32>,
     worker: &Worker,
 ) -> Result<Box<Builder>, String> {
     let started = Instant::now();
     let mut terrain = Terrain::parse(source).map_err(|e| format!("terrain: {e:?}"))?;
-    let ground = terrain.observer_ground(position.0, position.1).ok_or("no terrain at observer")?;
+    let ground = terrain.eye_ground(position.0, position.1, measured_m).ok_or("no terrain at observer")?;
     let mut candidates = Default::default();
     if let Some(reader) = reader {
         obc_app::peak_view::collect_summits(reader, position, (ground + 2.0).round() as i16, &[], &mut candidates)
@@ -252,6 +238,7 @@ impl Platform for Job {
     fn start(&mut self, app: &mut App, position: (i32, i32)) -> bool {
         let Some(input) = self.input.clone() else { return false };
         let heading = app.peak_view_heading_q4();
+        let measured = app.recorder.fused_elevation_m();
         self.heading.store(heading, Ordering::Relaxed);
         let mut profile = input.profile();
         profile.observer_lat = position.0;
@@ -264,7 +251,7 @@ impl Platform for Job {
         self.cancel = Arc::new(AtomicBool::new(false));
         let worker = Worker { heading: Arc::clone(&self.heading), cancel: Arc::clone(&self.cancel), sender };
         std::thread::spawn(move || {
-            let result = generate(input, position, &worker)
+            let result = generate(input, position, measured, &worker)
                 .map(|builder| Frame { preview: Preview::from_builder(&builder), complete: true });
             let _ = worker.sender.send(result);
         });

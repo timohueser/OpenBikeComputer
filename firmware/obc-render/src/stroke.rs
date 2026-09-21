@@ -66,6 +66,13 @@ fn clip_segment(a: Point, b: Point, xmin: f32, ymin: f32, xmax: f32, ymax: f32) 
     }
 }
 
+/// Screen-space length of `a → b` in px.
+#[inline]
+fn dist(a: Point, b: Point) -> f32 {
+    let (dx, dy) = ((b.x - a.x) as f32, (b.y - a.y) as f32);
+    libm::sqrtf(dx * dx + dy * dy)
+}
+
 /// The `cos²θ` threshold below which a `weight`-px thick stroke's bare butt-join is within ½ px of
 /// a round joint, so the vertex needs no round-join disc in [`flush_run`]. Butt ends meet at the
 /// vertex; on the outer side of a turn `θ` that leaves a notch ~`r·sin(θ/2)` deep (`r = weight/2`).
@@ -166,6 +173,12 @@ pub(crate) struct Stroker<'a, D: DrawTarget> {
     line: LineStyle,
     /// View rectangle grown by the stroke width ([`Stroker::new`]), as `(xmin, ymin, xmax, ymax)`.
     clip: (f32, f32, f32, f32),
+    /// Arc length (px) walked from this polyline's **first vertex**, counting the parts the view
+    /// clip threw away. Anchoring the dash / tick rhythm to the feature instead of to wherever it
+    /// happens to cross the screen edge is what holds the pattern still while the camera pans.
+    arc: f32,
+    /// [`Stroker::arc`] at the current run's first point — the phase its dashes or ticks open with.
+    run_arc: f32,
     w: i32,
     h: i32,
 }
@@ -186,7 +199,7 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
         let m = weight as f32 + 2.0; // clip margin ≥ half-width, so edge strokes still paint in
         let clip = (-m, -m, w as f32 + m, h as f32 + m);
         run.clear();
-        Self { target, run, color, weight, line: LineStyle::Solid, clip, w, h }
+        Self { target, run, color, weight, line: LineStyle::Solid, clip, arc: 0.0, run_arc: 0.0, w, h }
     }
 
     /// Clip a projected overlay polyline to the view and stroke the on-screen runs
@@ -221,8 +234,8 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
     /// Like [`Stroker::stroke`] but rasterises the on-screen runs as **dashes** ([`walk_dashes`]):
     /// the whole simplify → clip → run-accumulation pipeline is reused unchanged (so off-screen
     /// dashes cost nothing — clip-before-dash), and only [`Stroker::flush_run`] diverges once the
-    /// `dashed` flag is set. Dash phase resets at each run (each clip re-entry), the accepted v1
-    /// "crawl" during pans (epic #556).
+    /// `dashed` flag is set. Each run opens on the phase its start point reached along the feature
+    /// ([`Stroker::arc`]), so the dashes hold their ground positions while the camera pans.
     pub(crate) fn stroke_dashed<I>(&mut self, points: I) -> usize
     where
         I: IntoIterator<Item = Point>,
@@ -233,8 +246,8 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
 
     /// Like [`Stroker::stroke`] but rasterises each run as a solid stroke carrying regular
     /// perpendicular **ticks** ([`walk_ticks`]) — the cableway and lift mark. It reuses the same
-    /// simplify → clip → run pipeline, so off-screen ticks cost nothing, and the tick phase resets
-    /// at each run exactly as the dash phase does.
+    /// simplify → clip → run pipeline, so off-screen ticks cost nothing, and the tick phase is
+    /// anchored to the feature's arc exactly as the dash phase is.
     pub(crate) fn stroke_ticked<I>(&mut self, points: I) -> usize
     where
         I: IntoIterator<Item = Point>,
@@ -250,7 +263,10 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
     /// — `c1` always, plus `c0` when it (re)starts a run.
     fn stroke_seg(&mut self, a: Point, b: Point) -> usize {
         let (xmin, ymin, xmax, ymax) = self.clip;
-        match clip_segment(a, b, xmin, ymin, xmax, ymax) {
+        // Only a dashed or ticked stroke has a phase to anchor; a solid one skips the arc's `sqrt`
+        // entirely, so the common case costs exactly what it did before.
+        let patterned = self.line != LineStyle::Solid;
+        let drawn = match clip_segment(a, b, xmin, ymin, xmax, ymax) {
             None => {
                 self.flush_run(); // segment wholly off-screen
                 0
@@ -259,7 +275,10 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
                 let mut drawn = 1; // c1
                                    // (Re)start a run if this segment didn't continue the previous one.
                 if self.run.last().copied() != Some(c0) {
-                    self.flush_run();
+                    self.flush_run(); // still on the *previous* run's phase
+                    if patterned {
+                        self.run_arc = self.arc + dist(a, c0);
+                    }
                     let _ = self.run.push(c0);
                     drawn += 1; // c0 enters the view here
                 }
@@ -270,7 +289,13 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
                 }
                 drawn
             }
+        };
+        // Every segment advances the feature's arc, on-screen or not — that is what keeps the
+        // dash / tick phase anchored to the line rather than to the view.
+        if patterned {
+            self.arc += dist(a, b);
         }
+        drawn
     }
 
     /// Rasterise the accumulated run, then clear it for the next.
@@ -342,7 +367,7 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
         let target = &mut *self.target;
         let color = self.color;
         let (w, h) = (self.w, self.h);
-        walk_dashes(self.run, dash, |a, b| {
+        walk_dashes(self.run, dash, self.run_arc, |a, b| {
             if a == b {
                 return; // an on-interval that rounded onto a single pixel
             }
@@ -366,7 +391,7 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
         let target = &mut *self.target;
         let color = self.color;
         let (w, h) = (self.w, self.h);
-        walk_ticks(self.run, spacing, |c, (ux, uy)| {
+        walk_ticks(self.run, spacing, self.run_arc, |c, (ux, uy)| {
             // The tick is the segment normal, swept ±`arm` about the centre point.
             let (nx, ny) = (-uy * arm, ux * arm);
             let a = round_pt(c.0 - nx, c.1 - ny);
@@ -469,14 +494,18 @@ fn tick_geometry(weight: u32) -> (f32, f32) {
 
 /// Walk an already-clipped, screen-space polyline `run` and emit one **tick** every `spacing` px of
 /// arc length as a `(centre, unit direction)` pair. Phase accumulates across the run's segments, so
-/// the ticks stay evenly spaced through a bend, and starts at `spacing / 2` so a short run still
-/// gets one. The direction is the segment's own, which the caller turns into the normal; the pure
-/// arc-length math lives here so it can be unit-tested apart from any draw target.
-fn walk_ticks<F>(run: &[Point], spacing: f32, mut emit: F)
+/// the ticks stay evenly spaced through a bend. `arc0` is the run's start position along the whole
+/// feature ([`Stroker::arc`]): marks land at `spacing / 2` plus whole spacings from the feature's
+/// first vertex, so a run starting mid-feature picks the rhythm up where it left off, and a run
+/// starting at the feature's own start still gets its first mark half a spacing in. The direction
+/// is the segment's own, which the caller turns into the normal; the pure arc-length math lives
+/// here so it can be unit-tested apart from any draw target.
+fn walk_ticks<F>(run: &[Point], spacing: f32, arc0: f32, mut emit: F)
 where
     F: FnMut((f32, f32), (f32, f32)),
 {
-    let mut phase = spacing * 0.5; // distance still to run before the next tick
+    // Distance from `arc0` to the next mark: marks sit at `spacing/2 (mod spacing)` along the feature.
+    let mut phase = libm::fmodf(1.5 * spacing - libm::fmodf(arc0, spacing), spacing);
     for seg in run.windows(2) {
         let (a, b) = (seg[0], seg[1]);
         let (ax, ay) = (a.x as f32, a.y as f32);
@@ -497,16 +526,17 @@ where
 
 /// Walk an already-clipped, screen-space polyline `run` and emit each **"on" dash interval** as a
 /// `(start, end)` point pair to `emit`, using `on == off == dash` px of **arc length**. The phase
-/// accumulates across the run's segments (so dashes read continuously through a bend) and starts at
-/// 0 — i.e. it resets per run, per clip re-entry ([`Stroker::stroke_dashed`]). An on-interval that
+/// accumulates across the run's segments (so dashes read continuously through a bend) and opens at
+/// `arc0`, the run's start position along the whole feature ([`Stroker::arc`]), so a run that
+/// re-enters the view resumes the feature's rhythm instead of restarting. An on-interval that
 /// spans a vertex is emitted as two pieces (one per segment); the pure arc-length math lives here so
 /// it can be unit-tested apart from any draw target.
-fn walk_dashes<F>(run: &[Point], dash: f32, mut emit: F)
+fn walk_dashes<F>(run: &[Point], dash: f32, arc0: f32, mut emit: F)
 where
     F: FnMut(Point, Point),
 {
     let period = 2.0 * dash;
-    let mut phase = 0.0_f32; // arc position within [0, period); carries across segments
+    let mut phase = libm::fmodf(arc0, period); // arc position within [0, period); carries across segments
     for seg in run.windows(2) {
         let (a, b) = (seg[0], seg[1]);
         let (ax, ay) = (a.x as f32, a.y as f32);
@@ -587,10 +617,10 @@ pub(crate) fn draw_line<D>(
 mod tests {
     use super::{
         butt_quad, dash_len, joint_disc_cos2, simplify, tick_geometry, turn_is_sharp, walk_dashes, walk_ticks,
-        within_eps,
+        within_eps, LineStyle, Stroker,
     };
     use crate::fill::{fill_convex_quad, fill_polygon};
-    use crate::MAX_CROSSINGS;
+    use crate::{MAX_CROSSINGS, MAX_SCREEN_POINTS};
     use embedded_graphics::{pixelcolor::BinaryColor, prelude::*, primitives::Rectangle};
     use heapless::Vec;
 
@@ -603,13 +633,19 @@ mod tests {
         out
     }
 
-    /// Collect the on-dash intervals [`walk_dashes`] emits for `run` at on/off length `dash`.
-    fn dashes(run: &[Point], dash: f32) -> Vec<(Point, Point), 64> {
+    /// Collect the on-dash intervals [`walk_dashes`] emits for `run` at on/off length `dash`,
+    /// opening at feature-arc `arc0`.
+    fn dashes_from(run: &[Point], dash: f32, arc0: f32) -> Vec<(Point, Point), 64> {
         let mut out = Vec::new();
-        walk_dashes(run, dash, |a, b| {
+        walk_dashes(run, dash, arc0, |a, b| {
             let _ = out.push((a, b));
         });
         out
+    }
+
+    /// [`dashes_from`] for a run that starts at the feature's own first vertex.
+    fn dashes(run: &[Point], dash: f32) -> Vec<(Point, Point), 64> {
+        dashes_from(run, dash, 0.0)
     }
 
     /// Arc length of an axis-aligned or straight `a → b`.
@@ -679,7 +715,7 @@ mod tests {
         let run = [Point::new(0, 0), Point::new(20, 0), Point::new(20, 20)];
         let mut at: Vec<(i32, i32), 8> = Vec::new();
         let mut dirs: Vec<(f32, f32), 8> = Vec::new();
-        walk_ticks(&run, spacing, |c, d| {
+        walk_ticks(&run, spacing, 0.0, |c, d| {
             at.push((c.0 as i32, c.1 as i32)).expect("the run holds few enough ticks");
             dirs.push(d).expect("the run holds few enough ticks");
         });
@@ -689,10 +725,14 @@ mod tests {
         assert_eq!(dirs[0], (1.0, 0.0), "along the first segment");
         assert_eq!(dirs[4], (0.0, 1.0), "and along the second");
 
-        // A run shorter than one spacing still carries a mark, so a clipped lift never vanishes.
-        let mut short = 0;
-        walk_ticks(&[Point::new(0, 0), Point::new(5, 0)], spacing, |_, _| short += 1);
-        assert_eq!(short, 1);
+        // A run entering mid-feature resumes that rhythm rather than restarting at half a spacing:
+        // marks stay on the feature's arc 4, 12, 20, 28, … grid, so entering at arc 22 puts the
+        // next one 6 px in (arc 28).
+        let mut at: Vec<(i32, i32), 8> = Vec::new();
+        walk_ticks(&[Point::new(0, 0), Point::new(20, 0)], spacing, 22.0, |c, _| {
+            at.push((c.0 as i32, c.1 as i32)).expect("the run holds few enough ticks");
+        });
+        assert_eq!(at.as_slice(), [(6, 0), (14, 0)]);
     }
 
     #[test]
@@ -711,11 +751,17 @@ mod tests {
     }
 
     #[test]
-    fn walk_dashes_resets_phase_per_call() {
-        // "Reset per run" = the walker is stateless across calls: a run that doesn't start at the
-        // origin still opens with a dash at its first point (the clip re-entry always paints).
-        let out = dashes(&[Point::new(5, 5), Point::new(9, 5)], 4.0);
-        assert_eq!(&out[..], &[(Point::new(5, 5), Point::new(9, 5))], "one full dash from the entry point");
+    fn walk_dashes_opens_on_the_feature_arc() {
+        // A clipped run carries the phase its entry point reached along the feature, so the dashes
+        // sit where the unclipped line would have put them — the view's edge is not an origin.
+        let run = [Point::new(5, 5), Point::new(13, 5)];
+        // Entering at arc 10 (period 8) lands 2 px into an "on" dash: paint its remaining 2 px,
+        // then the gap, then the next dash — cut short where the run ends.
+        let out = dashes_from(&run, 4.0, 10.0);
+        assert_eq!(&out[..], &[(Point::new(5, 5), Point::new(7, 5)), (Point::new(11, 5), Point::new(13, 5))]);
+        // Entering mid-gap opens with the gap, not with ink.
+        let out = dashes_from(&run, 4.0, 5.0);
+        assert_eq!(&out[..], &[(Point::new(8, 5), Point::new(12, 5))]);
     }
 
     #[test]
@@ -897,6 +943,58 @@ mod tests {
         for quad in quads {
             let (g, s) = draw_both(quad);
             assert!(g.px == s.px, "pixel drift for degenerate quad {quad:?}");
+        }
+    }
+
+    // ---- pan stability (#1894) -------------------------------------------------------------------
+
+    /// Stroke `pts` through the real [`Stroker`] into a [`Grid`], styled as `line`.
+    fn stroked(pts: &[Point], line: LineStyle) -> Grid {
+        let mut grid = Grid::new();
+        let mut run: Vec<Point, MAX_SCREEN_POINTS> = Vec::new();
+        let mut s = Stroker::new(&mut grid, &mut run, BinaryColor::On, 1, GW, GH);
+        match line {
+            LineStyle::Dashed => s.stroke_dashed(pts.iter().copied()),
+            LineStyle::Ticked => s.stroke_ticked(pts.iter().copied()),
+            LineStyle::Solid => s.stroke(pts.iter().copied()),
+        };
+        grid
+    }
+
+    /// A camera pan translates every projected vertex by the same amount, so a dashed or ticked
+    /// line must keep painting the same ground positions. These lines run well past both side
+    /// edges — the case whose phase used to belong to the clip re-entry point and so slid along the
+    /// line as the view moved across it.
+    ///
+    /// The clip entry is rounded to a pixel before its arc is measured, so the phase carries up to
+    /// ~½ px of rounding error that differs between frames. These geometries (axis-aligned and 45°)
+    /// have exact entry arcs, which is what lets this assert pixel equality; a general slope keeps
+    /// a sub-pixel residual, far below the period a re-entry used to cost.
+    #[test]
+    fn a_pan_does_not_slide_the_pattern_along_the_line() {
+        let cases: [&[Point]; 3] = [
+            &[Point::new(-70, 11), Point::new(110, 11)],                   // horizontal
+            &[Point::new(-70, 9), Point::new(-20, 9), Point::new(110, 9)], // horizontal, two segments
+            &[Point::new(-70, -48), Point::new(110, 132)],                 // 45°
+        ];
+        for pts in cases {
+            for line in [LineStyle::Dashed, LineStyle::Ticked] {
+                let still = stroked(pts, line);
+                for pan in 1..=9i32 {
+                    let mut moved: Vec<Point, 8> = Vec::new();
+                    for p in pts {
+                        let _ = moved.push(Point::new(p.x - pan, p.y));
+                    }
+                    let panned = stroked(&moved, line);
+                    // Column x of the still frame is column x − pan of the panned one.
+                    for y in 0..GH {
+                        for x in pan..GW {
+                            let (a, b) = (still.px[(y * GW + x) as usize], panned.px[(y * GW + x - pan) as usize]);
+                            assert_eq!(a, b, "{line:?} pattern moved at ({x},{y}) after a {pan} px pan");
+                        }
+                    }
+                }
+            }
         }
     }
 }

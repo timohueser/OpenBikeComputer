@@ -35,6 +35,7 @@
       "obc-bench",
       "obc-dem",
       "obc-desktop",
+      "obc-file-source",
       "obc-fixtures",
       "obc-flat-device",
       "obc-host-core",

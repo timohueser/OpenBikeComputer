@@ -115,11 +115,12 @@ impl FlatMap {
         input: std::fs::File,
         previous: Option<(ObjectId, Revision)>,
     ) -> Result<Self, MapError> {
+        use obc_formats::io::ByteSource;
         use std::io::Seek;
-        let input = NativeMapInput::snapshot(input)?;
-        let len = input.len;
+        let input = snapshot(input)?;
+        let len = input.len();
         let tables = MapTables::parse(&input).map_err(MapError::Format)?;
-        let mut file = input.file.into_inner();
+        let mut file = input.into_file();
         file.rewind().map_err(MapError::Io)?;
         let meta = store.import(ObjectKind::MapShard, previous, &mut file, len, DisplayName::default())?;
         Self::committed(store, meta, tables)
@@ -146,50 +147,26 @@ impl FlatMap {
     }
 }
 
+/// `input` copied into a temporary file. The map is parsed and published from this private copy,
+/// so a later edit to the caller's file cannot change the tables it already stated.
 #[cfg(not(target_arch = "wasm32"))]
-struct NativeMapInput {
-    file: std::cell::RefCell<std::fs::File>,
-    len: u64,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl NativeMapInput {
-    fn snapshot(mut input: std::fs::File) -> Result<Self, MapError> {
-        use std::io::{Read, Seek, Write};
-        let len = input.metadata().map_err(MapError::Io)?.len();
-        input.rewind().map_err(MapError::Io)?;
-        let mut file = tempfile::tempfile().map_err(MapError::Io)?;
-        let mut buffer = [0; crate::flat_store::IMPORT_BUFFER_BYTES];
-        let mut remaining = len;
-        while remaining != 0 {
-            let take = remaining.min(buffer.len() as u64) as usize;
-            input.read_exact(&mut buffer[..take]).map_err(MapError::Io)?;
-            file.write_all(&buffer[..take]).map_err(MapError::Io)?;
-            remaining -= take as u64;
-        }
-        if input.read(&mut buffer[..1]).map_err(MapError::Io)? != 0 {
-            return Err(MapError::Io(io::ErrorKind::InvalidData.into()));
-        }
-        // Parse and publish this private copy, so later input edits cannot change its tables.
-        Ok(Self { file: std::cell::RefCell::new(file), len })
+fn snapshot(mut input: std::fs::File) -> Result<obc_file_source::FileSource, MapError> {
+    use std::io::{Read, Seek, Write};
+    let len = input.metadata().map_err(MapError::Io)?.len();
+    input.rewind().map_err(MapError::Io)?;
+    let mut file = tempfile::tempfile().map_err(MapError::Io)?;
+    let mut buffer = [0; crate::flat_store::IMPORT_BUFFER_BYTES];
+    let mut remaining = len;
+    while remaining != 0 {
+        let take = remaining.min(buffer.len() as u64) as usize;
+        input.read_exact(&mut buffer[..take]).map_err(MapError::Io)?;
+        file.write_all(&buffer[..take]).map_err(MapError::Io)?;
+        remaining -= take as u64;
     }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl obc_formats::io::ByteSource for NativeMapInput {
-    fn len(&self) -> u64 {
-        self.len
+    if input.read(&mut buffer[..1]).map_err(MapError::Io)? != 0 {
+        return Err(MapError::Io(io::ErrorKind::InvalidData.into()));
     }
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
-        use obc_formats::io::Error;
-        use std::io::{Read, Seek, SeekFrom};
-        if offset.checked_add(buf.len() as u64).is_none_or(|end| end > self.len) {
-            return Err(Error::BadOffset);
-        }
-        let mut file = self.file.borrow_mut();
-        file.seek(SeekFrom::Start(offset)).map_err(|_| Error::Io)?;
-        file.read_exact(buf).map_err(|_| Error::Io)
-    }
+    obc_file_source::FileSource::from_file(file).map_err(MapError::Io)
 }
 
 #[cfg(test)]

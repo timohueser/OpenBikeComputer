@@ -66,3 +66,18 @@ export interface Bootstrap { actor: Actor; revision: Revision; catalog: Catalog;
 export interface CoverageProposal { id: string; baseRevision: number; requirementId: string; sourceSha: string; plan: CoveragePlan; procedures?: VerificationTest[]; author: string; agentToken?: AgentTokenIdentity; createdAt: string; status: 'pending' | 'accepted' | 'rejected' | 'superseded'; supersedes?: string; feedback?: string; decidedBy?: string; decidedAt?: string }
 /** `conflict` blocks approval; `stale` names what changed since the base revision and leaves the decision to the owner. */
 export interface CoverageProposalReview extends CoverageProposal { requirement?: Requirement; conflict?: string; stale?: string }
+/** An agent's suggestion for a new requirement, or for a change to one. The owner writes the requirement by hand; accepting only records that. */
+export interface RequirementSuggestion {
+  id: string; baseRevision: number;
+  /** Absent for a new requirement. */
+  requirementId?: string;
+  title: string; statement: string; group?: string;
+  /** Why: the observation behind the suggestion, two or three sentences. */
+  reason: string;
+  sourceSha?: string;
+  author: string; agentToken?: AgentTokenIdentity; createdAt: string;
+  status: 'open' | 'accepted' | 'dismissed' | 'superseded'; supersedes?: string;
+  feedback?: string; decidedBy?: string; decidedAt?: string;
+}
+/** `stale` names what changed on the requirement since the base revision; `missing` is set when the requirement is no longer in the current revision. */
+export interface RequirementSuggestionReview extends RequirementSuggestion { stale?: string; missing?: boolean }

@@ -21,7 +21,7 @@ fn main() {
             (v[0], v[1], v[2], v[3])
         })
         .collect();
-    let ground = t.observer_ground((lat * 1e6) as i32, (lon * 1e6) as i32).expect("observer outside coverage");
+    let ground = t.eye_ground((lat * 1e6) as i32, (lon * 1e6) as i32, None).expect("observer outside coverage");
     let eye = f64::from(ground) + eye_off;
     eprintln!("ground {ground:.1} m, eye {eye:.1} m");
     let k = 0.87 / (2.0 * 6_371_000.0);

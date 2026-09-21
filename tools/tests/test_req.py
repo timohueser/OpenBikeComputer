@@ -295,5 +295,116 @@ class WritePathTest(unittest.TestCase):
             self.assertIn(expected, str(caught.exception))
 
 
+class SuggestionTest(unittest.TestCase):
+    """A suggestion is never a requirement, so the checks are about the prose it carries."""
+
+    OPEN = {"id": "s1", "status": "open", "requirementId": "SYS-003", "baseRevision": 57, "author": "claude",
+            "createdAt": "2026-09-21T08:00:00Z", "title": "Say what happens without a fix",
+            "statement": "The map shall follow the last known position.", "reason": "Nothing states it."}
+    NEW = {"id": "s2", "status": "open", "baseRevision": 58, "author": "claude", "group": "Ride export",
+           "createdAt": "2026-09-19T08:00:00Z", "title": "Export timestamps",
+           "statement": "Exported files shall keep the recorded time.", "reason": "No requirement states it."}
+
+    def test_an_open_change_is_named_on_the_requirement(self):
+        text = req.render(requirement(), REVISION, [], [self.NEW, self.OPEN])
+        self.assertIn("Suggested change by claude (2026-09-21, against r57): Say what happens without a fix; "
+                      "read it with: obc req suggestions", text)
+        stale = req.render(requirement(), REVISION, [], [{**self.OPEN, "stale": "SYS-003 changed in r58."}])
+        self.assertIn("SYS-003 changed in r58.", stale)
+        self.assertNotIn("Suggested change", req.render(requirement(), REVISION, [], [self.NEW]))
+        self.assertNotIn("Suggested change", req.render(requirement(), REVISION, [],
+                                                        [{**self.OPEN, "status": "accepted"}]))
+
+    def test_the_listing_marks_the_subject_and_the_owners_answer(self):
+        lines = req.suggestion_lines([self.NEW, {**self.OPEN, "stale": "It changed."}])
+        self.assertIn("new       Export timestamps", lines[0])
+        self.assertIn("claude · 2026-09-19 · Ride export", lines[0])
+        self.assertIn("SYS-003 ", lines[1])
+        self.assertIn("against r57 · stale", lines[1])
+        self.assertIn("the requirement is gone", req.suggestion_lines([{**self.OPEN, "missing": True}])[0])
+        decided = req.suggestion_lines([{**self.NEW, "status": "dismissed", "decidedBy": "timo",
+                                         "feedback": "Weather is out of scope."}], decided=True)
+        self.assertIn("dismissed by timo", decided[0])
+        self.assertIn("“Weather is out of scope.”", decided[1])
+
+
+class SuggestPathTest(unittest.TestCase):
+    """The second command that writes. Its refusals matter more than its output."""
+
+    class Stub:
+        def __init__(self):
+            self.posts = []
+
+        def call(self, path, body=None):
+            if body is not None:
+                self.posts.append(body)
+                return {"id": "fresh"}
+            if path == "/api/bootstrap":
+                return {"revision": {"id": 58, "requirements": [requirement()]}}
+            return []
+
+    def setUp(self):
+        self.stub = self.Stub()
+        self.original, req.Console = req.Console, lambda: self.stub
+        self.addCleanup(lambda: setattr(req, "Console", self.original))
+        self.file = Path(__file__).with_name("_suggestion.json")
+        self.addCleanup(lambda: self.file.unlink(missing_ok=True))
+
+    def write(self, *suggestions):
+        self.file.write_text(json.dumps(list(suggestions)))
+        return str(self.file)
+
+    def run_cli(self, *argv):
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            return req.main(list(argv)), output.getvalue()
+
+    def test_a_valid_pair_is_submitted_with_the_base_revision_and_the_commit(self):
+        path = self.write({"title": "Export timestamps", "statement": "Files shall keep the time.",
+                           "group": "Ride export", "reason": "Nothing states it."},
+                          {"requirementId": "SYS-003", "title": "Say more", "statement": "The map shall say more.",
+                           "reason": "The case cannot be tested."})
+        code, output = self.run_cli("suggest", path, f"--sha={'a' * 40}")
+        self.assertEqual(code, 0)
+        self.assertIn("2 suggestions · 1 new · 1 to requirements", output)
+        self.assertIn("submitted Export timestamps", output)
+        self.assertIn("submitted SYS-003", output)
+        self.assertEqual([p["baseRevision"] for p in self.stub.posts], [58, 58])
+        self.assertEqual(self.stub.posts[0]["group"], "Ride export")
+        self.assertNotIn("requirementId", self.stub.posts[0])
+        self.assertEqual(self.stub.posts[1]["requirementId"], "SYS-003")
+
+    def test_check_submits_nothing_and_a_missing_field_stops_the_batch(self):
+        path = self.write({"title": "Export timestamps", "statement": "Files shall keep the time.",
+                           "reason": "Nothing states it."})
+        self.assertEqual(self.run_cli("suggest", path, "--check", f"--sha={'a' * 40}")[0], 0)
+        self.assertEqual(self.stub.posts, [])
+        empty = self.write({"title": "Export timestamps", "statement": "Files shall keep the time.", "reason": " "})
+        code, output = self.run_cli("suggest", empty, f"--sha={'a' * 40}")
+        self.assertEqual(code, 1)
+        self.assertIn("has no reason", output)
+        self.assertEqual(self.stub.posts, [])
+
+    def test_an_unknown_requirement_and_a_suggestion_that_changes_nothing(self):
+        gone = self.write({"requirementId": "SYS-404", "title": "T", "statement": "S", "reason": "R"})
+        code, output = self.run_cli("suggest", gone, f"--sha={'a' * 40}")
+        self.assertEqual(code, 1)
+        self.assertIn("no such requirement in r58", output)
+        same = self.write({"requirementId": "SYS-003", "title": requirement()["title"],
+                           "statement": requirement()["statement"], "reason": "Reads better."})
+        code, output = self.run_cli("suggest", same, f"--sha={'a' * 40}")
+        self.assertEqual(code, 0, "a warning may not block a submission")
+        self.assertIn("the title and the statement are the ones SYS-003 already has", output)
+
+    def test_the_flags_of_the_two_commands_stay_apart(self):
+        for argv, expected in ((("suggestions", "plan.json"), "did you mean `obc req suggest plan.json`?"),
+                               (("suggestions", "--check"), "does not take --check"),
+                               (("suggest",), "name at least one suggestion file"),
+                               (("suggest", "s.json", "--json"), "does not take --json")):
+            with self.assertRaises(req.Problem) as caught:
+                self.run_cli(*argv)
+            self.assertIn(expected, str(caught.exception))
+        self.assertEqual(self.stub.posts, [])
+
+
 if __name__ == "__main__":
     unittest.main()

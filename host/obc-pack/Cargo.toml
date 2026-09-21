@@ -11,6 +11,8 @@ external-fixtures = []
 [dependencies]
 # Normative OBCM constants and primitive codecs shared with every producer/consumer.
 obc-formats = { path = "../../firmware/obc-formats" }
+# The one file adapter onto that crate's read seam — `--terrain` opens its containers through it.
+obc-file-source = { path = "../obc-file-source" }
 # Resident quadtree BFS numbering shared with the assembler and byte-fixture oracle.
 obc-tree-walk = { path = "../obc-tree-walk" }
 # High-level reader algorithms used for round-trip comparison, geometry capacity, POI distance,

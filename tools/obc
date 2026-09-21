@@ -25,10 +25,15 @@ if ! command -v just >/dev/null 2>&1; then
   exit 127
 fi
 
-# `obc` lists every group but `agent`; these two reach the rest. They are wrapper flags, not
-# just flags, so they are routed to the listing recipe by hand.
+# `obc` lists every group but `agent`; `--agent` and `--all` reach the rest, and `obc help TASK`
+# or `obc TASK --help` describes one task. These are wrapper flags, not just flags, so they go
+# straight to the listing script.
 case "${1:-}" in
-  --agent|--all) exec just --justfile "$root/justfile" --working-directory "$PWD" default "$1" ;;
+  --agent|--all) exec python3 "$root/tasks.py" --justfile "$root/justfile" "$1" ;;
+  help|-h|--help) exec python3 "$root/tasks.py" --justfile "$root/justfile" ${2:+--task "$2"} ;;
+esac
+case "${2:-}" in
+  -h|--help) exec python3 "$root/tasks.py" --justfile "$root/justfile" --task "$1" ;;
 esac
 
 exec just --justfile "$root/justfile" --working-directory "$PWD" "$@"

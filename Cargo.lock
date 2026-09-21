@@ -2682,6 +2682,7 @@ dependencies = [
  "image",
  "obc-dem",
  "obc-elevation",
+ "obc-file-source",
  "obc-formats",
  "obc-map-scene",
  "obc-pack",
@@ -2732,6 +2733,7 @@ dependencies = [
  "obc-elevation",
  "obc-fixtures",
  "obc-formats",
+ "serde_json",
  "sha2",
  "tiff",
  "ureq",
@@ -2760,6 +2762,14 @@ name = "obc-elevation"
 version = "0.1.0"
 dependencies = [
  "obc-formats",
+]
+
+[[package]]
+name = "obc-file-source"
+version = "0.1.0"
+dependencies = [
+ "obc-formats",
+ "obcm-testkit",
 ]
 
 [[package]]
@@ -2795,6 +2805,7 @@ dependencies = [
  "obc-app",
  "obc-crc",
  "obc-elevation",
+ "obc-file-source",
  "obc-fixtures",
  "obc-formats",
  "obc-link",
@@ -2817,6 +2828,7 @@ version = "0.1.0"
 dependencies = [
  "obc-app",
  "obc-elevation",
+ "obc-file-source",
  "obc-formats",
  "obc-reader",
  "obc-route",
@@ -2882,6 +2894,7 @@ dependencies = [
  "indexmap",
  "obc-dem",
  "obc-elevation",
+ "obc-file-source",
  "obc-fixtures",
  "obc-formats",
  "obc-map-scene",
@@ -2996,6 +3009,7 @@ dependencies = [
  "obc-ble",
  "obc-dfu",
  "obc-display",
+ "obc-file-source",
  "obc-fixtures",
  "obc-formats",
  "obc-host-core",
@@ -3149,6 +3163,7 @@ dependencies = [
  "obc-dem",
  "obc-display",
  "obc-elevation",
+ "obc-file-source",
  "obc-formats",
  "obc-host-core",
  "obc-map-scene",

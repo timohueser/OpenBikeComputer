@@ -41,11 +41,75 @@ const GEOKEY_GEOGRAPHIC_TYPE: u16 = 2048;
 
 /// The GeoTIFF raster convention (`GTRasterTypeGeoKey`): what the tie point names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RasterType {
+pub(crate) enum RasterType {
     /// The tie point is a pixel **corner**; post centres sit half a step inside it.
     Area,
     /// The tie point is a post **centre** — the DEM convention, and what GLO-30 ships.
     Point,
+}
+
+/// A north-up geographic GeoTIFF's georeferencing, as the file declares it.
+///
+/// Both rasters this crate reads — a Copernicus source tile and a reference-archive tile — are one
+/// tie point, one pixel scale and the GeoKeys that say what those mean, so the checks that a file
+/// *is* that shape live here once. What the numbers then have to **be** is each reader's own
+/// business: a source tile takes whatever lattice the file declares, and an archive tile must be on
+/// the lattice its id names.
+pub(crate) struct NorthUp {
+    /// The coordinate of raster (0, 0): a post centre under `PixelIsPoint`, the raster's north-west
+    /// pixel corner under `PixelIsArea`.
+    pub tie_lat_deg: f64,
+    pub tie_lon_deg: f64,
+    /// Pixel scale, degrees. Both positive; the file's north-down row order is not in them.
+    pub step_lat_deg: f64,
+    pub step_lon_deg: f64,
+    pub raster_type: RasterType,
+}
+
+/// Read and check the georeferencing of a north-up geographic raster.
+///
+/// Refuses anything that is not a plain north-up geographic grid — a transformation matrix, a tie
+/// point that is not anchored on raster (0, 0), a non-positive step, a projected model type, a datum
+/// that is not WGS 84 — because guessing at any of them misplaces every sample in the file.
+pub(crate) fn read_north_up<R: std::io::Read + std::io::Seek>(
+    dec: &mut Decoder<R>,
+    name: &impl Fn() -> String,
+) -> Result<NorthUp, String> {
+    let tie = dec
+        .get_tag_f64_vec(Tag::ModelTiepointTag)
+        .map_err(|_| format!("{}: no ModelTiepointTag — not a georeferenced raster", name()))?;
+    let scale = dec
+        .get_tag_f64_vec(Tag::ModelPixelScaleTag)
+        .map_err(|_| format!("{}: no ModelPixelScaleTag — a transformation-matrix GeoTIFF is not supported", name()))?;
+    if tie.len() < 6 || scale.len() < 2 {
+        return Err(format!("{}: short ModelTiepointTag/ModelPixelScaleTag", name()));
+    }
+    if tie[0] != 0.0 || tie[1] != 0.0 {
+        return Err(format!("{}: ModelTiepointTag is not anchored on raster (0, 0)", name()));
+    }
+    let (step_lon_deg, step_lat_deg) = (scale[0], scale[1]);
+    if !(step_lon_deg.is_finite() && step_lat_deg.is_finite()) || step_lon_deg <= 0.0 || step_lat_deg <= 0.0 {
+        return Err(format!("{}: pixel scale {scale:?} is not a positive north-up step", name()));
+    }
+
+    let keys = geo_keys(dec);
+    let key = |code: u16| keys.iter().find(|(k, _)| *k == code).map(|(_, v)| *v);
+    match key(GEOKEY_MODEL_TYPE) {
+        Some(2) | None => {}
+        Some(other) => return Err(format!("{}: GTModelTypeGeoKey {other} — only geographic (2) is read", name())),
+    }
+    if let Some(code) = key(GEOKEY_GEOGRAPHIC_TYPE) {
+        if code != 4326 {
+            return Err(format!("{}: GeographicTypeGeoKey {code} — only WGS 84 (4326) is read", name()));
+        }
+    }
+    let raster_type = match key(GEOKEY_RASTER_TYPE) {
+        Some(2) => RasterType::Point,
+        // GeoTIFF's own default when the key is absent.
+        Some(1) | None => RasterType::Area,
+        Some(other) => return Err(format!("{}: GTRasterTypeGeoKey {other} is neither area (1) nor point (2)", name())),
+    };
+    Ok(NorthUp { tie_lat_deg: tie[4], tie_lon_deg: tie[3], step_lat_deg, step_lon_deg, raster_type })
 }
 
 /// One decoded DEM tile: a rectangular grid of posts on a regular lat/lon lattice.
@@ -92,51 +156,15 @@ impl DemTile {
         }
 
         // --- the geotransform ------------------------------------------------------------------
-        let tie = dec
-            .get_tag_f64_vec(Tag::ModelTiepointTag)
-            .map_err(|_| format!("{}: no ModelTiepointTag — not a georeferenced raster", name()))?;
-        let scale = dec.get_tag_f64_vec(Tag::ModelPixelScaleTag).map_err(|_| {
-            format!("{}: no ModelPixelScaleTag — a transformation-matrix GeoTIFF is not supported", name())
-        })?;
-        if tie.len() < 6 || scale.len() < 2 {
-            return Err(format!("{}: short ModelTiepointTag/ModelPixelScaleTag", name()));
-        }
-        // A single tie point anchored on raster (0, 0) is the only form here: anything else means
-        // the raster is not a plain north-up grid, and guessing at one would misplace every sample.
-        if tie[0] != 0.0 || tie[1] != 0.0 {
-            return Err(format!("{}: ModelTiepointTag is not anchored on raster (0, 0)", name()));
-        }
-        let (step_lon_deg, step_lat_deg) = (scale[0], scale[1]);
-        if !(step_lon_deg.is_finite() && step_lat_deg.is_finite()) || step_lon_deg <= 0.0 || step_lat_deg <= 0.0 {
-            return Err(format!("{}: pixel scale {scale:?} is not a positive north-up step", name()));
-        }
-
-        // --- the GeoKeys -----------------------------------------------------------------------
-        let keys = geo_keys(&mut dec);
-        match keys.iter().find(|(k, _)| *k == GEOKEY_MODEL_TYPE).map(|(_, v)| *v) {
-            Some(2) | None => {}
-            Some(other) => return Err(format!("{}: GTModelTypeGeoKey {other} — only geographic (2) is read", name())),
-        }
-        if let Some((_, code)) = keys.iter().find(|(k, _)| *k == GEOKEY_GEOGRAPHIC_TYPE) {
-            if *code != 4326 {
-                return Err(format!("{}: GeographicTypeGeoKey {code} — only WGS 84 (4326) is read", name()));
-            }
-        }
-        let raster_type = match keys.iter().find(|(k, _)| *k == GEOKEY_RASTER_TYPE).map(|(_, v)| *v) {
-            Some(2) => RasterType::Point,
-            // GeoTIFF's own default when the key is absent.
-            Some(1) | None => RasterType::Area,
-            Some(other) => {
-                return Err(format!("{}: GTRasterTypeGeoKey {other} is neither area (1) nor point (2)", name()))
-            }
-        };
+        let NorthUp { tie_lat_deg, tie_lon_deg, step_lat_deg, step_lon_deg, raster_type } =
+            read_north_up(&mut dec, &name)?;
         // With `PixelIsArea` the tie point is a pixel corner, so post centres sit half a step in.
         let (half_lon, half_lat) = match raster_type {
             RasterType::Point => (0.0, 0.0),
             RasterType::Area => (step_lon_deg / 2.0, step_lat_deg / 2.0),
         };
-        let west_lon_deg = tie[3] + half_lon;
-        let north_lat_deg = tie[4] - half_lat;
+        let west_lon_deg = tie_lon_deg + half_lon;
+        let north_lat_deg = tie_lat_deg - half_lat;
 
         // --- the void value --------------------------------------------------------------------
         let nodata = dec
@@ -255,9 +283,9 @@ fn snap(v: f64, last: f64) -> f64 {
 }
 
 /// Every `(key, value)` in the GeoTIFF GeoKey directory whose value is inline (`location = 0`).
-/// The two keys this tool reads are both of that kind; a key stored out-of-line points into
+/// The keys this crate reads are all of that kind; a key stored out-of-line points into
 /// `GeoDoubleParams`/`GeoAsciiParams` and names a datum detail, not a geometry fact.
-fn geo_keys<R: std::io::Read + std::io::Seek>(dec: &mut Decoder<R>) -> Vec<(u16, u16)> {
+pub(crate) fn geo_keys<R: std::io::Read + std::io::Seek>(dec: &mut Decoder<R>) -> Vec<(u16, u16)> {
     let Ok(raw) = dec.get_tag_u32_vec(Tag::GeoKeyDirectoryTag) else {
         return Vec::new();
     };

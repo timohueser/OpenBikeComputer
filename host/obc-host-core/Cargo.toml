@@ -45,6 +45,9 @@ heapless = "0.8"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tempfile = "3"
+# The shared file adapter the native map snapshot is read through. Native only: a browser host's
+# map is bytes in memory, and this crate's wasm build must acquire no filesystem.
+obc-file-source = { path = "../obc-file-source" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }

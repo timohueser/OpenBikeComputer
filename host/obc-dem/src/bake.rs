@@ -20,7 +20,9 @@ use obc_formats::obct::{
 };
 
 use crate::container::{CellRect, ShardWriter};
+use crate::crest::{CellLift, LiftMap, LiftTally};
 use crate::geotiff::DemMosaic;
+use crate::reference::ReferenceArchive;
 use crate::BboxUdeg;
 
 /// The v1 baked posting: `2^9` µdeg ≈ 57 × 39 m at 47 °N (`OBCT_Spec.md` §1.3).
@@ -40,12 +42,35 @@ pub struct BakeParams {
 
 /// What one bake produced, for the operator's summary and for a caller that wants to check coverage
 /// without re-reading the file.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BakeReport {
     pub cells_total: u64,
     pub cells_written: u64,
     pub samples_total: u64,
     pub samples_nodata: u64,
+    /// What §9's rule did, over every cell. Zero when the bake had no reference.
+    pub lifts: LiftTally,
+    /// Every reference source a **lifted** cell of this bake is derived from, sorted. Its
+    /// attribution must travel with the container (§9.3). A source whose tiles the archive named
+    /// and did not hold, or whose tiles moved no sample, is not in here.
+    pub sources: std::collections::BTreeSet<String>,
+    /// Tiles the index named and the archive did not hold, over the whole run — distinct ids, so a
+    /// tile two cells share is counted once.
+    pub reference_tiles_absent: std::collections::BTreeSet<(u32, u32)>,
+}
+
+/// One cell's outcome, for a CLI's per-cell line — a struct rather than six positional arguments,
+/// because a caller that wants only the lift count should not have to count commas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CellDone {
+    pub index: u64,
+    pub total: u64,
+    pub ci: u32,
+    pub cj: u32,
+    /// Whether the cell had any height at all, i.e. whether a block was written.
+    pub written: bool,
+    /// Nodes §9's rule lifted in this cell.
+    pub lifted: u64,
 }
 
 /// Quantise a source height in metres to an OBCT sample.
@@ -95,7 +120,8 @@ pub fn cell_rect(bbox: BboxUdeg, posting_log2: u8, cell_log2: u8) -> Result<Cell
     Ok(CellRect { min_i, min_j, rows, cols })
 }
 
-/// Bake one terrain cell: every lattice sample the cell owns, point-sampled from `mosaic`.
+/// Bake one terrain cell: every lattice sample the cell owns, point-sampled from `mosaic` and
+/// raised by `lift` where a reference DEM says our lattice loses a crest (`OBCT_Spec.md` §9).
 ///
 /// Returns `None` when **every** sample is `NODATA` — the cell is then published as an absent
 /// directory slot rather than 2 MiB of sentinel. That is not a compression trick: an all-void cell
@@ -105,7 +131,50 @@ pub fn cell_rect(bbox: BboxUdeg, posting_log2: u8, cell_log2: u8) -> Result<Cell
 /// The returned block is laid out per §3.2 — tiles row-major with `ti` advancing latitude, samples
 /// row-major within a tile with `row` advancing latitude — and the offsets come from `obc-formats`
 /// rather than from this file's own arithmetic.
-pub fn bake_cell(mosaic: &DemMosaic, ci: u32, cj: u32, posting_log2: u8, cell_log2: u8) -> Option<Vec<u8>> {
+pub fn bake_cell(
+    mosaic: &DemMosaic,
+    ci: u32,
+    cj: u32,
+    posting_log2: u8,
+    cell_log2: u8,
+    lift: Option<&LiftMap>,
+) -> Option<Vec<u8>> {
+    fill_cell(ci, cj, posting_log2, cell_log2, lifted_sampler(mosaic, lift))
+}
+
+/// **The height every baker reads**: the mosaic as the lattice sees it, raised by a cell's §9 lifts.
+///
+/// Boxed rather than generic because there are two bakers over it — the native [`bake_cell`] here
+/// and `surface::bake_cell`, which the production bakery drives — and this is the one place the
+/// composition is written. A second copy of `lift.apply(native)` is the first place the published
+/// surface and the one a shard carries could stop being the same surface. The indirection costs one
+/// allocation and one vtable hop per sample, against a bilinear interpolation over a GeoTIFF mosaic.
+pub fn lifted_sampler<'a>(mosaic: &'a DemMosaic, lift: Option<&'a LiftMap>) -> Box<dyn FnMut(i32, i32) -> i16 + 'a> {
+    let native = lattice_sampler(mosaic);
+    match lift {
+        Some(map) => Box::new(map.apply(native)),
+        None => Box::new(native),
+    }
+}
+
+/// The mosaic as the lattice sees it: point-sampled at a µdeg node, quantised by [`quantise`], and
+/// `NODATA` outside coverage. The lift rule measures its gap against these same samples, so there
+/// is one definition of "our surface" in this file.
+fn lattice_sampler(mosaic: &DemMosaic) -> impl Fn(i32, i32) -> i16 + '_ {
+    move |lat, lon| match mosaic.height(f64::from(lat) / 1e6, f64::from(lon) / 1e6) {
+        Some(metres) => quantise(metres),
+        None => NODATA,
+    }
+}
+
+/// The block itself, from whatever sampler the caller composed.
+fn fill_cell(
+    ci: u32,
+    cj: u32,
+    posting_log2: u8,
+    cell_log2: u8,
+    mut sample: impl FnMut(i32, i32) -> i16,
+) -> Option<Vec<u8>> {
     let samples_log2 = cell_samples_log2(posting_log2, cell_log2).expect("caller validated the pairing");
     let tiles_log2 = cell_tiles_log2(posting_log2, cell_log2).expect("caller validated the pairing");
     let block_len = cell_block_len(posting_log2, cell_log2).expect("caller validated the pairing") as usize;
@@ -116,14 +185,10 @@ pub fn bake_cell(mosaic: &DemMosaic, ci: u32, cj: u32, posting_log2: u8, cell_lo
     let mut block = vec![0u8; block_len];
     let mut any = false;
     for li in 0..span {
-        let lat_deg = f64::from(lattice_coord(base_i + li, posting_log2)) / 1e6;
+        let lat = lattice_coord(base_i + li, posting_log2);
         let (ti, row) = (li >> TILE_LOG2, li & (TILE_SAMPLES as u32 - 1));
         for lj in 0..span {
-            let lon_deg = f64::from(lattice_coord(base_j + lj, posting_log2)) / 1e6;
-            let value = match mosaic.height(lat_deg, lon_deg) {
-                Some(metres) => quantise(metres),
-                None => NODATA,
-            };
+            let value = sample(lat, lattice_coord(base_j + lj, posting_log2));
             any |= value != NODATA;
             let (tj, col) = (lj >> TILE_LOG2, lj & (TILE_SAMPLES as u32 - 1));
             let at = tile_offset_in_cell(ti, tj, tiles_log2) as usize + sample_offset_in_tile(row, col);
@@ -131,6 +196,36 @@ pub fn bake_cell(mosaic: &DemMosaic, ci: u32, cj: u32, posting_log2: u8, cell_lo
         }
     }
     any.then_some(block)
+}
+
+/// One cell's §9 lifts, or `None` when there is no reference or it selects nothing here.
+///
+/// The lift map is a pure function of the cell and the two DEMs, so the same cell baked alone,
+/// inside a wide shard and by another baker over the same square comes out identical — the property
+/// the digest pin exists to protect. It is `pub` for that last case: the production terrain bakery
+/// bakes the same lift the same way rather than a lift of its own.
+pub fn cell_lift(
+    mosaic: &DemMosaic,
+    ci: u32,
+    cj: u32,
+    posting_log2: u8,
+    cell_log2: u8,
+    reference: Option<&ReferenceArchive>,
+) -> Result<CellLift, String> {
+    match reference {
+        Some(archive) => LiftMap::bake(ci, cj, posting_log2, cell_log2, lattice_sampler(mosaic), archive),
+        None => Ok(CellLift { map: None, absent_tiles: Vec::new() }),
+    }
+}
+
+/// Fold one cell's lift outcome into the run's report: its tally, its attribution and the tiles the
+/// archive owed it. Attribution comes from the map, so a cell that moved no sample credits nothing.
+fn record(report: &mut BakeReport, lift: &CellLift) {
+    if let Some(map) = &lift.map {
+        report.lifts = report.lifts.join(map.tally());
+        report.sources.extend(map.sources().iter().cloned());
+    }
+    report.reference_tiles_absent.extend(lift.absent_tiles.iter().copied());
 }
 
 /// Count the `NODATA` samples in a block — the operator's coverage number, read back from the bytes
@@ -147,8 +242,9 @@ fn nodata_in(block: &[u8]) -> u64 {
 pub fn bake_shard<W: Write + Seek>(
     mosaic: &DemMosaic,
     params: BakeParams,
+    reference: Option<&ReferenceArchive>,
     out: W,
-    mut progress: impl FnMut(u64, u64, u32, u32, bool),
+    mut progress: impl FnMut(CellDone),
 ) -> Result<BakeReport, String> {
     let rect = cell_rect(params.bbox, params.posting_log2, params.cell_log2)?;
     let mut writer = ShardWriter::new(out, params.posting_log2, params.cell_log2, rect)?;
@@ -157,7 +253,10 @@ pub fn bake_shard<W: Write + Seek>(
     let mut report = BakeReport { cells_total: total, samples_total: total * per_cell, ..BakeReport::default() };
 
     for (index, (ci, cj)) in rect.cells().enumerate() {
-        let block = bake_cell(mosaic, ci, cj, params.posting_log2, params.cell_log2);
+        let lift = cell_lift(mosaic, ci, cj, params.posting_log2, params.cell_log2, reference)?;
+        let block = bake_cell(mosaic, ci, cj, params.posting_log2, params.cell_log2, lift.map.as_ref());
+        let lifted = lift.map.as_ref().map_or(0, |map| map.tally().nodes);
+        record(&mut report, &lift);
         match &block {
             Some(bytes) => {
                 report.cells_written += 1;
@@ -166,7 +265,7 @@ pub fn bake_shard<W: Write + Seek>(
             None => report.samples_nodata += per_cell,
         }
         writer.push(block.as_deref())?;
-        progress(index as u64 + 1, total, ci, cj, block.is_some());
+        progress(CellDone { index: index as u64 + 1, total, ci, cj, written: block.is_some(), lifted });
     }
     writer.finish()?;
     Ok(report)
@@ -225,8 +324,9 @@ pub fn write_cell_file(
 pub fn bake_cells(
     mosaic: &DemMosaic,
     params: BakeParams,
+    reference: Option<&ReferenceArchive>,
     dir: &std::path::Path,
-    mut progress: impl FnMut(u64, u64, u32, u32, bool),
+    mut progress: impl FnMut(CellDone),
 ) -> Result<BakeReport, String> {
     let rect = cell_rect(params.bbox, params.posting_log2, params.cell_log2)?;
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -235,20 +335,21 @@ pub fn bake_cells(
     let mut report = BakeReport { cells_total: total, samples_total: total * per_cell, ..BakeReport::default() };
 
     for (index, (ci, cj)) in rect.cells().enumerate() {
-        let block = bake_cell(mosaic, ci, cj, params.posting_log2, params.cell_log2);
+        let lift = cell_lift(mosaic, ci, cj, params.posting_log2, params.cell_log2, reference)?;
+        let block = bake_cell(mosaic, ci, cj, params.posting_log2, params.cell_log2, lift.map.as_ref());
+        let lifted = lift.map.as_ref().map_or(0, |map| map.tally().nodes);
+        record(&mut report, &lift);
+        let written = block.is_some();
         match block {
             Some(bytes) => {
                 report.cells_written += 1;
                 report.samples_nodata += nodata_in(&bytes);
                 let path = dir.join(cell_file_name(params.cell_log2, ci, cj));
                 write_cell_file(&path, params.posting_log2, params.cell_log2, ci, cj, &bytes)?;
-                progress(index as u64 + 1, total, ci, cj, true);
             }
-            None => {
-                report.samples_nodata += per_cell;
-                progress(index as u64 + 1, total, ci, cj, false);
-            }
+            None => report.samples_nodata += per_cell,
         }
+        progress(CellDone { index: index as u64 + 1, total, ci, cj, written, lifted });
     }
     Ok(report)
 }
