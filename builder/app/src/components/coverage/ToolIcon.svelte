@@ -3,7 +3,7 @@
     // ◧ ▭ ◠ glyphs nobody could read). One component so the rail and the parts
     // list agree about what a lasso looks like. Stroke-drawn in currentColor,
     // matching the field-guide line work; the picked set is the approved
-    // "field marks" wireframe (2026-08-09).
+    // "field marks" wireframe.
 
     let { kind, size = 20 }: { kind: "region" | "box" | "corridor" | "lasso"; size?: number } = $props();
 </script>

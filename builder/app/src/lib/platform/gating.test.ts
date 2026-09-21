@@ -1,4 +1,4 @@
-// #901's three promises, held where they can't quietly stop being true:
+// The gating layer's three promises, held where they can't quietly stop being true:
 //
 //   1. Nothing is disabled without a reason and a next step.
 //   2. The tier question and the browser question stay separate — a Safari
