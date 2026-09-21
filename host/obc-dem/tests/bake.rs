@@ -610,10 +610,19 @@ fn a_tile_that_breaks_the_contract_is_refused_by_name() {
 /// An `index.json` this reader cannot hold to the contract is refused when it is opened, not when a
 /// tile turns out wrong: a different schema, step or tile size is a different archive, and a key
 /// that is not a tile id means the ids cannot be trusted at all.
+///
+/// A tile with no digest and a source that cannot be credited are refused here too, and for the
+/// same reason: the bakery keys a cell's skip on the digest and publishes the credit, so an index
+/// that states neither would give a map no attribution and every bake a full one.
 #[test]
 fn an_index_that_is_not_this_contract_is_refused() {
     let ok =
         |extra: &str| format!("{{\"schema\": 1, \"step_log2\": 6, \"tile_log2\": 16, \"sources\": {{}}, {extra}}}");
+    let with = |source: &str, extra: &str| {
+        format!("{{\"schema\": 1, \"step_log2\": 6, \"tile_log2\": 16, \"sources\": {{\"ch\": {source}}}, {extra}}}")
+    };
+    let complete = "{\"product\": \"synthetic\", \"attribution\": \"© nobody\", \"licence\": \"CC0\"}";
+    let one_tile = "\"tiles\": {\"1/2\": \"ch\"}";
     for (what, json, expect) in [
         ("another schema", ok("\"tiles\": {}").replace("\"schema\": 1", "\"schema\": 2"), "schema 2"),
         ("another step", ok("\"tiles\": {}").replace("\"step_log2\": 6", "\"step_log2\": 5"), "step_log2 5"),
@@ -622,6 +631,23 @@ fn an_index_that_is_not_this_contract_is_refused() {
         ("no schema", "{\"step_log2\": 6, \"tile_log2\": 16, \"tiles\": {}}".to_string(), "no schema"),
         ("a key that is not an id", ok("\"tiles\": {\"ch\": \"ch\"}"), "`ch` is not a tile id"),
         ("not JSON at all", "{".to_string(), "not readable JSON"),
+        (
+            "no sources map",
+            "{\"schema\": 1, \"step_log2\": 6, \"tile_log2\": 16, \"tiles\": {}}".to_string(),
+            "no `sources` map",
+        ),
+        (
+            "a source with no licence",
+            with("{\"product\": \"p\", \"attribution\": \"a\"}", "\"tiles\": {}"),
+            "source `ch` has no `licence`",
+        ),
+        ("a source it cannot credit", ok(one_tile), "`sources` does not declare"),
+        ("a tile with no digest", with(complete, one_tile), "tile `1/2` has no `sha256`"),
+        (
+            "a digest that is not one",
+            with(complete, &format!("{one_tile}, \"sha256\": {{\"1/2\": \"NOPE\"}}")),
+            "is not 64 lowercase hex digits",
+        ),
     ] {
         let scratch = Scratch::new("broken-index");
         std::fs::write(scratch.join("index.json"), json).unwrap();
@@ -711,11 +737,17 @@ fn a_short_mirror_credits_only_the_tiles_it_holds_and_counts_the_rest() {
     std::fs::write(common::tile_path(scratch.path(), held.0, held.1), tile.to_geotiff()).unwrap();
     let entry = |f: &dyn Fn(&(u32, u32)) -> String| ids.iter().map(f).collect::<Vec<_>>().join(", ");
     let key = |id: &(u32, u32)| if *id == held { "ch" } else { "absent-source" };
+    let source = |key: &str| {
+        format!("\"{key}\": {{\"product\": \"synthetic\", \"attribution\": \"© {key}\", \"licence\": \"CC0\"}}")
+    };
     let index = format!(
         "{{\"schema\": 1, \"step_log2\": 6, \"tile_log2\": 16, \
-          \"sources\": {{\"ch\": {{}}, \"absent-source\": {{}}}}, \"tiles\": {{{}}}, \"contributors\": {{{}}}}}",
+          \"sources\": {{{}, {}}}, \"tiles\": {{{}}}, \"contributors\": {{{}}}, \"sha256\": {{{}}}}}",
+        source("ch"),
+        source("absent-source"),
         entry(&|id| format!("\"{}/{}\": \"{}\"", id.0, id.1, key(id))),
         entry(&|id| format!("\"{}/{}\": [\"{}\"]", id.0, id.1, key(id))),
+        entry(&|id| format!("\"{}/{}\": \"{}\"", id.0, id.1, common::sha256_hex(format!("{id:?}").as_bytes()))),
     );
     std::fs::write(scratch.join("index.json"), index).unwrap();
 
@@ -724,6 +756,13 @@ fn a_short_mirror_credits_only_the_tiles_it_holds_and_counts_the_rest() {
     let map = lift.map.expect("the tower stands in the tile the mirror holds");
     assert_eq!(map.sources(), ["ch"], "a source whose tile the mirror does not hold must not be credited");
     assert_eq!(lift.absent_tiles, absent, "and every tile it lacked is reported");
+
+    // A bakery's skip key reads the same fact from the same window without decoding a tile: only the
+    // tile this mirror holds contributes a digest, so the tiles it lacks cannot pin a cell that was
+    // baked without them.
+    let digests = archive.held_digests(window);
+    assert_eq!(digests.iter().map(|&(ti, tj, _)| (ti, tj)).collect::<Vec<_>>(), vec![held]);
+    assert_eq!(archive.credits().iter().map(|c| c.key.as_str()).collect::<Vec<_>>(), ["absent-source", "ch"]);
 }
 
 /// The seam rule from both sides: two adjacent cells baked **independently** hand the reader a
