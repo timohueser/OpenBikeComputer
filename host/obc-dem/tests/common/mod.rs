@@ -1,5 +1,5 @@
-//! Test support: a **hand-written** float32 GeoTIFF, and the closed-form surface the bake is
-//! checked against.
+//! Test support: **hand-written** GeoTIFFs — a float32 source DEM and an `int16` reference-archive
+//! tile — and the closed-form surface the bake is checked against.
 //!
 //! The TIFF is assembled from the format's own field tables rather than through the `tiff` crate's
 //! encoder, for the reason `obcm-testkit` exists on the OBCM side: a fixture built by the same
@@ -11,6 +11,9 @@
 #![allow(dead_code)] // each integration-test binary uses a different subset
 
 use std::path::Path;
+
+use obc_dem::reference::{NO_PIXEL, STEP_LOG2, TILE_LOG2, TILE_PIXELS};
+use obc_formats::obct::GRID_ORIGIN;
 
 /// TIFF field types this builder emits.
 const TYPE_SHORT: u16 = 3;
@@ -71,21 +74,68 @@ impl SyntheticDem {
 
     /// Serialise as an uncompressed single-strip float32 GeoTIFF.
     pub fn to_geotiff(&self) -> Vec<u8> {
+        RasterTiff {
+            tie_lat_deg: self.tie_lat_deg,
+            tie_lon_deg: self.tie_lon_deg,
+            step_deg: self.step_deg,
+            rows: self.rows,
+            cols: self.cols,
+            bits: 32,
+            sample_format: 3, // IEEE floating point
+            pixels: self.north_up.iter().flat_map(|v| v.to_le_bytes()).collect(),
+            raster_type: self.raster_type,
+            nodata: self.nodata,
+        }
+        .to_bytes()
+    }
+
+    /// Write the fixture into `dir` as `name.tif`.
+    pub fn write(&self, dir: &Path, name: &str) -> std::path::PathBuf {
+        let path = dir.join(format!("{name}.tif"));
+        std::fs::write(&path, self.to_geotiff()).expect("writing the synthetic GeoTIFF");
+        path
+    }
+}
+
+/// The TIFF envelope every fixture here shares: one north-up, uncompressed, single-strip
+/// geographic raster, assembled from the format's own field tables.
+///
+/// The sample type is a parameter because this crate reads two rasters of different shapes — a
+/// `float32` source DEM and an `int16` reference archive tile — and one envelope is what keeps the
+/// two fixtures from drifting into two TIFF writers.
+pub struct RasterTiff {
+    pub tie_lat_deg: f64,
+    pub tie_lon_deg: f64,
+    pub step_deg: f64,
+    pub rows: usize,
+    pub cols: usize,
+    /// `BitsPerSample` and `SampleFormat`: 32 and 3 for IEEE float, 16 and 2 for signed integer.
+    pub bits: u16,
+    pub sample_format: u16,
+    /// The samples, little-endian, row-major, **north-up**.
+    pub pixels: Vec<u8>,
+    pub raster_type: u16,
+    pub nodata: Option<f64>,
+}
+
+impl RasterTiff {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        assert_eq!(self.pixels.len(), self.rows * self.cols * usize::from(self.bits) / 8, "pixel bytes");
         // Layout: 8-byte header, then the IFD, then out-of-line values, then the strip.
         let mut entries: Vec<(u16, u16, u32, Value)> = Vec::new();
         let mut push = |tag: u16, ty: u16, count: u32, value: Value| entries.push((tag, ty, count, value));
 
         push(256, TYPE_LONG, 1, Value::Inline((self.cols as u32).to_le_bytes()));
         push(257, TYPE_LONG, 1, Value::Inline((self.rows as u32).to_le_bytes()));
-        push(258, TYPE_SHORT, 1, Value::Inline(short(32)));
+        push(258, TYPE_SHORT, 1, Value::Inline(short(self.bits)));
         push(259, TYPE_SHORT, 1, Value::Inline(short(1))); // uncompressed
         push(262, TYPE_SHORT, 1, Value::Inline(short(1))); // BlackIsZero
         push(273, TYPE_LONG, 1, Value::StripOffset);
         push(277, TYPE_SHORT, 1, Value::Inline(short(1)));
         push(278, TYPE_LONG, 1, Value::Inline((self.rows as u32).to_le_bytes()));
-        push(279, TYPE_LONG, 1, Value::Inline(((self.rows * self.cols * 4) as u32).to_le_bytes()));
+        push(279, TYPE_LONG, 1, Value::Inline((self.pixels.len() as u32).to_le_bytes()));
         push(284, TYPE_SHORT, 1, Value::Inline(short(1))); // chunky
-        push(339, TYPE_SHORT, 1, Value::Inline(short(3))); // IEEE floating point
+        push(339, TYPE_SHORT, 1, Value::Inline(short(self.sample_format)));
         push(33550, TYPE_DOUBLE, 3, Value::Blob(doubles(&[self.step_deg, self.step_deg, 0.0])));
         push(33922, TYPE_DOUBLE, 6, Value::Blob(doubles(&[0.0, 0.0, 0.0, self.tie_lon_deg, self.tie_lat_deg, 0.0])));
         // GeoKeyDirectory: header (version, revision, minor, key count) + 4 shorts per key.
@@ -154,17 +204,93 @@ impl SyntheticDem {
             }
         }
         assert_eq!(out.len(), strip_at, "the strip must start where the IFD said it would");
-        for v in &self.north_up {
-            out.extend_from_slice(&v.to_le_bytes());
-        }
+        out.extend_from_slice(&self.pixels);
         out
     }
+}
 
-    /// Write the fixture into `dir` as `name.tif`.
-    pub fn write(&self, dir: &Path, name: &str) -> std::path::PathBuf {
-        let path = dir.join(format!("{name}.tif"));
-        std::fs::write(&path, self.to_geotiff()).expect("writing the synthetic GeoTIFF");
-        path
+/// One reference-archive tile: `TILE_PIXELS²` whole metres on the archive lattice.
+///
+/// The real archive's tiles are DEFLATE'd with 256 × 256 internal blocks. A fixture written the
+/// plainest way — uncompressed, one strip — exercises the only thing the reader promises about a
+/// tile, which is that its transform **is** the lattice its id names; the compression and the block
+/// layout are the decoder's business and `ingest.py check`'s.
+pub struct ArchiveTile {
+    pub ti: u32,
+    pub tj: u32,
+    /// Heights in **north-up** rows, so row 0 is the northernmost, as a GeoTIFF stores them.
+    north_up: Vec<i16>,
+    /// A deliberate error in the tie point, in degrees — for the refusal test.
+    pub skew_deg: f64,
+}
+
+impl ArchiveTile {
+    /// A tile of the given id with no source pixel anywhere in it.
+    pub fn empty(ti: u32, tj: u32) -> ArchiveTile {
+        ArchiveTile { ti, tj, north_up: vec![NO_PIXEL; TILE_PIXELS * TILE_PIXELS], skew_deg: 0.0 }
+    }
+
+    /// Fill it by evaluating `height` at every **pixel centre**, in µdeg, exactly as the reader
+    /// computes that centre. `None` leaves the pixel absent.
+    pub fn filled(ti: u32, tj: u32, mut height: impl FnMut(i64, i64) -> Option<i16>) -> ArchiveTile {
+        let mut tile = ArchiveTile::empty(ti, tj);
+        let step = 1i64 << STEP_LOG2;
+        let (lat0, lon0) = tile.origin_udeg();
+        for row in 0..TILE_PIXELS {
+            // `r` counts north, the GeoTIFF's rows count south: row 0 is pixel row TILE_PIXELS - 1.
+            let lat = lat0 + (TILE_PIXELS - 1 - row) as i64 * step + step / 2;
+            for col in 0..TILE_PIXELS {
+                if let Some(metres) = height(lat, lon0 + col as i64 * step + step / 2) {
+                    tile.north_up[row * TILE_PIXELS + col] = metres;
+                }
+            }
+        }
+        tile
+    }
+
+    /// The south-west corner of pixel `(0, 0)`, in µdeg.
+    pub fn origin_udeg(&self) -> (i64, i64) {
+        let tile = 1i64 << TILE_LOG2;
+        (i64::from(GRID_ORIGIN) + i64::from(self.ti) * tile, i64::from(GRID_ORIGIN) + i64::from(self.tj) * tile)
+    }
+
+    pub fn to_geotiff(&self) -> Vec<u8> {
+        let tile = 1i64 << TILE_LOG2;
+        let (_, lon0) = self.origin_udeg();
+        let north = i64::from(GRID_ORIGIN) + (i64::from(self.ti) + 1) * tile;
+        RasterTiff {
+            tie_lat_deg: north as f64 / 1e6 + self.skew_deg,
+            tie_lon_deg: lon0 as f64 / 1e6,
+            step_deg: (1i64 << STEP_LOG2) as f64 / 1e6,
+            rows: TILE_PIXELS,
+            cols: TILE_PIXELS,
+            bits: 16,
+            sample_format: 2, // two's-complement signed integer
+            pixels: self.north_up.iter().flat_map(|v| v.to_le_bytes()).collect(),
+            raster_type: PIXEL_IS_AREA,
+            nodata: Some(f64::from(NO_PIXEL)),
+        }
+        .to_bytes()
+    }
+}
+
+/// Write a reference archive at `root`: the tiles, and an `index.json` that names every one of them
+/// with the source key `key`.
+pub fn write_archive(root: &Path, key: &str, tiles: &[ArchiveTile]) {
+    let ids: Vec<String> = tiles.iter().map(|t| format!("{}/{}", t.ti, t.tj)).collect();
+    let entry = |value: &str| ids.iter().map(|id| format!("    \"{id}\": {value}")).collect::<Vec<_>>().join(",\n");
+    let index = format!(
+        "{{\n  \"schema\": 1,\n  \"step_log2\": {STEP_LOG2},\n  \"tile_log2\": {TILE_LOG2},\n  \
+         \"sources\": {{\"{key}\": {{\"product\": \"synthetic\", \"attribution\": \"© nobody\"}}}},\n  \
+         \"tiles\": {{\n{}\n  }},\n  \"contributors\": {{\n{}\n  }}\n}}\n",
+        entry(&format!("\"{key}\"")),
+        entry(&format!("[\"{key}\"]")),
+    );
+    std::fs::write(root.join("index.json"), index).expect("writing index.json");
+    for tile in tiles {
+        let dir = root.join(format!("{TILE_LOG2}/{:04}", tile.ti));
+        std::fs::create_dir_all(&dir).expect("archive tile directory");
+        std::fs::write(dir.join(format!("{:04}.tif", tile.tj)), tile.to_geotiff()).expect("writing an archive tile");
     }
 }
 

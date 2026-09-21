@@ -20,8 +20,9 @@ use obc_formats::obct::{
 };
 
 use crate::container::{CellRect, ShardWriter};
-use crate::crest::{LiftMap, LiftTally};
+use crate::crest::{cell_window, LiftMap, LiftTally};
 use crate::geotiff::DemMosaic;
+use crate::reference::ReferenceArchive;
 use crate::BboxUdeg;
 
 /// The v1 baked posting: `2^9` µdeg ≈ 57 × 39 m at 47 °N (`OBCT_Spec.md` §1.3).
@@ -41,7 +42,7 @@ pub struct BakeParams {
 
 /// What one bake produced, for the operator's summary and for a caller that wants to check coverage
 /// without re-reading the file.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BakeReport {
     pub cells_total: u64,
     pub cells_written: u64,
@@ -49,6 +50,23 @@ pub struct BakeReport {
     pub samples_nodata: u64,
     /// What §9's rule did, over every cell. Zero when the bake had no reference.
     pub lifts: LiftTally,
+    /// Every reference source that contributed a pixel to a cell of this bake, sorted. Its
+    /// attribution must travel with the container (§9.3).
+    pub sources: std::collections::BTreeSet<String>,
+}
+
+/// One cell's outcome, for a CLI's per-cell line — a struct rather than six positional arguments,
+/// because a caller that wants only the lift count should not have to count commas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CellDone {
+    pub index: u64,
+    pub total: u64,
+    pub ci: u32,
+    pub cj: u32,
+    /// Whether the cell had any height at all, i.e. whether a block was written.
+    pub written: bool,
+    /// Nodes §9's rule lifted in this cell.
+    pub lifted: u64,
 }
 
 /// Quantise a source height in metres to an OBCT sample.
@@ -173,9 +191,19 @@ fn lift_map(
     ci: u32,
     cj: u32,
     params: BakeParams,
-    reference: Option<&dyn Fn(f64, f64) -> Option<f64>>,
-) -> Option<LiftMap> {
-    LiftMap::bake(ci, cj, params.posting_log2, params.cell_log2, lattice_sampler(mosaic), reference?)
+    reference: Option<&ReferenceArchive>,
+) -> Result<Option<LiftMap>, String> {
+    match reference {
+        Some(archive) => LiftMap::bake(ci, cj, params.posting_log2, params.cell_log2, lattice_sampler(mosaic), archive),
+        None => Ok(None),
+    }
+}
+
+/// The reference sources one cell reads, for the run's attribution.
+fn sources_of(ci: u32, cj: u32, params: BakeParams, reference: Option<&ReferenceArchive>) -> Vec<String> {
+    let Some(archive) = reference else { return Vec::new() };
+    let Some(window) = cell_window(ci, cj, params.posting_log2, params.cell_log2) else { return Vec::new() };
+    archive.sources_for(window).into_iter().map(str::to_string).collect()
 }
 
 /// Count the `NODATA` samples in a block — the operator's coverage number, read back from the bytes
@@ -192,9 +220,9 @@ fn nodata_in(block: &[u8]) -> u64 {
 pub fn bake_shard<W: Write + Seek>(
     mosaic: &DemMosaic,
     params: BakeParams,
-    reference: Option<&dyn Fn(f64, f64) -> Option<f64>>,
+    reference: Option<&ReferenceArchive>,
     out: W,
-    mut progress: impl FnMut(u64, u64, u32, u32, bool),
+    mut progress: impl FnMut(CellDone),
 ) -> Result<BakeReport, String> {
     let rect = cell_rect(params.bbox, params.posting_log2, params.cell_log2)?;
     let mut writer = ShardWriter::new(out, params.posting_log2, params.cell_log2, rect)?;
@@ -203,11 +231,13 @@ pub fn bake_shard<W: Write + Seek>(
     let mut report = BakeReport { cells_total: total, samples_total: total * per_cell, ..BakeReport::default() };
 
     for (index, (ci, cj)) in rect.cells().enumerate() {
-        let lift = lift_map(mosaic, ci, cj, params, reference);
+        let lift = lift_map(mosaic, ci, cj, params, reference)?;
         let block = bake_cell(mosaic, ci, cj, params.posting_log2, params.cell_log2, lift.as_ref());
+        let lifted = lift.as_ref().map_or(0, |map| map.tally().nodes);
         if let Some(map) = &lift {
             report.lifts = report.lifts.join(map.tally());
         }
+        report.sources.extend(sources_of(ci, cj, params, reference));
         match &block {
             Some(bytes) => {
                 report.cells_written += 1;
@@ -216,7 +246,7 @@ pub fn bake_shard<W: Write + Seek>(
             None => report.samples_nodata += per_cell,
         }
         writer.push(block.as_deref())?;
-        progress(index as u64 + 1, total, ci, cj, block.is_some());
+        progress(CellDone { index: index as u64 + 1, total, ci, cj, written: block.is_some(), lifted });
     }
     writer.finish()?;
     Ok(report)
@@ -275,9 +305,9 @@ pub fn write_cell_file(
 pub fn bake_cells(
     mosaic: &DemMosaic,
     params: BakeParams,
-    reference: Option<&dyn Fn(f64, f64) -> Option<f64>>,
+    reference: Option<&ReferenceArchive>,
     dir: &std::path::Path,
-    mut progress: impl FnMut(u64, u64, u32, u32, bool),
+    mut progress: impl FnMut(CellDone),
 ) -> Result<BakeReport, String> {
     let rect = cell_rect(params.bbox, params.posting_log2, params.cell_log2)?;
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -286,24 +316,24 @@ pub fn bake_cells(
     let mut report = BakeReport { cells_total: total, samples_total: total * per_cell, ..BakeReport::default() };
 
     for (index, (ci, cj)) in rect.cells().enumerate() {
-        let lift = lift_map(mosaic, ci, cj, params, reference);
+        let lift = lift_map(mosaic, ci, cj, params, reference)?;
         let block = bake_cell(mosaic, ci, cj, params.posting_log2, params.cell_log2, lift.as_ref());
+        let lifted = lift.as_ref().map_or(0, |map| map.tally().nodes);
         if let Some(map) = &lift {
             report.lifts = report.lifts.join(map.tally());
         }
+        report.sources.extend(sources_of(ci, cj, params, reference));
+        let written = block.is_some();
         match block {
             Some(bytes) => {
                 report.cells_written += 1;
                 report.samples_nodata += nodata_in(&bytes);
                 let path = dir.join(cell_file_name(params.cell_log2, ci, cj));
                 write_cell_file(&path, params.posting_log2, params.cell_log2, ci, cj, &bytes)?;
-                progress(index as u64 + 1, total, ci, cj, true);
             }
-            None => {
-                report.samples_nodata += per_cell;
-                progress(index as u64 + 1, total, ci, cj, false);
-            }
+            None => report.samples_nodata += per_cell,
         }
+        progress(CellDone { index: index as u64 + 1, total, ci, cj, written, lifted });
     }
     Ok(report)
 }
