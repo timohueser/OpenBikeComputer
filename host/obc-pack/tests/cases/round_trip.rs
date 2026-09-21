@@ -50,8 +50,8 @@ fn styles() -> Vec<Style> {
             fixed_width: false,
             terrain_layer: false,
         },
-        // Priority 4 (flags 3, the top of the clamped range). Dashed + a secondary color exercises
-        // the v10 flag bits (2 and 3) and the trailing color2 u16 through the whole pack→read path.
+        // Priority 4 (flags 3, the top of the clamped range). Dashed plus a secondary color
+        // exercises flag bits 2 and 3 and the trailing color2 u16 through the whole pack-read path.
         Style {
             id: 5,
             z_index: 3,
@@ -75,8 +75,8 @@ fn styles() -> Vec<Style> {
             fixed_width: false,
             terrain_layer: false,
         },
-        // The E3 contour shape (#1095): dashed, hairline, and carrying both new flag bits — bit 4
-        // (fixed width) and bit 5 (terrain layer) — through the whole pack → read path.
+        // A contour shape: dashed, hairline, and carrying both flag bits — bit 4 (fixed width) and
+        // bit 5 (terrain layer) — through the whole pack to read path.
         Style {
             id: 20,
             z_index: 8,
