@@ -13,17 +13,24 @@
 //! The rule is two tests and one dilation, and each part earns its place:
 //!
 //! * **`LIFT_M` against the bilinear surface, not the node.** The interesting quantity is how far
-//!   the reference stands above the surface we actually draw, measured where it stands there.
+//!   the reference stands above the surface we actually draw, measured where it stands there. That
+//!   same gap is also *how far* a node rises, because `node_max - native` is the difference between
+//!   a maximum over a node's cell and a point sample at its centre, and on a slope that is half a
+//!   posting of fall rather than a crest. Measured against the Engelberg photographs, lifting by
+//!   the gap holds or improves every view and takes the two worst from 0.45° to 0.30° and from
+//!   0.84° to 0.50° of root-mean-square skyline error.
 //! * **`CONVEX_M` on the reference's own node maxima.** Without it, a steep planar face reads as
 //!   a crest — a coarse lattice under-samples a 40° slope honestly — and the whole mountain
 //!   inflates. Measured against three photographs, the ungated rule pushed the drawn skyline half a
 //!   degree high; the gate brings the median back to zero. It is also what leaves a saddle alone,
 //!   so a pass does not move.
-//! * **One node of dilation.** A lifted node beside unlifted neighbours makes the bilinear surface
-//!   sawtooth, which the panorama shows as a jittering skyline. Extending the selection by one node
-//!   lifts a crest along its whole length instead of at scattered points, and it also *improves*
-//!   accuracy: on the Rigidalstock it took the root-mean-square skyline error from 0.32° to 0.24°,
-//!   which is the 2 m reference's own error against the same photograph.
+//! * **One node of dilation, bounded by the gap.** A lifted node beside unlifted neighbours makes
+//!   the bilinear surface sawtooth, which the panorama shows as a jittering skyline, so the
+//!   selection is extended by one node and a crest is lifted along its whole length. The gap is
+//!   what keeps that honest: over Engelberg the dilation reaches 10,863 nodes — 11.5 % of the
+//!   94,379 selected — where the reference stands at or below the surface we draw, and lifting
+//!   those to `node_max` put the drawn skyline a third of a degree high at two viewpoints. Bounded
+//!   by the gap they rise by nothing and the drawn median comes back within 0.17°.
 //!
 //! Every part of the rule reads only a node's **2-ring**, and [`LiftMap::bake`] scans that ring
 //! beyond the cell it is asked for ([`HALO`]). A node on a cell seam therefore gets the same lift
@@ -218,17 +225,21 @@ impl LiftMap {
         let mut tally = LiftTally::default();
         for y in 0..=side {
             for x in 0..=side {
-                let top = node_max[scan.at(y, x)];
+                let at = scan.at(y, x);
+                let top = node_max[at];
                 let (lat, lon) = ((origin_y + y * step) as i32, (origin_x + x * step) as i32);
                 let here = heights.at(y, x);
                 if here == NODATA || top == NO_PIXEL || !dilated(&core, &scan, y, x) {
                     continue;
                 }
-                // Whole metres either side, because an archive pixel is whole metres and so is the
-                // sample it lands in (§1.2), which makes §9.1's `round` the identity here. Never
-                // negative: the reference may sit below our surface in a hollow, and §9 raises
-                // crests rather than editing the lattice wherever the two disagree.
-                let lift = (i32::from(top) - i32::from(here)).clamp(0, i32::from(i16::MAX)) as i16;
+                // The node rises by the **gap** — how far the reference stands above the surface —
+                // and never past `node_max`, the highest reference the node owns. Never negative
+                // either: the reference may sit below our surface in a hollow, and §9 raises crests
+                // rather than editing the lattice wherever the two disagree. Whole metres, because
+                // an archive pixel is whole metres and so is the sample it lands in (§1.2), which
+                // makes §9.1's `round` the identity here.
+                let to_top = i32::from(top) - i32::from(here);
+                let lift = to_top.min(gap[at].round() as i32).clamp(0, i32::from(i16::MAX)) as i16;
                 if lift == 0 {
                     continue;
                 }
