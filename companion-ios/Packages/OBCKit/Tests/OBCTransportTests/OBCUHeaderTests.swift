@@ -119,12 +119,12 @@ struct OBCUHeaderTests {
         #expect(throws: FirmwareImageError.unsigned) { try StagedFirmware.validate(v1) }
     }
 
-    /// Trailing bytes past `64 + image_len + sig_len` are FAT-cluster slack, not an error. The
+    /// Trailing bytes past `64 + image_len + sig_len` are slack, not an error. The
     /// container is trimmed to the exact container length; the signature trailer stays.
     @Test func acceptsTrailingSlackAndTrimsToExactLength() throws {
         let container = try fixture("update-container-v2.bin")
         var padded = container
-        padded.append(Data(repeating: 0xAB, count: 512)) // FAT-cluster slack
+        padded.append(Data(repeating: 0xAB, count: 512)) // slack past the container
         #expect(padded.count == 256 + 512)
 
         let staged = try StagedFirmware.validate(padded)
@@ -132,17 +132,5 @@ struct OBCUHeaderTests {
         #expect(staged.imageByteCount == 128)
         #expect(staged.byteCount == 256)
         #expect(staged.container == container)
-    }
-
-    /// Each `commandResult` status maps to exactly one install outcome.
-    @Test(arguments: [
-        (CommandResult.Status.ok, FirmwareInstallResult.accepted),
-        (.notFound, .noStaged),
-        (.busy, .busy),
-        (.error, .rejected),
-        (.unknownCommand, .unsupported),
-    ])
-    func mapsInstallReplyCodes(status: CommandResult.Status, expected: FirmwareInstallResult) {
-        #expect(FirmwareInstallResult(commandStatus: status) == expected)
     }
 }

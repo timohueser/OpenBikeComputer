@@ -3,7 +3,7 @@
 //! assertions pin the ordering, the retry counts, the byte math, and every failure edge.
 
 use obc_dfu::engine::{abandon_arm, run, InstallIo, IoError, Outcome, Phase, Slot, FLASH_RETRIES, PAD_BYTE};
-use obc_dfu::{BootState, Extent, ImageHeader, LastOutcome, OutcomeKind, StagedRef, PAGE_LEN};
+use obc_dfu::{BootState, Extent, ImageHeader, LastOutcome, OutcomeKind, StagedRef, MAX_EXTENTS, PAGE_LEN};
 use std::collections::BTreeMap;
 
 const BLOCK: usize = 512;
@@ -62,8 +62,8 @@ impl MockIo {
         }
     }
 
-    /// Lays `bytes` across `extents`, with slack in the final block, as a FAT file sits in its
-    /// cluster chain.
+    /// Lays `bytes` across `extents`, with slack in the final block, as an object sits in the
+    /// extents it owns.
     fn load_file(&mut self, bytes: &[u8], extents: &[Extent]) {
         let mut off = 0usize;
         for e in extents {
@@ -185,7 +185,7 @@ fn image(len: usize) -> Vec<u8> {
     (0..len).map(|i| (i as u32).wrapping_mul(2654435761).to_le_bytes()[1]).collect()
 }
 
-/// The extent chain covers the whole file, header included, as the armer resolves `UPDATE.BIN`.
+/// The extent chain covers the whole object, header included, as the armer resolves a package.
 fn stage(img: &[u8], version: &str, extents: &[Extent]) -> (Vec<u8>, StagedRef) {
     let header = ImageHeader::new(img, version);
     let mut file = header.encode().to_vec();
@@ -200,23 +200,25 @@ fn stage(img: &[u8], version: &str, extents: &[Extent]) -> (Vec<u8>, StagedRef) 
     (file, staged)
 }
 
-/// An extent chain with irregular run lengths, to exercise the chain walk.
+/// An extent chain with irregular run lengths and gaps between them, to exercise the chain walk.
+/// It spreads the file over as many runs as the record holds, which is the worst case the installer
+/// can be handed.
 fn chain_for(file_len: usize, first_block: u32) -> Vec<Extent> {
     let need = file_len.div_ceil(BLOCK) as u32;
+    let runs = (MAX_EXTENTS as u32).min(need);
     let mut out = Vec::new();
     let mut placed = 0u32;
     let mut at = first_block;
-    let mut run = 3u32; // 3, 1, 5, 3, 1, 5, ...
-    while placed < need {
-        let blocks = run.min(need - placed);
+    for run in 0..runs {
+        let left_after = runs - run - 1; // one block each for the runs still to come
+        let blocks = ((need / runs) + run % 3).max(1).min(need - placed - left_after);
         out.push(Extent { start_block: at, blocks });
         placed += blocks;
         at += blocks + 7; // gaps between runs — fragmentation
-        run = match run {
-            3 => 1,
-            1 => 5,
-            _ => 3,
-        };
+    }
+    // Whatever the uneven split left over rides on the last run.
+    if placed < need {
+        out.last_mut().expect("a non-empty file has at least one run").blocks += need - placed;
     }
     out
 }

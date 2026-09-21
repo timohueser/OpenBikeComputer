@@ -42,18 +42,18 @@ pub struct DetourRequest {
     pub target_m: u32,
 }
 
-/// Which phase of the SD-sideload firmware update [`DfuState`](crate::dfu::DfuState) asks the board
+/// Which phase of the firmware update [`DfuState`](crate::dfu::DfuState) asks the board
 /// to run. The two are separate so the UI can confirm before arming: [`Scan`](DfuAction::Scan) is
 /// read-only and answers a [`DfuScanReport`](crate::dfu::DfuScanReport), and
 /// [`Install`](DfuAction::Install) is the irreversible arm-and-reboot. The `dfu-install` debug
 /// command posts `Install` directly, with no confirm screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DfuAction {
-    /// Validate the staged `UPDATE.BIN` (header, full CRC-32, extents) without touching anything;
-    /// the board answers through the pass's fact stage.
+    /// Validate the staged update package (header, full CRC-32, extents) without touching
+    /// anything; the board answers through the pass's fact stage.
     Scan,
-    /// Arm the update: snapshot the running image to `ROLLBACK.BIN`, write the `Armed` boot-state
-    /// record, and reboot into the bootloader. On success the board never returns (it resets).
+    /// Arm the update: write the running image into a rollback reserve, write the `Armed`
+    /// boot-state record, and reboot into the bootloader. On success the board never returns.
     Install,
 }
 

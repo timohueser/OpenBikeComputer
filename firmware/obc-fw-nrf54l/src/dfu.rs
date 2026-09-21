@@ -1,39 +1,58 @@
 //! The app-side DFU armer driver: the board half of `obc_dfu::armer`.
 //!
 //! The pure decision core lives host-tested in `obc_dfu::armer`; this module wires it to the real
-//! device: [`sd::Storage`]'s stage and rollback adapters, [`RramSettingsStore`]'s boot-state page,
-//! the watchdog pets between the long SD phases, the `D`-line status stream, and the final
-//! `SCB::sys_reset()` into the bootloader.
+//! device: the flat store's staged update package and rollback reserve, [`RramSettingsStore`]'s
+//! boot-state page, the watchdog pets between the long card phases, the `D`-line status stream, and
+//! the final `SCB::sys_reset()` into the bootloader.
 //!
 //! The arm sequence is normative in this order:
 //!
-//! 1. Scan and validate `UPDATE.BIN`: header decode, full CRC-32 pass, size gate, whole-file extent
-//!    chain. Read-only, so a failure costs nothing. In the normal scan, confirm, install flow this
-//!    pass already ran at [`run_scan`] and its [`StagedRef`] is carried in.
-//! 2. Snapshot the rollback: the running image, read memory-mapped out of the app slot, re-wrapped
-//!    as `/ROLLBACK.BIN` and extent-resolved the same way. Skipped on a first install, or when the
-//!    slot no longer matches the installed record.
+//! 1. Scan and validate the staged package: header decode, full CRC-32 pass, signature, size gate,
+//!    whole-object extent chain. Read-only, so a failure costs nothing. In the normal scan, confirm,
+//!    install flow this pass already ran at [`run_scan`] and its [`StagedRef`] is carried in.
+//! 2. Write the rollback: the running image, read memory-mapped out of the app slot, re-wrapped as
+//!    an unsigned OBCU container into a fresh rollback reserve, and extent-resolved the same way.
+//!    Skipped on a first install, or when the slot no longer matches the installed record.
 //! 3. Compose and write `Armed` (generation is the old page's plus 1) to the BOOT_STATE page: one
 //!    CRC-framed blob in whole 16-byte RRAMC lines, with no torn intermediate.
 //! 4. A brief beat to flush the status lines to the host, then `SCB::sys_reset()`.
 //!
-//! Power loss before step 3's write leaves nothing done, because the snapshot file is inert without
-//! the record. After it, the install proceeds on the next boot exactly as if the reset had run,
-//! because `Armed` is idempotent. That is why nothing else sits between 3 and 4.
+//! Power loss before step 3's write starts no install, because the reserve and the staged blob are
+//! both inert without the record that points at them. What it can leave behind is one committed
+//! kind-8 entry holding an image's worth of extents: nothing reclaims it until the next arm's batch
+//! removes it, so the cost is bounded at one reserve and the rider sees the old firmware. After
+//! step 3 the install proceeds on the next boot exactly as if the reset had run, because `Armed` is
+//! idempotent. That is why nothing else sits between 3 and 4.
 //!
-//! The heavy work is one sync `#[inline(never)]` call ([`arm_update`]) at the ride loop's shallow
-//! drained-request depth, so the `StagedRef`s and the decoded `BootState` live in frames that pop
-//! on return. Nothing large is held across an `await`. The carried scan ref parks in a ride-loop
-//! local, in the loop task's own future storage, so it never deepens `arm_update`'s frame.
+//! The heavy work runs at the ride loop's shallow drained-request depth in `#[inline(never)]` calls,
+//! so the `StagedRef`s and the decoded `BootState` live in frames that pop on return. The carried
+//! scan ref parks in a ride-loop local, in the loop task's own future storage.
 
 use core::fmt::Write;
 
 use embassy_nrf::wdt;
-use obc_dfu::armer::{self, ArmError, Rollback, ScanError};
-use obc_dfu::{BootState, ImageHeader, StagedRef};
+use obc_dfu::armer::{self, ArmError, ExtentsError, Rollback, ScanError, StageIo};
+use obc_dfu::{BootState, Extent, ImageHeader, StagedRef, HEADER_LEN, MAX_EXTENTS};
+use obc_formats::io::ByteSource;
+use obc_storage::flat::source::StoreSource;
+use obc_storage::flat::{
+    BlockRun, DisplayName, EntryFlags, EntryMeta, FlatStore, Mutation, ObjectId, ObjectKind, PutSource, Revision,
+    Store as _, MAX_RANGES,
+};
 
-use crate::sd;
+use crate::flat_store::{FlatCard, Outcome, Reply, Request, Writer};
 use crate::settings::RramSettingsStore;
+
+/// The board's flat store.
+type Flat = FlatStore<FlatCard>;
+
+/// An object holds at most [`MAX_RANGES`] extent ranges, and one range is one contiguous block run,
+/// so the boot handoff's extent table can never be the thing that refuses an arm.
+const _: () = assert!(MAX_RANGES <= MAX_EXTENTS);
+
+/// The arm's own reply slot. One call is in flight at a time: the arm runs in the ride loop's store
+/// tail, which serves one install request per pass and diverges into the reset on success.
+static ARM_REPLY: Reply = Reply::new();
 
 /// Base of the app slot, from the `__app_slot_base` linker symbol, read at runtime like
 /// `__settings_base` so no address is hard-coded.
@@ -74,42 +93,19 @@ struct ArmReport {
     extent_count: usize,
 }
 
-/// Why an arm failed. The boot-state page is untouched in every case.
+/// Why the two RRAM writes failed. The boot-state page is untouched in both cases.
 enum ArmFailure {
-    Scan(ScanError),
-    Snapshot(ScanError),
     BlobStage,
     StateWrite,
 }
 
-/// The board's [`armer::ArmIo`]: the rollback snapshot over [`sd::Storage`] and the boot-state page
-/// write over [`RramSettingsStore`], with a watchdog pet after the long snapshot phase.
+/// The board's [`armer::ArmIo`]: the two RRAM writes the arm sequences, with a watchdog pet after
+/// the long snapshot phase that precedes them.
 struct BoardArmIo<'a> {
-    storage: &'a mut sd::Storage,
     settings: &'a mut RramSettingsStore,
-    wdt: &'a mut Option<wdt::WatchdogHandle>,
 }
 
 impl armer::ArmIo for BoardArmIo<'_> {
-    fn snapshot(&mut self, installed: &ImageHeader) -> Result<Option<StagedRef>, ScanError> {
-        // Gate the length before mapping the slot: the header came off a CRC-valid page, but a
-        // foreign length must never build an out-of-slot slice.
-        if installed.image_len == 0 || installed.image_len > obc_dfu::MAX_IMAGE_LEN {
-            defmt::warn!("dfu: installed record has an implausible image_len — treating as no rollback");
-            return Ok(None);
-        }
-        // SAFETY: the app slot is memory-mapped RRAM (XIP-readable) and `image_len` is gated to
-        // the slot's capacity above; nothing writes program RRAM while the app runs.
-        let image = unsafe { core::slice::from_raw_parts(app_slot_base(), installed.image_len as usize) };
-        let result = self.storage.dfu_write_rollback(installed, image);
-        // The snapshot is the arm's longest SD stretch, so feed the dog before the page write and
-        // the reset tail.
-        if let Some(h) = self.wdt.as_mut() {
-            h.pet();
-        }
-        result
-    }
-
     fn stage_boot_blob(&mut self) -> Result<(), obc_dfu::engine::IoError> {
         // The sEMMC image the bootloader boots the card through: the same bytes this firmware's
         // own storage bring-up copies to the FLPR carve.
@@ -129,44 +125,217 @@ impl armer::ArmIo for BoardArmIo<'_> {
     }
 }
 
-/// The whole arm as one sync, popped frame: carry or scan, read the old page, snapshot, compose,
-/// write. Returns the report for the status lines; the caller owns the beat and the reset.
+/// The staged update package: the catalog's update-package head, or [`ScanError::Missing`] when a
+/// client has not uploaded one. The greatest `ObjectId` wins, because a client that uploads a second
+/// package rather than replacing the first means the newer one.
 ///
-/// `cached` is the [`StagedRef`] the confirm's preceding scan already validated, so the arm drops
-/// straight to the snapshot with no second full read and CRC of `UPDATE.BIN`. It is absent only for
-/// an install that arrives with no preceding scan. A stale carried ref is safe: the bootloader
-/// re-reads and re-CRCs the raw extents before it erases, so a mismatch costs at worst a
-/// `StageRejected` next boot. This is not a re-validation point.
+/// A listing that stopped early is a media failure, never an absent package: answering "nothing is
+/// staged" out of a failed read would send the rider to upload a package that is already there.
+fn staged_package(store: &Flat) -> Result<EntryMeta, ScanError> {
+    let found = store
+        .entries()
+        .filter(|entry| entry.kind == ObjectKind::UpdatePackage && entry.flags == EntryFlags::NONE)
+        .last();
+    if !store.entries_ok() {
+        return Err(ScanError::Io);
+    }
+    found.ok_or(ScanError::Missing)
+}
+
+/// Resolve one committed object's extents into the bootloader's absolute block runs.
+///
+/// The boot handoff addresses a block in a `u32`, which is [`FlatCard`]'s own wall, so a run past
+/// 2 TiB refuses rather than truncating an address. No card the SD standards define reaches it —
+/// the driver would already have refused the read — so it gets the transient bucket the rider can
+/// act on and names itself on the log instead of a bucket of its own.
+fn block_extents(
+    store: &Flat,
+    id: ObjectId,
+    revision: Revision,
+    out: &mut [Extent; MAX_EXTENTS],
+) -> Result<usize, ExtentsError> {
+    let mut runs = [BlockRun::default(); MAX_RANGES];
+    let count = store.block_runs(id, revision, &mut runs).map_err(|_| ExtentsError::Io)?;
+    for (slot, run) in out.iter_mut().zip(&runs[..count]) {
+        let narrow = u32::try_from(run.start_block).ok().zip(u32::try_from(run.blocks).ok());
+        let Some((start_block, blocks)) = narrow else {
+            defmt::error!(
+                "dfu: object extent at block {=u64} ({=u64} blocks) is past the boot handoff's 2 TiB address",
+                run.start_block,
+                run.blocks
+            );
+            return Err(ExtentsError::Io);
+        };
+        *slot = Extent { start_block, blocks };
+    }
+    Ok(count)
+}
+
+/// The armer's [`StageIo`] over the open update package: byte reads through the store's own random
+/// access, and the whole-object extent resolve off the catalog entry.
+struct FlatStage<'a> {
+    store: &'a Flat,
+    source: &'a StoreSource<'a, FlatCard>,
+    id: ObjectId,
+    revision: Revision,
+}
+
+impl StageIo for FlatStage<'_> {
+    fn stage_len(&mut self) -> Option<u32> {
+        u32::try_from(self.source.len()).ok()
+    }
+
+    fn read_stage(&mut self, offset: u32, buf: &mut [u8]) -> Result<(), obc_dfu::engine::IoError> {
+        self.source.read_at(offset.into(), buf).map_err(|_| obc_dfu::engine::IoError)
+    }
+
+    fn stage_extents(&mut self, out: &mut [Extent; MAX_EXTENTS]) -> Result<usize, ExtentsError> {
+        block_extents(self.store, self.id, self.revision, out)
+    }
+}
+
+/// Read and validate the staged package end to end: OBCU header, size gate, one streaming pass for
+/// the CRC-32 and the Ed25519 verification, then the extent chain the arm records.
+///
+/// The trusted key is [`obc_dfu::RELEASE_PUBKEY`], and this is the only place the firmware names it.
+/// `obc_dfu::armer::scan` takes the key as a parameter, so tests inject their own.
+///
+/// `#[inline(never)]`: the staging buffer and the returned `StagedRef` belong in a frame that pops.
 #[inline(never)]
-fn arm_update(
-    storage: &mut sd::Storage,
-    settings: &mut RramSettingsStore,
-    wdt: &mut Option<wdt::WatchdogHandle>,
-    cached: Option<StagedRef>,
-) -> Result<ArmReport, ArmFailure> {
-    let staged = match cached {
-        // The confirm's scan already read and CRC'd the whole image; carry that verdict.
-        Some(staged) => staged,
-        // Fallback: an install with no preceding scan. Read and CRC the stage now.
-        None => {
-            let staged = storage.dfu_scan_update().map_err(ArmFailure::Scan)?;
-            // The CRC pass over a 900 KB stage takes seconds; pet before the snapshot.
-            if let Some(h) = wdt.as_mut() {
-                h.pet();
-            }
-            staged
-        }
+fn scan_package(store: &Flat) -> Result<StagedRef, ScanError> {
+    let meta = staged_package(store)?;
+    let scanned = store.with_source(meta.id, Some(meta.revision), |source| {
+        let mut stage = FlatStage { store, source, id: meta.id, revision: meta.revision };
+        // The CRC and signature staging buffer is a stack chunk: no new resident statics, and the
+        // frame pops with the scan, verifier state included.
+        let mut chunk = [0u8; 512];
+        armer::scan(&mut stage, &mut chunk, &obc_dfu::RELEASE_PUBKEY)
+    });
+    scanned.map_err(|_| ScanError::Io)?
+}
+
+/// Write the running image into a fresh rollback reserve and resolve the reserve's extents.
+///
+/// The reserve is one `RESERVED` entry of kind 8: the store owns the extents and never serves their
+/// bytes, and the bootloader restores the image from them when a trial boot goes unconfirmed. The
+/// bytes land before the commit, so a cut anywhere before it leaves an anonymous allocation the next
+/// mount frees. The commit that publishes the new reserve removes the previous one in the same
+/// batch, so an arm never leaves two.
+///
+/// `Ok(None)` means the slot's bytes no longer CRC-match the installed header, so a reserve would
+/// record a rollback the bootloader must reject. None is taken. Errors abort the arm.
+///
+/// The snapshot is an unsigned container: the device cannot re-create the release signature from
+/// slot bytes, and nothing verifies this one, because the bootloader checks it by CRC.
+async fn write_rollback(
+    store: &'static Flat,
+    writer: &Writer,
+    installed: &ImageHeader,
+    image: &'static [u8],
+) -> Result<Option<StagedRef>, ScanError> {
+    debug_assert_eq!(image.len() as u32, installed.image_len);
+    let crc = obc_dfu::crc32(image);
+    if crc != installed.image_crc32 {
+        defmt::warn!("dfu: running image doesn't match the installed record (SWD reflash?) — no rollback");
+        return Ok(None);
+    }
+    let header = installed.unsigned();
+    let bytes = (HEADER_LEN + image.len()) as u64;
+
+    let Ok(Outcome::Allocated(allocation)) = writer.call(Request::Allocate { bytes }, &ARM_REPLY).await else {
+        defmt::warn!("dfu: no room for a {=u64} B rollback reserve — arm aborted", bytes);
+        return Err(ScanError::Io);
     };
+    let request = Request::WriteRollback { allocation, header: header.encode(), image };
+    let Ok(Outcome::Wrote(allocation)) = writer.call(request, &ARM_REPLY).await else {
+        let _ = writer.call(Request::Cancel { allocation }, &ARM_REPLY).await;
+        defmt::warn!("dfu: rollback reserve write failed — arm aborted");
+        return Err(ScanError::Io);
+    };
+
+    let mut batch: heapless::Vec<Mutation, { obc_storage::flat::store::MAX_BATCH }> = heapless::Vec::new();
+    for stale in store.entries().filter(|entry| entry.kind == ObjectKind::RollbackReserve) {
+        if batch.push(Mutation::Remove { id: stale.id, revision: stale.revision }).is_err() {
+            break;
+        }
+    }
+    if !store.entries_ok() {
+        let _ = writer.call(Request::Cancel { allocation }, &ARM_REPLY).await;
+        return Err(ScanError::Io);
+    }
+    let meta = EntryMeta {
+        added_at_utc: 0,
+        id: store.next_object_id(),
+        revision: Revision(1),
+        kind: ObjectKind::RollbackReserve,
+        flags: EntryFlags::RESERVED,
+        payload_len: 0,
+        payload_crc: 0,
+        name: DisplayName::default(),
+    };
+    if batch.push(Mutation::Put { meta, source: PutSource::Fresh(allocation) }).is_err() {
+        let _ = writer.call(Request::Cancel { allocation }, &ARM_REPLY).await;
+        defmt::warn!("dfu: too many stale rollback reserves to swap in one commit — arm aborted");
+        return Err(ScanError::Io);
+    }
+    if !matches!(writer.call(Request::Commit { batch }, &ARM_REPLY).await, Ok(Outcome::Committed(_))) {
+        let _ = writer.call(Request::Cancel { allocation }, &ARM_REPLY).await;
+        defmt::warn!("dfu: rollback reserve commit failed — arm aborted");
+        return Err(ScanError::Io);
+    }
+
+    let mut extents = [Extent::default(); MAX_EXTENTS];
+    let count = block_extents(store, meta.id, meta.revision, &mut extents).map_err(|e| match e {
+        ExtentsError::TooFragmented { extents } => ScanError::TooFragmented { extents },
+        ExtentsError::Io => ScanError::Io,
+    })?;
+    defmt::info!("dfu: rollback reserve written ({=u32} B raw image, {=usize} extent(s))", installed.image_len, count);
+    StagedRef::new(header, installed.image_len, crc, &extents[..count])
+        .map(Some)
+        .ok_or(ScanError::TooFragmented { extents: count as u32 })
+}
+
+/// The running image as the reserve records it, or `None` when this arm gets no rollback: a first
+/// install, or defensively a page that is not `Idle`.
+fn rollback_source(current: &BootState) -> Option<ImageHeader> {
+    match current {
+        BootState::Idle { installed, .. } => *installed,
+        // Armed and Trial cannot be live mid-run, so treat them like a fresh device rather than
+        // guess at a rollback.
+        _ => None,
+    }
+}
+
+/// The running image's bytes, read memory-mapped out of the app slot, or `None` when the installed
+/// record's length is implausible.
+fn running_image(installed: &ImageHeader) -> Option<&'static [u8]> {
+    // Gate the length before mapping the slot: the header came off a CRC-valid page, but a foreign
+    // length must never build an out-of-slot slice.
+    if installed.image_len == 0 || installed.image_len > obc_dfu::MAX_IMAGE_LEN {
+        defmt::warn!("dfu: installed record has an implausible image_len — treating as no rollback");
+        return None;
+    }
+    // SAFETY: the app slot is memory-mapped RRAM (XIP-readable) and `image_len` is gated to the
+    // slot's capacity above; nothing writes program RRAM while the app runs.
+    Some(unsafe { core::slice::from_raw_parts(app_slot_base(), installed.image_len as usize) })
+}
+
+/// The two RRAM writes that end the arm: the sEMMC blob stage and the `Armed` page.
+///
+/// `#[inline(never)]`: the decoded `BootState` and the composed page are ~300 B temporaries that
+/// must live in a frame that pops rather than in the ride loop's poll frame.
+#[inline(never)]
+fn commit_arm(
+    settings: &mut RramSettingsStore,
+    current: &BootState,
+    staged: StagedRef,
+    rollback: Option<StagedRef>,
+) -> Result<ArmReport, ArmFailure> {
     let mut staged_version: heapless::String<32> = heapless::String::new();
     let _ = staged_version.push_str(staged.header.fw_version_str());
     let (staged_len, extent_count) = (staged.len, staged.extent_count());
-
-    // Read and decode the old page first, because the generation bump is old plus 1. Then hand the
-    // pure sequencer the IO: it snapshots before it writes.
-    let current = settings.read_boot_state();
-    let mut io = BoardArmIo { storage, settings, wdt };
-    let ticket = armer::arm(&mut io, &current, staged).map_err(|e| match e {
-        ArmError::Snapshot(s) => ArmFailure::Snapshot(s),
+    let mut io = BoardArmIo { settings };
+    let ticket = armer::arm(&mut io, current, staged, rollback).map_err(|e| match e {
         ArmError::BlobStage => ArmFailure::BlobStage,
         ArmError::StateWrite => ArmFailure::StateWrite,
     })?;
@@ -182,15 +351,22 @@ macro_rules! statusf {
     }};
 }
 
-/// Run a drained install request end to end: status lines per phase, the sync [`arm_update`] under
-/// the caller's storage and settings access, then, on success, a brief beat so the `D`-lines flush
-/// to the host, and `SCB::sys_reset()` into the bootloader.
+/// Run a drained install request end to end: status lines per phase, the rollback reserve, the two
+/// RRAM writes, then, on success, a brief beat so the `D`-lines flush to the host, and
+/// `SCB::sys_reset()` into the bootloader.
 ///
 /// Returns only on failure, with the state page untouched and the device still riding. The typed
 /// [`DfuInstallError`](obc_app::DfuInstallError) goes to the pass's fact stage, so the spinner is
 /// replaced by an error card instead of hanging. On success the call diverges into the reset.
+///
+/// `cached` is the [`StagedRef`] the confirm's preceding scan already validated, so the arm drops
+/// straight to the rollback with no second full read and CRC of the package. It is absent only for
+/// an install that arrives with no preceding scan. A stale carried ref is safe: the bootloader
+/// re-reads and re-CRCs the raw extents before it erases, so a mismatch costs at worst a
+/// `StageRejected` next boot. This is not a re-validation point.
 pub(crate) async fn run_install(
-    storage: &mut sd::Storage,
+    store: &'static Flat,
+    writer: &Writer,
     settings: &mut RramSettingsStore,
     wdt: &mut Option<wdt::WatchdogHandle>,
     cached: Option<StagedRef>,
@@ -200,13 +376,47 @@ pub(crate) async fn run_install(
     if cached.is_some() {
         statusf!("arming from the scan's validated image (running {})", env!("OBC_FW_GIT"));
     } else {
-        statusf!("scanning UPDATE.BIN (running {})", env!("OBC_FW_GIT"));
+        statusf!("scanning the staged update package (running {})", env!("OBC_FW_GIT"));
     }
-    match arm_update(storage, settings, wdt, cached) {
+    let staged = match cached {
+        // The confirm's scan already read and CRC'd the whole image; carry that verdict.
+        Some(staged) => staged,
+        // Fallback: an install with no preceding scan. Read and CRC the package now.
+        None => match scan_package(store) {
+            Ok(staged) => {
+                // The CRC pass over a 900 KB package takes seconds; pet before the reserve.
+                pet(wdt);
+                staged
+            }
+            Err(e) => {
+                report_scan_error("scan", e);
+                return Some(obc_app::DfuInstallError::Scan(map_scan_error(e)));
+            }
+        },
+    };
+
+    let current = settings.read_boot_state();
+    let rollback = match rollback_source(&current).and_then(|installed| Some((installed, running_image(&installed)?))) {
+        Some((installed, image)) => match write_rollback(store, writer, &installed, image).await {
+            Ok(rollback) => {
+                // The reserve is the arm's longest card stretch, so feed the dog before the page
+                // writes and the reset tail.
+                pet(wdt);
+                rollback
+            }
+            Err(e) => {
+                report_scan_error("rollback reserve", e);
+                return Some(obc_app::DfuInstallError::SnapshotFailed);
+            }
+        },
+        None => None,
+    };
+
+    match commit_arm(settings, &current, staged, rollback) {
         Ok(report) => {
             statusf!("scan ok: {} ({} B, {} extent(s))", report.staged_version, report.staged_len, report.extent_count);
             match report.rollback {
-                Rollback::Snapshot => status("rollback snapshot written to ROLLBACK.BIN"),
+                Rollback::Snapshot => status("rollback written to the reserve"),
                 Rollback::FirstInstall => status("no rollback: first install -- an unconfirmed trial will be accepted"),
                 Rollback::RunningMismatch => {
                     status("no rollback: running image differs from installed record (SWD reflash?)")
@@ -221,16 +431,6 @@ pub(crate) async fn run_install(
             embassy_time::Timer::after_millis(400).await;
             cortex_m::peripheral::SCB::sys_reset();
         }
-        // Each failure keeps its `D`-line breadcrumb and returns the app-facing bucket, so the
-        // caller can swap the spinner for the error card.
-        Err(ArmFailure::Scan(e)) => {
-            report_scan_error("scan", e);
-            Some(obc_app::DfuInstallError::Scan(map_scan_error(e)))
-        }
-        Err(ArmFailure::Snapshot(e)) => {
-            report_scan_error("rollback snapshot", e);
-            Some(obc_app::DfuInstallError::SnapshotFailed)
-        }
         // The blob stage and the page write are both RRAM writes with the same user story, so they
         // share one app bucket; the `D`-line breadcrumb keeps them apart for diagnostics.
         Err(ArmFailure::BlobStage) => {
@@ -244,32 +444,33 @@ pub(crate) async fn run_install(
     }
 }
 
-/// The scan-only phase: the UI's read-only "Checking card" step. Validates `UPDATE.BIN` exactly as
-/// the arm's first step does, but touches nothing, and reads the boot-state page for the pre-arm
-/// no-rollback fact. Returns the report the confirm screen shows, or a mapped
-/// [`DfuScanError`](obc_app::DfuScanError) for the error card.
-///
-/// The [`StagedRef`] comes back beside the report, so the caller can park it and hand it to
-/// [`run_install`]; the confirm then arms with no second full read and CRC pass over the 900 KB
-/// `UPDATE.BIN`.
-pub(crate) fn run_scan(
-    storage: &mut sd::Storage,
-    settings: &mut RramSettingsStore,
-    wdt: &mut Option<wdt::WatchdogHandle>,
-) -> Result<(obc_app::DfuScanReport, StagedRef), obc_app::DfuScanError> {
-    let staged = storage.dfu_scan_update().map_err(map_scan_error)?;
-    // The full CRC pass over a 900 KB stage takes seconds; feed the dog before returning.
+/// Feed the hardware watchdog between the arm's long phases.
+fn pet(wdt: &mut Option<wdt::WatchdogHandle>) {
     if let Some(h) = wdt.as_mut() {
         h.pet();
     }
+}
+
+/// The scan-only phase: the UI's read-only "Checking card" step. Validates the staged package
+/// exactly as the arm's first step does, but touches nothing, and reads the boot-state page for the
+/// pre-arm no-rollback fact. Returns the report the confirm screen shows, or a mapped
+/// [`DfuScanError`](obc_app::DfuScanError) for the error card.
+///
+/// The [`StagedRef`] comes back beside the report, so the caller can park it and hand it to
+/// [`run_install`]; the confirm then arms with no second full read and CRC pass over the package.
+pub(crate) fn run_scan(
+    store: &Flat,
+    settings: &mut RramSettingsStore,
+    wdt: &mut Option<wdt::WatchdogHandle>,
+) -> Result<(obc_app::DfuScanReport, StagedRef), obc_app::DfuScanError> {
+    let staged = scan_package(store).map_err(map_scan_error)?;
+    // The full CRC pass over a 900 KB package takes seconds; feed the dog before returning.
+    pet(wdt);
     // The no-rollback fact is knowable before the arm from the boot-state page: `Idle` with no
     // installed record, and defensively any non-`Idle` page, arms with no rollback, so an
     // unconfirmed trial is accepted rather than rolled back. The running-mismatch case needs the
     // slot CRC, which is too heavy before the confirm, so it is not surfaced.
-    let installed = match settings.read_boot_state() {
-        BootState::Idle { installed, .. } => installed,
-        _ => None,
-    };
+    let installed = rollback_source(&settings.read_boot_state());
     let mut staged_version: heapless::String<32> = heapless::String::new();
     let _ = staged_version.push_str(staged.header.fw_version_str());
     // The installed side of the confirm screen, and its same-version equality check, must speak
