@@ -63,6 +63,8 @@ use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use defmt::{error, warn};
 use embassy_time::{Duration, Instant, Timer};
 
+use obc_storage::health::Breaker;
+
 use crate::semmc::{self, CardInfo, Semmc, SemmcError};
 
 /// Which image has the hart.
@@ -192,7 +194,7 @@ pub fn ensure_storage() -> bool {
             true
         }
         Some(Err(e)) => {
-            error!("flpr_mux: sEMMC would not take the hart ({}) — storage is down for this operation", e);
+            error!("flpr_mux: sEMMC would not take the hart ({}) — this operation fails", e);
             MODE.store(Mode::Unknown as u8, Ordering::Relaxed);
             false
         }
@@ -200,15 +202,52 @@ pub fn ensure_storage() -> bool {
     }
 }
 
+/// Consecutive failed storage operations, as [`Breaker`] counts them. One word beside the driver,
+/// under the same access rule as everything else here, but an atomic because [`storage_latched`]
+/// reads it from the ride loop between operations.
+static FAILURES: AtomicU8 = AtomicU8::new(0);
+
+fn breaker() -> Breaker {
+    Breaker::from_failures(FAILURES.load(Ordering::Relaxed))
+}
+
+/// Whether the transport has given up for this session, for the one warning the ride loop raises.
+pub fn storage_latched() -> bool {
+    breaker().open()
+}
+
 /// Run one synchronous storage operation with the FLPR in storage mode.
 ///
 /// The single door the `BlockDevice` impl uses: it pairs the mode guarantee with the driver borrow,
-/// so neither can be taken without the other.
-pub fn with_storage<R>(f: impl FnOnce(&mut Semmc) -> R) -> Result<R, SemmcError> {
-    if !ensure_storage() {
-        return Err(SemmcError::NoBoot);
+/// so neither can be taken without the other, and it is the one place every card operation's
+/// outcome is visible, so it is where the [`Breaker`] lives.
+///
+/// The closure returns a `Result` because the breaker must see the transfer's verdict and not only
+/// whether the mode switch worked. A dead card and a soft peripheral that stopped booting are the
+/// same fact to a rider — storage is gone — so they share one latch.
+///
+/// Once the breaker is open every call returns [`SemmcError::Unhealthy`] immediately, without a
+/// mode switch, a boot attempt or a bus cycle. That is what bounds a ride-loop pass: a run of
+/// failures costs [`Breaker::LIMIT`] deadline ladders in the session rather than one per operation.
+pub fn with_storage<R>(f: impl FnOnce(&mut Semmc) -> Result<R, SemmcError>) -> Result<R, SemmcError> {
+    let before = breaker();
+    if before.open() {
+        return Err(SemmcError::Unhealthy);
     }
-    with_semmc(f).ok_or(SemmcError::NotInitialised)
+    let r = if ensure_storage() {
+        with_semmc(f).unwrap_or(Err(SemmcError::NotInitialised))
+    } else {
+        Err(SemmcError::NoBoot)
+    };
+    let after = before.record(r.is_ok());
+    FAILURES.store(after.failures(), Ordering::Relaxed);
+    if after.opened_from(before) {
+        error!(
+            "flpr_mux: {=u8} storage operations failed in a row — the transport is latched off for this session (power-cycle to retry)",
+            Breaker::LIMIT
+        );
+    }
+    r
 }
 
 /// The async front door for a batch of storage work, acquired by

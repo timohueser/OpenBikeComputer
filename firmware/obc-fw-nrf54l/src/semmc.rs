@@ -293,6 +293,9 @@ pub enum SemmcError {
     OutOfRange,
     /// A transfer was attempted before [`Semmc::init_card`] succeeded.
     NotInitialised,
+    /// The transport's failure latch is open, so the operation was refused without touching the
+    /// device. See [`crate::flpr_mux::with_storage`].
+    Unhealthy,
 }
 
 impl SemmcError {

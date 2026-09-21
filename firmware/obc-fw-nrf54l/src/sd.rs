@@ -189,7 +189,7 @@ impl BlockDevice for SemmcCard {
                     Ok(())
                 })
             }
-        })?;
+        });
         #[cfg(feature = "sd-bench")]
         crate::card_io::note_read_perf(bench_started, addr, n);
         if let Err(e) = r {
@@ -224,7 +224,7 @@ impl BlockDevice for SemmcCard {
                     Ok(())
                 })
             }
-        })?;
+        });
         if let Err(e) = r {
             log_transfer_error("write", start_block_idx.0, n, e);
         }
@@ -232,7 +232,7 @@ impl BlockDevice for SemmcCard {
     }
 
     fn num_blocks(&self) -> Result<BlockCount, Self::Error> {
-        crate::flpr_mux::with_storage(|sd| sd.num_blocks())?.map(BlockCount)
+        crate::flpr_mux::with_storage(|sd| sd.num_blocks()).map(BlockCount)
     }
 }
 
