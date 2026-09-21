@@ -3,25 +3,13 @@
 Version 3 adds the geographic surface index in section 8. Sections 1–7 describe the native
 v1 raster, which remains the base height plane of v3.
 
-OBCT is the terrain artifact: a raster of ground heights on the [OBCA](OBCA_Spec.md) cell grid.
-It defines four things:
+OBCT is the terrain artifact: a raster of ground heights on the [OBCA](OBCA_Spec.md) cell grid. It
+defines the sample lattice (§1), the 512-byte tile and the terrain cell (§2, §3), the container
+(§4) and the sampling rules (§5).
 
-1. **The sample lattice** (§1) — a fixed, global microdegree lattice sharing OBCA's origin, with
-   `int16` metre heights and one reserved "no data" value.
-2. **The tile and the terrain cell** (§2, §3) — a 512-byte tile of 16 × 16 samples, and the grid
-   cell that is a square block of them.
-3. **The container** (§4) — one file format for both published artifacts: a **cell** is a
-   container whose cell rectangle is 1 × 1, an **assembly raster** one covering a whole selection.
-   A fixed header, a row-major offset directory over that rectangle, then the cell blocks. Every
-   lookup is grid arithmetic; nothing is searched.
-4. **Sampling** (§5) — the normative bilinear rules, including what happens at a cell seam, at a
-   coverage edge and around a `NODATA` sample. This is the raster analogue of OBCA §3.4's seam rule:
-   **two independent implementations MUST produce bit-identical heights for the same `(lat, lon)`.**
-
-OBCT introduces **no new OBCM version and changes no OBCM semantics**. Terrain is a separate
-artifact class with its own revision track. An assembly's raster is embedded **verbatim** in the
-map file's terrain region ([`OBCM_Spec.md` §1.3](OBCM_Spec.md)), which the map reader hands over as
-an opaque window rather than parsing: an OBCM consumer learns no terrain section.
+Terrain is a separate artifact class with its own revision track. An assembly's raster is embedded
+**verbatim** in the map file's terrain region ([`OBCM_Spec.md` §1.3](OBCM_Spec.md)), which the map
+reader hands over as an opaque window rather than parsing.
 
 This document is normative. The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are to be
 interpreted as in RFC 2119.
@@ -35,28 +23,6 @@ Related contracts: [`OBCA_Spec.md`](OBCA_Spec.md) §1 defines the grid this rast
 [`OBCC_Spec.md`](OBCC_Spec.md) §13 publishes terrain cells as a catalog artifact class with its own
 revision track; [`OBCM_Spec.md`](OBCM_Spec.md) is the map that carries an assembly's raster, and
 whose §8 nav graph stores the ascent integrated *from* these samples.
-
-## Design principles
-
-These constrain what a later version may change without a format bump.
-
-1. **Terrain is static; OSM churns.** Terrain is baked once per **dataset** version and survives
-   every map-format change, because it is its own artifact class with its own revision.
-2. **One sampling truth.** The packer, the device's profile and the altimeter reference all use
-   §5 over one artifact, so their numbers agree by construction.
-3. **Addressing is arithmetic, never search.** Cell, tile and sample are reached by shifts and
-   masks, because lattice, tile and cell are all powers of two on one origin.
-4. **Sizes are data; shape is format.** The posting `P` and the cell side are header fields
-   (§1.3), so retuning either is a re-bake, not a format bump. The 512-byte tile is not: it is
-   the device's I/O quantum, and changing it changes the fetch unit every consumer is budgeted
-   around.
-5. **One container for both artifacts.** A published cell and an assembly's raster differ only in
-   how many cells they carry (§4).
-6. **A hole is silence, never a guess.** Terrain is `None` outside coverage and wherever the
-   source DEM had no data, and one missing corner voids the whole sample (§5.4). Elevation never
-   degrades to a plausible-looking number.
-7. **Removable.** Delete the terrain and the map still renders, routing still works and profiles
-   go flat. Nothing else in the system parses these bytes.
 
 ---
 
@@ -80,8 +46,8 @@ lat(i) = GRID_ORIGIN + i·P
 lon(j) = GRID_ORIGIN + j·P
 ```
 
-with `0 ≤ i, j < WORLD_SIDE / P`. The same expression on **both** axes: the lattice is square in
-µdeg, not in metres, exactly as OBCA cells are, so that §3.3's addressing stays arithmetic.
+with `0 ≤ i, j < WORLD_SIDE / P`. The same expression applies on **both** axes: the lattice is
+square in µdeg, not in metres.
 
 A `2^9` posting is therefore ≈ 57 m in latitude everywhere and ≈ 39 m in longitude at 47°N,
 narrowing towards the poles. This is not corrected anywhere and MUST NOT be: the contract rests on
@@ -105,8 +71,7 @@ Heights are orthometric — height above the geoid — **not** ellipsoidal. A pr
 A sample is a **point sample** of the source at the lattice node, with one exception. At a crest
 node the sample MAY instead be the maximum reference ground height inside the node's half-posting
 cell, taken from a finer reference DEM. Section 9 states the rule that selects such a node and
-computes its value. No flag records the exception, because the result is one height lattice either
-way: every consumer reads the sample it finds.
+computes its value. No flag records the exception; every consumer reads the sample it finds.
 
 ### 1.3 Posting and cell size are data
 
@@ -118,11 +83,10 @@ values are
 | Posting `P` | `2^9` µdeg | 57 × 39 m |
 | Terrain cell | `2^19` µdeg | 58 × 40 km — 1024 × 1024 samples, 2 MiB raw |
 
-and they are the bakery's choice, published in the catalog. Retuning them is a terrain re-bake,
+They are the bakery's choice, published in the catalog. Retuning them is a terrain re-bake,
 **not** a version bump of this format (the [`OBCA_Spec.md` §1.5](OBCA_Spec.md) idiom).
 
-A reader MUST accept any pairing this document permits (§4.5), not only the v1 one. Test fixtures
-in particular use a small cell so that a whole multi-cell rectangle fits in a few KB.
+A reader MUST accept any pairing this document permits (§4.5), not only the v1 one.
 
 ---
 
@@ -136,9 +100,9 @@ tile bytes[ (row · 16 + col) · 2 ] … +2      row, col ∈ 0..16, little-endi
 ```
 
 Row-major, and **rows advance latitude**: `row` steps north by one posting, `col` steps east by one
-posting. So the 32 bytes of one row are 16 consecutive longitudes at one latitude, and the tile's
-first sample is its **minimum** corner in both axes. This is the opposite of the north-up scanline
-a GeoTIFF ships, so a baker flips rows on the way in, once; a consumer never flips anything.
+posting. The 32 bytes of one row are 16 consecutive longitudes at one latitude, and the tile's first
+sample is its **minimum** corner in both axes. A north-up source scanline, such as a GeoTIFF, is
+flipped by the baker on the way in; a consumer never flips anything.
 
 One tile spans `16·P` µdeg on each axis — at the v1 posting, `2^13` µdeg ≈ 910 m of latitude.
 
@@ -165,9 +129,8 @@ i ∈ [ ci · S/P , (ci+1) · S/P )        j ∈ [ cj · S/P , (cj+1) · S/P )
 ```
 
 **A cell owns the samples on its minimum edges and not those on its maximum edges** — half-open,
-like the square itself. The sample lying exactly on the boundary between two cells belongs to the
-upper one, once, in the whole world, so no sample is stored twice and no consumer has to decide
-which copy is authoritative.
+like the square itself. The sample on the boundary between two cells belongs to the upper one, once,
+in the whole world, so no sample is stored twice.
 
 ### 3.2 A cell block is its tiles, row-major
 
@@ -185,12 +148,12 @@ byte offset of tile (ti, tj) within the block = (ti · T + tj) · 512
 byte length of a cell block                   = T² · 512
 ```
 
-At the v1 pairing, `T = 64` and a cell block is 2 MiB. The `T ≤ 2^11` bound is arithmetic: one
-more doubling would put a cell block past the `uint32` offsets the directory is made of.
+At the v1 pairing, `T = 64` and a cell block is 2 MiB. The `T ≤ 2^11` bound keeps a cell block
+inside the `uint32` offsets the directory is made of.
 
 A cell block is **complete**: every tile is present, including tiles that are entirely `NODATA`.
-There is no per-tile presence bit and no sparse encoding in v1, so addressing stays a shift; the
-`flags` field (§4.2) is reserved for a future per-tile encoding.
+There is no per-tile presence bit and no sparse encoding in v1; the `flags` field (§4.2) is
+reserved for a future per-tile encoding.
 
 ### 3.3 Addressing a sample
 
@@ -228,7 +191,7 @@ The same layout is both published artifacts:
 - a **terrain shard** — what an assembler builds for a selection and a rider carries — is a
   container whose rectangle covers that selection.
 
-There is no separate cell format, and a consumer never branches on which it holds.
+There is no separate cell format.
 
 ### 4.2 Header (32 bytes)
 
@@ -246,15 +209,13 @@ There is no separate cell format, and a consumer never branches on which it hold
 | 20 | Directory Offset | 4 | `uint32` | Absolute byte offset of the offset directory. A v1 producer MUST write `32` |
 | 24 | Reserved | 8 | `uint8[8]` | MUST be zero |
 
-The header carries **no bounding box**: the cell rectangle *is* the bounding box, exactly as a
-catalog cell entry carries none because its square follows from its id
-([`OBCC_Spec.md` §8](OBCC_Spec.md), and §13.1 for a terrain cell's own entry).
+The header carries **no bounding box**: the cell rectangle *is* the bounding box (see
+[`OBCC_Spec.md` §8](OBCC_Spec.md), and §13.1 for a terrain cell's own entry).
 
-`Flags` is this format's extension point: a future per-tile packed encoding (§3.2) sets a bit here
-rather than needing a new magic. A v1 reader MUST refuse a file with any bit set.
+`Flags` is this format's extension point: a future per-tile packed encoding (§3.2) sets a bit here.
+A v1 reader MUST refuse a file with any bit set.
 
-`Directory Offset` is explicit even though v1 fixes it at 32, so a reader follows the field rather
-than an assumption and a later version may prepend something without breaking the follow.
+A reader follows the `Directory Offset` field rather than the fixed v1 value.
 
 ### 4.3 The offset directory
 
@@ -266,16 +227,13 @@ slot(ci, cj)  = (ci − CellMinI) · CellCols + (cj − CellMinJ)
 entry         = absolute byte offset of that cell's block, or 0
 ```
 
-`0` means **the cell is not in this file**. It needs no bit carved out of the offset space because
-no block can start at 0 — the header does.
+`0` means **the cell is not in this file**. No block can start at 0, because the header does.
 
 An entry that is not `0` MUST be even, MUST be at or after the end of the directory, and its whole
 `T² · 512` bytes MUST lie inside the file. Present cells MAY appear in any order in the file; the
 directory is the only thing that places them.
 
-The rectangle is dense rather than a list of `(i, j, offset)`, so a lookup is two subtractions and
-a multiply with no search, sort or resident index. It costs 4 bytes per cell in the bounding box,
-covered or not.
+The rectangle is dense: it costs 4 bytes per cell in the bounding box, covered or not.
 
 ### 4.4 Cell blocks
 
@@ -286,8 +244,7 @@ directory.
 ### 4.5 What a reader MUST reject
 
 A reader MUST refuse the file — not the individual query — when any of the following holds. All of
-them are properties of the bytes, so checking them once at parse is what lets §5 be free of bounds
-tests on the hot path.
+them are properties of the bytes, and are checked once at parse.
 
 1. The file is shorter than 32 bytes, `Magic` is not `OBCT`, or `Version` is not `0x01`.
 2. `Flags` is not `0`, or any reserved byte is not `0`.
@@ -316,9 +273,7 @@ by the catalog.
 
 This section is normative and exhaustive. **Two independent implementations MUST produce
 bit-identical results for the same `(lat, lon)` against the same file.** Every step below is
-integer arithmetic for that reason: a float in the interpolation would make the last metre a
-property of the FPU, and the packer's routing cost, the device's drawn profile and a host-side
-cross-check all have to agree on it.
+integer arithmetic for that reason.
 
 ### 5.1 The algorithm
 
@@ -364,10 +319,6 @@ permitted posting) and MUST NOT be evaluated in floating point.
 h = num ≥ 0  ?   (num + P²/2) / P²   :   −((−num + P²/2) / P²)          (truncating division)
 ```
 
-Half away from zero rather than `floor`, so a rider crossing sea level does not see the rounding
-bias flip sign with the terrain, and so the rule needs only a truncating divide and a sign test in
-any language.
-
 Since no corner is `NODATA` at this point, `num / P²` is a weighted mean of values in
 `−32767 … 32767`, so the result always fits `int16`.
 
@@ -379,9 +330,7 @@ by construction. Resolve each corner as follows:
 1. Let `(ci', cj')` be the cell owning that corner (§3.1). If `(ci', cj') = (ci, cj)`, read the
    sample from the containing cell's block.
 2. Otherwise, if `(ci', cj')` is inside the rectangle **and** present, read the sample from *its*
-   block. This is the **cross-cell fetch**, and it is what makes the surface continuous across a
-   seam: a query in the last posting of a cell interpolates towards the first sample of the next
-   cell, which is the same sample the next cell would use.
+   block. This is the **cross-cell fetch**, which makes the surface continuous across a seam.
 3. Otherwise — the corner's cell is absent or outside the rectangle — **clamp**: replace the corner
    with the nearest sample of the **containing** cell, i.e. clamp each out-of-cell axis index to
    that cell's maximum sample index on that axis. The weights `a`, `b` are **not** changed.
@@ -520,8 +469,7 @@ patches: height differences are bilinear, and each gradient difference is affine
 A consumer MUST use the same true corner heights; it MUST NOT substitute a clamped boundary
 corner while retaining these bounds. Coarser stored levels may supply the same exact vertices.
 A consumer MUST bound both projected height error and physical gradient error before merging
-cells into that patch. These bounds do not guarantee identical intersection depths or outlines
-near tangencies. Rendering tolerances and measured visual differences are separate from the format.
+cells into that patch.
 
 The exact layout arithmetic is implemented by `SurfaceLayout` and `SurfaceLevel` in
 [`obct_surface.rs`](../firmware/obc-formats/src/obct_surface.rs).
@@ -543,7 +491,7 @@ the index or its padding. A reader MUST reject a truncated index.
 One index serves all surface levels. Native cell bounds include the high-edge vertices, and
 every coarser level selects a subset of those vertices. Thus the native maximum also bounds
 all coarser bilinear surfaces. An 8×8 cell rectangle needs 170 index bytes plus 342 padding
-bytes. The assembler builds this index once for the selected rectangle.
+bytes.
 
 ### 8.4 Assembly
 
@@ -556,16 +504,12 @@ bytes inside the OBCT prefix and cell blocks are zero padding.
 
 ## 9. Crest lifts (producer rule)
 
-A native posting of `2^9` µdeg cannot hold a rock tower. Measured against 2 m LiDAR at Engelberg,
-the bilinear surface through Copernicus GLO-30 samples runs 100 m below the Hahnen's summit, and a
-panorama drawn from it loses the one feature that makes the mountain recognisable.
-
-A **lift** is the answer: at a node where a finer reference DEM says the ground stands far above our
-surface, and the terrain there is convex, the producer raises the sample to the reference ground.
-This is the section 1.2 exception, and it is a producer rule, not a container feature. The lifted
-value is in the sample itself, so section 8's pyramid, maxima, error codes and cross-cell index need
-no reasoning of their own, and Peak View, the contours, the ascent integral, the route profile and
-the map-referenced altimeter all read one surface.
+A native posting of `2^9` µdeg cannot hold a rock tower. A **lift** is the correction: at a node
+where a finer reference DEM says the ground stands far above the native bilinear surface, and the
+terrain there is convex, the producer raises the sample to the reference ground. This is the
+section 1.2 exception, and it is a producer rule, not a container feature. The lifted value is in
+the sample itself, so section 8's pyramid, maxima, error codes and cross-cell index need no rule of
+their own.
 
 Copernicus stays the base raster. A national DTM supplies lifts only: it sits below a surface model
 over every forest and town, so it MUST NOT become the base.
@@ -580,8 +524,7 @@ A node is **selected** when both of these hold:
 1. The largest **gap** over the node's cell is more than **10 m**. The gap at a point is the
    reference height there minus the native bilinear surface there, so the largest gap is
    `max(reference - surface)` over the cell. This maximum and `node_max` are taken independently and
-   need not occur at the same point: the gap is how far the node rises, and `node_max` is the
-   ceiling it may not pass.
+   need not occur at the same point.
 2. `node_max` exceeds the mean of its four neighbours' `node_max` by more than **3 m**.
 
 The selection is then **dilated by one node**, 8-connected: a node that touches a selected node,
@@ -596,17 +539,8 @@ lift = max(0, min(round(node_max) - native, round(gap)))   whole metres
 and the baked sample is `native + lift`. `round` is half away from zero, the rule section 5.2 pins
 for the read side.
 
-A node rises by the **gap**, because that is the quantity the correction is about: how far the
-reference stands above the surface a consumer draws. `node_max - native` is a different quantity —
-a maximum over the node's cell against a point sample at its centre — and on a slope most of it is
-half a posting of fall rather than a crest, so lifting by it inflates the ground around a summit.
-The gap does not cap the lift on a summit, where the surface peaks at the node and the two agree.
-`node_max` still bounds the lift, because section 9 raises a sample to reference ground and never
-above the highest reference the node owns.
-
 A node with `NODATA` anywhere in the 3 × 3 native lattice around it MUST NOT be lifted, not even by
-the dilation. There is no bilinear surface there to measure a gap against, so a hole keeps a
-one-node rim of unlifted ground around it rather than a height the rule cannot justify.
+the dilation: there is no bilinear surface there to measure a gap against.
 
 `node_max` and the gap are sampled on a probe grid the producer chooses. The v1 bakery uses **every
 reference pixel inside the node's half-posting cell**: its reference is an archive on a `2^6` µdeg
@@ -614,30 +548,12 @@ lattice, so that is 64 probes per node at the v1 posting.
 
 A probe that is a **maximum over an area** must have its gap measured against the **highest point of
 the surface over that same area**, not against the surface under one point of it. Each archive pixel
-is the maximum of the source pixels inside its square, and it may have come from anywhere in that
+is the maximum of the source pixels inside its square and may have come from anywhere in that
 square, so the gap the bakery credits it is `pixel − max(surface over the pixel's square)`. Measured
-against the surface at the pixel's centre instead, the gap reads high wherever the ground is steep —
-about 3 m on a 40° face, a third of the whole 10 m gate — and nodes the reference does not stand 10 m
-above are lifted. Measured against the highest point, the gap can only read low, which loses a
-correction rather than inventing ground. Now that the gap is also *how far* a node rises, that
-conservatism costs a little height as well as a little selection: on the same 40° face a lift can
-come out about 3 m short. Losing 3 m of a 100 m correction is the right side of the trade.
+this way, the gap can only read low, which loses a correction rather than inventing ground.
 
 This document therefore does **not** promise that two producers agree byte for byte on a lifted cell.
 It promises the identity of section 9.2: where there is no coverage, there is no difference.
-
-Each test earns its place. The gap is measured against the bilinear surface, not against the node,
-because that surface is what a consumer draws. The convexity test is what leaves a steep planar
-slope alone; without it a coarse lattice's honest under-sampling of a 40° face reads as a crest and
-the whole mountain inflates. It is also what leaves a saddle alone, so a pass does not move. The
-one-node dilation carries a crest along its whole length instead of lifting it at scattered points,
-which a panorama would otherwise show as a sawtooth along the skyline.
-
-The gap is what keeps that dilation honest. Over Engelberg the dilation reached 10,863 nodes — 11.5 %
-of the 94,379 the rule selected there — at which the reference stands at or below the surface we
-draw, and lifting them to `node_max` raised ground the reference gives no height for. Against the
-photographs the drawn skyline stood a third of a degree too high at two viewpoints for it. Bounded
-by the gap those nodes rise by nothing, and the drawn median comes back within 0.17°.
 
 Every part of the rule reads only a node's 2-ring of `node_max` values. A producer MUST therefore
 compute a lift from that neighbourhood alone, so that a node on a cell seam gets the same lift
@@ -650,9 +566,6 @@ misses, at itself or at any of the four neighbours a test reads, is not selected
 reference coverage at all MUST be byte-identical to the same cell baked without a reference, and a
 cell with coverage has the same byte length as one without.
 
-At a coverage edge along a border ridge, the step between a lifted and an unlifted node is visible
-in contours and profiles. That is a reason to widen the reference registry, not to soften the rule.
-
 ### 9.3 What a producer MUST NOT do
 
 A lift MUST NOT be negative: section 9 raises crests, and a reference that sits below our surface in
@@ -660,20 +573,11 @@ a hollow is not a reason to edit the lattice there. A producer MUST NOT use a li
 other correction; a systematic disagreement with the source is a re-bake of the source, not a lift.
 
 There is **no fixed ceiling** on a lift, and a producer MUST NOT impose one. The gap and `node_max`
-bound a lift, and nothing else may. Measured over Engelberg the largest lift is 391 m, where
-Copernicus GLO-30 reads a notch in a rock wall that the 2 m reference does not; the reference is the
-better measurement there, so a clamp would put the error back.
+bound a lift, and nothing else may.
 
-A spike in a reference looks the same from here, though. A producer SHOULD therefore report the
-largest lift of a run, the node it is at, and how many lifts exceed 200 m, so that an operator sees
-a broken reference instead of finding it in a drawn panorama. This is guidance, not a byte
-requirement: nothing in a container records it, and no reader can check it. `obc-dem bake` prints
-it.
-
-That report is a weaker detector than it looks. A spike on steep ground raises its node by the gap,
-which is less than the spike's own height, so a reference fault can stay under the 200 m line. Over
-Engelberg the same archive gives 153 lifts past 200 m where lifting to `node_max` gave 269. A quiet
-report is not evidence of a clean reference.
+A producer SHOULD report the largest lift of a run, the node it is at, and how many lifts exceed
+200 m, so that an operator sees a broken reference. Nothing in a container records this and no
+reader can check it; `obc-dem bake` prints it.
 
 A change of reference archive changes the baked samples, so it is a terrain revision bump and hence
 a navigation re-bake (`OBCC_Spec.md` §13.4). The reference DEM keeps its own attribution, which
