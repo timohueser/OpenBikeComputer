@@ -1119,6 +1119,14 @@ impl RecorderMachine {
         Some(self.altitude.fused_m(baro).unwrap_or(baro))
     }
 
+    /// The map-referenced elevation (m), or `None` until the estimator has settled (EL8). Unlike
+    /// [`current_elevation_m`](Self::current_elevation_m) this never falls back to the
+    /// uncalibrated barometric reading, so a consumer can treat it as an absolute height. Peak
+    /// View stands the observer's eye on it.
+    pub fn fused_elevation_m(&self) -> Option<f32> {
+        self.altitude.fused_m(self.last_alt?)
+    }
+
     /// The map-referenced altimeter's state (EL8) — the inspection surface the board's RTT line and
     /// the simulator's readout print; no UI reads it.
     pub fn altitude(&self) -> &AltitudeFusion {
