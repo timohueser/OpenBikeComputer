@@ -12,9 +12,9 @@
 //!
 //! The rule is two tests and one dilation, and each part earns its place:
 //!
-//! * **[`LIFT_M`] against the bilinear surface, not the node.** The interesting quantity is how far
+//! * **`LIFT_M` against the bilinear surface, not the node.** The interesting quantity is how far
 //!   the reference stands above the surface we actually draw, measured where it stands there.
-//! * **[`CONVEX_M`] on the reference's own node maxima.** Without it, a steep planar face reads as
+//! * **`CONVEX_M` on the reference's own node maxima.** Without it, a steep planar face reads as
 //!   a crest — a coarse lattice under-samples a 40° slope honestly — and the whole mountain
 //!   inflates. Measured against three photographs, the ungated rule pushed the drawn skyline half a
 //!   degree high; the gate brings the median back to zero. It is also what leaves a saddle alone,
@@ -33,9 +33,9 @@
 use obc_formats::obct::{cell_samples_log2, GRID_ORIGIN, NODATA};
 
 /// A node is a candidate when the reference stands this far above our bilinear surface.
-pub const LIFT_M: f64 = 10.0;
+const LIFT_M: f64 = 10.0;
 /// …and only where the reference's node maxima are locally convex by this much.
-pub const CONVEX_M: f64 = 3.0;
+const CONVEX_M: f64 = 3.0;
 /// Sub-samples per node axis when scanning a node's half-posting cell for its reference maximum.
 /// 32 puts the step below 2 m at the v1 posting of `2^9` µdeg, so a metre-scale tower cannot hide
 /// between them. A bake at a much coarser posting would need more, at the square of the cost.
@@ -181,9 +181,9 @@ impl LiftMap {
                     continue;
                 }
                 lifts[y as usize * stride + x as usize] = lift;
-                // The tally counts the nodes this cell *owns*, not its inclusive high edge: the
-                // edge is the next cell's node 0 and is tallied there, so a run's count is one per
-                // written sample rather than two per seam.
+                // The tally is a **report**, not the existence test: it counts the nodes this cell
+                // owns, because the inclusive high edge is the next cell's node 0 and is counted
+                // there, so a run's count is one per written sample rather than two per seam.
                 if y == side || x == side {
                     continue;
                 }
@@ -194,7 +194,12 @@ impl LiftMap {
                 }
             }
         }
-        (tally.nodes > 0).then_some(LiftMap { origin_y, origin_x, step, stride, lifts, tally })
+        // A map exists when it holds **any** lift, including one only on the inclusive high edge.
+        // Gating on the owned-node count instead would let a cell whose coverage begins on its own
+        // seam answer 0 there while its neighbour answers the lift, which is exactly the
+        // disagreement the halo exists to prevent.
+        let any_lift = lifts.iter().any(|&lift| lift != 0);
+        any_lift.then_some(LiftMap { origin_y, origin_x, step, stride, lifts, tally })
     }
 
     /// The native sampler with this map's lifts added. `NODATA` passes through — a lift describes a
@@ -254,9 +259,10 @@ impl Scan {
         (y - self.low) as usize * side + (x - self.low) as usize
     }
 
-    /// Whether the scan holds this node with `margin` nodes to spare on every side.
-    fn holds(&self, y: i64, x: i64, margin: i64) -> bool {
-        let inner = self.low + margin..=self.high - margin;
+    /// Whether the scan holds this node **and** the ring around it, which is what the convexity
+    /// test reads. `HALO` guarantees it for every node a map stores.
+    fn has_ring(&self, y: i64, x: i64) -> bool {
+        let inner = self.low + 1..=self.high - 1;
         inner.contains(&y) && inner.contains(&x)
     }
 }
@@ -274,8 +280,8 @@ fn bilinear(around: &[[i16; 3]; 3], fy: f64, fx: f64) -> f64 {
     a * (1.0 - tx) * (1.0 - ty) + b * tx * (1.0 - ty) + c * (1.0 - tx) * ty + d * tx * ty
 }
 
-/// Nodes the rule selects before dilation: the reference stands [`LIFT_M`] above our surface at a
-/// node whose own four neighbours it is convex over by [`CONVEX_M`].
+/// Nodes the rule selects before dilation: the reference stands `LIFT_M` above our surface at a
+/// node whose own four neighbours it is convex over by `CONVEX_M`.
 ///
 /// A node the reference misses at any of those five places is left unselected. The test has no
 /// answer there, and inventing one — by clamping to the node itself, say — would make the lift
@@ -284,7 +290,7 @@ fn select(node_max: &[f64], over: &[f64], scan: &Scan) -> Vec<bool> {
     let mut core = vec![false; scan.nodes()];
     for y in scan.axis() {
         for x in scan.axis() {
-            if !scan.holds(y, x, 1) {
+            if !scan.has_ring(y, x) {
                 continue;
             }
             let here = node_max[scan.at(y, x)];
@@ -302,9 +308,11 @@ fn select(node_max: &[f64], over: &[f64], scan: &Scan) -> Vec<bool> {
     core
 }
 
-/// Whether a node is selected or touches one, which is §9's one-node extension.
+/// Whether a node is selected or touches one, which is §9's one-node extension. 8-connected: a
+/// node that touches a selected node at a corner is lifted too. [`HALO`] keeps the whole ring
+/// inside `core` for every node a map stores, so there is nothing to bounds-test here.
 fn dilated(core: &[bool], scan: &Scan, y: i64, x: i64) -> bool {
-    (y - 1..=y + 1).any(|dy| (x - 1..=x + 1).any(|dx| scan.holds(dy, dx, 0) && core[scan.at(dy, dx)]))
+    (y - 1..=y + 1).any(|dy| (x - 1..=x + 1).any(|dx| core[scan.at(dy, dx)]))
 }
 
 #[cfg(test)]
@@ -406,25 +414,79 @@ mod tests {
         assert_eq!(map.at(node(0, 1, 9, 16, 8, 8).0, node(0, 1, 9, 16, 8, 8).1), 0);
     }
 
-    /// The whole point of the halo: a node on a cell seam is lifted by the same amount whichever
-    /// cell computes it. A tower astride the seam exercises both the convexity ring and the
-    /// dilation across it.
+    /// The whole point of the halo: a node two or four cells share is lifted by the same amount
+    /// whichever of them computes it. The tower stands on the node all four cells of a 2 × 2 block
+    /// share, so one fixture exercises both seams, the corner, the convexity ring across a seam and
+    /// the dilation across it.
     #[test]
-    fn two_adjacent_cells_agree_on_every_shared_edge_lift() {
+    fn cells_agree_on_every_node_they_share() {
         let (posting, cell) = (9u8, 16u8);
         let side = 1i64 << cell_samples_log2(posting, cell).unwrap();
-        // The tower sits on the eastern seam of cell (0, 0), which is the western edge of (0, 1).
-        let cone = Cone::new(0, 0, posting, cell, (40.0, side as f64), 120.0);
-        let west = cone.bake(0, 0).expect("the seam tower is a crest in the west cell");
-        let east = cone.bake(0, 1).expect("…and in the east cell");
+        let cone = Cone::new(0, 0, posting, cell, (side as f64, side as f64), 120.0);
+        let map = |ci, cj| cone.bake(ci, cj).expect("the corner tower is a crest in every cell of the block");
+        let (nw, ne, sw, se) = (map(0, 0), map(0, 1), map(1, 0), map(1, 1));
 
         let mut shared = 0;
+        // Each row's eastern seam: cell (i, 0)'s inclusive high edge is cell (i, 1)'s column 0.
+        for (west, east, row) in [(&nw, &ne, 0u32), (&sw, &se, 1)] {
+            for y in 0..=side {
+                let (lat, lon) = node(row, 0, posting, cell, y, side);
+                assert_eq!(west.at(lat, lon), east.at(lat, lon), "row {row} seam node {y} disagrees");
+                shared += i32::from(west.at(lat, lon) > 0);
+            }
+        }
+        // Each column's northern seam: cell (0, j)'s high edge is cell (1, j)'s row 0.
+        for (south, north, col) in [(&nw, &sw, 0u32), (&ne, &se, 1)] {
+            for x in 0..=side {
+                let (lat, lon) = node(0, col, posting, cell, side, x);
+                assert_eq!(south.at(lat, lon), north.at(lat, lon), "column {col} seam node {x} disagrees");
+                shared += i32::from(south.at(lat, lon) > 0);
+            }
+        }
+        assert!(shared > 0, "the test would pass on four empty edges");
+
+        // The node all four describe, which is the one the tower stands on.
+        let (lat, lon) = node(0, 0, posting, cell, side, side);
+        let corner: Vec<i16> = [&nw, &ne, &sw, &se].map(|m| m.at(lat, lon)).into();
+        assert!(corner.iter().all(|&lift| lift == corner[0]), "the shared corner disagrees: {corner:?}");
+        assert!(corner[0] > 0, "the tower stands on that corner");
+    }
+
+    /// A cell whose reference coverage begins on its own seam owns no lifted node at all, but the
+    /// seam node it shares with its neighbour is lifted — by the dilation from a ridge one posting
+    /// into the neighbour. The map has to exist for that one node, or the two cells disagree about
+    /// a node neither owns alone.
+    #[test]
+    fn a_cell_lifted_only_on_its_seam_still_has_a_map() {
+        let (posting, cell) = (9u8, 16u8);
+        let side = 1i64 << cell_samples_log2(posting, cell).unwrap();
+        let step = (1i64 << posting) as f64;
+        let origin = f64::from(GRID_ORIGIN);
+        let seam_lon = origin + side as f64 * step;
+        let ridge_lon = seam_lon + step;
+        let plane = |lat: f64, lon: f64| (lat - origin) / step * 4.0 + (lon - origin) / step * 4.0;
+        // Coverage starts exactly on the seam; a north–south ridge stands one posting east of it.
+        let reference = |lat_deg: f64, lon_deg: f64| {
+            let (lat, lon) = (lat_deg * 1e6, lon_deg * 1e6);
+            if lon < seam_lon {
+                return None;
+            }
+            let d = (lon - ridge_lon).abs() / step;
+            Some(plane(lat, lon) + (120.0 - 120.0 * d).max(0.0))
+        };
+        let native = |lat: i32, lon: i32| plane(f64::from(lat), f64::from(lon)).round() as i16;
+
+        let west = LiftMap::bake(0, 0, posting, cell, native, &reference).expect("the seam node is lifted");
+        let east = LiftMap::bake(0, 1, posting, cell, native, &reference).expect("and so is its column 0");
+        assert_eq!(west.tally().nodes, 0, "the west cell owns no lifted node, which is the trap");
+
+        let mut lifted = 0;
         for y in 0..=side {
             let (lat, lon) = node(0, 0, posting, cell, y, side);
             assert_eq!(west.at(lat, lon), east.at(lat, lon), "seam node {y} disagrees");
-            shared += i32::from(west.at(lat, lon) > 0);
+            lifted += i32::from(west.at(lat, lon) > 0);
         }
-        assert!(shared > 0, "the test would pass on two empty edges");
+        assert!(lifted > 0, "the ridge must reach the seam by dilation, or the test proves nothing");
     }
 
     /// A reference that covers nothing produces no map, so the cell bakes exactly as it would
