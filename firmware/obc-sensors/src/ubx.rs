@@ -1,53 +1,45 @@
-//! Pure UBX protocol decode for the u-blox **SAM-M10Q** GNSS receiver — the host-testable half of
-//! the GPS driver (the board crate owns the concrete I²C/DDC transport).
+//! Pure UBX protocol decode for the u-blox SAM-M10Q GNSS receiver: the host-testable half of the
+//! GPS driver. The board crate owns the concrete I²C/DDC transport.
 //!
-//! ## Why UBX NAV-PVT (not NMEA)
-//! One binary, checksummed message carries everything the ride pipeline needs —
-//! lat/lon/height/velocity/heading/`fixType`/`numSV`/accuracy/time — as **integer** fields. No
-//! ASCII float parsing, no multi-sentence reassembly. The M10 emits it on the I²C (DDC) port once
-//! per nav epoch when configured via the VALSET key-value API.
+//! NAV-PVT carries everything the ride pipeline needs as integer fields in one checksummed
+//! message, so there is no ASCII float parsing and no multi-sentence reassembly.
 //!
-//! ## Framing
-//! A UBX frame is `B5 62 | class | id | len_lo len_hi | payload[len] | ck_a ck_b`. The 8-bit
-//! Fletcher checksum ([`checksum`]) runs over `class .. payload` (**not** the two sync bytes).
-//! [`scan_ubx`] finds the next complete, checksum-valid frame and how many bytes it consumed;
-//! [`parse_stream`] returns the **freshest** NAV-PVT in a buffer plus the bytes to drain, leaving
-//! any trailing partial frame for the next read.
+//! A UBX frame is `B5 62 | class | id | len_lo len_hi | payload[len] | ck_a ck_b`, and the 8-bit
+//! Fletcher checksum runs over `class .. payload`, not the two sync bytes. [`scan_ubx`] finds the
+//! next complete, checksum-valid frame; [`parse_stream`] returns the freshest NAV-PVT in a buffer
+//! plus the bytes to drain, leaving a trailing partial frame for the next read.
 
 use obc_ports::{DateTime, Fix, GpsTime};
 
-/// UBX sync chars — every frame starts `0xB5 0x62`.
+/// UBX sync chars: every frame starts `0xB5 0x62`.
 const SYNC1: u8 = 0xB5;
 const SYNC2: u8 = 0x62;
 
 /// `UBX-NAV` class and the `NAV-PVT` (position/velocity/time) message id + its fixed payload length.
 pub const CLASS_NAV: u8 = 0x01;
 pub const ID_NAV_PVT: u8 = 0x07;
-/// NAV-PVT payload length. The receiver may append fields in a future protocol revision, so the
-/// parser accepts `>=` this and reads by fixed offset; today the M10 emits exactly 92.
+/// NAV-PVT payload length. A future protocol revision may append fields, so the parser accepts
+/// `>=` this and reads by fixed offset.
 pub const NAV_PVT_LEN: usize = 92;
 
-/// NAV-PVT `valid` bitfield: bit0 `validDate`, bit1 `validTime`, bit2 `fullyResolved` (UTC settled,
-/// no leap-second ambiguity). All three ⇒ the receiver's UTC date+time is trustworthy — the gate
-/// [`NavPvt::utc_time`] applies before it stamps the clock.
+/// NAV-PVT `valid` bitfield: bit0 `validDate`, bit1 `validTime`, bit2 `fullyResolved`. All three
+/// mean the receiver's UTC is trustworthy, which is the gate [`NavPvt::utc_time`] applies.
 pub const VALID_TIME_RESOLVED: u8 = 0x07;
 
-/// `UBX-ACK` class with its ACK / NAK ids — the receiver answers each `CFG-VALSET` with one. See
-/// [`ack_status`].
+/// `UBX-ACK` class with its ACK and NAK ids; the receiver answers each `CFG-VALSET` with one.
 pub const CLASS_ACK: u8 = 0x05;
 pub const ID_ACK_ACK: u8 = 0x01;
 pub const ID_ACK_NAK: u8 = 0x00;
 
-/// `UBX-CFG` class + the `VALSET` (set configuration value) message id — the M10 dropped the legacy
-/// `CFG-MSG`, so all runtime config goes through the key-value VALSET API.
+/// `UBX-CFG` class and the `VALSET` message id. The M10 dropped `CFG-MSG`, so all runtime config
+/// goes through the key-value VALSET API.
 pub const CLASS_CFG: u8 = 0x06;
 pub const ID_CFG_VALSET: u8 = 0x8A;
 
 /// Controlled GNSS start/stop command. See [`cfg_gnss_running`].
 pub const ID_CFG_RST: u8 = 0x04;
 
-// Little-endian field readers — UBX is little-endian throughout. Each returns 0 if the slice is
-// too short (callers gate on length first).
+// Little-endian field readers. Each returns 0 if the slice is too short; callers gate on length.
 fn le_u16(b: &[u8], o: usize) -> u16 {
     if o + 2 > b.len() {
         return 0;
@@ -64,8 +56,8 @@ fn le_i32(b: &[u8], o: usize) -> i32 {
     le_u32(b, o) as i32
 }
 
-/// The UBX 8-bit Fletcher checksum over `data` (which is `class | id | len_lo | len_hi | payload`).
-/// `ck_a` accumulates the bytes, `ck_b` accumulates `ck_a` — both mod 256.
+/// The UBX 8-bit Fletcher checksum over `class | id | len_lo | len_hi | payload`: `ck_a`
+/// accumulates the bytes and `ck_b` accumulates `ck_a`, both mod 256.
 pub fn checksum(data: &[u8]) -> (u8, u8) {
     let mut ck_a: u8 = 0;
     let mut ck_b: u8 = 0;
@@ -87,22 +79,19 @@ pub struct UbxFrame<'a> {
 /// Outcome of scanning a byte buffer for the next UBX frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scan<'a> {
-    /// A complete, checksum-valid frame. Drain `consumed` bytes from the **front** of the buffer —
-    /// that count includes any junk skipped before the sync plus the whole frame.
+    /// A complete, checksum-valid frame. Drain `consumed` bytes from the front: that count
+    /// includes any junk skipped before the sync.
     Frame { frame: UbxFrame<'a>, consumed: usize },
-    /// No complete frame yet. Drop `discard` leading bytes (noise before a possible partial sync)
-    /// and keep the rest, retrying once more bytes arrive. `discard == buf.len()` means the buffer
-    /// held no sync byte at all and can be cleared.
+    /// No complete frame yet. Drop `discard` leading bytes and keep the rest.
+    /// `discard == buf.len()` means the buffer held no sync byte at all.
     NeedMore { discard: usize },
 }
 
 /// Find the next complete, checksum-valid UBX frame in `buf`.
 ///
-/// Skips leading non-sync noise, validates the length + Fletcher checksum, and on success reports
-/// how many bytes to drain. A truncated trailing frame yields [`Scan::NeedMore`] with the leading
-/// junk to drop, so a streaming caller keeps only the partial frame's bytes. A **bad checksum** is
-/// treated as a false sync: skip that one sync byte and keep scanning, so a corrupt frame can't
-/// wedge the stream.
+/// A truncated trailing frame yields [`Scan::NeedMore`] with the leading junk to drop, so a
+/// streaming caller keeps only the partial frame. A bad checksum is treated as a false sync: skip
+/// that one sync byte and keep scanning, so a corrupt frame cannot wedge the stream.
 pub fn scan_ubx(buf: &[u8]) -> Scan<'_> {
     let mut i = 0usize;
     while i + 1 < buf.len() {
@@ -133,27 +122,25 @@ pub fn scan_ubx(buf: &[u8]) -> Scan<'_> {
                 consumed: frame_end,
             };
         }
-        // Bad checksum: this sync was noise (or a corrupt frame). Step one byte and re-scan.
+        // Bad checksum: this sync was noise. Step one byte and re-scan.
         i += 1;
     }
-    // No (complete) sync pair found; a lone trailing SYNC1 is kept as a possible partial.
+    // No complete sync pair found; a lone trailing SYNC1 is kept as a possible partial.
     let discard = if buf.last() == Some(&SYNC1) { buf.len() - 1 } else { buf.len() };
     Scan::NeedMore { discard }
 }
 
-/// What a single DDC read yielded: the **freshest** NAV-PVT in the buffer (if any) and the number
-/// of leading bytes to drain. Any bytes after `consumed` are a trailing partial frame the caller
-/// keeps for the next read.
+/// What a single DDC read yielded: the freshest NAV-PVT in the buffer and the number of leading
+/// bytes to drain. Bytes after `consumed` are a trailing partial frame the caller keeps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamResult {
     pub nav_pvt: Option<NavPvt>,
     pub consumed: usize,
 }
 
-/// Drain every complete UBX frame from `buf`, returning the freshest [`NavPvt`] seen (the one the
-/// driver acts on) and how many bytes were consumed. Non-NAV-PVT frames (e.g. a VALSET `ACK-ACK`)
-/// are skipped but still consumed. Stops at the first incomplete trailing frame, leaving it for the
-/// next read.
+/// Drain every complete UBX frame from `buf`, returning the freshest [`NavPvt`] and how many
+/// bytes were consumed. Other frames are skipped but still consumed. Stops at the first
+/// incomplete trailing frame.
 pub fn parse_stream(buf: &[u8]) -> StreamResult {
     let mut consumed = 0usize;
     let mut latest = None;
@@ -167,8 +154,8 @@ pub fn parse_stream(buf: &[u8]) -> StreamResult {
                 }
                 consumed += n;
             }
-            // A NeedMore with no progress means only a partial/empty tail remains; otherwise drain
-            // the junk before the partial frame and keep the tail for the next read.
+            // A NeedMore with no progress means only a partial tail remains; otherwise drain the
+            // junk before the partial frame and keep the tail.
             Scan::NeedMore { discard } => {
                 consumed += discard;
                 break;
@@ -178,9 +165,8 @@ pub fn parse_stream(buf: &[u8]) -> StreamResult {
     StreamResult { nav_pvt: latest, consumed }
 }
 
-/// The decoded `UBX-NAV-PVT` fields the ride pipeline needs (a subset of the 92-byte payload, read
-/// by fixed offset). Integer units exactly as the receiver reports them; [`to_fix`](NavPvt::to_fix)
-/// does the conversion + validity gate.
+/// The decoded `UBX-NAV-PVT` fields the ride pipeline needs, read by fixed offset, in the
+/// receiver's own integer units. [`to_fix`](NavPvt::to_fix) converts and gates them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NavPvt {
     /// GPS time-of-week of the nav epoch, ms.
@@ -220,17 +206,16 @@ pub struct NavPvt {
 }
 
 impl NavPvt {
-    /// `flags.gnssFixOK` — the receiver's own "this fix is usable" bit.
+    /// `flags.gnssFixOK`: the receiver's own "this fix is usable" bit.
     #[inline]
     pub fn gnss_fix_ok(&self) -> bool {
         self.flags & 0x01 != 0
     }
 
-    /// The receiver's UTC date+time as a [`GpsTime`] **iff** the `valid` bitfield marks date, time,
-    /// **and** full resolution all good — else `None`, so the app never stamps the clock from a
-    /// half-resolved epoch. Deliberately **independent of** [`to_fix`](NavPvt::to_fix)'s position
-    /// gate: the receiver resolves time before a 3D position, so this can deliver a stamp during
-    /// acquisition. A leap-second `60` is clamped to `59`.
+    /// The receiver's UTC as a [`GpsTime`], only if `valid` marks date, time and full resolution
+    /// all good, so the app never stamps the clock from a half-resolved epoch. Independent of
+    /// [`to_fix`](NavPvt::to_fix)'s position gate, because the receiver resolves time before a 3D
+    /// position. A leap-second `60` is clamped to `59`.
     pub fn utc_time(&self) -> Option<GpsTime> {
         if self.valid & VALID_TIME_RESOLVED != VALID_TIME_RESOLVED {
             return None;
@@ -241,27 +226,24 @@ impl NavPvt {
         })
     }
 
-    /// Whether this is a usable position fix: a 3D (or GNSS+DR) solution the receiver flags OK.
-    /// This is the **lenient bring-up gate** — `fixType >= 3 && gnssFixOK`. Tighten with
-    /// [`passes_quality`](NavPvt::passes_quality) once locks are reliable.
+    /// Whether this is a usable position fix: `fixType >= 3 && gnssFixOK`. A lenient bring-up
+    /// gate; tighten with [`passes_quality`](NavPvt::passes_quality) once locks are reliable.
     #[inline]
     pub fn is_valid_fix(&self) -> bool {
         self.fix_type >= 3 && self.gnss_fix_ok()
     }
 
-    /// Optional accuracy gate on top of [`is_valid_fix`](NavPvt::is_valid_fix): horizontal accuracy
-    /// ≤ `max_hacc_mm` and pDOP ≤ `max_pdop` (each `None` to skip).
+    /// Optional accuracy gate on top of [`is_valid_fix`](NavPvt::is_valid_fix): horizontal
+    /// accuracy and pDOP, each `None` to skip.
     #[inline]
     pub fn passes_quality(&self, max_hacc_mm: Option<u32>, max_pdop: Option<u16>) -> bool {
         max_hacc_mm.is_none_or(|m| self.hacc_mm <= m) && max_pdop.is_none_or(|m| self.pdop <= m)
     }
 
-    /// Convert to the app's [`Fix`] **iff** this is a valid fix, else `None` (so a cold start /
-    /// dropout never teleports the camera). Units: lat/lon 1e-7° → 1e-6 µdeg (rounded); `gSpeed`
-    /// mm/s → m/s; `headMot` 1e-5° → deg. **Course gating:** below ~walking pace ([`COURSE_MIN_MMS`])
-    /// a real receiver's heading is noise, so `course = None`. **No position smoothing** here: the
-    /// motion integrator + route matcher downstream own that (double-filtering adds lag and fights
-    /// map-matching).
+    /// Convert to the app's [`Fix`] only for a valid fix, so a cold start never teleports the
+    /// camera. Below about walking pace ([`COURSE_MIN_MMS`]) a receiver's heading is noise, so
+    /// `course` is `None`. No position smoothing here: the motion integrator and the route
+    /// matcher downstream own that, and double-filtering adds lag.
     pub fn to_fix(&self) -> Option<Fix> {
         if !self.is_valid_fix() {
             return None;
@@ -276,12 +258,12 @@ impl NavPvt {
     }
 }
 
-/// Ground speed (mm/s) below which [`NavPvt::to_fix`] drops the course to `None`. 0.5 m/s ≈ slow
-/// walking pace — under it GPS heading is unreliable.
+/// Ground speed below which [`NavPvt::to_fix`] drops the course. 0.5 m/s is slow walking pace,
+/// under which GPS heading is unreliable.
 pub const COURSE_MIN_MMS: i32 = 500;
 
-/// Divide `v` by `d` rounding to nearest (ties away from zero), for the 1e-7° → 1e-6° conversion.
-/// Integer-only so it carries no f32 rounding error across the ±180° range.
+/// Divide `v` by `d` rounding to nearest, ties away from zero. Integer-only, so it carries no f32
+/// rounding error across the ±180° range.
 fn div_round_i32(v: i32, d: i32) -> i32 {
     let half = d / 2;
     if v >= 0 {
@@ -291,8 +273,7 @@ fn div_round_i32(v: i32, d: i32) -> i32 {
     }
 }
 
-/// Parse a NAV-PVT payload (must be at least [`NAV_PVT_LEN`] bytes) into a [`NavPvt`]. Returns
-/// `None` if the slice is too short. Fields are read by fixed offset per the UBX protocol.
+/// Parse a NAV-PVT payload into a [`NavPvt`], or `None` if the slice is too short.
 pub fn parse_nav_pvt(p: &[u8]) -> Option<NavPvt> {
     if p.len() < NAV_PVT_LEN {
         return None;
@@ -321,9 +302,8 @@ pub fn parse_nav_pvt(p: &[u8]) -> Option<NavPvt> {
     })
 }
 
-/// For a `UBX-ACK` frame answering a config message, return `Some(true)` on ACK-ACK, `Some(false)`
-/// on ACK-NAK (payload = the class+id being acknowledged), or `None` if it doesn't match
-/// `cls`/`id`. The driver uses this to confirm each VALSET (or RTT-warn a NAK).
+/// For a `UBX-ACK` frame, `Some(true)` on ACK-ACK, `Some(false)` on ACK-NAK, or `None` if it does
+/// not match `cls` and `id`. The driver confirms each VALSET with it.
 pub fn ack_status(frame: &UbxFrame<'_>, cls: u8, id: u8) -> Option<bool> {
     if frame.class != CLASS_ACK || frame.payload.len() < 2 || frame.payload[0] != cls || frame.payload[1] != id {
         return None;
@@ -335,12 +315,11 @@ pub fn ack_status(frame: &UbxFrame<'_>, cls: u8, id: u8) -> Option<bool> {
     }
 }
 
-// VALSET config-key IDs (u-blox M10 interface description). Each key's top bits encode its storage
-// size; one VALSET per key so each can be ACK-tracked individually. NB: confirm these IDs + the
-// SAM-M10Q TX-Ready PIO against the M10 interface manual on first bring-up.
+// VALSET config-key IDs. Each key's top bits encode its storage size, and there is one VALSET per
+// key so each can be ACK-tracked individually.
 /// `CFG-I2COUTPROT-UBX` (L): enable UBX output on the I²C/DDC port.
 pub const KEY_I2COUTPROT_UBX: u32 = 0x1072_0001;
-/// `CFG-I2COUTPROT-NMEA` (L): NMEA output on the I²C/DDC port — we disable it (UBX only).
+/// `CFG-I2COUTPROT-NMEA` (L): NMEA output on the I²C/DDC port, which we disable.
 pub const KEY_I2COUTPROT_NMEA: u32 = 0x1072_0002;
 /// `CFG-MSGOUT-UBX_NAV_PVT_I2C` (U1): NAV-PVT output rate on I²C, in nav epochs (1 = every epoch).
 pub const KEY_MSGOUT_NAV_PVT_I2C: u32 = 0x2091_0006;
@@ -358,14 +337,13 @@ pub const KEY_TXREADY_PIN: u32 = 0x20a2_0003;
 pub const KEY_TXREADY_THRESHOLD: u32 = 0x30a2_0004;
 /// `CFG-TXREADY-INTERFACE` (U1): 0 = I²C, 1 = SPI.
 pub const KEY_TXREADY_INTERFACE: u32 = 0x20a2_0005;
-/// `CFG-PM-OPERATEMODE` (U1): receiver power mode while tracking — `0` full power, `1` PSMOO
-/// (power-save on/off), `2` PSMCT (cyclic tracking). The `power_saver` toggle drives this to `1`
-/// while riding. **VERIFY this key + value semantics against the SAM-M10Q manual on first bring-up**
-/// — applied best-effort (a wrong id degrades to full power, not a fault).
+/// `CFG-PM-OPERATEMODE` (U1): receiver power mode while tracking. `0` full power, `1` PSMOO,
+/// `2` PSMCT. The `power_saver` toggle drives this to `1` while riding. Applied best-effort: a
+/// wrong id degrades to full power rather than faulting.
 pub const KEY_PM_OPERATEMODE: u32 = 0x20d0_0001;
 
-/// Frame a UBX message (`B5 62 | class | id | len | payload | ck`) into `out`. Returns the total
-/// frame length, or `None` if `out` is too small. The inverse of [`scan_ubx`].
+/// Frame a UBX message into `out`, returning the total frame length or `None` if `out` is too
+/// small. The inverse of [`scan_ubx`].
 pub fn frame(out: &mut [u8], class: u8, id: u8, payload: &[u8]) -> Option<usize> {
     let total = 8 + payload.len();
     if out.len() < total {
@@ -385,8 +363,7 @@ pub fn frame(out: &mut [u8], class: u8, id: u8, payload: &[u8]) -> Option<usize>
     Some(total)
 }
 
-/// Build a `CFG-VALSET` frame (RAM layer) setting a single `key` to a 1-byte (`L`/`U1`) value.
-/// Payload = 4-byte header + 4-byte key + 1-byte value.
+/// Build a `CFG-VALSET` frame (RAM layer) setting a single `key` to a 1-byte value.
 pub fn valset_u8(out: &mut [u8], key: u32, val: u8) -> Option<usize> {
     let mut payload = [0u8; 9];
     valset_header(&mut payload, key);
@@ -402,16 +379,15 @@ pub fn valset_u16(out: &mut [u8], key: u32, val: u16) -> Option<usize> {
     frame(out, CLASS_CFG, ID_CFG_VALSET, &payload)
 }
 
-/// Start or stop GNSS tasks without clearing navigation data or receiver configuration.
-/// `CFG-RST` payload: zero `navBbrMask`, controlled start/stop mode, reserved zero.
-/// The receiver does not acknowledge this command. Returns 12 bytes, or `None` if too small.
+/// Start or stop GNSS tasks without clearing navigation data or configuration. The receiver does
+/// not acknowledge this command. Returns 12 bytes, or `None` if `out` is too small.
 pub fn cfg_gnss_running(out: &mut [u8], running: bool) -> Option<usize> {
     let mode = if running { 0x09 } else { 0x08 };
     frame(out, CLASS_CFG, ID_CFG_RST, &[0, 0, mode, 0])
 }
 
-/// Common VALSET payload prefix (first 8 bytes): `version=0 | layers=RAM | reserved(2) | key(4 LE)`.
-/// The value bytes follow at offset 8.
+/// Common VALSET payload prefix: `version=0 | layers=RAM | reserved(2) | key(4 LE)`, with the
+/// value bytes at offset 8.
 fn valset_header(payload: &mut [u8], key: u32) {
     payload[0] = 0x00; // version 0 (no transaction)
     payload[1] = 0x01; // layers: bit0 = RAM
@@ -424,8 +400,8 @@ fn valset_header(payload: &mut [u8], key: u32) {
 mod tests {
     use super::*;
 
-    /// The classic UBX-CFG-PRT poll `B5 62 06 00 00 00 06 18` independently pins the Fletcher
-    /// checksum: over `[06 00 00 00]` it is `(0x06, 0x18)`.
+    /// The classic UBX-CFG-PRT poll independently pins the Fletcher checksum: over
+    /// `[06 00 00 00]` it is `(0x06, 0x18)`.
     #[test]
     fn checksum_matches_known_vector() {
         assert_eq!(checksum(&[0x06, 0x00, 0x00, 0x00]), (0x06, 0x18));
@@ -487,8 +463,8 @@ mod tests {
         assert_eq!(fix.speed_mps, Some(0.1));
     }
 
-    /// `utc_time` is gated on `validDate | validTime | fullyResolved` and is **independent of the
-    /// position fix** (here `fixType = 0`, no lock); it clamps a leap-second `60`.
+    /// `utc_time` is gated on `validDate | validTime | fullyResolved`, is independent of the
+    /// position fix, and clamps a leap-second `60`.
     #[test]
     fn utc_time_gated_on_resolved_validity_and_independent_of_fix() {
         let mut p = [0u8; NAV_PVT_LEN]; // fixType stays 0 → no usable fix, yet time can be valid
@@ -525,7 +501,7 @@ mod tests {
 
     #[test]
     fn scan_finds_frame_after_leading_junk() {
-        // A NAV-PVT frame preceded by DDC idle bytes (0xFF) the chip emits between messages.
+        // A NAV-PVT frame behind the DDC idle bytes the chip emits between messages.
         let p = nav_pvt_payload(3, 0x01, 10, 20, 0, 0);
         let mut buf = [0xFFu8; 3 + 8 + NAV_PVT_LEN];
         let n = frame(&mut buf[3..], CLASS_NAV, ID_NAV_PVT, &p).unwrap();
@@ -556,8 +532,8 @@ mod tests {
         let p = nav_pvt_payload(3, 0x01, 7, 8, 0, 0);
         let mut good = [0u8; 8 + NAV_PVT_LEN];
         let n = frame(&mut good, CLASS_NAV, ID_NAV_PVT, &p).unwrap();
-        // A corrupted frame followed by a clean one. parse_stream must skip the bad frame and still
-        // return the good NAV-PVT.
+        // A corrupted frame followed by a clean one: the bad frame is skipped and the good
+        // NAV-PVT still comes back.
         let mut buf = [0u8; 2 * (8 + NAV_PVT_LEN)];
         buf[..n].copy_from_slice(&good[..n]);
         buf[n - 1] ^= 0xFF; // wreck the first frame's checksum

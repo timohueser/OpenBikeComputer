@@ -1,87 +1,57 @@
-//! Board-agnostic firmware **source/handoff adapters** — the focused seam that bridges a concrete
-//! board's tasks to the shared app's [`obc_ports`] semantic sources.
+//! Board-agnostic firmware source and handoff adapters: the seam that bridges a concrete board's
+//! tasks to the shared app's [`obc_ports`] semantic sources.
 //!
-//! `no_std`, over `embedded-hal` / `obc-ports`, so the board crate stays thin (clocks, concrete
-//! pins, the main loop) and the reusable port bridges live here, ported to the next board by
-//! re-pointing the pins: the button debouncer, the transport-agnostic debug-sensor protocol
-//! (behind `debug-link`), the real-sensor and BLE-sensor cross-task hand-offs (behind
-//! `sensor-link`), and the synthetic/stub fallback sources.
+//! `no_std`, over `embedded-hal` and `obc-ports`, so the board crate stays thin (clocks, concrete
+//! pins, the main loop) and the reusable bridges live here, ported to the next board by
+//! re-pointing the pins: the button debouncer, the transport-agnostic debug-sensor protocol, the
+//! real-sensor and BLE-sensor cross-task hand-offs, and the synthetic fallback sources.
 //!
-//! Issue #807 split the former junk-drawer into coherent crates; what remains here is exactly the
-//! **adapter/handoff** role — the pieces that turn board-side events (a GPIO edge, a decoded UBX
-//! sample, a BLE HR notification, a debug-UART line) into an [`obc_ports`] `*Source` the app polls,
-//! plus the embassy-sync/embassy-time plumbing that carries them across tasks. The sibling crates
-//! own the rest:
+//! What remains here is exactly the adapter role: the pieces that turn a board-side event (a GPIO
+//! edge, a decoded UBX sample, a BLE notification, a debug-UART line) into an [`obc_ports`]
+//! `*Source` the app polls, plus the embassy plumbing that carries them across tasks. The display
+//! contracts live in `obc-display`, the chip decoders in `obc-sensors`, and the SD adapters in
+//! `obc-storage`.
 //!
-//! - [`obc-display`](https://docs.rs/obc-display) — the generic frame/presentation contracts, the
-//!   framebuffer DrawTargets, the banded panel view, and the LS021/FLPR pairing.
-//! - [`obc-sensors`](https://docs.rs/obc-sensors) — the pure chip/protocol decoders (UBX, BMP581,
-//!   ICM-20948, compass) this crate's `sensor-link` handoff carries.
-//! - [`obc-storage`](https://docs.rs/obc-storage) — the FatFs/SD `ByteSource`/`Sink` adapters and
-//!   the FAT-extent map fast path.
+//! [`backlight`] owns the level-to-duty ladder, [`button_input`] the debouncer and its edge-wake,
+//! [`debug_link`] the fake-sensor protocol, [`sensor_hub`] the instance-owned cross-task sensor
+//! streams, [`synth`] the synthetic moving location, and [`fuel`] a fixed-level fuel gauge.
 //!
-//! ## Responsibility / dependency table
+//! Two-plane architecture: each board's main loop runs the device on two planes across two
+//! executors, so input and the overlay stay responsive while a map frame renders. `render_map` is
+//! CPU-bound and never awaits, so it blocks its executor, and dirty-tracking cuts how often it
+//! runs but not the during-render case.
 //!
-//! | Module | Owns | Depends on |
-//! |---|---|---|
-//! | [`backlight`] | the level → duty ladder a real [`Backlight`](obc_ports::Backlight) drives — one square-law table, shared by the board's PWM today and by any later brightness driver | `obc-ports` |
-//! | [`button_input`] | a [`ButtonInput`] debouncer over four [`InputPin`](embedded_hal::digital::InputPin)s, feeding the shared gesture recognizer through [`InputSource`](obc_ports::InputSource); the `input-wait` edge-wake | `obc-ports`, `embedded-hal`, `heapless` (+ `embedded-hal-async`/`embassy-futures` behind `input-wait`) |
-//! | [`debug_link`] | the transport-agnostic fake-sensor debug protocol (#38): the always-compiled line codec + telemetry/fix encoders, and — behind `debug-link` — the embassy-sync `Signal`/`Channel` hand-off + `LocationSource`/`AltimeterSource`/`CompassSource` impls | `obc-ports`, `heapless` (+ `embassy-sync` behind `debug-link`) |
-//! | [`sensor_hub`] | the instance-owned [`SensorHub`](sensor_hub::SensorHub) (#808): every cross-task sensor stream (GPS fix / baro / temp / GPS time / heading + BLE HR / power / cadence) owned by one composition object, split into typed producer/consumer/control handles bridging the board's I²C task ([`obc-sensors`](https://docs.rs/obc-sensors) decodes) + BLE manager / debug injection to the app poll — behind `sensor-link` | `obc-ports`, `embassy-sync` (`sensor-link`) |
-//! | [`synth`] | [`SynthLocation`], the board-agnostic synthetic moving [`LocationSource`](obc_ports::LocationSource) — the `debug-link`-off fallback fake GPS (always compiled) | `obc-ports`, `embassy-time` |
-//! | [`fuel`] | [`StubFuelGauge`], a fixed-level [`FuelGauge`](obc_ports::FuelGauge) stand-in until the nPM1300 PMIC fuel gauge is wired in | `obc-ports` |
+//! - The high-priority plane is an embassy `InterruptExecutor` above thread mode but below the
+//!   embassy-time driver, so its timers still wake mid-render. It owns the [`ButtonInput`]
+//!   debouncer, the app input plane and the overlay framebuffer. Every few ms it preempts the map
+//!   render, samples the buttons, recognises gestures into a channel and repaints the hold bulge,
+//!   so press-to-feedback latency stays bounded whatever the map render costs.
+//! - The low-priority plane is the thread-mode executor running the app: screen stack, camera,
+//!   sensors, SD and the map render.
 //!
-//! Nothing here depends on `obc-app` (the FAR-00 upward edge is gone), on the display seam, or on
-//! the SD stack — those moved to the sibling crates above. The sensor hand-off is the instance-owned
-//! [`sensor_hub`] (#808): no process-global singleton mailboxes remain.
-//!
-//! ## Two-plane architecture — input/overlay vs. map (issue #48)
-//!
-//! Each board's main loop runs the device on **two planes across two executors**, so input + the
-//! overlay stay responsive *while a map frame renders*. `render_map` is CPU-bound (tens of ms) and
-//! never `.await`s, so it blocks its executor; dirty-tracking cuts how *often* it runs but not the
-//! during-render case (panning re-renders rapidly while a button is held). The fix is preemption:
-//!
-//! - **High-priority plane** — an embassy **`InterruptExecutor`** at a priority *above* thread mode
-//!   but *below* the embassy-time driver (so its `Timer`s still wake mid-render). It owns the
-//!   [`ButtonInput`] debouncer, the shared app input plane, and the **overlay**
-//!   framebuffer. Every few ms it *preempts the map render*, samples the buttons, recognises
-//!   gestures into a channel, and repaints the hold bulge — so press-to-feedback latency stays
-//!   bounded regardless of map-render time.
-//! - **Low-priority plane** — the thread-mode executor running the app: screen
-//!   stack, camera, sensors, SD, and the **map** render. Each loop it drains the gesture channel,
-//!   advances animations, polls sensors through [`obc_ports`], and re-renders the map on the app's
-//!   dirty signal — never the overlay.
-//!
-//! The only shared state is a lock-free `Channel<Gesture>` plus the two **disjoint** framebuffers,
-//! so the long map render holds no lock against the input plane. Whatever display resource the two
-//! planes genuinely share (the framebuffer/transport on a banded board, a frame-flip register on a
-//! scan-out board) is guarded by a short critical section in the board's present helper. On the
-//! board the preemptive split is the *only* shape — there is no single-executor build. The
-//! single-loop **hosts** (the simulator, the web demos) run the same two planes inline instead,
-//! fused into one call by the app's `handle_input`; the plane logic is shared either way.
+//! The only shared state is a lock-free `Channel<Gesture>` plus the two disjoint framebuffers, so
+//! the long map render holds no lock against the input plane. Whatever display resource the two
+//! planes genuinely share is guarded by a short critical section in the board's present helper.
+//! The single-loop hosts run the same two planes inline, fused by the app's `handle_input`.
 
 #![no_std]
 
-// The level → duty ladder every real `Backlight` drives. Board-agnostic on purpose: the PWM the
+// The level-to-duty ladder every real `Backlight` drives. Board-agnostic on purpose: the PWM the
 // board wires today and a later constant-current driver want the same five steps.
 pub mod backlight;
 pub mod button_input;
-// Transport-agnostic fake-sensor protocol + sources + telemetry. The pure codec is always compiled;
-// only the embassy-sync `Signal`/`Channel` plumbing + HAL-trait sources are gated inside the module
-// behind `debug-link`, so the host workspace build never pulls embassy-sync.
+// Transport-agnostic fake-sensor protocol, sources and telemetry. The pure codec is always
+// compiled; only the embassy-sync plumbing is gated behind `debug-link`, so the host workspace
+// build never pulls embassy-sync.
 pub mod debug_link;
-// Stand-in battery fuel gauge — a fixed level until the nPM1300 PMIC gauge is wired in.
+// Stand-in battery fuel gauge until the nPM1300 PMIC gauge is wired in.
 pub mod fuel;
-// Always compiled: the synthetic GPS is the `synth`-feature fallback, so it must exist without the
-// real-sensor / `sensor-link` features.
+// Always compiled: the synthetic GPS is the `synth`-feature fallback, so it must exist without
+// the real-sensor features.
 pub mod synth;
-// The instance-owned sensor hub (#808): one `SensorHub` owns every cross-task sensor stream (GPS
-// fix / baro / temp / GPS time / heading, and the BLE HR / power / cadence), constructed once in
-// static storage by the board and split into typed producer/consumer/control handles — the
-// successor to the former global `sensor_link` + `sensor_values` mailboxes. Bridges the board's I²C
-// sensor task (decoded by `obc-sensors`) and BLE manager / debug injection (decoded by `obc-ble`) to
-// the app's HAL poll. Gated behind `sensor-link` (it pulls embassy-sync).
+// The instance-owned sensor hub: one `SensorHub` owns every cross-task sensor stream, constructed
+// once in static storage by the board and split into typed producer, consumer and control handles.
+// Gated behind `sensor-link`, which pulls embassy-sync.
 #[cfg(feature = "sensor-link")]
 pub mod sensor_hub;
 
@@ -93,14 +63,11 @@ pub use synth::SynthLocation;
 
 #[cfg(test)]
 mod deleted_knobs {
-    /// The board's own auto-repeat is gone (D1, #1515): all four buttons forward debounced edges
-    /// and the step cadence lives in `obc_app::input`. This reads `button_input.rs` as text so a
-    /// second timing model cannot quietly grow back beside the shared one — the needle is assembled
-    /// here rather than written literally so this guard does not match its own source.
-    ///
-    /// The haystack is lower-cased first: the two constants this deletes were `DEFAULT_REPEAT_
-    /// DELAY_MS` and `DEFAULT_REPEAT_INTERVAL_MS`, so a case-sensitive match would miss the very
-    /// names it guards against.
+    /// All four buttons forward debounced edges and the step cadence lives in `obc_app::input`.
+    /// This reads `button_input.rs` as text, so a second timing model cannot quietly grow back
+    /// beside the shared one. The needle is assembled here rather than written literally, so the
+    /// guard does not match its own source, and the haystack is lower-cased first, so a
+    /// case-sensitive match cannot miss the names it guards against.
     #[test]
     fn button_input_grows_no_second_repeat_timing() {
         let source = include_str!("button_input.rs").to_ascii_lowercase();

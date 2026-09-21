@@ -1,7 +1,7 @@
 //! The shared quadtree-index block cache.
 //!
 //! A quadtree walk reads 4-byte nodes whose siblings are adjacent in the file, so a few resident
-//! block-aligned windows coalesce a whole descent into a handful of source reads. One driver here
+//! block-aligned windows coalesce a whole descent into a handful of source reads. One driver
 //! serves every walker; callers own only the slot count and the insertion decision.
 
 use crate::io::{ByteSource, Error as IoError};
@@ -14,16 +14,14 @@ const INDEX_META_RRPV_SHIFT: u8 = 5;
 const INDEX_META_VALID: u8 = 0x80;
 
 /// One resident, block-aligned window of an index region. The validity bit and the two-bit RRIP
-/// prediction share `meta`, and `len` is bounded by the window — tags packed this tight because the
-/// render cache spends every byte they save on the leaf bbox in its chunk slots.
+/// prediction share `meta`, packed this tight because the render cache spends every byte they
+/// save on the leaf bbox in its chunk slots.
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct IndexBlock {
-    /// Which window this holds, as a **block number** (`byte_offset / INDEX_BLOCK`) rather than the
-    /// offset itself — exact, never a rounding, since every fill is block-aligned by construction.
-    /// A `u32` keeps the cache 4-aligned, which the `align_of::<MapCache>()` assert in `obc-reader`
-    /// explains is a boot requirement; the const assert below is the proof that it gives up no
-    /// reach in exchange.
+    /// Which window this holds, as a block number rather than a byte offset: exact, because every
+    /// fill is block-aligned. A `u32` keeps the cache 4-aligned, which `obc-reader` explains is a
+    /// boot requirement, and the const assert below proves it gives up no reach.
     block: u32,
     len: u16,
     meta: u8,
@@ -32,13 +30,10 @@ struct IndexBlock {
     buf: [u8; INDEX_BLOCK],
 }
 
-// On-device each compact tagged window is 520 bytes including alignment — unmoved by the u64 read
-// seam, which is the point of the block-number tag above.
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::size_of::<IndexBlock>() == INDEX_BLOCK + 8);
-// The last byte of the largest interior §1.1 permits — `2^32` units at the largest legal
-// `Offset Scale` — must still have a block number a `u32` can hold, or [`IndexBlock::block`] would
-// be the wall instead of the format. It fits, and at that extreme it fits exactly.
+// The last byte of the largest interior the format permits must still have a block number a `u32`
+// can hold, or [`IndexBlock::block`] would be the wall instead of the format.
 const _: () = assert!(
     ((1u64 << 32) * (1u64 << crate::obcm::OFFSET_SCALE_MAX) - 1) / INDEX_BLOCK as u64 <= u32::MAX as u64,
     "a block number must reach every byte an `Offset Scale` can cover"
@@ -53,7 +48,7 @@ impl IndexBlock {
     }
 
     /// Re-reference prediction (0 = near, 3 = distant). A hit promotes to 0; most one-pass fills
-    /// enter at 3 so an ordered tree scan churns one probation slot instead of flushing them all.
+    /// enter at 3, so an ordered tree scan churns one probation slot instead of flushing them all.
     #[inline]
     fn rrpv(&self) -> u8 {
         (self.meta >> INDEX_META_RRPV_SHIFT) & 0x03
@@ -72,22 +67,14 @@ impl IndexBlock {
 
 /// `SLOTS` block-aligned index windows with scan-resistant RRIP replacement.
 ///
-/// RRIP rather than LRU because the access pattern is an *ordered walk repeated*: when the working
-/// set is a little larger than the cache, LRU evicts every block just before the next pass asks for
-/// it and scores zero hits forever. RRIP keeps a protected subset and churns one probation slot.
+/// RRIP rather than LRU, because the access pattern is an ordered walk repeated: when the working
+/// set is a little larger than the cache, LRU evicts every block just before the next pass asks
+/// for it and scores zero hits forever. RRIP keeps a protected subset and churns one slot.
 ///
-/// The **insertion** half of that policy is the caller's: `on_fill` decides whether each fill
-/// enters protected. Today's two callers answer from two different counters with two different
-/// off-by-ones, so a driver that grew a counter of its own would silently change which blocks they
-/// evict. [`hits`](Self::hits) and [`misses`](Self::misses) are a report, never an input.
-///
-/// The counters live here and the *reporting* seam stays the caller's: no cache-stats struct grows
-/// an index row. `obc_reader`'s `MapCacheInner` embeds this type, reads neither counter, and pays
-/// 8 bytes plus a `saturating_add` per node read — priced and accepted, not an oversight. Moving
-/// them behind the caller needs a second hook (`misses` is already `on_fill`'s `fill`; `hits` has
-/// none) to free 8 bytes that cannot be spent: `map_cache` is an exact-equality RAM pin, so they
-/// would come straight back as a reserve field. Widening `CacheStats` only becomes a gate if
-/// `RenderStats` and `golden.txt` widen with it; the `overview-cold` golden row already covers it.
+/// The insertion half of that policy is the caller's: `on_fill` decides whether each fill enters
+/// protected. The two callers answer from two different counters with two different off-by-ones,
+/// so a driver that grew a counter of its own would silently change which blocks they evict.
+/// [`hits`](Self::hits) and [`misses`](Self::misses) are a report, never an input.
 ///
 /// All-zero is a valid empty cache, so an embedding cache may zero-init it. Tags mean nothing
 /// across files: reset before binding to a different source.
@@ -105,19 +92,17 @@ impl<const SLOTS: usize> Default for IndexBlockCache<SLOTS> {
 
 impl<const SLOTS: usize> IndexBlockCache<SLOTS> {
     /// A zero-slot cache would hang: nothing is ever resident, no slot is empty, and
-    /// [`rrip_victim`] ages an empty slice forever looking for a victim. The two hand-written
-    /// caches this replaced had fixed arrays and could not express it; making the count a caller's
-    /// knob is what opens the hole, so close it where the knob is. Const-generic asserts are lazy,
-    /// so [`read`](Self::read) forces this one.
+    /// [`rrip_victim`] ages an empty slice forever looking for a victim. Const-generic asserts
+    /// are lazy, so [`read`](Self::read) forces this one.
     const NON_EMPTY: () = assert!(SLOTS > 0, "an index cache needs at least one window");
 
     pub const fn new() -> Self {
         Self { blocks: [IndexBlock::EMPTY; SLOTS], hits: 0, misses: 0 }
     }
 
-    /// Drop every resident window and zero the counters. The counters are part of the reset because
-    /// for both callers the counter *is* a policy phase: preserving them across a map switch would
-    /// carry the old file's insertion phase into the new one.
+    /// Drop every resident window and zero the counters. The counters reset too, because for both
+    /// callers the counter is a policy phase: keeping it across a map switch would carry the old
+    /// file's insertion phase into the new one.
     pub fn reset(&mut self) {
         for block in &mut self.blocks {
             block.meta = 0;
@@ -139,14 +124,12 @@ impl<const SLOTS: usize> IndexBlockCache<SLOTS> {
     }
 
     /// Fill `out` from index-region offset `off`, assembling it from resident windows and reading
-    /// any window that is missing. A node read is 4 bytes and may straddle a block edge, so this
-    /// loops.
+    /// any that are missing. A node read is 4 bytes and may straddle a block edge, so this loops.
     ///
-    /// `on_fill(bytes, fill)` is called once per source fill, after that fill has succeeded and been
-    /// counted: `bytes` is what it moved and `fill` is the post-increment [`misses`](Self::misses).
-    /// It returns whether the window enters **protected** (RRIP 2) rather than on probation (3) —
-    /// the caller's bimodal insertion decision — and doubles as its hook for byte accounting. A fill
-    /// into a previously empty slot is protected regardless, so a cold cache seeds every slot.
+    /// `on_fill(bytes, fill)` is called once per source fill, after that fill succeeded and was
+    /// counted. It returns whether the window enters protected (RRIP 2) rather than probation (3),
+    /// the caller's bimodal insertion decision, and doubles as its hook for byte accounting. A
+    /// fill into a previously empty slot is protected regardless, so a cold cache seeds every slot.
     pub fn read(
         &mut self,
         src: &dyn ByteSource,
@@ -179,19 +162,17 @@ impl<const SLOTS: usize> IndexBlockCache<SLOTS> {
         block_off: u64,
         on_fill: &mut dyn FnMut(usize, u32) -> bool,
     ) -> Result<usize, IoError> {
-        // Checked, not cast: the const assert on [`IndexBlock::block`] proves no *legal* file
-        // reaches a block number past `u32`, but `block_off` is derived from directory bytes and a
-        // corrupt one is not legal. A wrap here would alias two different windows of the file and
-        // serve one for the other, which is the one failure a cache must never have.
+        // Checked, not cast: the const assert on [`IndexBlock::block`] proves no legal file
+        // reaches a block number past `u32`, but `block_off` comes from directory bytes and a
+        // corrupt one is not legal. A wrap would alias two windows and serve one for the other.
         let tag = u32::try_from(block_off / INDEX_BLOCK as u64).map_err(|_| IoError::BadOffset)?;
         if let Some(i) = self.blocks.iter().position(|b| b.valid() && b.block == tag) {
             self.blocks[i].set_rrpv(0);
             self.hits = self.hits.saturating_add(1);
             return Ok(i);
         }
-        // Checked rather than `-`: `block_off` is derived from file data, so a corrupt directory can
-        // name a block past the source's end. A `u64` subtraction would panic in debug and produce
-        // an absurd length in release; this refuses instead.
+        // Checked rather than `-`: a corrupt directory can name a block past the source's end,
+        // where a `u64` subtraction would panic in debug and produce an absurd length in release.
         let remaining = src.len().checked_sub(block_off).ok_or(IoError::BadOffset)?;
         let want = remaining.min(INDEX_BLOCK as u64) as usize;
         if want == 0 {
@@ -199,17 +180,17 @@ impl<const SLOTS: usize> IndexBlockCache<SLOTS> {
         }
         let empty = self.blocks.iter().position(|b| !b.valid());
         let i = empty.unwrap_or_else(|| rrip_victim(&mut self.blocks));
-        // Invalidate before the read: a flaky source can fail partway, half-overwriting the buffer.
-        // Committing the tag only after the read succeeds means a failed read leaves an empty slot,
-        // not a poisoned one still keyed to the old block (which would serve as a corrupt hit).
+        // Invalidate before the read: a flaky source can fail partway. Committing the tag only
+        // after the read succeeds leaves a failed read with an empty slot, not one poisoned with
+        // the old block.
         self.blocks[i].meta = 0;
         src.read_at(block_off, &mut self.blocks[i].buf[..want])?;
         self.blocks[i].block = tag;
         self.blocks[i].len = want as u16;
         self.misses = self.misses.saturating_add(1);
-        // Called unconditionally, and *before* the empty-slot arm can decide the answer: it is the
-        // caller's per-fill hook, not just a predicate, so short-circuiting it would silently drop
-        // the byte accounting of every seeding fill.
+        // Called unconditionally, and before the empty-slot arm can decide the answer: it is the
+        // caller's per-fill hook, so short-circuiting it would drop the byte accounting of every
+        // seeding fill.
         let protect = on_fill(want, self.misses);
         let rrpv = if empty.is_some() || protect { 2 } else { 3 };
         self.blocks[i].commit(rrpv);
@@ -217,8 +198,8 @@ impl<const SLOTS: usize> IndexBlockCache<SLOTS> {
     }
 }
 
-/// Pick the next RRIP victim. If no entry currently predicts a distant re-reference, age every
-/// entry one step and try again. Bounded: predictions saturate at 3, so at most three passes.
+/// Pick the next RRIP victim. If no entry predicts a distant re-reference, age every entry one
+/// step and try again. Bounded: predictions saturate at 3, so at most three passes.
 fn rrip_victim(slots: &mut [IndexBlock]) -> usize {
     loop {
         if let Some(i) = slots.iter().position(|slot| slot.rrpv() >= 3) {
@@ -230,17 +211,14 @@ fn rrip_victim(slots: &mut [IndexBlock]) -> usize {
     }
 }
 
-/// Pick the next LRU victim: the first empty slot, else the lowest stamp, ties to the lowest index.
-/// Input is `(is_empty, stamp)` per slot in slot order; `stamp` is whatever monotonic recency
-/// counter the caller writes on access — `u16` for a route chunk slot's four-byte header, `u32` for
-/// a terrain tile's parallel array.
+/// Pick the next LRU victim: the first empty slot, else the lowest stamp, ties to the lowest
+/// index. Input is `(is_empty, stamp)` per slot in slot order, where `stamp` is whatever monotonic
+/// recency counter the caller writes on access.
 ///
 /// The LRU counterpart of [`rrip_victim`], shared because it was the one eviction rule written
-/// twice. A *rule*, not a cache: both callers keep their own slots, keys, payloads and I/O, and both
-/// chose LRU deliberately — a bilinear sample touches four tiles at one cell corner, and a frame's
-/// route working set is the matcher's chunk plus the view.
-/// An empty iterator answers `0` — an out-of-range index the caller must not dereference; both
-/// embedding caches have `SLOTS >= 1`, so the case is unreachable there and stays undefined here.
+/// twice. A rule, not a cache: both callers keep their own slots, keys, payloads and I/O. An empty
+/// iterator answers `0`, an out-of-range index the caller must not dereference; both embedding
+/// caches have `SLOTS >= 1`.
 pub fn lru_victim<S: Ord>(slots: impl Iterator<Item = (bool, S)>) -> usize {
     let mut victim = 0usize;
     let mut lowest: Option<S> = None;
@@ -264,14 +242,14 @@ mod tests {
     /// The render cache's seven windows and the router's sixteen.
     const MAP_SLOTS: usize = 7;
 
-    /// `working` distinct 512-byte windows; every byte of block `b` is `b`, so a served window is
-    /// checkable against the block that was asked for.
+    /// `working` distinct 512-byte windows, where every byte of block `b` is `b`, so a served
+    /// window is checkable against the block that was asked for.
     fn source(working: usize) -> std::vec::Vec<u8> {
         (0..working * INDEX_BLOCK).map(|k| (k / INDEX_BLOCK) as u8).collect()
     }
 
-    /// A source that fills `partial` bytes and then fails, for the read at `fail_at` — the
-    /// flaky-SD partial-overwrite a torn fill must survive.
+    /// A source that fills `partial` bytes and then fails, the flaky-SD partial overwrite a torn
+    /// fill must survive.
     struct FlakySource<'a> {
         data: &'a [u8],
         fail_at: u64,
@@ -298,9 +276,8 @@ mod tests {
 
     /// Run `passes` ordered scans over `working` blocks and report `(hits, misses)`.
     ///
-    /// Also pins `on_fill`'s **`bytes`** argument, which is what carries a caller's byte accounting
-    /// and so has no other cover at this tier: every window of this source is whole, so the reported
-    /// bytes must total exactly one [`INDEX_BLOCK`] per fill and nothing per hit.
+    /// It also pins `on_fill`'s `bytes` argument: every window of this source is whole, so the
+    /// reported bytes must total exactly one [`INDEX_BLOCK`] per fill and nothing per hit.
     fn scan(on_fill: &mut dyn FnMut(usize, u32) -> bool, working: usize, passes: usize) -> (u32, u32) {
         let data = source(working);
         let src = SliceSource(&data);
@@ -324,29 +301,26 @@ mod tests {
         (hits, misses)
     }
 
-    /// The insertion decision is the caller's, and the driver has none of its own: one access
+    /// The insertion decision is the caller's and the driver has none of its own: one access
     /// pattern under three `on_fill` sequences must reach three distinct outcomes, with the real
-    /// bimodal policy between the two extremes — which is what "bimodal" means. A driver that
-    /// quietly grew its own predicate and ignored `on_fill` would collapse all three to one row.
+    /// bimodal policy between the two extremes. A driver that grew its own predicate and ignored
+    /// `on_fill` would collapse all three to one row.
     ///
-    /// The extremes rather than the two shipping predicates, deliberately: those are the *same*
-    /// every-eighth-fill rule read off two different counters, so they differ only in phase — and
-    /// over a repeated scan a phase shift changes nothing. (Verified by exhaustive simulation over
-    /// 7 and 16 slots, working sets up to slots+15 and 2–4 passes: not one configuration separates
-    /// them.) A test claiming those two sequences diverge would be asserting something false; the
-    /// numbers that actually pin each caller's phase are its own exact-count scan-resistance test.
+    /// The extremes rather than the two shipping predicates, deliberately: those are the same
+    /// every-eighth-fill rule read off two different counters, so they differ only in phase, and
+    /// over a repeated scan a phase shift changes nothing.
     #[test]
     fn the_insertion_decision_comes_from_the_caller() {
         const WORKING: usize = 18; // one repeated ordered scan, well over MAP_SLOTS
         let always = scan(&mut |_, _| true, WORKING, 2);
         let never = scan(&mut |_, _| false, WORKING, 2);
-        // Every eighth fill protected — the shape both shipping callers use.
+        // Every eighth fill protected, the shape both shipping callers use.
         let bimodal = scan(&mut |_bytes, fill| fill.is_multiple_of(8), WORKING, 2);
         assert_eq!((always, never, bimodal), ((0, 36), (6, 30), (5, 31)));
     }
 
-    /// A read that fails partway must leave the evicted window *empty*, not poisoned with the old
-    /// tag over half-overwritten bytes — otherwise the old block is later served as a corrupt hit.
+    /// A read that fails partway must leave the evicted window empty, not poisoned with the old
+    /// tag over half-overwritten bytes, which would later serve as a corrupt hit.
     #[test]
     fn a_torn_fill_leaves_an_empty_slot_not_a_poisoned_one() {
         const WORKING: usize = MAP_SLOTS + 1; // one more block than slots, so a fill must evict
@@ -373,9 +347,8 @@ mod tests {
         assert_eq!(word[0], 0, "the re-read must return block 0's bytes");
     }
 
-    /// A block number past `u32` is refused rather than wrapped: a wrap would alias two windows of
-    /// the file and serve one for the other. No legal file can reach here — the const assert on
-    /// `IndexBlock::block` proves that — but a corrupt directory can name it.
+    /// A block number past `u32` is refused rather than wrapped, because a wrap would alias two
+    /// windows of the file. No legal file reaches here, but a corrupt directory can name it.
     #[test]
     fn a_block_number_past_u32_is_refused_not_wrapped() {
         let data = [0u8; INDEX_BLOCK];
@@ -392,7 +365,7 @@ mod tests {
     }
 
     /// The three clauses of the one LRU rule: an empty slot outranks any stamp, the lowest stamp
-    /// wins otherwise, and ties — including an all-equal set — resolve to the lowest index.
+    /// wins otherwise, and ties resolve to the lowest index.
     #[test]
     fn the_lru_victim_takes_an_empty_slot_then_the_lowest_stamp() {
         assert_eq!(lru_victim([(false, 9u16), (true, 1), (false, 0)].into_iter()), 1, "empty first");
