@@ -1,3 +1,8 @@
+# Only failures print per test: a passing run is its summary line, so a thousand green tests
+# cost a reader nothing. CI's evidence is the junit file, not the log.
+[profile.default]
+status-level = "fail"
+
 [profile.ci.junit]
 path = "junit.xml"
 
