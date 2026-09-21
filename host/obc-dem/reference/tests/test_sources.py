@@ -209,6 +209,25 @@ class Requests(unittest.TestCase):
         self.assertEqual(subsets["E"], [mid_x, hi_x])
         self.assertEqual(subsets["N"], [lo_y, hi_y])
 
+    def test_fetch_keeps_the_boxes_in_order_and_skips_the_ones_outside(self):
+        """The requests of one box run in a pool; what comes back is still one file per
+        sub-box in the split's order, with nothing for a box the service holds nothing of."""
+
+        class Fake(ingest.sources.protocols.TiledService):
+            def request(self, box):
+                return None if box[0] < BOX[0] + 0.012 else b"II*\x00" + repr(box).encode()
+
+        fake = Fake("fk", "Testland", "fake", 1.0, "CC0", "© fake", "EGM2008", (-180, -90, 180, 90))
+        boxes = list(request_boxes(BOX, 1.0))
+        self.assertGreater(len(boxes), 2)
+        with TemporaryDirectory() as directory:
+            paths = fake.fetch(BOX, Path(directory))
+            kept = [box for box in boxes if box[0] >= BOX[0] + 0.012]
+            self.assertEqual(len(paths), len(kept))
+            for path, box in zip(paths, kept):
+                self.assertEqual(path.read_bytes(), b"II*\x00" + repr(box).encode())
+            self.assertEqual(fake.fetch(BOX, Path(directory)), paths)  # cached, in the same order
+
     def test_the_envelope_is_read_on_the_rows_axes_whatever_order_the_server_states(self):
         describe = ('<gml:Envelope srsName="…" axisLabels="N E"><gml:lowerCorner>5263999.5 387999.5'
                     '</gml:lowerCorner><gml:upperCorner>5520000.5 611000.5</gml:upperCorner>')

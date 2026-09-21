@@ -12,6 +12,7 @@ import math
 import os
 import re
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from rasterio.crs import CRS
@@ -27,6 +28,10 @@ MAX_PIXELS = 2000
 # Metres per degree of latitude. The longitude span is this times the cosine of the
 # latitude, which is only used to size a request, never to place a pixel.
 METRES_PER_DEGREE = 111320.0
+
+# Requests of one box in flight at once. Four is well under what a public WCS rate-limits
+# and enough that a slow edge request no longer serialises the box behind it.
+PARALLEL_REQUESTS = 4
 
 
 def spans(bbox, epsg=None) -> tuple[float, float]:
@@ -148,24 +153,32 @@ class TiledService(Source):
     def fetch(self, bbox, workdir) -> list[Path]:
         workdir.mkdir(parents=True, exist_ok=True)
         boxes = list(request_boxes(bbox, self.resolution_m, self.epsg))
-        paths = []
-        for i, box in enumerate(boxes, 1):
+
+        def one(box) -> Path | None:
             name = f"{self.key}_{box[0]:.5f}_{box[1]:.5f}_{box[2]:.5f}_{box[3]:.5f}.tif"
             path = workdir / name
-            if not path.exists():
-                body = self.request(box)
-                if body is None:
-                    print(f"  fetch [{i}/{len(boxes)}] {box[0]:.4f},{box[1]:.4f} → "
-                          f"{box[2]:.4f},{box[3]:.4f}: outside the coverage")
-                    continue
-                # A half-written file in the cache would look complete to the next run, so
-                # the bytes land beside the name and are moved onto it at the end.
-                part = path.with_name(name + ".part")
-                part.write_bytes(body)
-                os.replace(part, path)
-            print(f"  fetch [{i}/{len(boxes)}] {box[0]:.4f},{box[1]:.4f} → {box[2]:.4f},{box[3]:.4f}")
-            paths.append(path)
-        return paths
+            if path.exists():
+                return path
+            body = self.request(box)
+            if body is None:
+                return None
+            # A half-written file in the cache would look complete to the next run, so
+            # the bytes land beside the name and are moved onto it at the end.
+            part = path.with_name(name + ".part")
+            part.write_bytes(body)
+            os.replace(part, path)
+            return path
+
+        # The requests of one box are independent, and a server spends most of a request
+        # rendering it: the LGL WCS takes 85 s for a box on its coverage edge and 4 s for
+        # one inside, so a country run is the server's time, and the pool shares it.
+        with ThreadPoolExecutor(max_workers=PARALLEL_REQUESTS) as pool:
+            paths = list(pool.map(one, boxes))
+        for i, (box, path) in enumerate(zip(boxes, paths), 1):
+            note = "" if path else ": outside the coverage"
+            print(f"  fetch [{i}/{len(boxes)}] {box[0]:.4f},{box[1]:.4f} → {box[2]:.4f},{box[3]:.4f}{note}",
+                  flush=True)
+        return [path for path in paths if path]
 
     def request(self, box) -> bytes | None:
         """One raster, asked for as the protocol states it and as the portal lets it be, or
