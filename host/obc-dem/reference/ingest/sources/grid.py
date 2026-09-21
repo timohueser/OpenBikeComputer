@@ -11,22 +11,22 @@ published square at all.
 
 import math
 
-from pyproj import Transformer
-
 from .bulk import BulkSource
+from .protocols import projected_box
 
 
 def grid_squares(bbox, epsg: int, step_m: int):
-    """The south-west corner, in metres, of every grid square a WGS84 box touches."""
+    """The south-west corner, in metres, of every grid square a WGS84 box touches.
 
-    west, south, east, north = bbox
-    to_grid = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
-    # All four corners, because a projected grid's north edge is not a line of latitude.
-    xs, ys = to_grid.transform([west, east, west, east], [south, south, north, north])
-    for x in range(math.floor(min(xs) / step_m) * step_m,
-                   math.ceil(max(xs) / step_m) * step_m, step_m):
-        for y in range(math.floor(min(ys) / step_m) * step_m,
-                       math.ceil(max(ys) / step_m) * step_m, step_m):
+    `projected_box` densifies the box's edges before it transforms them, so a square the
+    bulge of a curved edge reaches into is named and not missed.
+    """
+
+    (lo_x, lo_y, hi_x, hi_y), _ = projected_box(bbox, epsg)
+    for x in range(math.floor(lo_x / step_m) * step_m,
+                   math.ceil(hi_x / step_m) * step_m, step_m):
+        for y in range(math.floor(lo_y / step_m) * step_m,
+                       math.ceil(hi_y / step_m) * step_m, step_m):
             yield x, y
 
 

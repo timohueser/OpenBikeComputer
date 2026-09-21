@@ -10,8 +10,11 @@ import sys
 import unittest
 import urllib.parse
 import zipfile
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Thread
 
 import numpy as np
 import rasterio
@@ -30,6 +33,38 @@ from ingest.sources.grid import grid_squares  # noqa: E402
 from ingest.sources.protocols import MAX_PIXELS, request_boxes  # noqa: E402
 
 BOX = (6.8255, 45.9257, 6.8495, 45.9417)  # about 1.9 x 1.8 km over Chamonix
+
+#: The verification box of every source with an adapter, exactly as `README.md` documents
+#: it. A request is only ever built from a box the split has already cut, so these tests
+#: go through `request_boxes` the way `TiledService.fetch` does.
+BOXES = {
+    "ch": (8.3800, 46.7800, 8.4200, 46.8200),
+    "fr": (2.8019, 45.5204, 2.8259, 45.5364),
+    "us": (-106.4583, 39.1091, -106.4323, 39.1265),
+    "no": (8.2925, 61.6230, 8.3325, 61.6496),
+    "es": (-4.8666, 43.1888, -4.8406, 43.2062),
+    "nl": (6.0079, 50.7453, 6.0339, 50.7627),
+    "uk": (-3.2227, 54.4469, -3.2007, 54.4615),
+    "at": (12.6829, 47.0671, 12.7049, 47.0817),
+    "ca": (-73.5983, 45.4968, -73.5763, 45.5114),
+    "it-bz": (10.5337, 46.5016, 10.5557, 46.5162),
+    "de-nw": (8.5462, 51.2682, 8.5722, 51.2856),
+    "de-he": (9.9287, 50.4908, 9.9507, 50.5054),
+    "de-bw": (7.9934, 47.8666, 8.0154, 47.8812),
+    "de-mv": (13.5984, 53.4794, 13.6204, 53.4941),
+    "de-st": (10.6046, 51.7918, 10.6266, 51.8064),
+    "de-by": (10.9743, 47.4138, 10.9963, 47.4284),
+    "de-sn": (12.9432, 50.4213, 12.9652, 50.4359),
+    "de-th": (10.7351, 50.6524, 10.7571, 50.6670),
+    "de-ni": (10.6084, 51.7508, 10.6304, 51.7654),
+}
+
+
+def split(key):
+    """The sub-boxes `fetch` would ask for, for one source's verification box."""
+
+    source = ingest.SOURCES[key]
+    return list(request_boxes(BOXES[key], source.resolution_m, getattr(source, "epsg", None)))
 
 
 class TempCase(unittest.TestCase):
@@ -53,32 +88,67 @@ def query(url):
 
 
 class Requests(unittest.TestCase):
-    """Every live adapter's request, held as the URL it would send."""
+    """Every live adapter's request, held as the URL it would send.
+
+    The box is the source's own verification box, cut by `request_boxes` first, because a
+    request is never built from anything else and `output_size` refuses a box the split
+    left too large.
+    """
+
+    def test_every_split_sub_box_stays_inside_the_pixel_cap(self):
+        """The split is what keeps a request from coming back coarsened, so it is the
+        first thing to hold: every adapter, every sub-box of its documented box."""
+
+        for key in BOXES:
+            source = ingest.SOURCES[key]
+            if not isinstance(source, ingest.sources.protocols.TiledService):
+                continue  # a tile grid and a STAC search are not sized in pixels
+            with self.subTest(key):
+                boxes = split(key)
+                self.assertGreaterEqual(len(boxes), 1)
+                for box in boxes:
+                    span_x, span_y = ingest.sources.protocols.spans(box, source.epsg)
+                    self.assertLessEqual(span_x / source.resolution_m, MAX_PIXELS + 1)
+                    self.assertLessEqual(span_y / source.resolution_m, MAX_PIXELS + 1)
+                # The sub-boxes tile the box exactly.
+                self.assertAlmostEqual(min(b[0] for b in boxes), BOXES[key][0])
+                self.assertAlmostEqual(min(b[1] for b in boxes), BOXES[key][1])
+                self.assertAlmostEqual(max(b[2] for b in boxes), BOXES[key][2])
+                self.assertAlmostEqual(max(b[3] for b in boxes), BOXES[key][3])
+
+    def test_a_request_over_the_cap_is_refused_and_not_coarsened(self):
+        """Asking a service for fewer pixels than the box holds gets a coarser raster
+        back, and a quietly coarser reference is the failure this archive must not have."""
+
+        with self.assertRaises(ingest.Refuse) as refusal:
+            ingest.sources.protocols.pixels(MAX_PIXELS + 1, "a box nobody split")
+        self.assertIn("was not split small enough", str(refusal.exception))
 
     def test_the_arcgis_request_asks_for_float32_metres_in_wgs84(self):
         """3DEP resamples to the size it is asked for, so the size and the type are stated."""
 
-        path, values = query(ingest.SOURCES["us"].url(BOX))
+        box = split("us")[0]
+        path, values = query(ingest.SOURCES["us"].url(box))
         self.assertTrue(path.endswith("/3DEPElevation/ImageServer/exportImage"))
-        self.assertEqual(values["bbox"], [",".join(str(value) for value in BOX)])
+        self.assertEqual(values["bbox"], [",".join(str(value) for value in box)])
         self.assertEqual((values["bboxsr"], values["imagesr"]), (["4326"], ["4326"]))
         self.assertEqual((values["format"], values["pixeltype"], values["f"]),
                          (["tiff"], ["F32"], ["image"]))
         px, py = (int(value) for value in values["size"][0].split(","))
-        # About 1.9 km by 1.8 km at the product's 1 m step, and never over the cap.
-        self.assertEqual((px, py), (1858, 1781))
         self.assertLessEqual(max(px, py), MAX_PIXELS)
+        self.assertGreater(min(px, py), 1000)
 
     def test_a_wcs_20_request_names_the_coverage_its_axes_and_the_output_size(self):
-        """WCS 2.0 answers at the native step unless asked, and a label the server does not
-        know is a refusal, so both the axes and the size are in every request."""
+        """WCS 2.0 answers at the coverage's native step unless it is asked otherwise, and
+        a label the server does not know is a refusal, so both are in every request."""
 
         for key, coverage, epsg, axes in (("es", "Elevacion4258_5", 4326, ("long", "lat")),
                                           ("nl", "dtm_05m", 28992, ("x", "y")),
-                                          ("de-nw", "nw_dgm", 25832, ("x", "y"))):
+                                          ("de-nw", "nw_dgm", 25832, ("x", "y")),
+                                          ("de-he", "he_dgm1", 25832, ("E", "N"))):
             with self.subTest(key):
                 source = ingest.SOURCES[key]
-                _, values = query(source.url(BOX))
+                _, values = query(source.url(split(key)[0]))
                 self.assertEqual(values["version"], ["2.0.1"])
                 self.assertEqual(values["request"], ["GetCoverage"])
                 self.assertEqual(values["coverageid"], [coverage])
@@ -95,17 +165,18 @@ class Requests(unittest.TestCase):
     def test_a_projected_wcs_request_encloses_the_box_in_the_services_own_grid(self):
         """The subsets are metres on the national grid, and they enclose the box.
 
-        A projected grid's axes are not the box's, so the request is the rectangle that
-        contains all four transformed corners. It reaches a little past the box, which is
-        what keeps a curved projection edge from cutting a corner off.
+        A projected grid's axes are not the box's and its edges are curves, so the request
+        is the rectangle that contains the densified edges. It reaches a little past the
+        box, which is what keeps a curved edge from cutting a corner off.
         """
 
         source = ingest.SOURCES["de-nw"]
-        _, values = query(source.url(BOX))
+        box = split("de-nw")[0]
+        _, values = query(source.url(box))
         subsets = {part.split("(")[0]: part.split("(")[1].rstrip(")").split(",")
                    for part in values["subset"]}
         to_grid = Transformer.from_crs("EPSG:4326", f"EPSG:{source.epsg}", always_xy=True)
-        for lon, lat in ((BOX[0], BOX[1]), (BOX[2], BOX[1]), (BOX[0], BOX[3]), (BOX[2], BOX[3])):
+        for lon, lat in ((box[0], box[1]), (box[2], box[1]), (box[0], box[3]), (box[2], box[3])):
             x, y = to_grid.transform(lon, lat)
             self.assertLessEqual(float(subsets["x"][0]), x)
             self.assertGreaterEqual(float(subsets["x"][1]), x)
@@ -116,7 +187,7 @@ class Requests(unittest.TestCase):
         """Norway answers WCS 1.0.0, which sizes its grid differently from 2.0.1."""
 
         source = ingest.SOURCES["no"]
-        _, values = query(source.url(BOX))
+        _, values = query(source.url(split("no")[0]))
         self.assertEqual(values["version"], ["1.0.0"])
         self.assertEqual(values["coverage"], ["nhm_dtm_topo_25833"])
         self.assertEqual(values["crs"], ["EPSG:25833"])
@@ -125,40 +196,23 @@ class Requests(unittest.TestCase):
         self.assertEqual(len(values["bbox"][0].split(",")), 4)
         self.assertLessEqual(max(int(values["width"][0]), int(values["height"][0])), MAX_PIXELS)
 
-    def test_a_box_larger_than_the_cap_becomes_several_requests(self):
-        """Half-metre LiDAR overruns every server's size cap, so the box is cut up."""
-
-        wide = (6.0, 46.0, 6.2, 46.2)  # about 15 km by 22 km
-        for key in ("us", "nl"):
-            with self.subTest(key):
-                source = ingest.SOURCES[key]
-                boxes = list(request_boxes(wide, source.resolution_m))
-                self.assertGreater(len(boxes), 1)
-                self.assertAlmostEqual(min(box[0] for box in boxes), wide[0])
-                self.assertAlmostEqual(max(box[3] for box in boxes), wide[3])
-                for box in boxes:
-                    _, values = query(source.url(box))
-                    sizes = (values["size"][0].split(",") if key == "us"
-                             else [part.split("(")[1].rstrip(")") for part in values["scalesize"][0].split(",")])
-                    self.assertLessEqual(max(int(size) for size in sizes), MAX_PIXELS)
-
-
     def test_a_coverage_that_refuses_scalesize_is_asked_without_it(self):
         """Several servers answer `ScaleAxisUndefined` however the axes are named, so those
         rows take the coverage's native step instead."""
 
         for key in ("de-bw", "uk", "it-bz"):
             with self.subTest(key):
-                _, values = query(ingest.SOURCES[key].url(BOX))
+                _, values = query(ingest.SOURCES[key].url(split(key)[0]))
                 self.assertNotIn("scalesize", values)
                 self.assertEqual(len(values["subset"]), 2)
-        self.assertIn("scalesize", query(ingest.SOURCES["de-he"].url(BOX))[1])
+        self.assertIn("scalesize", query(ingest.SOURCES["de-he"].url(split("de-he")[0]))[1])
 
-    def test_the_wcs_11_request_states_the_grid_and_not_an_output_size(self):
-        """A 1.1.1 server answers a single pixel when the grid is left out of the request."""
+    def test_the_wcs_11_request_states_the_grid_at_the_products_own_step(self):
+        """A 1.1.1 server answers a single pixel when the grid is left out of the request,
+        and a coarser step if it is asked for one, so the step is always the product's."""
 
         source = ingest.SOURCES["ca"]
-        _, values = query(source.url(BOX))
+        _, values = query(source.url(split("ca")[0]))
         self.assertEqual(values["version"], ["1.1.1"])
         self.assertEqual(values["identifier"], ["dtm"])
         self.assertEqual(values["format"], ["image/geotiff"])
@@ -166,17 +220,27 @@ class Requests(unittest.TestCase):
         self.assertEqual(crs, f"urn:ogc:def:crs:EPSG::{source.epsg}")
         # The grid starts at the north-west corner and steps east and south from it.
         self.assertEqual(values["gridorigin"], [f"{low_x},{high_y}"])
-        step_x, step_y = values["gridoffsets"][0].split(",")
-        self.assertEqual((float(step_x), float(step_y)), (1.0, -1.0))
+        self.assertEqual(values["gridoffsets"], ["1.0,-1.0"])
         self.assertGreater(float(high_x), float(low_x))
         self.assertGreater(float(high_y), float(low_y))
 
+    def test_a_box_larger_than_the_cap_becomes_several_requests(self):
+        """Half-metre LiDAR overruns every server's size cap, so the box is cut up."""
 
-BOXES = {
-    "de-by": (10.9743, 47.4138, 10.9963, 47.4284),
-    "de-sn": (12.9432, 50.4213, 12.9652, 50.4359),
-    "de-th": (10.7351, 50.6524, 10.7571, 50.6670),
-}
+        wide = (6.0, 46.0, 6.2, 46.2)  # about 15 km by 22 km
+        for key in ("us", "nl"):
+            with self.subTest(key):
+                source = ingest.SOURCES[key]
+                boxes = list(request_boxes(wide, source.resolution_m, source.epsg))
+                self.assertGreater(len(boxes), 1)
+                self.assertAlmostEqual(min(box[0] for box in boxes), wide[0])
+                self.assertAlmostEqual(max(box[3] for box in boxes), wide[3])
+                for box in boxes:
+                    _, values = query(source.url(box))
+                    sizes = (values["size"][0].split(",") if key == "us"
+                             else [part.split("(")[1].rstrip(")")
+                                   for part in values["scalesize"][0].split(",")])
+                    self.assertLessEqual(max(int(size) for size in sizes), MAX_PIXELS)
 
 
 class NamedGrids(unittest.TestCase):
@@ -245,39 +309,96 @@ class StacSearch(unittest.TestCase):
         self.assertIn("gateway timeout", str(refusal.exception))
 
 
+class RangeHandler(SimpleHTTPRequestHandler):
+    """A static file server that answers byte ranges, which is what a COG reader needs."""
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):  # noqa: N802
+        path = Path(self.translate_path(self.path))
+        if not path.is_file():
+            self.send_error(404, "no such square")
+            return
+        body = path.read_bytes()
+        asked = self.headers.get("Range")
+        if not asked:
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Accept-Ranges", "bytes")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        first, _, last = asked.removeprefix("bytes=").partition("-")
+        start = int(first)
+        stop = int(last) if last else len(body) - 1
+        chunk = body[start:stop + 1]
+        self.send_response(206)
+        self.send_header("Content-Range", f"bytes {start}-{start + len(chunk) - 1}/{len(body)}")
+        self.send_header("Content-Length", str(len(chunk)))
+        self.send_header("Accept-Ranges", "bytes")
+        self.end_headers()
+        self.wfile.write(chunk)
+
+
 class RemoteWindows(TempCase):
-    """Austria's squares are 6.5 GB each, so the box's window is read and nothing else."""
+    """Austria's squares are 7.7 GB each, so the box's window is read and nothing else.
+
+    The squares are served over real HTTP from a thread, because the two things worth
+    holding here are what the adapter does with a 404 and what it caches a cut under, and
+    both of those are HTTP behaviour.
+    """
 
     BOX = (12.68, 47.067, 12.6827, 47.0687)
+    #: A second box a few hundred metres away, in the same 50 km square. A cache keyed on
+    #: the square alone would hand this one the first box's heights, which is the bug this
+    #: class exists for.
+    OTHER = (12.6850, 47.0700, 12.6877, 47.0717)
 
-    def remote(self, directory):
-        return ingest.sources.cog.CogGrid(
+    def setUp(self):
+        super().setUp()
+        self.served = self.root / "served"
+        self.served.mkdir()
+        handler = partial(RangeHandler, directory=str(self.served))
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.addCleanup(self.httpd.server_close)
+        self.addCleanup(self.httpd.shutdown)
+        self.source = ingest.sources.cog.CogGrid(
             "xx", "Nowhere", "DTM 1 m", 1.0, "CC BY 4.0", "(c) Nowhere", "DHHN2016",
             (-180, -90, 180, 90),
-            base=f"{directory}/", name="tile_{north}_{east}.tif", epsg=3035, tile_m=50000)
+            base=f"http://127.0.0.1:{self.httpd.server_address[1]}/",
+            name="tile_{north}_{east}.tif", epsg=3035, tile_m=50000)
+
+    def serve_square(self, *boxes):
+        """The one grid square those boxes share, holding a patch that covers them all."""
+
+        names = {name for box in boxes for name, _ in self.source.urls(box)}
+        self.assertEqual(len(names), 1, f"the boxes must share one square, not {names}")
+        name = names.pop()
+        corners = [ingest.sources.protocols.projected_box(box, 3035)[0] for box in boxes]
+        lo_x = min(corner[0] for corner in corners) - 200
+        lo_y = min(corner[1] for corner in corners) - 200
+        hi_x = max(corner[2] for corner in corners) + 200
+        hi_y = max(corner[3] for corner in corners) + 200
+        width, height = round(hi_x - lo_x), round(hi_y - lo_y)
+        heights = (np.arange(width * height, dtype="float32") % 3000).reshape(height, width)
+        with rasterio.open(self.served / name, "w", driver="GTiff", width=width, height=height,
+                           count=1, dtype="float32", crs=CRS.from_epsg(3035), nodata=-9999.0,
+                           transform=Affine(1, 0, round(lo_x), 0, -1, round(hi_y))) as dst:
+            dst.write(heights, 1)
+        return name, (width, height)
 
     def test_only_the_window_the_box_needs_comes_out_of_a_square(self):
         """The window carries a pixel of margin and keeps the square's own transform."""
 
-        square = self.root / "remote"
-        square.mkdir()
-        source = self.remote(square)
-        # One square of the grid the adapter names, holding a 4 km patch around the box.
-        (name, _), = source.urls(self.BOX)
+        name, (width, height) = self.serve_square(self.BOX)
         (lo_x, lo_y, hi_x, hi_y), _ = ingest.sources.protocols.projected_box(self.BOX, 3035)
-        origin_x, origin_y = round(lo_x) - 2000, round(hi_y) + 2000
-        heights = (np.arange(4000 * 4000, dtype="float32") % 3000).reshape(4000, 4000)
-        with rasterio.open(square / name, "w", driver="GTiff",
-                           width=4000, height=4000, count=1, dtype="float32",
-                           crs=CRS.from_epsg(3035), nodata=-9999.0,
-                           transform=Affine(1, 0, origin_x, 0, -1, origin_y)) as dst:
-            dst.write(heights, 1)
-
-        cut = source.fetch(self.BOX, self.root / "work")
+        cut = self.source.fetch(self.BOX, self.root / "work")
         self.assertEqual(len(cut), 1)
         with rasterio.open(cut[0]) as src:
             self.assertEqual(src.crs, CRS.from_epsg(3035))
-            self.assertLess(src.width * src.height, 4000 * 4000)
+            self.assertLess(src.width * src.height, width * height)
             self.assertEqual(src.res, (1.0, 1.0))
             # The margin means the window reaches past the box on every side.
             self.assertLessEqual(src.bounds.left, lo_x)
@@ -285,35 +406,56 @@ class RemoteWindows(TempCase):
             self.assertLessEqual(src.bounds.bottom, lo_y)
             self.assertGreaterEqual(src.bounds.top, hi_y)
 
-        # The cut is cached, so a second run reads nothing remote.
-        (square / name).unlink()
-        self.assertEqual(source.fetch(self.BOX, self.root / "work"), cut)
+        # The cut is cached, so a second run of the same box asks the server nothing: the
+        # square is gone and the server is stopped, and the cut still comes back.
+        (self.served / name).unlink()
+        self.httpd.shutdown()
+        self.assertEqual(self.source.fetch(self.BOX, self.root / "work"), cut)
 
-    def test_a_square_that_is_not_published_is_named_in_the_refusal(self):
-        empty = self.root / "empty"
-        empty.mkdir()
+    def test_a_second_box_in_one_square_gets_its_own_heights(self):
+        """The cut is cached under the square *and* the box. Keyed on the square alone,
+        the second box in a 50 km square silently reads the first box's heights."""
+
+        self.serve_square(self.BOX, self.OTHER)
+        work = self.root / "work"
+        here = self.source.fetch(self.BOX, work)
+        there = self.source.fetch(self.OTHER, work)
+        self.assertNotEqual(here, there)
+        with rasterio.open(here[0]) as one, rasterio.open(there[0]) as two:
+            self.assertNotEqual(one.bounds, two.bounds)
+            for bounds, box in ((one.bounds, self.BOX), (two.bounds, self.OTHER)):
+                (lo_x, lo_y, hi_x, hi_y), _ = ingest.sources.protocols.projected_box(box, 3035)
+                self.assertLessEqual(bounds.left, lo_x)
+                self.assertGreaterEqual(bounds.right, hi_x)
+
+    def test_a_square_that_is_not_published_is_a_coverage_edge(self):
+        """404 is the country's edge. The box is then covered by nothing, which is said."""
+
         with self.assertRaises(ingest.Refuse) as refusal:
-            self.remote(empty).fetch(self.BOX, self.root / "work2")
-        self.assertIn("is published", str(refusal.exception))
+            self.source.fetch(self.BOX, self.root / "work")
+        self.assertIn("no published square", str(refusal.exception))
 
+    def test_a_server_fault_is_not_mistaken_for_a_coverage_edge(self):
+        """A 500 or a reset must not become a silent hole in the archive."""
 
-class StampedCrs(TempCase):
-    def test_an_answer_with_no_crs_takes_the_grid_the_row_declares(self):
-        """A coverage that answers a GeoTIFF with a transform and no projection at all
-        cannot be placed by the tail, and the row already names the grid it asked in."""
+        class Broken(SimpleHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                self.send_error(500, "upstream is down")
 
-        source = ingest.SOURCES["de-mv"]
-        path = self.inputs / "nameless.tif"
-        with rasterio.open(path, "w", driver="GTiff", width=4, height=4, count=1,
-                           dtype="float32",
-                           transform=Affine(1, 0, 300000, 0, -1, 5950300)) as dst:
-            dst.write(np.full((4, 4), 100.0, dtype="float32"), 1)
-        with rasterio.open(path) as src:
-            self.assertIsNone(src.crs)
+            def log_message(self, *args):
+                pass
 
-        source.stamp_crs(path)
-        with rasterio.open(path) as src:
-            self.assertEqual(src.crs, CRS.from_epsg(source.epsg))
+        broken = ThreadingHTTPServer(("127.0.0.1", 0), Broken)
+        Thread(target=broken.serve_forever, daemon=True).start()
+        self.addCleanup(broken.server_close)
+        self.addCleanup(broken.shutdown)
+        self.source.base = f"http://127.0.0.1:{broken.server_address[1]}/"
+
+        ingest.sources.base.RETRY_DELAYS = ()
+        self.addCleanup(lambda: setattr(ingest.sources.base, "RETRY_DELAYS", (2, 4, 8)))
+        with self.assertRaises(ingest.Refuse) as refusal:
+            self.source.fetch(self.BOX, self.root / "work")
+        self.assertIn("500", str(refusal.exception))
 
 
 class FrenchBil(unittest.TestCase):
@@ -401,8 +543,10 @@ class BulkArchives(unittest.TestCase):
             out = Path(directory) / "unpacked"
             rasters = ingest.sources.base.unpack(archive, out)
             self.assertEqual([path.relative_to(out).as_posix() for path in rasters],
-                             ["dgm/tile_01.asc", "dgm/tile_01.tif"])
+                             ["dgm/tile_01.tif"])
             self.assertFalse((out / "readme.txt").exists())
+            # A `.asc` grid names no CRS, and the tail cannot place one, so it stays in.
+            self.assertFalse((out / "dgm" / "tile_01.asc").exists())
 
     def test_a_member_that_reaches_outside_the_directory_is_refused(self):
         """A zip can name `../../etc/x.tif`, and unpacking it would write there."""
@@ -438,7 +582,7 @@ class BulkArchives(unittest.TestCase):
             def files(self, bbox):
                 return []
 
-        source = Empty("xx", "Nowhere", "p", 1.0, "l", "a", "d", (-180, -90, 180, 90))
+        source = Empty("xx", "Nowhere", "p", 1.0, "l", "a", "NAP", (-180, -90, 180, 90))
         with self.assertRaises(ingest.Refuse) as refusal:
             source.fetch((0, 0, 1, 1), Path("/nonexistent"))
         self.assertIn("nothing published covers", str(refusal.exception))
@@ -461,6 +605,19 @@ class Registry(unittest.TestCase):
             ingest.SOURCES["de-nw"].request(BOX)
         self.assertIn("no such coverage", str(refusal.exception))
 
+    def test_the_readme_priority_block_is_the_constant(self):
+        """The ranking is a decision, so it is written down twice — and held to once."""
+
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+        block = readme.split("```priority\n", 1)[1].split("```", 1)[0]
+        written = tuple(key for key in block.replace("\n", " ").replace(",", " ").split() if key)
+        self.assertEqual(written, ingest.PRIORITY)
+
+    def test_every_registered_source_is_ranked(self):
+        """A key that is not in `PRIORITY` ranks last, which is a silent demotion."""
+
+        self.assertEqual([key for key in ingest.SOURCES if key not in ingest.PRIORITY], [])
+
     def test_every_registered_source_states_a_vertical_datum(self):
         """The archive is orthometric metres, so a source whose datum nobody wrote down
         cannot be held to it."""
@@ -469,12 +626,14 @@ class Registry(unittest.TestCase):
             with self.subTest(key):
                 self.assertTrue(source.vertical_datum)
                 self.assertTrue(source.attribution and source.licence and source.product)
-        with self.assertRaises(ingest.Refuse):
-            ingest.Source("x", "Nowhere", "p", 1.0, "l", "a", "", (0, 0, 1, 1))
+        for datum in ("", "NAD83 ellipsoidal heights", "Mystery Height 1997"):
+            with self.subTest(datum):
+                with self.assertRaises(ingest.Refuse):
+                    ingest.Source("x", "Nowhere", "p", 1.0, "l", "a", datum, (0, 0, 1, 1))
 
     def test_a_source_with_no_adapter_says_to_pass_input(self):
         manual = ingest.sources.ManualSource(
-            "xx", "Nowhere", "p", 1.0, "l", "a", "d", (0, 0, 1, 1),
+            "xx", "Nowhere", "p", 1.0, "l", "a", "NAP", (0, 0, 1, 1),
             why="the service needs a token")
         with self.assertRaises(ingest.Refuse) as refusal:
             manual.fetch(BOX, Path("/nonexistent"))

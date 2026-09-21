@@ -12,7 +12,7 @@ import rasterio
 from rasterio.io import MemoryFile
 
 from ..lattice import Refuse
-from .protocols import TiledService, degree_pixels
+from .protocols import TiledService, output_size
 from .base import http_get
 
 # The sentinel IGN puts where RGE ALTI has no ground. The tail drops anything below
@@ -28,7 +28,7 @@ class BilWmsSource(TiledService):
         self.service, self.layer = url, layer
 
     def url(self, box) -> str:
-        px, py = degree_pixels(box, self.resolution_m)
+        px, py = output_size(box, self.resolution_m, f"{self.key} {box}")
         west, south, east, north = box
         # WMS 1.3.0 with a geographic CRS states the box latitude first.
         query = urllib.parse.urlencode({
@@ -39,7 +39,7 @@ class BilWmsSource(TiledService):
         return f"{self.service}?{query}"
 
     def request(self, box) -> bytes:
-        px, py = degree_pixels(box, self.resolution_m)
+        px, py = output_size(box, self.resolution_m, f"{self.key} {box}")
         raw = http_get(self.url(box))
         if len(raw) != px * py * 4:
             text = raw[:400].decode("utf-8", "replace").replace("\n", " ").strip()

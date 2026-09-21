@@ -1,10 +1,10 @@
 """Switzerland: swissALTI3D, published per square kilometre over STAC."""
 
-import json
 import os
 from pathlib import Path
 
 from .base import Source, http_get
+from .stac import stac_items
 
 
 class StacSource(Source):
@@ -18,14 +18,11 @@ class StacSource(Source):
     def fetch(self, bbox, workdir) -> list[Path]:
         url = f"{self.stac}?bbox={bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}&limit=100"
         assets, seen = [], set()
-        while url:
-            page = json.loads(http_get(url))
-            for feature in page["features"]:
-                for name, asset in feature["assets"].items():
-                    if name.endswith(".tif") and f"_{self.gsd}_" in name and name not in seen:
-                        seen.add(name)
-                        assets.append((name, asset["href"]))
-            url = next((l["href"] for l in page.get("links", []) if l.get("rel") == "next"), None)
+        for feature in stac_items(url):
+            for name, asset in feature["assets"].items():
+                if name.endswith(".tif") and f"_{self.gsd}_" in name and name not in seen:
+                    seen.add(name)
+                    assets.append((name, asset["href"]))
         workdir.mkdir(parents=True, exist_ok=True)
         paths = []
         for i, (name, href) in enumerate(sorted(assets), 1):
