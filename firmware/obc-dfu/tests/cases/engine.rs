@@ -1,10 +1,6 @@
-//! Install-engine sequencing tests (host, mock IO) — the safety property of the DFU epic (#615).
-//!
-//! Every test drives `obc_dfu::engine::run` against a `MockIo` that models the SD card (a block
-//! map), the RRAM app slot, and the BOOT_STATE page, logging every operation. The assertions pin
-//! the *ordering* (verify strictly before the first slot write, state transition strictly after
-//! the last readback), the retry counts, the header-skip/padding byte math, and every failure
-//! edge — power loss included.
+//! Install-engine sequencing tests. Every test drives `obc_dfu::engine::run` against a `MockIo`
+//! that models the card, the RRAM app slot and the boot-state page, and logs every operation. The
+//! assertions pin the ordering, the retry counts, the byte math, and every failure edge.
 
 use obc_dfu::engine::{abandon_arm, run, InstallIo, IoError, Outcome, Phase, Slot, FLASH_RETRIES, PAD_BYTE};
 use obc_dfu::{BootState, Extent, ImageHeader, LastOutcome, OutcomeKind, StagedRef, PAGE_LEN};
@@ -12,52 +8,37 @@ use std::collections::BTreeMap;
 
 const BLOCK: usize = 512;
 const HEADER_LEN: usize = 64;
-/// A small app slot so tests stay fast; the engine takes it as a parameter.
 const SLOT: Slot = Slot { base: 0x8000, len: 16 * 1024 };
-/// What the mock's flash model is filled with before any write — distinguishable from both
-/// image bytes and the 0xFF pad.
+/// Fills the flash model before any write; distinct from both image bytes and the 0xFF pad.
 const FLASH_BLANK: u8 = 0xAA;
-/// The engine's staging buffer, sized like the bootloader's.
 const BUF_LEN: usize = 4096;
-
-// ---------------------------------------------------------------------------- mock IO
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Op {
-    ReadBlocks {
-        start: u32,
-        blocks: u32,
-    },
-    WriteLines {
-        addr: u32,
-        len: u32,
-    },
+    ReadBlocks { start: u32, blocks: u32 },
+    WriteLines { addr: u32, len: u32 },
     ReadFlash,
-    /// The written state's tag (decoded back out of the page bytes).
     WriteState(&'static str),
 }
 
 struct MockIo {
-    /// The SD card: absolute block index → block content.
+    /// Absolute block index to block content.
     disk: BTreeMap<u32, [u8; BLOCK]>,
-    /// The RRAM app slot, `SLOT.len` bytes at `SLOT.base`.
     flash: Vec<u8>,
-    /// The BOOT_STATE page bytes.
     state_page: Vec<u8>,
     ops: Vec<Op>,
-    /// Power-loss model: the write (write_lines + write_state, counted together) that dies
-    /// mid-operation. The dying write applies a *partial* prefix (a torn write), then every
-    /// later operation fails — the "device is off" state.
+    /// Power-loss model: the write that dies mid-operation. It applies a partial prefix, then
+    /// every later operation fails.
     kill_at_write: Option<usize>,
     writes_done: usize,
     dead: bool,
-    /// Fail the Nth read_blocks call (transient card error model).
+    /// Fail the Nth read_blocks call: a transient card error.
     fail_read_at: Option<usize>,
     reads_done: usize,
-    /// Fail every read_blocks once at least one slot write has happened — models a card that dies
-    /// only *after* the flash pass has begun (a mid-flash, non-abandonable SD error, DR3 #731).
+    /// Fail every read_blocks once a slot write has happened: a card that dies after the flash
+    /// pass began, which is not abandonable.
     fail_read_after_write: bool,
-    /// Corrupt every write_lines (flip the first byte) — a flash that never takes the data.
+    /// Flip the first byte of every write: a flash that never takes the data.
     corrupt_writes: bool,
 }
 
@@ -81,8 +62,8 @@ impl MockIo {
         }
     }
 
-    /// Lay `bytes` onto the disk across `extents` (in order), padding the final block with 0xEE
-    /// slack — exactly how a FAT file sits in its cluster chain.
+    /// Lays `bytes` across `extents`, with slack in the final block, as a FAT file sits in its
+    /// cluster chain.
     fn load_file(&mut self, bytes: &[u8], extents: &[Extent]) {
         let mut off = 0usize;
         for e in extents {
@@ -99,7 +80,6 @@ impl MockIo {
         assert!(off >= bytes.len(), "extents must cover the file: {} of {} placed", off, bytes.len());
     }
 
-    /// The decoded BOOT_STATE page — what the next boot would see.
     fn state(&self) -> BootState {
         BootState::decode(&self.state_page)
     }
@@ -108,7 +88,7 @@ impl MockIo {
         self.ops.iter().filter(|o| matches!(o, Op::WriteLines { .. })).count()
     }
 
-    /// "Power cycle" the killed mock: alive again, op log cleared, disk/flash/state kept.
+    /// Alive again, op log cleared, disk, flash and state kept.
     fn power_cycle(&mut self) {
         self.dead = false;
         self.kill_at_write = None;
@@ -127,8 +107,6 @@ impl InstallIo for MockIo {
         if self.fail_read_at == Some(self.reads_done) {
             return Err(IoError);
         }
-        // A card that dies once the flash pass has started writing the slot: every verify-pass read
-        // (writes_done == 0) still succeeds, so the failure is unambiguously mid-flash.
         if self.fail_read_after_write && self.writes_done > 0 {
             return Err(IoError);
         }
@@ -151,7 +129,6 @@ impl InstallIo for MockIo {
         }
         self.writes_done += 1;
         if self.kill_at_write == Some(self.writes_done) {
-            // Torn write: half the lines (rounded down to a whole line) land, then lights out.
             let torn = data.len() / 2 / 16 * 16;
             self.flash[off..off + torn].copy_from_slice(&data[..torn]);
             self.dead = true;
@@ -183,8 +160,8 @@ impl InstallIo for MockIo {
         let page = state.encode();
         self.writes_done += 1;
         if self.kill_at_write == Some(self.writes_done) {
-            // Torn page write: a prefix of the new blob over the old page (front-to-back
-            // 16-byte lines, like the RRAMC) — must decode to Idle via the CRC frame.
+            // A prefix of the new blob over the old page, like the RRAMC writes lines, so the
+            // CRC frame must decode it to Idle.
             let torn = page.len() / 2 / 16 * 16;
             self.state_page[..torn].copy_from_slice(&page.as_bytes()[..torn]);
             self.dead = true;
@@ -204,15 +181,11 @@ impl InstallIo for MockIo {
     fn progress(&mut self, _phase: Phase, _done: u32, _total: u32) {}
 }
 
-// ---------------------------------------------------------------------------- fixtures
-
-/// A deterministic pseudo-random image of `len` bytes.
 fn image(len: usize) -> Vec<u8> {
     (0..len).map(|i| (i as u32).wrapping_mul(2654435761).to_le_bytes()[1]).collect()
 }
 
-/// Wrap `img` into an OBCU container file and a consistent `StagedRef` over `extents` — the
-/// extent chain covers the WHOLE file (header + image), as the armer resolves `UPDATE.BIN`.
+/// The extent chain covers the whole file, header included, as the armer resolves `UPDATE.BIN`.
 fn stage(img: &[u8], version: &str, extents: &[Extent]) -> (Vec<u8>, StagedRef) {
     let header = ImageHeader::new(img, version);
     let mut file = header.encode().to_vec();
@@ -227,7 +200,7 @@ fn stage(img: &[u8], version: &str, extents: &[Extent]) -> (Vec<u8>, StagedRef) 
     (file, staged)
 }
 
-/// Extent chain with irregular run lengths covering `file_len` bytes (exercises the chain walk).
+/// An extent chain with irregular run lengths, to exercise the chain walk.
 fn chain_for(file_len: usize, first_block: u32) -> Vec<Extent> {
     let need = file_len.div_ceil(BLOCK) as u32;
     let mut out = Vec::new();
@@ -248,7 +221,6 @@ fn chain_for(file_len: usize, first_block: u32) -> Vec<Extent> {
     out
 }
 
-/// An `Armed` fixture: image on disk, staged record, optional rollback snapshot also on disk.
 fn armed(img_len: usize, with_rollback: bool) -> (MockIo, BootState, Vec<u8>, StagedRef) {
     let img = image(img_len);
     let extents = chain_for(img_len + HEADER_LEN, 1000);
@@ -275,8 +247,6 @@ fn run_engine(io: &mut MockIo, state: &BootState) -> Outcome {
     run(state, &SLOT, io, &mut buf)
 }
 
-/// Assert the app slot holds exactly `img`, tail-padded with 0xFF to a 16-byte line, and the
-/// rest of the slot untouched (still the blank pattern) — the header-skip/padding contract.
 fn assert_flash_is(io: &MockIo, img: &[u8]) {
     assert_eq!(&io.flash[..img.len()], img, "slot bytes must be exactly the raw image (header skipped)");
     let padded = img.len().div_ceil(16) * 16;
@@ -284,24 +254,17 @@ fn assert_flash_is(io: &MockIo, img: &[u8]) {
     assert!(io.flash[padded..].iter().all(|&b| b == FLASH_BLANK), "nothing past the padded image may be written");
 }
 
-// ---------------------------------------------------------------------------- the matrix
-
-/// Happy path: verify → flash → readback → Trial, in that strict order, and the flashed bytes
-/// are exactly the raw image (the 64-byte container header skipped, tail padded with 0xFF).
+/// Verify, flash, readback, then Trial, in that strict order.
 #[test]
 fn happy_path_ordering_and_bytes() {
-    // 9001: multi-chunk (3 buffer fills) and not a multiple of 16 (real tail padding).
+    // 9001 bytes: three buffer fills, and not a multiple of 16, so the tail really pads.
     let (mut io, state, img, update) = armed(9001, true);
     assert_eq!(run_engine(&mut io, &state), Outcome::Installed);
     assert_flash_is(&io, &img);
 
-    // Ordering: no slot write before the last verify read; the state write is the very last
-    // operation and follows the last readback.
     let first_write = io.ops.iter().position(|o| matches!(o, Op::WriteLines { .. })).expect("flashed");
     let verify_reads: Vec<usize> =
         io.ops.iter().enumerate().filter_map(|(i, o)| matches!(o, Op::ReadBlocks { .. }).then_some(i)).collect();
-    // The verify pass must have streamed the whole file before the first write: at least one
-    // read precedes it, and the bytes read before the first write cover header + image.
     let bytes_before: u32 = io.ops[..first_write]
         .iter()
         .filter_map(|o| match o {
@@ -311,12 +274,10 @@ fn happy_path_ordering_and_bytes() {
         .sum();
     assert!(bytes_before as usize >= HEADER_LEN + img.len(), "full verify stream before the first slot write");
     assert!(verify_reads.first().unwrap() < &first_write);
-    // Last op = the Trial state write, after the last readback.
     assert_eq!(io.ops.last(), Some(&Op::WriteState("trial")));
     let last_readback = io.ops.iter().rposition(|o| matches!(o, Op::ReadFlash)).expect("readback ran");
     assert_eq!(last_readback, io.ops.len() - 2);
 
-    // The written Trial carries the generation, the installed header, and the rollback ref.
     match io.state() {
         BootState::Trial { generation, installed, rollback } => {
             assert_eq!(generation, 7);
@@ -327,20 +288,16 @@ fn happy_path_ordering_and_bytes() {
     }
 }
 
-/// A corrupt staged image (CRC mismatch) is rejected with ZERO slot writes and the arm cleared
-/// to Idle — a bad stage never costs the running firmware (epic invariant 1).
+/// A bad stage must never cost the running firmware.
 #[test]
 fn verify_crc_fail_writes_nothing() {
     let (mut io, state, _img, _update) = armed(9001, true);
-    // Flip one image byte on card (past the header, mid-file).
     let key = *io.disk.keys().nth(2).unwrap();
     io.disk.get_mut(&key).unwrap()[100] ^= 0xFF;
 
     assert_eq!(run_engine(&mut io, &state), Outcome::StageRejected);
     assert_eq!(io.count_write_lines(), 0, "verify failure must not touch the app slot");
     assert!(io.flash.iter().all(|&b| b == FLASH_BLANK));
-    // Arm cleared; the outgoing image's header (from the rollback snapshot) is carried forward,
-    // and the terminal write records StageRejected against the arm's generation (7).
     match io.state() {
         BootState::Idle { installed, last_outcome } => {
             assert!(installed.is_some(), "outgoing header carried into Idle");
@@ -350,12 +307,12 @@ fn verify_crc_fail_writes_nothing() {
     }
 }
 
-/// An embedded OBCU header on card that differs from the armed record is a mismatch too (the
-/// blocks are not the image this arm described), rejected before any read of the image body.
+/// A header on card that differs from the armed record means the blocks are not the image this
+/// arm described.
 #[test]
 fn verify_foreign_header_rejected() {
     let (mut io, state, _img, _update) = armed(2000, false);
-    // Overwrite the on-card header with a different (self-consistent!) one.
+    // A different, but self-consistent, header.
     let other = ImageHeader::new(&image(2000), "v9.9.9-foreign").encode();
     let first = *io.disk.keys().next().unwrap();
     io.disk.get_mut(&first).unwrap()[..HEADER_LEN].copy_from_slice(&other);
@@ -372,13 +329,13 @@ fn verify_foreign_header_rejected() {
     );
 }
 
-/// A chain that runs out before header+image is a deterministic bad stage, not an SD error.
+/// A chain that runs out is a bad stage, not an SD error.
 #[test]
 fn verify_truncated_chain_rejected() {
     let img = image(5000);
     let extents = chain_for(img.len() + HEADER_LEN, 1000);
     let (file, update) = stage(&img, "v2.0.0", &extents);
-    // Arm with a chain one extent short — but the record still self-consistent.
+    // One extent short, but the record is still self-consistent.
     let short = &extents[..extents.len() - 1];
     let staged_short = StagedRef::new(update.header, update.len, update.crc32, short).unwrap();
     let state = BootState::Armed { generation: 1, update: staged_short, rollback: None };
@@ -396,25 +353,20 @@ fn verify_truncated_chain_rejected() {
     );
 }
 
-/// An image whose line-padded length exceeds the slot is rejected up front — the pad can never
-/// write past the slot (and a slot-filling image that DOES fit is accepted).
+/// The pad must never write past the slot, and an image that fills the slot exactly is accepted.
 #[test]
 fn slot_bounds_gate() {
-    // Fits exactly: len == slot.len (already a 16-multiple).
     let (mut io, state, img, _) = armed(SLOT.len as usize, false);
     assert_eq!(run_engine(&mut io, &state), Outcome::Installed);
     assert_eq!(&io.flash[..], &img[..], "a slot-filling image is written wall to wall");
 
-    // Doesn't fit: len + pad > slot.len ⇒ rejected before any read or write.
     let (mut io, state, _, _) = armed(SLOT.len as usize + 1, false);
     assert_eq!(run_engine(&mut io, &state), Outcome::StageRejected);
     assert_eq!(io.count_write_lines(), 0);
 }
 
-/// A transient SD read error must NOT clear the arm (unlike a mismatch): outcome `SdError`,
-/// state untouched, nothing written — the caller retries and the stage stays installable. These
-/// failures all land in the verify pass (before any slot write), so the arm is still abandonable
-/// (`pre_erase: true`, DR3 #731).
+/// A transient SD read error must not clear the arm. These failures are all in the verify pass,
+/// so the arm stays abandonable.
 #[test]
 fn sd_error_leaves_arm_intact() {
     for fail_at in [1, 3, 7] {
@@ -426,13 +378,12 @@ fn sd_error_leaves_arm_intact() {
     }
 }
 
-/// DR3 (#731) acceptance — an SD error *after* the flash pass has begun is NOT abandonable
-/// (`pre_erase: false`): the slot may be half-written, so the state stays `Armed` for the
-/// forever-retry and nothing is cleared. (The caller must never call `abandon_arm` for this.)
+/// An SD error after the flash pass began is not abandonable: the slot may be half-written, so
+/// the state stays `Armed`.
 #[test]
 fn sd_error_mid_flash_is_not_abandonable() {
     let (mut io, state, _img, _update) = armed(9001, true);
-    io.fail_read_after_write = true; // reads fail once the first slot write has landed
+    io.fail_read_after_write = true;
 
     assert_eq!(run_engine(&mut io, &state), Outcome::SdError { pre_erase: false });
     assert!(io.count_write_lines() > 0, "the flash pass must have started (a slot write happened)");
@@ -440,23 +391,17 @@ fn sd_error_mid_flash_is_not_abandonable() {
     assert_eq!(io.state(), state, "arm untouched — a mid-flash card death is never abandoned");
 }
 
-/// DR3 (#731) acceptance — after the driver's bounded pre-erase retry budget is exhausted it calls
-/// `abandon_arm`: the arm is cleared to `Idle` (installed = the outgoing image's header, carried
-/// from the rollback snapshot as the reject path does), an `ArmAbandoned` outcome is recorded
-/// against the arm's generation, the app slot is never touched, and the old app is booted. Covered
-/// for both the with- and without-rollback arms.
+/// After the driver's retry budget is exhausted it abandons the arm: cleared to `Idle`, the
+/// outcome recorded, and the app slot never touched. Both arms, with and without a rollback.
 #[test]
 fn abandon_arm_clears_to_idle_and_boots_old_app() {
     for with_rollback in [true, false] {
         let (mut io, state, _img, _update) = armed(9001, with_rollback);
 
-        // The failure that drives the driver to the abandon is provably pre-erase, and nothing was
-        // written before it (the strict sequencing rule this issue turns on).
         io.fail_read_at = Some(1);
         assert_eq!(run_engine(&mut io, &state), Outcome::SdError { pre_erase: true });
         assert_eq!(io.count_write_lines(), 0, "nothing may be erased before the abandon");
 
-        // Budget exhausted (the count lives in the driver) → abandon.
         assert_eq!(abandon_arm(&state, &mut io), Outcome::ArmAbandoned);
         assert_eq!(io.count_write_lines(), 0, "the abandon must never touch the app slot");
 
@@ -478,8 +423,7 @@ fn abandon_arm_clears_to_idle_and_boots_old_app() {
     }
 }
 
-/// `abandon_arm` on a non-`Armed` state is a caller bug — it must stay total: nothing is written and
-/// the app is booted (`Jump`), never a panic (the bootloader's standing rule).
+/// A non-`Armed` abandon is a caller bug, and must stay total: no write, no panic.
 #[test]
 fn abandon_arm_on_non_armed_is_a_noop_jump() {
     let state = BootState::Idle { installed: None, last_outcome: None };
@@ -488,13 +432,10 @@ fn abandon_arm_on_non_armed_is_a_noop_jump() {
     assert!(io.ops.is_empty(), "no writes on a non-Armed abandon");
 }
 
-/// Power-loss sweep: kill the mock at every possible write (torn), power-cycle, re-run from
-/// whatever the page now decodes to — the system converges to the new image in the slot with a
-/// sane state (epic invariant 2: `Armed` is idempotent; a torn state page decodes to `Idle`
-/// only after the slot already holds the verified image).
+/// Kill the mock at every possible write, power-cycle, and re-run from whatever the page decodes
+/// to. The system must converge to the new image in the slot with a sane state.
 #[test]
 fn power_loss_converges() {
-    // Count the writes of a clean run first.
     let (mut io, state, img, update) = armed(9001, true);
     assert_eq!(run_engine(&mut io, &state), Outcome::Installed);
     let total_writes = io.writes_done;
@@ -506,15 +447,12 @@ fn power_loss_converges() {
         let first = run_engine(&mut io, &state);
         assert_ne!(first, Outcome::Installed, "kill at write {kill} cannot complete");
 
-        // Power cycle: next boot decodes whatever the page holds and re-runs.
         io.power_cycle();
         let next_state = io.state();
         let second = run_engine(&mut io, &next_state);
 
-        // Converged: the slot holds the full verified image...
         assert_flash_is(&io, &img);
-        // ...and the state is sane: Trial (normal convergence) or Idle (the kill tore the
-        // final Trial write itself — flash was already complete and verified by then).
+        // Idle is sane only when the kill tore the final Trial write, after a complete flash.
         match (second, io.state()) {
             (Outcome::Installed, BootState::Trial { installed, .. }) => assert_eq!(installed, update.header),
             (Outcome::Jump, BootState::Idle { .. }) => {
@@ -525,25 +463,22 @@ fn power_loss_converges() {
     }
 }
 
-/// Readback that never matches: the flash pass runs 1 + FLASH_RETRIES times, then the engine
-/// halts with `FlashError` and — critically — NO state write happened: the page still holds
-/// `Armed`, so the next power cycle retries from scratch.
+/// A readback that never matches halts with no state write, so the page still holds `Armed` and
+/// the next power cycle retries from the start.
 #[test]
 fn readback_fail_retries_then_halts() {
     let (mut io, state, _img, _update) = armed(9001, false);
-    io.corrupt_writes = true; // every write lands corrupted ⇒ readback can never match
+    io.corrupt_writes = true;
 
     assert_eq!(run_engine(&mut io, &state), Outcome::FlashError);
 
-    // Exactly 1 + FLASH_RETRIES full flash passes (each pass writes ceil(9001/4096) = 3 chunks).
     let chunks_per_pass = 9001usize.div_ceil(BUF_LEN);
     assert_eq!(io.count_write_lines(), (1 + FLASH_RETRIES as usize) * chunks_per_pass, "flash retried exactly 3x");
     assert!(!io.ops.iter().any(|o| matches!(o, Op::WriteState(_))), "no state write on a failed install");
     assert_eq!(io.state(), state, "state must still be Armed so the next boot retries");
 }
 
-/// Rollback: same engine, source = the snapshot extents; ends in `Idle { installed: rollback }`
-/// + reset (no second trial for the known-good image).
+/// A rollback ends in `Idle`: the known-good image gets no second trial.
 #[test]
 fn rollback_path() {
     let rb_img = image(7003);
@@ -560,15 +495,13 @@ fn rollback_path() {
     match io.state() {
         BootState::Idle { installed, last_outcome } => {
             assert_eq!(installed, Some(snapshot.header));
-            // The rollback restored the snapshot — recorded as RolledBack against the arm's gen (4).
             assert_eq!(last_outcome, Some(LastOutcome { kind: OutcomeKind::RolledBack, generation: 4 }));
         }
         s => panic!("expected Idle, got {s:?}"),
     }
 }
 
-/// A rollback whose snapshot is itself corrupt must NOT flash garbage over the (running,
-/// fully-flashed) trial image: it clears to Idle and keeps what's in the slot.
+/// A corrupt snapshot must not flash garbage over the running trial image.
 #[test]
 fn rollback_bad_snapshot_keeps_trial_image() {
     let rb_img = image(7003);
@@ -578,7 +511,6 @@ fn rollback_bad_snapshot_keeps_trial_image() {
     let state = BootState::Trial { generation: 4, installed: trial_hdr, rollback: Some(snapshot) };
     let mut io = MockIo::new(&state);
     io.load_file(&rb_file, &rb_extents);
-    // Corrupt the snapshot on card.
     let key = *io.disk.keys().nth(1).unwrap();
     io.disk.get_mut(&key).unwrap()[9] ^= 0xFF;
 
@@ -587,15 +519,13 @@ fn rollback_bad_snapshot_keeps_trial_image() {
     match io.state() {
         BootState::Idle { installed, last_outcome } => {
             assert_eq!(installed, Some(trial_hdr), "the trial image is accepted");
-            // The trial image stuck (snapshot unusable) — recorded as Installed against the gen (4).
             assert_eq!(last_outcome, Some(LastOutcome { kind: OutcomeKind::Installed, generation: 4 }));
         }
         s => panic!("expected Idle, got {s:?}"),
     }
 }
 
-/// AcceptAndClear (unconfirmed trial, no snapshot — the first-install case): write Idle with the
-/// running image's header and jump; no SD, no slot writes.
+/// An unconfirmed trial with no snapshot writes `Idle` and jumps: no card reads, no slot writes.
 #[test]
 fn accept_and_clear() {
     let installed = ImageHeader::new(&image(1234), "v1.0.0-first");
@@ -608,13 +538,11 @@ fn accept_and_clear() {
         io.state(),
         BootState::Idle {
             installed: Some(installed),
-            // First-install trial accepted — recorded as Installed against the arm's gen (1).
             last_outcome: Some(LastOutcome { kind: OutcomeKind::Installed, generation: 1 })
         }
     );
 }
 
-/// Idle: nothing pending, nothing done.
 #[test]
 fn idle_jumps_untouched() {
     let state = BootState::Idle { installed: None, last_outcome: None };
@@ -623,8 +551,7 @@ fn idle_jumps_untouched() {
     assert!(io.ops.is_empty());
 }
 
-/// Sub-chunk image (single buffer fill, tail shorter than a block) — the small-image edge of the
-/// header-skip + padding math.
+/// A single buffer fill with a tail shorter than a block: the small edge of the padding math.
 #[test]
 fn tiny_image_bytes_exact() {
     let (mut io, state, img, _) = armed(100, false);

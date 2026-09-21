@@ -1,7 +1,5 @@
-//! Host tests for the app-side armer's decision core (S4, #619) — the scan validation matrix,
-//! the arm sequencing (snapshot **before** the boot-state page write, asserted on a mock's call
-//! log), the generation bump, the first-install no-rollback path, and the trial confirm. The
-//! same mock-IO bar as `tests/engine.rs`.
+//! Host tests for the armer: the scan validation matrix, the arm sequencing asserted on a mock's
+//! call log, the generation bump, the first-install path, and the trial confirm.
 
 use obc_dfu::armer::{
     arm, confirm_trial, scan, ArmError, ArmIo, ArmTicket, ExtentsError, Rollback, ScanError, StageIo,
@@ -13,23 +11,18 @@ use obc_dfu::{
     SIG_LEN, SIG_SCHEME_ED25519,
 };
 
-// ==================== The staged-file fake ====================
-
-/// An in-memory `UPDATE.BIN`: the file bytes plus a scripted extent resolve and optional
-/// injected read failures.
+/// An in-memory `UPDATE.BIN`: the file bytes, a scripted extent resolve, and injected read
+/// failures.
 struct FakeStage {
-    /// The staged file, or `None` for the missing-file case.
     file: Option<Vec<u8>>,
-    /// What `stage_extents` answers.
     extents: Result<Vec<Extent>, ExtentsError>,
-    /// Fail every `read_stage` at or past this offset (`u32::MAX` = never).
+    /// Fail every `read_stage` at or past this offset; `u32::MAX` never fails.
     fail_reads_from: u32,
 }
 
 impl FakeStage {
-    /// A happy stage: `image` wrapped in a valid **signed** (OBCU v2) container under the committed
-    /// test key, one whole-file extent at block 100. Since #997 an unsigned container is not a happy
-    /// stage — `scan` rejects it (see `tests/signature.rs`).
+    /// `image` wrapped in a signed container under the committed test key, as one whole-file
+    /// extent. An unsigned container is not a happy stage; `scan` rejects it.
     fn happy(image: &[u8], version: &str) -> (FakeStage, ImageHeader) {
         let header = ImageHeader::new(image, version).signed();
         let mut file = header.encode().to_vec();
@@ -66,7 +59,7 @@ impl StageIo for FakeStage {
     }
     fn stage_extents(&mut self, out: &mut [Extent; MAX_EXTENTS]) -> Result<usize, ExtentsError> {
         let ext = self.extents.clone()?;
-        // An over-long scripted chain reports its true count (the resolver contract).
+        // An over-long scripted chain reports its true count.
         if ext.len() > MAX_EXTENTS {
             return Err(ExtentsError::TooFragmented { extents: ext.len() as u32 });
         }
@@ -76,12 +69,10 @@ impl StageIo for FakeStage {
 }
 
 fn scan_with(stage: &mut FakeStage) -> Result<StagedRef, ScanError> {
-    // A deliberately awkward chunk size so the CRC + signature pass exercises partial-chunk tails.
+    // An awkward chunk size, so the CRC and signature pass gets partial-chunk tails.
     let mut chunk = [0u8; 96];
     scan(stage, &mut chunk, &test_key::PUBLIC)
 }
-
-// ==================== Scan matrix ====================
 
 #[test]
 fn scan_happy_returns_a_coherent_staged_ref() {
@@ -112,7 +103,6 @@ fn scan_rejects_bad_magic_and_torn_header() {
     stage.file.as_mut().unwrap()[8] ^= 0xFF; // payload flip without fixing the header CRC
     assert_eq!(scan_with(&mut stage), Err(ScanError::BadHeader));
 
-    // A file shorter than the 64-byte header can't even be decoded.
     let (mut stage, _) = FakeStage::happy(b"img", "v1");
     stage.file.as_mut().unwrap().truncate(HEADER_LEN - 1);
     assert_eq!(scan_with(&mut stage), Err(ScanError::Truncated));
@@ -128,8 +118,8 @@ fn scan_rejects_bad_image_crc() {
 
 #[test]
 fn scan_rejects_oversize_before_any_bulk_read() {
-    // Hand-build a header whose CRC is valid but whose image_len is over the slot cap; the file
-    // carries no body at all — the scan must reject on the length gate, not try to read.
+    // A valid header CRC, an `image_len` over the cap, and no body: the scan must reject on the
+    // length gate instead of reading.
     let header = ImageHeader {
         image_len: MAX_IMAGE_LEN + 1,
         image_crc32: 0,
@@ -159,7 +149,7 @@ fn scan_rejects_too_fragmented_with_the_true_count() {
     stage.extents = Err(ExtentsError::TooFragmented { extents: 130 });
     assert_eq!(scan_with(&mut stage), Err(ScanError::TooFragmented { extents: 130 }));
 
-    // A resolver that *returns* an over-long chain (rather than erroring) is caught too.
+    // A resolver that returns an over-long chain, instead of erroring, is caught too.
     let (mut stage, _) = FakeStage::happy(b"image bytes", "v1");
     stage.extents = Ok(vec![Extent { start_block: 1, blocks: 1 }; MAX_EXTENTS + 1]);
     assert_eq!(scan_with(&mut stage), Err(ScanError::TooFragmented { extents: (MAX_EXTENTS + 1) as u32 }));
@@ -177,9 +167,7 @@ fn scan_maps_read_failures_to_io() {
     assert_eq!(scan_with(&mut stage), Err(ScanError::Io));
 }
 
-// ==================== Arm sequencing ====================
-
-/// What the mock observed, in order — the sequencing assertion's evidence.
+/// What the mock observed, in order: the evidence for the sequencing assertion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Call {
     Snapshot(ImageHeader),
@@ -189,11 +177,8 @@ enum Call {
 
 struct FakeArmIo {
     calls: Vec<Call>,
-    /// What `snapshot` answers.
     snapshot: Result<Option<StagedRef>, ScanError>,
-    /// Whether `stage_boot_blob` fails (#1158).
     stage_fails: bool,
-    /// Whether `write_state` fails.
     write_fails: bool,
 }
 
@@ -247,9 +232,8 @@ fn arm_snapshots_before_the_page_write_and_bumps_the_generation() {
     let ticket = arm(&mut io, &current, update).expect("arm succeeds");
     assert_eq!(ticket, ArmTicket { generation: 1, rollback: Rollback::Snapshot }, "Idle carries generation 0 → 1");
 
-    // THE ordering assertion: the rollback snapshot lands on the card, then the blob stage lands
-    // in RRAM (#1158), and only then the boot-state page write — a power cut anywhere before the
-    // page write leaves nothing armed, and a valid Armed page implies a staged blob.
+    // The ordering assertion: snapshot, then blob stage, then the page write. A power cut before
+    // the page write leaves nothing armed, and a valid Armed page implies a staged blob.
     assert_eq!(io.calls.len(), 3);
     assert_eq!(io.calls[0], Call::Snapshot(old));
     assert_eq!(io.calls[1], Call::StageBlob);
@@ -267,8 +251,8 @@ fn arm_snapshots_before_the_page_write_and_bumps_the_generation() {
 
 #[test]
 fn arm_generation_is_old_plus_one_even_from_a_stale_armed_page() {
-    // Defensive totality: a non-Idle page can't be live mid-run, but arm() must stay total —
-    // no snapshot (no known-installed image), generation still bumps past the stale record.
+    // A non-Idle page cannot be live mid-run, but `arm` must stay total: no snapshot, and the
+    // generation still bumps past the stale record.
     let update = staged(1);
     let current = BootState::Armed { generation: 7, update: staged(3), rollback: None };
     let mut io = FakeArmIo::new(Err(ScanError::Io)); // would fail if snapshot were attempted
@@ -297,8 +281,8 @@ fn arm_first_install_skips_the_snapshot_and_records_no_rollback() {
 
 #[test]
 fn arm_running_mismatch_arms_without_a_rollback_and_says_so() {
-    // The snapshot reported the slot no longer matches the installed header (SWD reflash):
-    // the arm proceeds, rollback None, flagged for the caller's warning.
+    // The slot no longer matches the installed header, so the arm proceeds without a rollback and
+    // flags it for the caller.
     let update = staged(1);
     let mut io = FakeArmIo::new(Ok(None));
     let ticket = arm(&mut io, &BootState::Idle { installed: Some(installed_header()), last_outcome: None }, update)
@@ -323,8 +307,8 @@ fn arm_aborts_on_a_failed_snapshot_without_touching_the_page() {
 
 #[test]
 fn arm_aborts_on_a_failed_blob_stage_without_touching_the_page() {
-    // #1158: an Armed page whose blob carve can't be validated would only ever be abandoned next
-    // boot — so a failed stage aborts the arm here, page untouched, where the app can say why.
+    // An Armed page whose blob carve cannot be validated would only be abandoned on the next
+    // boot, so a failed stage aborts the arm here, where the app can say why.
     let update = staged(1);
     let mut io = FakeArmIo::new(Ok(Some(staged(2))));
     io.stage_fails = true;
@@ -338,20 +322,12 @@ fn arm_aborts_on_a_failed_blob_stage_without_touching_the_page() {
 
 #[test]
 fn arm_records_the_carried_scan_ref_verbatim() {
-    // DR6 (#734): the confirm's single scan produces the StagedRef the arm consumes. Note what
-    // this test does NOT claim: "arm never re-reads the stage" is structural, not asserted here —
-    // `arm` takes only an `ArmIo` (snapshot + page write), which by construction has no route back
-    // to the staged file, so a read-counter on the stage would be vacuously flat. The board-side
-    // "one CRC pass before `armed gen=…`" rides on that seam shape plus `arm_update` skipping its
-    // fallback scan, and is only observable on glass / via the sim.
-    //
-    // What this test pins is the carry contract itself: the ref the scan returned feeds `arm` by
-    // value (StagedRef is Copy) and lands in the Armed page verbatim — the bootloader's
-    // verify-before-erase then checks exactly the image the one scan validated.
+    // The carry contract: the ref one scan returned feeds `arm` by value and lands in the Armed
+    // page verbatim, so verify-before-erase checks exactly the image that scan validated. That
+    // `arm` cannot re-read the stage is structural: `ArmIo` has no route back to the file.
     let image: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8).collect();
     let (mut stage, header) = FakeStage::happy(&image, "v2.0.0-1-gcarry01");
 
-    // The one scan: the full read + CRC pass, yielding the ref the confirm carries.
     let carried = scan_with(&mut stage).expect("the one scan validates the stage");
     assert_eq!(carried.header, header);
 
@@ -360,8 +336,6 @@ fn arm_records_the_carried_scan_ref_verbatim() {
     let ticket = arm(&mut io, &current, carried).expect("arm consumes the carried ref");
     assert_eq!(ticket.rollback, Rollback::Snapshot);
 
-    // The armed record carries exactly the scanned image — same header/len/CRC/extents the one
-    // CRC pass validated.
     match &io.calls[2] {
         Call::WriteState(s) => match **s {
             BootState::Armed { update, .. } => {
@@ -383,8 +357,6 @@ fn arm_reports_a_failed_page_write() {
     assert_eq!(err, ArmError::StateWrite);
 }
 
-// ==================== Trial confirm ====================
-
 #[test]
 fn confirm_trial_writes_idle_with_the_installed_header() {
     let installed = installed_header();
@@ -394,13 +366,12 @@ fn confirm_trial_writes_idle_with_the_installed_header() {
         next,
         BootState::Idle {
             installed: Some(installed),
-            // The confirm records the accept against the trial's generation (4).
             last_outcome: Some(LastOutcome { kind: OutcomeKind::Installed, generation: 4 })
         }
     );
     assert_eq!(hdr, installed);
 
-    // Idempotent through the codec: what the confirm writes decodes back to the same Idle.
+    // What the confirm writes decodes back to the same Idle.
     let page = next.encode();
     assert_eq!(BootState::decode(page.as_bytes()), next);
 }
