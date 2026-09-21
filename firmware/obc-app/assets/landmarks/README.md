@@ -7,7 +7,6 @@ and the board display demo share these files and their renderer.
 To reproduce the bytes, read the source PNG as RGB8 in row order and pack each pixel as
 `((red / 85) << 4) | ((green / 85) << 2) | (blue / 85)` with integer division. The source PNGs are
 the ordered 4 × 4 samples in the
-[photo study](../../../../docs/assets/ride-assistant/landmark-photos/README.md).
 
 ## Credits
 
