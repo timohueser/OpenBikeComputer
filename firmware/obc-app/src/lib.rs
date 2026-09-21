@@ -1,27 +1,20 @@
 //! OBC device application layer.
 //!
-//! `no_std`, so the **same** logic runs in the desktop simulator and on the nRF54L
-//! firmware. It owns *what the device is doing* and leaves *how pixels reach a screen* to
-//! the host. It adds no allocations of its own — and since #1146 it does not even own the render
-//! path's working memory: the host lends a [`RenderScratch`](obc_render::RenderScratch) to each
-//! render call, and that scratch clears-not-frees its buffers per frame.
+//! `no_std`, so the same logic runs in the desktop simulator and on the nRF54L firmware. It owns
+//! what the device is doing and leaves how pixels reach a screen to the host. It adds no
+//! allocations, and it does not own the render path's working memory: the host lends a
+//! [`RenderScratch`](obc_render::RenderScratch) to each render call.
 //!
-//! The boundary is the dependency-light [`obc_ports`] layer: the app reads position from a
-//! [`LocationSource`] and buttons from an [`InputSource`], oblivious to whether those are a
-//! real GPS chip + GPIO or the simulator's control panel + GPX replay. The host injects an
-//! implementation; the app stays identical.
+//! The boundary is the dependency-light [`obc_ports`] layer, so the app reads position from a
+//! [`LocationSource`] and buttons from an [`InputSource`] whatever the host provides.
 
-// `no_std` for every real target (board + sim build `not(test)`); the crate's own in-crate test
-// build re-enables `std` so the relocated screen/upload staging harnesses (FAR-19, #812) — which
-// reach `Activity`'s `pub(crate)` fields directly — can use `Vec`/`Box`, the same pattern
-// `obc-reader` uses. Production code paths are `not(test)` and stay strictly `no_std`.
+// `no_std` for every real target; the crate's own in-crate test build re-enables `std` so the
+// staging harnesses can use `Vec`/`Box`. Production code paths are `not(test)` and stay `no_std`.
 #![cfg_attr(not(test), no_std)]
 
-// The shared test-support module ([`harness::support`]) is compiled **twice**: once in-crate for
-// the staging harnesses, once by `tests/common/mod.rs` as an integration-test module (a `#[path]`
-// include, so there is exactly one copy on disk). Its one crate-relative name is `obc_app::App` —
-// which the integration side resolves as an extern crate; this alias makes it resolve in-crate too,
-// so the same source compiles on both sides.
+// The shared test-support module is compiled twice: once in-crate, once by `tests/common/mod.rs`
+// as an integration-test module. Its one crate-relative name is `obc_app::App`, and this alias
+// makes that resolve in-crate too, so the same source compiles on both sides.
 #[cfg(test)]
 extern crate self as obc_app;
 
