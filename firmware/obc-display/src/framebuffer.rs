@@ -1,26 +1,20 @@
 //! `DrawTarget`s the board owns and the shared renderer draws into: the nRF's device-native
-//! RGB222 [`FbDevice64`] map plane, which is the real target, and the [`Framebuffer565`] RGB565
-//! plane, the per-band scratch the [`Band`](crate::Band) view wraps.
+//! RGB222 [`FbDevice64`] map plane, the real target, and the [`Framebuffer565`] RGB565 plane, the
+//! per-band scratch the [`Band`](crate::Band) view wraps.
 //!
-//! The renderer stays `Rgb565`-typed everywhere; the per-board pixel format is the [`Pack`]'s
-//! business, a no-op on the RGB565 planes and the device-64 (RGB222) quantization on
-//! [`FbDevice64`]. So the gamut the simulator previews is what the nRF stores and shows.
-//!
-//! Every plane is the same `DrawTarget`, a borrowed `width * height` buffer with a clipped `put`,
-//! a scanline `fill_solid` and a `clear`. They differ only by the stored pixel type and how an
-//! [`Rgb565`] colour packs into it, so the body is written once over `P: Pack` and the two are
-//! thin aliases. `P::pack` is monomorphized, so there is no per-pixel indirection in the hot loop.
+//! The renderer stays `Rgb565`-typed everywhere and the per-board pixel format is the [`Pack`]'s
+//! business, so the gamut the simulator previews is what the nRF stores and shows. Both planes are
+//! the same `DrawTarget` over a borrowed buffer, differing only in the stored pixel type, so the
+//! body is written once over `P: Pack` and `P::pack` is monomorphized.
 
 use core::marker::PhantomData;
 
 use embedded_graphics::{pixelcolor::Rgb565, prelude::*, primitives::Rectangle};
 
 /// How a [`RawFb`] packs an [`Rgb565`] colour into one stored pixel, and what type that pixel is:
-/// the only per-plane difference between the framebuffers. Impls are zero-sized markers and `pack`
-/// is `#[inline]`, so a packed pixel is a static call in the per-pixel render loop.
-///
-/// The associated pixel type gives a board's native byte width for free: the RGB565 plane stores a
-/// `u16` and the device-native RGB222 plane a single `u8`, which is half the RAM.
+/// the only per-plane difference. Impls are zero-sized markers and `pack` is `#[inline]`, so a
+/// packed pixel is a static call in the per-pixel render loop, and the associated type gives a
+/// board's native byte width for free.
 pub trait Pack {
     /// The stored pixel type: `u16` for RGB565, `u8` for the device-64 (RGB222) plane.
     type Pixel: Copy;
@@ -38,11 +32,10 @@ impl Pack for PackRgb565 {
     }
 }
 
-/// Device-64 (RGB222) pack for the nRF's device-native full-frame plane: the top 2 bits of each
-/// RGB565 channel in a single byte (`0b00_RR_GG_BB`), so a 240×320 frame is 75 KB instead of
-/// 150 KB and fits the nRF's on-chip SRAM. The 2-bit-per-channel quantization is the
-/// LS021B7DD02's intended fidelity and the style colours are tuned to this 64-colour gamut, so it
-/// is the target format, not a loss. The byte value `0..64` doubles as the palette index.
+/// Device-64 (RGB222) pack for the nRF's full-frame plane: the top 2 bits of each RGB565 channel
+/// in one byte, so a 240×320 frame is 75 KB and fits on-chip SRAM. The quantization is the
+/// LS021B7DD02's intended fidelity and the style colours are tuned to this gamut, so it is the
+/// target format, not a loss. The byte value doubles as the palette index.
 pub struct PackDevice64;
 impl Pack for PackDevice64 {
     type Pixel = u8;
@@ -52,19 +45,16 @@ impl Pack for PackDevice64 {
     }
 }
 
-/// A `DrawTarget` wrapping a borrowed `width * height` buffer, one pixel per stored cell,
-/// row-major, generic over the [`Pack`] and so over the stored pixel type. The buffer is the
-/// board's, so this owns nothing and only writes pixels. The `_pack` marker is zero-sized.
+/// A `DrawTarget` wrapping a borrowed `width * height` buffer, row-major, generic over the
+/// [`Pack`]. The buffer is the board's, so this owns nothing and only writes pixels.
 ///
-/// Clip rect ([`set_clip`](RawFb::set_clip)): pixel writes outside the clip are discarded, so a
-/// host that knows this frame's change is contained in a region can replay the full draw sequence
-/// and pay only for the region's pixels. The clip is the bounds check: it defaults to the whole
-/// frame, so an unclipped frame costs what it always did.
+/// Writes outside the clip rect are discarded, so a host that knows this frame's change is
+/// contained in a region can replay the full draw sequence and pay only for that region. The clip
+/// is the bounds check and defaults to the whole frame.
 pub struct RawFb<'a, P: Pack> {
     width: u32,
     height: u32,
-    // Clip bounds, half-open (`cx0 <= x < cx1`), always inside the frame. `put` checks these
-    // instead of the frame edges, so the full-frame default adds no per-pixel cost.
+    // Clip bounds, half-open and always inside the frame, so the default adds no per-pixel cost.
     cx0: i32,
     cy0: i32,
     cx1: i32,
@@ -76,14 +66,12 @@ pub struct RawFb<'a, P: Pack> {
 /// The native-RGB565 plane: every pixel stored as its own RGB565 word.
 pub type Framebuffer565<'a> = RawFb<'a, PackRgb565>;
 
-/// The nRF's device-native RGB222 full-frame plane: one byte per pixel, so the 240×320 frame is
-/// 75 KB and fits on-chip SRAM. The overlay composite reads it back row by row, expanding each
-/// byte to RGB565 to fill the overlay window, and the simulator expands it the same way.
+/// The nRF's device-native RGB222 full-frame plane, one byte per pixel. The overlay composite
+/// reads it back row by row, expanding each byte to RGB565, and the simulator does the same.
 pub type FbDevice64<'a> = RawFb<'a, PackDevice64>;
 
 impl<'a, P: Pack> RawFb<'a, P> {
-    /// Wrap `buf` as a `width`×`height` target. `buf` must hold at least `width * height` pixels;
-    /// a shorter slice is a board wiring bug and panics.
+    /// Wrap `buf` as a `width`×`height` target. A shorter slice is a wiring bug and panics.
     pub fn new(buf: &'a mut [P::Pixel], width: u32, height: u32) -> Self {
         assert!(buf.len() >= (width * height) as usize, "framebuffer slice smaller than width*height");
         RawFb { width, height, cx0: 0, cy0: 0, cx1: width as i32, cy1: height as i32, buf, _pack: PhantomData }
@@ -97,9 +85,9 @@ impl<'a, P: Pack> RawFb<'a, P> {
         self.height
     }
 
-    /// Restrict every subsequent write to `area`, intersected with the frame: pixels outside are
-    /// discarded. The caller's contract is that the content it wants changed lies inside `area`,
-    /// because writes outside are dropped and not deferred. A disjoint `area` empties the clip.
+    /// Restrict every subsequent write to `area`, intersected with the frame. The caller's
+    /// contract is that everything it wants changed lies inside `area`, because writes outside are
+    /// dropped and not deferred. A disjoint `area` empties the clip.
     pub fn set_clip(&mut self, area: Rectangle) {
         let c = area.intersection(&Rectangle::new(Point::zero(), Size::new(self.width, self.height)));
         self.cx0 = c.top_left.x;
@@ -116,9 +104,8 @@ impl<'a, P: Pack> RawFb<'a, P> {
         )
     }
 
-    /// Write one already-packed pixel, clipping silently to the clip bounds: the buffer bounds by
-    /// default, because the renderer projects geometry that can land off-screen, narrowed by
-    /// [`set_clip`](RawFb::set_clip) on a region-scoped repaint.
+    /// Write one already-packed pixel, clipped silently: the renderer projects geometry that can
+    /// land off-screen, and [`set_clip`](RawFb::set_clip) narrows it further.
     #[inline]
     fn put(&mut self, x: i32, y: i32, raw: P::Pixel) {
         if x < self.cx0 || y < self.cy0 || x >= self.cx1 || y >= self.cy1 {
@@ -149,18 +136,15 @@ impl<P: Pack> DrawTarget for RawFb<'_, P> {
         Ok(())
     }
 
-    /// Fast path for the renderer's scanline fills: fill a clipped rectangle one contiguous
-    /// row-slice at a time. Each row is a single `fill`, so the inner loop carries no per-pixel
-    /// bounds check and the compiler can coalesce the stores, instead of the element-indexed
-    /// write it cannot prove in bounds. The polygon scanline fill is the renderer's dominant
-    /// draw cost.
+    /// Fast path for the renderer's scanline fills: fill a clipped rectangle one contiguous row
+    /// slice at a time, so the inner loop carries no per-pixel bounds check and the compiler can
+    /// coalesce the stores. The polygon scanline fill is the renderer's dominant draw cost.
     fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
         let clipped = area.intersection(&self.clip_rect());
         if let Some(br) = clipped.bottom_right() {
             let raw = P::pack(color);
             let w = self.width as usize;
-            // Clipped to `clip_rect`, so `0 <= x0 <= x1 < width` and `0 <= y <= height-1` and the
-            // row slice is always in bounds.
+            // Clipped to `clip_rect`, so the row slice is always in bounds.
             let (x0, x1) = (clipped.top_left.x as usize, br.x as usize);
             for y in clipped.top_left.y..=br.y {
                 let row = y as usize * w;
@@ -171,9 +155,8 @@ impl<P: Pack> DrawTarget for RawFb<'_, P> {
     }
 
     /// The default `fill_contiguous` is `draw_iter` over the area's points, with a lazy colors
-    /// iterator such as the mono-font glyph decode. Rejecting a whole area that misses the clip
-    /// skips that decode for one rect test, which is where a region-scoped chrome repaint spends
-    /// its residual time.
+    /// iterator such as the glyph decode. Rejecting a whole area that misses the clip skips that
+    /// decode for one rect test.
     fn fill_contiguous<I>(&mut self, area: &Rectangle, colors: I) -> Result<(), Self::Error>
     where
         I: IntoIterator<Item = Self::Color>,
@@ -197,14 +180,12 @@ impl<P: Pack> DrawTarget for RawFb<'_, P> {
     }
 }
 
-/// Pack an RGB565 storage word into a device-64 (RGB222) byte: the top 2 bits of each channel in
-/// `0b00_RR_GG_BB`. Keeping the top 2 bits is the same quantization
-/// `obc_reader::rgb565_to_device64` applies, so this stores the same 64-colour gamut the style
-/// table is tuned to. The inverse is [`device64_to_rgb565`].
+/// Pack an RGB565 storage word into a device-64 (RGB222) byte: the top 2 bits of each channel.
+/// That is the same quantization `obc_reader::rgb565_to_device64` applies, so it stores the same
+/// 64-colour gamut the style table is tuned to, and [`device64_to_rgb565`] is the inverse.
 ///
-/// Public because it is the one place this formula lives: the overlay engine re-quantizes each
-/// composited pixel through it, and every re-derivation is a chance for on-glass colour to fork
-/// from the simulator preview.
+/// Public because it is the one place this formula lives: every re-derivation is a chance for
+/// on-glass colour to fork from the simulator preview.
 #[inline]
 pub fn rgb565_to_device64_byte(rgb: u16) -> u8 {
     // rgb is RRRRR GGGGGG BBBBB.
@@ -214,10 +195,9 @@ pub fn rgb565_to_device64_byte(rgb: u16) -> u8 {
     (r << 4) | (g << 2) | b
 }
 
-/// Expand a device-64 (RGB222) byte (`0b00_RR_GG_BB`) back to an [`Rgb565`] storage word, for the
-/// banded push to feed an RGB565 panel. Each 2-bit channel is bit-replicated up to its RGB565
-/// width, landing on `round(level * max / 3)`, the same ramp the simulator previews. Lossless on
-/// the gamut: re-packing the result yields the original byte.
+/// Expand a device-64 byte back to an [`Rgb565`] storage word for the banded push. Each 2-bit
+/// channel is bit-replicated, landing on `round(level * max / 3)`, and re-packing the result
+/// yields the original byte.
 #[inline]
 pub fn device64_to_rgb565(byte: u8) -> u16 {
     let rq = ((byte >> 4) & 0x3) as u16;
@@ -276,8 +256,7 @@ mod tests {
         assert_eq!(at(3, 3), 0x001F); // last in-bounds pixel
     }
 
-    /// A rectangle with a negative top-left must be clipped by the intersection, so the fill
-    /// starts at (0,0) and never indexes the buffer with a negative coordinate.
+    /// A rectangle with a negative top-left is clipped by the intersection, so the fill starts at (0,0).
     #[test]
     fn fill_solid_clips_a_negative_top_left() {
         let mut buf = [0u16; 4 * 4];
@@ -303,8 +282,7 @@ mod tests {
         FbDevice64::new(buf, w, h)
     }
 
-    /// The pack stores one byte per pixel, the top 2 bits of each channel. Pure channels land in
-    /// the expected bit positions, and an off-screen pixel is clipped.
+    /// The pack stores one byte per pixel, and an off-screen pixel is clipped.
     #[test]
     fn device64_packs_top_two_bits_per_channel_and_clips() {
         let mut buf = [0u8; 2 * 2];
@@ -322,7 +300,7 @@ mod tests {
         assert_eq!(buf, [0b00_11_00_00, 0b00_00_11_00, 0b00_00_00_11, 0x00]);
     }
 
-    /// The byte value is the device-64 palette index `0..64` — white is the max (0x3F), black 0.
+    /// The byte value is the device-64 palette index: white is the max, black 0.
     #[test]
     fn device64_byte_is_the_palette_index() {
         assert_eq!(rgb565_to_device64_byte(0xFFFF), 0x3F); // white
@@ -330,9 +308,8 @@ mod tests {
         // black
     }
 
-    /// The pack keeps exactly the bits `obc_reader::rgb565_to_device64` keeps: the top 2 of each
-    /// channel's RGB888 expansion. Cross-checked against the same RGB565-to-888 math that helper
-    /// uses, so the on-glass gamut matches the simulator preview.
+    /// The pack keeps exactly the bits `obc_reader::rgb565_to_device64` keeps, cross-checked
+    /// against the same expansion that helper uses, so the on-glass gamut matches the preview.
     #[test]
     fn device64_matches_reader_gamut_indices() {
         // The exact channel expansion obc_reader::rgb565_to_rgb888 uses.
@@ -350,28 +327,22 @@ mod tests {
         }
     }
 
-    /// Exhaustive pin over all 65,536 RGB565 values: the panel-plane pack must agree with
-    /// `obc_reader::rgb565_to_device64`, the simulator preview's quantizer, at the 6-bit palette
-    /// index. The two crates implement the same quantization independently, so without this a
-    /// change to one would silently fork on-glass colour from the preview.
-    ///
-    /// Only the quantization is pinned, not the expansion: the reader spreads each 2-bit level on
-    /// the `level * 85` ramp while [`device64_to_rgb565`] bit-replicates. The two land within
-    /// 3/255 per channel, which never changes which of the 64 colours a pixel is.
+    /// Exhaustive pin over all 65,536 RGB565 values: this pack must agree with the simulator
+    /// preview's quantizer at the palette index. The two crates implement it independently, so a
+    /// change to one would otherwise silently fork on-glass colour from the preview. Only the
+    /// quantization is pinned, not the expansion, which differs by at most 3/255 per channel.
     #[test]
     fn device64_matches_reader_quantization_exhaustively() {
         for raw in 0u16..=u16::MAX {
             let byte = rgb565_to_device64_byte(raw);
-            // The reader returns the kept colour expanded on the `level * 85` ramp, so `/ 85`
-            // recovers the 2-bit index it quantized each channel to.
+            // The reader expands on the `level * 85` ramp, so `/ 85` recovers the 2-bit index.
             let (r, g, b) = obc_reader::rgb565_to_device64(raw);
             let want = ((r / 85) << 4) | ((g / 85) << 2) | (b / 85);
             assert_eq!(byte, want, "raw {raw:#06x}");
         }
     }
 
-    /// Expansion is the exact inverse of the pack on the gamut: byte to RGB565 to byte round-trips,
-    /// so the banded push reconstructs the stored colour losslessly.
+    /// Expansion is the exact inverse of the pack on the gamut, so the banded push is lossless.
     #[test]
     fn device64_expand_roundtrips_every_byte() {
         for byte in 0u8..64 {
@@ -379,8 +350,7 @@ mod tests {
         }
     }
 
-    /// Expansion lands each 2-bit level on the `{0, ⅓, ⅔, 1}` ramp, the same levels the simulator
-    /// shows.
+    /// Expansion lands each 2-bit level on the `{0, ⅓, ⅔, 1}` ramp the simulator shows.
     #[test]
     fn device64_expand_levels_match_the_quarter_ramp() {
         // R channel sweep (top 2 bits) → expected 5-bit values round(level*31/3).
@@ -391,8 +361,7 @@ mod tests {
         assert_eq!([g6(0b00_0000), g6(0b00_0100), g6(0b00_1000), g6(0b00_1100)], [0, 21, 42, 63]);
     }
 
-    /// `set_clip` discards `put`s outside the clip and keeps those inside, the same silent-drop
-    /// contract off-frame writes always had.
+    /// `set_clip` discards `put`s outside the clip, the silent-drop contract off-frame writes had.
     #[test]
     fn clip_discards_pixel_writes_outside() {
         let mut buf = [0u16; 4 * 4];
@@ -411,9 +380,8 @@ mod tests {
         assert_eq!(at(3, 2), 0x0000);
     }
 
-    /// `fill_solid` and `clear` both restrict to the clip: a clipped `clear` repaints only the
-    /// clip's pixels and leaves the rest of the frame byte-identical, which is what lets a
-    /// region-scoped repaint replay a full screen draw that opens with `clear`.
+    /// `fill_solid` and `clear` both restrict to the clip, so a clipped `clear` leaves the rest of
+    /// the frame byte-identical, which is what lets a region repaint replay a full screen draw.
     #[test]
     fn clip_restricts_fill_solid_and_clear() {
         let mut buf = [0u16; 4 * 4];
@@ -427,8 +395,7 @@ mod tests {
         assert_eq!(at(2, 3), 0x07E0, "inside the clip, below the fill rect: keeps the clear");
     }
 
-    /// `fill_contiguous` with an area disjoint from the clip is skipped whole; a straddling area
-    /// still writes its in-clip pixels at the right offsets.
+    /// A `fill_contiguous` area disjoint from the clip is skipped whole; a straddling one clips.
     #[test]
     fn clip_rejects_and_straddles_fill_contiguous() {
         let red = Rgb565::from(RawU16::new(0xF800));
@@ -462,8 +429,7 @@ mod tests {
         assert!(buf.iter().all(|&p| p == 0));
     }
 
-    /// A full-frame `set_clip` behaves exactly like no clip, so a host setting a frame-sized
-    /// region changes nothing.
+    /// A full-frame `set_clip` behaves exactly like no clip.
     #[test]
     fn full_frame_clip_is_identity() {
         let red = Rgb565::from(RawU16::new(0xF800));

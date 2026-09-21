@@ -1,23 +1,12 @@
 //! The LS021B7DD02 pairing: everything specific to the shipping Sharp memory-LCD panel and the
-//! row-span presentation strategy built around it, in one place, so the generic
+//! row-span presentation strategy built around it, so the generic
 //! [`display_contracts`](crate::display_contracts) stay free of any panel's width, wire format or
 //! damage model.
 //!
-//! The pairing is `Device64Frame<FRAME_W, FRAME_H>` plus a row-span presenter, the board's
-//! LS021/FLPR backend or the simulator's host backend. This module owns their shared substance:
-//!
-//! - [`FRAME_W`] and [`FRAME_H`], the panel-native frame geometry every frame-sized thing derives
-//!   from, pinned against the wire pack's row width below.
-//! - [`rowdiff`], the damage strategy: the per-row hash store, the span-emitting self-diff, the
-//!   live-overlay span clip and the exact-diff host oracle. Row hashing and span masking are this
-//!   pairing's choice; the generic contracts impose no damage model on other panels.
-//! - [`wire`], the source-bus wire pack, host-tested here as the normative reference the C blob
-//!   ports line for line.
-//! - [`RowDamage`] and [`RowWindow`], the damage and region vocabulary behind the contracts'
-//!   associated types, shared so the two backends speak and test one strategy.
-//! - [`composite_into_resident`], the mutate-and-restore overlay composite the FLPR transport
-//!   needs, because the coprocessor scans the resident frame directly and a second full frame is
-//!   banned: save the clean window bytes, write the composited window in, push, restore.
+//! It owns the panel-native frame geometry, [`rowdiff`]'s per-row hash damage strategy, [`wire`]'s
+//! source-bus pack, the [`RowDamage`] and [`RowWindow`] vocabulary both backends share, and
+//! [`composite_into_resident`], the mutate-and-restore overlay composite the FLPR transport needs
+//! because the coprocessor scans the resident frame directly.
 
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::Rectangle;
@@ -30,21 +19,18 @@ pub mod wire;
 
 pub use rowdiff::{clip_span, diff_rows, row_hash, spans_missed_changes, RowDiff};
 
-/// The frame geometry, and the single authority for it: the frame the app renders and the LS021
-/// pairing presents, `FRAME_W × FRAME_H` device-64 bytes. Everything frame-sized derives from
-/// these two constants, and the board backend statically asserts its panel-native geometry equals
-/// them, so a panel change cannot silently desynchronize the framebuffer from the scanned frame.
+/// The frame geometry, and the single authority for it. Everything frame-sized derives from these
+/// two constants, and the board backend statically asserts its panel-native geometry equals them,
+/// so a panel change cannot silently desynchronize the framebuffer from the scanned frame.
 pub const FRAME_W: usize = 240;
 /// Frame height in rows — see [`FRAME_W`].
 pub const FRAME_H: usize = 320;
 
-// The wire pack consumes exactly one `WIDTH`-pixel row per framebuffer row, so the panel-native
-// row width is the frame width. Pin them together here, at the single authority.
+// The wire pack consumes one `WIDTH`-pixel row per framebuffer row, so pin them together here.
 const _: () = assert!(wire::WIDTH == FRAME_W, "ls021::wire::WIDTH diverged from ls021::FRAME_W");
 
-/// The LS021 pairing's damage description, the `Presenter::Damage` type both backends use.
-/// Callers construct it only through the contracts' neutral constructors, so rows never leak into
-/// generic code.
+/// The LS021 pairing's damage description. Callers construct it only through the contracts'
+/// neutral constructors, so rows never leak into generic code.
 pub enum RowDamage {
     /// Forced full repaint: re-seed the row-hash store and push every row. This is the panel-reinit
     /// and transport-recovery damage.
