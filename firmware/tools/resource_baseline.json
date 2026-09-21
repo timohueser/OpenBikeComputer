@@ -1,12 +1,12 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "measurement": {
     "source_commit": "FS8 #1390 acceptance state on 9f76040f (local uncommitted diff, 2026-08-20)",
     "rustc": "1.97.1 (8bab26f4f 2026-07-14) on CI; itemized on the pinned 1.96.0 (ac68faa20 2026-05-25)",
     "llvm": "22.1.6 on CI; 22.1.2 on the pinned host",
     "riscv_gcc": "riscv64-elf-gcc (GCC) 16.1.0",
     "riscv_binutils": "GNU objcopy (GNU Binutils) 2.46.1",
-    "build_host": "x86_64-unknown-linux-gnu (GitHub Actions ubuntu-latest). The `embedded` CI job is the gate and the authority for `measured_resident` and `resident_ram_max`. The pinned host below is what per-symbol itemization is diffed on; it links 8 B less resident, which is not gated.",
+    "build_host": "x86_64-unknown-linux-gnu (GitHub Actions ubuntu-latest). The `embedded` CI job is the gate and the authority for `measured_resident` and `resident_ram_max`. The pinned host below is what per-symbol itemization is diffed on; it links 8 B less resident, which is under the pinned resident band, so re-pin the resident figures from CI only.",
     "target": "thumbv8m.main-none-eabihf",
     "capacity_profile": "LM20 (nRF54LM20-DK, 512 KiB SRAM; 480 KiB M33 carve \u2014 the 20 KiB below the display FLPR's carve holds the sEMMC soft-peripheral image, the live storage transport; default = all-features/ble + the unconditional USB device plane; SDC size measured on glass 2026-07-24)"
   },
@@ -14,7 +14,9 @@
     "default": {
       "features": "default (= all-features: map + router + BLE + USB device plane, LS021/FLPR, real sensors)",
       "measured_resident": 305192,
-      "resident_ram_max": 320688,
+      "resident_ram_max": 309288,
+      "resident_ram_slack": 4096,
+      "_resident_ram_slack_note": "`resident_ram_max` is `measured_resident` plus the slack, and the guard gates the link against both ends of that band. The slack is what one slice can spend to widen a few protocol structs without a ceiling pull request. A slack of a few dozen bytes is too tight for a single protocol type, and a row nobody can stay inside is a row nobody re-pins. A link more than the slack below the ceiling fails the guard, so a slice that saves RAM re-pins `measured_resident` and `resident_ram_max` together instead of banking the saving as headroom nothing measured. The `embedded` CI job is the authority for both figures; a pinned-host link reads a few bytes lower and falls out of the band.",
       "uninit_max": 132096,
       "framebuffer_count": 1,
       "framebuffer_bytes": 76800,

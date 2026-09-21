@@ -154,6 +154,7 @@ other:
         profile = {
             "framebuffer_bytes": 76_800,
             "resident_ram_max": 120,
+            "resident_ram_slack": 8,
             "uninit_max": UNINIT_BYTES,
             "framebuffer_count": 0,
             "compile_time_allocations": {"arena_total": ARENA_BYTES},
@@ -182,6 +183,18 @@ other:
     def test_board_guard_explains_resident_ram_growth(self):
         with self.assertRaisesRegex(resource_guard.GuardError, "resident RAM grew.*itemize/approve"):
             self._check_board(self._board_measured(bss=101), self._board_baseline())
+
+    def test_board_guard_fails_when_the_link_shrinks_out_of_the_resident_band(self):
+        """The half a `<=` ceiling cannot have: a link that saves RAM must re-pin the row.
+
+        Without it the recorded ceiling drifts above the real link one saving at a time, and the
+        headroom the next slice reads off the baseline is fiction.
+        """
+        with self.assertRaisesRegex(
+            resource_guard.GuardError, "111 B .*, 9 B below the 120 B ceiling.*8 B slack"
+        ):
+            self._check_board(self._board_measured(bss=91), self._board_baseline())
+        self._check_board(self._board_measured(bss=92), self._board_baseline())  # 8 B below: in band
 
     def test_board_guard_explains_missing_framebuffer_symbol(self):
         with self.assertRaisesRegex(resource_guard.GuardError, "framebuffer symbol count is 0"):
@@ -507,6 +520,7 @@ class BootChainTests(unittest.TestCase):
         profile = {
             "framebuffer_bytes": 76_800,
             "resident_ram_max": 120,
+            "resident_ram_slack": 8,
             "uninit_max": UNINIT_BYTES,
             "framebuffer_count": 0,
             "compile_time_allocations": {"arena_total": ARENA_BYTES},
