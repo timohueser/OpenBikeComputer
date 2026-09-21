@@ -58,9 +58,9 @@ VOID = -1e30
 NOT_A_HEIGHT = 1e6  # a magnitude no orthometric height reaches
 POOL_BLOCK = 256  # source rows per coordinate transform
 
-# Priority, finest and best-maintained national product first. A tile a source earlier in
-# this list holds is never replaced by a source later in it. Keys with no adapter yet are
-# listed so the ranking does not move when an adapter lands.
+# Priority, finest and best-maintained national product first. Where two sources cover the
+# same pixel, the one earlier in this list keeps it. Keys with no adapter yet are listed so
+# the ranking does not move when an adapter lands.
 PRIORITY = ("nl", "de-nw", "fr", "no", "us", "ch", "es")
 
 ARCHIVE_PREFIX = "reference/v1"
@@ -362,19 +362,33 @@ def write_tile(path: Path, ti: int, tj: int, tile) -> None:
         dst.update_tags(AREA_OR_POINT="Area")
 
 
-def merge_tiles(existing, incoming):
-    """Per-pixel maximum of two whole tiles.
+def merge_tiles(existing, incoming, held: set[str], key: str):
+    """Fold an incoming tile into the one the archive already has, pixel by pixel.
 
-    `NODATA` is the smallest `int16`, so absence loses every comparison and the plain
-    maximum is also the merge rule: a second box into the same tile adds its pixels and
-    raises the ones both boxes cover.
+    Coverage stops at country borders and at survey edges, so two sources over one tile is
+    the normal case, not the exception, and the rule is per pixel:
+
+    - Only this source has been here: the maximum, so a second box adds its footprint and
+      raises the pixels both boxes cover.
+    - This source ranks better than every source that has been here: its pixels win where
+      it has them, and the others' pixels stay in its gaps.
+    - Otherwise: the pixels already there stay, and this source fills the gaps only.
+
+    A pixel does not record which source wrote it, so the comparison is against the tile's
+    best contributor. The one case that loses is a source that ranks best and ingests two
+    overlapping boxes into a tile a worse source also reached: those two boxes then take
+    the later value instead of the maximum.
     """
 
-    return np.maximum(existing, incoming)
+    if not held - {key}:
+        return np.maximum(existing, incoming)
+    if all(priority_rank(key) < priority_rank(other) for other in held):
+        return np.where(incoming != NODATA, incoming, existing)
+    return np.where(existing != NODATA, existing, incoming)
 
 
-def ingest_raster(path: Path, source: Source, root: Path, owner: dict[str, str]) -> list[str]:
-    """Warp one raster onto the lattice and fold it into the archive's tiles."""
+def ingest_raster(path: Path, source: Source, root: Path, held: dict[str, set[str]]) -> list[str]:
+    """Pool one raster onto the lattice and fold it into the archive's tiles."""
 
     values, src_transform, src_crs, bounds = read_source(path)
     check_world(bounds, str(path))
@@ -385,15 +399,13 @@ def ingest_raster(path: Path, source: Source, root: Path, owner: dict[str, str])
         tile = cut_tile(window, pooled, ti, tj)
         if tile is None or not (tile != NODATA).any():
             continue
-        held = owner.get(tile_id(ti, tj))
-        if held is not None and held != source.key and priority_rank(held) < priority_rank(source.key):
-            continue  # a finer source already holds this tile
         out = tile_path(root, ti, tj)
-        if held == source.key and out.exists():
+        contributors = held.setdefault(tile_id(ti, tj), set())
+        if out.exists():
             with rasterio.open(out) as src:
-                tile = merge_tiles(src.read(1), tile)
+                tile = merge_tiles(src.read(1), tile, contributors, source.key)
         write_tile(out, ti, tj, tile)
-        owner[tile_id(ti, tj)] = source.key
+        contributors.add(source.key)
         touched.append(tile_id(ti, tj))
     return touched
 
@@ -436,14 +448,18 @@ def write_manifest(root: Path, manifest: dict) -> None:
     path.write_text(json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def owners(manifests: dict[str, dict]) -> dict[str, str]:
-    """Tile id to the source key that holds it, best priority first."""
+def contributors(manifests: dict[str, dict]) -> dict[str, set[str]]:
+    """Tile id to every source key that has written pixels into it."""
 
-    held: dict[str, str] = {}
-    for key in sorted(manifests, key=priority_rank):
+    held: dict[str, set[str]] = {}
+    for key in sorted(manifests):
         for tile in manifests[key].get("tiles", []):
-            held.setdefault(tile, key)
+            held.setdefault(tile, set()).add(key)
     return held
+
+
+def best_contributor(keys: set[str]) -> str:
+    return min(keys, key=priority_rank)
 
 
 def sha256_of(path: Path) -> str:
@@ -460,14 +476,14 @@ def rebuild_index(root: Path) -> dict:
     manifests = load_manifests(root)
     if not manifests:
         raise Refuse(f"{root}: no source manifests, so there is nothing to index")
-    held = owners(manifests)
+    held = contributors(manifests)
     tiles, digests = {}, {}
     for tile in sorted(held):
         ti, tj = (int(part) for part in tile.split("/"))
         path = tile_path(root, ti, tj)
         if not path.is_file():
-            raise Refuse(f"sources/{held[tile]}.json names tile {tile}, which is not in the archive")
-        tiles[tile] = held[tile]
+            raise Refuse(f"a source manifest names tile {tile}, which is not in the archive")
+        tiles[tile] = best_contributor(held[tile])
         digests[tile] = sha256_of(path)
     index = {
         "schema": 1,
@@ -481,7 +497,7 @@ def rebuild_index(root: Path) -> dict:
                 "fetched": manifests[key]["fetched"],
             }
             for key in sorted(manifests)
-            if key in set(tiles.values())
+            if any(key in keys for keys in held.values())
         },
         "tiles": tiles,
         "sha256": digests,
@@ -622,13 +638,13 @@ def command_ingest(args) -> int:
         raise Refuse("no rasters cover that box")
 
     manifests = load_manifests(root)
-    held = owners(manifests)
+    held = contributors(manifests)
     touched: set[str] = set()
     for i, path in enumerate(rasters, 1):
         touched.update(ingest_raster(path, source, root, held))
         print(f"  [{i}/{len(rasters)}] {path.name}: {len(touched)} tile(s) so far")
 
-    mine = sorted(tile for tile, key in held.items() if key == source.key)
+    mine = sorted(tile for tile, keys in held.items() if source.key in keys)
     write_manifest(root, {
         "key": source.key,
         "country": source.country,
@@ -639,12 +655,6 @@ def command_ingest(args) -> int:
         "fetched": datetime.now(timezone.utc).date().isoformat(),
         "tiles": mine,
     })
-    for key, manifest in manifests.items():
-        if key == source.key:
-            continue
-        kept = [tile for tile in manifest.get("tiles", []) if held.get(tile) == key]
-        if kept != manifest.get("tiles", []):
-            write_manifest(root, {**manifest, "tiles": kept})
     index = rebuild_index(root)
     total = sum(tile_path(root, *(int(p) for p in tile.split("/"))).stat().st_size for tile in index["tiles"])
     print(f"{root}: {len(index['tiles'])} tile(s), {total} bytes, {len(touched)} written this run")
