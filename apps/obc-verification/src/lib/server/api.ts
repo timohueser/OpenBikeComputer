@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { RequestEvent } from '@sveltejs/kit';
 import { json } from '@sveltejs/kit';
-import type { Candidate, Catalog, CoverageProposal, ManualRun, Role } from '../types.ts';
+import type { Candidate, Catalog, CoverageProposal, ManualRun, RequirementSuggestion, Revision, Role } from '../types.ts';
 import { attachments, assert, identifier, positive, Problem, readiness, requirements, testResults, text, within } from './domain.ts';
 import { store } from './store.ts';
 import { createSession, localLogin, logout, oauthEnabled, sameOrigin, requireAdmin, changePassword, agentTokens, createAgentToken, revokeAgentToken } from './auth.ts';
@@ -107,6 +107,7 @@ async function route(event: RequestEvent): Promise<Response> {
   if (path === 'files' && method === 'POST') { allow('owner', 'ci'); return json(await upload(event.request), { status: 201 }); }
   if (parts[0] === 'files' && parts.length === 2 && method === 'GET') return download(identifier(parts[1]));
   if (parts[0] === 'coverage-proposals') { allow('agent', 'owner'); return coverageProposals(event, parts); }
+  if (parts[0] === 'requirement-suggestions') { allow('agent', 'owner'); return requirementSuggestions(event, parts); }
   if (path === 'candidates' && method === 'GET') return json(store().list<Candidate>('candidate'));
   if (path === 'candidates' && method === 'POST') {
     allow('owner'); const data = await body(event);
@@ -236,6 +237,62 @@ async function coverageProposals(event: RequestEvent, parts: string[]): Promise<
   const feedback = data.feedback === undefined || data.feedback === '' ? undefined : text(data.feedback, 'Review feedback', 5000);
   const decided = store().rejectCoverageProposal(identifier(parts[1]), actor.name, feedback);
   return json({ ...decided, revision: store().latestRevision() });
+}
+/**
+ * An agent suggests a new requirement, or a change to one. The owner writes the requirement by
+ * hand and then ticks the suggestion off, so a decision records an acknowledgment and nothing else.
+ */
+async function requirementSuggestions(event: RequestEvent, parts: string[]): Promise<Response> {
+  const actor = event.locals.actor!;
+  if (parts.length === 1 && event.request.method === 'GET') {
+    const revision = store().latestRevision();
+    const revisions = store().revisions();
+    return json(store().list<RequirementSuggestion>('requirement-suggestion').map(s => {
+      if (s.status !== 'open' || !s.requirementId) return s;
+      const stale = suggestionStale(s, revisions);
+      return { ...s, ...(revision.requirements.some(r => r.id === s.requirementId) ? {} : { missing: true }), ...(stale ? { stale } : {}) };
+    }));
+  }
+  assert(event.request.method === 'POST', 'Method not allowed.', 405);
+  const data = await body(event);
+  if (parts.length === 1) {
+    const baseRevision = positive(data.baseRevision, 'Base revision');
+    const revision = store().latestRevision();
+    assert(revision.id === baseRevision, 'Requirements changed. Reload before suggesting.', 409);
+    const requirementId = data.requirementId === undefined || data.requirementId === null ? undefined : identifier(data.requirementId, 'Requirement ID');
+    assert(!requirementId || revision.requirements.some(r => r.id === requirementId), 'Requirement not found.', 404);
+    const title = text(data.title, 'Title', 200);
+    const statement = text(data.statement, 'Suggested statement', 10000);
+    const group = data.group === undefined || data.group === null || data.group === '' ? undefined : text(data.group, 'Group', 100);
+    const reason = text(data.reason, 'Reason', 2000);
+    const sourceSha = data.sourceSha === undefined || data.sourceSha === null ? undefined : commitSha(data.sourceSha);
+    const open = store().list<RequirementSuggestion>('requirement-suggestion').filter(s => s.status === 'open');
+    const identical = open.find(s => (s.requirementId ?? '') === (requirementId ?? '') && s.title === title && s.statement === statement && (s.group ?? '') === (group ?? '') && s.reason === reason);
+    if (identical) return json(identical);
+    // One open suggestion per requirement. A new requirement has no such subject, so those stand beside each other.
+    const replaced = requirementId ? open.filter(s => s.requirementId === requirementId) : [];
+    const suggestion: RequirementSuggestion = { id: store().id(), baseRevision, ...(requirementId ? { requirementId } : {}), title, statement,
+      ...(group ? { group } : {}), reason, ...(sourceSha ? { sourceSha } : {}), author: actor.name,
+      ...(actor.agentToken ? { agentToken: actor.agentToken } : {}), createdAt: new Date().toISOString(), status: 'open',
+      ...(replaced.length ? { supersedes: replaced[0].id } : {}) };
+    store().atomic(() => {
+      for (const previous of replaced) store().put('requirement-suggestion', previous.id, { ...previous, status: 'superseded' });
+      store().put('requirement-suggestion', suggestion.id, suggestion);
+    });
+    return json(suggestion, { status: 201 });
+  }
+  assert(parts.length === 2 && actor.role === 'owner', 'Only an owner may decide a suggestion.', 403);
+  assert(typeof data.accept === 'boolean', 'Accept must be boolean.');
+  const feedback = data.feedback === undefined || data.feedback === '' ? undefined : text(data.feedback, 'Feedback', 5000);
+  return json(store().decideRequirementSuggestion(identifier(parts[1]), actor.name, data.accept, feedback));
+}
+/** The revision that changed the requirement's title or statement after the suggestion was written. */
+function suggestionStale(suggestion: RequirementSuggestion, revisions: Revision[]): string | undefined {
+  const since = revisions.filter(r => r.id >= suggestion.baseRevision).sort((a, b) => a.id - b.id);
+  const before = since[0]?.id === suggestion.baseRevision ? since[0].requirements.find(r => r.id === suggestion.requirementId) : undefined;
+  if (!before) return `${suggestion.requirementId} was suggested against r${suggestion.baseRevision}, which is no longer kept. Read the current statement before deciding.`;
+  const changed = since.find(r => { const now = r.requirements.find(x => x.id === suggestion.requirementId); return now && (now.statement !== before.statement || now.title !== before.title); });
+  return changed && `${suggestion.requirementId} changed in r${changed.id}, after this suggestion. Read the current statement before deciding.`;
 }
 async function ci(event: RequestEvent, parts: string[]): Promise<Response> {
   if (parts[0] === 'catalog' && event.request.method === 'POST') {

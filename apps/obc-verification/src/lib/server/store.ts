@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { ApprovedGitHubUser, Attachment, Candidate, Catalog, CoverageProposal, CoverageReview, Requirement, ReviewedCoverage, Revision } from '../types.ts';
+import type { ApprovedGitHubUser, Attachment, Candidate, Catalog, CoverageProposal, CoverageReview, Requirement, RequirementSuggestion, ReviewedCoverage, Revision } from '../types.ts';
 import { assert, Problem, refresh } from './domain.ts';
 import { coverageConflict } from './coverage-plan.ts';
 import { coverageDefinition } from '../coverage.ts';
@@ -155,7 +155,7 @@ export class Store {
       const id = Number(inserted.lastInsertRowid);
       this.db.prepare(`DELETE FROM revisions WHERE id <> ? AND id NOT IN (${referencedRevisions})`).run(id);
       // 'proposal' holds inert link proposals from older databases.
-      this.db.prepare("DELETE FROM records WHERE kind IN ('proposal', 'coverage-proposal')").run();
+      this.db.prepare("DELETE FROM records WHERE kind IN ('proposal', 'coverage-proposal', 'requirement-suggestion')").run();
       return { id, author, createdAt, requirements };
     });
   }
@@ -187,6 +187,17 @@ export class Store {
       if (feedback) proposal.feedback = feedback;
       this.put('coverage-proposal', id, proposal);
       return proposal;
+    });
+  }
+  /** The owner's answer to a suggestion. Acceptance is an acknowledgment: the owner writes the requirement by hand. */
+  decideRequirementSuggestion(id: string, author: string, accept: boolean, feedback?: string): RequirementSuggestion {
+    return this.atomic(() => {
+      const suggestion = this.get<RequirementSuggestion>('requirement-suggestion', id);
+      assert(suggestion.status === 'open', 'Suggestion is already decided.', 409);
+      const decided: RequirementSuggestion = { ...suggestion, status: accept ? 'accepted' : 'dismissed',
+        decidedBy: author, decidedAt: new Date().toISOString(), ...(feedback ? { feedback } : {}) };
+      this.put('requirement-suggestion', id, decided);
+      return decided;
     });
   }
   githubUsers(): ApprovedGitHubUser[] {
