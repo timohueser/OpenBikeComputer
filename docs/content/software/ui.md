@@ -1389,7 +1389,7 @@ Palette constants use RGB565. The framebuffer converts them to the device's 64-c
 - Repaint state and UI runtime: [`dirty.rs`](src:firmware/obc-app/src/dirty.rs), [`render_key.rs`](src:firmware/obc-app/src/render_key.rs), [`ui_runtime.rs`](src:firmware/obc-app/src/ui_runtime.rs)
 - Shared screen primitives: [`screen/vocab/`](src:firmware/obc-app/src/screen/vocab)
 - Settings and translations: [`settings.rs`](src:firmware/obc-app/src/settings.rs), [`i18n/`](src:firmware/obc-app/i18n), [`i18n.rs`](src:firmware/obc-app/src/i18n.rs)
-- POI and Up-ahead views: [`poi_list.rs`](src:firmware/obc-app/src/screen/poi_list.rs), [`poi_detail.rs`](src:firmware/obc-app/src/screen/poi_detail.rs), [`up_ahead.rs`](src:firmware/obc-app/src/screen/up_ahead.rs)
+- POI and Up-ahead views: [`poi_list.rs`](src:firmware/obc-app/src/screen/poi_list.rs), [`poi_detail.rs`](src:firmware/obc-app/src/screen/poi_detail.rs), [`whats_next.rs`](src:firmware/obc-app/src/screen/whats_next.rs)
 - Route cleanup: [`route_cleanup.rs`](src:firmware/obc-storage/src/flat/route_cleanup.rs)
 
 See [system architecture](../architecture/) for the host loop. See [rendering pipeline](../rendering/) for pixel generation.
