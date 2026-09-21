@@ -684,12 +684,13 @@ def load_baseline(path: Path) -> dict[str, object]:
         baseline = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as error:
         raise GuardError(f"cannot read baseline {path}: {error}") from error
-    if baseline.get("schema_version") != 3:
+    if baseline.get("schema_version") != 4:
         raise GuardError(
-            f"unsupported baseline schema in {path}; expected schema_version 3 "
+            f"unsupported baseline schema in {path}; expected schema_version 4 "
             "(v2 added the boot-chain block: task_frame_limit / residual_stack_min / "
             "boot_chain_ceiling / boot_chain_roots; v3 added the deep-ride high-water gate: "
-            "deep_ride_high_water / deep_ride_margin_min)"
+            "deep_ride_high_water / deep_ride_margin_min; v4 added the resident band's lower "
+            "end: resident_ram_slack)"
         )
     return baseline
 
@@ -710,10 +711,30 @@ def check_board(args: argparse.Namespace, baseline: dict[str, object]) -> None:
         f"= {measured.resident:,} B linked resident; .uninit {measured.uninit:,} B; "
         f"flash {measured.flash:,} B"
     )
+    ceiling = profile["resident_ram_max"]
+    slack = profile["resident_ram_slack"]
+    pinned = profile["measured_resident"]
     require(
-        measured.resident <= profile["resident_ram_max"],
+        measured.resident <= ceiling,
         f"{args.profile} resident RAM grew to {measured.resident} B (.bss + .data), above the "
-        f"approved {profile['resident_ram_max']} B baseline; itemize/approve the increase",
+        f"approved {ceiling} B baseline; itemize/approve the increase",
+    )
+    # The other end of the same band, because a `<=` ceiling stays green on a link that *shrinks*.
+    # Without it every slice that saves RAM leaves the ceiling further above the real link, and the
+    # headroom the next slice reads off the baseline is fiction.
+    #
+    # The floor sits one slack below the PINNED link, not below the ceiling. Below the ceiling it
+    # would be exact equality with `measured_resident`, so one deleted byte — or a host toolchain
+    # linking a little less than CI — would fail a change for a reason outside itself. One slack of
+    # give in each direction lets an ordinary deletion ride until the next re-pin and still bounds
+    # the dead headroom at two slacks.
+    below = pinned - measured.resident
+    require(
+        below <= slack,
+        f"{args.profile} resident RAM is {measured.resident} B (.bss + .data), {below} B below the "
+        f"{pinned} B pinned link and so past its {slack} B slack: the link shrank. Re-pin "
+        "measured_resident to the `embedded` CI job's figure and resident_ram_max to that figure "
+        "plus resident_ram_slack, rather than leaving the saving as headroom nothing measured",
     )
     # A plain ceiling, and it needs no more shape than that even now that it is a real budget: until
     # `.uninit` once held only `defmt_rtt::BUFFER`, and the 1,024 B baseline was there to catch
