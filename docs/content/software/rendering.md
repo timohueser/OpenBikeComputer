@@ -552,7 +552,9 @@ Fixed-width styles bypass the zoom scale. Contours use this style property.
 | Line | Yes | Set | Solid base and dashed top stroke |
 | Polygon | Ignored | Set | Fill and ring outline |
 
-Dashed lines use screen-space arc length after clipping. A railway style draws a solid color2 base and color dashes.
+Dashed lines use screen-space arc length. The renderer measures the arc from the first point of the
+line, and includes the parts that the view clip removes. Thus the dashes stay at the same map
+positions when the camera moves. A railway style draws a solid color2 base and color dashes.
 
 ### Road casing
 
