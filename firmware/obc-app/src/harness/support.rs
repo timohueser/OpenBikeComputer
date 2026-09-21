@@ -297,12 +297,34 @@ pub fn render_120(app: &mut App, bytes: &[u8]) -> Buf {
     buf
 }
 
+/// A `ByteSink` over a growable `Vec`: the host's write-the-whole-file-to-RAM backing, and what a
+/// converter in a test writes into.
+#[derive(Default)]
+pub struct VecSink(pub Vec<u8>);
+
+impl obc_formats::io::ByteSink for VecSink {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), obc_formats::io::Error> {
+        self.0.extend_from_slice(bytes);
+        Ok(())
+    }
+    fn patch_at(&mut self, offset: u32, bytes: &[u8]) -> Result<(), obc_formats::io::Error> {
+        let at = offset as usize;
+        self.0[at..at + bytes.len()].copy_from_slice(bytes);
+        Ok(())
+    }
+}
+
 /// The resident waypoint table of an `.obcr`, through the production window loader — the table a
 /// real import hands the app, as opposed to the synthetic [`wpts`] one.
+///
+/// The loader returns one window, so an over-cap file would hand back a prefix. A caller here
+/// means "every waypoint the file holds", and gets told when that is not what it has.
 pub fn wpts_from_obcr(bytes: &[u8]) -> Waypoints {
     let src = SliceSource(bytes);
     let index = RouteIndex::read(&src).expect("a converted .obcr parses");
-    RouteReader::new(&index, &src).load_waypoints(0)
+    let wpts = RouteReader::new(&index, &src).load_waypoints(0);
+    assert!(!wpts.truncated, "the file holds more waypoints than one window: load a window yourself");
+    wpts
 }
 
 /// A synthetic waypoint table from `(distance, name)` pairs: every entry on the line, uncategorised.
