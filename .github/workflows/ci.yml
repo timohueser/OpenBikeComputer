@@ -567,7 +567,10 @@ jobs:
           python3 ../tools/resource_guard.py build-rustflags \
             --log "$RUNNER_TEMP/obc-fw-default-build.log" --crate obc-fw-nrf54l
           rustup component add llvm-tools
-          python3 ../tools/resource_guard.py board --profile default \
+          # `--ci-authority` gates the resident band's LOWER end here and nowhere else: this job's
+          # link is what `measured_resident` records, and a host toolchain links less than CI, so
+          # the same command on a head build prints the drift instead of failing on it.
+          python3 ../tools/resource_guard.py board --profile default --ci-authority \
             --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l
           # The resident `App`'s own construction frame (#1446), measured on the **shipping** link —
           # hence here, before the resource-report rebuild below overwrites this same path.
