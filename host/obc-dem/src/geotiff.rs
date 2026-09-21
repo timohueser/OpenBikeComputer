@@ -255,9 +255,9 @@ fn snap(v: f64, last: f64) -> f64 {
 }
 
 /// Every `(key, value)` in the GeoTIFF GeoKey directory whose value is inline (`location = 0`).
-/// The two keys this tool reads are both of that kind; a key stored out-of-line points into
+/// The keys this crate reads are all of that kind; a key stored out-of-line points into
 /// `GeoDoubleParams`/`GeoAsciiParams` and names a datum detail, not a geometry fact.
-fn geo_keys<R: std::io::Read + std::io::Seek>(dec: &mut Decoder<R>) -> Vec<(u16, u16)> {
+pub(crate) fn geo_keys<R: std::io::Read + std::io::Seek>(dec: &mut Decoder<R>) -> Vec<(u16, u16)> {
     let Ok(raw) = dec.get_tag_u32_vec(Tag::GeoKeyDirectoryTag) else {
         return Vec::new();
     };
