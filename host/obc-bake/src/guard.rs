@@ -1,21 +1,17 @@
-//! The mandatory re-bake guard: is the *published* catalog still readable?
+//! The mandatory re-bake guard: is the published catalog still readable?
 //!
-//! `OBCC_Spec.md` §10 states the law — an OBCM format bump invalidates every baked
-//! cell — and the generator already refuses a mixed or stale tree. That protects the
-//! repository and the tree on the bake box.
+//! An OBCM format bump invalidates every baked cell, and the generator already refuses a mixed or
+//! stale tree. That protects the repository and the tree on the bake box.
 //!
-//! Neither can see the thing that actually matters to a rider: **what is on the CDN
-//! right now**. A format bump can be merged, tested, and released with the pin
-//! moved and the re-bake honestly intended — and the published catalog still serves
-//! old cells to newer firmware for as long as nobody re-runs the bake. That is
-//! the gap this module closes, and it is why the check lives here rather than in
-//! `obc-pack`: it is a fact about a deployment, not about a tree, so it needs a URL
-//! and a network — neither of which belongs in the packer's own test suite.
+//! Neither can see what is on the CDN right now. A format bump can be merged, tested and released
+//! with the pin moved and the re-bake honestly intended, and the published catalog still serves old
+//! cells to newer firmware for as long as nobody re-runs the bake. That is the gap this module
+//! closes, and it is why the check lives here rather than in `obc-pack`: it is a fact about a
+//! deployment, not about a tree, so it needs a URL and a network.
 //!
-//! It fails **loudly and skips gracefully**: with no catalog URL configured there is
-//! nothing to check and the guard says so and succeeds, because a project that has
-//! not published a catalog yet must not have a red CI check about it. Wired into
-//! `.github/workflows/bake.yml`, where `vars.OBC_CATALOG_URL` supplies the URL.
+//! It fails loudly and skips gracefully: with no catalog URL configured there is nothing to check
+//! and the guard says so and succeeds, because a project that has not published a catalog yet must
+//! not have a red CI check about it.
 
 use obc_pack::catalog::Catalog;
 
@@ -107,29 +103,27 @@ pub fn evaluate(body: &str) -> Result<GuardOutcome, String> {
     }
 }
 
-// --- the cell-store lockstep guard (OBCA §6.3) ------------------------------------
-
 /// What the cell-store guard found in a bake tree.
 #[derive(Debug, Clone, Default)]
 pub struct CellStoreOutcome {
     pub cells: usize,
     pub revision: u32,
     pub partial: Vec<String>,
-    /// What the terrain track holds, when the tree publishes one (§13).
+    /// What the terrain track holds, when the tree publishes one.
     pub terrain: Option<TerrainStoreOutcome>,
     /// Every violation, named. Empty means the store is in lockstep.
     pub problems: Vec<String>,
 }
 
-/// What the terrain half of the guard found — reported separately because it *is* a
-/// separate store, with a separate revision, that a separate command bakes.
+/// What the terrain half of the guard found — reported separately because it is a separate store,
+/// with a separate revision, that a separate command bakes.
 #[derive(Debug, Clone, Default)]
 pub struct TerrainStoreOutcome {
     pub cells: usize,
     pub known_empty: u32,
     pub dataset: String,
     pub revision: u32,
-    /// The terrain revision the OBCM cells recorded sampling, if any (§13.4).
+    /// The terrain revision the OBCM cells recorded sampling, if any.
     pub network_terrain_revision: Option<u32>,
 }
 
@@ -170,7 +164,7 @@ impl CellStoreOutcome {
             s,
             "cell-store guard: FAILED — {} problem(s).\n\nA cell store is lockstep: every cell in an assembly must \
              share one OBCM version and one schema revision, because assembly copies chunk bytes between files and \
-             that is only meaningful within one revision (OBCA_Spec.md §5, §6.3). Re-bake the store:\n\n    \
+             that is only meaningful within one revision. Re-bake the store:\n\n    \
              obc-bake bake --out <tree> --base-url <url> --force <region…>\n",
             self.problems.len()
         );
@@ -205,23 +199,21 @@ impl CellStoreOutcome {
     }
 }
 
-/// Check a **cell bake tree** for the two things that make a store assemblable, and
-/// for the one thing D3 says a bake must never do.
+/// Check a cell bake tree for the two things that make a store assemblable, and for the one thing
+/// a bake must never do.
 ///
-/// - **Schema-revision lockstep.** Every cell sidecar states the revision it was cut
-///   at; they must all agree with each other *and* with `schema.json`'s `_meta`. A
-///   mixed store is not a store that is partly stale — it is one whose cells cannot be
-///   grafted into a single file at all, so this is fatal with no override
-///   (`OBCC_Spec.md` §10).
-/// - **OBCM lockstep.** Every cell's own header must carry this build's OBCM version.
-/// - **No silent downgrade (D3).** A cell whose recorded state says it was canonical
-///   but whose published sidecar now says `partial` means a narrower bake overwrote a
-///   covering one — the exact failure `OBCA_Spec.md` §3.7 forbids, and the reason
-///   [`crate::cells`] refuses it at install time. Checking it again here catches a
-///   store assembled by hand or merged from two machines.
+/// - Schema-revision lockstep. Every cell sidecar states the revision it was cut at; they must all
+///   agree with each other and with `schema.json`'s `_meta`. A mixed store is not partly stale — it
+///   is one whose cells cannot be grafted into a single file at all — so this is fatal with no
+///   override.
+/// - OBCM lockstep. Every cell's own header must carry this build's OBCM version.
+/// - No silent downgrade. A cell whose recorded state says it was canonical but whose published
+///   sidecar now says `partial` means a narrower bake overwrote a covering one, which is what
+///   [`crate::cells`] refuses at install time. Checking it again here catches a store assembled by
+///   hand or merged from two machines.
 ///
-/// Runs over a tree rather than a URL — unlike [`check`], which is about a deployment
-/// — so it needs no network and is what a bake box runs before it publishes.
+/// Runs over a tree rather than a URL, unlike [`check`], so it needs no network and is what a bake
+/// box runs before it publishes.
 pub fn check_cell_store(tree: &std::path::Path) -> Result<CellStoreOutcome, String> {
     #[derive(serde::Deserialize)]
     struct Sidecar {
@@ -267,8 +259,8 @@ pub fn check_cell_store(tree: &std::path::Path) -> Result<CellStoreOutcome, Stri
             continue;
         }
         if name_of(&band_dir) == crate::terrain::TERRAIN_DIR {
-            // The other artifact class, on the other revision track. Checked below, against
-            // `terrain.json` — never against `schema.json`, which is the whole point.
+            // The other artifact class, on the other revision track. Checked below against
+            // `terrain.json`, never against `schema.json`, which is the whole point.
             continue;
         }
         for i_dir in sorted_dir(&band_dir)? {
@@ -298,7 +290,7 @@ pub fn check_cell_store(tree: &std::path::Path) -> Result<CellStoreOutcome, Stri
                         schema.meta.revision
                     ));
                 }
-                // §13.4: the store as a whole sampled one terrain revision, or none.
+                // The store as a whole sampled one terrain revision, or none.
                 match baked_against {
                     None => baked_against = Some(sidecar.terrain_revision),
                     Some(have) if have != sidecar.terrain_revision => out.problems.push(format!(
@@ -322,8 +314,8 @@ pub fn check_cell_store(tree: &std::path::Path) -> Result<CellStoreOutcome, Stri
                 if sidecar.partial {
                     let id = format!("{}/{}/{}", name_of(&band_dir), name_of(&i_dir), name.trim_end_matches(".obcm"));
                     out.partial.push(id);
-                    // D3: was this square covered before? Then a narrower bake took
-                    // coverage away, which no run is allowed to do.
+                    // Was this square covered before? Then a narrower bake took coverage away,
+                    // which no run is allowed to do.
                     let state_path = path.with_file_name(format!(".{}.cell.json", name.trim_end_matches(".obcm")));
                     if let Some(state) =
                         std::fs::read_to_string(&state_path).ok().and_then(|t| serde_json::from_str::<State>(&t).ok())
@@ -351,18 +343,17 @@ fn name_revision(revision: Option<u32>) -> String {
     revision.map_or("none".to_string(), |r| r.to_string())
 }
 
-/// The terrain track's own lockstep, and the one coupling to the OBCM store (§13.2, §13.4).
+/// The terrain track's own lockstep, and the one coupling to the OBCM store.
 ///
 /// Two separate statements, and it matters that they are separate:
 ///
-/// - **Terrain lockstep** is `(dataset_version, posting, cell size, terrain_revision)` and nothing
-///   else. Not the OBCM version, not the schema revision — so a schema bump can never make this
-///   half of the guard fail, which is exactly the property epic #1068 needs from the catalog.
-/// - **The coupling** runs one way. The network band's cells sample OBCT at bake time, so their
-///   `Ascent M` values are a function of a particular terrain revision. When the terrain is
-///   re-baked and those cells are not, the router's numbers and the drawn profile stop being the
-///   same surface — silently, because every file still parses. That is what this names, loudly,
-///   *before* a publish rather than after one.
+/// - Terrain lockstep is `(dataset_version, posting, cell size, terrain_revision)` and nothing
+///   else. Not the OBCM version, not the schema revision, so a schema bump can never make this half
+///   of the guard fail.
+/// - The coupling runs one way. The network band's cells sample the terrain at bake time, so their
+///   `Ascent M` values are a function of a particular terrain revision. When the terrain is re-baked
+///   and those cells are not, the router's numbers and the drawn profile stop being the same
+///   surface — silently, because every file still parses.
 fn check_terrain_store(
     tree: &std::path::Path,
     doc: Option<crate::terrain::TerrainDoc>,
@@ -467,7 +458,7 @@ fn check_terrain_store(
         ));
     }
 
-    // §13.4 — the one coupling, and the only place in this guard where the two tracks meet.
+    // The one coupling, and the only place in this guard where the two tracks meet.
     if network_terrain_revision != Some(doc.revision) {
         problems.push(format!(
             "STALE network band: its cells' nav ascents were baked against terrain revision {}, but this tree \
@@ -523,8 +514,8 @@ mod tests {
         assert!(text.contains("obc-bake bake"), "the failure must say what to do: {text}");
     }
 
-    /// A catalog of the previous envelope version does not parse into this build's model at all —
-    /// its skin records still carry `dashed`. The reader must name the version, not the field.
+    /// A catalog of the previous envelope version does not parse into this build's model at all.
+    /// The reader must name the version, not the field.
     #[test]
     fn an_older_envelope_reports_its_version_and_asks_for_a_re_bake() {
         let stale = serde_json::from_str::<serde_json::Value>(obc_pack::catalog::CATALOG_EXAMPLE_JSON)
@@ -553,8 +544,8 @@ mod tests {
 
     #[test]
     fn no_url_configured_is_a_skip_not_a_failure() {
-        // The env var is deliberately not read here — `catalog_url(None)` may find
-        // one in a developer's environment, and either answer is correct behaviour.
+        // The env var is deliberately not read here: `catalog_url(None)` may find one in a
+        // developer's environment, and either answer is correct behaviour.
         let outcome = GuardOutcome::Skipped { reason: "no url".into() };
         assert!(outcome.ok());
     }

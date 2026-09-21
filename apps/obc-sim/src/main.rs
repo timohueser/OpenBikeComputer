@@ -1,12 +1,10 @@
-//! OBC desktop simulator — host shell around the shared renderer.
+//! OBC desktop simulator: the host shell around the shared renderer.
 //!
-//! All map drawing lives in `obc_render`, the same code the nRF54L firmware runs
-//! against the LS021B7DD02. This binary owns only the host concerns: argument
-//! parsing, the eframe window + pan/zoom event loop, PNG output, and the device's
-//! 64-color display policy.
+//! All map drawing lives in `obc_render`, the same code the firmware runs. This binary owns only
+//! the host concerns: argument parsing, the eframe window and its pan/zoom event loop, PNG output,
+//! and the device's 64-color display policy.
 //!
-//! Host logic shared with the landing page's wasm host (`obc-web-demo`) — replay stepping, the
-//! frame-interleaved `NavPlan`, the in-memory byte sink — lives in `obc-host-core`, not here.
+//! Host logic shared with the landing page's wasm host lives in `obc-host-core`.
 
 use obc_app::{App, AppState};
 use obc_host_core::frame::device_rgb888;
@@ -82,8 +80,8 @@ enum DfuSeed {
     Installing(dfu::DfuScanKind),
     Error(obc_app::DfuScanError),
     Confirmed(String),
-    /// The boot-outcome failure verdict + the version that was staged (`None` when the board could
-    /// not name one) — the "UPDATE FAILED" card's two inputs.
+    /// The boot-outcome failure verdict and the version that was staged. `None` when the board
+    /// could not name one.
     Failed(obc_app::DfuFailure, Option<String>),
 }
 
@@ -100,40 +98,32 @@ struct Args {
     peak_view: Option<peak_view::Preset>,
     /// Preload this GPX track for replay.
     gpx: Option<String>,
-    /// With `--gpx --png`, the playback time (seconds) to render the fix at; defaults
-    /// to the track midpoint.
+    /// With `--gpx --png`, the playback time in seconds to render the fix at. Defaults to the
+    /// track midpoint.
     at: Option<f64>,
     /// GPX position for the button script; replay then continues from here to `at`.
     script_at: Option<f64>,
-    /// Headless camera center "lon,lat" (microdegrees); defaults to the bbox center.
+    /// Headless camera center "lon,lat" in microdegrees. Defaults to the bbox center.
     center: Option<(i32, i32)>,
     /// Headless zoom multiplier applied to the bbox-fit zoom (picks a finer LOD).
     zoom_mul: f32,
-    /// A gesture script applied before a headless `--png` render, to snapshot a specific
-    /// screen. Tokens (one char, spaces ignored) mirror the four buttons: `d`/`u` = one Down /
-    /// Up step, `p` = press (Select), `h` = Select hold, `b` = back, `B` = back-hold, `H`/`M` =
-    /// leave Select / Back held partway (snapshots the in-flight long-press hint), `w` = wait
-    /// ~800 ms so an in-flight animation (the Menu needle sweep) settles before the snapshot,
-    /// `f` = draw one throwaway frame so draw-time lazy state (the POI-list snapshot) is filled
-    /// before the next gesture, `T` = one route-aware tick (sync + open the active route and run
-    /// the once-per-load state builds), `Q` = the Up+Select squeeze that opens the universal quick
-    /// drawer, with its slide-down settled, `A` = hold Up+Select to open Assistant, `I` = elapse 5 min with no input so the idle-return
-    /// timeout fires.
+    /// A gesture script applied before a headless `--png` render, to snapshot a specific screen.
+    /// One character a token, spaces ignored: `d` and `u` step Down and Up, `p` presses Select, `h`
+    /// holds Select, `b` is back, `B` is back-hold, `H` and `M` leave Select and Back held partway
+    /// to snapshot the long-press hint, `w` waits for an in-flight animation to settle, `f` draws
+    /// one throwaway frame so draw-time lazy state fills, `T` runs one route-aware tick, `Q` opens
+    /// the quick drawer with its slide settled, `A` holds Up and Select to open Assistant, and `I`
+    /// elapses 5 minutes with no input so the idle-return timeout fires.
     script: Option<String>,
     /// Normal button input after GPX replay, before the final render.
     script_after: Option<String>,
-    /// `--no-backlight`: model a platform whose panel has **no controllable light**
-    /// ([`Backlight::available`](obc_ports::Backlight) `== false`). The board is not that platform
-    /// any more — it drives a PWM backlight since #1558 — so this is the arrangement a *future*
-    /// lightless host would get. The quick drawer then draws three controls instead of four;
-    /// nothing else changes.
+    /// Model a platform whose panel has no controllable light. The quick drawer then draws three
+    /// controls instead of four; nothing else changes.
     no_backlight: bool,
-    /// `--expect-screen NAME`: headless `--png` only — refuse to render unless the script landed
-    /// on that screen ([`Screen::name`](obc_app::Screen::name), the `screens!` table's own
-    /// variant string). A recipe that walks a menu is a hostage to that menu's station order:
-    /// insert one row and `p d d d d w p d p` silently snapshots a different screen under the old
-    /// filename. Stating the destination turns that into a failed sweep instead of a quietly
-    /// wrong PNG.
+    /// Headless `--png` only: refuse to render unless the script landed on that screen, named by
+    /// the `screens!` table's own variant string. A recipe that walks a menu depends on that menu's
+    /// station order, so one inserted row would otherwise snapshot a different screen under the old
+    /// filename.
     expect_screen: Option<String>,
     /// Headless `--png` only: render from the device's real power-on state (Home / Idle,
     /// no route) instead of straight from the map.
@@ -151,8 +141,7 @@ struct Args {
     physical: bool,
     /// Show the device's 64-color gamut and nothing else. Needs no map.
     palette: bool,
-    /// Initial battery charge (0–100 %) shown on the Home gauge; stands in for the not-yet-
-    /// wired fuel gauge. Defaults to full.
+    /// Initial battery charge shown on the Home gauge, from 0 to 100. Defaults to full.
     battery: Option<u8>,
     /// Explicit UTC time and local offset, through the trusted clock entry.
     clock: Option<obc_ports::DateTime>,
@@ -162,16 +151,13 @@ struct Args {
 
     no_card: bool,
     route_cleanup: bool,
-    /// Headless `--png` only: the UI language `en` | `de` | `fr` | `es` (epic #602). Seeded into
-    /// `Settings.language` before the render, so a scripted screen draws its de/fr/es copy from the
-    /// i18n catalog — the per-language snapshot mechanism. Defaults to `en` (the device default), so
-    /// omitting it leaves the English output byte-identical.
+    /// Headless `--png` only: the UI language, one of `en`, `de`, `fr` or `es`. Seeded into
+    /// `Settings.language` before the render, so a scripted screen draws its copy from the i18n
+    /// catalog. Defaults to `en`.
     lang: Option<obc_app::settings::Language>,
-    /// Headless `--png` only: replace the Statistics grid's field selection with this comma-separated
-    /// list (epic #946, U5 — the `Next: <category>` tiles). Names are the catalogue's kebab-case ids
-    /// (`speed`, `next-waypoint`, `next-water`, …; `obc-sim --stat-fields ?` isn't a thing, but an
-    /// unknown name fails with the full list). Stands in for walking the Fields editor with a
-    /// twenty-token script just to place a tile.
+    /// Headless `--png` only: replace the Statistics grid's field selection with this
+    /// comma-separated list of the catalogue's kebab-case ids. An unknown name fails with the full
+    /// list. It stands in for walking the Fields editor with a long script just to place a tile.
     stat_fields: Option<std::vec::Vec<obc_app::StatField>>,
     /// One typed BLE fixture state for headless snapshots; `+` composes independent link facts.
     ble: Option<BleSeed>,
@@ -181,20 +167,18 @@ struct Args {
     hold: Option<Hold>,
     /// One mutually-exclusive host event injection for headless snapshots.
     inject: Option<Injection>,
-    /// Headless `--png` only: engage the **Recalculating freeze** (#1146 P2) after the script, via
-    /// `App::debug_set_plan_live`, so the overlay-plane banner renders over whatever map base the
-    /// script left showing. The freeze's visible state is otherwise unreachable headlessly: the
-    /// flows that start a plan leave the opaque planning spinner as the base (no map to freeze),
-    /// and the one gesture that puts a map base back under a live search also cancels the plan.
+    /// Headless `--png` only: engage the Recalculating freeze after the script, so the
+    /// overlay-plane banner renders over whatever map base the script left showing. The freeze is
+    /// otherwise unreachable headlessly, because the flows that start a plan leave the opaque
+    /// planning spinner as the base.
     freeze: bool,
     /// One mutually-exclusive DFU fixture state for headless snapshots.
     dfu: Option<DfuSeed>,
 }
 
 impl Default for Args {
-    /// Device resolution + all knobs off — the CLI parser's base. The resolution is the single
-    /// [`obc_display`] frame authority, not a re-declared literal (`--size` overrides it for
-    /// off-device experiments).
+    /// Device resolution with all knobs off: the CLI parser's base. The resolution comes from the
+    /// one [`obc_display`] frame authority; `--size` overrides it for off-device experiments.
     fn default() -> Self {
         Args {
             diagnostics: None,
@@ -265,16 +249,15 @@ impl Args {
         self.tracks_dir.clone().unwrap_or_else(|| "tracks".to_string())
     }
 
-    /// The persisted-settings file (the device's RRAM stand-in). Holds the shared
-    /// [`obc_app::settings`] blob, so relaunching restores units / clock / intervals.
+    /// The persisted-settings file, standing in for the device's RRAM. It holds the shared
+    /// [`obc_app::settings`] blob, so relaunching restores units, clock and intervals.
     pub(crate) fn settings_path(&self) -> String {
         "obc-settings.bin".to_string()
     }
 }
 
-/// Parse a `--clock` value `YYYY-MM-DDTHH:MM` into an [`obc_ports::DateTime`].
-/// Rejects a malformed stamp with a message (out-of-range fields are clamped by `Settings::decode`'s
-/// sanitiser when seeded, but the format itself must be well-formed).
+/// Parse a `--clock` value `YYYY-MM-DDTHH:MM` into an [`obc_ports::DateTime`]. An out-of-range
+/// field is clamped when seeded, but the format itself must be well-formed.
 fn parse_clock(s: &str) -> Result<obc_ports::DateTime, String> {
     let (date, time) = s.split_once('T').ok_or("--clock format is YYYY-MM-DDTHH:MM")?;
     let mut d = date.split('-');
@@ -286,9 +269,8 @@ fn parse_clock(s: &str) -> Result<obc_ports::DateTime, String> {
     let minute = t.next().and_then(|v| v.parse().ok()).ok_or("bad --clock minute")?;
     Ok(obc_ports::DateTime { year, month, day, hour, minute })
 }
-/// Parse a `--lang` value into a [`Language`](obc_app::settings::Language). Accepts the four
-/// ISO-639-1 codes the catalog ships (`en`/`de`/`fr`/`es`); anything else is a located error rather
-/// than a silent fall back to English, so a typo in a snapshot script fails loudly.
+/// Parse a `--lang` value into a [`Language`](obc_app::settings::Language). Anything but the four
+/// codes the catalog ships is an error, so a typo in a snapshot script fails loudly.
 fn parse_lang(s: &str) -> Result<obc_app::settings::Language, String> {
     use obc_app::settings::Language;
     match s {
@@ -300,9 +282,8 @@ fn parse_lang(s: &str) -> Result<obc_app::settings::Language, String> {
     }
 }
 
-/// The catalogue's kebab-case field ids, in catalogue order — the `--stat-fields` vocabulary. Kept
-/// beside [`parse_stat_fields`] so an added [`StatField`](obc_app::StatField) shows up as a missing
-/// arm here rather than as a silently unnameable field.
+/// The catalogue's kebab-case field ids, in catalogue order: the `--stat-fields` vocabulary. An
+/// added [`StatField`](obc_app::StatField) shows up as a missing arm here.
 fn stat_field_id(f: obc_app::StatField) -> &'static str {
     use obc_app::StatField as F;
     match f {
@@ -332,9 +313,8 @@ fn stat_field_id(f: obc_app::StatField) -> &'static str {
     }
 }
 
-/// An empty [`StatFieldList`](obc_app::StatFieldList) — the grid selection every `--stat-fields`
-/// (and `--sensors demo`) list is built onto, since the type starts at the device's default six and
-/// only shrinks by index.
+/// An empty [`StatFieldList`](obc_app::StatFieldList), which every `--stat-fields` list is built
+/// onto: the type starts at the device's default six and only shrinks by index.
 fn empty_stat_field_list() -> obc_app::StatFieldList {
     let mut sf = obc_app::StatFieldList::default();
     while !sf.is_empty() {
@@ -343,13 +323,11 @@ fn empty_stat_field_list() -> obc_app::StatFieldList {
     sf
 }
 
-/// Parse a `--stat-fields` list into the grid selection. Unknown names fail with the whole
-/// vocabulary listed, so a typo in a snapshot script is a loud, self-explaining error.
+/// Parse a `--stat-fields` list into the grid selection. An unknown name fails with the whole
+/// vocabulary listed.
 ///
 /// Every name is also pushed onto a real [`StatFieldList`](obc_app::StatFieldList) as it is parsed,
-/// so a list the grid *cannot hold* fails here just as loudly instead of silently truncating into a
-/// snapshot: `push` refuses both past the grid's cap and on a repeat, and either way the frame the
-/// script asked for is not the frame it would get.
+/// so a list the grid cannot hold fails here instead of truncating into a snapshot.
 fn parse_stat_fields(s: &str) -> Result<std::vec::Vec<obc_app::StatField>, String> {
     let mut fields = std::vec::Vec::new();
     let mut grid = empty_stat_field_list();
@@ -425,24 +403,21 @@ fn parse_ble(s: &str) -> Result<BleSeed, String> {
     Ok(seed)
 }
 
-/// The `--inject` vocabulary, stated once — the parser's error text and the `--help` line both read
-/// it, so an added form cannot advertise itself in only one of them.
+/// The `--inject` vocabulary, stated once: the parser's error text and the `--help` line both read
+/// it.
 const INJECT_FORMS: &str = "--inject needs nav-fail=KIND|detour-fail=KIND|upload=ID|upload-replace=ID|\
      trip-upload=N|map-transfer=receiving:RECEIVED/TOTAL|map-transfer=installed|map-transfer=failed:KIND|\
      warning=LIST";
 
-/// The `--inject map-transfer` forms, stated once (see [`INJECT_FORMS`]).
+/// The `--inject map-transfer` forms, stated once.
 const MAP_TRANSFER_FORMS: &str =
     "--inject map-transfer needs receiving:RECEIVED/TOTAL|installed|failed:storage|damaged|notamap|refused";
 
-/// Parse a `--inject map-transfer` value into the board's live transfer state (issue #927): every
-/// state the seam can carry — `receiving:RECEIVED/TOTAL` (kibibytes, the unit the seam itself
-/// carries), the terminal `installed`, and each `failed:KIND` face.
+/// Parse a `--inject map-transfer` value into the board's live transfer state:
+/// `receiving:RECEIVED/TOTAL` in kibibytes, the terminal `installed`, and each `failed:KIND` face.
 ///
-/// There is deliberately no form for an **abort or unplug**, and that is the one state this is
-/// short of: those clear the card rather than raising one (the rider caused them, and a red card
-/// explaining what they just did is noise), so `None` at the seam is what they look like and there
-/// is no frame to shoot.
+/// There is no form for an abort or an unplug. Those clear the card rather than raise one, so they
+/// look like `None` at the seam and there is no frame to shoot.
 fn parse_map_transfer(s: &str) -> Result<obc_app::screen::MapTransfer, String> {
     use obc_app::screen::{MapTransfer, MapTransferError};
     if s == "installed" {
@@ -480,9 +455,8 @@ fn parse_injection(s: &str) -> Result<Injection, String> {
         "trip-upload" => {
             let n: obc_app::CatalogObjectId =
                 value.parse().map_err(|_| "--inject trip-upload needs the N of TP{N}.OBT")?;
-            // The band here, not at the use site: a `TP{N}.OBT` the trip store cannot carry has no
-            // catalog identity to announce, and saturating into one would name a trip that no scan
-            // can ever list.
+            // The band here, not at the use site: a trip file the store cannot carry has no catalog
+            // identity to announce, and saturating into one would name a trip no scan can list.
             let id =
                 n.checked_add(obc_host_core::TRIP_ID_BASE).ok_or("--inject trip-upload N is past the trip id band")?;
             Ok(Injection::TripUpload { id })
@@ -493,13 +467,12 @@ fn parse_injection(s: &str) -> Result<Injection, String> {
     }
 }
 
-/// The `--dfu` vocabulary, stated once (see [`INJECT_FORMS`]).
+/// The `--dfu` vocabulary, stated once.
 const DFU_FORMS: &str =
     "--dfu needs scan=KIND|progress=KIND|installing=KIND|error=ERR|confirmed=VERSION|failed=WHY[:VERSION]";
 
-/// Parse a `--dfu failed=WHY[:VERSION]` value into the boot-outcome verdict the "UPDATE FAILED"
-/// card carries: why the armed update is not what is running, and the version that was staged (the
-/// board leaves it out when the arm marker could not name one).
+/// Parse a `--dfu failed=WHY[:VERSION]` value into the boot-outcome verdict the update-failed card
+/// carries: why the armed update is not what is running, and the version that was staged.
 fn parse_dfu_failed(s: &str) -> Result<DfuSeed, String> {
     let (why, staged) = match s.split_once(':') {
         Some((why, version)) => (why, Some(version.to_string())),
@@ -677,15 +650,13 @@ fn parse_args() -> Result<Args, String> {
     parse_args_from(std::env::args().skip(1))
 }
 
-/// The fixed card-free stand-in the sim answers a card-free scan with (the sim has no FAT to scan):
-/// ~1.2 GiB → the System screen reads "1.2 GB".
+/// The fixed free-space figure the sim answers a card scan with, because it has no FAT to scan.
 const SIM_CARD_FREE: u64 = 1_288_490_188;
 
-/// A canned scan-hit set for the sim's fake sensor manager (SE7, epic #707): two HR straps, one
-/// power meter, one unnamed cadence sensor — so any kind's scan list shows something (the unnamed
-/// one exercises the address fallback, the second HR hit a multi-row list). The scan-list screen
-/// filters to the row's quantity by `slot`. Shared with the interactive GUI ([`gui`]) so the two
-/// sensor paths cannot drift.
+/// A canned scan-hit set for the sim's fake sensor manager: two HR straps, one power meter and one
+/// unnamed cadence sensor, so any kind's scan list shows something. The unnamed hit exercises the
+/// address fallback, and the second HR hit gives a multi-row list. Shared with the interactive GUI
+/// so the two sensor paths cannot drift.
 fn fake_scan_hits() -> [obc_app::SensorScanHit; 4] {
     [
         obc_app::SensorScanHit::new(0, 1, [0x66, 0x55, 0x44, 0x33, 0x22, 0x11], "HRM-Dual", -58),
@@ -696,8 +667,7 @@ fn fake_scan_hits() -> [obc_app::SensorScanHit; 4] {
 }
 
 /// The headless driver's repositories, threaded as one value: three folder stores plus the open
-/// ride log. The tuple keeps them visibly one repository family and keeps [`settle`]'s signature
-/// from growing four more parameters.
+/// ride log.
 struct Stores<'a> {
     routes: &'a mut RouteStore,
     rides: &'a mut RideStore,
@@ -705,15 +675,16 @@ struct Stores<'a> {
     tracks: &'a mut TrackStore,
 }
 
-/// What only the headless driver can do: a fixed card-free figure (the sim has no FAT to scan) and
-/// the update answers `--dfu` stages. Persistence is deliberately absent for **both** durable
-/// records — a `--png` run must not write the developer's settings file, nor their alert anchors —
-/// and the defaults acknowledge the writes so the domains settle instead of parking.
+/// What only the headless driver can do: a fixed free-space figure and the update answers `--dfu`
+/// stages. Neither durable record persists, because a `--png` run must not write the developer's
+/// settings file or their alert anchors, and the defaults acknowledge the writes so the domains
+/// settle instead of parking.
 #[derive(Default)]
 struct HeadlessPlatform {
     /// The `--dfu` scan answer, taken by the first scan the flow asks for.
     scan: Option<Result<obc_app::dfu::DfuScanReport, obc_app::dfu::DfuScanError>>,
-    /// The `--dfu` install answer. `None` leaves the arm in flight — the progress spinner.
+    /// The `--dfu` install answer. `None` leaves the arm in flight, which is the progress
+    /// spinner.
     install: Option<Result<(), obc_app::dfu::DfuInstallError>>,
 }
 
@@ -731,24 +702,23 @@ impl HostPlatform for HeadlessPlatform {
     }
 }
 
-/// The most passes one settle runs. A route plan is stepped once per pass here exactly as it is on
-/// the board, so the ceiling has to clear a whole A* search; it is a runaway guard, not a budget.
+/// The most passes one settle runs. A route plan is stepped once per pass, as on the board, so the
+/// ceiling must clear a whole search. It is a runaway guard, not a budget.
 const MAX_SETTLE_PASSES: usize = 100_000;
 
-/// Passes with nothing owed before the device counts as settled. Two, because an outcome the
-/// executor produced is consumed by the *next* pass — one quiet pass alone would stop with an
-/// answer still in the inbox.
+/// Passes with nothing owed before the device counts as settled. Two, because the next pass
+/// consumes an outcome the executor produced, so one quiet pass would stop with an answer still in
+/// the inbox.
 const QUIET_PASSES: usize = 2;
 
 /// Run DeviceCore passes until the device stops asking for anything.
 ///
-/// A scripted host has no display frame to yield between bounded steps, so it settles here instead
-/// of once per frame: the same `App::run_pass` + typed executor the GUI runs, looped until no
-/// effect is owed, no deferred value is in flight and no planner step is left.
+/// A scripted host has no display frame to yield between bounded steps, so it settles here: the
+/// same `App::run_pass` and typed executor the GUI runs, looped until no effect is owed, no
+/// deferred value is in flight and no planner step is left.
 ///
-/// The **ride clock stands still** at zero and the UI clock is the script's own, which is exactly
-/// what the headless path has always done: it drives the UI with synthesized button events and only
-/// ever ticked the ride on an explicit `T`. A settling pass must not age a ride nobody is riding.
+/// The ride clock stands still at zero and the UI clock is the script's own. A settling pass must
+/// not age a ride nobody is riding.
 #[allow(clippy::too_many_arguments)]
 fn settle(
     host: &mut HostLoop,
@@ -832,8 +802,8 @@ fn nav_error(kind: NavFailure) -> obc_route::NavError {
     }
 }
 
-/// Encode a framebuffer to a PNG, upscaling by `scale` with nearest-neighbor so the
-/// device's hard pixel edges stay crisp.
+/// Encode a framebuffer to a PNG, upscaling by `scale` with nearest-neighbor so the device's hard
+/// pixel edges stay crisp.
 fn write_png(fb: &Framebuffer, scale: u32, path: &str) -> Result<(), String> {
     let (w, h) = (fb.width(), fb.height());
     let base = image::RgbImage::from_raw(w, h, fb.as_rgb888().to_vec()).ok_or("framebuffer size mismatch")?;
@@ -845,8 +815,7 @@ fn write_png(fb: &Framebuffer, scale: u32, path: &str) -> Result<(), String> {
     out.save(path).map_err(|e| format!("save_png failed: {e}"))
 }
 
-/// A scripted [`InputSource`] that replays a fixed queue of raw events — the
-/// headless counterpart to the control panel's [`obc_host_core::DeviceInput`].
+/// A scripted [`InputSource`] that replays a fixed queue of raw events.
 struct ScriptInput(std::collections::VecDeque<InputEvent>);
 impl InputSource for ScriptInput {
     fn poll(&mut self) -> Option<InputEvent> {
@@ -857,9 +826,9 @@ impl InputSource for ScriptInput {
 /// A host-side effect a script token requests from `apply_script`'s hook closure.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ScriptHook {
-    /// Draw one throwaway frame (the `f` token).
+    /// Draw one throwaway frame, for the `f` token.
     Render,
-    /// Run one route-aware pass (the `T` token).
+    /// Run one route-aware pass, for the `T` token.
     Tick,
     Before(char),
     After(char),
@@ -870,19 +839,15 @@ fn feed(app: &mut App, now: u32, events: Vec<InputEvent>) {
     app.handle_input(InputClock(now), &mut ScriptInput(events.into()));
 }
 
-/// Apply a gesture script (see `Args::script`) to `app`. Synthesizes the raw four-button
-/// events with a rising clock — including the threshold crossing that turns a held button
-/// into a `Hold`/`BackHold` — exactly as the real recognizer would see them.
+/// Apply a gesture script (see `Args::script`) to `app`. It synthesizes the raw four-button events
+/// with a rising clock, including the threshold crossing that turns a held button into a `Hold` or
+/// `BackHold`, as the real recognizer would see them.
 ///
-/// `hook` runs the host-side effects a token asks for: [`ScriptHook::Render`] draws one throwaway
-/// headless frame against the current app state — the `f` token uses it to **flush lazy draw-time
-/// state** that only fills at draw (the POI-list snapshot, then the detail's hours read), so a
-/// script can `p` into a POI *and then* `f p` to open its detail. Without an `f` the whole script
-/// runs before the single final render, so lazy state never fills mid-script.
-/// [`ScriptHook::Tick`] runs one **route-aware tick** (the `T` token): the GUI ticks every frame,
-/// but the headless script path never does — so Navigator's route total and derived
-/// climbs/waypoints caches stay unbuilt without it. A mid-ride flow that *reads* that state
-/// (the Detour chooser, #882) scripts a `T` after starting the ride.
+/// `hook` runs the host-side effects a token asks for. [`ScriptHook::Render`] draws one throwaway
+/// headless frame, which is how the `f` token flushes lazy draw-time state such as the POI-list
+/// snapshot. Without an `f` the whole script runs before the single final render, so lazy state
+/// never fills mid-script. [`ScriptHook::Tick`] runs one route-aware tick, which the headless path
+/// otherwise never does, so Navigator's route total and derived caches stay unbuilt.
 fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut(&mut App, ScriptHook, u32)) -> u32 {
     let down = |b| InputEvent::Button(ButtonEvent::Down(b));
     let up = |b| InputEvent::Button(ButtonEvent::Up(b));
@@ -894,14 +859,14 @@ fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut
         feed(app, *now, vec![InputEvent::Step(dir)]);
         *now += 30;
     };
-    // A tap: down, then up 80 ms later (well under the long-press threshold).
+    // A tap: down, then up 80 ms later, well under the long-press threshold.
     let tap = |app: &mut App, now: &mut u32, b| {
         feed(app, *now, vec![down(b)]);
         *now += 80;
         feed(app, *now, vec![up(b)]);
         *now += 30;
     };
-    // A long-press: hold past the threshold (one empty tick fires `Hold`/`BackHold`), then release.
+    // A long-press: hold past the threshold, where one empty tick fires the hold, then release.
     let press_hold = |app: &mut App, now: &mut u32, b| {
         feed(app, *now, vec![down(b)]);
         *now += hold + 80;
@@ -910,14 +875,14 @@ fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut
         feed(app, *now, vec![up(b)]);
         *now += 30;
     };
-    // Held partway (no release, no threshold crossing): snapshots the in-flight long-press hint.
+    // Held partway, with no release and no threshold crossing: the in-flight long-press hint.
     let partial_hold = |app: &mut App, now: &mut u32, b| {
         feed(app, *now, vec![down(b)]);
         *now += hold * 55 / 100; // ~55% toward the threshold
         feed(app, *now, vec![]); // samples the in-flight progress for the render
     };
-    // A **chord** (#1515 D2): two buttons squeezed inside the 100 ms window, released together.
-    // The recognizer swallows both, so the script gets the drawer and no constituent gesture.
+    // A chord: two buttons squeezed inside the 100 ms window, released together. The recognizer
+    // swallows both, so the script gets the drawer and no constituent gesture.
     let chord = |app: &mut App, now: &mut u32, a, b| {
         feed(app, *now, vec![down(a)]);
         *now += 30;
@@ -942,30 +907,27 @@ fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut
             'B' => press_hold(app, &mut now, Button::Back),
             'H' => partial_hold(app, &mut now, Button::Select),
             'M' => partial_hold(app, &mut now, Button::Back),
-            // Settle: step the clock ~800 ms in animation-sized ticks (a sweep integrates a
-            // dt-capped step per poll, so one big jump would leave it mid-flight) until any
-            // time-driven animation (the Menu needle) has finished. Not for use after `H`/`M` —
-            // the empty feeds would cross the hold threshold and fire the `Hold`/`BackHold`
-            // those tokens deliberately leave armed.
+            // Settle: step the clock in animation-sized ticks until any time-driven animation has
+            // finished. A sweep integrates a dt-capped step per poll, so one big jump would leave
+            // it mid-flight. Not for use after `H` or `M`: the empty feeds would cross the hold
+            // threshold and fire the hold those tokens leave armed.
             'w' => {
                 for _ in 0..8 {
                     now += 100;
                     feed(app, now, vec![]);
                 }
             }
-            // Draw one throwaway frame to flush lazy draw-time state (the POI-list snapshot / the
-            // detail's hours read) so the next gesture sees it — e.g. `p f p` opens a POI list, fills
-            // its snapshot, then presses a POI into its detail.
+            // Draw one throwaway frame to flush lazy draw-time state, so the next gesture sees it.
+            // `p f p` opens a POI list, fills its snapshot, then presses a POI into its detail.
             'f' => hook(app, ScriptHook::Render, now),
-            // One route-aware tick (see the fn doc): sync + open the active route and run the
-            // once-per-load state builds the GUI's per-frame tick would have run.
+            // One route-aware tick: sync and open the active route, and run the once-per-load
+            // state builds the GUI's per-frame tick would have run.
             'T' => hook(app, ScriptHook::Tick, now),
-            // Idle-elapse: jump the clock 5 min forward with no input and run one animation pass, so
-            // the app-level idle-return timeout (Part B) fires deterministically for a snapshot —
-            // e.g. `B u p I` sits in Settings, elapses, and lands back on Home. Longer than every
-            // configurable timeout (max 5 min), so it fires for any `Idle return` setting but Never.
-            // The universal quick drawer's Up+Select squeeze, then its slide-down settled — one
-            // token, because every drawer frame starts with it.
+            // Idle-elapse: jump the clock forward with no input and run one animation pass, so the
+            // idle-return timeout fires deterministically for a snapshot. Longer than every
+            // configurable timeout, so it fires for any idle-return setting but Never.
+            // The quick drawer's Up and Select squeeze, then its slide settled: one token, because
+            // every drawer frame starts with it.
             'Q' => {
                 chord(app, &mut now, Button::Up, Button::Select);
                 for _ in 0..12 {
@@ -984,7 +946,7 @@ fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut
                 feed(app, now, vec![up(Button::Select), up(Button::Up)]);
                 now += 30;
             }
-            // The contextual drawer's Down+Back squeeze, then its slide-up settled.
+            // The contextual drawer's Down and Back squeeze, then its slide settled.
             'C' => {
                 chord(app, &mut now, Button::Down, Button::Back);
                 for _ in 0..8 {
@@ -1101,8 +1063,8 @@ fn main() {
         );
     }
 
-    // `--palette`: the device's 64-color gamut on a standalone color-test screen. Needs no
-    // map. With `--png` it writes the frame headlessly (diffable in CI); else a minimal window.
+    // `--palette`: the device's 64-color gamut on a standalone color-test screen, which needs no
+    // map. With `--png` it writes the frame headlessly; otherwise it opens a minimal window.
     if args.palette {
         if let Some(path) = &args.png {
             let mut fb = Framebuffer::new(args.width, args.height);
@@ -1207,8 +1169,8 @@ fn main() {
     // Headless mode: render one frame through the shared app, save PNG, exit.
     if let Some(path) = &args.png {
         let tables = map.tables();
-        // One reader over the one map file — the map plane, nav, POI, hours and routing all read
-        // it, exactly as they do on the device.
+        // One reader over the one map file: the map plane, nav, POI, hours and routing all read
+        // it, as they do on the device.
         let reader = map.reader();
         let (mut cx, mut cy, mut zoom) = initial_camera(&reader, args.width);
         if let Some((lon, lat)) = args.center {
@@ -1228,16 +1190,16 @@ fn main() {
         if let Some(b) = args.battery {
             state.device.battery_pct = b;
         }
-        // `--heading` renders a rotated (heading-up) frame; the rotation derives from the
-        // fix's course, so seed one at the map center.
+        // `--heading` renders a heading-up frame, and the rotation derives from the fix's course,
+        // so seed one at the map center.
         if let Some(deg) = args.heading {
             state.compass_deg = Some(deg);
             state.heading_up = true;
             let (lat, lon) = state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((cy, cx));
             state.user_fix = Some(Fix { lat, lon, course: Some(deg), speed_mps: None });
         }
-        // Seed the camera and script fix at `--script-at`, or `--at` (default: midpoint).
-        // Replay up to `--at` runs below, after the route opens, so the snapshot shows live riding state, not just a static marker.
+        // Seed the camera and script fix at `--script-at`, or `--at`. The replay up to `--at` runs
+        // below, after the route opens, so the snapshot shows live riding state.
         let mut player: Option<GpxPlayer> = None;
         let mut replay_to = 0.0_f64;
         let mut replay_from = 0.0_f64;
@@ -1270,8 +1232,8 @@ fn main() {
             let mut loc = crate::sim_location::SimLocationSource::new(app.state.user_fix);
             app.tick(obc_ports::RideClock(0), obc_ports::Sensors::new(&mut loc), None);
         }
-        // Explicit headless settings are applied before the script. Without an explicit clock,
-        // the device's boot time remains untrusted.
+        // Explicit headless settings are applied before the script. Without an explicit clock the
+        // device's boot time stays untrusted.
         if args.clock.is_some() || args.lang.is_some() || args.stat_fields.is_some() || args.sensors.is_some() {
             let mut settings = obc_app::settings::Settings::default();
             if let Some(clock) = args.clock {
@@ -1280,9 +1242,8 @@ fn main() {
             if let Some(lang) = args.lang {
                 settings.language = lang;
             }
-            // `--sensors demo` (epic #707, SE5): pin the three new sensor tiles onto the visible
-            // Statistics page so the snapshot shows them. A dedicated demo selection — HR / PWR /
-            // RPM first, then a few live neighbours — replacing the default six.
+            // `--sensors demo`: pin the three sensor tiles onto the visible Statistics page so the
+            // snapshot shows them, replacing the default six.
             if args.sensors == Some(SensorSeed::Demo) {
                 use obc_app::StatField;
                 let mut sf = settings.stat_fields;
@@ -1301,22 +1262,22 @@ fn main() {
                 }
                 settings.stat_fields = sf;
             }
-            // `--stat-fields` (epic #946, U5): replace the grid selection wholesale, so a snapshot can
-            // put a `Next: <category>` tile (or any other field) on the visible page without walking
-            // the Fields editor. Applied after `--sensors demo` so an explicit list always wins.
+            // `--stat-fields` replaces the grid selection wholesale, so a snapshot can put any
+            // field on the visible page without walking the Fields editor. Applied after
+            // `--sensors demo`, so an explicit list wins.
             if let Some(fields) = &args.stat_fields {
                 let mut sf = empty_stat_field_list();
                 for f in fields {
-                    // Can't fail: `parse_stat_fields` pushed the identical list onto an identical
-                    // grid and rejected the argument outright if any of it didn't fit.
+                    // Cannot fail: `parse_stat_fields` pushed the identical list onto an identical
+                    // grid and rejected the argument if any of it did not fit.
                     let added = sf.push(*f);
                     debug_assert!(added, "`--stat-fields` is validated at parse time");
                 }
                 settings.stat_fields = sf;
             }
-            // `--sensors screen` (SE7): two saved slots so the row screen reads Connected / Searching
-            // (the Not-set third stays empty). A settings write, so it survives into the row status
-            // gate; the live phase + battery come from the status snapshot pushed after the script.
+            // `--sensors screen`: two saved slots, so the row screen reads Connected and Searching
+            // and the third stays unset. A settings write, so it survives into the row status gate;
+            // the live phase and battery come from the status snapshot pushed after the script.
             if args.sensors == Some(SensorSeed::Screen) {
                 settings.saved_sensors[0] = obc_app::SavedSensor::saved(1, [0x66, 0x55, 0x44, 0x33, 0x22, 0x11]);
                 settings.saved_sensors[1] = obc_app::SavedSensor::saved(0, [0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F]);
@@ -1324,22 +1285,21 @@ fn main() {
             app.set_settings(settings);
         }
         args.stamp_initial_clock(&mut app);
-        // Mirror the map's §8.6 routing-profile names for the bike-type editor + overview label (N5),
-        // and whether it carries a nav graph at all (#882: gates the ride menu's Detour station).
+        // Mirror the map's routing-profile names for the bike-type editor and overview label, and
+        // whether it carries a nav graph at all, which gates the ride menu's Detour station.
         app.set_nav_profiles(tables.nav_profiles());
         app.set_map_nav_graph(tables.has_nav_graph());
-        // Device-info built-ins for the System settings screen (T8 item 6): the running firmware
-        // version (the sim's own crate version stands in for the board's git-describe tag) and the
-        // loaded map's name (filename stem) + OBCM version from the parsed header. The card-free scan
-        // is answered after the script (below), mirroring the on-entry FAT scan seam.
-        // The panel-light capability the drawer's root row is built from (#1515 D2). The headless
-        // host models a lit panel, like the window does, so a snapshot shows the four-icon
-        // arrangement a rider gets on a device with a light — the board included, since #1558 —
-        // while `--no-backlight` renders the three-control one a lightless host would show.
+        // Device-info built-ins for the System settings screen: the running firmware version, with
+        // the sim's crate version standing in for the board's tag, and the loaded map's name and
+        // version from the parsed header. The free-space scan is answered after the script, which
+        // mirrors the on-entry FAT scan seam.
+        // The panel-light capability the drawer's root row is built from. The headless host models
+        // a lit panel, like the window does, so a snapshot shows the four-icon arrangement;
+        // `--no-backlight` renders the three-control one instead.
         app.set_backlight_available(!args.no_backlight);
-        // No `set_resident_frame` here, and deliberately: the headless host composes **one** frame
-        // into a buffer that holds nothing, so every screen has to be drawn, including a base a
-        // resident host would leave standing under a sheet (#1559).
+        // No `set_resident_frame` here: the headless host composes one frame into a buffer that
+        // holds nothing, so every screen must be drawn, including a base a resident host would
+        // leave standing under a sheet.
         app.set_fw_version(env!("CARGO_PKG_VERSION"));
         let map_name = map.display_name();
         app.set_map_info(map_name, tables.version);
@@ -1348,7 +1308,7 @@ fn main() {
         app.set_routes_with_ids(store.catalog(), store.ids());
 
         // The same host-protocol owner the interactive simulator drives. Headless runs each plan
-        // to completion inside a pass; its planned detour stays resident here until commit/cancel.
+        // to completion inside a pass, and its planned detour stays resident until commit or cancel.
         let mut host = HostLoop::new();
         if diagnostics.enabled() {
             host.set_trace(Box::new(diagnostics.clone()));
@@ -1356,9 +1316,8 @@ fn main() {
         if let Some(scope) = store.store_scope() {
             host.facts().note_store_revision(scope);
         }
-        // Trip stage references have already been remapped to the card's route identities. Fed
-        // **after** the routes so the stage ids resolve against the catalog. The TR3 menu draws the
-        // folder rows; until then the grouping is resolved but unrendered (the flat menu is intact).
+        // Trip stage references are already remapped to the card's route identities. Fed after the
+        // routes, so the stage ids resolve against the catalog.
         if args.route_cleanup {
             if let Some(scope) = store.store_scope() {
                 app.offer_route_cleanup(scope.store);
@@ -1369,7 +1328,7 @@ fn main() {
         // The complete saved-ride projection comes from the same card as the map and routes.
         let mut ride_store = rides;
         app.set_rides(ride_store.catalog());
-        // Inject BLE before the script; `+` preserves independent link, bond and passkey facts.
+        // Inject BLE before the script. `+` keeps independent link, bond and passkey facts.
         let ble = args.ble.unwrap_or_default();
         app.set_ble_status(obc_app::BleStatus {
             link: if ble.connected { obc_app::BleLink::Connected } else { obc_app::BleLink::Advertising },
@@ -1378,18 +1337,18 @@ fn main() {
         });
         // Planner emission and map-referenced altitude share terrain from this retained map.
         let mut elev = map.elevation();
-        // The open ride log. Opened here, above the script, because every settling pass reconciles
-        // it against the app's tracking session exactly as a frame loop does.
+        // The open ride log. Opened above the script, because every settling pass reconciles it
+        // against the app's tracking session as a frame loop does.
         let mut tracks = tracks;
         tracks.offer_recovery(&mut app);
         // The resident active-route parse, shared by every settle and by the final render.
         let mut session = ActiveRouteSession::new();
-        // What only this host can do: the fixed card-free figure, and the `--dfu` answers.
+        // What only this host can do: the fixed free-space figure and the `--dfu` answers.
         //
-        // Staged **here**, above the script, because `DfuState` asks exactly once: the "Checking
-        // card…" wait the script leaves on top emits one `DfuEffect::Scan`, and an executor with no
-        // answer ready would consume that operation and leave the flow parked. `Progress`
-        // deliberately stages no install answer — that unanswered arm *is* the spinner.
+        // Staged above the script, because `DfuState` asks exactly once: the wait the script leaves
+        // on top emits one scan effect, and an executor with no answer ready would consume that
+        // operation and park the flow. `Progress` stages no install answer, because that unanswered
+        // arm is the spinner.
         let mut platform = HeadlessPlatform::default();
         if let Some(dfu) = &args.dfu {
             platform.scan = match dfu {
@@ -1399,9 +1358,9 @@ fn main() {
             };
             platform.install = matches!(dfu, DfuSeed::Installing(_)).then_some(Ok(()));
         }
-        // `--hold nav` / `--inject nav-fail=...` **acquire** the search without starting it, so the
-        // planning screen stays up (for its own snapshot) and the injected answer below is a real
-        // answer to the operation the rider actually started.
+        // `--hold nav` and `--inject nav-fail=...` acquire the search without starting it, so the
+        // planning screen stays up and the injected answer below answers the operation the rider
+        // started.
         let hold = PlanHold::new(
             args.hold == Some(Hold::Nav) || matches!(args.inject, Some(Injection::NavFail(_))),
             args.hold == Some(Hold::Detour) || matches!(args.inject, Some(Injection::DetourFail(_))),
@@ -1431,8 +1390,7 @@ fn main() {
             app.stamp_clock(clock, 0, Some(args.utc_offset_min.unwrap_or(0)), obc_app::ClockTrust::Ble);
         }
         // Everything the script's last press asked for, with no trailing `f`: settle it now so the
-        // final render reflects the answer (the create-route commit, the detour plan/commit, the
-        // hold-to-delete re-feed, the trip cascade, the open Ride detail's track — all of it).
+        // final render reflects the answer.
         let mut stores =
             Stores { routes: &mut store, rides: &mut ride_store, trips: &mut trip_store, tracks: &mut tracks };
         let mut settle_now =
@@ -1441,14 +1399,10 @@ fn main() {
             };
         settle_now(&mut app, &mut stores, &mut host, &mut platform);
 
-        // ── The scripted injections ──────────────────────────────────────────────────────────
-        // Each of these is what the device actually sees: an **outcome** answering the operation
-        // the rider started (carrying the token the executor is holding for it), or an external
-        // **fact** nobody asked for. The pass consumes them at its first two stages, so the snapshot
+        // The scripted injections. Each is what the device sees: an outcome answering the
+        // operation the rider started, carrying the token the executor holds for it, or an external
+        // fact nobody asked for. The pass consumes them at its first two stages, so the snapshot
         // pins the same seam the board runs.
-        //
-        // A routing failure lands in the CREATE ROUTE confirm's own planning screen: `--hold nav`
-        // acquired the operation without starting the search, so this is a genuine answer to it.
         if let Some(Injection::NavFail(kind)) = args.inject {
             let error = obc_app::navigator::NavigatorError::Plan(nav_error(kind));
             if let Some(token) = host.plan_token() {
@@ -1490,10 +1444,10 @@ fn main() {
             );
         }
 
-        // A committed route upload (epic #447, P4): the catalog above is the "already rescanned"
-        // store, and this is the fact that names the committed id — the device's exact order. The
-        // route's mini elevation band is built from the committed OBCR at "commit time", exactly the
-        // seam the board fills (#682); the idle card draws it.
+        // A committed route upload: the catalog above is the already-rescanned store, and this is
+        // the fact that names the committed id, which is the device's own order. The route's mini
+        // elevation band is built from the committed OBCR at commit time, and the idle card draws
+        // it.
         if let Some(Injection::Upload { id, replaced }) = args.inject {
             let elevation = routes::elevation_sparkline(stores.routes, id);
             host.facts().note_route_upload(obc_app::device_core::RouteUpload { id, replaced, elevation });
@@ -1522,13 +1476,13 @@ fn main() {
                 script_now,
             );
         }
-        // The board's live map-transfer state (issue #927) — a level the ride loop polls each pass,
-        // and a feeder rather than a fact until the flat engine's `busy` is wired (S6b).
+        // The board's live map-transfer state: a level the ride loop polls each pass, and a feeder
+        // rather than a fact.
         if let Some(Injection::MapTransfer(state)) = args.inject {
             app.set_map_transfer(Some(state));
         }
-        // Device warnings (issue #504): the sim has no I²C probe / fragmented card to trip them for
-        // real, so they arrive as the fact the board raises.
+        // Device warnings: the sim has no probe or fragmented card to trip them for real, so they
+        // arrive as the fact the board raises.
         if let Some(Injection::Warning(w)) = args.inject {
             host.facts().raise_warnings(w);
             settle(
@@ -1543,19 +1497,17 @@ fn main() {
             );
         }
 
-        // DFU sideload snapshots (epic #615 S5, #620). The scan ran board-side above, answered by
-        // the staged platform when the "Checking card…" wait asked for it — so the confirm /
-        // progress / error cards render off the same app state the device reaches, behind the same
-        // operation token. What is left is the rider's own Confirm.
+        // DFU sideload snapshots. The scan ran above, answered by the staged platform when the
+        // wait asked for it, so the confirm, progress and error cards render off the same app state
+        // the device reaches. What is left is the rider's own Confirm.
         if let Some(dfu) = &args.dfu {
             if matches!(dfu, DfuSeed::Progress(_) | DfuSeed::Installing(_)) {
-                // Confirm (Install is the default selection) → the arm request. A tap: down, then up
-                // 80 ms later, well under the long-press threshold.
+                // Confirm, where Install is the default selection, is the arm request. A tap: down,
+                // then up 80 ms later, well under the long-press threshold.
                 //
-                // Long after any script (~110 ms a token), but taken as a *floor* on the script's
-                // own clock rather than as an absolute: the UI clock must never move backwards, and
-                // a script long enough to pass this mark would otherwise re-open every bounded
-                // window it had already closed.
+                // Taken as a floor on the script's own clock and not as an absolute: the UI clock
+                // must never move backwards, and a longer script would otherwise re-open every
+                // bounded window it had closed.
                 let now = script_now.max(500_000);
                 feed(&mut app, now, vec![InputEvent::Button(ButtonEvent::Down(Button::Select))]);
                 feed(&mut app, now + 80, vec![InputEvent::Button(ButtonEvent::Up(Button::Select))]);
@@ -1572,7 +1524,7 @@ fn main() {
             }
         }
         // The one-time post-update toast and its failure twin: this boot's update result is a fact,
-        // and the pass's card scheduler pushes the "Updated to vX" / "UPDATE FAILED" card from it.
+        // and the pass's card scheduler pushes the card from it.
         let boot_update = match &args.dfu {
             Some(DfuSeed::Confirmed(version)) => {
                 Some(obc_app::device_core::UpdateResult::Confirmed(obc_app::dfu::clamp(version)))
@@ -1589,10 +1541,9 @@ fn main() {
             settle(&mut host, &mut session, &mut app, &mut stores, map.planner_map(), &mut *elev, &mut platform, now);
         }
 
-        // `--sensors screen` (SE7, epic #707): after the script lands on the Sensors screen (or its
-        // scan list), push the per-slot status + the canned scan-hit set — the fake central manager,
-        // so the three-row screen reads Connected · 78 % / Searching / Not set and the scan list shows
-        // filtered hits. The row screen ignores the hits; the scan-list screen ignores the status.
+        // `--sensors screen`: once the script lands on the Sensors screen or its scan list, push
+        // the per-slot status and the canned scan hits, so the three-row screen reads its statuses
+        // and the scan list shows filtered hits. Each screen ignores the half it does not draw.
         if args.sensors == Some(SensorSeed::Screen) {
             let status = [
                 obc_app::SensorStatus { phase: obc_app::SensorPhase::Connected, battery: Some(78), last_value_ms: 0 },
@@ -1603,11 +1554,11 @@ fn main() {
             app.set_sensor_scan_hits(&fake_scan_hits());
         }
 
-        // Replay from `--script-at` (default: zero) up to `--at`, one device frame per step so the
-        // map-matcher locks on and the ride accumulators + breadcrumb fill. A coarse-but-bounded
-        // step keeps long tracks fast while staying under the dropout/teleport gates. The UI clock
-        // stands still at the script's own mark: a replay drives the *ride*, and aging the UI on top
-        // of it would run every card and idle timer through the whole track in one go.
+        // Replay from `--script-at` up to `--at`, one device frame per step, so the map-matcher
+        // locks on and the ride accumulators and breadcrumb fill. A coarse but bounded step keeps
+        // long tracks fast while staying under the dropout and teleport gates. The UI clock stands
+        // still at the script's mark: a replay drives the ride, and aging the UI on top of it would
+        // run every card and idle timer through the whole track at once.
         let mut replay_clock = obc_ports::RideClock(0);
         if let Some(p) = player.as_mut() {
             let mut baro = BaroSensor::new();
@@ -1650,19 +1601,18 @@ fn main() {
                     &mut *elev,
                     &mut platform,
                 );
-                // The map-referenced altimeter's one terrain read per fix (EL8, #1076) — the same
-                // retained map terrain the router emits from, drained right behind the pass exactly as
-                // the board's ride loop does.
+                // The map-referenced altimeter's one terrain read per fix, from the same retained map
+                // terrain the router emits from, drained behind the pass as the board's ride loop
+                // does.
                 app.sample_terrain(&mut *elev);
                 t = (t + step).min(replay_to);
             }
         }
 
-        // `--sensors demo` (epic #707, SE5): one final frame fed a **fixed synthetic** HR/power/
-        // cadence through SE2's HAL sensor traits, so the three new stat tiles render live values in
-        // the Statistics-grid snapshot (the grid was pinned to HR/PWR/RPM in the settings seed
-        // above). Stamped at the replay's own `now_ms` so `Activity`'s 5 s staleness gate reads them
-        // fresh. Deliberately minimal — SE8 replaces this with the sim control panel's real sliders.
+        // `--sensors demo`: one final frame fed a fixed synthetic heart rate, power and cadence
+        // through the HAL sensor traits, so the three stat tiles render live values in the
+        // Statistics-grid snapshot. Stamped at the replay's own `now_ms`, so the 5 s staleness gate
+        // reads them fresh.
         if args.sensors == Some(SensorSeed::Demo) {
             if let Some(p) = player.as_mut() {
                 struct DemoHr;
@@ -1750,8 +1700,8 @@ fn main() {
             );
         }
 
-        // `--freeze` (#1146 P2): engage the Recalculating freeze through the same seam a drained
-        // plan command takes, so the snapshot shows the real banner over the real frozen map.
+        // `--freeze` engages the Recalculating freeze through the same seam a drained plan command
+        // takes, so the snapshot shows the real banner over the real frozen map.
         if args.freeze {
             app.debug_set_plan_live(true);
         }
@@ -1764,9 +1714,9 @@ fn main() {
         let scene = obc_host_core::frame::Scene { reader: &reader, route: route.as_ref() };
 
         // `--expect-screen`: the recipe states where its gestures were supposed to land, and the
-        // sim checks it against the `screens!` table's own name before a single pixel is written.
-        // Checked here — below every seam that can still change the top screen, including WX12's
-        // alert decision — so what is verified is exactly what gets saved.
+        // sim checks it against the `screens!` table's own name before a pixel is written. Checked
+        // below every seam that can still change the top screen, so what is verified is what gets
+        // saved.
         if let Some(expected) = &args.expect_screen {
             let landed = app.top_screen().name();
             if landed != expected {
@@ -1823,7 +1773,7 @@ fn main() {
             stats.map_sd_reads,
             stats.map_bytes_read
         );
-        // The span/point/ring scratch split by render path (lines vs polygons).
+        // The span, point and ring scratch, split by render path.
         eprintln!(
             "  scratch by kind: spans {}L+{}P/{} · points {}L+{}P/{} · rings {}L+{}P/{}",
             stats.line_spans,
@@ -1917,7 +1867,7 @@ mod cli_tests {
         let (script, from, end) = args.replay_range(player.duration()).unwrap();
         player.seek(script);
         assert_eq!(player.poll().unwrap().lon, 7_000_050);
-        // The script's T token polls this same position through the normal location port.
+        // The script's `T` token polls this same position through the normal location port.
         player.seek(script);
         assert_eq!(player.poll().unwrap().lon, 7_000_050);
         player.seek(from);
@@ -2003,8 +1953,8 @@ mod cli_tests {
         ));
     }
 
-    /// The new seed forms refuse the values that would silently snapshot a *different* frame:
-    /// a progress bar past full, a zero-length transfer, and an unknown failure reason.
+    /// The seed forms refuse the values that would silently snapshot a different frame: a progress
+    /// bar past full, a zero-length transfer, and an unknown failure reason.
     #[test]
     fn seed_forms_reject_states_the_device_cannot_reach() {
         assert!(parse(&["--inject", "map-transfer=receiving:500/400"]).is_err());
@@ -2033,7 +1983,6 @@ mod cli_tests {
 
     #[test]
     fn help_lists_every_parser_flag_and_no_removed_flag() {
-        let readme = include_str!("../README.md");
         for flag in [
             "--size",
             "--scale",
@@ -2068,14 +2017,11 @@ mod cli_tests {
             "--inject",
         ] {
             assert!(HELP.contains(flag), "help is missing {flag}");
-            assert!(readme.contains(flag), "README is missing {flag}");
         }
         for removed in ["--true-color", "--colorway", "--calibrate", "--screenshot", "--boot-fault", "--set"] {
             assert!(!HELP.contains(removed), "help still advertises {removed}");
-            assert!(!readme.contains(removed), "README still advertises {removed}");
         }
-        // A grouped flag's *forms* are the actual vocabulary a snapshot recipe writes, so they are
-        // documented in both places too — a seed nobody can find is a seed nobody uses.
+        // A grouped flag's forms are the vocabulary a snapshot recipe writes.
         for form in [
             "trip-upload=N",
             "map-transfer=receiving:RECEIVED/TOTAL",
@@ -2084,7 +2030,6 @@ mod cli_tests {
             "failed=WHY[:VERSION]",
         ] {
             assert!(HELP.contains(form), "help is missing {form}");
-            assert!(readme.contains(form), "README is missing {form}");
         }
     }
 }

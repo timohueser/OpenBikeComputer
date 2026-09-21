@@ -1,9 +1,9 @@
 //! The phone's sensors as the app's pull-only ports.
 //!
-//! CoreLocation and CoreMotion deliver on their own cadence; the app polls once per pass. Each
-//! value therefore sits in a mailbox and leaves on the first poll that takes it — the fresh-sample
-//! contract in [`obc_ports`]: `Some` means *new*, and a value read twice would be a second fix at
-//! the same instant.
+//! CoreLocation and CoreMotion deliver on their own cadence and the app polls once per pass, so
+//! each value sits in a mailbox and leaves on the first poll that takes it. That is the
+//! fresh-sample contract in [`obc_ports`]: `Some` means new, and a value read twice would be a
+//! second fix at the same instant.
 
 use obc_ports::{
     AltimeterSource, ClockSource, CompassSource, DateTime, Fix, FuelGauge, GpsTime, LocationSource, Sensors,
@@ -61,8 +61,8 @@ impl FuelGauge for Mailbox<u8> {
 
 /// What the phone can tell the device: position, wall clock, heading, altitude and charge.
 ///
-/// No temperature, heart rate, power or cadence — the phone has none of them, and an honest
-/// absence is what makes the screens show `--` instead of a fabricated number.
+/// There is no temperature, heart rate, power or cadence, because the phone has none of them, and
+/// an honest absence is what makes the screens show a blank instead of a fabricated number.
 #[derive(Default)]
 pub struct PhoneSensors {
     fix: Mailbox<Fix>,
@@ -73,19 +73,19 @@ pub struct PhoneSensors {
 }
 
 impl PhoneSensors {
-    /// One `CLLocation`. Its timestamp stamps the wall clock, the way the board's GPS does; a fix
-    /// without one (a mocked location) simply leaves the clock alone.
+    /// One `CLLocation`. Its timestamp stamps the wall clock, as the board's GPS does, and a fix
+    /// without one leaves the clock alone.
     pub fn push_fix(&mut self, fix: Fix, unix_secs: Option<u32>) {
         self.fix.push(fix);
         if let Some(unix) = unix_secs {
-            // `DateTime` is minute-resolution; the seconds into the minute ride beside it.
+            // `DateTime` is minute-resolution, so the seconds into the minute ride beside it.
             self.clock.push(GpsTime { utc: DateTime::from_unix(unix), second: (unix % 60) as u8 });
         }
     }
 
     /// `CLHeading.trueHeading`, in degrees clockwise from north. CoreLocation reports an invalid
-    /// heading as a negative value, which is the absence of a direction rather than one: dropping
-    /// it leaves the app on its last real heading instead of turning -1 into a confident 359°.
+    /// heading as a negative value, which is the absence of a direction, so dropping it leaves the
+    /// app on its last real heading.
     pub fn push_heading(&mut self, degrees: f32) {
         if !degrees.is_finite() || degrees < 0.0 {
             return;
@@ -93,8 +93,8 @@ impl PhoneSensors {
         self.heading.push(degrees.rem_euclid(360.0));
     }
 
-    /// `CMAltimeter` absolute altitude in metres. No 1 Hz latch: CoreMotion delivers at its own
-    /// cadence and the app's staleness gate covers a gap.
+    /// `CMAltimeter` absolute altitude in metres. There is no cadence latch, because CoreMotion
+    /// delivers at its own rate and the app's staleness gate covers a gap.
     pub fn push_altitude(&mut self, metres: f32) {
         self.altitude.push(metres);
     }

@@ -1,6 +1,6 @@
 <script lang="ts">
-    // The builder's home when the catalog is a cell store (#1038): the approved
-    // R2·1 frame. The steps column is the narrative spine, the map pane
+    // The builder's home when the catalog is a cell store. The steps column is
+    // the narrative spine, the map pane
     // responds, and only the column scrolls. Step 1 is a ledger of composed
     // parts and the map owns selection
     // through its tool rail.

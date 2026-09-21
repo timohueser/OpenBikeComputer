@@ -1,15 +1,13 @@
 //! The bake: source mosaic → OBCT cell blocks → containers.
 //!
 //! One function is the whole contract. [`bake_cell`] takes a mosaic and a cell index and returns
-//! that cell's block — a pure function of those two things, depending on **no** bbox, no output
-//! mode and no neighbouring cell. Everything else here is bookkeeping around it: which cells a box
+//! that cell's block — a pure function of those two things, depending on no bbox, no output mode
+//! and no neighbouring cell. Everything else here is bookkeeping around it: which cells a box
 //! selects ([`cell_rect`]), and whether they land in one shard or one file each.
 //!
-//! That purity is what the epic actually needs. A cell published on its own must be byte-identical
-//! to the same cell inside a wide shard, or the catalog (EL3) and the assembler (EL4) would produce
-//! two different rasters for one square of the world and the "one sampling truth" claim would be
-//! false at the first seam. It is also what makes the digest pin in the tests meaningful rather than
-//! merely stable.
+//! That purity is what the rest of the pipeline needs. A cell published on its own must be
+//! byte-identical to the same cell inside a wide shard, or the catalog and the assembler would
+//! produce two different rasters for one square of the world.
 
 use std::io::{Seek, Write};
 
@@ -25,14 +23,14 @@ use crate::geotiff::DemMosaic;
 use crate::reference::ReferenceArchive;
 use crate::BboxUdeg;
 
-/// The v1 baked posting: `2^9` µdeg ≈ 57 × 39 m at 47 °N (`OBCT_Spec.md` §1.3).
+/// The v1 baked posting: `2^9` µdeg ≈ 57 × 39 m at 47 °N.
 pub const V1_POSTING_LOG2: u8 = 9;
-/// The v1 published cell side: `2^19` µdeg — 1024² samples, a 2 MiB block (`OBCT_Spec.md` §1.3).
+/// The v1 published cell side: `2^19` µdeg — 1024² samples, a 2 MiB block.
 pub const V1_CELL_LOG2: u8 = 19;
 
-/// What a bake was asked for. Posting and cell side are **parameters**, not constants, because they
-/// are header data in the format too (the OBCA §1.5 idiom): retuning either is a re-bake, and a
-/// sidecar for a small map is legitimately baked at a smaller cell than a published catalog object.
+/// What a bake was asked for. Posting and cell side are parameters, not constants, because they are
+/// header data in the format too: retuning either is a re-bake, and a sidecar for a small map is
+/// legitimately baked at a smaller cell than a published catalog object.
 #[derive(Debug, Clone, Copy)]
 pub struct BakeParams {
     pub posting_log2: u8,
@@ -48,11 +46,11 @@ pub struct BakeReport {
     pub cells_written: u64,
     pub samples_total: u64,
     pub samples_nodata: u64,
-    /// What §9's rule did, over every cell. Zero when the bake had no reference.
+    /// What the lift rule did, over every cell. Zero when the bake had no reference.
     pub lifts: LiftTally,
-    /// Every reference source a **lifted** cell of this bake is derived from, sorted. Its
-    /// attribution must travel with the container (§9.3). A source whose tiles the archive named
-    /// and did not hold, or whose tiles moved no sample, is not in here.
+    /// Every reference source a lifted cell of this bake is derived from, sorted. Its attribution
+    /// must travel with the container. A source whose tiles the archive named and did not hold, or
+    /// whose tiles moved no sample, is not in here.
     pub sources: std::collections::BTreeSet<String>,
     /// Tiles the index named and the archive did not hold, over the whole run — distinct ids, so a
     /// tile two cells share is counted once.
@@ -69,20 +67,20 @@ pub struct CellDone {
     pub cj: u32,
     /// Whether the cell had any height at all, i.e. whether a block was written.
     pub written: bool,
-    /// Nodes §9's rule lifted in this cell.
+    /// Nodes the lift rule raised in this cell.
     pub lifted: u64,
 }
 
 /// Quantise a source height in metres to an OBCT sample.
 ///
-/// **Rounding is half away from zero** — `f64::round`'s own rule, and the rule `OBCT_Spec.md` §5.2
-/// pins for the read side. Matching them is not cosmetic: the packer integrates ascent from these
-/// samples and the device interpolates between them, and a producer that rounded towards `-∞` would
-/// put a systematic half-metre bias into every descent and none into any climb.
+/// Rounding is half away from zero — `f64::round`'s own rule, and the rule the format pins for the
+/// read side. Matching them is not cosmetic: the packer integrates ascent from these samples and
+/// the device interpolates between them, and a producer that rounded towards `-∞` would put a
+/// systematic half-metre bias into every descent and none into any climb.
 ///
 /// A height outside the `int16` range is not clipped, it is voided. `-32768` is the `NODATA`
-/// sentinel a producer MUST NOT write as a height, and a source claiming 40 km of elevation is
-/// broken rather than steep — silence is the honest answer to both.
+/// sentinel a producer must not write as a height, and a source claiming 40 km of elevation is
+/// broken rather than steep.
 #[inline]
 pub fn quantise(metres: f64) -> i16 {
     if !metres.is_finite() {
@@ -98,10 +96,10 @@ pub fn quantise(metres: f64) -> i16 {
 /// The cell rectangle a bounding box selects: every cell that intersects the box, inclusive of the
 /// box's own max edge.
 ///
-/// Cells are half-open (`OBCT_Spec.md` §3.1), so the cell *owning* `max_lat` is the one a query at
-/// `max_lat` would be answered from — it has to be in the rectangle or the box's own northern edge
-/// would be uncovered. The result is therefore "the cells the box touches", never a rounding of the
-/// box down to a cell multiple.
+/// Cells are half-open, so the cell owning `max_lat` is the one a query at `max_lat` would be
+/// answered from — it has to be in the rectangle or the box's own northern edge would be uncovered.
+/// The result is therefore the cells the box touches, never a rounding of the box down to a cell
+/// multiple.
 pub fn cell_rect(bbox: BboxUdeg, posting_log2: u8, cell_log2: u8) -> Result<CellRect, String> {
     cell_samples_log2(posting_log2, cell_log2).ok_or_else(|| {
         format!("posting 2^{posting_log2} µdeg with cell 2^{cell_log2} µdeg is not a pairing OBCT permits")
@@ -121,16 +119,15 @@ pub fn cell_rect(bbox: BboxUdeg, posting_log2: u8, cell_log2: u8) -> Result<Cell
 }
 
 /// Bake one terrain cell: every lattice sample the cell owns, point-sampled from `mosaic` and
-/// raised by `lift` where a reference DEM says our lattice loses a crest (`OBCT_Spec.md` §9).
+/// raised by `lift` where a reference DEM says our lattice loses a crest.
 ///
-/// Returns `None` when **every** sample is `NODATA` — the cell is then published as an absent
-/// directory slot rather than 2 MiB of sentinel. That is not a compression trick: an all-void cell
-/// and a missing cell answer identically under §5 (`None` at every query, with the §5.3 clamp
-/// reaching for the containing cell either way), so writing the bytes would buy nothing.
+/// Returns `None` when every sample is `NODATA` — the cell is then published as an absent directory
+/// slot rather than 2 MiB of sentinel. An all-void cell and a missing cell answer identically on
+/// the read side, so writing the bytes would buy nothing.
 ///
-/// The returned block is laid out per §3.2 — tiles row-major with `ti` advancing latitude, samples
-/// row-major within a tile with `row` advancing latitude — and the offsets come from `obc-formats`
-/// rather than from this file's own arithmetic.
+/// The returned block is laid out tiles row-major with `ti` advancing latitude, samples row-major
+/// within a tile with `row` advancing latitude, and the offsets come from `obc-formats` rather than
+/// from this file's own arithmetic.
 pub fn bake_cell(
     mosaic: &DemMosaic,
     ci: u32,
@@ -142,13 +139,12 @@ pub fn bake_cell(
     fill_cell(ci, cj, posting_log2, cell_log2, lifted_sampler(mosaic, lift))
 }
 
-/// **The height every baker reads**: the mosaic as the lattice sees it, raised by a cell's §9 lifts.
+/// The height every baker reads: the mosaic as the lattice sees it, raised by a cell's lifts.
 ///
 /// Boxed rather than generic because there are two bakers over it — the native [`bake_cell`] here
 /// and `surface::bake_cell`, which the production bakery drives — and this is the one place the
 /// composition is written. A second copy of `lift.apply(native)` is the first place the published
-/// surface and the one a shard carries could stop being the same surface. The indirection costs one
-/// allocation and one vtable hop per sample, against a bilinear interpolation over a GeoTIFF mosaic.
+/// surface and the one a shard carries could stop being the same surface.
 pub fn lifted_sampler<'a>(mosaic: &'a DemMosaic, lift: Option<&'a LiftMap>) -> Box<dyn FnMut(i32, i32) -> i16 + 'a> {
     let native = lattice_sampler(mosaic);
     match lift {
@@ -198,12 +194,12 @@ fn fill_cell(
     any.then_some(block)
 }
 
-/// One cell's §9 lifts, or `None` when there is no reference or it selects nothing here.
+/// One cell's lifts, or `None` when there is no reference or it selects nothing here.
 ///
 /// The lift map is a pure function of the cell and the two DEMs, so the same cell baked alone,
-/// inside a wide shard and by another baker over the same square comes out identical — the property
-/// the digest pin exists to protect. It is `pub` for that last case: the production terrain bakery
-/// bakes the same lift the same way rather than a lift of its own.
+/// inside a wide shard and by another baker over the same square comes out identical. It is `pub`
+/// for that last case: the production terrain bakery bakes the same lift the same way rather than a
+/// lift of its own.
 pub fn cell_lift(
     mosaic: &DemMosaic,
     ci: u32,
@@ -229,13 +225,13 @@ fn record(report: &mut BakeReport, lift: &CellLift) {
 }
 
 /// Count the `NODATA` samples in a block — the operator's coverage number, read back from the bytes
-/// that were actually written rather than tallied while writing them.
+/// that were written rather than tallied while writing them.
 fn nodata_in(block: &[u8]) -> u64 {
     block.as_chunks::<2>().0.iter().filter(|s| i16::from_le_bytes([s[0], s[1]]) == NODATA).count() as u64
 }
 
-/// Bake every cell the box selects into **one** container on `out` — the terrain *shard* a rider
-/// carries beside a map (`OBCT_Spec.md` §4.1).
+/// Bake every cell the box selects into one container on `out` — the terrain shard a rider carries
+/// beside a map.
 ///
 /// `progress` is called once per cell with `(index, total, ci, cj, written)` so a CLI can say what
 /// it is doing without this module owning a progress abstraction.
@@ -273,25 +269,23 @@ pub fn bake_shard<W: Write + Seek>(
 
 /// The canonical file name of a published cell: the OBCA cell id with `/` replaced by `_`.
 ///
-/// The id itself (`<log2>/<i>/<j>`, zero-padded per `OBCA_Spec.md` §1.3) is the catalog's name for
-/// the square, so deriving the file name from it rather than inventing a second naming scheme keeps
-/// EL3's mapping a substitution instead of a lookup table. The padding rule is
-/// [`obc_elevation::grid::id_width`] rather than a local `max(4, …)`, because it is what makes an
-/// id a *key*: one square, one string, in a store addressed by that string. This crate cannot see
-/// `obc-pack`'s `grid::id_width`, and both call the same leaf so they cannot drift.
+/// The id itself is the catalog's name for the square, so deriving the file name from it rather
+/// than inventing a second naming scheme keeps the mapping a substitution instead of a lookup
+/// table. The padding rule is [`obc_elevation::grid::id_width`] rather than a local `max(4, …)`,
+/// because it is what makes an id a key: one square, one string. This crate cannot see `obc-pack`'s
+/// own `grid::id_width`, and both call the same leaf so they cannot drift.
 pub fn cell_file_name(cell_log2: u8, ci: u32, cj: u32) -> String {
     let width = obc_elevation::grid::id_width(cell_log2);
     format!("{cell_log2}_{ci:0width$}_{cj:0width$}.obcd", width = width)
 }
 
-/// Write one already-baked cell block as a **1 × 1 container** at `path` — the published
-/// terrain-cell shape (`OBCT_Spec.md` §4.1).
+/// Write one already-baked cell block as a 1 × 1 container at `path` — the published terrain-cell
+/// shape.
 ///
-/// Split out of [`bake_cells`] so a caller that owns its own naming can still write the *one*
-/// container this crate writes. The bakery (EL3) is exactly that caller: a catalog lays its objects
-/// out as `cells/terrain/<i>/<j>.obcd` rather than in one flat directory, and it must not reach for
-/// a second writer to get there — a second writer is the first place the published cell and the
-/// assembled shard could drift apart.
+/// Split out of [`bake_cells`] so a caller that owns its own naming can still write the one
+/// container this crate writes. The bakery is that caller: a catalog lays its objects out as
+/// `cells/terrain/<i>/<j>.obcd` rather than in one flat directory, and a second writer is the first
+/// place the published cell and the assembled shard could drift apart.
 pub fn write_cell_file(
     path: &std::path::Path,
     posting_log2: u8,
@@ -316,11 +310,11 @@ pub fn write_cell_file(
     Ok(())
 }
 
-/// Bake every cell the box selects into **one file each** — the terrain *cells* a bakery publishes
-/// and a catalog names, each a container whose rectangle is 1 × 1.
+/// Bake every cell the box selects into one file each — the terrain cells a bakery publishes and a
+/// catalog names, each a container whose rectangle is 1 × 1.
 ///
 /// A cell with no data at all is not written: there is no object to publish, and the catalog's
-/// known-empty runs (`OBCC_Spec.md`) are the right place to say so.
+/// known-empty runs are the right place to say so.
 pub fn bake_cells(
     mosaic: &DemMosaic,
     params: BakeParams,
@@ -359,8 +353,8 @@ mod tests {
     use super::*;
     use obc_formats::obct::GRID_ORIGIN;
 
-    /// Half away from zero, symmetric about sea level — the property `floor` would not have, and
-    /// the one the read side pins from the other direction.
+    /// Half away from zero, symmetric about sea level — the property `floor` would not have, and the
+    /// one the read side pins from the other direction.
     #[test]
     fn quantisation_rounds_half_away_from_zero() {
         assert_eq!(quantise(1000.4), 1000);
@@ -373,7 +367,7 @@ mod tests {
     }
 
     /// The sentinel is never written as a height, and an impossible height is silence rather than a
-    /// clipped one — a clip would put a believable 32767 into the raster.
+    /// clipped one, which would put a believable 32767 into the raster.
     #[test]
     fn an_impossible_height_is_voided_and_never_clipped() {
         assert_eq!(quantise(f64::NAN), NODATA);
@@ -407,8 +401,8 @@ mod tests {
         assert_eq!((rect.rows, rect.cols), (2, 2));
     }
 
-    /// The Grimsel bbox `build-map-package.sh` pins, at the v1 pairing — the shape the sidecar assets were
-    /// sized around, and the reason they are baked at a smaller cell.
+    /// The Grimsel bbox `build-map-package.sh` pins, at the v1 pairing — the shape the sidecar
+    /// assets were sized around, and the reason they are baked at a smaller cell.
     #[test]
     fn the_grimsel_box_straddles_four_v1_cells() {
         let grimsel = BboxUdeg::parse("46.48261,8.15034,46.72070,8.46007").unwrap();
@@ -421,12 +415,12 @@ mod tests {
 
     #[test]
     fn a_cell_file_name_is_its_catalog_id() {
-        // 2^19 cells: 1024 per axis, so 4 digits (the `max(4, …)` floor).
+        // 2^19 cells: 1024 per axis, so 4 digits — the padding floor.
         assert_eq!(cell_file_name(19, 600, 527), "19_0600_0527.obcd");
         assert_eq!(cell_file_name(19, 0, 1023), "19_0000_1023.obcd");
         // 2^16 cells: 8192 per axis — still 4 digits.
         assert_eq!(cell_file_name(16, 4805, 4220), "16_4805_4220.obcd");
-        // 2^10 cells: 524288 per axis — 6 digits, and the padding widens rather than truncating.
+        // 2^10 cells: 524288 per axis — 6 digits, so the padding widens rather than truncating.
         assert_eq!(cell_file_name(10, 7, 8), "10_000007_000008.obcd");
     }
 

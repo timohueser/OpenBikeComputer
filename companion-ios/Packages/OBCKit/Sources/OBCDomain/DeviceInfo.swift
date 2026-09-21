@@ -1,17 +1,10 @@
 import Foundation
 
-/// Identity of a connected OBC device — the semantic mirror of the GATT **DIS**
-/// (Device Information Service) plus the wire `protocol_version`.
-///
-/// **B-S0 skeleton.** The fields track DIS (see `companion-ios/OBCProtocol.md` →
-/// *Control plane*); `B1` finalizes the type as it wires `BLETransport`. New
-/// fields are defaulted so the scaffold's two-arg call sites keep compiling.
-/// Kept a plain `Sendable` value type so it crosses the `DeviceLink`
-/// boundary freely.
+/// Identity of a connected OBC device: the semantic mirror of the GATT Device Information
+/// Service plus the wire `protocol_version`.
 public struct DeviceInfo: Equatable, Sendable {
-    /// User-facing device name. Renamable via `DeviceConfig.name` (H3) — the
-    /// name shown here reflects the last-read config. See `OBCProtocol.md` →
-    /// *Delta 1*.
+    /// User-facing device name, as the last-read config reported it. A rename goes through
+    /// `DeviceConfig.name`.
     public let name: String
     /// Firmware revision string (DIS 0x2A26).
     public let firmwareVersion: String
@@ -19,9 +12,8 @@ public struct DeviceInfo: Equatable, Sendable {
     public let hardwareVersion: String
     /// Serial number string (DIS 0x2A25).
     public let serial: String
-    /// Wire `protocol_version` the device reports. The app compares this against
-    /// `OBCProtocol.version`; a mismatch surfaces as `DeviceError.protocolMismatch`
-    /// (never a crash). See `OBCProtocol.md` → *Versioning*.
+    /// Wire `protocol_version` the device reports. A mismatch with `OBCProtocol.version`
+    /// surfaces as `DeviceError.protocolMismatch`, never a crash.
     public let protocolVersion: UInt16
     /// The full StoreId learned from the first v4 LIST, as 32 lowercase hex digits.
     public let storeID: String?

@@ -1,24 +1,16 @@
 #!/usr/bin/env python3
-"""Fail when an executor grows a catalog-refresh policy of its own back (#1541).
+"""Fail when an executor grows a catalog-refresh policy of its own.
 
-Every re-read of the object store is ordered by `CatalogMachine`: three events arm one owed bit —
-the store moved underneath us, a removal completed, a read failed — and
-`CatalogState::next_effect` is the only place any of them becomes a `ReadCatalog`. Before this,
-three executors disagreed about it: the host composed a re-feed inside each deletion, the board kept
-a private `rescan_owed` retry the host could not even produce, and neither of them was the domain.
+Every re-read of the object store is ordered by `CatalogMachine`: three events arm one owed bit, and
+`CatalogState::next_effect` is the only place any of them becomes a `ReadCatalog`.
 
-Two spellings can bring that back, and this guard is a blocklist of exactly those two:
+Two spellings can bring a second policy back, and this guard blocks both. `rescan_owed` is a private
+retry: a failed read is answered `Unreadable`, and the domain re-offers it once per pass. A feeder
+call inside the host's `remove_object` is a re-feed composed by a removal; the function takes no
+`&mut App` so that it cannot.
 
-- **`rescan_owed`** — the board's own retry. A failed read is answered `Unreadable`, and the domain
-  re-offers it once per pass, which is the cadence that field existed to give.
-- **a feeder call inside the host's `remove_object`** — the re-feed a removal used to compose. The
-  function is free-standing and takes no `&mut App` precisely so it *cannot*; this guard says so out
-  loud for a reader who is about to hand it one.
-
-**This is a blocklist of names, and that is all it is.** A refresh policy rebuilt under other
-spellings passes it. What catches that is the conformance gate's own executor
-(`host/obc-host-core/tests/device_core_conformance.rs`), where a removal re-feeds nothing and the
-delete scenarios settle only because the domain ordered the read.
+This is a blocklist of names and nothing more. A policy rebuilt under other spellings passes it, and
+what catches that is the conformance gate's own executor, where a removal re-feeds nothing.
 """
 
 from __future__ import annotations
@@ -32,13 +24,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SKIP_PARTS = {".git", ".claude", ".codex", ".venv", "dist", "node_modules", "target"}
-# Rust and the Python contract tests that read it: both are places the retry came back from.
+# Rust and the Python contract tests that read it: the retry can come back in either.
 SUFFIXES = ("*.rs", "*.py")
 
 RETIRED = re.compile(r"\brescan_" + r"owed\b")
-# This file is the one place the retired name is written out in full, because naming what may not
-# come back is what the guard is for. Rewriting its own prose to dodge its own grep would make the
-# rule unreadable.
+# This file is the one place the banned name is written out in full, because naming what may not
+# come back is what the guard is for.
 EXEMPT = {Path("tools/check_catalog_ownership.py")}
 
 DISPATCH = Path("host/obc-host-core/src/dispatch.rs")

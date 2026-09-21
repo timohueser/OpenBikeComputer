@@ -1,96 +1,43 @@
-// Downloaded cells, on disk instead of in memory (#1116 B2).
+// Downloaded cells, on disk instead of in memory: the browser's origin private file system, keyed
+// by the digest the catalog already pins them with.
 //
-// The builder used to hold every downloaded cell as a `Uint8Array` from the moment
-// it arrived until the assembly was over — ~795 MB for Baden-Württemberg, in the
-// tab's heap and then copied again into wasm's. And a reload threw all of it away.
-// This module is where they go instead: the browser's **origin private file
-// system**, keyed by the digest the catalog already pins them with.
+// The read/write split is the platform's. Writing happens on the main thread through
+// `createWritable()`; reading happens in the assembly worker through `createSyncAccessHandle()`,
+// which exists only in a dedicated worker and is the only synchronous file read a browser has.
 //
-// Two sides, two APIs, and the split is not ours — it is the platform's:
+// Sync handles cannot be opened lazily — the opener is async and the blocking assembly cannot
+// await — so every handle a run needs is opened before it starts. They are exclusive locks, so a
+// leaked handle makes the next run fail to open the same file.
 //
-//   * **Writing happens on the main thread**, through `createWritable()`, next to
-//     the download that produced the bytes.
-//   * **Reading happens in the assembly worker**, through
-//     `createSyncAccessHandle()`, which exists *only* in a dedicated worker and is
-//     the only synchronous file read a browser has. That is what lets the wasm
-//     engine pull a byte range from inside its own synchronous `run()` — see
-//     `../assemble/bridge.ts`.
+// A file's name is its SHA-256 and it was written only after `fetchVerified` checked the catalog's
+// length and digest over those bytes, so a cached cell is not re-hashed. The size check stays: it
+// is free and catches a write torn by a crash or a quota refusal.
 //
-// **Sync handles cannot be opened lazily.** `createSyncAccessHandle()` returns a
-// promise, and nothing can be awaited from inside the blocking assembly, so every
-// handle a run will need is opened before it starts and closed after. They are
-// exclusive locks: a leaked handle makes the *next* run fail to open the same
-// cell, which is why `close()` runs in a `finally` and is idempotent.
-//
-// ## What a cached cell is trusted for
-//
-// A file's name **is** its SHA-256, and it was written only after `fetchVerified`
-// checked the catalog's length and digest over exactly those bytes. So a present
-// file of the right size is a cell the catalog vouched for, and re-hashing it on
-// every run would cost seconds of CPU and a full read of everything this change
-// exists to avoid reading — to defend against an attacker who can write another
-// origin's OPFS, which is to say one who can already replace the page's own code.
-// The size check stays because it is free and catches the one realistic failure:
-// a write torn by a crash or a quota refusal, which leaves a short file.
-//
-// ## Lifecycle
-//
-// Cells live under `obc-cells/<revision>/`, where the revision is derived from the
-// catalog's own pins on its cell indices ({@link cellStoreRevision}). A re-bake
-// changes those pins, so its cells land in a fresh directory and the previous
-// one's are swept the next time a store is opened. The builder may also discard
-// the current revision after the run; keeping it for future builds is an explicit
-// user choice.
-//
-// ## The other direction: the assembled map (#1116 D1)
-//
-// The same file system, the same worker, the same sync handles — pointed the other
-// way. {@link openMapSink} is where the assembled `.obcm` goes instead of into wasm
-// memory, and it is what makes a country assemblable in a tab at all.
-//
-// That was true when a map was a set of shards, because the **core shard could not
-// be split** — one nav graph, one file. A map is now *one* file outright, so the
-// same argument binds harder rather than softer: a DACH map is a single ~9 GiB
-// object, which is not merely awkward in a 4 GiB wasm32 address space but larger
-// than the whole of it. Writing it straight to a `FileSystemSyncAccessHandle` is
-// the only shape in which that selection exists.
-//
-// One thing about the platform shapes this: `createSyncAccessHandle()` is
-// asynchronous, and the engine writes *during* the blocking assembly, where nothing
-// can be awaited. So the handle cannot be opened on demand — it is opened before the
-// run, under a fixed scratch name ({@link MAP_ENTRY}). The map's real filename is
-// never on this disk: it is the name the page saves the file *as*, and the page owns
-// it (the assembler names nothing).
+// Cells live under `obc-cells/<revision>/`, so a re-bake's cells land in a fresh directory and the
+// previous one's are swept when a store is next opened. {@link openMapSink} points the same
+// machinery the other way: a DACH map is a single ~9 GiB object, larger than the whole 4 GiB wasm32
+// address space, so writing it straight to a sync access handle is the only shape it exists in.
 
 import type { Catalog } from "../catalog/manifest";
 
 /** Where every generation of cached cells lives, under the origin's private root. */
 const ROOT = "obc-cells";
-/** …and where an assembly's map is written (#1116 D1). A sibling of {@link ROOT}
- *  rather than a child: cells are keyed by a catalog revision and swept when it
- *  moves, output belongs to one run and is swept when the next starts. */
+/** …and where an assembly's map is written. A sibling of {@link ROOT} rather than a child: cells
+ *  are keyed by a catalog revision, output belongs to one run. */
 const OUT = "obc-out";
 /** The write-side probe's file. A dot-name so it cannot collide with a digest. */
 const PROBE = ".probe";
 const PROBE_BYTES = new Uint8Array([0x4f, 0x42, 0x43, 0x32]); // "OBC2"
 
 /**
- * The one entry an assembly's output lives in, under {@link OUT}.
- *
- * A fixed scratch name, not the map's filename: the handle is opened before the run
- * and the engine never names anything anyway. Fixed rather than posted from the
- * worker because both sides can then simply agree — nothing has to carry an entry
- * name across the port, and the page has no untrusted string to resolve against a
- * directory.
+ * The one entry an assembly's output lives in, under {@link OUT}. A fixed scratch name, not the
+ * map's filename: the handle is opened before the run, and both sides can then simply agree.
  */
 const MAP_ENTRY = "map.part";
 
-// --- the platform, as far as this module uses it ------------------------------
-//
-// TypeScript's DOM library does not declare `createSyncAccessHandle` (it is
-// worker-only) or the directory iterator, and the app's `lib` is not the place to
-// fix that. These are the exact shapes used below, so a browser that has them
-// answers and one that does not fails the probe.
+// TypeScript's DOM library does not declare `createSyncAccessHandle` (it is worker-only) or the
+// directory iterator. These are the exact shapes used below, so a browser that has them answers
+// and one that does not fails the probe.
 
 interface SyncHandle {
     read(into: ArrayBufferView, options: { at: number }): number;
@@ -111,10 +58,8 @@ interface FileEntry {
     getFile(): Promise<OpfsFile>;
 }
 
-/** What `getFile()` answers with. A `File` in the browser — which is a `Blob`, so it
- *  can be handed to a download without its bytes ever entering the heap. Typed as
- *  the two members this module uses plus the optional `Blob` shape, because the
- *  test's model has no `File`. */
+/** What `getFile()` answers with. A `File` in the browser, which is a `Blob`, so it can be handed
+ *  to a download without its bytes ever entering the heap. */
 interface OpfsFile {
     size: number;
     arrayBuffer(): Promise<ArrayBuffer>;
@@ -127,13 +72,11 @@ interface Directory {
     entries(): AsyncIterableIterator<[string, { kind: string }]>;
 }
 
-/** The origin's private root, or `null` where there is none (no secure context,
- *  an old browser, a locked-down profile). Never throws — the caller's answer to
+/** The origin's private root, or `null` where there is none. Never throws: the caller's answer to
  *  "no store" is the same as its answer to "a broken store". */
 async function opfsRoot(): Promise<Directory | null> {
-    // Through `unknown` because the DOM library's own `FileSystemFileHandle` is a
-    // strict subset of the shapes above — it is missing the very method this
-    // module exists to call.
+    // Through `unknown` because the DOM library's `FileSystemFileHandle` is missing the very method
+    // this module exists to call.
     const storage = globalThis.navigator?.storage as unknown as
         | { getDirectory?: () => Promise<Directory> }
         | undefined;
@@ -145,18 +88,13 @@ async function opfsRoot(): Promise<Directory | null> {
     }
 }
 
-// --- which generation of cells this is ----------------------------------------
-
 /**
  * A short, stable name for the cells a catalog publishes.
  *
- * Derived from the root's own pins — one digest per band's cell index, plus the
- * terrain index — because those change exactly when a cell's *content* might
- * have, and not when a skin is retouched or a region renamed. `generated_at`
- * would be simpler and would throw the cache away on every bake.
- *
- * FNV-1a rather than SHA-256 so it stays synchronous: this names a directory, it
- * does not authenticate anything (the filenames inside it do that).
+ * Derived from the root's own pins — one digest per band's cell index, plus the terrain index —
+ * because those change exactly when a cell's content might have. `generated_at` would throw the
+ * cache away on every bake. FNV-1a rather than SHA-256 so it stays synchronous: this names a
+ * directory, it does not authenticate anything.
  */
 export function cellStoreRevision(catalog: Catalog): string {
     const pins = [
@@ -172,8 +110,6 @@ export function cellStoreRevision(catalog: Catalog): string {
     return `r${hi.toString(16).padStart(8, "0")}${lo.toString(16).padStart(8, "0")}`;
 }
 
-// --- the write side (main thread) ---------------------------------------------
-
 /** Where a run's downloaded cells are kept, and what is already there. */
 export interface CellStore {
     /** The revision directory these cells live in — the worker opens the same one. */
@@ -186,16 +122,11 @@ export interface CellStore {
 }
 
 /**
- * Open (creating if needed) the store for one catalog revision, and sweep the
- * others away.
+ * Open (creating if needed) the store for one catalog revision, and sweep the others away.
  *
- * The sweep is here rather than on a timer or a setting because this is the one
- * moment the current revision is known and nothing is reading the old ones. It is
- * best-effort: a browser that will not enumerate the root simply keeps them, which
- * costs disk and nothing else.
- *
- * Returns `null` where OPFS is unusable — the caller's cue to keep the cells in
- * memory, exactly as it did before this existed.
+ * The sweep is here because this is the one moment the current revision is known and nothing is
+ * reading the old ones. Best-effort: a browser that will not enumerate the root simply keeps them.
+ * Returns `null` where OPFS is unusable, which is the caller's cue to keep the cells in memory.
  */
 export async function openCellStore(revision: string): Promise<CellStore | null> {
     const root = await opfsRoot();
@@ -221,9 +152,9 @@ export async function openCellStore(revision: string): Promise<CellStore | null>
         async put(key, bytes) {
             const handle = await dir.getFileHandle(key, { create: true });
             const writable = await handle.createWritable();
-            // No `try`/`abort`: a failed write leaves a file of the wrong size,
-            // which `has` already treats as absent. Swallowing the error here
-            // would instead leave the run believing a cell is cached.
+                // No `try`/`abort`: a failed write leaves a file of the wrong size, which `has`
+                // already treats as absent. Swallowing it would leave the run believing a cell is
+                // cached.
             await writable.write(bytes as unknown as BufferSource);
             await writable.close();
         },
@@ -285,17 +216,16 @@ async function sweep(home: Directory, keep: string): Promise<void> {
         if (entry.kind === "directory" && name !== keep) stale.push(name);
     }
     for (const name of stale) {
-        // One failure must not strand the rest — a directory can be locked by
-        // another tab's still-open sync handles.
+            // One failure must not strand the rest — another tab's open sync handles can lock a
+            // directory.
         await home.removeEntry(name, { recursive: true }).catch(() => {});
     }
 }
 
 /**
- * Whether this browser will let the main thread write cells at all — probed by
- * writing and reading back, not by sniffing for a method name.
- *
- * Memoized: it creates a file, and the answer cannot change within a page.
+ * Whether this browser will let the main thread write cells at all — probed by writing and reading
+ * back, not by sniffing for a method name. Memoized: it creates a file, and the answer cannot
+ * change within a page.
  */
 export function cellStoreWritable(): Promise<boolean> {
     writeProbe ??= probeWrite();
@@ -322,10 +252,9 @@ async function probeWrite(): Promise<boolean> {
 /**
  * Whether the origin has room for `bytes` more, with a margin.
  *
- * A quota refusal mid-download is a poor failure — half a country fetched and a
- * run that has to start over in memory — so the question is asked once, before
- * anything is fetched. A browser that will not estimate gets the benefit of the
- * doubt: the write path still reports its own failures.
+ * A quota refusal mid-download is a poor failure — half a country fetched and a run that has to
+ * start over in memory — so the question is asked once, before anything is fetched. A browser that
+ * will not estimate gets the benefit of the doubt.
  */
 export async function hasRoomFor(bytes: number): Promise<boolean> {
     const storage = globalThis.navigator?.storage;
@@ -339,41 +268,33 @@ export async function hasRoomFor(bytes: number): Promise<boolean> {
     }
 }
 
-// --- the read side (dedicated worker only) ------------------------------------
-
 /**
  * The bytes of one run's cells, addressable synchronously.
  *
- * `read` is what the wasm engine calls from inside its blocking `run()`, by slot —
- * the cell's index in the `keys` this was opened with.
+ * `read` is what the wasm engine calls from inside its blocking `run()`, by slot — the cell's index
+ * in the `keys` this was opened with.
  */
 export interface CellReader {
     /** Fill `into` from `offset` of the cell in `slot`. `false` means the read
      *  failed, which fails the assembly as `io` naming the cell. */
     read(slot: number, offset: number, into: Uint8Array): boolean;
-    /** Release every handle. Idempotent, and **required**: a handle is an
-     *  exclusive lock on its file, so one left open makes the next run fail to
-     *  open the same cell. */
+    /** Release every handle. Idempotent, and required: a handle is an exclusive lock, so one left
+     *  open makes the next run fail to open the same cell. */
     close(): void;
     /** How many handles are open. Diagnostics, and what the release test asserts. */
     readonly open: number;
 }
 
-/** How many handles are opened at once. Each is a promise and a file descriptor;
- *  a country's selection is ~1000 cells, and opening them one at a time would add
- *  a second to every run for no reason. */
+/** How many handles are opened at once. A country's selection is ~1000 cells, and opening them one
+ *  at a time would add a second to every run. */
 const OPEN_CONCURRENCY = 16;
 
 /**
  * Open a sync access handle for every key, in order.
  *
- * **All of them, before the run** — the alternative does not exist, because
- * `createSyncAccessHandle()` is asynchronous and the assembly it would be opened
- * from cannot await. A country-scale selection therefore holds ~1000 open handles
- * for the length of a run; they are closed together by {@link CellReader.close}.
- *
- * A key that is missing or locked rejects here, before the assembly starts, with
- * the key in the message.
+ * All of them, before the run: `createSyncAccessHandle()` is asynchronous and the assembly it would
+ * be opened from cannot await. A country-scale selection therefore holds ~1000 open handles for the
+ * length of a run. A key that is missing or locked rejects here, before the assembly starts.
  */
 export async function openCellReader(revision: string, keys: readonly string[]): Promise<CellReader> {
     const root = await opfsRoot();
@@ -381,10 +302,9 @@ export async function openCellReader(revision: string, keys: readonly string[]):
     const home = await root.getDirectoryHandle(ROOT);
     const dir = await home.getDirectoryHandle(revision);
 
-    // One handle per *file*, then one slot per cell pointing at it. A key can in
-    // principle repeat — the name is the content digest, so two selected cells
-    // with byte-identical content share it — and opening the same file twice is
-    // a lock error, not a second handle.
+    // One handle per *file*, then one slot per cell pointing at it. A key can repeat — the name is
+    // the content digest, so two selected cells with identical content share it — and opening the
+    // same file twice is a lock error, not a second handle.
     const distinct = [...new Set(keys)];
     const opened = new Map<string, SyncHandle>();
     let cursor = 0;
@@ -402,8 +322,7 @@ export async function openCellReader(revision: string, keys: readonly string[]):
             }
         }
     };
-    // Resolved once, after every handle is open, so the read path is an array
-    // index rather than a hash lookup.
+    // Resolved once, after every handle is open, so the read path is an array index.
     const bySlot: (SyncHandle | undefined)[] = [];
     const reader: CellReader = {
         read: counted(
@@ -413,8 +332,7 @@ export async function openCellReader(revision: string, keys: readonly string[]):
                 const handle = bySlot[slot];
                 if (!handle) return false;
                 try {
-                    // A short read is a failure, not a partial success: the engine
-                    // asked for a byte range and half of one is not it.
+                    // A short read is a failure, not a partial success.
                     return handle.read(into, { at: offset }) === into.byteLength;
                 } catch {
                     return false;
@@ -427,8 +345,8 @@ export async function openCellReader(revision: string, keys: readonly string[]):
                 try {
                     handle.close();
                 } catch {
-                    // Already closed, or the storage went away. Either way the
-                    // remaining handles still have to be released.
+                    // Already closed, or the storage went away. The remaining handles still have
+                    // to be released.
                 }
             }
             opened.clear();
@@ -440,8 +358,8 @@ export async function openCellReader(revision: string, keys: readonly string[]):
     try {
         await Promise.all(Array.from({ length: Math.min(OPEN_CONCURRENCY, distinct.length) }, worker));
     } catch (cause) {
-        // Whatever did open is a lock nobody will ever use. Releasing it here is
-        // what keeps a failed run from poisoning the retry.
+        // Whatever did open is a lock nobody will ever use. Releasing it here keeps a failed run
+        // from poisoning the retry.
         reader.close();
         throw cause;
     }
@@ -452,10 +370,8 @@ export async function openCellReader(revision: string, keys: readonly string[]):
 /**
  * Read whole cells back into memory, in the order of `keys`.
  *
- * The fallback for a browser that has OPFS but no synchronous reads: the download
- * still resumed from disk and still verified once, and the assembly's residency is
- * what it was before any of this — every cell in the heap at once. Deliberately
- * not clever; the clever path is {@link openCellReader}.
+ * The fallback for a browser that has OPFS but no synchronous reads: the download still resumed
+ * from disk and still verified once, but every cell is in the heap at once.
  */
 export async function readCellBytes(revision: string, keys: readonly string[]): Promise<Uint8Array[]> {
     const root = await opfsRoot();
@@ -474,8 +390,6 @@ export async function readCellBytes(revision: string, keys: readonly string[]): 
     return out;
 }
 
-// --- I/O accounting (dedicated worker only) -----------------------------------
-
 /** One channel's tally: how often the engine crossed into OPFS, and what it cost. */
 export interface IoCounter {
     calls: number;
@@ -484,12 +398,9 @@ export interface IoCounter {
 }
 
 /**
- * The run's I/O ledger, by channel. The wasm engine's every OPFS crossing lands
- * in one of these — which is exactly the number an in-tab assembly's wall clock
- * is made of, and the thing a slowness report needs before anyone theorizes.
- * Read-and-reset by {@link takeIoStats}; the worker sends it with `done`. The
- * `performance.now()` pair per call is nanoseconds against calls that cost
- * microseconds.
+ * The run's I/O ledger, by channel. Every OPFS crossing the wasm engine makes lands in one of
+ * these, which is what an in-tab assembly's wall clock is made of. Read-and-reset by
+ * {@link takeIoStats}; the worker sends it with `done`.
  */
 export interface IoStats {
     cellRead: IoCounter;
@@ -536,51 +447,41 @@ function counted<A extends unknown[]>(
     };
 }
 
-// --- the write side of the output (dedicated worker only) ---------------------
-
 /**
- * Where one assembly's map goes instead of into wasm memory (#1116 D1).
+ * Where one assembly's map goes instead of into wasm memory.
  *
- * The four byte-moving methods are the wasm sink seam verbatim, called from **inside**
- * the blocking assembly: `create`/`write`/`seal` on the way out, `readAt` for the
- * §4.8 read-back, all synchronous, all answering `false` rather than throwing —
- * which fails the run as `io`.
+ * The four byte-moving methods are the wasm sink seam verbatim, called from inside the blocking
+ * assembly: all synchronous, all answering `false` rather than throwing, which fails the run as
+ * `io`.
  *
- * The bytes land in the fixed scratch entry {@link MAP_ENTRY}, never under the map's
- * own filename: the handle has to be opened before the run, and the assembler names
- * nothing in any case. The page reads the file back with {@link readMapOutput} and
- * saves it under a name it chose itself.
+ * The bytes land in the fixed scratch entry {@link MAP_ENTRY}, never under the map's own filename:
+ * the handle has to be opened before the run. The page reads the file back with
+ * {@link readMapOutput} and saves it under a name it chose itself.
  */
 export interface MapSink {
     /** Begin the map, truncating whatever the entry held. */
     create(): boolean;
     /** Append to the map. A short write is a failure. */
     write(bytes: Uint8Array): boolean;
-    /** Fill `into` from `offset` of the sealed map — the §4.8 read-back. Served
-     *  through the wasm side's separate 64 KiB verification cache. */
+    /** Fill `into` from `offset` of the sealed map, for the read-back. */
     readAt(offset: number, into: Uint8Array): boolean;
-    /** No more bytes: flush, because §4.8 reads it back next. */
+    /** No more bytes: flush, because the map is read back next. */
     seal(): boolean;
-    /** Release the handle. Idempotent, and **required**: a handle is an exclusive
-     *  lock, and the page cannot read the file back while the worker holds one. */
+    /** Release the handle. Idempotent, and required: a handle is an exclusive lock, and the page
+     *  cannot read the file back while the worker holds one. */
     close(): void;
-    /** Whether the handle is still open. Diagnostics, and what the release test
-     *  asserts. */
+    /** Whether the handle is still open. Diagnostics. */
     readonly open: boolean;
 }
 
 /**
- * Open the map sink for one run: sweep whatever a previous one left, then open the
- * sync access handle the assembly will write through.
+ * Open the map sink for one run: sweep whatever a previous one left, then open the sync access
+ * handle the assembly will write through.
  *
- * Returns `null` where this browser cannot serve it — no OPFS, no sync handles, no
- * quota — which is the caller's cue to let the map be buffered in wasm memory
- * instead. That fallback is honest but small: it is the path a country-scale
- * selection cannot take, since the file is bigger than the address space.
- *
- * The **sweep is the point of doing it here**: a cancelled or crashed run leaves a
- * partial map on disk, and a partial map is nothing to anyone but the quota. This is
- * the one moment nothing is reading it.
+ * Returns `null` where this browser cannot serve it, which is the caller's cue to let the map be
+ * buffered in wasm memory instead — a fallback a country-scale selection cannot take, since the
+ * file is bigger than the address space. The sweep belongs here because this is the one moment
+ * nothing is reading a partial map left by a cancelled run.
  */
 export async function openMapSink(): Promise<MapSink | null> {
     const root = await opfsRoot();
@@ -618,8 +519,8 @@ export async function openMapSink(): Promise<MapSink | null> {
             (offset: number, into: Uint8Array) => {
                 if (!handle) return false;
                 try {
-                    // A short read is a failure, not a partial success — the same rule
-                    // the input side has, and here it is §4.8 that would be misled.
+                    // A short read is a failure, not a partial success — here it is the read-back
+                    // that would be misled.
                     return handle.read(into, { at: offset }) === into.byteLength;
                 } catch {
                     return false;
@@ -629,8 +530,8 @@ export async function openMapSink(): Promise<MapSink | null> {
         seal() {
             if (!handle) return false;
             try {
-                // Truncated to exactly what was written, so an entry left longer by an
-                // earlier run cannot leave trailing bytes past the map.
+                // Truncated to exactly what was written, so an entry left longer by an earlier run
+                // cannot leave trailing bytes past the map.
                 handle.truncate(written);
                 handle.flush();
                 return true;
@@ -642,8 +543,7 @@ export async function openMapSink(): Promise<MapSink | null> {
             try {
                 handle?.close();
             } catch {
-                // Already closed, or the storage went away. Either way there is no
-                // lock left worth holding a reference for.
+                // Already closed, or the storage went away. Either way there is no lock left.
             }
             handle = null;
         },
@@ -656,8 +556,8 @@ export async function openMapSink(): Promise<MapSink | null> {
         await sweepOutputs(dir);
         handle = await (await dir.getFileHandle(MAP_ENTRY, { create: true })).createSyncAccessHandle();
     } catch {
-        // Whatever opened is a lock nobody will use — the caller must be told "no",
-        // not handed a sink that fails at the first write.
+        // Whatever opened is a lock nobody will use — the caller must be told "no", not handed a
+        // sink that fails at the first write.
         sink.close();
         return null;
     }
@@ -669,41 +569,32 @@ async function sweepOutputs(dir: Directory): Promise<void> {
     const stale: string[] = [];
     for await (const [name] of dir.entries()) stale.push(name);
     for (const name of stale) {
-        // One locked file must not strand the rest — another tab may still hold a
-        // handle on it, and that is not this run's problem to solve.
+        // One locked file must not strand the rest — another tab may still hold a handle on it.
         await dir.removeEntry(name, { recursive: true }).catch(() => {});
     }
 }
 
-// --- the scratch store: the engine's spill (dedicated worker only) ------------
-
-/** Where the merge's spill lives (#1116 D2's third seam). A sibling of {@link ROOT}
- *  and {@link OUT}: cells outlive runs, output outlives the worker, scratch
- *  outlives **nothing** — it is swept at open and discarded at close. */
+/** Where the merge's spill lives. A sibling of {@link ROOT} and {@link OUT}: cells outlive runs,
+ *  output outlives the worker, scratch outlives nothing. */
 const SCRATCH = "obc-scratch";
 
 /**
- * How many spill files one run can hold open at once. Like the map sink's handle
- * ({@link openMapSink}), every one is opened **before** the run — the opener is
- * async and the assembly cannot await — so this is a hard concurrent-file ceiling,
- * not a soft one.
+ * How many spill files one run can hold open at once. Every one is opened before the run — the
+ * opener is async and the assembly cannot await — so this is a hard concurrent-file ceiling.
  *
- * The number to size against is the external sort's run fan-out: a sort over `S`
- * spilled bytes at budget `B` holds `⌈S / (B/2)⌉` run files open during its merge,
- * plus the streams feeding and draining it. At the engine's 64 MiB default budget
- * a DACH-scale edge stream (~2 GiB) is ~64 runs; 128 leaves the same again for
- * the concurrent node/id streams and the next pass's output. Exhaustion is an
- * `io` refusal naming the working area — the remedy is a bigger
+ * The number to size against is the external sort's run fan-out: a sort over `S` spilled bytes at
+ * budget `B` holds `⌈S / (B/2)⌉` run files open during its merge, plus the streams feeding and
+ * draining it. At the engine's 64 MiB default a DACH-scale edge stream is ~64 runs; 128 leaves the
+ * same again. Exhaustion is an `io` refusal naming the working area, and the remedy is a bigger
  * `mergeBudgetBytes`, which produces fewer, longer runs.
  */
 const SCRATCH_SLOTS = 128;
 
 /**
- * The engine's spill files, as the wasm scratch seam calls them: anonymous,
- * append-only, read back at `u64` offsets, synchronous. Ids are minted here and
- * **never reused** — a use-after-remove answers `false`/`-1` rather than serving
- * some later stream's bytes, which is the failure mode that would corrupt a merge
- * silently instead of failing it loudly.
+ * The engine's spill files, as the wasm scratch seam calls them: anonymous, append-only, read back
+ * at `u64` offsets, synchronous. Ids are minted here and never reused — a use-after-remove answers
+ * `false`/`-1` rather than serving some later stream's bytes, which would corrupt a merge silently
+ * instead of failing it loudly.
  */
 export interface ScratchFiles {
     /** Mint a spill file: a non-negative id, or `-1` when the pool is exhausted. */
@@ -717,12 +608,10 @@ export interface ScratchFiles {
     len(id: number): number;
     /** Drop `id`; its pool slot becomes reusable, the id does not. */
     remove(id: number): boolean;
-    /** Close every handle and delete the spill files. Idempotent. Call when the
-     *  run ends, success or not — spill held between runs is quota held for
-     *  nothing. */
+    /** Close every handle and delete the spill files. Idempotent. Call when the run ends, success
+     *  or not: spill held between runs is quota held for nothing. */
     discard(): Promise<void>;
-    /** How many pool handles are open. Diagnostics, and what the release test
-     *  asserts. */
+    /** How many pool handles are open. Diagnostics. */
     readonly open: number;
 }
 
@@ -732,10 +621,9 @@ function scratchEntry(slot: number): string {
 }
 
 /**
- * Open the spill pool for one run: sweep whatever a previous run left, then open
- * a sync access handle per slot. `null` where this browser cannot serve it —
- * the caller's cue to let the engine spill into wasm memory instead, exactly as
- * it does natively without a temp dir.
+ * Open the spill pool for one run: sweep whatever a previous run left, then open a sync access
+ * handle per slot. `null` where this browser cannot serve it, which is the caller's cue to let the
+ * engine spill into wasm memory instead.
  */
 export async function openScratchStore(slots = SCRATCH_SLOTS): Promise<ScratchFiles | null> {
     const root = await opfsRoot();
@@ -789,8 +677,8 @@ export async function openScratchStore(slots = SCRATCH_SLOTS): Promise<ScratchFi
                 const at = live.get(id);
                 const handle = at ? handles[at.slot] : null;
                 if (!at || !handle) return false;
-                // Past-the-end reads must refuse here: the model below the engine
-                // zero-fills, and zeroes that parse are the worst kind of wrong.
+                // Past-the-end reads must refuse here: the model below zero-fills, and zeroes that
+                // parse are the worst kind of wrong.
                 if (offset + into.byteLength > at.written) return false;
                 try {
                     return handle.read(into, { at: offset }) === into.byteLength;
@@ -806,8 +694,8 @@ export async function openScratchStore(slots = SCRATCH_SLOTS): Promise<ScratchFi
             const at = live.get(id);
             if (!at) return false;
             live.delete(id);
-            // The bytes are reclaimed at the slot's next `create` (truncate) or at
-            // `discard`; freeing the slot is what matters mid-run.
+            // The bytes are reclaimed at the slot's next `create` or at `discard`; freeing the slot
+            // is what matters mid-run.
             free.push(at.slot);
             return true;
         },
@@ -816,8 +704,7 @@ export async function openScratchStore(slots = SCRATCH_SLOTS): Promise<ScratchFi
                 try {
                     handle?.close();
                 } catch {
-                    // Already closed, or the storage went away — the rest still
-                    // have to be released, and the sweep below still runs.
+                    // Already closed, or the storage went away; the rest still have to be released.
                 }
             }
             handles.length = 0;
@@ -837,8 +724,8 @@ export async function openScratchStore(slots = SCRATCH_SLOTS): Promise<ScratchFi
             free.push(slot);
         }
     } catch {
-        // A half-open pool is not a store — release the locks and refuse, so the
-        // caller falls back instead of failing at spill file 90.
+        // A half-open pool is not a store — release the locks and refuse, so the caller falls back
+        // instead of failing at spill file 90.
         await sink.discard().catch(() => {});
         return null;
     }
@@ -846,31 +733,24 @@ export async function openScratchStore(slots = SCRATCH_SLOTS): Promise<ScratchFi
 }
 
 /**
- * The written map, as a `Blob` — for the **main thread**, after the worker has closed
- * its handle.
+ * The written map, as a `Blob`, for the main thread after the worker has closed its handle.
  *
- * Nothing is read here: OPFS's `getFile()` answers with a `File`, which is a `Blob`,
- * so the page can hand a multi-gigabyte map to a download (or stream it to a picked
- * folder) without its bytes ever entering the tab's heap. That is the second half of
- * what D1 buys — the first is that they never entered wasm's.
+ * Nothing is read here: OPFS's `getFile()` answers with a `File`, which is a `Blob`, so the page
+ * can hand a multi-gigabyte map to a download without its bytes entering the tab's heap.
  */
 export async function readMapOutput(): Promise<Blob> {
     const root = await opfsRoot();
     if (!root) throw new Error("this browser has no origin private file system to read the assembled map back from");
     const dir = await root.getDirectoryHandle(OUT);
     const file = await (await dir.getFileHandle(MAP_ENTRY)).getFile();
-    // The local `FileEntry` names only the two members this module calls; the real
-    // `getFile()` returns a `File`, and a `File` is a `Blob`.
+    // The local `FileEntry` names only the two members used here; `getFile()` returns a `File`.
     return file as unknown as Blob;
 }
 
 /**
- * Whether *this* thread can read cells synchronously — the capability the whole
- * streamed path rests on, probed by writing and reading a scratch file through a
- * sync handle rather than by looking for the method.
- *
- * Only ever true in a dedicated worker. Memoized for the same reason as
- * {@link cellStoreWritable}.
+ * Whether this thread can read cells synchronously — the capability the whole streamed path rests
+ * on, probed by writing and reading a scratch file through a sync handle rather than by looking for
+ * the method. Only ever true in a dedicated worker. Memoized.
  */
 export function syncReadsAvailable(): Promise<boolean> {
     readProbe ??= probeSyncReads();

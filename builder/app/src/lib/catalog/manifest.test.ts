@@ -1,11 +1,10 @@
 // The current root, whole or not at all.
 //
-// The first test is the one that matters most: the root the real generator
-// writes must parse. Everything after it is a document that must be refused *in
-// full* — and each case is a specific MUST from `OBCC_Spec.md`, not a
-// generic malformed-JSON exercise. A catalog that priced a selection wrongly, or
-// described a band table that cannot become a volume set, is not a catalog worth
-// half-reading.
+// The first test is the one that matters most: the root the real generator writes
+// must parse. Everything after it is a document that must be refused *in full*, and
+// each case is a specific MUST from the catalog spec rather than a generic
+// malformed-JSON exercise. A catalog that priced a selection wrongly, or described a
+// band table that cannot become a volume set, is not a catalog worth half-reading.
 
 import { describe, expect, it } from "vitest";
 import { CatalogFormatError, coreBand, parseRoot } from "./manifest";
@@ -25,8 +24,8 @@ describe("parseRoot", () => {
         expect(catalog.schema_version).toBe(3);
         expect(catalog.schema.id).toBe("bikepacking");
         expect(catalog.schema.revision).toBe(7);
-        // The generated example is self-sourced from `obc_formats::obcm::VERSION`, so this pin is
-        // what makes an OBCM bump walk past the site's own catalog reader (OBCC §10 filters on it).
+        // The generated example is self-sourced from the format crate's version constant, so this
+        // pin is what makes an OBCM bump walk past the site's own catalog reader.
         expect(catalog.schema.obcm_version).toBe(18);
         expect(catalog.schema.bands.map((b) => b.id)).toEqual(["coarse", "mid", "fine", "network"]);
         expect(catalog.skins.map((s) => s.id)).toEqual(["contrast", "default"]);
@@ -112,7 +111,7 @@ describe("parseRoot", () => {
         expect(() => parseRoot(mutated(edit))).toThrow(CatalogFormatError);
     });
 
-    describe("the band table (OBCA §1.2 partition, §5.1 roles)", () => {
+    describe("the band table (OBCA partition and roles)", () => {
         it.each<[string, (d: LooseDoc) => void]>([
             ["a LOD in two bands", (d) => d.schema.bands[1].lods.push(0)],
             ["a LOD in no band", (d) => (d.schema.bands[0].lods = [])],
@@ -151,7 +150,7 @@ describe("parseRoot", () => {
 
     describe("skins", () => {
         it.each<[string, (d: LooseDoc) => void]>([
-            // §5: a missing style ships a map with an invisible layer…
+                // A missing style ships a map with an invisible layer…
             ["a skin missing a feature type", (d) => d.skins[0].styles.pop()],
             // …and an unknown one is a stale skin claiming a layer that is gone.
             ["a skin naming a feature type the schema lacks", (d) => (d.skins[0].styles[0].feature_type = "highway.moonbase")],
@@ -172,8 +171,8 @@ describe("parseRoot", () => {
 
     describe("regions", () => {
         it.each<[string, (d: LooseDoc) => void]>([
-            // §6: the split is the per-file price. A split that does not add
-            // up is a price that is wrong for at least one file.
+                // The split is the per-file price. A split that does not add up is a price
+                // that is wrong for at least one file.
             ["bytes_by_band that does not sum to bytes", (d) => (d.regions[0].bytes_by_band.fine += 1)],
             ["a band in bytes_by_band that the schema lacks", (d) => (d.regions[0].bytes_by_band.vivid = 0)],
             ["a band in cell_count that the schema lacks", (d) => (d.regions[0].cell_count.vivid = 1)],

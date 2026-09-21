@@ -1,18 +1,11 @@
 import SwiftUI
 
 public extension View {
-    /// **Swipe-to-Delete Row** (§9) — trailing-swipe reveal exposing a
-    /// warning-red Delete that removes the row directly (the swipe reveal is
-    /// already the second, deliberate action — no extra confirm); full-swipe
-    /// destroys too, the standard iOS gesture. Apply to a row inside a `List`:
-    ///
-    ///     List(routes) { route in
-    ///         RouteCard(route: route)
-    ///             .obcSwipeToDelete { … }
-    ///     }
-    ///
-    /// One-tap destructive entry points (a detail screen's Delete button) still
-    /// confirm via `.obcDestructiveConfirm` (H1).
+    /// A trailing-swipe reveal exposing a warning-red Delete that removes the row
+    /// directly: the swipe reveal is already the second, deliberate action, so there
+    /// is no extra confirm. A full swipe destroys too, as the standard iOS gesture.
+    /// Apply it to a row inside a `List`. One-tap destructive entry points, such as a
+    /// detail screen's Delete button, still confirm through `.obcDestructiveConfirm`.
     func obcSwipeToDelete(
         deleteTitle: String = "Delete",
         onDelete: @escaping () -> Void

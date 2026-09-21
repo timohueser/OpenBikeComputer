@@ -22,9 +22,9 @@ fn open(card: &Path, directory: &Path) -> Box<Host> {
 /// A fix in the middle of the demo map's extract.
 const GRIMSEL: Fix = Fix { lat: 46_560_000, lon: 8_340_000, course: Some(90.0), speed_mps: Some(4.0) };
 
-/// The card is the whole device's memory: what [`import_map`] creates, [`Host::open`] mounts, and a
-/// second open finds the same map revision and the same route ids behind. [`card_state`] is what
-/// the shell asks before any of it.
+/// The card is the whole device's memory: [`import_map`] creates it, [`Host::open`] mounts it, and
+/// a second open finds the same map revision and the same route ids. [`card_state`] is what the
+/// shell asks before any of it.
 #[test]
 fn an_imported_card_boots_on_the_map_and_reopens_with_the_same_map_and_routes() {
     let directory = scratch_dir("obc-ios-host", "card");
@@ -99,7 +99,7 @@ fn each_pushed_sensor_value_polls_once_and_a_fix_moves_the_app() {
         assert_eq!(ports.altimeter.as_mut().unwrap().poll(), None);
         assert_eq!(ports.fuel.as_mut().unwrap().poll(), None);
     }
-    // CoreLocation reports an unusable heading as a negative value; it is no direction at all.
+    // CoreLocation reports an unusable heading as a negative value, which is no direction at all.
     sensors.push_heading(-1.0);
     sensors.push_heading(f32::NAN);
     assert_eq!(sensors.ports().compass.as_mut().unwrap().poll(), None, "an invalid heading is dropped");
@@ -116,7 +116,7 @@ fn each_pushed_sensor_value_polls_once_and_a_fix_moves_the_app() {
 }
 
 /// The button edges go through the app's own recognizer, so the phone's Select is the device's: a
-/// release inside the tap window is a `Press`, and a held Select fires `Hold` from plain ticks.
+/// release inside the tap window is a press, and a held Select fires a hold from plain ticks.
 #[test]
 fn a_select_tap_presses_and_a_held_select_holds() {
     let (card, directory) = card("input");
@@ -135,7 +135,7 @@ fn a_select_tap_presses_and_a_held_select_holds() {
     host.tick(1_100.0);
     assert_eq!(host.screen(), "Map");
 
-    // Select-hold on the Map enters Pan mode; the stack does not move, so the pan is the evidence.
+    // Select-hold on the Map enters Pan mode. The stack does not move, so the pan is the evidence.
     assert!(host.app.state.pan.is_none());
     host.push_button(Button::Select, true);
     host.tick(1_500.0);
@@ -203,8 +203,8 @@ fn the_c_surface_opens_a_card_it_imported_and_takes_a_null_host_as_nothing() {
         let fix = (*host).app.state.user_fix.expect("the pushed fix reaches the app");
         assert_eq!(fix, Fix { lat: GRIMSEL.lat, lon: GRIMSEL.lon, course: None, speed_mps: None });
 
-        // Closing frees the host, so the card's exclusive lock goes with it and the same card opens
-        // again. A leaked handle would fail here.
+        // Closing frees the host, so the card's exclusive lock goes with it and the same card
+        // opens again. A leaked handle would fail here.
         obc_ios_close(host);
         let reopened = obc_ios_open(card.as_ptr(), settings.as_ptr(), exports.as_ptr());
         assert!(!reopened.is_null(), "the closed host released the card");
@@ -231,8 +231,7 @@ fn the_c_surface_opens_a_card_it_imported_and_takes_a_null_host_as_nothing() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
-/// The hand-written header and the ABI cannot drift apart: each declares exactly what the other
-/// defines. This is the check that runs where `nm` does not.
+/// The hand-written header and the ABI cannot drift apart: each declares what the other defines.
 #[test]
 fn the_header_declares_exactly_the_functions_the_abi_defines() {
     use std::collections::BTreeSet;
@@ -249,7 +248,7 @@ fn the_header_declares_exactly_the_functions_the_abi_defines() {
             .collect()
     }
 
-    // A header comment that mentions a call spells a declared name, so `name(` needs no C parser.
+    // A header comment that mentions a call spells a declared name, so this needs no C parser.
     let declared = scan(include_str!("../include/obc_ios_host.h"), |_, after| after.starts_with('('));
     let defined = scan(include_str!("ffi.rs"), |before, _| before.ends_with("fn "));
     assert_eq!(declared, defined);

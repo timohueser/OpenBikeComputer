@@ -1,8 +1,6 @@
 /**
- * What the Enter key does inside a Markdown list: carry the list on.
- *
- * `- item` + Enter starts `- `, `3. item` starts `4. `, and a task item starts an empty box.
- * Enter on an item with no text ends the list instead, which is how a list is finished.
+ * What the Enter key does inside a Markdown list: carry the list on. `- item` starts `- `, `3. item`
+ * starts `4. `, and a task item starts an empty box. Enter on an item with no text ends the list.
  *
  * The result is an edit rather than a new text, so the caller can apply it with the browser's own
  * editing command and keep undo working.

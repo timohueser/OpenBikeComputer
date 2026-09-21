@@ -5,18 +5,17 @@ import OBCMock
 import OBCTransport
 @testable import OBCUI
 
-/// TR6 host-side model behavior: the Planned list's filed/loose partition, trip
-/// stats, dissolve-on-last-stage-removal, and the two delete-dialog branches
-/// (Ungroup vs Delete trip & routes). Pure `PlannedItem.partition` is tested
-/// directly; the edits run through `MainScreenModel` against the `trips` fixture.
+/// The Planned list's filed and loose partition, trip stats, dissolve on last-stage removal, and
+/// the two delete-dialog branches. `PlannedItem.partition` is tested directly; the edits run
+/// through `MainScreenModel` on the `trips` fixture.
 @MainActor
 struct TripListModelTests {
     private let tripID = TripID("driftless-weekender")
     private let stageA = RouteID("devils-lake-overnighter")
     private let stageB = RouteID("cross-plains-gravel")
 
-    /// A started model over the TR6 trips fixture: one trip (2 stages) + 3 loose
-    /// routes, seeded into an in-memory library exactly as the composition root does.
+    /// A started model over the trips fixture: one trip with 2 stages and 3 loose routes, seeded
+    /// into an in-memory library as the composition root does.
     private func makeModel() -> (MainScreenModel, MockControl) {
         let control = MockControl(scenario: .happyPath)
         control.latency = .zero
@@ -67,7 +66,6 @@ struct TripListModelTests {
         // All five planned routes still resolve (a stage must open its detail).
         #expect(model.routes.count == 5)
 
-        // The top-level list: the trip card + the 3 routes NOT in it.
         let ids = model.plannedItems.map(\.id)
         #expect(ids.contains("trip:driftless-weekender"))
         #expect(!ids.contains("route:devils-lake-overnighter"))  // filed
@@ -97,18 +95,15 @@ struct TripListModelTests {
     func removingTheLastStageDissolvesTheTripAndKeepsTheRoutes() {
         let (model, _) = makeModel()
 
-        // First removal keeps the trip (still one stage) and returns the route loose.
         let dissolvedFirst = model.removeStage(stageA, from: tripID)
         #expect(dissolvedFirst == false)
         #expect(model.trip(tripID)?.stageIDs == [stageB])
         #expect(model.plannedItems.map(\.id).contains("route:devils-lake-overnighter"))
 
-        // Second removal empties the trip → it dissolves; the route stays loose.
         let dissolvedSecond = model.removeStage(stageB, from: tripID)
         #expect(dissolvedSecond == true)
         #expect(model.trip(tripID) == nil)
         #expect(model.trips.isEmpty)
-        // Both former stages are now top-level, and no route was deleted.
         #expect(model.routes.count == 5)
         let ids = model.plannedItems.map(\.id)
         #expect(ids.contains("route:devils-lake-overnighter"))
@@ -127,13 +122,12 @@ struct TripListModelTests {
         let model = MainScreenModel(transport: MockTransport(control: control), library: library)
         model.start()
 
-        // Move stage B (index 1) before stage A — SwiftUI onMove semantics.
+        // Move stage B (index 1) before stage A, with SwiftUI onMove semantics.
         model.reorderTripStages(tripID, from: IndexSet(integer: 1), to: 0)
 
-        // The model's live order…
         #expect(model.trip(tripID)?.stageIDs == [stageB, stageA])
         #expect(model.tripStages(tripID).map(\.id) == [stageB, stageA])
-        // …and the store's persisted order (a fresh read, not the mirror).
+        // The store's persisted order, read fresh rather than from the mirror.
         #expect(library.trips().first { $0.id == tripID }?.stageIDs == [stageB, stageA])
     }
 
@@ -160,7 +154,6 @@ struct TripListModelTests {
         model.deleteTripAndRoutes(tripID)
 
         #expect(model.trip(tripID) == nil)
-        // The two member routes are gone; the three loose ones remain.
         #expect(model.routes.count == 3)
         let ids = model.plannedItems.map(\.id)
         #expect(!ids.contains("route:devils-lake-overnighter"))
@@ -181,7 +174,7 @@ struct TripListModelTests {
         #expect(
             MainScreenModel.composeTripState(tripSelf: .outdated, stageStates: [.upToDate])
                 == .outdated)
-        // The trip object itself not on the device → no badge, whatever the stages.
+        // A trip object not on the device gets no badge, whatever the stages say.
         #expect(
             MainScreenModel.composeTripState(tripSelf: .notOnDevice, stageStates: [.upToDate])
                 == .notOnDevice)

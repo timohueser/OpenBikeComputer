@@ -2,12 +2,10 @@
 //! code path, that a cancelled run stops and cleans up, and that the phases a host
 //! shows still line up with the ones the web builder scrapes.
 //!
-//! The byte-identity test is the one that matters for #906: the desktop app links
-//! `obc-pack` instead of spawning it, and "the app produces a byte-identical
-//! `.obcm` to the CLI" is only worth asserting if the two can drift. Here they run
-//! against the same fixture and the same preset and their outputs are compared
-//! whole — the binary through `CARGO_BIN_EXE_obc-pack`, so it is the real
-//! executable and the real argument parsing, not a re-implementation of them.
+//! The byte-identity test is the one that matters: the desktop app links `obc-pack` instead of
+//! spawning it, so the two can drift. They run against the same fixture and the same preset and
+//! their outputs are compared whole, the binary through `CARGO_BIN_EXE_obc-pack`, so it is the real
+//! executable and the real argument parsing.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};

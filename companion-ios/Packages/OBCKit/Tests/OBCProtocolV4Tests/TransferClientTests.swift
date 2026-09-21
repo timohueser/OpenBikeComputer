@@ -91,8 +91,7 @@ struct TransferClientTests {
 }
 
 /// The wedge shape of a lost CoC: the announce reaches the peer, not one stream byte follows, and
-/// the peer answers nothing. Only the client asking for it releases the parked PUT answer — a real
-/// link has no other way out, which is what turned this into a hang.
+/// the peer answers nothing. Only the client asking for it releases the parked PUT answer.
 private actor AbandonedAnswerLink: TransferLink {
     nonisolated let maximumStreamPayload = 8
 
@@ -134,9 +133,8 @@ private actor AbandonedAnswerLink: TransferLink {
     }
 
     func receiveControlRecord() async throws -> Data {
-        // A cancel can reach the link before the receive it names ever runs. The receive resolves
-        // as cancelled instead of parking for an answer nobody waits for — the rule
-        // `BLETransport` keeps in `objectControlReceiveCancelled`.
+        // A cancel can reach the link before the receive it names ever runs. The receive then
+        // resolves as cancelled instead of parking for an answer nobody waits for.
         if let cancelledRequest, let pending, cancelledRequest == pending.requestID {
             self.cancelledRequest = nil
             self.pending = nil
@@ -415,8 +413,8 @@ private actor DisconnectingLink: TransferLink {
         if putAttempts == 1, putRecords == 2 {
             firstPutBroke = true
             // A GATT drop fails every parked control waiter from the link side, the way
-            // `BLETransport.failAllPending` does. The CoC dying under a live GATT link is the
-            // other shape, and `AbandonedAnswerLink` carries it.
+            // `BLETransport.failAllPending` does. `AbandonedAnswerLink` carries the other shape:
+            // the CoC dying under a live GATT link.
             responseWaiter?.resume(throwing: TransferLinkLost())
             responseWaiter = nil
             throw TransferLinkLost()

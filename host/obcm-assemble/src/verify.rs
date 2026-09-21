@@ -1,40 +1,25 @@
-//! The verify pass ([`OBCA_Spec.md`](../../../specs/OBCA_Spec.md) §4.8): read the finished output
-//! back through the **real reader** — the same crate the firmware runs — before anything is handed
-//! anywhere.
+//! The verify pass (`OBCA_Spec.md`): read the finished output back through the real reader — the
+//! same crate the firmware runs — before anything is handed anywhere.
 //!
-//! This is a *precondition of handing the map anywhere*, not an optional extra, and the reason is
-//! stated in the spec's design principles: a catalog artifact was verified by the bakery, but an
-//! assembly was made on the rider's own machine, outside it. Nothing self-made reaches a device
-//! unverified.
+//! This is a precondition of handing a map anywhere, not an optional extra: a catalog artifact was
+//! verified by the bakery, but an assembly was made on the rider's own machine, outside it.
 //!
 //! It is also the pass that catches the graft's characteristic failures. A mis-relocated index node
-//! produces geometry in the wrong place *and* an anchor that no longer fits its leaf, and a wrong
-//! chunk base produces a stream that never meets its `0xFF` sentinel — so "decode every feature of
-//! every chunk" is not paranoia, it is the tripwire that fires on exactly the bug this crate can
-//! have.
+//! produces geometry in the wrong place and an anchor that no longer fits its leaf, and a wrong
+//! chunk base produces a stream that never meets its `0xFF` sentinel, so "decode every feature of
+//! every chunk" is the tripwire that fires on exactly the bug this crate can have.
 //!
-//! It is also, at country scale, the assembler's **peak-memory phase** — it re-derives the whole
-//! graph from bytes that were just written, while the merged graph they came from is still alive
-//! (#1116). So nothing here is allowed to hold a hash entry or a heap allocation per graph element:
-//! [`verify_nav`] walks the nav section over dense arrays instead of a resident arc list, and
-//! re-reading a section that is already on disk is the cheaper half of that trade.
+//! At country scale this is the assembler's peak-memory phase: it re-derives the whole graph from
+//! bytes that were just written, while the merged graph they came from is still alive. So nothing
+//! here holds a hash entry or a heap allocation per graph element. The junction table is banded, so
+//! only a contiguous range of dense ids is resident at a time and a graph that does not fit is
+//! walked once more per band; the edge claims go through [`crate::extsort::ExternalSort`], each
+//! carrying its claimant's coordinate so the edge checks need no random access back into the table;
+//! and the union-find keeps each component's size in its root's slot.
 //!
-//! #1116 phase D takes the next step and makes those dense arrays **bounded** rather than merely
-//! compact, because "8 bytes per junction" is still 1.5–2.9 GB at DACH:
-//!
-//! * The junction table is **banded**. Only a contiguous range of dense ids is resident at a time,
-//!   sized from [`crate::Options::merge_budget_bytes`]; a graph that does not fit is walked once
-//!   more per band. See [`NodeTable`].
-//! * The edge claims go through [`crate::extsort::ExternalSort`] instead of one `Vec` of `2 × E`
-//!   records, and each claim carries its claimant's coordinate so that the §4.8.4 edge checks need
-//!   no random access back into the junction table.
-//! * The union-find keeps each component's size **in its root's slot**, which is what removes the
-//!   second whole-map `Vec` the component histogram used to need.
-//!
-//! What is left resident and proportional to the graph is 4.25 bytes per junction: the union-find
-//! (4 B) and two bitmaps (⅛ B each). Everything else is the band (at most the budget) plus the
-//! sort's buffers (an eighth of it) — a ceiling of `1.125 × budget`, whatever the map.
-
+//! What stays resident and proportional to the graph is 4.25 bytes per junction: the union-find
+//! (4 B) and two bitmaps (⅛ B each). Everything else is the band, at most the budget, plus the
+//! sort's buffers — a ceiling of `1.125 × budget`, whatever the map.
 use std::cmp::Ordering;
 
 use obc_formats::io::ByteSource;
@@ -47,14 +32,14 @@ use crate::grid::AlignedBox;
 use crate::scratch::ScratchStore;
 use crate::{Error, Result};
 
-/// Vertices the longest legal `OBCM_Spec.md` §8.4 edge record can hold. Derived, not chosen: a
-/// record never straddles a chunk, so `15 + (Pt Count − 1) × 4 ≤ 512` bounds it at 125. Sizing the
-/// verify buffer from the format means a record the format permits can never be reported as
-/// undecodable because the *checker* ran out of room.
+/// Vertices the longest legal edge record can hold. Derived, not chosen: a record never straddles a
+/// chunk, so `15 + (Pt Count − 1) × 4 ≤ 512` bounds it at 125. Sizing the verify buffer from the
+/// format means a record the format permits can never be reported as undecodable because the
+/// checker ran out of room.
 const MAX_EDGE_PTS: usize = 1 + (NAV_CHUNK_SIZE - NAV_EDGE_FIXED_LEN) / 4;
 
 /// What a verified file reports about itself. Counts, not opinions — the caller decides what an
-/// implausible number means (§4.8.5 forbids silently repairing one).
+/// implausible number means, and nothing here repairs one.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct VerifyReport {
     pub chunks: u64,
@@ -70,9 +55,8 @@ pub struct VerifyReport {
 /// invariants, and validate nav integrity end to end.
 ///
 /// `scratch` is where the nav pass spills its claim stream and `budget` is
-/// [`crate::Options::merge_budget_bytes`] — the same number the §4.6 merge divides, because verify
-/// runs after the merge and the two never hold their buffers at the same time. Everything the pass
-/// sizes from the graph rather than the budget is listed in the module header.
+/// [`crate::Options::merge_budget_bytes`] — the same number the merge divides, because verify runs
+/// after the merge and the two never hold their buffers at the same time.
 pub fn verify_map(
     src: &dyn ByteSource,
     expected_box: AlignedBox,
@@ -80,8 +64,8 @@ pub fn verify_map(
     budget: usize,
 ) -> Result<VerifyReport> {
     let mut report = VerifyReport::default();
-    // 1. Parse. Header, style table, LOD table, POI directory, nav directory and profile table all
-    //    parse and validate — `MapTables::parse` is exactly that gate.
+    // 1. Parse: `MapTables::parse` is the gate for the header, style table, LOD table, POI
+    //    directory, nav directory and profile table.
     let tables = MapTables::parse(src).map_err(|e| Error::Verify(format!("the output does not parse: {e:?}")))?;
     let (min_lon, min_lat, max_lon, max_lat) = expected_box.ubox();
     let b = tables.bbox;
@@ -105,8 +89,8 @@ pub fn verify_map(
     let view =
         BBox { min_lon: min_lon as i32, min_lat: min_lat as i32, max_lon: max_lon as i32, max_lat: max_lat as i32 };
 
-    // 2/3. Every chunk, every feature — plus the §5.1 offset-table invariants, re-derived from the
-    //      bytes rather than trusted.
+    // 2/3. Every chunk, every feature, plus the offset-table invariants, re-derived from the bytes
+    //      rather than trusted.
     let mut points: heapless::Vec<(i32, i32), MAX_FEAT_PTS> = heapless::Vec::new();
     let mut rings: heapless::Vec<usize, MAX_FEAT_RINGS> = heapless::Vec::new();
     for (i, lod) in reader.lods().iter().enumerate() {
@@ -118,7 +102,7 @@ pub fn verify_map(
         }
         check_offset_table(src, lod, i, tables.scale())?;
         // The leaf walk borrows the reader's index cache for its duration, so the chunk list is
-        // collected first and decoded after — a nested streaming call would legally fail.
+        // collected first and decoded after; a nested streaming call would legally fail.
         let mut chunks: Vec<(u32, BBox)> = Vec::new();
         reader
             .for_each_chunk(i, &view, |id, node| chunks.push((id, node)))
@@ -149,14 +133,12 @@ pub fn verify_map(
     Ok(report)
 }
 
-/// The §1.3 terrain window of a finished map, resolved through the **reader's own header parse**.
+/// The terrain window of a finished map, resolved through the reader's own header parse.
 ///
-/// This is deliberately not "the bytes the assembler put at the offset it remembers". It re-reads
-/// the header a device would read, resolves the scaled region pointer the way a device would
-/// resolve it, and hands back the window a device would form — so what
-/// [`crate::TerrainRegion::verify`] then checks is the raster *as mounted*, not as intended. A
-/// header field the writer got wrong shows up here as a window over the wrong bytes rather than not
-/// at all.
+/// Deliberately not "the bytes the assembler put at the offset it remembers": it re-reads the
+/// header a device would read and hands back the window a device would form, so what
+/// [`crate::TerrainRegion::verify`] checks is the raster as mounted. A header field the writer got
+/// wrong shows up here as a window over the wrong bytes rather than not at all.
 pub fn terrain_window(src: &dyn ByteSource) -> Result<TerrainWindow<'_>> {
     let tables = MapTables::parse(src).map_err(|e| Error::Verify(format!("the output does not parse: {e:?}")))?;
     let region = tables
@@ -173,8 +155,8 @@ pub fn terrain_window(src: &dyn ByteSource) -> Result<TerrainWindow<'_>> {
     Ok(TerrainWindow { src, offset: region.offset, len: region.len })
 }
 
-/// A byte source whose offset `0` is the terrain region's first byte (§1.3) — the window a reader
-/// hands its terrain consumer.
+/// A byte source whose offset `0` is the terrain region's first byte — the window a reader hands
+/// its terrain consumer.
 pub struct TerrainWindow<'a> {
     src: &'a dyn ByteSource,
     offset: u64,
@@ -183,7 +165,7 @@ pub struct TerrainWindow<'a> {
 
 impl ByteSource for TerrainWindow<'_> {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> core::result::Result<(), obc_formats::io::Error> {
-        // The window is a *bound*, not merely a base: a container whose directory pointed past its
+        // The window is a bound, not merely a base: a container whose directory pointed past its
         // own region would otherwise read the map's own bytes and look like raster.
         let end = offset.checked_add(buf.len() as u64).ok_or(obc_formats::io::Error::BadOffset)?;
         if end > self.len {
@@ -196,29 +178,26 @@ impl ByteSource for TerrainWindow<'_> {
     }
 }
 
-/// `OBCM_Spec.md` §5.1's offset-table invariants for every chunk of one LOD: `offsets[0] == 0`,
-/// monotone, ends in the region, and no pair spans more than `Chunk Size` rounded to the unit.
+/// The offset-table invariants for every chunk of one LOD: `offsets[0] == 0`, monotone, ends in the
+/// region, and no pair spans more than `Chunk Size` rounded to the unit.
 ///
-/// The entries are **units** since v14, so every comparison here is made in that currency and only
-/// the two that leave it — the span bound and the region's end — multiply, always after widening
-/// (§1.1).
+/// The entries are units, so every comparison here is made in that currency and only the two that
+/// leave it — the span bound and the region's end — multiply, always after widening.
 fn check_offset_table(
     src: &dyn ByteSource,
     lod: &obc_reader::Lod,
     i: usize,
     scale: obc_formats::obcm::OffsetScale,
 ) -> Result<()> {
-    // **The file's own scale, not this crate's.** `crate::emit::SCALE` is what the assembler
-    // *writes*; this pass reads a file back, and a verifier that resolves offsets against its own
-    // constant agrees with itself no matter what byte 40 says. §1.1's whole point is that the unit
-    // travels in the file.
+    // The file's own scale, not this crate's. `crate::emit::SCALE` is what the assembler writes;
+    // a verifier that resolved offsets against its own constant would agree with itself no matter
+    // what the file says.
     let unit = scale.unit();
     let table_start = lod.index_offset + (lod.node_count * 4) as u64;
     let raw = crate::input::read_at(src, table_start, (lod.chunk_count + 1) * 4)?;
-    // §5.1's v14 restatement of "a chunk may not span more than `Chunk Size`": a chunk's *content*
-    // still may not exceed it, and its *span* is that content rounded up to a unit — so the tight
-    // bound is `align_up(Chunk Size, U)` and the looser `Chunk Size + U - 1` would admit spans no
-    // writer can produce.
+    // A chunk's content may not exceed `Chunk Size` and its span is that content rounded up to a
+    // unit, so the tight bound is `align_up(Chunk Size, U)`; the looser `Chunk Size + U - 1` would
+    // admit spans no writer can produce.
     let span_bound = scale.align_up(lod.chunk_size as u64).ok_or_else(|| {
         Error::Verify(format!("LOD {i}: chunk size {} does not round to a unit boundary", lod.chunk_size))
     })?;
@@ -250,7 +229,7 @@ fn check_offset_table(
             lod.chunk_units_total
         )));
     }
-    // The chunks begin one rounding step past the table (§3), so the region's end is measured from
+    // The chunks begin one rounding step past the table, so the region's end is measured from
     // there and not from the table's own last byte.
     let end = crate::emit::align_up(table_start + raw.len() as u64) + lod.chunk_units_total as u64 * unit;
     if end > src.len() {
@@ -259,52 +238,41 @@ fn check_offset_table(
     Ok(())
 }
 
-/// One **band** of the junction table: a contiguous range of dense ids, `[lo, lo + span)`.
+/// One band of the junction table: a contiguous range of dense ids, `[lo, lo + span)`.
 ///
-/// The table is dense because `OBCM_Spec.md` §8.3 says node ids are file-local and dense and
-/// `OBCA_Spec.md` §4.6.5's renumbering is what writes them that way. Indexing a `Vec` by id is what
-/// lets this pass hold sixteen bytes per junction instead of a hash entry, and it turns §8.3's
-/// "every id below the highest has a record" into a popcount.
+/// Node ids are file-local and dense, so indexing a `Vec` by id holds sixteen bytes per junction
+/// instead of a hash entry, and "every id below the highest has a record" becomes a popcount.
 ///
-/// It is **banded** because dense is not the same as bounded: sixteen bytes times DACH's junctions
-/// is a quarter of a gigabyte, and #1116's standing law is that no structure here may grow with the
-/// map. A band holds `span` ids, `span` is set from [`crate::Options::merge_budget_bytes`], and a
-/// graph with more ids than that is walked once more per band. Records that fall outside the band
-/// are still *examined* — the id-range check, the degree cap and the running node count are global
-/// — they are simply not stored.
+/// It is banded because dense is not the same as bounded: no structure here may grow with the map.
+/// A band holds `span` ids, set from [`crate::Options::merge_budget_bytes`], and a graph with more
+/// ids is walked once more per band. Records outside the band are still examined — the id-range
+/// check, the degree cap and the running node count are global — they are simply not stored.
 ///
-/// The one thing banding costs is re-reads, and it is why the band gets the lion's share of the
-/// budget while the claim sort (a stream, which only trades buffer for run count) gets an eighth:
-/// re-walking §8.2 at country scale delivers each record ~2.3× and is far more expensive than a
-/// deeper k-way merge.
+/// Banding costs re-reads, which is why the band gets the lion's share of the budget while the
+/// claim sort, a stream, gets an eighth.
 ///
-/// The seen set is a bitmap and not a `Vec<bool>` because it survives alongside the coordinates, the
-/// digests, the union-find and the sort's run buffer at the peak: at Baden-Württemberg's ~3 M
-/// junctions it is 366 KiB rather than 2.9 MiB.
-///
-/// Faults are **recorded, not raised**: the walk that fills this is a `FnMut` callback with no error
-/// channel, and bailing out of it early would under-count the degree-cap tally the caller reports
-/// first. The first fault wins, which is the order a `?` would have produced anyway.
+/// Faults are recorded, not raised: the walk that fills this is a `FnMut` callback with no error
+/// channel, and leaving it early would under-count the degree-cap tally the caller reports first.
+/// The first fault wins.
 #[derive(Debug, Default)]
 struct NodeTable {
     /// First id this band holds.
     lo: usize,
     /// How many ids it may hold — the budget, in junctions.
     span: usize,
-    /// `(lat, lon)` per in-band id, offset by `lo` — absolute µdeg, as §8.3 stores them.
+    /// `(lat, lon)` per in-band id, offset by `lo` — absolute µdeg, as the records store them.
     coords: Vec<(i32, i32)>,
     /// [`record_digest`] of the record that claimed each in-band id, so a re-delivery can be told
-    /// from a second, *different* record wearing the same id.
+    /// from a second, different record wearing the same id.
     digest: Vec<u64>,
-    /// One bit per in-band id: "a §8.3 record for this id was seen".
+    /// One bit per in-band id: a junction record for this id was seen.
     seen: Vec<u64>,
     /// Popcount of `seen`, maintained as it fills.
     count: usize,
     /// The first id this section cannot possibly dense-number (see [`verify_nav`]).
     ceiling: usize,
-    /// The highest id seen *anywhere*, plus one — the graph's junction count, which the first
-    /// band's walk is what learns (nothing in the directory states it: §8.1's `node_count` is the
-    /// quadtree index's size, not the graph's).
+    /// The highest id seen anywhere, plus one — the graph's junction count, which the first band's
+    /// walk learns. Nothing in the directory states it: `node_count` is the quadtree index's size.
     top: usize,
     fault: Option<String>,
 }
@@ -317,24 +285,20 @@ impl NodeTable {
         NodeTable { lo, span: span.min(ceiling.saturating_sub(lo)), ceiling, ..Default::default() }
     }
 
-    /// Record one §8.3 junction — or, when it is not this band's, just count it.
+    /// Record one junction — or, when it is not this band's, just count it.
     ///
-    /// §8.2's bin packing can hand the same record back more than once, so a repeat carrying the
-    /// same content is accepted — that is the idempotence every consumer of these records owes the
-    /// format, and it is what the old pass's `HashMap::insert` accepted. A repeat that *disagrees*
-    /// is two different junctions wearing one id, and is a verify failure: the coordinates get their
-    /// own message because they are what the rest of the pass indexes by, and any other difference
-    /// is caught by the digest.
+    /// The quadtree's bin packing can hand the same record back more than once, so a repeat
+    /// carrying the same content is accepted. A repeat that disagrees is two different junctions
+    /// wearing one id, and is a verify failure: the coordinates get their own message because they
+    /// are what the rest of the pass indexes by, and any other difference is caught by the digest.
     ///
     /// Proving a repeat is a repeat is what lets the adjacency walk process each junction exactly
-    /// once (§8.2 delivered 17.5 M records for BW's 3.0 M junctions), and the strictness is why that
-    /// is not a loss of checking: the old pass re-checked a re-delivered record's adjacency, this
-    /// one refuses the only case where re-checking could have found anything.
+    /// once.
     fn see(&mut self, id: u32, lat: i32, lon: i32, digest: u64) {
         let id_usize = id as usize;
         if id_usize >= self.ceiling {
-            // Refused before it is used to size anything: `coords` is indexed by id, so a corrupt
-            // id must not be allowed to name an allocation.
+            // Refused before it sizes anything: `coords` is indexed by id, so a corrupt id must
+            // not name an allocation.
             self.fail(format!(
                 "node id {id} is out of the section's range: its node chunks cannot hold more than {} dense §8.3 \
                  records (OBCM §8.3)",
@@ -368,14 +332,11 @@ impl NodeTable {
         self.count += 1;
     }
 
-    /// Extend the band's arrays past in-band index `i`, in **fixed steps of a sixteenth of the
-    /// band** and with `reserve_exact`.
+    /// Extend the band's arrays past in-band index `i`, in fixed steps of a sixteenth of the band
+    /// and with `reserve_exact`.
     ///
-    /// The obvious `resize(i + 1, …)` is what this replaces, and the reason is measured: `Vec`'s
-    /// amortised growth doubles, so a table that ends at 2.99 M junctions (Baden-Württemberg) sits in
-    /// capacity for 4.19 M — 46 MiB of slack across the coordinates and the digests, which is most of
-    /// a band. Growing in fixed steps caps the slack at one step (4 MiB at the default budget) for
-    /// at most sixteen reallocations over the whole walk.
+    /// `Vec`'s amortised growth doubles, which leaves most of a band in slack at the end of a walk.
+    /// Fixed steps cap the slack at one step, for at most sixteen reallocations.
     fn grow_past(&mut self, i: usize) {
         let step = (self.span / 16).max(1024);
         let want = (i + 1).next_multiple_of(step).min(self.span);
@@ -396,13 +357,10 @@ impl NodeTable {
 
     /// The recorded fault, then the density check over this band's slice of the numbering.
     ///
-    /// §8.3's ids are dense, so every id below the highest one seen must have a record — and `total`
-    /// is that highest one plus one, learned by the first band's walk. The old pass could not notice
-    /// a gap at all (a hash map has no opinion about which keys are absent) and would have carried
-    /// on as if the graph were simply smaller. A gap means the walk never saw a junction that some
-    /// neighbour entry will point at, so §4.8.4's "every neighbour resolves" is only truly checkable
-    /// once this holds — for **every** band, which is why a hole in band 3 refuses in band 3's pass
-    /// rather than being lost in a table that stops at band 0.
+    /// Ids are dense, so every id below the highest one seen must have a record, and `total` is that
+    /// highest one plus one. A gap means the walk never saw a junction that some neighbour entry
+    /// will point at, so "every neighbour resolves" is only checkable once this holds for every
+    /// band — which is why a hole in band 3 refuses in band 3's pass.
     fn finish(mut self, total: usize) -> Result<Self> {
         if let Some(msg) = self.fault.take() {
             return Err(Error::Verify(msg));
@@ -425,11 +383,9 @@ impl NodeTable {
 
     /// The junction's `(lat, lon)`, or `None` if `id` is outside this band or has no record in it.
     ///
-    /// The seen bit, not the array's length, is what answers "has a record": [`NodeTable::grow_past`]
+    /// The seen bit, not the array's length, answers "has a record": [`NodeTable::grow_past`]
     /// extends the arrays in steps, so an index inside them is not proof of a record. Answering from
-    /// the bitmap makes an unwritten slot unreachable rather than readable as `(0, 0)` — after
-    /// [`NodeTable::finish`] no in-band id below `total` can be missing anyway, so this costs one
-    /// bit test to make the failure mode impossible instead of merely unreachable.
+    /// the bitmap makes an unwritten slot unreachable rather than readable as `(0, 0)`.
     fn get(&self, id: u32) -> Option<(i32, i32)> {
         let i = (id as usize).checked_sub(self.lo).filter(|i| *i < self.span)?;
         let word = self.seen.get(i / 64)?;
@@ -437,13 +393,12 @@ impl NodeTable {
     }
 }
 
-/// FNV-1a over one §8.3 record's decoded content: its coordinates, its degree and every field of
-/// every adjacency entry — `Ascent M` included, because here the question is "are these the same
+/// FNV-1a over one junction record's decoded content: its coordinates, its degree and every field
+/// of every adjacency entry — `Ascent M` included, because the question here is "are these the same
 /// record?", not "do the two directions of an edge agree?".
 ///
-/// Its only job is to tell a §8.2 re-delivery (identical bytes, so identical digest) from a second
-/// record that merely shares an id. A 64-bit fold makes a false "same" a 2⁻⁶⁴ event on a comparison
-/// that is only ever made between two records already known to share an id and a coordinate.
+/// Its only job is to tell a quadtree re-delivery, which has identical bytes, from a second record
+/// that merely shares an id.
 fn record_digest(node: &NavNodeRef<'_>) -> u64 {
     #[inline]
     fn fold(h: u64, v: u64) -> u64 {
@@ -460,25 +415,19 @@ fn record_digest(node: &NavNodeRef<'_>) -> u64 {
 }
 
 /// One adjacency entry's claim on its edge, as a spillable record:
-/// `(edge id, the claiming junction, cost m, way kind, the claimant's coordinate)` — everything
-/// §4.8.4's edge checks still need once the walk has gone by.
+/// `(edge id, the claiming junction, cost m, way kind, the claimant's coordinate)` — everything the
+/// edge checks need once the walk has gone by.
 ///
-/// The claimant's **coordinate travels with the claim**, which is the change that makes the banded
-/// table work: the edge-decode pass reads the claim stream in edge order, and edge ids have nothing
-/// to do with node ids, so looking the coordinate up would have been a random access into a table
-/// that is only partly resident. It is the same value — a claim is written while its claimant's own
-/// record is in hand, and `(node.lat, node.lon)` is by definition what the junction table stored for
-/// that id (the duplicate check above is what proves there is only one such pair).
+/// The claimant's coordinate travels with the claim, which is what makes the banded table work: the
+/// edge-decode pass reads the stream in edge order, and edge ids have nothing to do with node ids,
+/// so looking the coordinate up would be a random access into a table that is only partly resident.
 ///
-/// The fields are laid out **big-endian, in key order**, so the byte-lexicographic comparator
-/// [`by_claim`] *is* the `(edge_id, from, cost, kind)` ordering the in-memory tuple sort had. The
-/// coordinate sits last, where it can never change an ordering: it is a function of `from`.
+/// The fields are big-endian and in key order, so the byte-lexicographic comparator [`by_claim`] is
+/// the `(edge_id, from, cost, kind)` ordering. The coordinate sits last, where it can never change
+/// an ordering: it is a function of `from`.
 ///
-/// 21 bytes, packed — a spilled record has no alignment to serve, where the old in-memory tuple paid
-/// 3 bytes of padding on every one of `2 × E`.
-///
-/// `Ascent M` is deliberately absent: §8.3 makes it the one adjacency field the two directions of an
-/// edge legitimately disagree about, so it is not a claim about the edge.
+/// `Ascent M` is deliberately absent: it is the one adjacency field the two directions of an edge
+/// legitimately disagree about, so it is not a claim about the edge.
 const CLAIM_LEN: usize = 21;
 
 fn claim(edge_id: u32, from: u32, cost: u32, kind: u8, lat: i32, lon: i32) -> [u8; CLAIM_LEN] {
@@ -487,9 +436,8 @@ fn claim(edge_id: u32, from: u32, cost: u32, kind: u8, lat: i32, lon: i32) -> [u
     r[4..8].copy_from_slice(&from.to_be_bytes());
     r[8..12].copy_from_slice(&cost.to_be_bytes());
     r[12] = kind;
-    // Biased so the byte order is the signed order — the coordinate never decides a comparison, but
-    // an encoding that only sorts correctly for positive values is a trap for whoever keys on it
-    // next.
+    // Biased so the byte order is the signed order. The coordinate never decides a comparison, but
+    // an encoding that only sorts positive values correctly is a trap for whoever keys on it next.
     r[13..17].copy_from_slice(&((lat as u32) ^ 0x8000_0000).to_be_bytes());
     r[17..21].copy_from_slice(&((lon as u32) ^ 0x8000_0000).to_be_bytes());
     r
@@ -535,28 +483,17 @@ fn mark(bits: &mut [u64], id: u32) -> bool {
     was
 }
 
-/// A root's marker bit in the union-find: `parent[i] & ROOT != 0` means *i is a root* and the low
-/// 31 bits are its component's size.
+/// A root's marker bit in the union-find: `parent[i] & ROOT != 0` means i is a root, and the low 31
+/// bits are its component's size. Carrying the size in the root's own slot removes a second
+/// whole-map `Vec`.
 ///
-/// Carrying the size in the root's own slot is what removes the second whole-map `Vec` — the old
-/// pass allocated a `counts: Vec<u32>` of one entry per junction and filled it with a `find` per id
-/// purely to answer "how big is the largest component". Sizes and component counts are structural,
-/// so which junction ends up as a representative (this is union by size; the old one was
-/// last-wins) cannot move `largest_component_permille` by a single per mille.
-///
-/// The bit **was** free by arithmetic: §8.3 ids are `uint32`, and while the file ceiling was
-/// `u32::MAX` the id ceiling was at most `FILE_CEILING / NAV_NODE_FIXED_LEN` ≈ 330 M, so no legal
-/// graph could reach 2³¹ junctions.
-///
-/// **v14's 64 GiB interior ends that argument** — `FILE_CEILING / NAV_NODE_FIXED_LEN` is now ≈ 5.3 G,
-/// comfortably past 2³¹ — so the bound is no longer implied by the layout and is instead *enforced*:
-/// [`verify_nav`]'s explicit refusal below is now load-bearing rather than defensive. A graph that
-/// claims 2³¹ or more junctions is refused with a message that says so; it is never silently
-/// aliased against this flag.
+/// The 64 GiB file interior permits more than 2³¹ junctions, so the bit is not free by arithmetic:
+/// [`verify_nav`]'s refusal of a graph that claims 2³¹ or more junctions is what keeps the flag
+/// unaliased, and is load-bearing rather than defensive.
 const ROOT: u32 = 1 << 31;
 
-/// Union-find root of `x`, with path halving. `parent` is indexed by `Node Id` **directly** — the
-/// dense-id invariant is what removes the id → slot map the old pass had to build.
+/// Union-find root of `x`, with path halving. `parent` is indexed by `Node Id` directly, which the
+/// dense-id invariant is what permits.
 fn find(parent: &mut [u32], mut x: u32) -> u32 {
     while parent[x as usize] & ROOT == 0 {
         let p = parent[x as usize];
@@ -582,49 +519,38 @@ fn union(parent: &mut [u32], a: u32, b: u32) {
     parent[keep as usize] = ROOT | (sa + sb);
 }
 
-/// The share of the budget the **claim sort** gets, as a divisor — on top of the band's, not out of
-/// it, so the pass's ceiling is `budget + budget / CLAIM_SHARE`.
+/// The share of the budget the claim sort gets, as a divisor — on top of the band's, not out of it,
+/// so the pass's ceiling is `budget + budget / CLAIM_SHARE`.
 ///
-/// An eighth, and additive, because the two structures degrade in different currencies. The sort is
-/// a stream: a smaller buffer buys more runs and a deeper k-way merge, which is a fraction of a
-/// second either way. The band is random access: a smaller band buys another **whole walk of the nav
-/// section**, and §8.2 delivers each record ~2.3× at country scale, so a band one junction short of
-/// the graph costs seconds. Carving the sort's share out of the band's would put that cliff at 7/8
-/// of the budget instead of at the budget, to save an eighth of the peak — the wrong trade in both
-/// directions.
+/// Additive because the two structures degrade in different currencies. A smaller sort buffer buys
+/// more runs and a deeper k-way merge, a fraction of a second either way; a band one junction short
+/// of the graph buys another whole walk of the nav section, which costs seconds.
 const CLAIM_SHARE: usize = 8;
 
 /// Bytes one band spends per junction: `(lat, lon)` plus the record digest.
 const BAND_BYTES_PER_NODE: usize = 16;
 
-/// §4.8.4/§4.8.5: every neighbour resolves, degrees are capped, every `Edge Id` decodes to a record
+/// Nav integrity: every neighbour resolves, degrees are capped, every `Edge Id` decodes to a record
 /// whose endpoints are the two junctions' coordinates, both directions agree — then the component
 /// histogram, as a report.
 ///
-/// **Two walks per band, no resident graph.** The old shape held one hash entry per node, a 28-byte
-/// arc tuple per adjacency entry, a hash entry *and* a heap `Vec` per edge, and a second id map for
-/// the union-find — which made this the assembler's peak phase at country scale (#1116). C5 replaced
-/// that with dense arrays; D5 bounds the arrays. The nav section is on disk by the time verify runs,
+/// Two walks per band, and no resident graph. The nav section is on disk by the time verify runs,
 /// so re-reading it is the cheap side of every trade here:
 ///
-/// 1. **Walk 1** fills one band of the [`NodeTable`] — coordinates, a [`record_digest`] and a seen
-///    bit per in-band id — while counting *every* delivered record's degree against the cap and
-///    every id against the section's capacity. Band 0's walk is also what learns the graph's
-///    junction count, since §8.1's `node_count` is the quadtree index's size and says nothing about
-///    the graph.
-/// 2. **Walk 2** re-reads the same records and checks each adjacency entry *streaming*: the
-///    neighbour resolves (against the junction count — density makes that a bounds test), and, for
-///    the neighbours this band holds, the entry's `int16` deltas reconstruct the coordinate that
-///    neighbour's own record states. §8.2's bin packing delivers a record once per leaf that shares
-///    its chunk (17.5 M deliveries for BW's 3.0 M junctions), and walk 1 has already proved every
-///    repeat is the *same* record, so a `done` bitmap lets this walk process each junction once.
+/// 1. Walk 1 fills one band of the [`NodeTable`] — coordinates, a [`record_digest`] and a seen bit
+///    per in-band id — while counting every delivered record's degree against the cap and every id
+///    against the section's capacity. Band 0's walk also learns the graph's junction count, since
+///    the directory's `node_count` is the quadtree index's size.
+/// 2. Walk 2 re-reads the same records and checks each adjacency entry streaming: the neighbour
+///    resolves, which density makes a bounds test, and, for the neighbours this band holds, the
+///    entry's `int16` deltas reconstruct the coordinate that neighbour's own record states. Bin
+///    packing delivers a record once per leaf that shares its chunk, and walk 1 has proved every
+///    repeat is the same record, so a `done` bitmap lets this walk process each junction once.
 ///
-/// Band 0's walk 2 additionally feeds the union-find and emits one [`claim`] per adjacency entry
-/// into an [`ExternalSort`]; later bands re-check only the coordinates they now hold, so the claim
-/// stream stays the graph's size however many bands there are. The sorted claims are grouped by edge
-/// id, which replaces the old per-edge `Vec` with a run of one stream and makes the edge decodes
-/// happen in id order (so a failure reports the same edge every run, where the old `HashMap`
-/// iteration did not).
+/// Band 0's walk 2 also feeds the union-find and emits one [`claim`] per adjacency entry into an
+/// [`ExternalSort`]; later bands re-check only the coordinates they now hold, so the claim stream
+/// stays the graph's size however many bands there are. The sorted claims are grouped by edge id,
+/// so the edge decodes happen in id order and a failure reports the same edge every run.
 fn verify_nav(
     reader: &Reader<'_>,
     view: &BBox,
@@ -635,17 +561,11 @@ fn verify_nav(
     let dir = *reader.nav_directory();
     let mut chunk = vec![0u8; NAV_MAX_CHUNK_BYTES];
 
-    // A §8.3 record is at least `NAV_NODE_FIXED_LEN` bytes (a degree-0 junction), so the node
-    // chunks' capacity bounds how many junctions the section can hold — and the ids being dense
-    // makes that a bound on the ids too. Deriving the ceiling from the directory rather than
-    // trusting the record is what keeps a corrupt id from naming a multi-gigabyte allocation.
+    // A record is at least `NAV_NODE_FIXED_LEN` bytes, so the node chunks' capacity bounds how many
+    // junctions the section can hold, and dense ids make that a bound on the ids too. Deriving the
+    // ceiling from the directory keeps a corrupt id from naming a multi-gigabyte allocation.
     let ceiling = dir.chunk_count.saturating_mul(dir.chunk_size) / NAV_NODE_FIXED_LEN;
 
-    // The band gets the **whole** budget and the claim sort an eighth on top, rather than the two
-    // dividing it. That is deliberate: what the sort's share buys is a shallower k-way merge (a
-    // fraction of a second either way at country scale), and what the band's buys is *not walking
-    // the section again*. Trading a ninth of the peak for a hard edge at exactly the budget would be
-    // paying seconds to save megabytes.
     let claim_budget = (budget / CLAIM_SHARE).max(4 * CLAIM_LEN);
     let span = (budget / BAND_BYTES_PER_NODE).max(1);
 
@@ -655,7 +575,7 @@ fn verify_nav(
     while lo == 0 || lo < total {
         let first = lo == 0;
 
-        // --- Walk 1: this band of the junction table; on band 0, the global §8.3 invariants. -----
+        // Walk 1: this band of the junction table; on band 0, the global record invariants.
         let mut nodes = NodeTable::new(lo, span, ceiling);
         let mut over_cap = 0usize;
         reader
@@ -679,13 +599,12 @@ fn verify_nav(
                 )));
             }
             report.nav_nodes = total as u64;
-            // Every junction starts as its own component of size one — the encoding [`ROOT`]
-            // describes.
+            // Every junction starts as its own component of size one.
             parent = vec![ROOT | 1; total];
         }
         let nodes = nodes.finish(total)?;
 
-        // --- Walk 2: the adjacency checks, streaming; on band 0, the union-find and the claims. --
+        // Walk 2: the adjacency checks, streaming; on band 0, the union-find and the claims.
         let mut done: Vec<u64> = vec![0; words(total)];
         let mut claims = first.then(|| ExternalSort::<CLAIM_LEN>::new(scratch, claim_budget, by_claim));
         let mut fault: Option<String> = None;
@@ -696,9 +615,8 @@ fn verify_nav(
                     return;
                 }
                 for n in node.neighbors() {
-                    // Density (checked band by band) makes "every neighbour resolves" a bounds test
-                    // against the junction count, so it is answered on band 0 for *every* neighbour
-                    // rather than deferred to whichever band happens to hold it.
+                    // Density, checked band by band, makes "every neighbour resolves" a bounds test
+                    // against the junction count, so band 0 answers it for every neighbour.
                     if first && n.id as usize >= total {
                         fault =
                             Some(format!("neighbour id {} of node {} resolves to no record (§4.8.4)", n.id, node.id));
@@ -735,11 +653,10 @@ fn verify_nav(
         drop(done);
 
         if let Some(sort) = claims {
-            // §4.8.5's histogram, while the union-find is still hot and before the claim stream's
-            // buffers are allocated. A selection whose largest component covers an implausibly small
-            // share of the graph is what a broken seam looks like — surfaced, never silently
-            // repaired. The size in each root's slot is the whole answer: no second array, and no
-            // pass over the ids to find which roots exist.
+            // The component histogram, while the union-find is still hot and before the claim
+            // stream's buffers are allocated. A selection whose largest component covers an
+            // implausibly small share of the graph is what a broken seam looks like — surfaced,
+            // never silently repaired.
             report.components = parent.iter().filter(|p| *p & ROOT != 0).count() as u64;
             let largest = parent.iter().filter(|p| *p & ROOT != 0).map(|p| p & !ROOT).max().unwrap_or(0) as u64;
             report.largest_component_permille = (largest * 1000 / total.max(1) as u64) as u32;
@@ -752,23 +669,16 @@ fn verify_nav(
     Ok(())
 }
 
-/// §4.8.4's edge half, in **one pass over the sorted claim stream**: both directions agree, every
-/// `Edge Id` decodes, and the record's polyline ends at the junctions that claim it.
+/// The edge half, in one pass over the sorted claim stream: both directions agree, every `Edge Id`
+/// decodes, and the record's polyline ends at the junctions that claim it.
 ///
-/// The dedup is the old pass's `adjacency.sort_unstable(); adjacency.dedup()` in its new clothes:
-/// the stream is sorted, so equal records are adjacent. §8.2's re-deliveries are already gone (the
-/// `done` bitmap), so what it removes is the one case that survives — a junction with two neighbours
-/// over a single edge id at the same cost and kind. The old pass pushed the very same claim twice
-/// into that edge's list and checked it twice with the same answer, so collapsing the two changes no
-/// verdict.
+/// The stream is sorted, so equal claims are adjacent and the dedup is a scan. Quadtree
+/// re-deliveries are already gone, through the `done` bitmap, so what it removes is the one case
+/// that survives: a junction with two neighbours over a single edge id at the same cost and kind.
 ///
-/// **The one ordering the in-memory pass had and this one does not**: it ran the whole `(Cost M, Way
-/// Kind)` agreement check before any decode, so a map with *both* a disagreeing edge and an
-/// undecodable one always named the disagreement. Grouped streaming names whichever comes first by
-/// edge id. Both are refusals, neither check is weakened, and every claim is still checked — the
-/// price of that ordering was writing the deduped `2 × E` records out and reading them back, which
-/// measured at ~1 s of Baden-Württemberg's verify and would be several at DACH. It is given up in
-/// the *message* a broken map gets, never in whether it is refused.
+/// Because the pass is grouped by edge id, a map with both a disagreeing edge and an undecodable
+/// one names whichever comes first by id. Both are refusals and no check is weakened; only the
+/// message changes.
 fn check_edges(reader: &Reader<'_>, sort: ExternalSort<'_, CLAIM_LEN>, report: &mut VerifyReport) -> Result<()> {
     let mut points: heapless::Vec<(i32, i32), MAX_EDGE_PTS> = heapless::Vec::new();
     let mut previous: Option<[u8; CLAIM_LEN]> = None;
@@ -782,12 +692,11 @@ fn check_edges(reader: &Reader<'_>, sort: ExternalSort<'_, CLAIM_LEN>, report: &
         previous = Some(record);
         let edge_id = claim_edge(&record);
         match open {
-            // Both directions of an edge must agree on `Cost M` and `Way Kind` (§8.3).
+            // Both directions of an edge must agree on `Cost M` and `Way Kind`.
             Some(g) if g.edge_id == edge_id => g.check_agreement(&record)?,
             _ => {
-                // A group's `Cost M` is checked against the §8.4 record's `length_m` once the last
-                // of its claims has gone by — the order the in-memory pass used, where every
-                // endpoint of an edge was checked before that edge's length.
+                // A group's `Cost M` is checked against the record's `length_m` once the last of
+                // its claims has gone by, so every endpoint is checked before the edge's length.
                 if let Some(g) = open.take() {
                     g.check_length()?;
                 }
@@ -814,7 +723,7 @@ fn check_edges(reader: &Reader<'_>, sort: ExternalSort<'_, CLAIM_LEN>, report: &
 #[derive(Clone, Copy)]
 struct Group {
     edge_id: u32,
-    /// The `length_m` the §8.4 record states.
+    /// The `length_m` the edge record states.
     length: u32,
     /// The `(Cost M, Way Kind)` the group's first claim states; every later one must match.
     agreement: (u32, u8),
@@ -865,14 +774,12 @@ impl Group {
 mod tests {
     use super::*;
 
-    /// The dense table is what makes the whole pass cheap, and it is also where the *new* refusals
-    /// live. Constructing a shard that trips them would mean hand-forging §8.3 bytes inside an
-    /// otherwise valid OBCM — the end-to-end path is covered by `tests/oracle.rs`, so the refusals
-    /// are pinned here, at the table.
+    /// A table wide enough for everything, which is the shape every graph that fits the budget
+    /// takes. Tripping its refusals end to end would mean hand-forging junction bytes inside an
+    /// otherwise valid OBCM, so they are pinned here instead.
     ///
-    /// Records are `(id, lat, lon, digest)`; [`digested`] fills in the digest the way a real record
-    /// would, i.e. equal content ⇒ equal digest. One band wide enough for everything, which is the
-    /// shape every graph that fits the budget takes.
+    /// Records are `(id, lat, lon, digest)`; [`digested`] fills the digest in the way a real record
+    /// would, so equal content gives equal digest.
     fn table(ceiling: usize, records: &[(u32, i32, i32, u64)]) -> Result<NodeTable> {
         band(0, usize::MAX / 2, ceiling, records)
     }
@@ -900,8 +807,8 @@ mod tests {
         assert_eq!(t.get(3), None);
     }
 
-    /// A band holds its own slice of the numbering and nothing else, but it still *counts* every
-    /// record — the junction total is a global fact and only band 0's walk is asked for it.
+    /// A band holds its own slice of the numbering and nothing else, but it still counts every
+    /// record: the junction total is a global fact and only band 0's walk is asked for it.
     #[test]
     fn a_band_holds_its_own_ids_and_counts_the_rest() {
         let records = digested(&[(0, 0, 1), (1, 10, 11), (2, 20, 21), (3, 30, 31), (4, 40, 41)]);
@@ -916,8 +823,7 @@ mod tests {
         assert_eq!(high.get(5), None, "past the highest id, inside the band");
     }
 
-    /// The density check is per band, so a hole above band 0 is refused by the band that holds it —
-    /// the failure a single table truncated at the budget would have lost.
+    /// The density check is per band, so a hole above band 0 is refused by the band that holds it.
     #[test]
     fn a_hole_above_the_first_band_is_still_refused() {
         let records = digested(&[(0, 0, 1), (1, 10, 11), (3, 30, 31)]);
@@ -927,8 +833,8 @@ mod tests {
         assert!(format!("{err}").contains("1 of the 4 ids"), "{err}");
     }
 
-    /// §8.2's bin packing re-delivers a record when two leaves share a chunk. Same bytes, same
-    /// answer — the pass must not care.
+    /// Bin packing re-delivers a record when two leaves share a chunk. Same bytes, same answer —
+    /// the pass must not care.
     #[test]
     fn a_re_delivered_record_is_not_a_duplicate() {
         let t = table(8, &digested(&[(0, 0, 1), (1, 10, 11), (0, 0, 1)])).expect("an idempotent re-delivery");
@@ -942,7 +848,7 @@ mod tests {
     }
 
     /// Walk 2 skips a re-delivered record, which is only sound because a record that differs in
-    /// anything *but* its coordinates is refused here.
+    /// anything but its coordinates is refused here.
     #[test]
     fn one_id_with_two_adjacency_lists_is_refused() {
         let err = table(8, &[(0, 0, 1, 0xaaaa), (0, 0, 1, 0xbbbb)]).expect_err("two records under one id");
@@ -950,16 +856,15 @@ mod tests {
     }
 
     /// The band's arrays may never reach past one growth step above the highest id they have been
-    /// asked to hold, whatever order the ids arrive in. This is the property the mem-profile numbers
-    /// rest on: `Vec`'s own doubling left the table in capacity for 4.19 M junctions where 2.99 M
-    /// had records, which was 46 MiB of air inside a 64 MiB budget.
+    /// asked to hold, whatever order the ids arrive in. `Vec`'s own doubling would leave most of a
+    /// band in slack.
     #[test]
     fn a_band_never_reaches_more_than_one_growth_step_past_its_highest_id() {
         let span = 1 << 16;
         let step = span / 16;
         for (name, ids) in [
             ("ascending", (0..span as u32).collect::<Vec<u32>>()),
-            // The shape a real §8.2 walk produces: chunk-ordered, so the ids arrive scattered.
+            // The shape a real quadtree walk produces: chunk-ordered, so the ids arrive scattered.
             ("scattered", (0..span as u32).map(|i| (i * 40_507) % span as u32).collect()),
         ] {
             let mut t = NodeTable::new(0, span, span);
@@ -978,21 +883,19 @@ mod tests {
             }
             t.finish(span).expect("a full band is dense");
         }
-        // …and the worst order there is — highest id first — still allocates the band once and not
-        // twice, because the step rounds up rather than doubling.
+        // …and the worst order there is — highest id first — still allocates the band once, because
+        // the step rounds up rather than doubling.
         let mut t = NodeTable::new(0, span, span);
         t.see(span as u32 - 1, 0, 0, 0);
         assert_eq!(t.coords.capacity(), span, "one allocation of exactly the band");
     }
 
-    /// New in #1116: the old pass hashed such an id and carried on.
     #[test]
     fn an_id_past_the_sections_capacity_is_refused() {
         let err = table(4, &digested(&[(0, 0, 1), (9, 9, 9)])).expect_err("an id no dense numbering could reach");
         assert!(format!("{err}").contains("out of the section's range"), "{err}");
     }
 
-    /// New in #1116: a hole in the numbering means a junction the walk never saw.
     #[test]
     fn a_hole_in_the_numbering_is_refused() {
         let err = table(8, &digested(&[(0, 0, 1), (2, 20, 21)])).expect_err("id 1 has no record");
@@ -1000,8 +903,8 @@ mod tests {
         assert!(format!("{err}").contains("1 of the 3 ids"), "{err}");
     }
 
-    /// The first fault is the one raised, and the range check runs before the coordinate check —
-    /// an out-of-range id must never reach the table's index arithmetic.
+    /// The first fault is the one raised, and the range check runs before the coordinate check: an
+    /// out-of-range id must never reach the table's index arithmetic.
     #[test]
     fn the_first_fault_is_the_one_reported() {
         let err = table(4, &digested(&[(0, 0, 1), (99, 0, 0), (0, 7, 7)])).expect_err("both faults");
@@ -1015,8 +918,8 @@ mod tests {
     }
 
     /// The claim stream is grouped by scanning runs of equal `edge_id`, so the external sort must
-    /// put an edge's claims together and the dedup must leave the distinct set — which is only true
-    /// if the byte layout's order *is* the `(edge_id, from, cost, kind)` order the tuple sort had.
+    /// put an edge's claims together and the dedup must leave the distinct set — which holds only
+    /// if the byte layout's order is the `(edge_id, from, cost, kind)` order.
     #[test]
     fn sorting_groups_the_claims_by_edge_and_dedup_leaves_the_distinct_set() {
         let rows = [(7, 1, 30, 2), (3, 9, 10, 1), (7, 1, 30, 2), (3, 2, 10, 1)];
@@ -1031,7 +934,7 @@ mod tests {
         assert_eq!(claim_coord(&claims[0]), (-1_002, 2_000));
     }
 
-    /// The whole claim record round-trips, at the extremes of every field — a mis-sized slice in
+    /// The whole claim record round-trips at the extremes of every field. A mis-sized slice in
     /// [`claim`] would otherwise show up as a mystery verify failure on one map in a thousand.
     #[test]
     fn a_claim_round_trips_at_the_extremes() {
@@ -1077,9 +980,9 @@ mod tests {
         assert_eq!(histogram(&parent), (2, 3), "two components, the larger of three");
     }
 
-    /// The size in the root's slot is the component histogram, and it must answer the same as the
-    /// `counts`-array pass it replaces — over a chain long enough that path halving actually runs,
-    /// and with the unions handed over in an order that makes both by-size branches fire.
+    /// The size in the root's slot is the component histogram, over a chain long enough that path
+    /// halving runs and with the unions handed over in an order that makes both by-size branches
+    /// fire.
     #[test]
     fn the_size_in_the_root_is_the_histogram_the_counts_array_gave() {
         for order in [true, false] {
@@ -1094,7 +997,7 @@ mod tests {
             for (a, b) in links {
                 union(&mut parent, a, b);
             }
-            // The old formulation, verbatim.
+            // Counted directly, as the oracle.
             let mut counts = vec![0u32; n];
             for id in 0..n as u32 {
                 counts[find(&mut parent, id) as usize] += 1;

@@ -1,4 +1,4 @@
-// Browser-local custom skins for the product builder (#1045).
+// Browser-local custom skins for the product builder.
 //
 // This store deliberately persists only presentation bytes. The schema id and
 // revision wrap the records, and every load revalidates the exact feature-type
@@ -86,7 +86,7 @@ function styleFrom(raw: unknown, featureType: string): SkinStyle | null {
         z_index: zIndex,
         priority,
         line_style: value.line_style,
-        // #1095: structural flag bits the editor does not offer but must not silently drop — a
+        // Structural flag bits the editor does not offer but must not silently drop — a
         // custom skin that lost them would put the contours back on the road width ramp.
         fixed_width: value.fixed_width === true,
         terrain_layer: value.terrain_layer === true,

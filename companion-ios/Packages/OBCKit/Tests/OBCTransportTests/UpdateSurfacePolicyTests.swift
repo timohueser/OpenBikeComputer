@@ -2,14 +2,10 @@ import Foundation
 import Testing
 @testable import OBCTransport
 
-/// The proactive-update rules (#773 U5). This is the suite that matters: the launch sheet and the
-/// background notification are both thin adapters over ``UpdateSurfacePolicy``, so what is pinned
-/// here is *everything either of them can decide*.
-///
-/// Two rules earn the most tests, because getting them wrong is a product failure rather than a bug:
-/// a device on an unparseable version is **never** interrupted (#773's locked refusal, the same rule
-/// the S7 screen honours), and a version already put to the rider is never raised twice — while a
-/// newer one is a new question.
+/// The proactive-update rules. The launch sheet and the background notification are both thin
+/// adapters over ``UpdateSurfacePolicy``, so everything either of them can decide is pinned here.
+/// Two rules earn the most cases: an unparseable running version is never interrupted, and a
+/// version already put to the rider is never raised twice, while a newer one is a new question.
 struct UpdateSurfacePolicyTests {
     // MARK: Fixtures
 
@@ -76,16 +72,15 @@ struct UpdateSurfacePolicyTests {
         #expect(UpdateSurfacePolicy.decide(Self.context(answered: "v1.4.0")) == .nothing)
     }
 
-    /// #773's locked refusal, and the reason it is a table rather than one case: an unparseable
-    /// running version must lose to *nothing* — not to a published release, not to a stale cache,
-    /// not to an empty ledger. A probe-flashed dev build is never interrupted and never polled for.
+    /// An unparseable running version loses to everything: a published release, a stale cache, an
+    /// empty ledger. A probe-flashed dev build is never interrupted and never polled for.
     @Test(
         "A running version that isn't a release version is never surfaced",
         arguments: ["abc1234", "main", "0.4", "v", "1.2.3.4", "twelve"]
     )
     func unparseableRunningVersionNeverSurfaces(running: String) {
         #expect(UpdateSurfacePolicy.decide(Self.context(running: running)) == .nothing)
-        // …and not even a network request is spent finding out.
+        // Not even a network request is spent finding out.
         #expect(UpdateSurfacePolicy.decide(Self.context(running: running, cached: nil)) == .nothing)
     }
 
@@ -99,7 +94,7 @@ struct UpdateSurfacePolicyTests {
     @Test("Up to date says nothing")
     func currentIsSilent() {
         #expect(UpdateSurfacePolicy.decide(Self.context(running: "1.4.0")) == .nothing)
-        // Build metadata is not a version difference (the U4 dialect) — still silent.
+        // Build metadata is not a version difference, so this stays silent.
         #expect(UpdateSurfacePolicy.decide(Self.context(running: "1.4.0+abc1234")) == .nothing)
     }
 
@@ -116,7 +111,7 @@ struct UpdateSurfacePolicyTests {
     @Test("The toggle gates the surface AND the network")
     func toggleOffIsSilent() {
         #expect(UpdateSurfacePolicy.decide(Self.context(autoCheck: false)) == .nothing)
-        // Off with no cache asks for no check either — the rider is not quietly polled.
+        // Off with no cache asks for no check either: the rider is not quietly polled.
         #expect(UpdateSurfacePolicy.decide(Self.context(autoCheck: false, cached: nil)) == .nothing)
     }
 
@@ -137,8 +132,7 @@ struct UpdateSurfacePolicyTests {
         #expect(UpdateSurfacePolicy.decide(Self.context(cached: fresh)) == .surface(Self.release("1.4.0")))
     }
 
-    /// A clock that moved backwards (time zone, manual set) must read as stale rather than fresh
-    /// forever — the same rule ``UpdateChecker/isFresh(_:now:)`` keeps.
+    /// A clock that moved backwards must read as stale, not fresh forever.
     @Test("A cache from the future is stale, not fresh forever")
     func futureCacheIsStale() {
         let future = Self.cached("1.4.0", age: -3600)
@@ -147,8 +141,8 @@ struct UpdateSurfacePolicyTests {
 
     @Test("Silence never depends on which refusal applied")
     func refusalsAreIndistinguishable() {
-        // Nothing in the enum lets a surface tell "dev build" from "up to date" — deliberately, so
-        // no adapter can grow a special case for one of them.
+        // Nothing in the enum lets a surface tell "dev build" from "up to date", so no adapter
+        // can grow a special case for one of them.
         let refusals: [UpdateSurfacePolicy.Context] = [
             Self.context(autoCheck: false),
             Self.context(running: "abc1234"),
@@ -163,8 +157,8 @@ struct UpdateSurfacePolicyTests {
     }
 }
 
-/// The runner — the one code path both surfaces share. What matters here is that it performs the
-/// check the policy asks for, decides again on the answer, and stays silent when the network fails.
+/// The runner is the one code path both surfaces share: it performs the check the policy asks
+/// for, decides again on the answer, and stays silent when the network fails.
 struct UpdateSurfaceRunnerTests {
     private static let manifestURL = UpdateChecker.manifestURL
     private static let device = LastSeenDevice(
@@ -275,8 +269,7 @@ struct UpdateSurfaceRunnerTests {
         #expect(surface.loadAnsweredVersion(device: "OBC-0001") == "1.5.0")
     }
 
-    /// A fresh cache is the common case (the app was foregrounded twice in an hour) — and it must
-    /// cost nothing, or "on launch" becomes "a request every launch".
+    /// A fresh cache must cost nothing, or "on launch" becomes "a request every launch".
     @Test("A fresh cache is answered from memory, with no request at all")
     func freshCacheMakesNoRequest() async {
         let (runner, _, fetcher) = makeRunner(
@@ -289,7 +282,6 @@ struct UpdateSurfaceRunnerTests {
         #expect(fetcher.requested.isEmpty)
     }
 
-    /// The default is documented as ON — a fresh install is told about updates.
     @Test("Automatic checks default to on")
     func defaultsToOn() {
         let defaults = UserDefaults(suiteName: "obc.tests.updateSurface.\(UUID().uuidString)")!
@@ -326,8 +318,7 @@ struct UpdateSurfaceRunnerTests {
     }
 }
 
-/// A stubbed HTTP seam for the runner tests — records what was asked for, so "made no request" is
-/// an assertion rather than a hope.
+/// A stubbed HTTP seam that records what was asked for, so "made no request" is an assertion.
 final class PolicyStubFetcher: ManifestFetching, @unchecked Sendable {
     private let lock = NSLock()
     private var responses: [URL: (status: Int, body: Data)] = [:]

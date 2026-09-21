@@ -1,14 +1,10 @@
 import Foundation
 
-/// What a waypoint *is*, in the device's own vocabulary: the six browsable POI
-/// categories the map already uses (`OBCM_Spec.md` §7.4), reused verbatim for
-/// waypoints so one icon language covers both sources on the device's "Up ahead"
-/// list.
+/// What a waypoint is, in the device's own vocabulary: the six browsable POI categories the
+/// map already uses, reused verbatim so one icon language covers both sources.
 ///
-/// The raw values are the **stable wire ids** stored in an OBCR waypoint record's
-/// category byte (`OBCR_Spec.md` §4). `0` is not a case: it means *generic*, which
-/// this type models as `nil` — most hand-placed waypoints ("turn left here") map to
-/// nothing, and generic is first-class, not a failure.
+/// The raw values are the stable wire ids stored in an OBCR waypoint record's category byte
+/// (`OBCR_Spec.md`). `0` is not a case: it means generic, which this type models as `nil`.
 public enum WaypointCategory: UInt8, CaseIterable, Sendable {
     case water = 1
     case campsite = 2
@@ -22,14 +18,13 @@ public enum WaypointCategory: UInt8, CaseIterable, Sendable {
         category?.rawValue ?? 0
     }
 
-    /// The category a stored byte names, or `nil` for generic — **including** any
-    /// value outside `1...6`, which the spec says to render as generic rather than
-    /// reject (a newer producer may know a category this build doesn't).
+    /// The category a stored byte names, or `nil` for generic, including any value outside
+    /// `1...6`. A newer producer may know a category this build does not, so it renders generic.
     public init?(wireID: UInt8) {
         self.init(rawValue: wireID)
     }
 
-    /// Stable, device-facing label (matches the firmware's `PoiCategory::name`).
+    /// Stable, device-facing label; it matches the firmware's `PoiCategory::name`.
     public var label: String {
         switch self {
         case .water: return "Water"

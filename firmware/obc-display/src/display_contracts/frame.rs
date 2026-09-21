@@ -1,12 +1,11 @@
-//! [`NativeFrame`] — the frame specification/storage contract — and [`Device64Frame`], the shipping
-//! RGB222 implementation of it.
+//! [`NativeFrame`], the frame specification and storage contract, and [`Device64Frame`], the
+//! shipping RGB222 implementation of it.
 //!
 //! A frame type answers, at compile time, everything the rest of the stack must never hard-code:
-//! geometry, the device-native storage cell, the stride/backing-length invariant, and how drawing
-//! code writes it (a [`DrawTarget`] view straight into the backing — no staging buffer, no format
-//! conversion). Presenters are *paired* with a frame type; anything beyond this contract (raw byte
-//! access for a damage diff, a wire pack) is the pairing's private business on the concrete type,
-//! not a generic requirement.
+//! geometry, the device-native storage cell, the stride and backing-length invariant, and how
+//! drawing code writes it, through a [`DrawTarget`] view straight into the backing with no
+//! staging buffer and no format conversion. Anything beyond this contract, such as raw byte
+//! access for a damage diff or a wire pack, is the pairing's private business.
 
 use core::convert::Infallible;
 
@@ -16,83 +15,75 @@ use embedded_graphics::primitives::Rectangle;
 
 use crate::framebuffer::FbDevice64;
 
-/// A device-native frame: geometry + storage + a direct-write draw view.
+/// A device-native frame: geometry, storage and a direct-write draw view.
 ///
-/// **Backing invariant**: `backing().len() == BACKING_CELLS` (`STRIDE * HEIGHT` storage cells),
-/// validated at construction — a presenter paired with this frame may index rows as
-/// `y * STRIDE .. y * STRIDE + …` without re-checking. `STRIDE` is in **storage cells**, not
-/// visual pixels, and may exceed the cells `WIDTH` pixels need (a padded backing); the shipping
-/// frame packs one pixel per cell with `STRIDE == WIDTH`.
+/// Backing invariant: `backing().len() == BACKING_CELLS`, validated at construction, so a paired
+/// presenter may index rows without re-checking. `STRIDE` is in storage cells, not visual pixels,
+/// and may exceed the cells `WIDTH` pixels need; the shipping frame packs one pixel per cell.
 ///
-/// **Quantization invariant**: [`draw_target`](Self::draw_target) packs [`Color`](Self::Color)
-/// into the native cell **on store, exactly once** — there is no readback-convert-rewrite anywhere
-/// in the contract, so the hot render loop's per-pixel cost is one packed store.
+/// Quantization invariant: [`draw_target`](Self::draw_target) packs [`Color`](Self::Color) into
+/// the native cell on store, exactly once, so the hot render loop's per-pixel cost is one packed
+/// store.
 ///
-/// **Borrowing**: drawing needs `&mut self`; a base present borrows the frame shared. Holding the
-/// present's `&self` across its `await` is what statically keeps a render from racing a scan-out
-/// of the same bytes — see the [module docs](super).
+/// Borrowing: drawing needs `&mut self` and a base present borrows the frame shared, which is
+/// what statically keeps a render from racing a scan-out of the same bytes.
 pub trait NativeFrame {
-    /// The colour drawing code supplies — the renderer's colour space (RGB565 on the shipping
-    /// path), *not* the storage format. Packing to the native cell happens on store.
+    /// The colour drawing code supplies: the renderer's colour space, not the storage format.
+    /// Packing to the native cell happens on store.
     type Color: PixelColor;
-    /// One storage cell of the backing — `u8` for the RGB222 device-64 plane, `u16` for a
-    /// native-RGB565 plane. `PartialEq` so pairings and tests can compare backings without
-    /// knowing the format.
+    /// One storage cell of the backing: `u8` for the RGB222 device-64 plane, `u16` for a
+    /// native-RGB565 plane. `PartialEq` so pairings and tests can compare backings.
     type Pixel: Copy + PartialEq;
     /// Frame width in visual pixels.
     const WIDTH: usize;
     /// Frame height in rows.
     const HEIGHT: usize;
-    /// Storage cells per row (≥ the cells `WIDTH` pixels occupy; the shipping frame's is `WIDTH`).
+    /// Storage cells per row, at least the cells `WIDTH` pixels occupy.
     const STRIDE: usize;
     /// The validated backing length, in cells.
     const BACKING_CELLS: usize = Self::STRIDE * Self::HEIGHT;
 
     /// The backing storage, row-major at [`STRIDE`](Self::STRIDE) cells per row.
     fn backing(&self) -> &[Self::Pixel];
-    /// Mutable backing access — the escape hatch a *board's* composition edge may need (a backend
-    /// whose transport scans the resident frame transiently composites into the backing); generic
-    /// render/UI code draws through [`draw_target`](Self::draw_target) instead.
+    /// Mutable backing access, the escape hatch a board's composition edge may need when its
+    /// transport scans the resident frame and composites into the backing. Generic render and UI
+    /// code draws through [`draw_target`](Self::draw_target) instead.
     fn backing_mut(&mut self) -> &mut [Self::Pixel];
-    /// A [`DrawTarget`] writing **directly into the backing** — the render path's view. Infallible:
-    /// out-of-frame writes clip, they don't error.
+    /// A [`DrawTarget`] writing directly into the backing: the render path's view. Infallible,
+    /// because out-of-frame writes clip rather than error.
     fn draw_target(&mut self) -> impl DrawTarget<Color = Self::Color, Error = Infallible> + '_;
-    /// [`draw_target`](Self::draw_target) restricted to `area`: writes outside it are discarded, so
-    /// a region-scoped repaint replays a full draw sequence and pays only for the region — **no
-    /// second frame** is ever allocated for the view.
+    /// [`draw_target`](Self::draw_target) restricted to `area`: writes outside it are discarded,
+    /// so a region-scoped repaint replays a full draw sequence and pays only for the region. No
+    /// second frame is allocated for the view.
     fn clipped(&mut self, area: Rectangle) -> impl DrawTarget<Color = Self::Color, Error = Infallible> + '_;
 }
 
-/// The shipping frame: one resident **RGB222 / device-64** plane over a borrowed byte backing —
-/// `W × H` cells of one byte per pixel (`0b00_RR_GG_BB`), exactly the buffer the board keeps in
-/// `.bss` and the simulator in its backend. The draw view is the existing [`FbDevice64`], so the
-/// quantize-on-store path (and its codegen) is byte-for-byte the one the renderer always used.
+/// The shipping frame: one resident RGB222 device-64 plane over a borrowed byte backing, `W × H`
+/// cells of one byte per pixel, exactly the buffer the board keeps in `.bss`. The draw view is
+/// [`FbDevice64`], so the quantize-on-store path is the one the renderer always used.
 ///
-/// Borrowing the backing (rather than owning an array) is deliberate: the board's frame is a
-/// placement-initialized static at the composition edge, and this type must wrap it without a copy
-/// or a second allocation.
+/// Borrowing the backing rather than owning an array is deliberate: the board's frame is a
+/// placement-initialized static, and this type must wrap it without a copy.
 pub struct Device64Frame<'b, const W: usize, const H: usize> {
     buf: &'b mut [u8],
 }
 
 impl<'b, const W: usize, const H: usize> Device64Frame<'b, W, H> {
-    /// Wrap `buf` as the `W × H` device-64 frame. Panics unless `buf.len() == W * H` — the
-    /// contract's validated-backing invariant, checked once here so presenters never re-check.
+    /// Wrap `buf` as the `W × H` device-64 frame. Panics unless `buf.len() == W * H`, the
+    /// validated-backing invariant, checked once here so presenters never re-check.
     pub fn new(buf: &'b mut [u8]) -> Self {
         assert!(buf.len() == W * H, "device-64 backing must be exactly WIDTH * HEIGHT bytes");
         Self { buf }
     }
 
-    /// The backing as raw bytes — what a byte-plane pairing's damage diff and wire pack read
-    /// (`W` bytes per row). Same slice as [`NativeFrame::backing`]; named for call sites that want
-    /// bytes, not cells.
+    /// The backing as raw bytes, `W` bytes per row: what a byte-plane pairing's damage diff and
+    /// wire pack read. The same slice as [`NativeFrame::backing`].
     pub fn bytes(&self) -> &[u8] {
         self.buf
     }
 
-    /// [`bytes`](Self::bytes), mutable — the board composition edge's render entry (it wraps these
-    /// bytes in the concrete draw target) without importing the trait. Same slice as
-    /// [`NativeFrame::backing_mut`].
+    /// [`bytes`](Self::bytes), mutable, for the board composition edge's render entry. The same
+    /// slice as [`NativeFrame::backing_mut`].
     pub fn bytes_mut(&mut self) -> &mut [u8] {
         self.buf
     }
@@ -134,8 +125,8 @@ mod tests {
         Rgb565::from(RawU16::new(raw))
     }
 
-    /// The frame's draw view is byte-for-byte the existing `FbDevice64` path — same quantization,
-    /// same writes — so wrapping the resident plane in the contract changes no pixel.
+    /// The frame's draw view is byte-for-byte the existing `FbDevice64` path, so wrapping the
+    /// resident plane in the contract changes no pixel.
     #[test]
     fn draw_target_matches_fbdevice64_exactly() {
         let mut via_contract = [0u8; 4 * 4];
@@ -156,8 +147,8 @@ mod tests {
         assert_eq!(via_contract, direct, "the contract view must be the same store path");
     }
 
-    /// The clip view discards writes outside `area` without allocating anything: the backing is the
-    /// one buffer throughout.
+    /// The clip view discards writes outside `area` without allocating: the backing is the one
+    /// buffer throughout.
     #[test]
     fn clipped_view_discards_outside_writes() {
         let mut buf = [0u8; 4 * 4];

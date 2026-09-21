@@ -7,15 +7,14 @@ import OBCTransport
 /// device. Reconnect reconciles saved archives; only an explicit sync downloads missing rides.
 @MainActor @Observable
 public final class RideSyncCoordinator {
-    /// Ride-count progress for the syncing caption ("3 of 5 rides").
+    /// Ride-count progress for the syncing caption.
     public struct SyncProgress: Equatable, Sendable {
         public var done: Int
         public var total: Int
     }
 
-    /// H10 — a sync the link dropped out from under. Feeds the warning banner
-    /// ("Sync interrupted. Got 2 of 5 rides." + Resume). What landed is already
-    /// persisted; `resumeSync()` continues the rest.
+    /// A sync the link dropped out from under, which feeds the warning banner and its Resume.
+    /// What landed is already persisted; `resumeSync()` continues the rest.
     public struct SyncInterruption: Equatable, Sendable {
         public var landed: Int
         public var total: Int
@@ -39,12 +38,11 @@ public final class RideSyncCoordinator {
         }
     }
 
-    /// Pacing — injectable so the coordinator tests run in milliseconds.
+    /// Pacing, injectable so the coordinator tests run in milliseconds.
     public struct Timing: Sendable {
-        /// How long the forest check holds before the button returns to idle
-        /// (design: "Check for ~2s, then idle").
+    /// How long the forest check holds before the button returns to idle.
         public var syncDoneHold: Duration
-        /// How long the C2 "Synced N new rides just now" line stays up.
+    /// How long the "synced N new rides just now" line stays up.
         public var syncedLineHold: Duration
 
         public init(
@@ -59,14 +57,12 @@ public final class RideSyncCoordinator {
     // MARK: Observable state
 
     public private(set) var syncState: OBCSyncButtonState = .idle {
-        // The batch is mid-flight exactly while `.syncing` (#459): `runSync`
-        // raises it, and every way out — done, idle, the H10 interrupt — lowers
-        // it. Mirroring the transitions here keeps the `TransferActivity` claim
-        // in lock-step with the state machine's many exit paths, including an
-        // interruption whose consuming loop deliberately stays alive awaiting
-        // the stalled stream (a stalled batch must NOT hold the background
-        // grace window — waiting longer won't finish a transfer whose link is
-        // gone; Resume restarts it after the foreground reconnect).
+        // The batch is mid-flight exactly while `.syncing`: `runSync` raises this, and every way
+        // out lowers it. Mirroring the transitions here keeps the `TransferActivity` claim in
+        // lock-step with the state machine's many exits, including an interruption whose consuming
+        // loop deliberately stays alive awaiting the stalled stream. A stalled batch must not hold
+        // the background grace window: waiting longer will not finish a transfer whose link is
+        // gone, and Resume restarts it after the foreground reconnect.
         didSet {
             guard oldValue != syncState else { return }
             if syncState == .syncing {
@@ -77,26 +73,21 @@ public final class RideSyncCoordinator {
             }
         }
     }
-    /// Non-nil while syncing — feeds the amber "N of M rides" caption.
+    /// Non-nil while syncing, which feeds the amber progress caption.
     public private(set) var syncProgress: SyncProgress?
-    /// Non-nil after a successful sync — feeds "Synced N new rides just now".
+    /// Non-nil after a successful sync, which feeds the confirm line.
     public private(set) var lastSyncCount: Int?
-    /// H9: a sync found nothing new (bound to the transient toast).
+    /// A sync found nothing new; bound to the transient toast.
     public var upToDateToastVisible = false
-    /// H10: non-nil while a dropped sync waits for Resume — replaces the S4
-    /// banner (one banner at a time; this one carries the link story too).
+    /// Non-nil while a dropped sync waits for Resume. It replaces the disconnected banner, because
+    /// one banner at a time, and this one carries the link story too.
     public private(set) var syncInterruption: SyncInterruption?
-    /// How many rides the device holds beyond what its bounded catalog could carry
-    /// (v2 header `total − count`, spec §7.4) — set from each sync's list read.
-    /// `> 0` surfaces the "some rides can't be listed" warning: past the device's
-    /// `MAX_RIDES` cap the catalog scan drops the excess in FAT-arbitrary order,
-    /// so this is the only honest "you're not actually up to date" signal. Holds
-    /// within a connected session (device truth, re-read every sync) but **resets
-    /// on every edge into `.connected`**: a count carried across a link edge could
-    /// be stale (the rider freed space while away) or another device's entirely
-    /// (the banner interpolates the connected device's name — device A's count
-    /// under device B's name would assert a false fact). Unknown-until-read is
-    /// the honest state, matching the epic's proof-only philosophy.
+    /// How many rides the device holds beyond what its bounded catalog could carry, set from each
+    /// sync's list read. Above zero it surfaces the "some rides can't be listed" warning: past the
+    /// device's cap the catalog scan drops the excess in arbitrary order, so this is the only
+    /// honest "you are not actually up to date" signal. It holds within a connected session, but
+    /// resets on every edge into `.connected`: a count carried across a link edge could be stale,
+    /// or another device's entirely, and the banner names the connected device.
     public private(set) var hiddenRideCount: Int = 0
 
     // MARK: Wiring
@@ -104,44 +95,36 @@ public final class RideSyncCoordinator {
     private let transport: any DeviceLink & DeviceObjects
     private let library: any LibraryStore
     private let timing: Timing
-    /// The foreground-only policy's in-flight ledger (#459) — `nil` in tests
-    /// and previews that don't exercise the lifecycle.
+    /// The foreground-only policy's in-flight ledger. Nil in tests and previews.
     @ObservationIgnored private let activity: TransferActivity?
-    /// This coordinator's claim while a batch is `.syncing`.
+    /// This coordinator's claim while a batch is syncing.
     @ObservationIgnored private var activityToken: TransferActivity.Token?
-    /// The model's veto (#303): `false` while the connected device reports an
-    /// incompatible `protocol_version` — **or while the verdict is still
-    /// unknown** (the identity read hasn't settled), so an id-keyed operation
-    /// can't run ahead of the check. That state lives with the model's
-    /// reload/identity path; the coordinator only asks — always *after*
-    /// awaiting `identitySettled`.
+    /// The model's veto: false while the connected device reports an incompatible protocol
+    /// version, and also while the verdict is still unknown, so an id-keyed operation cannot run
+    /// ahead of the check. The coordinator only asks, and always after awaiting `identitySettled`.
     @ObservationIgnored public var canSync: () -> Bool = { true }
-    /// Awaits the model's identity read settling for the current connection
-    /// (#303): `runSync` suspends on this before consulting `canSync`, so an
-    /// early SYNC tap waits the few ms for the verdict instead of silently
-    /// no-oping. Defaults to already-settled (standalone coordinators, tests).
+    /// Awaits the model's identity read settling for the current connection. `runSync` suspends on
+    /// this before consulting `canSync`, so an early tap waits the few milliseconds for the verdict
+    /// instead of silently doing nothing. Defaults to already-settled.
     @ObservationIgnored public var identitySettled: () async -> Void = {}
-    /// A ride just landed *and persisted* — the model mirrors it into its
-    /// in-memory Tracked list. Delivery is per ride, so newly synced rides
-    /// surface this session, not only after the next reload.
+    /// A ride just landed and was persisted, so the model can mirror it into its in-memory list.
+    /// Delivery is per ride, so newly synced rides surface this session.
     @ObservationIgnored public var onRideLanded: (Ride) -> Void = { _ in }
-    /// The batch's `listRides()` read succeeded — proof the device is readable,
-    /// so the model can clear a stale S3 failure state.
+    /// The batch's `listRides()` read succeeded, which proves the device is readable, so the model
+    /// can clear a stale failure state.
     @ObservationIgnored public var onRideCatalogRead: () -> Void = {}
-    /// Mirror of `library.syncedRideIDs()` — what makes the next sync's "new".
-    /// **Re-read from the library at the start of every sync** (the store is
-    /// the source of truth): phone-side tombstones (`deleteRide` marks the id
-    /// synced so a later sync can't resurrect it) reach the coordinator through
-    /// that re-read — no cross-object mirror pokes.
+    /// What makes the next sync's "new". Re-read from the library at the start of every sync,
+    /// because the store is the source of truth: a phone-side tombstone reaches the coordinator
+    /// through that re-read, with no cross-object mirror pokes.
     @ObservationIgnored private var syncedRideIDs: Set<RideID> = []
-    /// The coordinator's own view of the link — gates `sync()` and is kept by
-    /// its own `transport.state` subscription (replayed on subscribe).
+    /// The coordinator's own view of the link. It gates `sync()` and is kept by its own state
+    /// subscription, which replays on subscribe.
     @ObservationIgnored private(set) var connection: ConnectionState = .connecting
     @ObservationIgnored private var connectionWatch: Task<Void, Never>?
     @ObservationIgnored private var syncTask: Task<Void, Never>?
     @ObservationIgnored private var syncDropWatch: Task<Void, Never>?
-    /// The running (or dropped-but-resumable) download — `resumeSync()` signals
-    /// its handle; the consuming loop in `runSync` is still awaiting its stream.
+    /// The running, or dropped but resumable, download. `resumeSync()` signals its handle, and the
+    /// consuming loop in `runSync` is still awaiting its stream.
     @ObservationIgnored private var activeDownload: RideDownload?
 
     public init(
@@ -154,19 +137,17 @@ public final class RideSyncCoordinator {
         self.library = library
         self.timing = timing
         self.activity = activity
-        // Open-ended stream loops are `[weak self]` + per-iteration `guard let
-        // self` (the #356 convention) — the stream never finishes, so a strong
-        // capture would pin the coordinator (and its owner) for the session.
+        // The stream never finishes, so a strong capture would pin the coordinator, and its owner,
+        // for the session.
         connectionWatch = Task { [weak self, transport] in
             var wasConnected = false
             for await state in transport.state {
                 guard let self else { return }
                 connection = state
                 if state == .connected, !wasConnected {
-                    // A fresh link is a fresh device truth: drop the previous
-                    // session's truncation count (see `hiddenRideCount` — it may
-                    // be stale, or a *different* device's). The next sync's list
-                    // read re-establishes it.
+                    // A fresh link is a fresh device truth, so drop the previous session's
+                    // truncation count: it may be stale, or a different device's. The next sync's
+                    // list read re-establishes it.
                     hiddenRideCount = 0
                     reconcileArchives()
                 }
@@ -204,10 +185,9 @@ public final class RideSyncCoordinator {
         syncTask = Task { await runSync(downloadMissing: downloadMissing) }
     }
 
-    /// H10's Resume: restart the dropped batch at whole-ride granularity —
-    /// rides that fully landed stay landed, the interrupted one is re-sent from
-    /// its start. The consuming loop never stopped (it's awaiting the stalled
-    /// stream), so rides simply start landing again.
+    /// Resume restarts the dropped batch at whole-ride granularity: rides that fully landed stay
+    /// landed, and the interrupted one is re-sent from its start. The consuming loop never stopped,
+    /// because it is awaiting the stalled stream, so rides simply start landing again.
     public func resumeSync() {
         guard let interruption = syncInterruption else { return }
         guard let download = activeDownload, interruption.reason == .download else {
@@ -364,8 +344,8 @@ public final class RideSyncCoordinator {
         }
     }
 
-    /// The drop watch's H10 hand-off: freeze the counts into the banner state
-    /// and bring the progress caption down. The download stays resumable.
+    /// The drop watch's hand-off: freeze the counts into the banner state and bring the progress
+    /// caption down. The download stays resumable.
     private func interruptSync() {
         guard syncState == .syncing, activeDownload != nil else { return }
         syncState = .idle

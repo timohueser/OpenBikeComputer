@@ -1,9 +1,8 @@
 import XCTest
 
-/// B8 acceptance on the simulator: Settings (G) reached from the top-bar gear,
-/// the H3 device rename showing across the app, and the H2 forget returning to
-/// the unpaired D1 prompt. The model logic is host-tested in
-/// `SettingsModelTests`; this proves the wiring gear → G → alerts → app state.
+/// Settings reached from the top-bar gear, the device rename showing across the app, and the
+/// forget returning to the unpaired prompt. The model logic is host-tested in `SettingsModelTests`;
+/// this proves the wiring from gear to screen to alerts to app state.
 final class SettingsTests: XCTestCase {
     override func setUp() {
         super.setUp()
@@ -27,8 +26,7 @@ final class SettingsTests: XCTestCase {
         add(attachment)
     }
 
-    /// Gear → G. The screen id sits on a ScrollView, so query descendants
-    /// (same gotcha as `detail.screen`).
+    /// The screen id sits on a `ScrollView`, so query descendants.
     @MainActor
     private func openSettings(_ app: XCUIApplication) {
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10), "main missing")
@@ -37,9 +35,8 @@ final class SettingsTests: XCTestCase {
         XCTAssertTrue(screen.waitForExistence(timeout: 5), "settings screen missing")
     }
 
-    /// G: every group renders — device identity, the S7 Routes default, the
-    /// coming-soon rows, About. The screen scrolls past a fold now, so reveal the
-    /// lower groups before asserting them.
+    /// Every group renders. The screen scrolls past a fold, so reveal the lower groups before
+    /// asserting them.
     @MainActor
     func testSettingsShowsTheFourDesignGroups() {
         let app = launch()
@@ -52,12 +49,11 @@ final class SettingsTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Forget device"].exists)
         snap(app, "G-settings")
 
-        // The screen now scrolls past a fold — reveal each lower group in turn
-        // (each scrolls off the top as the next comes up, so assert as it appears).
-        reveal(app, "Update firmware")                         // firmware group
-        reveal(app, "Strava sync")                             // connected services
-        reveal(app, "OpenBikeComputer on GitHub")              // about
-        reveal(app, "No account. No subscription. No cloud.")  // the no-cloud promise
+        // Each lower group scrolls off the top as the next comes up, so assert each as it appears.
+        reveal(app, "Update firmware")
+        reveal(app, "Strava sync")
+        reveal(app, "OpenBikeComputer on GitHub")
+        reveal(app, "No account. No subscription. No cloud.")
     }
 
     /// Swipe up until the labelled row enters the tree, then assert it.
@@ -68,8 +64,7 @@ final class SettingsTests: XCTestCase {
         XCTAssertTrue(element.exists, "\(label) row missing")
     }
 
-    /// H3: rename via the text-field alert; the new name shows in Settings and
-    /// on the main top bar.
+    /// Rename through the text-field alert; the new name shows in Settings and on the main top bar.
     @MainActor
     func testRenameDeviceShowsAcrossTheApp() {
         let app = launch()
@@ -95,14 +90,14 @@ final class SettingsTests: XCTestCase {
                       "top bar kept the old name")
     }
 
-    /// H2: forget confirms with the reassurance copy, then lands on D1.
+    /// Forget confirms with the reassurance copy, then lands on the pairing prompt.
     @MainActor
     func testForgetDeviceConfirmsThenReturnsToPairing() {
         let app = launch()
         openSettings(app)
 
         app.staticTexts["Forget device"].tap()
-        // Scoped to the sheet — the row shares the "Forget device" label.
+        // Scoped to the sheet: the row shares the "Forget device" label.
         let confirm = app.sheets.buttons["Forget device"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 5), "H2 confirm missing")
         XCTAssertTrue(
@@ -117,7 +112,7 @@ final class SettingsTests: XCTestCase {
         snap(app, "H2-after-forget-D1")
     }
 
-    /// H2 cancel keeps the bond — still on Settings, still bonded.
+    /// Cancelling the forget keeps the bond: still on Settings, still bonded.
     @MainActor
     func testForgetCancelKeepsEverything() {
         let app = launch()
@@ -125,8 +120,8 @@ final class SettingsTests: XCTestCase {
 
         app.staticTexts["Forget device"].tap()
         XCTAssertTrue(app.sheets.buttons["Forget device"].waitForExistence(timeout: 5))
-        // Dismiss without confirming — the dialog's Cancel isn't a queryable
-        // button on iOS 26, and tapping the scrim is the same user gesture.
+        // Dismiss without confirming: the dialog's Cancel is not a queryable button on this iOS
+        // version, and tapping the scrim is the same user gesture.
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15)).tap()
 
         XCTAssertTrue(app.descendants(matching: .any)["settings.screen"].waitForExistence(timeout: 5))

@@ -6,29 +6,24 @@ copy: ai
 
 # Data formats
 
-OpenBikeComputer uses binary objects for device data.
-The device reads these objects through a random-access byte interface.
-It does not parse host data formats during normal operation.
+The device reads binary objects straight from storage through a random-access byte interface, and
+parses no text format while it rides.
 
-The files in [`specs/`](src:specs) are the normative contracts.
-[`obc-formats`](src:firmware/obc-formats) defines shared constants and byte primitives.
-Reader and writer crates own parsing, caching, and conversion policy.
+The files in [`specs/`](src:specs) are the normative contracts and define every byte. This page
+says what each format is for and why it has that shape.
+[`obc-formats`](src:firmware/obc-formats) holds the shared constants and byte primitives.
 
-## Format summary
+| Format | Use | Main consumer |
+| --- | --- | --- |
+| OBCM | Map, POIs, navigation, terrain, and article collections | Device |
+| OBCR | Route geometry, statistics, and waypoints | Device |
+| Ride object | Recorded samples and summary | Device and companion |
+| OBCT | Terrain height raster | Device and map tools |
+| OBCC | Map-builder catalog | Website and desktop app |
+| OBCA | Cell and assembly rules | Map tools |
 
-| Format | Current version | Use | Main consumer |
-| --- | ---: | --- | --- |
-| OBCM | 18 | Map, POIs, navigation, terrain, and separate article collections | Device |
-| OBCR | 4 | Route geometry, statistics, and waypoints | Device |
-| Ride object | 3 | Recorded samples and summary | Device and companion |
-| OBCT | 1 | Terrain height raster | Device and map tools |
-| OBCC | Schema 2 | Map-builder catalog | Website and desktop app |
-| OBCA | 1 | Cell and assembly rules | Map tools |
-
-All multi-byte values use little-endian order unless a specification says otherwise.
-Coordinates use signed integer microdegrees.
-Each format stores offsets and counts.
-Readers use checked arithmetic and reject unsupported versions.
+Values are little-endian and coordinates are signed microdegrees. A reader uses checked arithmetic
+and refuses an unsupported version at the header, not halfway through a frame.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -78,13 +73,8 @@ Readers use checked arithmetic and reject unsupported versions.
 
 ## OBCM — the map
 
-OBCM v18 is the only supported map version.
-One OBCM object contains all map data.
-Its global offsets are 32-bit values in scaled units.
-Current writers use 16-byte units.
-This gives the file a 64 GiB address space.
-
-### The file, front to back
+One OBCM object holds everything the device draws and routes on, so a rider installs one file.
+Offsets are stored in scaled units, so a 32-bit offset still reaches the end of a large map.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 940px">
@@ -148,27 +138,8 @@ This gives the file a 64 GiB address space.
 <figcaption>Each LOD repeats the same index-and-chunks structure. The ribbon shows file order, not relative region sizes.</figcaption>
 </figure>
 
-The 65-byte header addresses the global sections.
-The style table applies to all LODs.
-The LOD table orders detail levels from coarse to fine.
-Each LOD is independent.
-A renderer reads only the LOD for the current meters-per-pixel value.
-
-A LOD table entry is 18 bytes:
-
-| Field | Type | Meaning |
-| --- | --- | --- |
-| Maximum meters per pixel | `f32` | Upper display threshold for this LOD |
-| Index offset | `u32` | Scaled offset to the quadtree |
-| Node count | `u32` | Number of quadtree words |
-| Chunk size | `u16` | Maximum chunk content size |
-| Chunk count | `u32` | Number of geometry chunks |
-
-The chunk size is a capacity limit.
-It is not a stride.
-A table with `chunk_count + 1` scaled offsets addresses the unit-aligned chunks.
-
-### The header
+The map is a pyramid of pre-simplified levels of detail. Each level is independent and states the
+coarsest scale it serves, so the renderer opens one level and reads nothing else.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -297,53 +268,9 @@ A table with `chunk_count + 1` scaled offsets addresses the unit-aligned chunks.
 <figcaption>Field widths show their actual byte sizes. Small fields have leader labels. The second row continues directly after byte 24.</figcaption>
 </figure>
 
-The core header fields are:
-
-| Bytes | Field |
-| ---: | --- |
-| 0–3 | Magic `OBCM` |
-| 4 | Version `18` |
-| 5–20 | Latitude/longitude bounding box |
-| 21–24 | Style-table offset |
-| 25 | LOD count |
-| 26–29 | LOD-table offset |
-| 30–31 | Marker color in RGB565 |
-| 32–35 | POI-section offset |
-| 36–39 | Navigation-section offset |
-| 40 | Base-2 offset scale |
-| 41–44 | Optional terrain offset |
-| 45–48 | Optional terrain length |
-| 49–52 | Optional landmark offset |
-| 53–56 | Optional landmark length |
-| 57–60 | Optional peak article offset |
-| 61–64 | Optional peak article length |
-
-The POI and navigation sections are always present.
-An empty section has a valid nonzero offset.
-A zero terrain offset and length mean that the map has no terrain.
-A zero landmark offset and length mean that it has no landmark section.
-A zero peak offset and length mean that it has no peak article collection.
-
-Landmark records form a bounded latitude index. Each record holds its QID, category,
-display coordinate and an optional explicit OSM approach. A self-contained article bundle stores
-every usable text version in the supported UI languages: English, German, French and Spanish.
-Each version has its own source credits; all versions share one optional photo.
-
-The reader selects the device UI language, then English, then the default language stored by the
-baker. The baker prefers a known local language from captured administrative or country claims.
-If these facts do not resolve the choice, it uses the fixed supported-language order. Changing
-the device language selects another installed text version without a new map download.
-Text, source credits and independent compressed photos stay in the map object.
-The reader fetches these payloads only after selection. Each photo is a lossless
-216 × 240 RGB222 image with a 4 KiB DEFLATE history window. Decode steps write to
-the existing framebuffer; a bad photo leaves valid text and credits available.
-The exact bounds and corruption rules are in [OBCM §9](src:specs/OBCM_Spec.md).
-
-Each style record is 8 bytes.
-It contains the style identifier, z-index, RGB565 color, weight, flags, and optional secondary color.
-Flags contain priority, dashed, secondary-color, fixed-width, and terrain-layer bits.
-The packer assigns style identifiers from 1 through 254.
-Value `0xFF` ends the features in a chunk.
+The header addresses the global sections. An absent section has a zero offset and length, which is
+how a map without terrain, landmarks, or peak articles says so. The style table applies to every
+level. [OBCM](src:specs/OBCM_Spec.md) defines each field.
 
 ### The quadtree index
 
@@ -384,15 +311,8 @@ Value `0xFF` ends the features in a chunk.
 <figcaption>Branches point to four consecutive children. Readers derive child bounds from the parent bounds.</figcaption>
 </figure>
 
-The quadtree is a flat array of `u32` words:
-
-- A set high bit identifies a branch.
-- The low 31 bits give the first of four consecutive children.
-- `0x7FFF_FFFF` identifies an empty leaf.
-- Other values identify a geometry chunk.
-
-The child order is northwest, northeast, southwest, and southeast.
-The reader calculates child bounds with integer floor midpoints.
+Each level indexes its geometry with a quadtree of 32-bit words. A reader derives a child's bounds
+from its parent's, so no node stores a box and one comparison prunes a whole branch.
 
 ### Features: an anchor, then deltas
 
@@ -453,13 +373,8 @@ The reader calculates child bounds with integer floor midpoints.
 <figcaption>Anchor and delta encoding keeps common geometry records small.</figcaption>
 </figure>
 
-A feature stores an anchor relative to its leaf.
-Subsequent points use signed coordinate deltas.
-One flag selects 8-bit or 16-bit delta pairs.
-
-The reader validates the complete feature before it publishes geometry.
-An invalid or over-capacity feature is dropped as one unit.
-The reader does not return truncated polygons or lines.
+A feature stores one anchor relative to its leaf and then coordinate deltas, because map geometry
+is dense and local.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -537,10 +452,8 @@ The reader does not return truncated polygons or lines.
 <figcaption>The compact header is the common form. The wide form supports large anchors or point counts.</figcaption>
 </figure>
 
-A compact header uses an 8-bit point count and two 16-bit anchor components.
-A wide header uses a 16-bit point count and two 32-bit anchor components.
-Polygon holes follow the exterior ring.
-The even-odd fill rule uses all rings.
+A reader validates a whole feature before it publishes any geometry, and drops an invalid one as
+one unit. Half a coastline is worse than no coastline.
 
 ### POIs: services and named summits
 
@@ -629,20 +542,11 @@ The even-odd fill rule uses all rings.
 <figcaption>The two ruler rows show the 64-byte record at one scale. Source identity and an optional mapped approach follow the display fields.</figcaption>
 </figure>
 
-The map has one POI quadtree for each category.
-The category comes from the selected directory entry.
-It is not repeated in each record.
-
-A POI record is 64 bytes.
-Service records contain coordinates, subtype, a 24-byte printable-ASCII name, and `HoursRef`.
-Category 7 stores optional named summits for Peak View. Summit records use a UTF-8 name
-and a signed elevation in place of `HoursRef`. Subtype 19 identifies these records.
-Category 9 stores optional settlement names for the map overlay. Settlement records use a
-UTF-8 name and a population in hundreds of people in place of `HoursRef`. Subtypes 21 to 24
-identify these records and give the settlement class. The service POI browser does not read
-this category.
-See [OBCM section 7](src:specs/OBCM_Spec.md) for the shared layout and category rules.
-The same indexes support nearest-item and route-corridor queries.
+Each POI category has its own index, so a search for water reads no campsite records. A record
+carries its source identity and, where a source node lies on a routable way, a mapped approach.
+That approach is what lets the device plan a ride to a place instead of to a coordinate beside it.
+Separate categories hold named summits and settlement names. See
+[OBCM section 7](src:specs/OBCM_Spec.md).
 
 ### Opening hours: a pooled weekly schedule
 
@@ -727,11 +631,9 @@ The same indexes support nearest-item and route-corridor queries.
 <figcaption>The packer converts opening-hours text to fixed weekly schedules. The device does not parse the source grammar.</figcaption>
 </figure>
 
-Each schedule contains two intervals for each weekday.
-Times use 15-minute units.
-`HoursRef = 0xFFFF` means that no parsed schedule is available.
-Seasonal rules, unsupported rules, and rounded times set schedule flags.
-Flagged schedules produce Unknown status. Definite status also requires trusted UTC and an explicitly configured local offset.
+The packer converts the opening-hours grammar into fixed weekly schedules in a shared pool, so the
+device never parses text and identical hours cost one copy. A rounded time or a rule the packer
+cannot express sets a flag, and a flagged schedule reports Unknown.
 
 ### The navigation graph: a routable network
 
@@ -808,21 +710,9 @@ Flagged schedules produce Unknown status. Definite status also requires trusted 
 <figcaption>The directory addresses four regions. A junction record is 13 + 17 × degree bytes. Inline neighbor coordinates, cost, way kind, and ascent avoid another record read during relaxation.</figcaption>
 </figure>
 
-The navigation section uses 512-byte chunks.
-Its 40-byte directory addresses these regions:
-
-- Profile table
-- Node quadtree and junction chunks
-- Edge geometry pool
-- Sparse snap-anchor quadtree and chunks
-
-Each junction record includes its neighbor coordinates.
-The router can calculate its heuristic without another read.
-Each directional neighbor entry also stores way kind, cost, and integrated ascent.
-
-Edges longer than 300 m get sparse lookup anchors.
-The anchors make each accepted road discoverable within the 251 m lookup radius.
-The router then projects the endpoint onto the complete stored polyline.
+The routing network is baked into the map. A junction record repeats each neighbor's coordinate,
+cost, way kind, and ascent. That costs bytes and saves reads: relaxing a junction uses the chunk
+that is already open, and a search on this device is limited by storage reads.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -877,43 +767,21 @@ The router then projects the endpoint onto the complete stored polyline.
 <figcaption>The junction chunk supplies the data for each relaxation. Costs include distance, road-profile weight, and directional ascent; ε weights the goal-distance heuristic.</figcaption>
 </figure>
 
-The route search uses node records only.
-It reads edge geometry for exact endpoint projection and final route output.
-For routing behavior and limits, see [the router seam](../architecture/#on-device-routing-the-router-seam).
+The search uses junction records alone, and reads edge geometry only to project the endpoints and
+write the finished route. Long edges carry sparse lookup anchors, so a road stays discoverable far
+from its junctions. See [the router seam](../architecture/#on-device-routing-the-router-seam).
 
 ## OBCR — the route
 
-OBCR v4 stores an ordered route with measured statistics and optional waypoints.
-Older versions must be imported again. The shared emitter measures the retained
-geometry, so the header and interval facts use the same route.
+An OBCR route holds the ordered geometry, the measured statistics, the waypoints, and, for an
+accepted visit, the tie back to the original route. The statistics are measured from the geometry
+the file keeps, so the summary and the route agree.
 
-| Section | Purpose |
-| :-- | :-- |
-| Fixed header | Summary, section offsets, unresolved-avoidance state, optional exact map identity |
-| Geometry chunks | Coordinates, elevation or an explicit unknown value, incoming surface and coverage |
-| Chunk index | Bounded random access and cumulative anchors |
-| Waypoints | Names, categories, offsets, and optional original route provenance |
-| Accepted visit descriptor | Exact original route, original and accepted phase anchors, and mapped target identity |
-
-A valid zero elevation differs from missing data. Elevation gaps remain empty in
-profiles and pause ascent integration. A segment can be incomplete even when its
-endpoints have elevations, if graph integration found a missing terrain sample.
-Synthetic interior points then keep unknown elevation. The received-route card
-omits its compact elevation band if any segment is incomplete or unreadable.
-
-Surface facts from an imported GPX require conservative graph attribution.
-Ambiguous or off-network spans stay unknown. An unreadable candidate cannot prove
-a unique match; the import reports a read error. A comparison checks the exact
-attribution-map identity; historical facts from another revision are stale.
-
-The Rust interval API streams bounded chunk scratch. It clips measured distance,
-ascent, descent, and surface totals on one shared distance axis. Adjacent intervals
-conserve these integer totals. Grades use ordered endpoint heights.
-
-For byte offsets, validity rules, and the producer matrix, see the
+Missing elevation is an explicit unknown value, because zero meters is a valid height at the coast.
+An unknown point pauses ascent integration instead of adding a false climb. See the
 [OBCR specification](src:specs/OBCR_Spec.md).
 
-## Recorded rides — the v3 ride object
+## Recorded rides
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -981,19 +849,12 @@ For byte offsets, validity rules, and the producer matrix, see the
 <figcaption>Ride finalization does not rewrite sample data.</figcaption>
 </figure>
 
-Each 20-byte sample contains position, elevation, flags, time, heart rate, cadence, and power.
-A segment-start flag separates discontinuous track segments.
-Finalization appends a fixed summary footer.
-The device can recover a summary without scanning all samples.
-
-The byte contract is in [the BLE interface specification](src:specs/obc-ble-interface-spec.md).
-Shared vectors include [`ride-v3.bin`](src:specs/vectors/ride-v3.bin).
+A ride is a run of fixed-size samples with a summary footer appended at the end. Finalization does
+not rewrite the samples, so a long ride closes in constant time and an interrupted recording keeps
+everything written before the interruption. The byte contract is in
+[the BLE interface specification](src:specs/obc-ble-interface-spec.md).
 
 ## OBCT — the terrain raster
-
-OBCT v1 stores orthometric heights as signed 16-bit meters.
-Value `-32768` means `NODATA`.
-The sample posting and cell size are header values.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -1165,38 +1026,12 @@ The sample posting and cell size are header values.
 <figcaption>Native height bytes retain the same lattice and tile order. Indexed OBCT v3 adds a height pyramid and conservative bounds; ordinary elevation sampling still reads native tiles.</figcaption>
 </figure>
 
-A tile contains 16 × 16 samples and is exactly 512 bytes.
-Native tiles and the cell directory use row-major order. Indexed cell blocks also contain
-coarse height levels and bounds for Peak View.
-Rows increase latitude.
-The first sample is at the minimum corner.
+OBCT stores heights as signed meters on a fixed lattice, in small tiles, with a directory of cells.
+A tile is the unit of reading, so sampling one position touches a small part of the file. An
+assembled map carries one OBCT container, and the map reader hands that region to the terrain
+reader as a byte window. See [terrain and elevation](../terrain/).
 
-The 32-byte header defines the lattice and a rectangular cell directory.
-Each nonzero directory entry addresses one cell block.
-The device applies bilinear interpolation.
-If one required corner is `NODATA`, the sample result is unavailable.
-
-Published terrain cells use the `.obcd` extension.
-An assembled OBCM map contains one OBCT container in its terrain region.
-The map reader gives that region to the OBCT reader as a byte-source window.
-
-## Streaming: resident vs on-demand
-
-All device readers use [`ByteSource`](src:firmware/obc-formats/src/io.rs):
-
-```rust
-pub trait ByteSource {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error>;
-    fn len(&self) -> u64;
-}
-```
-
-The device implementation reads a flat-store object.
-The simulator and browser demo import OBCM into the same flat store, then read the committed map object.
-Their media differ: a temporary sparse file on the simulator and sparse memory pages in the browser.
-The browser also imports routes into its session card. Simulator routes and other host objects
-use their existing file or memory repositories.
-The `u64` offset supports large OBCM objects.
+## Streaming: resident against on-demand
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -1239,44 +1074,27 @@ The `u64` offset supports large OBCM objects.
 <figcaption>Large map, route, and terrain objects do not have to fit in RAM.</figcaption>
 </figure>
 
-OBCM keeps its header, styles, and LOD table in memory.
-It streams quadtree blocks and geometry chunks.
-OBCR keeps its small flat index in memory and streams geometry.
-OBCT keeps its header in memory and uses a four-tile cache.
+Every reader takes bytes through [`ByteSource`](src:firmware/obc-formats/src/io.rs) and keeps only
+its small tables in memory: the map header, styles, and level table; the route index; the terrain
+header and a few tiles. Indexes and geometry stream as the frame needs them. That is what lets a
+map larger than the device's RAM be drawn at all.
 
 ## The catalog — the map builder's source of truth
 
-OBCC schema 2 is the map-builder catalog.
-The device does not read it.
-The root document publishes:
+OBCC is the map-builder catalog, and the device never reads it. Its root publishes the map schema,
+the skins, the region selections, the cell index for each band, the terrain metadata, and the
+license information. It pins every object by length and digest: a map is assembled from files
+fetched over a network, so the catalog, not the transport, decides what the right bytes are.
 
-- One map schema
-- Presentation-only skins
-- Named region selections
-- One cell index for each band
-- Optional terrain metadata and index
-- Source and license information
-
-The root pins referenced objects by byte length and SHA-256.
-Published object keys also contain the digest.
-A consumer verifies each object before use.
-
-The schema controls geometry, LODs, style identifiers, routing, and chunk size.
-A skin controls colors, weights, line style, z-index, priority, and marker color.
-A skin change does not require a cell rebake.
-A schema or OBCM-version change does require a consistent cell-store rebake.
-
-Terrain cells have a separate revision.
-The catalog also states which terrain revision supplied navigation ascent values.
-See [`OBCC_Spec.md`](src:specs/OBCC_Spec.md).
+The split between schema and skin is why a map can be restyled cheaply. The schema controls
+geometry, levels, style identifiers, routing, and chunk size, and changing it needs a rebake. A
+skin controls only colors, weights, line style, paint order, and priority, and changing it does
+not. See [`OBCC_Spec.md`](src:specs/OBCC_Spec.md).
 
 ## Cells and assemblies
 
-OBCA defines the global cell grid and the assembly rules.
-Cells are power-of-two microdegree squares on one global origin.
-Each schema band assigns a cell size and a subset of map content.
-
-### The alignment trick
+OBCA defines a global grid of power-of-two cells and the rules for joining them. A region is baked
+once as cells, and every map a rider selects is assembled from those cells.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -1342,45 +1160,16 @@ Each schema band assigns a cell size and a subset of map content.
 <figcaption>Exact grid alignment preserves leaf-relative feature anchors. The assembler copies geometry bytes without decoding them.</figcaption>
 </figure>
 
-Exact alignment lets the assembler copy geometry chunks without decoding them.
-The assembler rebuilds the header, tables, POIs, opening-hours pool, and navigation graph.
-It also inserts the selected OBCT terrain container.
-Routing seam nodes merge only when their coordinates are equal.
+The cell grid and the map quadtree share one global origin, so a leaf of the assembled map is a
+leaf of a cell. Feature anchors are relative to their leaf and stay correct, and the assembler
+copies geometry chunks without decoding them. It rebuilds only the global parts: the header, the
+tables, the POIs, the hours pool, the navigation graph, and the terrain container. Routing nodes on
+a seam merge when their coordinates are equal.
 
-The assembler reads optional landmarks from core cells and keeps one record per Wikidata identity.
-For duplicates, it prefers a mapped approach, then the lowest OSM identity, then the content hash.
-It shares identical content bytes and remaps landmark schedules into the same pool as service schedules.
-The output never retains a schedule index from an input cell.
-Text, photos, and source credits stream from the cells in bounded reads; the assembler does not hold all photos in memory.
-The optional landmark region follows navigation. A separate peak article region follows landmarks
-and precedes terrain. Peak content is selected by the full OSM identity of each included summit.
-Several summits can share one article, including a summit more than 10 km from the rider.
-Clipping and assembly retain that article whenever a linked summit remains. Article coordinates,
-names and routable approaches do not select or join peak content. The reader checks the active map
-generation and the article identity before it exposes content. Each payload also identifies its
-article and content type, so a damaged reference cannot open another article. Landmark queries
-never search the peak collection. The exact layout is in [OBCM §10](src:specs/OBCM_Spec.md).
-
-### Schema and skin
-
-All cells in one assembly use the same schema revision and OBCM version.
-The assembler replaces cell presentation records with the selected skin.
-It does not change geometry.
-
-### One map, one file
-
-OBCM v18 uses scaled offsets, stores terrain in the map, preserves place identities and mapped approaches, and stores separate optional landmark and peak article collections.
-The assembler produces one OBCM object.
-It does not produce map shards or a set manifest.
-
-### Browser assembly
-
-[`obcm-assemble`](src:host/obcm-assemble) is the shared native assembly engine.
-[`obc-web-assemble`](src:apps/obc-web-assemble) is its WebAssembly interface.
-The browser can stream cells, scratch data, and output through origin-private storage.
-The assembler verifies the completed file through the production readers.
-
-See [`OBCA_Spec.md`](src:specs/OBCA_Spec.md) for the grid, seam, and verification rules.
+All cells in one assembly share the schema revision and the map version, and the assembler replaces
+their presentation records with the selected skin. The output is one file. The browser runs the
+same engine as the command line, through [`obc-web-assemble`](src:apps/obc-web-assemble), and
+verifies the result with the production readers. See [`OBCA_Spec.md`](src:specs/OBCA_Spec.md).
 
 ## Source index
 
@@ -1391,4 +1180,3 @@ See [`OBCA_Spec.md`](src:specs/OBCA_Spec.md) for the grid, seam, and verificatio
 - OBCM packer: [`obc-pack`](src:host/obc-pack)
 - Terrain baker: [`obc-dem`](src:host/obc-dem)
 - Map assembler: [`obcm-assemble`](src:host/obcm-assemble)
-- Catalog and assembly specifications: [`OBCC_Spec.md`](src:specs/OBCC_Spec.md) and [`OBCA_Spec.md`](src:specs/OBCA_Spec.md)

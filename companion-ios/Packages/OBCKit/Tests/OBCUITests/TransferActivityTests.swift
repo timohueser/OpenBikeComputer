@@ -5,11 +5,9 @@ import OBCMock
 import OBCTransport
 @testable import OBCUI
 
-/// #459 — the in-flight transfer ledger, and the two writers that feed it:
-/// `UploadSheetModel` (claims while an upload is moving) and
-/// `RideSyncCoordinator` (claims while a batch is `.syncing`). The ledger is
-/// what the background drain waits on, so the claim/release discipline IS the
-/// "in-flight transfers are never dropped" guarantee.
+/// The in-flight transfer ledger and its two writers: `UploadSheetModel` claims while an upload
+/// moves, `RideSyncCoordinator` claims while a batch syncs. The background drain waits on the
+/// ledger, so the claim and release discipline is the "no dropped transfer" guarantee.
 @MainActor
 struct TransferActivityTests {
 
@@ -107,21 +105,15 @@ struct TransferActivityTests {
         model.start()
         #expect(activity.isActive)
 
-        // The scenario drops the link mid-transfer: stalled-resumable is NOT
-        // in flight — the background drain must not wait on a transfer whose
-        // link is already gone.
+        // Stalled-resumable is not in flight: the drain must not wait on a transfer whose link
+        // is already gone.
         try await waitFor("interrupted") { model.phase == .interrupted }
         #expect(!activity.isActive)
     }
 
-    /// The tick and link-state watchers drain two independent streams, so under
-    /// scheduler load a pre-drop progress tick can be *delivered* after the drop
-    /// event (this suite's full-parallel flake: backlogged watchers, and the
-    /// state subscription replays `.outOfRange`). The parked sheet must
-    /// **discard** a stale tick outright — it must not read as "moving again"
-    /// (flipping back to `.uploading` and re-claiming the ledger for a transfer
-    /// whose link is already gone, permanently, since the parked transfer emits
-    /// nothing further), and it must not move the parked bar either.
+    /// The tick and link-state watchers drain two independent streams, so a pre-drop progress
+    /// tick can arrive after the drop event. The parked sheet must discard a stale tick: it must
+    /// not move the parked bar, flip back to `.uploading`, or re-claim the ledger.
     @Test func staleTickDeliveredAfterTheDropDoesNotReclaim() async throws {
         let activity = TransferActivity()
         let transport = HandDrivenUploadTransport()
@@ -142,20 +134,17 @@ struct TransferActivityTests {
         model.start()
         #expect(activity.isActive)
 
-        // A live tick moves the bar (and proves the tick watcher is consuming).
+        // A live tick moves the bar and proves the tick watcher is consuming.
         transport.progress.yield(TransferProgress(bytesDone: 10_000, total: 100_000))
         try await waitFor("first tick") { model.progress.bytesDone == 10_000 }
 
-        // The link drops — the sheet parks and releases its claim.
         transport.states.send(.outOfRange)
         try await waitFor("interrupted") { model.phase == .interrupted }
         #expect(!activity.isActive)
 
-        // A tick that was in flight before the drop lands late. Sequencing it
-        // after `.interrupted` reproduces deterministically what full-suite
-        // parallel load produces by starving the MainActor. Discarded ticks
-        // leave nothing to wait on, so settle, then assert nothing moved —
-        // slow delivery only makes the negative asserts vacuously true.
+        // A tick in flight before the drop lands late. Sequencing it after `.interrupted` makes
+        // the race deterministic. A discarded tick leaves nothing to wait on, so settle first,
+        // then assert that nothing moved.
         transport.progress.yield(TransferProgress(bytesDone: 20_000, total: 100_000))
         let stayedParked = await neverHolds({
             model.progress.bytesDone != 10_000 || model.phase != .interrupted
@@ -166,8 +155,8 @@ struct TransferActivityTests {
         #expect(model.phase == .interrupted, "…or resurrect .uploading")
         #expect(!activity.isActive, "…or re-claim the ledger")
 
-        // Resume unparks the sheet: ticks apply again (the ordered stream has
-        // drained the stale one by the time this lands) and the claim re-opens.
+        // Resume unparks the sheet: ticks apply again (the ordered stream has drained the stale
+        // one by now) and the claim re-opens.
         model.resume()
         #expect(activity.isActive, "resume re-claims the ledger")
         transport.progress.yield(TransferProgress(bytesDone: 30_000, total: 100_000))
@@ -196,8 +185,7 @@ struct TransferActivityTests {
         let coordinator = RideSyncCoordinator(
             transport: MockTransport(control: control),
             library: InMemoryLibraryStore(),
-            // Sticky holds (the RideSyncCoordinatorTests convention): the
-            // ledger must release on the `.done` transition, not a timer race.
+            // Sticky holds: the ledger must release on the `.done` transition, not win a timer race.
             timing: RideSyncCoordinator.Timing(
                 syncDoneHold: .seconds(300), syncedLineHold: .seconds(300)),
             activity: activity
@@ -213,17 +201,16 @@ struct TransferActivityTests {
     }
 }
 
-/// A main-actor flag a free-running waiter task can raise (a captured local
-/// `var` can't cross into a `Task` under Swift 6).
+/// A main-actor flag a free-running waiter task can raise; a captured local `var` cannot cross
+/// into a `Task` under Swift 6.
 @MainActor
 private final class Flag {
     var value = false
 }
 
-/// A transport whose progress ticks and link states the test delivers by hand,
-/// so the tick↔drop ordering is sequenced deterministically — the timing-driven
-/// `MockTransport` only produces the stale-tick-after-drop order under
-/// scheduler load. Only `state` + `uploadRoute` are exercised; the rest is inert.
+/// A transport whose progress ticks and link states the test delivers by hand, so the tick and
+/// drop order is deterministic; `MockTransport` produces that order only under scheduler load.
+/// Only `state` and `uploadRoute` are live.
 private final class HandDrivenUploadTransport: DeviceLink, DeviceObjects, @unchecked Sendable {
     let states = AsyncMulticast<ConnectionState>(.connected)
     let progress: AsyncStream<TransferProgress>.Continuation

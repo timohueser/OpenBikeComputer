@@ -1,51 +1,31 @@
-//! `cut.rs` — the **cell cutter**: one ingested extract in, the cell artifacts of every band it
-//! touches out ([`OBCA_Spec.md`](../../../specs/OBCA_Spec.md) §3).
+//! The cell cutter: one ingested extract in, the cell artifacts of every band it touches out
+//! (`OBCA_Spec.md`).
 //!
-//! A cell artifact is an ordinary OBCM file that a device could open on its own; what makes it a
-//! *cell* is a set of constraints, and every one of them is here:
+//! A cell artifact is an ordinary OBCM file a device could open on its own. What makes it a cell is
+//! a set of constraints, and every one of them is here. The header bbox is the grid square and not
+//! the content, because the alignment theorem needs the box to be the cell. The complete ladder is
+//! written with out-of-band levels empty, so band membership never appears in the bytes. Geometry is
+//! clipped at the exact cell edge and the per-LOD sub-pixel cull runs on the clipped geometry, so a
+//! polygon may survive in one cell and be culled in its neighbour. The nav graph is cut with
+//! deterministic boundary junctions on the edge line (see [`prepare_nav`]), island pruning touches
+//! only strictly interior components, and an under-covered cell is marked `partial`.
 //!
-//! - **The header bbox is the grid square, not the content** (§3.1). This is the one place the
-//!   packer's usual "the bbox is what the content covers" rule is deliberately inverted, because the
-//!   alignment theorem (§2) needs the box to *be* the cell.
-//! - **The complete ladder is written, with out-of-band levels empty** (§3.1), so band membership
-//!   never appears in the bytes. A `network` cell carries no geometry at all and a `fine` cell no
-//!   nav graph, but both list every level on the ladder.
-//! - **Geometry is clipped at the exact cell edge** (§3.3), and the per-LOD sub-pixel cull runs on
-//!   the *clipped* geometry, so a polygon may survive in one cell and be culled in its neighbour.
-//! - **The nav graph is cut with deterministic boundary junctions on the edge line** (§3.4), which
-//!   is the whole reason routing works across a seam. See [`prepare_nav`].
-//! - **Island pruning only touches strictly interior components** (§3.5). The real pruning pass is
-//!   the assembler's.
-//! - **Provenance is recorded and under-covered cells are marked `partial`** (§3.7).
+//! Two orderings are load-bearing, and both exist to make seams meet exactly rather than nearly.
 //!
-//! # Why this reads the way it does
+//! Simplify before clipping, always. A clip puts vertices exactly on the edge line, and both
+//! neighbours clip the same simplified segment against the same line, so their pieces meet to the
+//! microdegree. Simplifying afterwards would let each neighbour move or drop its own copy of a seam
+//! vertex, and no tolerance could fix the crack.
 //!
-//! Two orderings in here are load-bearing rather than incidental, and both exist to make seams meet
-//! *exactly* rather than nearly:
+//! Merge fills and lines once, over the whole extract, before cutting. The union of a cluster of
+//! parcels must be the same geometry in both neighbours or their clips would not meet, and GEOS
+//! overlay is only guaranteed to agree when handed identical inputs. The tier-wide coverage simplify
+//! ([`crate::coverage`]) slots in at the same place for the same reason, and because it has already
+//! simplified globally, the per-cell simplify leaves what it produced alone.
 //!
-//! 1. **Simplify before clipping, always.** A clip puts vertices exactly on the edge line, and both
-//!    neighbours clip the *same* simplified segment against the *same* line, so their pieces meet to
-//!    the microdegree. Simplifying afterwards would let each neighbour move or drop its own copy of
-//!    a seam vertex — a visible crack that no amount of tolerance could fix. The cost is that a
-//!    feature straddling `k` cells is simplified `k` times; since cells partition space, the total
-//!    is about one pass over the extract either way.
-//! 2. **Merge fills/lines once, over the whole extract, before cutting.** The union of a cluster of
-//!    parcels must be the same geometry in both neighbours or their clips would not meet, and GEOS
-//!    overlay is only guaranteed to agree when handed identical inputs. OBCA §2.4 anticipates the
-//!    *pessimistic* case (per-cell unions, so an assembly carries slightly more features than a
-//!    single-shot bake); cutting a globally merged set is strictly better than that and never worse.
-//!
-//!    The tier-wide **coverage simplify** ([`crate::coverage`]) slots in at exactly the same place
-//!    and for exactly the same reason: it is an arrangement over the whole extract, so every cell
-//!    clips the identical glued geometry. It is also the one pass that simplifies, which is why a
-//!    feature it produced is marked and the per-cell simplify below leaves it alone — point 1's
-//!    rule ("simplify before clipping") is satisfied by the coverage pass having already done it,
-//!    globally, which is even stronger.
-//!
-//! The one thing that is *not* streamed is per-band: geometry work is organised band → LOD → cell so
-//! that a level's merged feature set is built once and every cell of the band reads it, and only that
-//! band's levels are resident. Cells within a band are cut in parallel; nothing in a cell's bytes
-//! depends on which thread produced it.
+//! Work is organised band, then LOD, then cell, so a level's merged feature set is built once and
+//! every cell of the band reads it, and only that band's levels are resident. Cells within a band
+//! are cut in parallel; nothing in a cell's bytes depends on which thread produced it.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -80,25 +60,24 @@ pub const MANIFEST_NAME: &str = "cells.json";
 
 /// How many refinement passes the boundary-vertex insertion makes before it gives up.
 ///
-/// One pass inserts every crossing of the *original* segment. A second is needed only because a
+/// One pass inserts every crossing of the original segment. A second is needed only because a
 /// crossing coordinate is rounded to the µdeg grid, which can move it across another line by at most
-/// half a microdegree (~5 cm); a third has never been observed. The cap exists so a pathological
-/// input cannot spin, and [`prepare_nav`] counts the (expected zero) non-convergences.
+/// half a microdegree. The cap exists so a pathological input cannot spin, and [`prepare_nav`] counts
+/// the non-convergences.
 const MAX_CUT_REFINE: usize = 4;
 
-/// One source extract a cell was baked from (OBCA §3.7).
+/// One source extract a cell was baked from.
 ///
 /// `coverage` is the extract's own coverage box, and the honest answer to "is this cell canonical?".
-/// Without it a cell cannot be shown to be fully covered, so it is marked `partial` — deliberately
-/// conservative: presenting an under-covered border cell as canonical coverage is exactly the failure
-/// D3 exists to prevent.
+/// Without it a cell cannot be shown to be fully covered, so it is marked `partial`: presenting an
+/// under-covered border cell as canonical coverage is the failure this prevents.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceExtent {
     /// Extract identifier, e.g. `europe/switzerland`.
     pub id: String,
     /// The extract's snapshot date, as the bakery knows it (e.g. `2026-07-01`).
     pub snapshot: Option<String>,
-    /// The ground this extract covers, µdeg, in [`UBox`] order. `None` ⇒ unknown ⇒ nothing is
+    /// The ground this extract covers, µdeg, in [`UBox`] order. `None` means unknown, so nothing is
     /// canonical.
     pub coverage: Option<UBox>,
 }
@@ -130,15 +109,15 @@ impl SourceExtent {
 /// Everything a cut run can be told to do differently.
 #[derive(Clone, Debug)]
 pub struct CutOptions {
-    /// The schema's band table (OBCA §1.2). Cell sizes are **schema data**, never format constants.
+    /// The schema's band table. Cell sizes are schema data, never format constants.
     pub bands: BandTable,
-    /// Cut exactly these cells rather than everything the extract touches. A cell id names a *size*,
-    /// and two bands may share one (`fine` and `network` are both `2^18` in the recommended table), so a
-    /// selection is cut for every band of that size unless [`CutOptions::only_bands`] narrows it.
+    /// Cut exactly these cells rather than everything the extract touches. A cell id names a size,
+    /// and two bands may share one, so a selection is cut for every band of that size unless
+    /// [`CutOptions::only_bands`] narrows it.
     pub select: Vec<CellId>,
     /// Restrict the run to these band ids. Empty ⇒ every band in the table.
     pub only_bands: Vec<String>,
-    /// The sources this run is baking from (OBCA §3.7).
+    /// The sources this run is baking from.
     pub sources: Vec<SourceExtent>,
     /// Override the config's `chunk_size`.
     pub chunk_size: Option<usize>,
@@ -146,22 +125,20 @@ pub struct CutOptions {
     pub no_land: bool,
     /// Crop the sources to this box during ingest.
     pub bbox: Option<Bbox>,
-    /// Baked OBCT terrain (a `.obcd` container or a directory of them) to integrate the OBCM §8.3
-    /// per-direction `Ascent M` from. Absent ⇒ every adjacency entry gets `0`.
+    /// Baked OBCT terrain (a `.obcd` container or a directory of them) to integrate the
+    /// per-direction `Ascent M` from. Absent means every adjacency entry gets `0`.
     ///
-    /// **Seam-safe by construction.** The cutter slices edges exactly on cell-edge lines and the
-    /// ascent of a piece is integrated from the *global* OBCT lattice, never from anything cell-local
-    /// — so the stub the western neighbour bakes and the stub the eastern one bakes are each the
-    /// integral of their own geometry over one shared surface, and re-cutting a cell alone
-    /// reproduces the identical bytes.
+    /// Seam-safe by construction: the cutter slices edges exactly on cell-edge lines and a piece's
+    /// ascent is integrated from the global OBCT lattice, never from anything cell-local, so
+    /// re-cutting one cell alone reproduces the identical bytes.
     pub terrain: Option<PathBuf>,
     pub landmarks: Option<PathBuf>,
     pub peaks: Vec<PathBuf>,
     /// Logical source extent used for land generation and the cut manifest.
     ///
-    /// Ordinarily the ingest derives this from the retained features. Planet
-    /// leaves state it explicitly: a featureless ocean shard still owns cells,
-    /// and a quiet corner of a leaf still needs the global land layer considered.
+    /// Ordinarily the ingest derives this from the retained features. Planet leaves state it
+    /// explicitly: a featureless ocean shard still owns cells, and a quiet corner of a leaf still
+    /// needs the global land layer considered.
     pub source_extent: Option<UBox>,
 }
 
@@ -192,15 +169,15 @@ pub struct CellArtifact {
     pub path: String,
     pub bytes: u64,
     pub sha256: String,
-    /// The sources do not demonstrably cover the whole square (OBCA §3.7).
+    /// The sources do not demonstrably cover the whole square.
     pub partial: bool,
     /// Features that exceeded `chunk_size` and were dropped — never expected, never silent.
     pub dropped: usize,
     pub pois: usize,
     pub nav_nodes: usize,
     pub nav_edges: usize,
-    /// The serialized band carries no geometry, POIs, or navigation content.
-    ///
+    /// The serialized band carries no geometry, POIs, or navigation content. `dropped > 0` always
+    /// makes this false: losing oversized source content is not proof that the cell is empty.
     /// `dropped > 0` always makes this false: losing oversized source content is
     /// not proof that the canonical cell is semantically empty.
     pub empty: bool,
@@ -213,7 +190,7 @@ pub struct CutSummary {
     pub cells: Vec<CellArtifact>,
     pub bytes: u64,
     pub dropped: usize,
-    /// Cells marked `partial` (OBCA §3.7).
+    /// Cells marked `partial`.
     pub partial: usize,
 }
 
@@ -230,7 +207,7 @@ pub fn cut(
         Err(e) => {
             if progress.is_cancelled() {
                 // The manifest is written last, so a cancelled run leaves no document claiming the
-                // half-written tree is a catalog — the same atomicity trick §5.4 uses for a set.
+                // half-written tree is a catalog.
                 let _ = std::fs::remove_file(out_dir.join(MANIFEST_NAME));
                 return Err(PackError::Cancelled);
             }
@@ -246,7 +223,7 @@ fn run(
     opts: &CutOptions,
     progress: &Progress,
 ) -> Result<CutSummary, String> {
-    // The ways, not a graph: the cutter builds one graph per cell (OBCA §3.4).
+    // The ways, not a graph: the cutter builds one graph per cell (OBCA).
     let (mut ingested, ways) = crate::ingest::ingest_osm_ways(pbfs, config, opts.bbox, progress)?;
     if ingested.features.is_empty() && ingested.coastlines.is_empty() && opts.source_extent.is_none() {
         return Err("no features found matching config".into());
@@ -256,10 +233,10 @@ fn run(
     let extract = opts.source_extent.unwrap_or_else(|| crate::pipeline::compute_bbox(&ingested));
     crate::pipeline::add_land(&mut ingested, config, extract, opts.no_land, progress)?;
     progress.check()?;
-    // Contours are generated **once** over the whole extract and then cut like any other feature,
-    // for the same reason land is: a cell's geometry must not depend on which cell asked for it.
-    // This opens the terrain set a second time (the cutter opens its own for the §8.3 ascent pass)
-    // — a header read and a directory validation per container, and only when contours are on.
+    // Contours are generated once over the whole extract and then cut like any other feature, for
+    // the same reason land is: a cell's geometry must not depend on which cell asked for it. This
+    // opens the terrain set a second time, which costs a header read and a directory validation per
+    // container, and only when contours are on.
     let contour_terrain = match (&opts.terrain, config.contours.enabled) {
         (Some(path), true) => Some(TerrainSet::open(path)?),
         _ => None,
@@ -271,12 +248,11 @@ fn run(
 
 /// Cut an already-ingested extract — the entry point tests and the bakery both drive.
 ///
-/// `ways` are the routable ways of the **source snapshot** (from [`crate::ingest::ingest_osm_ways`]);
-/// they are what junction-ness is classified from, so handing in a subset would quietly change the
-/// graph a cell writes.
+/// `ways` are the routable ways of the source snapshot; they are what junction-ness is classified
+/// from, so handing in a subset would quietly change the graph a cell writes.
 ///
 /// Writes `<out_dir>/cells/<band>/<i>/<j>.obcm` plus the provenance sidecar
-/// `<out_dir>/`[`MANIFEST_NAME`] — **last**, so an interrupted run publishes nothing.
+/// `<out_dir>/`[`MANIFEST_NAME`], written last, so an interrupted run publishes nothing.
 pub fn cut_ingested(
     ing: &Ingested,
     ways: &[RoutableWay],
@@ -325,10 +301,9 @@ pub fn cut_ingested(
     };
     let styles = config.styles();
     let semantic_scheme = config.semantic_scheme();
-    // Build the exact same finer-to-coarser semantic ladder as the monolithic packer before it is
-    // clipped into canonical cells. Fine-only and network-only production jobs skip this relatively
-    // expensive bake-time pass altogether; neither selected band can consume its output. The device
-    // still receives ordinary OBCM polygons.
+    // Build the same finer-to-coarser semantic ladder as the monolithic packer before it is clipped
+    // into canonical cells. Fine-only and network-only jobs skip this expensive pass, since neither
+    // selected band can consume its output.
     let needs_semantic = opts
         .bands
         .bands
@@ -356,10 +331,9 @@ pub fn cut_ingested(
             format!("Cutting band {} (2^{} µdeg): {} cell(s)...", band.id, band.cell_log2, cells.len()),
         );
 
-        // Per-band preparation, done once and read by every cell of the band.
-        // One memo per band for custom schemas that still use coverage simplification. It dies with
-        // the band rather than sitting in memory through unrelated cells, and is cleared at the
-        // first tier that does not use that pass. Semantic tiers use the separately prebuilt ladder.
+        // Per-band preparation, done once and read by every cell of the band. The memo dies with the
+        // band rather than sitting in memory through unrelated cells, and is cleared at the first
+        // tier that does not use the coverage pass.
         let predissolved = PredissolveCache::new();
         let lod_sets: Vec<LodSet<'_>> = band
             .lods
@@ -402,8 +376,8 @@ pub fn cut_ingested(
                     lod_sets.iter().map(|set| (set.lod, set.cell_tree(*cell, chunk_size, progress))).collect();
                 // One sampler per cell: it opens only the OBCT containers this square touches, and
                 // an `ElevationSource` is `&mut` by design (it caches tiles), so it cannot be shared
-                // across the rayon workers. A cell outside the supplied terrain gets an empty
-                // sampler, which answers `None` everywhere exactly like `NullElevation`.
+                // across rayon workers. A cell outside the supplied terrain gets an empty sampler,
+                // which answers `None` everywhere.
                 let mut sampler = match &terrain_set {
                     None => None,
                     Some(set) => Some(set.sampler_for(Some(cell.square()))?),
@@ -468,7 +442,7 @@ pub fn cut_ingested(
 }
 
 /// The cells of one band this run must emit: the explicit selection filtered to the band's size, or
-/// every cell of the band whose square intersects the extract (OBCA §1.2's coverage rule).
+/// every cell of the band whose square intersects the extract.
 fn select_cells(band: &Band, extract: UBox, select: &[CellId]) -> Vec<CellId> {
     let mut cells: Vec<CellId> = if select.is_empty() {
         cells_intersecting(band.cell_log2, extract)
@@ -480,12 +454,9 @@ fn select_cells(band: &Band, extract: UBox, select: &[CellId]) -> Vec<CellId> {
     cells
 }
 
-// --- geometry ---------------------------------------------------------------------------------
-
 /// One ladder level, prepared once per band: the merged features that reach it, their bounds, and a
 /// bucket index from cell to candidate features.
 struct LodSet<'a> {
-    /// Ladder index.
     lod: usize,
     feats: Vec<(u8, Cow<'a, Geom>)>,
     /// Parallel to `feats`: the coverage pass already cut this feature to `tol`, so
@@ -513,11 +484,10 @@ struct PreparedSemantic<'a, 's> {
 /// Build a level's feature set exactly as [`crate::pipeline`] does — `min_lod` filter, then the
 /// optional fill-dissolve, line-stitch and coverage passes — and index it by cell.
 ///
-/// All of them run here, over the whole extract, and not per cell: see the module docs. The
-/// ordinary per-feature simplify does **not** run here, because it must run on the geometry a
-/// *cell* clips. The coverage pass is the exception that proves the rule: it simplifies as part
-/// of building one global arrangement, which is *stronger* than per-cell simplify (every cell
-/// clips the identical glued geometry), so what it produced is marked in `presimplified` and
+/// All of them run here, over the whole extract, and not per cell; see the module docs. The ordinary
+/// per-feature simplify does not, because it must run on the geometry a cell clips. The coverage
+/// pass is the exception that proves the rule: it simplifies while building one global arrangement,
+/// which is stronger than per-cell simplify, so what it produced is marked in `presimplified` and
 /// [`LodSet::cell_tree`] leaves it alone.
 fn prepare_lod<'a>(
     ing: &'a Ingested,
@@ -556,8 +526,6 @@ fn prepare_lod<'a>(
     let tol = if l.simplify_m > 0.0 { l.simplify_m / M_PER_DEG } else { 0.0 };
     let line_tol = if l.line_simplify_m > 0.0 { l.line_simplify_m / M_PER_DEG } else { 0.0 };
     // `merge_fills` is skipped on a coverage tier: the coverage pass dissolves the same
-    // candidate set itself, per class, as part of building the arrangement (see
-    // [`crate::coverage`] and the pipeline's copy of this rule).
     let want_merge_fills = config.merge_fills && !l.coverage_simplify && !l.semantic_coverage;
     let mut presimplified = vec![false; feats.len()];
     if want_merge_fills || config.merge_lines || l.coverage_simplify {
@@ -580,8 +548,8 @@ fn prepare_lod<'a>(
         }
         if l.coverage_simplify {
             // The elimination threshold is the tier's own cull pair, resolved exactly as `cull_mpp`
-            // below resolves it — on a coverage tier `min_area_px` absorbs a small face into its
-            // neighbour instead of deleting it (see [`crate::coverage`]).
+            // below resolves it: on a coverage tier `min_area_px` absorbs a small face into its
+            // neighbour instead of deleting it.
             let eliminate = Eliminate::new(config.lods.get(lod + 1).and_then(|n| n.max_mpp), l.min_area_px);
             let (covered, c) =
                 coverage_simplify_fills_with(owned, &merge_classes(&styles), tol, eliminate, predissolved, progress);
@@ -615,9 +583,9 @@ fn prepare_lod<'a>(
         }
     }
 
-    // Keep the full land base through merge/coverage construction, then omit it at the same final
-    // boundary as the monolithic packer. The cell's renderer clear is land now; indexing and
-    // clipping these faces would only recreate thousands of redundant per-cell vertices.
+    // Keep the full land base through merge and coverage construction, then omit it at the same
+    // final boundary as the monolithic packer. The cell's renderer clear is land now, so indexing
+    // and clipping these faces would only recreate thousands of redundant per-cell vertices.
     if let Some(land_id) = config.implicit_land_style_id() {
         let filtered = feats.into_iter().zip(presimplified).filter(|((style_id, _), _)| *style_id != land_id);
         (feats, presimplified) = filtered.unzip();
@@ -642,8 +610,8 @@ fn bounds_to_udeg(b: Bounds) -> UBox {
 }
 
 impl LodSet<'_> {
-    /// This level's quadtree for one cell: simplify → clip at the exact cell edge → cull the
-    /// **clipped** geometry (OBCA §3.3) → build the tree over the cell square.
+    /// This level's quadtree for one cell: simplify, clip at the exact cell edge, cull the clipped
+    /// geometry, then build the tree over the cell square.
     fn cell_tree(&self, cell: CellId, chunk_size: usize, progress: &Progress) -> Node {
         debug_assert_eq!(cell.log2, self.cell_log2);
         let square = cell.square();
@@ -682,13 +650,11 @@ impl LodSet<'_> {
 /// Append `geom`'s simple parts to `out`, dropping the ones the sub-pixel footprint cull rejects and
 /// trimming sub-pixel holes from the survivors — the pipeline's cull, applied to clipped geometry.
 ///
-/// `from_coverage` skips the footprint cull entirely, and that is deliberate down to the worst
-/// case: a coverage polygon clipped by a cell edge can come out as a hairline strip along the seam,
-/// far under `min_area_px`, and dropping it would open exactly the kind of backdrop sliver the pass
-/// exists to close — visible as a hole *at the cell boundary*, where a neighbouring cell still
-/// paints its half. The pass has already applied this tier's threshold globally (as elimination
-/// rather than a drop, including culling the faces it could not eliminate), so nothing sub-threshold
-/// reaches here except these clip artefacts.
+/// `from_coverage` skips the footprint cull entirely. A coverage polygon clipped by a cell edge can
+/// come out as a hairline strip along the seam, far under `min_area_px`, and dropping it would open
+/// a backdrop sliver at the cell boundary, where the neighbouring cell still paints its half. The
+/// pass has already applied this tier's threshold globally, so nothing sub-threshold reaches here
+/// except these clip artefacts.
 fn flatten_culled(
     style_id: u8,
     geom: Geom,
@@ -716,10 +682,8 @@ fn flatten_culled(
     }
 }
 
-// --- POIs -------------------------------------------------------------------------------------
-
-/// Bucket POIs by the one cell whose half-open square contains them (OBCA §3.6). Indices into
-/// `pois`, in input order, so a cell's records are ordered deterministically.
+/// Bucket POIs by the one cell whose half-open square contains them. Indices into `pois`, in input
+/// order, so a cell's records are ordered deterministically.
 fn bucket_pois(pois: &[Poi], cell_log2: u32) -> HashMap<(i64, i64), Vec<u32>> {
     let mut out: HashMap<(i64, i64), Vec<u32>> = HashMap::new();
     for (k, p) in pois.iter().enumerate() {
@@ -728,8 +692,6 @@ fn bucket_pois(pois: &[Poi], cell_log2: u32) -> HashMap<(i64, i64), Vec<u32>> {
     }
     out
 }
-
-// --- the nav cut (OBCA §3.4) ------------------------------------------------------------------
 
 /// One source way with a boundary vertex inserted at every crossing of the nav band's grid.
 struct PreparedWay {
@@ -744,8 +706,8 @@ struct PreparedWay {
 struct NavCut {
     log2: u32,
     ways: Vec<PreparedWay>,
-    /// OSM node id → how many routable ways of the source touch it. Junction-ness is classified from
-    /// this, never from the ways that survive inside a cell (§3.4).
+    /// OSM node id to how many routable ways of the source touch it. Junction-ness is classified
+    /// from this, never from the ways that survive inside a cell.
     touch: HashMap<i64, u32>,
     cells: HashMap<(i64, i64), Vec<u32>>,
 }
@@ -753,20 +715,18 @@ struct NavCut {
 /// Prepare the nav cut: insert the deterministic boundary junctions and index the ways by cell.
 ///
 /// The insertion is the heart of the seam contract. For every routable way and every cell-edge line
-/// it crosses, a vertex is materialised at the crossing coordinate, computed by
-/// [`segment_crossing`] — exact `i128` interpolation with banker's rounding over canonically ordered
-/// endpoints. Both neighbours run that computation over the same two source vertices and the same
-/// line, so they mint **the same integer pair**, which is what lets an assembler unify the two stubs
-/// by exact coordinate equality and nothing weaker (§3.4's epsilon rule).
+/// it crosses, a vertex is materialised at the crossing coordinate from [`segment_crossing`] — exact
+/// `i128` interpolation with banker's rounding over canonically ordered endpoints. Both neighbours
+/// run that computation over the same two source vertices and the same line, so they mint the same
+/// integer pair, which is what lets an assembler unify the two stubs by exact coordinate equality
+/// and nothing weaker.
 ///
-/// A vertex that already lies exactly on a line is *itself* the boundary junction (§3.4(1)) — no
-/// interpolation, and no new key: it keeps its OSM identity and becomes a junction because
-/// [`NavCut::cell_graph`]'s predicate tests the coordinate.
+/// A vertex that already lies exactly on a line is itself the boundary junction: no interpolation
+/// and no new key, because [`NavCut::cell_graph`]'s predicate tests the coordinate.
 ///
 /// A [`RoutableWay`] whose `coords` and `node_ids` are not two parallel lists of at least two
 /// entries is rejected rather than indexed: every step below reads the two positionally, so a
-/// malformed one would have been an index panic or a length underflow deep inside the cut — and
-/// [`cut_ingested`] is a `pub` entry point the bakery hands ingested data to.
+/// malformed one would panic deep inside the cut.
 fn prepare_nav(ways: &[RoutableWay], log2: u32, progress: &Progress) -> Result<NavCut, String> {
     let mut touch: HashMap<i64, u32> = HashMap::new();
     for w in ways {
@@ -832,14 +792,14 @@ fn lines_strictly_between(v0: i64, v1: i64, log2: u32) -> impl Iterator<Item = i
     std::iter::successors(Some(first), move |v| Some(v + s)).take_while(move |v| *v < hi)
 }
 
-/// The boundary junctions on segment `a`–`b` (µdeg `(lon, lat)`), ordered along the segment.
+/// The boundary junctions on segment `a`-`b` (µdeg `(lon, lat)`), ordered along the segment.
 ///
-/// Returns `(cuts, converged)`. A crossing coordinate is rounded to the µdeg grid, which can in
-/// principle push it across a *different* line by half a microdegree, so the segment is re-scanned
-/// until no proper crossing is left (or [`MAX_CUT_REFINE`] passes have run).
+/// Returns `(cuts, converged)`. A crossing coordinate is rounded to the µdeg grid, which can push it
+/// across a different line by half a microdegree, so the segment is re-scanned until no proper
+/// crossing is left, or [`MAX_CUT_REFINE`] passes have run.
 fn segment_cuts(a: (i32, i32), b: (i32, i32), log2: u32) -> (Vec<(i32, i32)>, bool) {
-    // Fast path, and it is the overwhelmingly common one: an OSM segment is metres long and crosses
-    // nothing, so the first pass is also the only pass and no chain is ever built.
+    // Fast path, and the overwhelmingly common one: an OSM segment is metres long and crosses
+    // nothing, so the first pass is also the only pass.
     let first = crossings(a, b, log2);
     if first.is_empty() {
         return (Vec::new(), true);
@@ -870,9 +830,9 @@ fn segment_cuts(a: (i32, i32), b: (i32, i32), log2: u32) -> (Vec<(i32, i32)>, bo
 }
 
 /// The proper crossings of one segment with the grid, ordered along the segment. Endpoints and
-/// duplicates are excluded: a vertex already on a line needs no interpolation (§3.4(1)).
+/// duplicates are excluded: a vertex already on a line needs no interpolation.
 fn crossings(a: (i32, i32), b: (i32, i32), log2: u32) -> Vec<(i32, i32)> {
-    // §3.4's formula is written in (lat, lon); the packer's coordinates are (lon, lat).
+    // The formula is written in (lat, lon); the packer's coordinates are (lon, lat).
     let (p, q) = ((a.1 as i64, a.0 as i64), (b.1 as i64, b.0 as i64));
     // Each crossing carries its position along the segment as an exact rational `num/den`, so
     // crossings of the two axes sort into one order without a float anywhere.
@@ -905,18 +865,17 @@ fn crossings(a: (i32, i32), b: (i32, i32), log2: u32) -> Vec<(i32, i32)> {
 
 /// The cell that owns segment `(a, b)` — valid once the segment crosses no grid line.
 ///
-/// Per axis it is `div_euclid(min − origin, S)`, which is the half-open convention read off the
-/// segment: a segment sitting exactly **on** an edge line belongs to the cell for which that line is
-/// a `min` edge (OBCA §3.4(3)), so it is written once and never twice.
+/// Per axis it is `div_euclid(min - origin, S)`, the half-open convention read off the segment: a
+/// segment sitting exactly on an edge line belongs to the cell for which that line is a `min` edge,
+/// so it is written once and never twice.
 fn segment_owner(a: (i32, i32), b: (i32, i32), log2: u32) -> (i64, i64) {
     let s = 1i64 << log2;
     ((a.1.min(b.1) as i64 - GRID_ORIGIN).div_euclid(s), (a.0.min(b.0) as i64 - GRID_ORIGIN).div_euclid(s))
 }
 
 impl NavCut {
-    /// The runs of source ways this cell owns: maximal chains of segments whose owner is `cell`.
-    ///
-    /// A run therefore ends only at a boundary junction or at a way's own end, which is why
+    /// The runs of source ways this cell owns: maximal chains of segments whose owner is `cell`. A
+    /// run therefore ends only at a boundary junction or at a way's own end, which is why
     /// [`nav::build_graph_cut`] can treat every run endpoint as a junction.
     fn cell_runs(&self, cell: CellId) -> Vec<CutRun> {
         let key = (cell.i, cell.j);
@@ -948,15 +907,15 @@ impl NavCut {
     }
 
     /// This cell's nav graph: junction-ness from the source snapshot plus every vertex on a boundary
-    /// line, and pruning restricted to strictly interior components (OBCA §3.4/§3.5).
+    /// line, and pruning restricted to strictly interior components.
     fn cell_graph(&self, cell: CellId, min_component_edges: usize) -> NavGraph {
         let runs = self.cell_runs(cell);
         let log2 = self.log2;
         let is_junction = |key: JunctionKey, coord: (i32, i32)| match key {
             // Minted on the edge line: a junction in both neighbours, by construction.
             JunctionKey::Boundary(..) => true,
-            // A real OSM node is a junction if the source's way set makes it one — or if it happens
-            // to sit exactly on a boundary line, which is the §3.4(1) case.
+            // A real OSM node is a junction if the source's way set makes it one, or if it sits
+            // exactly on a boundary line.
             JunctionKey::Osm(id) => {
                 on_grid_boundary(coord.1 as i64, coord.0 as i64, log2) || self.touch.get(&id).copied().unwrap_or(0) >= 2
             }
@@ -971,8 +930,8 @@ impl NavCut {
 
 /// Serialize and write one cell artifact.
 ///
-/// The header bbox **is** the cell square (§3.1), the ladder is complete with out-of-band levels
-/// written empty, and the POI/nav sections are present but empty unless the band carries them.
+/// The header bbox is the cell square, the ladder is complete with out-of-band levels written empty,
+/// and the POI and nav sections are present but empty unless the band carries them.
 #[allow(clippy::too_many_arguments)]
 fn write_cell(
     cell: &CellId,
@@ -1012,8 +971,8 @@ fn write_cell(
         &config.routing.profiles,
         terrain,
         |i| {
-            // In band ⇒ its tree; out of band ⇒ an empty region, so band membership never shows up
-            // in the bytes (§3.1).
+            // In band gives its tree; out of band gives an empty region, so band membership
+            // never shows up in the bytes.
             let root = trees.iter_mut().find(|t| t.as_ref().is_some_and(|(l, _)| *l == i)).and_then(Option::take);
             (root.map(|(_, n)| n), chunk_size, config.lods[i].max_mpp)
         },
@@ -1048,10 +1007,9 @@ fn node_has_features(node: &Node) -> bool {
 
 /// A cell artifact's path inside the run's output directory.
 ///
-/// Keyed by **band**, not by `log2`: two bands may legitimately share a cell size (`fine` and
-/// `network` are both `2^18` in the recommended table), and `OBCC_Spec.md` §2's cell path
-/// sketch collides for exactly that pair. Every cell's path is stated explicitly in the manifest, so
-/// a publisher never has to infer it.
+/// Keyed by band, not by `log2`: two bands may legitimately share a cell size (`fine` and `network`
+/// are both `2^18` in the recommended table). Every cell's path is stated explicitly in the
+/// manifest, so a publisher never has to infer it.
 fn cell_path(band: &Band, cell: &CellId) -> String {
     let w = crate::grid::id_width(cell.log2);
     format!("cells/{}/{:0w$}/{:0w$}.obcm", band.id, cell.i, cell.j, w = w)
@@ -1064,11 +1022,11 @@ fn sha256_file(path: &Path) -> Result<String, String> {
     Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// Whether the declared source coverage contains the whole square (OBCA §3.7).
+/// Whether the declared source coverage contains the whole square.
 ///
 /// Coverage is the union of the sources' boxes, so two co-baked neighbours can make a border cell
 /// canonical between them. The test is exact: the square is decomposed on the boxes' own coordinates
-/// and every elementary piece must be inside some box — a "mostly covered" square is `partial`.
+/// and every elementary piece must be inside some box, so a "mostly covered" square is `partial`.
 fn sources_cover(square: UBox, sources: &[SourceExtent]) -> bool {
     let boxes: Vec<UBox> = sources.iter().filter_map(|s| s.coverage).collect();
     if boxes.is_empty() {
@@ -1170,11 +1128,10 @@ struct Manifest<'a> {
 
 /// Write the run's provenance sidecar.
 ///
-/// This is **not** the OBCC catalog — the bakery builds that. It is what a bakery needs and the
+/// This is not the OBCC catalog — the bakery builds that. It is what a bakery needs and the
 /// artifacts themselves cannot say: which band each cell belongs to (band membership is deliberately
-/// absent from the bytes, §3.1), which sources and snapshots it was baked from, and whether its
-/// square was fully covered (§3.7). It carries no wall clock, so two identical runs write identical
-/// bytes.
+/// absent from the bytes), which sources and snapshots it was baked from, and whether its square was
+/// fully covered. It carries no wall clock, so two identical runs write identical bytes.
 fn write_manifest(
     out_dir: &Path,
     config: &Config,
@@ -1313,7 +1270,7 @@ mod tests {
         let lo = GRID_ORIGIN + 5 * S;
         let got: Vec<i64> = lines_strictly_between(lo + 10, lo + 3 * S - 10, LOG2).collect();
         assert_eq!(got, vec![lo + S, lo + 2 * S]);
-        // Endpoints exactly on lines are excluded — such a vertex IS the junction (§3.4(1)).
+        // Endpoints exactly on lines are excluded: such a vertex IS the junction.
         let got: Vec<i64> = lines_strictly_between(lo, lo + S, LOG2).collect();
         assert!(got.is_empty(), "no line strictly between two adjacent lines");
         // Direction-independent.
@@ -1322,8 +1279,8 @@ mod tests {
         assert_eq!(a, b);
     }
 
-    /// A segment crossing one seam gets exactly one boundary vertex, on the line, and the reversed
-    /// segment gets the same one.
+    /// One crossing gives one boundary vertex, on the line, and the reversed segment gives the same
+    /// one.
     #[test]
     fn one_crossing_one_boundary_vertex() {
         let a = pt(row_lat(), seam_lon() - 5_000);
@@ -1359,8 +1316,8 @@ mod tests {
         assert_eq!(rev_sorted, fwd_sorted, "direction changes the order, never the coordinates");
     }
 
-    /// Segment ownership is the half-open rule read off a segment, including the collinear case
-    /// (§3.4(3)): a segment lying **on** a line belongs to the cell above/east of it, once.
+    /// Segment ownership is the half-open rule read off a segment, including the collinear case: a
+    /// segment lying on a line belongs to the cell above or east of it, once.
     #[test]
     fn segment_ownership_is_half_open() {
         let inside = (at(100, 100, 10, 10), at(100, 100, 20, 20));
@@ -1389,13 +1346,13 @@ mod tests {
         }
     }
 
-    /// The seam property, at the level of one prepared way: both cells see a junction at the **same**
-    /// coordinate on the shared edge, and each carries its own stub inward (§3.4(4)).
+    /// The seam property at the level of one prepared way: both cells see a junction at the same
+    /// coordinate on the shared edge, and each carries its own stub inward.
     #[test]
     fn neighbours_agree_on_the_boundary_junction() {
-        // One short road running west→east across the line between cells (100, 100) and (100, 101).
-        // Short on purpose: a way spanning a whole cell would be split by the §8.3 `i16` bound into
-        // pieces, which is orthogonal to what this test is about.
+        // One short road running west to east across the line between cells (100, 100) and
+        // (100, 101). Short on purpose: a way spanning a whole cell would be split by the `i16`
+        // bound into pieces, which is orthogonal to what this test is about.
         let seam = seam_lon();
         let w = way(&[(1, pt(row_lat(), seam - 5_000)), (2, pt(row_lat(), seam + 5_000))]);
         let prep = prepare_nav(&[w], LOG2, &Progress::silent()).expect("prepare");
@@ -1416,8 +1373,8 @@ mod tests {
         assert_eq!(ge.edges[0].polyline.first().map(|p| p.0 as i64), Some(seam));
     }
 
-    /// A vertex that already sits exactly on the line is the junction — no interpolation, no extra
-    /// node (§3.4(1)).
+    /// A vertex that already sits exactly on the line is the junction: no interpolation, no extra
+    /// node.
     #[test]
     fn a_vertex_on_the_line_is_the_junction() {
         let seam = seam_lon();
@@ -1437,8 +1394,8 @@ mod tests {
         }
     }
 
-    /// Island pruning is strictly interior (§3.5): a stub touching the cell edge survives however
-    /// small, while an equally small component in the middle of the cell does not.
+    /// Island pruning is strictly interior: a stub touching the cell edge survives however small,
+    /// while an equally small component in the middle of the cell does not.
     #[test]
     fn pruning_spares_components_touching_the_edge() {
         // A boundary-crossing stub (one edge per side) and a tiny interior islet (one edge).

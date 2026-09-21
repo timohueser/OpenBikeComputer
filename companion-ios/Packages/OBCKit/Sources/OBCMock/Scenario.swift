@@ -2,28 +2,12 @@
 import Foundation
 import OBCDomain
 
-/// A named bundle of `MockControl` knobs that reproduces one (or a few) design
-/// screens with no device and no firmware. The `rawValue` doubles as the launch-arg
-/// token B1P will parse (`-OBCScenario happyPath`).
+/// A named bundle of `MockControl` knobs that reproduces design screens with no device and
+/// no firmware. The `rawValue` is also the launch-arg token (`-OBCScenario happyPath`).
 ///
-/// | Scenario | Reproduces |
-/// |---|---|
-/// | `happyPath` | C1 / C2 / E2 / F / F₂ |
-/// | `emptyLibrary` | S1 |
-/// | `coldRead` | S2 (skeletons) |
-/// | `readError` | S3 |
-/// | `outOfRange` | S4 + disconnected banner |
-/// | `deviceUnreachable` | A-timeout connect-failed screen (bonded, device silent) |
-/// | `noDevice` | D1→D4 pairing flow; H4 on import |
-/// | `pairingTimeout` / `pairingRejected` | D5 |
-/// | `bluetoothOff` / `permissionDenied` | H8 / H7 |
-/// | `syncUpToDate` / `syncDrop` | H9 / H10 |
-/// | `uploadDrop` | F interrupted → restart |
-/// | `unsupportedFile` | H5 |
-///
-/// Some rows are pure UI-layer states the transport can't originate — `unsupportedFile`
-/// (H5) is import validation, `syncUpToDate` (H9) is "no new rides" — so their preset is
-/// a happy link and the UI branches on `scenario`. The rest are fully transport-driven.
+/// Some scenarios are UI-layer states the transport cannot originate: `unsupportedFile` is
+/// import validation and `syncUpToDate` means "no new rides". Their preset is a happy link and
+/// the UI branches on `scenario`. The rest are transport-driven.
 public enum Scenario: String, CaseIterable, Sendable {
     case happyPath
     case emptyLibrary
@@ -43,22 +27,16 @@ public enum Scenario: String, CaseIterable, Sendable {
     case oldFirmware
 }
 
-/// The concrete knob values a `Scenario` expands to. Public so B1P / tests can
-/// inspect or compose presets.
+/// The concrete knob values a `Scenario` expands to.
 public struct ScenarioPreset: Sendable {
     /// Bundled fixture-set name to load.
     public var fixtures: String
     /// Initial connection state the `state` stream replays.
     public var connection: ConnectionState
-    /// Whether the app has bonded before — the B2 launch branch (`MockBondStore`
-    /// reads it). False for the pairing-flow scenarios (D1–D5 / H7 / H8 start
-    /// unpaired); true everywhere else.
+    /// Whether the app has bonded before. False for the pairing-flow scenarios, true elsewhere.
     public var bonded: Bool
-    /// Radio power/permission.
     public var radio: RadioState
-    /// Per-op latency.
     public var latency: Duration
-    /// Bulk-transfer throughput (bytes/sec).
     public var throughputBytesPerSec: Int
     /// A one-shot failure armed on the next throwing op (nil = none).
     public var pendingFailure: DeviceError?
@@ -94,7 +72,6 @@ public struct ScenarioPreset: Sendable {
 }
 
 extension Scenario {
-    /// The knob bundle this scenario expands to (see the table on `Scenario`).
     public var preset: ScenarioPreset {
         switch self {
         case .happyPath:
@@ -102,17 +79,16 @@ extension Scenario {
         case .emptyLibrary:
             return ScenarioPreset(fixtures: "empty")
         case .coldRead:
-            // A slow first read → the UI shows S2 skeletons while it awaits.
+            // A slow first read: the UI shows skeletons while it awaits.
             return ScenarioPreset(latency: .seconds(3))
         case .readError:
-            // The first read throws → S3; a retry (next read) succeeds.
+            // The first read throws; the next read succeeds.
             return ScenarioPreset(pendingFailure: .readFailed)
         case .outOfRange:
             return ScenarioPreset(connection: .outOfRange)
         case .deviceUnreachable:
-            // Bonded but the device never answers: connect() parks on the huge
-            // latency the way the real transport's scan parks on an absent
-            // peripheral — the launch flow must time out, not hang.
+            // Bonded but the device never answers: connect() parks on the huge latency the
+            // way a real scan parks on an absent peripheral. Launch must time out, not hang.
             return ScenarioPreset(connection: .disconnected, latency: .seconds(3_600))
         case .noDevice:
             return ScenarioPreset(connection: .disconnected, bonded: false)
@@ -133,7 +109,7 @@ extension Scenario {
         case .unsupportedFile:
             return ScenarioPreset()
         case .oldFirmware:
-            // A supported peer that does not support clock sync — a happy link otherwise.
+            // A supported peer without clock sync; a happy link otherwise.
             return ScenarioPreset(supportsClockSync: false)
         }
     }

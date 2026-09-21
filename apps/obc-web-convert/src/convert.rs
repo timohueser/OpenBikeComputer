@@ -1,27 +1,22 @@
-//! The target-independent conversion core: byte buffers in, byte buffers out, and a typed
-//! failure with a message a rider can act on.
-//!
-//! Nothing here knows about the browser — that is the point. `cargo test` runs these functions
-//! natively, so the error mapping and the two guards below are covered by the workspace suite
-//! rather than only by whatever a browser happens to exercise.
+//! The target-independent conversion core: byte buffers in, byte buffers out, and a typed failure
+//! with a message a rider can act on. Nothing here knows about the browser, so the error mapping
+//! and the two guards below are tested natively.
 
 use obc_formats::io::{ByteSink, Error, SliceSource};
 use obc_formats::obcr::WAYPOINT_ELE_NONE;
 use obc_route::{for_each_waypoint, RouteIndex, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS};
 
-/// Largest point count an `.obcr` can *store*, and therefore the ceiling
-/// [`gpx_to_obcr`] converts up to: every chunk full, consecutive chunks sharing their seam
-/// vertex, so `MAX_ROUTE_CHUNKS` chunks hold `256 + 255 × 255` vertices.
+/// Largest point count an `.obcr` can store, and so the ceiling [`gpx_to_obcr`] converts up to:
+/// every chunk full, with consecutive chunks sharing their seam vertex.
 ///
-/// This counts **stored** vertices — what survives decimation, plus the synthetic vertices the
-/// `int16`-delta densify guard inserts. A GPX with far more `<trkpt>`s than this converts fine
-/// as long as its shape decimates below the ceiling, so the message this constant feeds says
-/// "after decimation" rather than promising anything about the input.
+/// It counts stored vertices: what survives decimation, plus the synthetic vertices the
+/// `int16`-delta densify guard inserts. A GPX with far more track points converts fine if its shape
+/// decimates below the ceiling.
 pub const MAX_STORED_POINTS: usize = MAX_ROUTE_CHUNKS * (MAX_POINTS_PER_CHUNK - 1) + 1;
 
 /// A conversion failure: a stable machine-readable [`ErrorCode`] plus prose the UI can show
-/// verbatim. The two travel together deliberately — a caller that wants to special-case one
-/// cause branches on `code`, and everyone else just displays `message`.
+/// verbatim. A caller that special-cases a cause branches on `code`; everyone else shows
+/// `message`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConvertFailure {
     pub code: ErrorCode,
@@ -42,17 +37,17 @@ impl core::fmt::Display for ConvertFailure {
 
 impl std::error::Error for ConvertFailure {}
 
-/// Why a conversion failed. The string form ([`ErrorCode::as_str`]) is the **wire contract** with
-/// the browser wrapper — it lands on the thrown JS `Error` as `.code`, so renaming one is a
-/// breaking change for the frontend, not a refactor.
+/// Why a conversion failed. The string form ([`ErrorCode::as_str`]) is the wire contract with the
+/// browser wrapper: it lands on the thrown JS `Error` as `.code`, so renaming one breaks the
+/// frontend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCode {
     /// The dropped file is zero bytes.
     EmptyFile,
-    /// The route file does not open like an XML document (a FIT/TCX export, a ZIP, a stray image).
+    /// The route file does not open like an XML document.
     NotGpx,
-    /// Valid-looking GPX with no `<trkpt>` carrying both `lat` and `lon` — waypoints or a `<rte>`
-    /// route only, which the device cannot ride.
+    /// Valid-looking GPX with no `<trkpt>` carrying both `lat` and `lon`, which the device cannot
+    /// ride.
     GpxNoTrackPoints,
     /// The decimated route still exceeds [`MAX_STORED_POINTS`].
     GpxTooManyPoints,
@@ -62,9 +57,9 @@ pub enum ErrorCode {
     RideNoPoints,
     /// A read ran past the end of the input: the file is truncated or the upload was cut short.
     InputTruncated,
-    /// The bytes handed to [`obcr_to_track`] are not an OBCR route (bad magic/version/layout).
+    /// The bytes handed to [`obcr_to_track`] are not an OBCR route.
     NotRoute,
-    /// A defect in this bridge or in the shared converter. The message says so, and says to report it.
+    /// A defect in this bridge or in the shared converter.
     Internal,
 }
 
@@ -88,14 +83,11 @@ impl ErrorCode {
 
 /// Convert a GPX file's bytes into a `.obcr` route named `name`.
 ///
-/// Byte-for-byte the same output as the native path (`obc_route::gpx_to_obcr`) on the same input
-/// — this function contributes no geometry, only the buffer adapter and the guards below. The
-/// `specs/vectors/route-*.obcr` fixtures pin that equality from both sides.
+/// Byte-for-byte the same output as `obc_route::gpx_to_obcr` on the same input: this function
+/// contributes no geometry, only the buffer adapter and the guards below.
 ///
-/// The two pre-checks (empty, not-XML) exist because they are the two failures a *dropped file*
-/// actually produces, and the converter cannot tell them apart: both would otherwise surface as
-/// the generic "no track points". They are the only place the browser path's behaviour differs
-/// from the native one, and only for inputs the native path would reject anyway.
+/// The two pre-checks, empty and not-XML, are the two failures a dropped file produces, and the
+/// converter cannot tell them apart. Without them both surface as the generic "no track points".
 pub fn gpx_to_obcr(gpx: &[u8], name: &str) -> Result<Vec<u8>, ConvertFailure> {
     if gpx.is_empty() {
         return Err(ConvertFailure::new(
@@ -113,10 +105,9 @@ pub fn gpx_to_obcr(gpx: &[u8], name: &str) -> Result<Vec<u8>, ConvertFailure> {
         ));
     }
 
-    // ~16 KB of the emitter's bounded chunk index lives on this frame (256 × `ChunkMeta`), which
-    // is a rounding error against wasm's 1 MiB stack — unlike obc-web-demo's ≈277 KB `MapCache`,
-    // which had to be heap-boxed to avoid overflowing it (#661). Nothing here is boxed because
-    // nothing here is big; the scanners' buffers are 4 KB each and sequential, never co-resident.
+    // About 16 KB of the emitter's bounded chunk index lives on this frame, which is small against
+    // wasm's 1 MiB stack. Nothing here is boxed, because nothing here is big: the scanners' buffers
+    // are 4 KB each and sequential, never co-resident.
     let mut sink = VecSink(Vec::new());
     obc_route::gpx_to_obcr(&SliceSource(gpx), name, &mut sink).map_err(describe_gpx_error)?;
     Ok(sink.0)
@@ -124,8 +115,7 @@ pub fn gpx_to_obcr(gpx: &[u8], name: &str) -> Result<Vec<u8>, ConvertFailure> {
 
 /// Convert a finished ride-v3 object's bytes into a GPX 1.1 document named `name`.
 ///
-/// Byte-for-byte the same output as the native path (`obc_route::track_to_gpx`) — again, only the
-/// buffer adapter is new. `specs/vectors/ride-v3.bin` + `track-export.gpx` pin the pair.
+/// Byte-for-byte the same output as `obc_route::track_to_gpx`; only the buffer adapter is new.
 pub fn track_to_gpx(ride: &[u8], name: &str) -> Result<String, ConvertFailure> {
     if ride.is_empty() {
         return Err(ConvertFailure::new(
@@ -147,7 +137,7 @@ pub fn track_to_gpx(ride: &[u8], name: &str) -> Result<String, ConvertFailure> {
     let mut sink = VecSink(Vec::new());
     obc_route::track_to_gpx(&source, name, &mut sink).map_err(describe_track_error)?;
     // Every byte the exporter writes is ASCII except `name`, which arrived as a `&str`, so this
-    // cannot fail. Mapped rather than unwrapped all the same: a panic in wasm is an opaque trap.
+    // cannot fail. Mapped rather than unwrapped, because a panic in wasm is an opaque trap.
     String::from_utf8(sink.0).map_err(|_| {
         ConvertFailure::new(
             ErrorCode::Internal,
@@ -157,17 +147,15 @@ pub fn track_to_gpx(ride: &[u8], name: &str) -> Result<String, ConvertFailure> {
     })
 }
 
-/// Decode an `.obcr` route's polyline: flat `[lat°, lon°, ele m]` triples, in route order.
-/// Missing elevations are NaN, never a fabricated sea-level sample.
+/// Decode an `.obcr` route's polyline: flat `[lat, lon, ele]` triples in route order. A missing
+/// elevation is NaN, never a fabricated sea-level sample.
 ///
-/// The device-page preview's other direction — reading back what [`gpx_to_obcr`] (or the device)
-/// wrote — through the same [`RouteReader`] the firmware streams its map draw from, so what the
-/// preview traces is what the device will trace. Flat `f64` triples rather than a struct because
-/// this crosses the wasm boundary as one `Float64Array`: no per-point allocation on either side.
+/// It reads back through the same [`RouteReader`] the firmware streams its map draw from, so what
+/// the preview traces is what the device traces. Flat `f64` triples because this crosses the wasm
+/// boundary as one `Float64Array`.
 ///
-/// Chunks share their seam vertex (chunk `k`'s last point is chunk `k+1`'s anchor), so every
-/// chunk after the first drops its first decoded point — the stored `point_count` is exactly what
-/// comes back.
+/// Chunks share their seam vertex, so every chunk after the first drops its first decoded point and
+/// the stored `point_count` is what comes back.
 pub fn obcr_to_track(obcr: &[u8]) -> Result<Vec<f64>, ConvertFailure> {
     let src = SliceSource(obcr);
     let idx = RouteIndex::read(&src).map_err(describe_route_read_error)?;
@@ -197,32 +185,30 @@ pub fn obcr_to_track(obcr: &[u8]) -> Result<Vec<f64>, ConvertFailure> {
     Ok(out)
 }
 
-/// One waypoint read back out of an `.obcr` route — the decoded form of a spec §4 record, with
-/// the wire encodings already unfolded (microdegrees → degrees, the elevation sentinel → `None`).
+/// One waypoint read back out of an `.obcr` route, with the wire encodings already unfolded:
+/// microdegrees to degrees, and the elevation sentinel to `None`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RouteWaypoint {
-    /// The stored UTF-8 short name (≤ 24 bytes; may be empty).
+    /// The stored UTF-8 short name, at most 24 bytes, and possibly empty.
     pub name: String,
-    /// The waypoint's own coordinate, degrees — may sit off the polyline (spec §4).
+    /// The waypoint's own coordinate in degrees. It can sit off the polyline.
     pub lat: f64,
     pub lon: f64,
     /// Elevation in meters, or `None` where the source carried none.
     pub ele: Option<f64>,
-    /// The stored category byte **raw**: `0` = generic, `1..=6` = the OBCM §7.4 POI category ids;
-    /// a consumer renders any other value as generic, per the spec.
+    /// The stored category byte, raw: `0` is generic and `1..=6` are the POI category ids. A
+    /// consumer renders any other value as generic.
     pub category: u8,
-    /// Meters from the route start to the waypoint's position on the track — the **stored**
-    /// `Distance Along` field, not a recomputation (see [`obcr_to_waypoints`]).
+    /// Meters from the route start to the waypoint's position on the track: the stored field, not
+    /// a recomputation.
     pub dist_along_m: u32,
 }
 
-/// Decode an `.obcr` route's waypoint table (spec §4), in route order (ascending distance).
+/// Decode an `.obcr` route's waypoint table, in ascending distance order: name, position, raw
+/// category byte and along-track distance for each stored waypoint.
 ///
-/// The preview's third direction, alongside [`obcr_to_track`]: name, position, raw category byte,
-/// and the along-track distance for each stored waypoint. `dist_along_m` is returned **as
-/// stored** — the format fixes it at conversion time by nearest-raw-track-point placement
-/// (`OBCR_Spec.md` §4), against the raw geometry the converter saw, which a reader of the
-/// decimated file could not reproduce. A route without waypoints decodes to an empty list.
+/// `dist_along_m` is returned as stored. The format fixes it at conversion time against the raw
+/// geometry the converter saw, which a reader of the decimated file could not reproduce.
 pub fn obcr_to_waypoints(obcr: &[u8]) -> Result<Vec<RouteWaypoint>, ConvertFailure> {
     let src = SliceSource(obcr);
     let mut out: Vec<RouteWaypoint> = Vec::new();
@@ -240,8 +226,7 @@ pub fn obcr_to_waypoints(obcr: &[u8]) -> Result<Vec<RouteWaypoint>, ConvertFailu
     Ok(out)
 }
 
-/// Map a failure to open/read an `.obcr` onto the browser vocabulary — shared by the two
-/// read-back directions ([`obcr_to_track`], [`obcr_to_waypoints`]). Exhaustive like the other
+/// Map a failure to open or read an `.obcr` onto the browser vocabulary. Exhaustive like the other
 /// maps in this file: a new seam variant must break this build.
 fn describe_route_read_error(e: Error) -> ConvertFailure {
     match e {
@@ -272,22 +257,20 @@ fn document_start(bytes: &[u8]) -> &[u8] {
     &body[lead..]
 }
 
-/// Could `bytes` be XML at all — does the document start with `<`?
+/// Could `bytes` be XML at all: does the document start with `<`?
 ///
-/// The **lenient** test, and only the GPX direction uses it. A false accept costs nothing: a
-/// binary file that happens to start with `<` falls through to the scanner and comes back as
-/// [`ErrorCode::GpxNoTrackPoints`], which is still a true statement about it. A false *reject*
-/// would be the expensive mistake — refusing a real route — so the bar stays at one byte.
+/// A false accept costs nothing, because the scanner then answers
+/// [`ErrorCode::GpxNoTrackPoints`], which is still true. A false reject would refuse a real route,
+/// so the bar stays at one byte.
 fn opens_like_xml(bytes: &[u8]) -> bool {
     document_start(bytes).first() == Some(&b'<')
 }
 
-/// Map a GPX→OBCR failure onto the browser vocabulary.
+/// Map a GPX-to-OBCR failure onto the browser vocabulary.
 ///
-/// The match is exhaustive **on purpose**: [`Error`] is shared across the whole byte seam, so a
-/// new variant must break this build and get a deliberate message rather than silently collapse
-/// into someone else's text. That is also why the unreachable-from-here variants get honest
-/// "this is a bug" prose instead of being folded into a plausible-sounding lie.
+/// The match is exhaustive on purpose: [`Error`] is shared across the whole byte seam, so a new
+/// variant must break this build and get a deliberate message. The variants unreachable from here
+/// say they are a defect rather than inventing a plausible cause.
 fn describe_gpx_error(e: Error) -> ConvertFailure {
     match e {
         Error::Empty => ConvertFailure::new(
@@ -315,8 +298,8 @@ fn describe_gpx_error(e: Error) -> ConvertFailure {
             "Internal error: writing the .obcr into memory failed. This is a bug in the \
              conversion bridge — please report it.",
         ),
-        // Neither is reachable from a GPX conversion (nothing on this path validates a format
-        // tag), so say so rather than inventing a plausible cause the file does not have.
+        // Nothing on this path validates a format tag, so neither is reachable from a GPX
+        // conversion.
         Error::BadMagic | Error::BadVersion => ConvertFailure::new(
             ErrorCode::Internal,
             "Internal error: the route converter reported a file-format mismatch, which it does \
@@ -325,10 +308,9 @@ fn describe_gpx_error(e: Error) -> ConvertFailure {
     }
 }
 
-/// Map a track→GPX failure onto the browser vocabulary. Exhaustive for the same reason as
-/// [`describe_gpx_error`], and split from it because the same [`Error`] means a different thing
-/// in each direction — `Empty` is "your GPX has no track" one way and "your recording is empty"
-/// the other.
+/// Map a track-to-GPX failure onto the browser vocabulary. Split from [`describe_gpx_error`]
+/// because the same [`Error`] means a different thing in each direction: `Empty` is a GPX with no
+/// track one way and an empty recording the other.
 fn describe_track_error(e: Error) -> ConvertFailure {
     match e {
         Error::Empty => ConvertFailure::new(
@@ -353,9 +335,9 @@ fn describe_track_error(e: Error) -> ConvertFailure {
     }
 }
 
-/// A growable in-memory [`ByteSink`]. The OBCR writer streams the body and then patches the
-/// header back at offset 0, so `patch_at` has to be real — and bounds-checked, because a slice
-/// panic inside wasm is an opaque `unreachable` trap with no message.
+/// A growable in-memory [`ByteSink`]. The OBCR writer streams the body and then patches the header
+/// back at offset 0, so `patch_at` must be real and bounds-checked: a slice panic inside wasm is an
+/// opaque trap with no message.
 struct VecSink(Vec<u8>);
 
 impl ByteSink for VecSink {
@@ -396,8 +378,7 @@ mod tests {
     }
 
     /// The 9-point track from `obc-vectors`' route source, inline so this crate's tests stand on
-    /// their own; the byte-identity proof against the real fixture is the frontend's job (it is
-    /// the one place a wasm build and the checked-in native output can be compared).
+    /// their own. The byte-identity proof against the real fixture is the frontend's job.
     const TINY_GPX: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="test">
   <trk><name>t</name><trkseg>
@@ -412,8 +393,8 @@ mod tests {
         r.expect_err("expected a failure").code
     }
 
-    /// The read-back direction closes the loop: what `gpx_to_obcr` stored, `obcr_to_track`
-    /// returns — point for point, in order, elevation included.
+    /// What `gpx_to_obcr` stored, `obcr_to_track` returns: point for point, in order, elevation
+    /// included.
     #[test]
     fn obcr_round_trips_to_the_track_it_stored() {
         let obcr = gpx_to_obcr(TINY_GPX.as_bytes(), "Tiny").unwrap();
@@ -430,9 +411,9 @@ mod tests {
         }
     }
 
-    /// The tiny track with two `<wpt>`s ahead of it: one categorized (Drinking Water → water,
-    /// category 1) with an elevation, one unmapped symbol (generic, no elevation). Positions sit
-    /// near different ends of the track so the stored `Distance Along` values must differ.
+    /// The tiny track with two waypoints ahead of it: one categorized with an elevation, one with
+    /// an unmapped symbol and no elevation. They sit near different ends of the track, so the
+    /// stored distances must differ.
     const WPT_GPX: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="test">
   <wpt lat="48.0002" lon="7.8264"><name>Aussicht</name><sym>Viewpoint</sym></wpt>
@@ -445,9 +426,7 @@ mod tests {
 </gpx>
 "#;
 
-    /// The waypoint read-back closes its loop the same way the track one does: what the converter
-    /// stored (spec §4 records — name, coordinate, category, sentinel-encoded elevation, the
-    /// placement-time distance), `obcr_to_waypoints` returns, sorted by distance along.
+    /// What the converter stored, `obcr_to_waypoints` returns, sorted by distance along.
     #[test]
     fn obcr_round_trips_the_waypoints_it_stored() {
         let obcr = gpx_to_obcr(WPT_GPX.as_bytes(), "Tiny").unwrap();
@@ -466,11 +445,11 @@ mod tests {
         assert_eq!(far.category, 0, "Viewpoint is deliberately unmapped — generic");
         assert_eq!(far.ele, None, "no <ele> comes back as None, not as the sentinel");
         assert!(near.dist_along_m < far.dist_along_m, "route order: {near:?} vs {far:?}");
-        // The track is ~500 m long; the far waypoint's anchor is near its end.
+        // The track is about 500 m long, and the far waypoint's anchor is near its end.
         assert!(far.dist_along_m > 300 && far.dist_along_m < 700, "{far:?}");
     }
 
-    /// A route without waypoints is an empty list — the common case, and not an error.
+    /// A route without waypoints is an empty list, which is the common case and not an error.
     #[test]
     fn a_waypoint_free_route_decodes_to_no_waypoints() {
         let obcr = gpx_to_obcr(TINY_GPX.as_bytes(), "Tiny").unwrap();
@@ -488,15 +467,14 @@ mod tests {
     fn obcr_to_track_refuses_what_is_not_a_route() {
         // Long enough to read a header out of, wrong magic: not a route.
         assert_eq!(code_of(obcr_to_track(&[0u8; 200])), ErrorCode::NotRoute);
-        // Too short for even the header — indistinguishable from a cut-off copy.
+        // Too short for even the header, which reads the same as a cut-off copy.
         assert_eq!(code_of(obcr_to_track(b"short")), ErrorCode::InputTruncated);
         // A valid header cut off mid-index reads as truncation too.
         let obcr = gpx_to_obcr(TINY_GPX.as_bytes(), "Tiny").unwrap();
         assert_eq!(code_of(obcr_to_track(&obcr[..116])), ErrorCode::InputTruncated);
     }
 
-    /// The bridge adds nothing to the bytes: its output equals the shared converter's, driven
-    /// through the very same sink shape the rest of the tree uses.
+    /// The bridge adds nothing to the bytes: its output equals the shared converter's.
     #[test]
     fn gpx_conversion_matches_the_shared_converter_byte_for_byte() {
         let mine = gpx_to_obcr(TINY_GPX.as_bytes(), "Tiny").unwrap();
@@ -540,15 +518,14 @@ mod tests {
         assert!(mine.contains("<name>a &lt; b</name>"), "name escaping survives: {mine}");
     }
 
-    /// Every guard the UI shows a message for, and the codes it branches on. The distinction that
-    /// matters: an empty file, a non-GPX file and a GPX without a track are three different
-    /// answers, not one "invalid file".
+    /// An empty file, a non-GPX file and a GPX without a track are three different answers, not one
+    /// invalid-file message.
     #[test]
     fn each_rejected_input_gets_its_own_code() {
         assert_eq!(code_of(gpx_to_obcr(b"", "x")), ErrorCode::EmptyFile);
         assert_eq!(code_of(gpx_to_obcr(&[0x00, 0x01, 0x02, 0x03], "x")), ErrorCode::NotGpx);
-        // A FIT file's header starts with a length byte then ".FIT" — binary, so it is caught by
-        // the sniff rather than mis-reported as a GPX with no track.
+        // A FIT file's header starts with a length byte and then ".FIT", so the sniff catches it
+        // rather than reporting a GPX with no track.
         assert_eq!(code_of(gpx_to_obcr(b"\x0e\x10\x2e\x46\x49\x54", "x")), ErrorCode::NotGpx);
         // Waypoints but no track: well-formed GPX, nothing to ride.
         let wpt_only = r#"<?xml version="1.0"?><gpx><wpt lat="48.0" lon="7.8"><name>Home</name></wpt></gpx>"#;
@@ -559,7 +536,7 @@ mod tests {
         assert_eq!(code_of(track_to_gpx(&[0xAB; 19], "x")), ErrorCode::NotRide);
     }
 
-    /// A leading BOM and leading whitespace are both normal in exported GPX; neither may be
+    /// A leading BOM and leading whitespace are both normal in exported GPX, and neither may be
     /// mistaken for a binary file.
     #[test]
     fn the_xml_sniff_tolerates_a_bom_and_leading_whitespace() {
@@ -584,9 +561,7 @@ mod tests {
         assert_eq!(code_of(track_to_gpx(&samples, "retired")), ErrorCode::NotRide);
     }
 
-    /// The message is the product here, so pin that each one actually says what is wrong and what
-    /// to do — no test can catch "Invalid file" creeping back in, but this catches an empty or
-    /// bare one.
+    /// The message is the product here, so each one must say what is wrong and what to do.
     #[test]
     fn messages_name_the_cause_and_the_fix() {
         let no_track = gpx_to_obcr(b"<gpx></gpx>", "x").unwrap_err();
@@ -600,15 +575,14 @@ mod tests {
         assert!(short.message.contains("ride-v3"), "names the required format: {short}");
     }
 
-    /// A route past the storage ceiling reports *that*, with the number in it. Built as a
-    /// zig-zag whose every vertex is ~2 m off the chord, so the decimator (ε = 1 m) keeps them
-    /// all and the emitter runs out of chunks.
+    /// A route past the storage ceiling reports that, with the number in it. The zig-zag keeps
+    /// every vertex about 2 m off the chord, so the decimator keeps them all.
     #[test]
     fn a_route_over_the_storage_ceiling_says_so() {
         let mut gpx = String::from("<?xml version=\"1.0\"?><gpx><trk><trkseg>");
         for i in 0..=MAX_STORED_POINTS {
-            // ~1.1 m per step east, alternating ~2.2 m north/south — well inside the int16 delta
-            // guard, well outside the 1 m decimation tolerance.
+            // About 1.1 m per step east, alternating about 2.2 m north and south: inside the
+            // int16 delta guard, outside the 1 m decimation tolerance.
             let lon = 7_800_000 + i as i32 * 15;
             let lat = 48_000_000 + if i % 2 == 0 { 0 } else { 20 };
             gpx.push_str(&format!(
@@ -633,8 +607,8 @@ mod tests {
         assert_eq!(MAX_STORED_POINTS, MAX_POINTS_PER_CHUNK + (MAX_ROUTE_CHUNKS - 1) * (MAX_POINTS_PER_CHUNK - 1));
     }
 
-    /// A patch outside what was written is a bug, and must surface as an error rather than a
-    /// slice panic (which wasm reports as an unreachable trap with no message at all).
+    /// A patch outside what was written must surface as an error and not a slice panic, which wasm
+    /// reports as a trap with no message.
     #[test]
     fn the_sink_refuses_an_out_of_range_patch() {
         let mut sink = VecSink(vec![0u8; 4]);

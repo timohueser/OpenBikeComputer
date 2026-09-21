@@ -1,4 +1,4 @@
-//! `obc-mkimage` — the producer side of the SD-staged DFU pipeline (epic #615, signed in #997).
+//! `obc-mkimage` — the producer side of the SD-staged, signed DFU pipeline.
 //!
 //! Four subcommands over the shared [`obc_dfu`] OBCU codec:
 //!
@@ -62,8 +62,6 @@ fn print_usage() {
     println!("{USAGE}");
 }
 
-// ==================== keygen ====================
-
 /// `keygen`: a fresh Ed25519 keypair as two hex files — `<base>.seed` (secret, mode 0600) and
 /// `<base>.pub`. Entropy comes from the OS; nothing about the key is derived from the machine.
 fn keygen(args: &[String]) -> Result<(), String> {
@@ -103,8 +101,6 @@ fn keygen(args: &[String]) -> Result<(), String> {
     println!("  public key: {}", hex(public.as_bytes()));
     Ok(())
 }
-
-// ==================== wrap ====================
 
 /// `wrap`: prepend the OBCU header to a raw image and write `<out>`; with a seed, sign it in the
 /// same pass (the release pipeline's one-shot path).
@@ -189,8 +185,6 @@ fn wrap(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-// ==================== sign ====================
-
 /// `sign`: attach (or replace) the Ed25519 trailer on an already-wrapped container. Same result as
 /// `wrap --sign-seed`; separate so a build artifact can be signed later, on a machine that holds the
 /// key, without re-running the build.
@@ -205,8 +199,8 @@ fn sign(args: &[String]) -> Result<(), String> {
             "--out" => out = Some(next_value(&mut it, "--out")?.into()),
             "--sign-seed" => seed_src = Some(SeedSource::File(next_value(&mut it, "--sign-seed")?.into())),
             "--sign-seed-env" => seed_src = Some(SeedSource::Env(next_value(&mut it, "--sign-seed-env")?)),
-            // Pre-AR16 compatibility aliases. Deliberately absent from USAGE/help so both
-            // subcommands present one canonical signing vocabulary.
+            // Compatibility aliases, deliberately absent from the help so both subcommands present
+            // one canonical signing vocabulary.
             "--seed" => seed_src = Some(SeedSource::File(next_value(&mut it, "--seed")?.into())),
             "--seed-env" => seed_src = Some(SeedSource::Env(next_value(&mut it, "--seed-env")?)),
             other => return Err(format!("unexpected argument `{other}`\n\n{USAGE}")),
@@ -239,8 +233,6 @@ fn build_signed(header: ImageHeader, image: &[u8], seed: &[u8; SEED_LEN]) -> Vec
     blob.extend_from_slice(&signature);
     blob
 }
-
-// ==================== inspect ====================
 
 /// `inspect`: decode + verify both CRCs + the signature, human-readable, non-zero exit on anything
 /// invalid. This is CI's gate on a release artifact, so every check is fatal by default; the one
@@ -330,8 +322,6 @@ fn inspect(args: &[String]) -> Result<(), String> {
         Err(format!("{}: image failed verification", path.display()))
     }
 }
-
-// ==================== shared helpers ====================
 
 /// Where a secret seed comes from: a file (dev machines) or an environment variable (CI, so the
 /// secret never touches the filesystem).

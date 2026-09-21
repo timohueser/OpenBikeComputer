@@ -20,9 +20,9 @@ const sampleConfig = {
     disabled: ["highway/path"],
 };
 
-// Mirrors the OBCM style schema obc-pack serves (#557): the five original
-// fields plus line_style + color2. Values are placeholders — buildConfigForSubmit
-// only reads the property *names* (its known-key set).
+// Mirrors the OBCM style schema obc-pack serves: the five original fields plus
+// line_style + color2. Values are placeholders — buildConfigForSubmit only reads
+// the property *names*, for its known-key set.
 const mockSchema: SchemaEnvelope = {
     schema_version: 1,
     format_version: 10,

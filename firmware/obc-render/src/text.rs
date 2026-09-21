@@ -1,12 +1,8 @@
-//! On-screen text — the shared text primitive for the device UI.
+//! On-screen text: the shared text primitive for the device UI.
 //!
-//! Wires the converted **Terminus** pixel font (a bold monospace bitmap face; see
-//! [`font_data`](crate::font_data)) in size tiers. Routing every screen's text through this module
-//! makes the font a single edit here ([`Font::mono`]).
-//!
-//! The color is already resolved to the target's pixel type: the caller maps a palette RGB565
-//! through the host's `color_fn`, so text quantizes to the 64-color panel exactly like the map does
-//! and stays true-color in the simulator.
+//! It wires the converted Terminus bitmap face in size tiers, so the font is a single edit here.
+//! The colour is already resolved to the target's pixel type, so text quantizes to the 64-colour
+//! panel exactly like the map does and stays true-colour in the simulator.
 
 use embedded_graphics::{
     image::GetPixel,
@@ -18,13 +14,11 @@ use embedded_graphics::{
 
 use crate::font_data;
 
-/// A text size — one of five Terminus tiers. The names describe intent
-/// (`Caption` / `Label` / `Body` / `Display` / `Huge`), not pixel sizes, so screen code reads the
-/// same regardless of which Terminus cut each maps to (see [`Font::mono`]).
+/// A text size, one of five Terminus tiers. The names describe intent, not pixel sizes, so screen
+/// code reads the same whichever Terminus cut each maps to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Font {
-    /// Terminus 10×20 (cap ≈ 1.76 mm) — annotation over other content, where the text names a
-    /// thing the rider already sees: the settlement names on the map.
+    /// Terminus 10×20 (cap about 1.76 mm): annotation over other content, such as settlement names.
     Caption,
     /// Terminus 12×24 (cap ≈ 2.0 mm) — dense labels, list captions, the HUD strip title.
     Label,
@@ -32,13 +26,13 @@ pub enum Font {
     Body,
     /// Terminus 16×32 (cap ≈ 2.71 mm) — glanceable numbers (speed, the big stat tiles).
     Display,
-    /// Terminus 32×64 (cap ≈ 5.4 mm) — the one oversized readout: the Home-screen clock.
-    /// Pixel-doubled from `Display` (see [`font_data::TER_U64B`](crate::font_data)).
+    /// Terminus 32×64 (cap about 5.4 mm): the one oversized readout, the Home-screen clock,
+    /// pixel-doubled from `Display`.
     Huge,
 }
 
 impl Font {
-    /// The backing Terminus [`MonoFont`] — the single point the typeface is chosen.
+    /// The backing Terminus [`MonoFont`]: the single point the typeface is chosen.
     #[inline]
     pub(crate) fn mono(self) -> &'static MonoFont<'static> {
         match self {
@@ -50,13 +44,13 @@ impl Font {
         }
     }
 
-    /// Glyph cell width in pixels (monospace — every glyph is this wide).
+    /// Glyph cell width in pixels; the face is monospace.
     #[inline]
     pub fn char_width(self) -> u32 {
         self.mono().character_size.width
     }
 
-    /// Glyph cell height in pixels — the per-row advance for stacking lines.
+    /// Glyph cell height in pixels, the per-row advance for stacking lines.
     #[inline]
     pub fn line_height(self) -> u32 {
         self.mono().character_size.height
@@ -121,8 +115,8 @@ pub fn text_width(s: &str, font: Font) -> u32 {
     font.char_width() * s.chars().count() as u32
 }
 
-/// Visible vertical ink bounds of one line, relative to its cell-top anchor. Blank text has no bounds.
-/// Scans only rows outside the bounds already found; no glyph table or allocation is needed.
+/// Visible vertical ink bounds of one line, relative to its cell-top anchor; blank text has none.
+/// It scans only rows outside the bounds already found, so it needs no glyph table.
 pub fn text_ink_bounds(s: &str, font: Font) -> Option<core::ops::Range<i32>> {
     let mono = font.mono();
     let (w, h) = (mono.character_size.width, mono.character_size.height);
@@ -145,26 +139,21 @@ pub fn text_ink_bounds(s: &str, font: Font) -> Option<core::ops::Range<i32>> {
 
 /// Whether the text tiers can render `c` as a real glyph rather than the silent `?` fallback.
 ///
-/// The `Caption` / `Label` / `Body` / `Display` tiers share the one `LATIN` glyph strip
-/// (ASCII `0x20..=0x7f` + Latin-1 Supplement `0xa0..=0xff` + Latin Extended-A `0x100..=0x17f`);
-/// any other char maps to `?`'s slot and paints as `?`. This reads that mapping off the **actual
-/// font**, so callers (e.g. the i18n repertoire test) are pinned to the real coverage, not a
-/// hand-copied range that could drift from the strip. The ASCII-only `Huge` clock tier is not
-/// consulted — it carries no user-facing copy.
+/// The four text tiers share one `LATIN` glyph strip, and any other char maps to `?`'s slot. This
+/// reads that mapping off the actual font, so callers are pinned to the real coverage rather than
+/// a hand-copied range. The ASCII-only `Huge` clock tier carries no user-facing copy.
 #[inline]
 pub fn glyph_supported(c: char) -> bool {
-    // Any text tier shares the `LATIN` mapping; the Body cut stands in for all of them. An
-    // unmapped char resolves to `?`'s fallback slot — so `c` is covered iff it lands on a
-    // different slot, except `?` itself, which legitimately owns that slot. (`index` resolves
-    // on the `&dyn GlyphMapping` field, so its trait needs no import here.)
+    // Any text tier shares the `LATIN` mapping, so the Body cut stands in for all of them. An
+    // unmapped char resolves to `?`'s fallback slot, so `c` is covered if it lands on a different
+    // slot, except `?` itself, which legitimately owns that slot.
     let mapping = Font::Body.mono().glyph_mapping;
     c == '?' || mapping.index(c) != mapping.index('?')
 }
 
-/// Draw `s` anchored at `anchor`, in `font`, aligned `align` about `anchor.x`, in the
-/// already-resolved `color`. The glyph cell top sits at `anchor.y`; capital ink starts at
-/// `anchor.y + font.cap_top()`. Returns the position just past the string for chaining runs; a draw error
-/// falls back to `anchor`.
+/// Draw `s` anchored at `anchor`, aligned about `anchor.x`, in the already-resolved `color`. The
+/// glyph cell top sits at `anchor.y`. Returns the position just past the string for chaining runs;
+/// a draw error falls back to `anchor`.
 pub fn draw_text<D>(target: &mut D, s: &str, anchor: Point, font: Font, align: TextAlign, color: D::Color) -> Point
 where
     D: DrawTarget,
@@ -175,9 +164,8 @@ where
 }
 
 /// Draw a text run counter-clockwise from `bottom_left`, optionally downsampling the source bitmap
-/// by an integer `divisor`. Peak View uses the Label face at 2:1, yielding a compact 6x12 label
-/// without shipping another font strip. Each output pixel is on when any source pixel in its
-/// `divisor` square is on, so the thin Terminus strokes remain legible after reduction.
+/// by an integer `divisor`. Each output pixel is on when any source pixel in its `divisor` square
+/// is on, so the thin Terminus strokes stay legible after reduction.
 pub fn draw_text_ccw<D>(target: &mut D, s: &str, bottom_left: Point, font: Font, divisor: u32, color: D::Color)
 where
     D: DrawTarget,

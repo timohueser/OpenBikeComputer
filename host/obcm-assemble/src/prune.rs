@@ -1,57 +1,37 @@
-//! §4.6.4 island pruning, **hierarchically** — the pass that decides which components of the merged
-//! graph reach the map, without ever holding a whole-map union-find (#1116 D3).
+//! Island pruning, hierarchically: the pass that decides which components of the merged graph
+//! reach the map, without ever holding a whole-map union-find.
 //!
-//! The flat formulation is three arrays over the node set — `parent`, `roots`, and a `keep` bit —
-//! plus a pass over every edge. At DACH scale that is gigabytes of random access, and it is the last
-//! thing in the merge that genuinely looks like it needs the whole graph at once.
+//! The flat formulation is three arrays over the node set plus a pass over every edge, which at
+//! DACH scale is gigabytes of random access. It is avoidable because two cells can only be
+//! connected through a seam node: a collection id that is not a seam id is named by exactly one
+//! cell, the one that minted it and collected every edge incident to it. So connectivity
+//! decomposes:
 //!
-//! It does not, and the reason is the same seam fact the rest of phase D is built on
-//! (`OBCA_Spec.md` §4.6.2): **two cells can only be connected through a seam node**. A collection id
-//! that is not a seam id is named by exactly one cell — the one that minted it, and the one that
-//! collected every edge incident to it. So connectivity decomposes:
+//! 1. Per cell, a union-find over that cell's own minted nodes plus one entry per seam another cell
+//!    minted, sized by the cell and thrown away when the cell ends. It emits each own node's local
+//!    component, each surviving edge's local component, and one incidence `(component, seam slot)`
+//!    per seam the cell touches.
+//! 2. Globally, a union-find over components and seams only — tens of thousands of entries against
+//!    a state-sized bake's three million nodes, and the only structure that spans the map.
 //!
-//! 1. **Per cell**, a union-find over that cell's *own* minted nodes plus one entry per seam another
-//!    cell minted, sized by the cell and thrown away when the cell ends. It emits three things: each
-//!    own node's local component, each surviving edge's local component, and one **incidence**
-//!    `(component, seam slot)` per seam the cell touches.
-//! 2. **Globally**, a union-find over *components and seams only*. At a state-sized bake that is
-//!    tens of thousands of entries against three million nodes, and it is the only structure that
-//!    spans the map.
-//!
-//! The per-node and per-edge component labels are streamed to [scratch](crate::scratch) — the node
+//! The per-node and per-edge component labels are streamed to [scratch](crate::scratch): the node
 //! labels in collection-id order, so the renumber reads them in lockstep with the node stream, and
 //! the edge labels in collection order, so the join pass does the same with the edge stream.
 //!
-//! # Why this is the same kept set as the flat pass
+//! This decides the same kept set as a flat union-find. Nothing is split, because every edge is
+//! unioned and a seam node is minted by exactly one cell, which always emits an incidence for it
+//! even when it has no edges there. Nothing is fused, because a union only happens between two
+//! endpoints of an actual edge or between a component and a seam it contains. And the counts are
+//! the same sums, because every collection id is counted once, in the cell that minted it, and
+//! every surviving edge once, in the cell that collected it.
 //!
-//! The two agree component for component:
-//!
-//! * *Nothing is split.* Every edge is unioned. An edge with both endpoints inside one cell is
-//!   unioned in that cell's pass; an edge touching a seam is unioned into that cell's seam entry,
-//!   and the incidence carries the union to the global pass, where the seam's other cells meet it.
-//!   A seam node is minted by exactly one cell, which always emits an incidence for it — even when
-//!   it has no edges there — so no seam is ever an orphan.
-//! * *Nothing is fused.* A union only ever happens between two endpoints of an actual edge (per
-//!   cell) or between a component and a seam it genuinely contains (globally). Two nodes end up in
-//!   one component only if a chain of edges joins them, which is the definition.
-//! * *The counts are the same sums.* Every collection id is counted exactly once, in the cell that
-//!   minted it (a seam id included — its seam entry counts nothing, because its minting cell already
-//!   did). Every surviving edge is counted once, in the cell that collected it, against the
-//!   component of its endpoint `a` — which is what the flat pass counts too.
-//!
-//! # The one deliberate difference: the tie-break
-//!
-//! §4.6.4 keeps "the largest component" plus everything at or above the threshold, and *largest*
-//! needs a tie-break when two components have the same node count **and** the same edge count. The
-//! flat pass broke it with the smallest union-find **root id**, which is a node of the component but
-//! an arbitrary one: which node ends up as the root is a property of the order the unions happened
-//! in, not of the graph. This pass breaks it with the component's **smallest collection id**, which
-//! is a property of the component itself.
-//!
-//! The two can only ever disagree about a component that ties another on both counts *and* is below
-//! the threshold — anything at or above it is kept regardless of which one is called largest. Both
-//! published regions and the assembler's oracle land on the same bytes either way; a synthetic pair
-//! of tied components pins the new rule, because nothing else can reach it.
+//! The one deliberate difference is the tie-break. "The largest component" needs one when two
+//! components have the same node count and the same edge count, and this pass breaks it with the
+//! component's smallest collection id, which is a property of the component itself, rather than
+//! with a union-find root, which is a property of the order the unions happened in. The two rules
+//! can only disagree about a component that ties another on both counts and is below the threshold;
+//! a synthetic pair of tied components pins the new rule, because nothing in a real bake reaches
+//! it.
 
 use std::collections::BTreeMap;
 
@@ -65,24 +45,22 @@ const LABEL: usize = 4;
 
 /// What the prune leaves behind: two label streams and the verdict per label.
 ///
-/// Neither stream is a whole-map array in memory — they are scratch files read once, forward, by the
-/// passes that need them. `keep` is indexed by the label both streams carry, and there is one label
-/// per *component of a cell*, which is thousands of entries at country scale.
+/// Neither stream is a whole-map array in memory — they are scratch files read once, forward, by
+/// the passes that need them. `keep` is indexed by the label both streams carry, and there is one
+/// label per component of a cell.
 #[derive(Debug)]
 pub struct Pruned {
     /// One `u32` component label per collection id, in id order. The renumber reads it beside the
     /// node stream; a node is kept exactly when `keep[label]`.
     pub node_comp: ScratchId,
-    /// One `u32` component label per **surviving** edge (post-§4.6.3), in collection order. The join
-    /// pass reads it beside the edge stream, skipping the same duplicates the dedup killed.
+    /// One `u32` component label per surviving edge, in collection order. The join pass reads it
+    /// beside the edge stream, skipping the same duplicates the dedup killed.
     pub edge_comp: ScratchId,
     /// Whether each label's component reaches the map.
     pub keep: Vec<bool>,
 }
 
-/// A union-find with path halving. `union` points the first root at the second, exactly as the flat
-/// pass did — with a canonical representative (see the module header) it no longer matters which,
-/// but there is no reason to differ.
+/// A union-find with path halving.
 struct Uf {
     parent: Vec<u32>,
 }
@@ -93,7 +71,7 @@ impl Uf {
     }
 
     /// Add one more singleton entry and return its index — how a cell's pass grows an entry for a
-    /// seam it did not mint the first time an edge names it.
+    /// seam it did not mint, the first time an edge names it.
     fn push(&mut self) -> u32 {
         let x = self.parent.len() as u32;
         self.parent.push(x);
@@ -128,9 +106,9 @@ struct Components {
     nodes: Vec<u32>,
     /// Surviving edges booked against it.
     edges: Vec<u32>,
-    /// The smallest collection id it holds, or `u32::MAX` for a label with no own nodes (a component
-    /// made only of seams another cell minted — it contributes connectivity and edges, and its
-    /// nodes are counted where they were minted).
+    /// The smallest collection id it holds, or `u32::MAX` for a label with no own nodes — a
+    /// component made only of seams another cell minted, whose nodes are counted where they were
+    /// minted.
     min_id: Vec<u32>,
 }
 
@@ -151,9 +129,8 @@ impl Components {
 
 /// Which union-find entry a collection id is, inside cell `[base, base + n)`'s pass.
 ///
-/// A seam node another cell minted gets an entry of its own, created on first sight; everything else
-/// — including a seam this cell minted, which *is* one of its own nodes — is the own entry its id
-/// names directly.
+/// A seam node another cell minted gets an entry of its own, created on first sight; everything
+/// else, a seam this cell minted included, is the own entry its id names directly.
 fn localize(uf: &mut Uf, foreign: &mut BTreeMap<u32, u32>, seam_id: &[u32], base: u32, n: u32, id: u32) -> Result<u32> {
     if let Ok(slot) = seam_id.binary_search(&id) {
         if id < base || id >= base + n {
@@ -162,7 +139,7 @@ fn localize(uf: &mut Uf, foreign: &mut BTreeMap<u32, u32>, seam_id: &[u32], base
     }
     if id < base || id >= base + n {
         // A non-seam id another cell minted would mean an edge crossed a cell boundary somewhere
-        // other than §4.6.2's unification, which is the one thing §4.6 forbids outright.
+        // other than the seam unification, which is the one thing the merge forbids outright.
         return Err(Error::Format(format!(
             "a merged edge names node {id}, which is neither this cell's ({base}..{}) nor a seam — no single cell \
              joined it (OBCA §4.6)",
@@ -172,12 +149,12 @@ fn localize(uf: &mut Uf, foreign: &mut BTreeMap<u32, u32>, seam_id: &[u32], base
     Ok(id - base)
 }
 
-/// §4.6.4 over the whole merged graph, one cell at a time. See the module header.
+/// Island pruning over the whole merged graph, one cell at a time.
 ///
-/// `edges` is the collection-order edge stream, `dead` the §4.6.3 duplicates' collection indices
-/// (ascending), `cell_base` the first collection id of each cell followed by the total, and
-/// `seam_id` the seam table's ids — ascending, because seams are minted in collection order, which
-/// is what makes the membership test a binary search rather than a map.
+/// `edges` is the collection-order edge stream, `dead` the duplicates' collection indices,
+/// ascending, `cell_base` the first collection id of each cell followed by the total, and `seam_id`
+/// the seam table's ids — ascending, because seams are minted in collection order, which is what
+/// makes the membership test a binary search rather than a map.
 #[allow(clippy::too_many_arguments)]
 pub fn prune(
     scratch: &dyn ScratchStore,
@@ -209,9 +186,9 @@ pub fn prune(
         let mut foreign: BTreeMap<u32, u32> = BTreeMap::new(); // seam slot → its entry, ordered so
         let mut edge_at: Vec<u32> = Vec::new(); // …the incidences below are emitted deterministically
 
-        // The stream is in collection order and every cell's edges are contiguous in it, so a cell's
-        // run ends the moment a record names a different one. A cell that collected nothing is an
-        // empty run, which this skips without a special case.
+        // The stream is in collection order and every cell's edges are contiguous in it, so a
+        // cell's run ends the moment a record names a different one. A cell that collected nothing
+        // is an empty run, which this skips without a special case.
         while let Some(rec) = ahead {
             if edge_cell(&rec) != ci as u32 {
                 break;
@@ -219,8 +196,8 @@ pub fn prune(
             let at = index;
             index += 1;
             ahead = src.next().transpose()?;
-            // The duplicates §4.6.3 killed are not in the graph at all: they neither connect (they
-            // are parallel to their survivor, so they could not) nor count towards the threshold.
+            // The duplicates the dedup killed are not in the graph at all: they neither connect,
+            // being parallel to their survivor, nor count towards the threshold.
             if next_dead < dead.len() && dead[next_dead] == at {
                 next_dead += 1;
                 continue;
@@ -270,11 +247,11 @@ pub fn prune(
     let (edge_comp, edge_labels) = edge_comp.seal()?;
     debug_assert_eq!(node_labels, id_count as u64, "one component label per collection id");
     debug_assert_eq!(edge_labels + dead.len() as u64, index as u64, "one label per surviving edge");
-    // The cell-grouped walk above reached every record, which is the whole premise of reading the
-    // stream as a sequence of per-cell runs.
+    // The cell-grouped walk above reached every record, which is the premise of reading the stream
+    // as a sequence of per-cell runs.
     debug_assert_eq!(index as u64, edge_total, "the per-cell runs do not cover the edge stream");
 
-    // --- The global pass: components and seams, nothing else. ---
+    // The global pass: components and seams, nothing else.
     let n_comp = comps.nodes.len();
     let mut global = Uf::new(n_comp + seam_id.len());
     for &(label, slot) in &incidences {
@@ -303,8 +280,8 @@ pub fn prune(
     }
     drop(seen);
 
-    // The key is total — distinct components hold disjoint node sets, so their smallest ids differ —
-    // which is why the answer does not depend on the order `roots` came out in.
+    // The key is total — distinct components hold disjoint node sets, so their smallest ids differ
+    // — which is why the answer does not depend on the order `roots` came out in.
     let largest = *roots
         .iter()
         .max_by_key(|&&r| (nodes_per[r as usize], edges_per[r as usize], std::cmp::Reverse(min_per[r as usize])))
@@ -337,7 +314,7 @@ mod tests {
         r
     }
 
-    /// A whole collection, as the passes before §4.6.4 would have left it.
+    /// A whole collection, as the passes before the prune would have left it.
     struct Fixture {
         /// Each cell's first minted id, with the total appended.
         cell_base: Vec<u32>,
@@ -345,7 +322,7 @@ mod tests {
         seam_id: Vec<u32>,
         /// `(a, b, cell)`, grouped by cell exactly as the collection order is.
         edges: Vec<(u32, u32, u32)>,
-        /// Collection indices §4.6.3 killed, ascending.
+        /// Collection indices the dedup killed, ascending.
         dead: Vec<u32>,
     }
 
@@ -384,7 +361,7 @@ mod tests {
             (stats, nodes, edges_kept)
         }
 
-        /// The flat union-find §4.6.4 was written as, with the canonical tie-break (module header).
+        /// The flat union-find, with the same tie-break.
         fn oracle(&self, min_component_edges: usize) -> (NavStats, Vec<bool>, Vec<bool>) {
             let n = self.id_count() as usize;
             let mut uf = Uf::new(n);
@@ -443,8 +420,8 @@ mod tests {
     }
 
     /// `cells` cells of `per` nodes each, every `stride`-th id a seam, and `density` edges per cell
-    /// drawn from that cell's own nodes and the seams minted before it — which is exactly the shape
-    /// §4.6.1/§4.6.2 leave behind.
+    /// drawn from that cell's own nodes and the seams minted before it — the shape the collect and
+    /// unify passes leave behind.
     fn fixture(seed: u32, cells: usize, per: u32, stride: u32, density: u32) -> Fixture {
         let mut rng = Rng(seed | 1);
         let cell_base: Vec<u32> = (0..=cells as u32).map(|c| c * per).collect();
@@ -462,11 +439,10 @@ mod tests {
         Fixture { cell_base, seam_id, edges, dead: Vec::new() }
     }
 
-    /// **The equivalence.** Per-cell union-finds plus a global one over components-and-seams decide
-    /// exactly what one union-find over every node decides — the same components, the same counts,
-    /// the same kept set — over a sweep of shapes: sparse graphs that fragment into many islands,
-    /// dense ones that are a single component, and thresholds from "keep everything" to "keep only
-    /// the largest".
+    /// The equivalence. Per-cell union-finds plus a global one over components and seams decide
+    /// exactly what one union-find over every node decides, over a sweep of shapes: sparse graphs
+    /// that fragment into many islands, dense ones that are a single component, and thresholds from
+    /// "keep everything" to "keep only the largest".
     #[test]
     fn the_hierarchical_prune_is_the_flat_prune() {
         for seed in 1..12u32 {
@@ -486,9 +462,9 @@ mod tests {
         }
     }
 
-    /// …and the same holds once §4.6.3 has taken copies out of the stream, because a duplicate is
-    /// parallel to its survivor: it cannot connect anything new, but it would inflate the count the
-    /// threshold is read against, so it must be gone from *both* sums.
+    /// …and the same holds once the dedup has taken copies out of the stream, because a duplicate
+    /// is parallel to its survivor: it cannot connect anything new, but it would inflate the count
+    /// the threshold is read against, so it must be gone from both sums.
     #[test]
     fn the_duplicates_the_dedup_killed_count_for_nothing() {
         for seed in 1..8u32 {
@@ -516,9 +492,9 @@ mod tests {
         }
     }
 
-    /// **The tie-break.** Two components with the same node count and the same edge count, both
-    /// below the threshold: exactly one is kept, and it is the one holding the smallest collection
-    /// id (module header). Nothing in a real bake reaches this, which is why it is built by hand.
+    /// The tie-break. Two components with the same node count and the same edge count, both below
+    /// the threshold: exactly one is kept, and it is the one holding the smallest collection id.
+    /// Nothing in a real bake reaches this, which is why it is built by hand.
     #[test]
     fn the_largest_of_two_tied_components_is_the_one_with_the_smallest_id() {
         // Two cells, four nodes each, one path per cell — identical shapes, so the node and edge
@@ -541,7 +517,7 @@ mod tests {
     }
 
     /// A seam node its cell never gave an edge is still a node of the graph, and another cell can
-    /// still reach it — which only works because a cell emits an incidence for **every** seam it
+    /// still reach it — which only works because a cell emits an incidence for every seam it
     /// minted, not only the ones it wired up.
     #[test]
     fn a_seam_the_minting_cell_never_used_still_joins_the_component_that_reaches_it() {
@@ -560,8 +536,8 @@ mod tests {
         assert_eq!((stats, keep_node), (want, want_node));
     }
 
-    /// An edge naming a node no cell of its own minted is the one thing §4.6 forbids outright, so it
-    /// is a refusal rather than a component quietly stitched to the wrong cell.
+    /// An edge naming a node no cell of its own minted is forbidden outright, so it is a refusal
+    /// rather than a component quietly stitched to the wrong cell.
     #[test]
     fn an_edge_reaching_into_another_cell_is_refused() {
         let scratch = MemoryScratch::new();

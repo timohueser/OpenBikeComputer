@@ -27,7 +27,7 @@ REPO_ROOT = os.path.dirname(BUILDER_ROOT)
 TINY_PBF = os.path.join(HERE, "corpus", "data", "tiny.osm.pbf")
 SCHEMA_PRESET = os.path.join(BUILDER_ROOT, "presets", "schema.json")
 
-# §8.6 canonical class order (must match obc-pack/src/nav.rs and OBCM_Spec §8.6).
+# Canonical class order; must match obc-pack/src/nav.rs and the OBCM spec.
 HIGHWAY_CLASSES = [
     "cycleway", "path", "track", "footway", "steps", "bridleway", "living_street",
     "residential", "service", "unclassified", "tertiary", "secondary", "primary", "trunk_cycl",
@@ -40,7 +40,6 @@ CLIMB_WEIGHT_OFF = 52
 OBCM_VERSION = int(re.search(r"pub const VERSION: u8 = (\d+);",
                              open(os.path.join(REPO_ROOT, "firmware/obc-formats/src/obcm.rs")).read())[1])
 
-
 def _pack_bin():
     override = os.environ.get("OBC_PACK_BIN")
     if override and os.path.exists(override):
@@ -51,12 +50,10 @@ def _pack_bin():
             return p
     return None
 
-
 requires_pack = pytest.mark.skipif(
     _pack_bin() is None or not os.path.exists(TINY_PBF),
     reason="obc-pack binary or tiny corpus fixture not built",
 )
-
 
 def _quantize(v):
     """Mirror obc-pack's quantize_multiplier: forbidden -> 0, else round(v*16) clamped 16..255."""
@@ -64,7 +61,6 @@ def _quantize(v):
         return 0
     q = round(v * 16)
     return max(16, min(255, q))
-
 
 def _expected_record(profile):
     """Build the 56-byte v12 §8.6 record we expect the packer to write for a profile."""
@@ -78,11 +74,10 @@ def _expected_record(profile):
     name = profile["name"].encode("utf-8")
     assert len(name) <= NAME_LEN
     name_field = name + b"\xff" * (NAME_LEN - len(name))
-    # v12 tail: the climb weight (absent in a config -> climb-blind) and three reserved ZERO bytes.
-    # Zero, not 0xFF: the name field is a padded string, this is a reserved field.
+        # The climb weight (absent in a config means climb-blind) and three reserved ZERO bytes.
+        # Zero, not 0xFF: the name field is a padded string, this is a reserved field.
     climb = bytes([int(profile.get("climb_weight", 0))]) + b"\x00" * 3
     return name_field + bytes(highway) + bytes(surface) + climb
-
 
 def _pack(tmp_path, profiles, min_component_edges=None):
     """Pack the tiny corpus with the given routing.profiles; return the .obcm bytes."""
@@ -95,8 +90,8 @@ def _pack(tmp_path, profiles, min_component_edges=None):
     cfg_path = tmp_path / "config.json"
     cfg_path.write_text(json.dumps(cfg))
     out_path = tmp_path / "out.obcm"
-    # --no-land avoids the network land-polygon dataset; the profile table is
-    # written regardless of graph contents (§8.6 is always present).
+        # --no-land avoids the network land-polygon dataset; the profile table is
+        # written regardless of graph contents.
     proc = subprocess.run(
         [_pack_bin(), TINY_PBF, str(cfg_path), str(out_path), "--no-land"],
         capture_output=True, text=True,
@@ -104,13 +99,12 @@ def _pack(tmp_path, profiles, min_component_edges=None):
     assert proc.returncode == 0, f"obc-pack failed: {proc.stdout}\n{proc.stderr}"
     return out_path.read_bytes()
 
-
 def _profile_table(data):
     """Locate and slice the §8.6 profile table out of a packed .obcm."""
     assert data[:4] == b"OBCM", "bad magic"
     assert data[4] == OBCM_VERSION, f"expected OBCM v{OBCM_VERSION}, got v{data[4]}"
-    # v14 (§1.1): every offset that addresses the *file* counts 2^scale-byte units, not bytes.
-    # Arithmetic *inside* a structure (the `nav_off + 22` below) stays in bytes.
+        # Every offset that addresses the *file* counts 2^scale-byte units, not bytes.
+        # Arithmetic *inside* a structure (the `nav_off + 22` below) stays in bytes.
     scale = data[40]  # header: Offset Scale @ 40 (u8)
     assert 0 <= scale <= 9, f"§1.1 restricts Offset Scale to 0..=9, got {scale}"
     unit = 1 << scale
@@ -123,7 +117,6 @@ def _profile_table(data):
     end = table_off + count * PROFILE_RECORD_LEN
     return count, data[table_off:end]
 
-
 CUSTOM = {
     "name": "TestBike",
     "default": 4.0,  # -> 64
@@ -132,7 +125,6 @@ CUSTOM = {
     "climb_weight": 12,  # v12 §8.6: flat metres charged per metre of ascent
 }
 MINIMAL = {"name": "Zwei", "default": 2.0}
-
 
 @requires_pack
 def test_custom_profiles_round_trip_to_112_bytes(tmp_path):
@@ -153,7 +145,6 @@ def test_custom_profiles_round_trip_to_112_bytes(tmp_path):
     assert rec1[CLIMB_WEIGHT_OFF] == 0           # …and absent means climb-blind
     assert rec0[CLIMB_WEIGHT_OFF + 1:] == b"\x00" * 3, "the reserved tail is zero"
 
-
 @requires_pack
 def test_forbidden_primary_is_quantized_to_zero(tmp_path):
     """The acceptance-criterion shape: switching a class to forbidden zeroes its wire byte."""
@@ -162,14 +153,12 @@ def test_forbidden_primary_is_quantized_to_zero(tmp_path):
     _count, table = _profile_table(data)
     assert table[NAME_LEN + HIGHWAY_CLASSES.index("primary")] == 0
 
-
 @requires_pack
 def test_single_profile_count(tmp_path):
     data = _pack(tmp_path, [CUSTOM])
     count, table = _profile_table(data)
     assert count == 1
     assert table == _expected_record(CUSTOM)
-
 
 @requires_pack
 def test_sub_one_multiplier_is_rejected_with_admissibility_error(tmp_path):
@@ -189,14 +178,12 @@ def test_sub_one_multiplier_is_rejected_with_admissibility_error(tmp_path):
     assert "below 1.0" in msg
     assert "admissible" in msg
 
-
 # --- Pure builder-API endpoints (no network) --------------------------------
 # Called directly (not via TestClient) so the suite needs no httpx — the
 # handlers return FastAPI JSONResponses whose body we decode.
 
 def _endpoint_json(response):
     return json.loads(bytes(response.body))
-
 
 def test_schema_endpoint_exposes_routing_defaults():
     """The builder serves the canonical shipped profiles as the schema default —
@@ -213,7 +200,6 @@ def test_schema_endpoint_exposes_routing_defaults():
     mult = schema["$defs"]["multiplier"]["oneOf"]
     assert any(o.get("minimum") == 1.0 for o in mult)
     assert any(o.get("const") == "forbidden" for o in mult)
-
 
 def test_presets_round_trip_routing():
     """Every shipped preset carries a complete routing section (CLI-usable), so the

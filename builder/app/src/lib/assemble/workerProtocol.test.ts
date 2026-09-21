@@ -144,8 +144,8 @@ describe("isWorkerResponse", () => {
         expect(isWorkerResponse({ type: "error", code: "not-a-code", message: "x" })).toBe(false);
         // A `file` whose bytes are not bytes: the one field the download screen dereferences.
         expect(isWorkerResponse({ type: "file", sha256: "a".repeat(64), byteLength: 1, bytes: [1] })).toBe(false);
-        // The message variants a set-era worker would send. There is no shard, no manifest and no
-        // plan any more, and a build still speaking them must be dropped rather than half-understood.
+        // Message variants this protocol does not speak: a build still sending them must be
+        // dropped rather than half-understood.
         expect(
             isWorkerResponse({ type: "shard", name: "MS1S00.OBM", role: "core", sha256: "", byteLength: 1 }),
         ).toBe(false);

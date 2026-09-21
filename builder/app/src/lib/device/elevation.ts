@@ -1,19 +1,13 @@
 /**
- * The preview's elevation profile: distance-along-track on x, elevation on y, as one SVG path —
- * plus the windowing math behind the chart-room preview's zoom (drag a range, scroll to zoom,
- * double-click to reset).
+ * The preview's elevation profile: distance-along-track on x, elevation on y, as one SVG path, plus
+ * the windowing math behind the preview's zoom.
  *
- * Pure geometry, shared by the route preview (points from the wasm read-back) and the ride
- * preview (points from `decodeRideObject`). Distance is equirectangular with a `cos(lat)`
- * correction — the same approximation `library.ts`'s thumbnail uses, and metres-accurate at
- * track scale.
+ * Pure geometry, shared by the route preview and the ride preview. Distance is equirectangular with
+ * a `cos(lat)` correction, which is metres-accurate at track scale.
  *
- * One distance axis for everything: {@link cumulativeDistances} runs over **all** points —
- * elevation-less ones included, since they exist on the map polyline — and both the profile and
- * the map's coral/gray split are driven from it. A zoom window is a `[t0, t1]` pair of fractions
- * of the total distance; {@link elevationProfile} redraws the windowed span from the real points
- * (interpolating the elevation at the cut edges), and {@link windowIndexRange} names the point
- * indices the map highlights for the same window.
+ * One distance axis for everything: {@link cumulativeDistances} runs over **all** points, including
+ * elevation-less ones, since they exist on the map polyline. A zoom window is a `[t0, t1]` pair of
+ * fractions of the total distance.
  */
 
 /** The minimum a profile is drawn from: with one point there is no distance axis at all. */
@@ -161,12 +155,11 @@ export function pointAtDistance(
 }
 
 /**
- * The elevation at distance `d` metres along the track, or null where there is no honest number:
- * the hover cursor's readout. Interpolated between the two track points bracketing `d` — and
- * **only** when both carry real elevation. A null-elevation neighbour means `d` falls in a gap
- * the source recorded nothing for; the profile's *line* spans such a gap (it interpolates between
- * the surrounding samples), but a readout that printed that ramp would be inventing a number, so
- * the label goes quiet instead. Clamped to the track's ends; null on an empty track.
+ * The elevation at distance `d` metres along the track, or null where there is no honest number.
+ * Interpolated between the two track points bracketing `d`, and **only** when both carry real
+ * elevation. A null-elevation neighbour means `d` falls in a gap the source recorded nothing for:
+ * the profile's line spans such a gap, but a readout that printed that ramp would be inventing a
+ * number, so the label goes quiet instead.
  */
 export function elevationAtDistance(
     points: readonly ProfilePoint[],
@@ -197,10 +190,9 @@ export function elevationAtDistance(
 }
 
 /**
- * The index of the track point nearest `(lat, lon)`, by the same equirectangular metric the
- * distance axis uses — the reverse hover: map cursor in, position along the track out
- * (`cum[index]`). A plain scan: preview tracks are thousands of points, and one pass per
- * animation frame is nothing. `-1` on an empty track.
+ * The index of the track point nearest `(lat, lon)`, by the same equirectangular metric the distance
+ * axis uses. A plain scan: preview tracks are thousands of points, and one pass per animation frame
+ * is nothing. `-1` on an empty track.
  */
 export function nearestPointIndex(points: readonly ProfilePoint[], lat: number, lon: number): number {
     const probe: ProfilePoint = { lat, lon, ele: null };
@@ -217,14 +209,13 @@ export function nearestPointIndex(points: readonly ProfilePoint[], lat: number, 
 }
 
 /**
- * Build the profile for the window, or null where there is nothing honest to draw — fewer than
- * two usable points in the window, or no elevation anywhere in it. A *flat* track still draws (a
- * flat line is a true statement); a track with no elevation data does not.
+ * Build the profile for the window, or null where there is nothing honest to draw — fewer than two
+ * usable points in the window, or no elevation anywhere in it. A *flat* track still draws, because a
+ * flat line is a true statement; a track with no elevation data does not.
  *
- * The x axis is true distance along the whole track ({@link cumulativeDistances}): points without
- * elevation still advance it, they just contribute no sample. Where the window's edge cuts
- * between two samples, the elevation at the cut is interpolated so the drawn span is exactly the
- * window, not the nearest sample inside it.
+ * The x axis is true distance along the whole track: points without elevation still advance it, they
+ * just contribute no sample. Where the window's edge cuts between two samples, the elevation at the
+ * cut is interpolated so the drawn span is exactly the window.
  */
 export function elevationProfile(
     points: readonly ProfilePoint[],

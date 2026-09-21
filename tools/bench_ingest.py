@@ -34,7 +34,6 @@ import sys
 import time
 import zlib
 
-# ── the wire (mirror of flat_store_bench.rs's module docs) ──────────────────────────────────────
 
 MAGIC = b"OBCI"
 VERSION = 1
@@ -58,8 +57,8 @@ NAME_CAPACITY = 48
 # uses `--wait` instead: that one is waiting for a person to flash the board.
 RETRY_WAIT = 15.0
 
-# `FLAT_Store_Format.md` §3.1. The device decodes the same table and refuses anything else, so this
-# is a convenience for the command line rather than a second authority.
+# The device decodes the same table and refuses anything else, so this is a convenience for the
+# command line rather than a second authority.
 KINDS = {
     "route": 1,
     "trip": 2,
@@ -90,16 +89,13 @@ REASONS = {
     REASON_LINK: "the link timed out or the UARTE reported an error",
 }
 
-# Failures the device recovered from cleanly — it cancelled the reservation and went back to
-# advertising — so sending the whole object again is the right response and costs nothing but time.
+# Failures the device recovered from cleanly: it cancelled the reservation and went back to
+# advertising, so sending the whole object again is the right response.
 #
-# Two reasons are deliberately NOT here, for opposite causes:
-#   - a refused commit (10) is not self-cleaning: the device ends the session holding the extents
-#     until a remount, so a retry fails differently and for the wrong reason;
-#   - a refused chunk (8) IS self-cleaning — the device cancels and carries on — but retrying it is
-#     pointless. It means the store would not take those bytes at that offset, and the retry sends
-#     the identical bytes to the identical offset. Only a different card or a different payload
-#     changes the answer, so the operator should see the refusal rather than watch it repeat.
+# Two reasons are not here. A refused commit is not self-cleaning, because the device ends the
+# session holding the extents until a remount. A refused chunk is self-cleaning, but a retry sends
+# the identical bytes to the identical offset, so only a different card or payload changes the
+# answer.
 RETRIABLE = frozenset({REASON_PAYLOAD_CRC, REASON_LINK})
 
 # Why the device stopped listening. `GONE` is READY's shape with another tag, sent on every exit
@@ -234,7 +230,6 @@ def chunk_plan(total: int, chunk: int) -> list[int]:
         plan.append(remainder)
     return plan
 
-# ── the link ────────────────────────────────────────────────────────────────────────────────────
 
 class Link:
     """A byte pipe to the device. `SerialLink` is the real one; the tests supply a fake."""
@@ -258,8 +253,8 @@ class SerialLink(Link):
         try:
             self._port = serial.Serial(port, baud, timeout=0.05, rtscts=False, dsrdtr=False)
         except OSError as error:  # pragma: no cover — environment, not logic
-            # `serial.SerialException` is an OSError. A traceback here tells an operator nothing they
-            # can act on; the two things that are actually wrong are the tty name and the cable.
+            # `serial.SerialException` is an OSError. A traceback tells an operator nothing they
+            # can act on; the two things that go wrong are the tty name and the cable.
             raise IngestError(
                 f"cannot open {port}: {error}. On macOS the DK exposes two CDC ttys and only one is "
                 "live — try the other (`ls /dev/cu.usbmodem*`), use `cu.*` rather than `tty.*`, and "
@@ -282,7 +277,6 @@ class SerialLink(Link):
     def close(self) -> None:
         self._port.close()
 
-# ── the transfer ────────────────────────────────────────────────────────────────────────────────
 
 def await_ready(link: Link, wait: float) -> int:
     """Scan the line for the device's READY advertisement and return its chunk size.
@@ -395,7 +389,6 @@ def send(
             progress(sent, len(payload))
     return parse_result(link.read_exact(RESULT_BYTES, timeout))
 
-# ── the command line ────────────────────────────────────────────────────────────────────────────
 
 def _progress(started: float):
     def report(done: int, total: int) -> None:

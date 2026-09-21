@@ -1,15 +1,13 @@
 import Foundation
 import OBCDomain
 
-/// One row of the Planned tab (TR6): a **trip** card or a **loose** route card.
-/// Filed routes (members of some trip) never appear at the top level — they live
-/// inside their trip's page — so a route id is in exactly one place. Trips and
-/// loose routes interleave by `addedAt`, newest first, exactly as the flat route
-/// list did before trips existed.
+/// One row of the Planned tab: a trip card or a loose route card. A route filed in a
+/// trip never appears at the top level; it lives on its trip's page, so a route id is
+/// in exactly one place. Trips and loose routes interleave by `addedAt`, newest first.
 public enum PlannedItem: Identifiable, Equatable, Sendable {
     case trip(TripRecord)
-    /// A top-level route with its library `addedAt` (the summary doesn't carry
-    /// it) for the interleave sort.
+    /// A top-level route with its library `addedAt`, which the summary does not carry,
+    /// for the interleave sort.
     case route(RouteSummary, addedAt: Date)
 
     public var id: String {
@@ -19,7 +17,6 @@ public enum PlannedItem: Identifiable, Equatable, Sendable {
         }
     }
 
-    /// The library timestamp this item sorts by (newest first).
     public var sortDate: Date {
         switch self {
         case .trip(let trip): trip.addedAt
@@ -27,7 +24,6 @@ public enum PlannedItem: Identifiable, Equatable, Sendable {
         }
     }
 
-    /// The searchable/display name — the trip name or the route name.
     public var name: String {
         switch self {
         case .trip(let trip): trip.name
@@ -35,15 +31,12 @@ public enum PlannedItem: Identifiable, Equatable, Sendable {
         }
     }
 
-    /// Partition the library's planned routes and trips into the interleaved
-    /// top-level list: trips as trip cards, routes **not filed in any trip** as
-    /// loose cards, sorted by `addedAt` descending. Pure over its inputs so the
-    /// list model can be unit-tested without a screen (TR6).
+    /// Partition the library into the interleaved top-level list: trips as trip cards,
+    /// routes not filed in any trip as loose cards, newest first. Pure over its inputs,
+    /// so the list model can be tested without a screen.
     ///
-    /// `trips` are assumed already dangling-pruned (the `LibraryStore.trips()`
-    /// contract), so a trip's `stageIDs` all resolve to a `records` entry; a
-    /// stage id that somehow isn't in `records` is simply filed-and-hidden, never
-    /// shown twice.
+    /// `trips` are assumed already dangling-pruned, so a stage id that is not in
+    /// `records` is filed-and-hidden, never shown twice.
     public static func partition(
         records: [PlannedRouteRecord], trips: [TripRecord]
     ) -> [PlannedItem] {

@@ -2,16 +2,14 @@ import XCTest
 import OBCDomain
 @testable import OBCUI
 
-/// Geometry rules behind the drawing components — the letterbox transform in
-/// `TrackPreviewView` and the waypoint-marker placement on the grid preview
-/// (`TrackPreviewView.Marker.middleWaypointPins`).
-/// `@MainActor` because the helpers are statics on `@MainActor` SwiftUI views
-/// (and the returned transform closure is non-Sendable, so it must stay there).
+/// Geometry rules behind the drawing components: the letterbox transform in `TrackPreviewView`
+/// and the waypoint-marker placement on the grid preview. `@MainActor` because the helpers are
+/// statics on `@MainActor` SwiftUI views, and the returned transform closure is non-Sendable.
 @MainActor
 final class TrackGeometryTests: XCTestCase {
-    // ------------------------------------------------------- letterbox fitting
+    // MARK: Letterbox fitting
     func testWideTrackLetterboxesVertically() {
-        // aspect 2 (wide) into a 100×100 box with 10pt inset → 80×40 centered.
+        // Aspect 2 (wide) into a 100x100 box with a 10pt inset gives 80x40, centered.
         let preview = TrackPreview(
             points: [.init(x: 0, y: 0), .init(x: 1, y: 1)],
             aspectRatio: 2
@@ -28,7 +26,7 @@ final class TrackGeometryTests: XCTestCase {
     }
 
     func testTallTrackLetterboxesHorizontally() {
-        // aspect 0.5 (tall) into 100×100 with 10pt inset → 40×80 centered.
+        // Aspect 0.5 (tall) into the same box gives 40x80, centered.
         let preview = TrackPreview(
             points: [.init(x: 0, y: 0), .init(x: 1, y: 1)],
             aspectRatio: 0.5
@@ -62,7 +60,7 @@ final class TrackGeometryTests: XCTestCase {
         XCTAssertEqual(p.y, 90, accuracy: 0.001)
     }
 
-    // ------------------------------------------------------- waypoint markers
+    // MARK: Waypoint markers
     func testMarkerIndexClampsToPolyline() {
         XCTAssertEqual(TrackPreviewView.Marker.pointIndex(fraction: 0, pointCount: 11), 0)
         XCTAssertEqual(TrackPreviewView.Marker.pointIndex(fraction: 1, pointCount: 11), 10)

@@ -32,13 +32,13 @@ pub const CATALOG_SCHEMA_JSON: &str = include_str!("../../schema/catalog.schema.
 /// synthetic tree in `tests::example_tree`.
 pub const CATALOG_EXAMPLE_JSON: &str = include_str!("../../schema/catalog.example.json");
 
-/// Worked example of a **cell index** satellite (§8).
+/// Worked example of a cell index satellite.
 pub const CELL_INDEX_EXAMPLE_JSON: &str = include_str!("../../schema/cell-index.example.json");
 
-/// Worked example of a **region cell list** satellite (§6).
+/// Worked example of a region cell list satellite.
 pub const REGION_CELLS_EXAMPLE_JSON: &str = include_str!("../../schema/region-cells.example.json");
 
-/// Worked example of the **terrain cell index** satellite (§13).
+/// Worked example of the terrain cell index satellite.
 pub const TERRAIN_INDEX_EXAMPLE_JSON: &str = include_str!("../../schema/terrain-index.example.json");
 
 fn flatten_descriptions(value: &mut Value) {
@@ -55,8 +55,6 @@ fn flatten_descriptions(value: &mut Value) {
         _ => {}
     }
 }
-
-// --- schema -------------------------------------------------------------------------------
 
 pub(super) const CELL_ID_PATTERN: &str = r"^\d{1,2}/\d{4,}/\d{4,}$";
 pub(super) const SHA256_PATTERN: &str = "^[0-9a-f]{64}$";
@@ -93,19 +91,17 @@ const CELL_DESCRIPTION: &str =
      the `id` determines to the microdegree (OBCA_Spec.md §1.3), and the generator verifies the artifact's own \
      OBCM header bbox against it at bake time. A stored copy could only agree (redundant) or disagree (a lie).";
 
-/// Generate the catalog documents' JSON Schema from the same serde model the generator
-/// writes and consumers deserialize, then add the constraints Rust types cannot
-/// express, and fold the two satellite documents into `$defs` so one checked-in file
-/// validates all three shapes.
+/// Generate the catalog documents' JSON Schema from the same serde model the generator writes and
+/// consumers deserialize, then add the constraints Rust types cannot express, and fold the two
+/// satellite documents into `$defs` so one checked-in file validates all three shapes.
 pub fn catalog_schema() -> Value {
     let mut schema = serde_json::to_value(schemars::schema_for!(Catalog)).expect("catalog schema serializes");
     let root = schema.as_object_mut().expect("root schema is an object");
     root.insert("$schema".into(), Value::String("https://json-schema.org/draft/2020-12/schema".into()));
     root.insert("title".into(), Value::String("OpenBikeComputer map catalog (schema_version 3)".into()));
     root.insert("description".into(), Value::String(CATALOG_DESCRIPTION.into()));
-    // The satellites are separate documents, so their models are not reachable from
-    // `Catalog`; generate each and merge, which also brings `CellEntry`/`CellSource`
-    // into `$defs` where the root's own definitions live.
+    // The satellites are separate documents, so their models are not reachable from `Catalog`:
+    // generate each and merge, which also brings `CellEntry` and `CellSource` into `$defs`.
     let mut extra_defs = Map::new();
     for (name, mut doc) in [
         ("CellIndexDocument", serde_json::to_value(schemars::schema_for!(CellIndexDocument)).expect("cell index")),
@@ -147,9 +143,9 @@ pub fn catalog_schema() -> Value {
     band_keyed_map(&mut defs["RegionCellsDocument"]["properties"]["cells"]);
     defs["RegionCellsDocument"]["properties"]["terrain"]["items"]["pattern"] = Value::from(CELL_ID_PATTERN);
 
-    // The terrain artifact class (§13). Its index is the third satellite shape, in the
-    // same checked-in file, and it carries no `schema_revision` at all — which is the
-    // independence stated in the schema rather than only in the prose.
+    // The terrain artifact class. Its index is the third satellite shape in the same checked-in
+    // file, and it carries no `schema_revision` at all, which states the independence in the schema
+    // rather than only in the prose.
     let terrain_doc = defs["TerrainIndexDocument"]["properties"].as_object_mut().expect("terrain index properties");
     terrain_doc["schema_version"]["const"] = Value::from(CATALOG_SCHEMA_VERSION);
     terrain_doc["terrain_revision"]["minimum"] = Value::from(1);
@@ -165,9 +161,8 @@ pub fn catalog_schema() -> Value {
     terrain["terrain_revision"]["minimum"] = Value::from(1);
     terrain_log2_bounds(terrain);
 
-    // Every field of a reference entry is a licence obligation, so the shape is pinned here
-    // rather than only in §13.1's prose: an entry a consumer cannot display is a credit nobody
-    // sees, and the builder should not be the first thing that notices.
+    // Every field of a reference entry is a licence obligation, so the shape is pinned here rather
+    // than only in prose: an entry a consumer cannot display is a credit nobody sees.
     let reference = defs["ReferenceEntry"]["properties"].as_object_mut().expect("reference properties");
     reference["key"]["pattern"] = Value::from(ID_PATTERN);
     for field in ["product", "attribution", "licence"] {
@@ -270,9 +265,9 @@ fn band_keyed_map(value: &mut Value) {
     value["propertyNames"] = serde_json::json!({ "pattern": ID_PATTERN });
 }
 
-/// The OBCT lattice bounds (`OBCT_Spec.md` §1.1, §3.1), applied wherever the pairing
-/// is published. They are the format's, not the OBCM grid's, which is why they come
-/// from `obc_formats::obct` rather than from this module's `MIN_CELL_LOG2`.
+/// The OBCT lattice bounds, applied wherever the pairing is published. They are the format's, not
+/// the OBCM grid's, which is why they come from `obc_formats::obct` rather than from this module's
+/// `MIN_CELL_LOG2`.
 fn terrain_log2_bounds(properties: &mut Map<String, Value>) {
     properties["posting_log2"]["minimum"] = Value::from(obct::MIN_POSTING_LOG2);
     properties["posting_log2"]["maximum"] = Value::from(obct::MAX_POSTING_LOG2);
@@ -288,15 +283,12 @@ pub fn catalog_schema_json() -> String {
     text
 }
 
-// --- tree schema and skins ----------------------------------------------------------------
-
-/// The schema as the tree states it: the packer config the cells were baked with,
-/// whose `_meta` adds the revision and the band table.
+/// The schema as the tree states it: the packer config the cells were baked with, whose `_meta`
+/// adds the revision and the band table.
 ///
-/// One document rather than two because the parts must not be able to disagree: the
-/// style-id assignment, the LOD ladder, `chunk_size` and the routing table are read
-/// out of the very config that produced the cells' bytes, not out of a hand-written
-/// description of it.
+/// One document rather than two, because the parts must not be able to disagree: the style-id
+/// assignment, the LOD ladder, `chunk_size` and the routing table are read out of the very config
+/// that produced the cells' bytes.
 pub(super) struct SchemaDoc {
     pub(super) id: String,
     pub(super) revision: u32,
@@ -322,9 +314,9 @@ struct SchemaMeta {
     id: String,
     name: String,
     description: String,
-    /// The cell store's identity. Bumping it invalidates every cell
-    /// (`OBCA_Spec.md` §6.3), which is why it is stated here and recorded in every
-    /// cell sidecar: the generator can then refuse a tree that mixes revisions.
+    /// The cell store's identity. Bumping it invalidates every cell, which is why it is stated here
+    /// and recorded in every cell sidecar: the generator can then refuse a tree that mixes
+    /// revisions.
     revision: u32,
     bands: Vec<BandDoc>,
 }
@@ -383,11 +375,10 @@ pub(super) fn read_schema_doc(path: &Path) -> Result<SchemaDoc, String> {
     })
 }
 
-/// The band table's rules (§4, `OBCA_Spec.md` §1.2/§5.1), all of which a consumer
-/// must reject and which therefore must not be publishable in the first place:
-/// every ladder LOD in exactly one band, the nav and POI sections in exactly one
-/// band, exactly one `core` band carrying the sections and no LOD, at most one
-/// `coarse` band, everything else `geometry`.
+/// The band table's rules, all of which a consumer must reject and which therefore must not be
+/// publishable in the first place: every ladder LOD in exactly one band, the nav and POI sections in
+/// exactly one band, exactly one `core` band carrying the sections and no LOD, at most one `coarse`
+/// band, everything else `geometry`.
 fn check_band_table(bands: &[BandDoc], lod_count: usize, path: &Path) -> Result<Vec<BandEntry>, String> {
     let at = || path.display().to_string();
     if bands.is_empty() {
@@ -463,7 +454,7 @@ fn check_band_table(bands: &[BandDoc], lod_count: usize, path: &Path) -> Result<
                 if !lods.is_empty() {
                     return Err(format!(
                         "{}: the `core` band `{}` carries LOD(s) {lods:?}. The core file is the one file of a volume \
-                         set that cannot be split by bbox, so no geometry may live in it (OBCA_Spec.md §5.1) — its \
+                         set that cannot be split by bbox, so no geometry may live in it — its \
                          headroom under 4 GiB is the design's hard limit.",
                         at(),
                         band.id
@@ -514,12 +505,11 @@ fn check_band_table(bands: &[BandDoc], lod_count: usize, path: &Path) -> Result<
     }
 
     // Published in band order as authored, which is the coarse→fine reading order of
-    // the table; determinism comes from the file, not from a map.
     Ok(out)
 }
 
-/// The LOD ladder as the catalog publishes it, cross-checked against `OBCM_Spec.md`
-/// §3: exactly one `+inf` level and it is index 0, strictly decreasing after.
+/// The LOD ladder as the catalog publishes it, cross-checked against the format: exactly one `+inf`
+/// level, at index 0, strictly decreasing after.
 fn ladder(config: &Config, bands: &[BandEntry], path: &Path) -> Result<Vec<LodEntry>, String> {
     let mut out = Vec::with_capacity(config.lods.len());
     let mut previous: Option<f64> = None;
@@ -556,19 +546,16 @@ fn ladder(config: &Config, bands: &[BandEntry], path: &Path) -> Result<Vec<LodEn
     Ok(out)
 }
 
-/// The canonical style-id assignment, read out of the config that assigned it —
-/// [`feature_type_ids`], plus the duplicate-id check and the id-keyed view of it.
-///
-/// Returned sorted by id, which is also the order a style table is written in
-/// (`OBCM_Spec.md` §2) and the order a skin's entries follow.
+/// The canonical style-id assignment, read out of the config that assigned it, plus the duplicate-id
+/// check and the id-keyed view of it. Returned sorted by id, which is also the order a style table
+/// is written in and the order a skin's entries follow.
 fn style_assignment(config: &Config, path: &Path) -> Result<(Vec<StyleAssignment>, BTreeMap<String, u8>), String> {
     let by_type = feature_type_ids(config);
     if by_type.is_empty() {
         return Err(format!("{}: no feature types — a schema with no styles draws nothing", path.display()));
     }
-    // The same assignment read the other way round, which is also where a collision
-    // shows up: two feature types on one id would make the published style table
-    // ambiguous about which one a chunk's feature header meant.
+    // The same assignment read the other way round, which is where a collision shows up: two
+    // feature types on one id would make the published style table ambiguous.
     let mut by_id: BTreeMap<u8, String> = BTreeMap::new();
     for (feature_type, &id) in &by_type {
         if let Some(other) = by_id.insert(id, feature_type.clone()) {
@@ -582,17 +569,14 @@ fn style_assignment(config: &Config, path: &Path) -> Result<(Vec<StyleAssignment
     Ok((styles, by_type))
 }
 
-/// A config's `feature_type → style id` assignment: `highway.primary → 3`, and so on
-/// for every `(tag key, tag value)` pair it styles.
+/// A config's `feature_type -> style id` assignment: `highway.primary -> 3`, and so on for every
+/// styled `(tag key, tag value)` pair.
 ///
-/// Public because it is the thing a **producer** has to agree with this generator
-/// about. `obc-pack` numbers feature types 1-based in config document order and those
-/// ids are referenced by every feature header in every chunk (`OBCM_Spec.md` §5.2), so
-/// the assignment is part of the cells' bytes.
-///
-/// The one place this walk lives: [`style_assignment`] and [`check_skin`] both read
-/// the assignment through here, so the generator and the producer-side check cannot
-/// come to disagree about what a config assigns.
+/// Public because it is the thing a producer has to agree with this generator about: feature types
+/// are numbered 1-based in config document order, and those ids are referenced by every feature
+/// header in every chunk, so the assignment is part of the cells' bytes. [`style_assignment`] and
+/// [`check_skin`] both read it through here, so the generator and the producer-side check cannot
+/// come to disagree.
 pub(super) fn feature_type_ids(config: &Config) -> BTreeMap<String, u8> {
     let mut by_type = BTreeMap::new();
     for (tag_key, values) in &config.features {
@@ -603,47 +587,38 @@ pub(super) fn feature_type_ids(config: &Config) -> BTreeMap<String, u8> {
     by_type
 }
 
-/// Prove a config **is a skin over** `schema`: same feature types, same style ids
-/// (`OBCC_Spec.md` §5, `OBCA_Spec.md` §4.7).
+/// Prove a config is a skin over `schema`: same feature types, same style ids.
 ///
-/// This is the check [`generate`](super::generate) applies to every document in a tree's `skins/`, and
-/// it is public so a producer can apply the *same* one before it spends hours cutting
-/// cells a skin turns out not to fit. A skin may change only the presentation values
-/// of a style record: introducing, dropping, reordering or renumbering a feature type
-/// is a new schema and therefore a re-bake, because those ids are already baked into
-/// every chunk of every cell.
+/// This is the check [`generate`](super::generate) applies to every document in a tree's `skins/`,
+/// and it is public so a producer can apply the same one before it spends hours cutting cells a skin
+/// turns out not to fit. A skin may change only the presentation values of a style record:
+/// introducing, dropping, reordering or renumbering a feature type is a new schema and therefore a
+/// re-bake, because those ids are already baked into every chunk of every cell.
 pub(super) fn check_skin(schema: &Config, skin: &Config) -> Result<(), String> {
     check_skin_ids(&feature_type_ids(schema), &feature_type_ids(skin))
 }
 
-/// The presentation-only keys a style record in a skin may carry (`OBCC_Spec.md`
-/// §5). Everything else in a packer config decides which bytes get written, and a
-/// skin is stamped onto bytes that already exist.
-/// `fixed_width` and `terrain_layer` (#1095) are on the list for the same reason `line_style` is:
-/// they are **flag bits of the 8-byte style record**, which is precisely the ≈ 2 KB a skin stamps.
-/// Neither decides which bytes get written — a contour is cut into the same cells whether it later
-/// draws hairline or ramped — so both restyle without a re-bake.
+/// The presentation-only keys a style record in a skin may carry. Everything else in a packer config
+/// decides which bytes get written, and a skin is stamped onto bytes that already exist.
+/// `fixed_width` and `terrain_layer` are on the list for the same reason `line_style` is: they are
+/// flag bits of the style record, which is precisely what a skin stamps, and neither decides which
+/// bytes get written.
 const SKIN_STYLE_KEYS: &[&str] =
     &["color", "color2", "weight", "z_index", "priority", "line_style", "fixed_width", "terrain_layer"];
 
-/// Prove a skin **document** is presentation only: no schema keys, at either level.
+/// Prove a skin document is presentation only: no schema keys, at either level.
 ///
-/// [`check_skin`] compares two parsed [`Config`]s and therefore cannot see this at
-/// all — by the time a config exists, a missing `lods` and a `lods` restating the
-/// defaults are the same value, so a skin carrying a whole LOD ladder parses into
-/// something that looks exactly like a skin that carries none. The keys have to be
-/// caught in the JSON, before that information is thrown away.
+/// [`check_skin`] compares two parsed [`Config`]s and cannot see this at all: by the time a config
+/// exists, a missing `lods` and a `lods` restating the defaults are the same value. The keys have to
+/// be caught in the JSON, before that information is thrown away.
 ///
-/// Silently dropping them would be the worse failure: a skin is stamped onto cells
-/// that were cut at the *schema's* ladder, tolerances, merge passes and routing table,
-/// so a skin that thinks it changes any of those is a document whose author believes
-/// something false. The values would have no effect, the author would have no way to
-/// find that out, and the map would quietly not be the one they wrote. That is a new
-/// schema revision and a re-bake (epic #1016 D2), and the error says so — naming every
-/// offending key rather than the first, so one edit fixes the document.
+/// Silently dropping them would be the worse failure. A skin is stamped onto cells that were cut at
+/// the schema's ladder, tolerances, merge passes and routing table, so a skin that thinks it changes
+/// any of those is a document whose author believes something false. That is a new schema revision
+/// and a re-bake, and the error says so, naming every offending key rather than the first.
 ///
-/// `min_lod` is in the list for the same reason `lods` is: it decides the level a
-/// feature is first written at, which is a decision already baked into every cell.
+/// `min_lod` is in the list for the same reason `lods` is: it decides the level a feature is first
+/// written at, which is already baked into every cell.
 pub(super) fn check_skin_document(json: &str, at: &str) -> Result<(), String> {
     let doc: serde_json::Value = serde_json::from_str(json).map_err(|e| format!("{at}: {e}"))?;
     let obj = doc.as_object().ok_or_else(|| format!("{at}: a skin document is a JSON object"))?;
@@ -653,9 +628,8 @@ pub(super) fn check_skin_document(json: &str, at: &str) -> Result<(), String> {
         .filter(|k| !matches!(k.as_str(), "_meta" | "features" | "marker"))
         .map(|k| format!("`{k}`"))
         .collect();
-    // `min_lod` hides one level down, per style record, and is the one a hand-written
-    // skin picks up most easily — it is on nearly every line of the schema it was
-    // copied from.
+    // `min_lod` hides one level down, per style record, and is the one a hand-written skin picks up
+    // most easily, because it is on nearly every line of the schema it was copied from.
     let mut culled: BTreeSet<&str> = BTreeSet::new();
     if let Some(features) = obj.get("features").and_then(serde_json::Value::as_object) {
         for values in features.values().filter_map(serde_json::Value::as_object) {
@@ -716,8 +690,6 @@ fn check_skin_ids(want: &BTreeMap<String, u8>, have: &BTreeMap<String, u8>) -> R
     }
     Ok(())
 }
-
-// --- skins --------------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 struct SkinMetaDoc {
@@ -804,8 +776,8 @@ pub(super) fn skin_styles(config: &Config, schema: &SchemaDoc, path: &Path) -> R
     }
     check_skin_ids(&schema.feature_types, &feature_type_ids(config)).map_err(|e| format!("{}: {e}", path.display()))?;
 
-    // Schema order, so `skins[].styles[k]` and `schema.styles[k]` describe the same
-    // feature type without a consumer having to join on the name.
+    // Schema order, so `skins[].styles[k]` and `schema.styles[k]` describe the same feature type
+    // without a consumer having to join on the name.
     let mut styles: Vec<SkinStyle> = by_type
         .into_iter()
         .map(|(feature_type, s)| SkinStyle {

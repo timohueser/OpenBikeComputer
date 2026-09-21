@@ -30,8 +30,6 @@ use device_core_corpus::{
     Scenario, ScreenState, VisibleState, ALL_REQUIREMENTS, SAVED_RIDE, SCENARIOS, SETTINGS_FAILURE_RETRY_MS, TRIP,
 };
 
-// ==================== the runners ====================
-
 /// One column of the conformance matrix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Runner {
@@ -70,10 +68,9 @@ impl Runner {
 /// One runner's result: the recorded trace, and the state it comes to rest in.
 ///
 /// The two are different questions. A trace ends the moment the last delayed answer is delivered,
-/// which for a *level* is one pass before the level can be consumed — so comparing traces at that
-/// instant would compare delivery cadence rather than behaviour. The settled state is what "the same
-/// device" means, and it is what the matrix compares (the same rule
-/// `device_core_compat` follows: compare at rest, never mid-flight).
+/// which for a level is one pass before the level can be consumed, so comparing traces at that
+/// instant would compare delivery cadence rather than behaviour. The settled state is what "the
+/// same device" means, and it is what the matrix compares.
 struct Run {
     trace: Trace<VisibleState>,
     settled: VisibleState,
@@ -118,15 +115,12 @@ const EVERYTHING: PlatformSupport =
 
 /// The rider-visible projection every runner must agree on.
 ///
-/// `delete_attempts` is dropped: it counts every removal the executor was handed,
-/// including one for an object that already left the store — a store-side figure, and not something
-/// a rider can see.
+/// `delete_attempts` is dropped: it counts every removal the executor was handed, including one for
+/// an object that already left the store — a store-side figure, not something a rider can see.
 fn rider_visible(mut state: VisibleState) -> VisibleState {
     state.delete_attempts = 0;
     state
 }
-
-// ==================== the DeviceCore harness ====================
 
 /// The pass's location source: at most one fix, taken once.
 struct ScriptedFix(Option<Fix>);
@@ -138,8 +132,8 @@ impl LocationSource for ScriptedFix {
 
 /// Whether a completed store operation re-fills the resident catalogs.
 ///
-/// Only a **read** does. A removal re-feeds nothing: the re-read it implies is `CatalogMachine`'s
-/// to order (#1541), and an executor that re-fed here would be deciding when a refresh happens.
+/// Only a read does. A removal re-feeds nothing: the re-read it implies is `CatalogMachine`'s to
+/// order, and an executor that re-fed here would be deciding when a refresh happens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Refeed {
     None,
@@ -149,13 +143,13 @@ enum Refeed {
 /// One thing the executor finished, on its way back into the next pass.
 #[derive(Debug)]
 enum Done {
-    /// A typed catalog answer, plus the resident re-feed the store change implies. Bulk never
-    /// enters the protocol, so the catalog arrives through the same feeders it always did.
+    /// A typed catalog answer, plus the resident re-feed the store change implies. Bulk never enters
+    /// the protocol, so the catalog arrives through the same feeders it always did.
     Catalog {
         outcome: CatalogOutcome,
         refeed: Refeed,
     },
-    /// A typed answer for one of the four domains #1397 S2 gave a machine.
+    /// A typed answer for one of the four domains a machine owns.
     Navigator(NavigatorOutcome),
     Settings(SettingsOutcome),
     Dfu(DfuOutcome),
@@ -169,9 +163,9 @@ enum Done {
 
 /// The pass, one executor, and the shared scenario fixture.
 ///
-/// The fixture — the app, the catalogs and the scripted planner/DFU/settings answers — is
-/// [`CorpusState`], unchanged: the two harnesses apply the *same* rider inputs and differ only in
-/// what runs the frame. That is what makes a difference in the trace a difference in the runner.
+/// The fixture — the app, the catalogs and the scripted planner, DFU and settings answers — is
+/// [`CorpusState`]: the two harnesses apply the same rider inputs and differ only in what runs the
+/// frame. That is what makes a difference in the trace a difference in the runner.
 struct CoreHarness {
     state: CorpusState,
     /// The pass's own monotonic clock, at or above every mark the corpus's actions set.
@@ -182,7 +176,7 @@ struct CoreHarness {
     /// Effects the executor served, by domain.
     served: BTreeSet<&'static str>,
     /// How many times this executor has fed the ride catalog. One saved ride must cost exactly one,
-    /// whichever mechanism ordered it — see `a_saved_ride_orders_exactly_one_catalog_read`.
+    /// whichever mechanism ordered it.
     ride_feeds: usize,
     /// Every settings revision the executor was asked to write, in order.
     settings_writes: Vec<u16>,
@@ -224,7 +218,7 @@ impl CoreHarness {
         let ride_preview = std::mem::take(&mut self.ride_preview);
         let nav_preview = std::mem::take(&mut self.nav_preview);
         // One scripted fix per pass while a scenario has queued any — what turns a ride into the
-        // samples an append carries. Every other pass polls nothing, as before.
+        // samples an append carries. Every other pass polls nothing.
         let mut location = ScriptedFix(if self.state.pending_fixes.is_empty() {
             None
         } else {
@@ -248,8 +242,6 @@ impl CoreHarness {
             targets: DerivedTargets { ride_preview: &ride_preview, nav_preview: &nav_preview },
         })
     }
-
-    // ---- the typed executor ----
 
     /// Serve each bounded effect and preserve its token in the scripted result.
     fn serve_typed(&mut self, effects: &mut EffectSlots, done: &mut Vec<Done>) {
@@ -303,9 +295,9 @@ impl CoreHarness {
 
     /// Serve one navigation operation from the corpus's scripted planner answers.
     ///
-    /// `None` means "the executor is still working": the corpus scripts a **detour** search's answer
-    /// at the action that opens the preview rather than at the request (the commit it leads to needs
-    /// that preview to exist), so that one arrives through the app's own event door.
+    /// `None` means the executor is still working: the corpus scripts a detour search's answer at
+    /// the action that opens the preview rather than at the request, because the commit it leads to
+    /// needs that preview to exist, so that one arrives through the app's own event door.
     fn serve_navigator(&mut self, effect: NavigatorEffect) -> Option<NavigatorOutcome> {
         let token = effect.token();
         match effect {
@@ -363,13 +355,13 @@ impl CoreHarness {
         }
     }
 
-    /// One recording operation, and **nothing beside it**.
+    /// One recording operation, and nothing beside it.
     ///
     /// The finalize deliberately does not report a store commit here, even though a real one is:
     /// production `serve_recorder` does not either, and a fixture that announced the commit itself
     /// would let `a_saved_ride_orders_exactly_one_catalog_read` pass on the revision fact alone with
-    /// `RideFinalized` broken. The executor that *does* report the commit — the board — reports it
-    /// on the same pass as the outcome, and
+    /// `RideFinalized` broken. The executor that does report the commit — the board — reports it on
+    /// the same pass as the outcome, and
     /// [`a_commit_reported_with_its_own_finalize_still_orders_one_read`] runs that pairing.
     fn serve_recorder(&mut self, effect: RecorderEffect) -> RecorderOutcome {
         match effect {
@@ -384,10 +376,10 @@ impl CoreHarness {
                 RecorderOutcome::Finalized { token, ride: SAVED_RIDE }
             }
             RecorderEffect::Discard { token } => RecorderOutcome::Discarded { token },
-            // The medium takes the whole batch, unless a scenario scripted a short write: Recorder
-            // then keeps the remainder staged and offers it again. The injection stays armed until
-            // a batch is worth shortening — a one-sample batch answered with zero would be a
-            // *rejection*, which every real executor reports as `Failed`, not as a short write.
+            // The medium takes the whole batch, unless a scenario scripted a short write, and
+            // Recorder then keeps the remainder staged and offers it again. The injection stays
+            // armed until a batch is worth shortening: a one-sample batch answered with zero
+            // would be a rejection, which every real executor reports as `Failed`.
             RecorderEffect::Append { token, samples } => {
                 let short = samples > 1 && std::mem::take(&mut self.state.partial_append_once);
                 RecorderOutcome::Appended { token, samples: if short { samples - 1 } else { samples } }
@@ -423,7 +415,7 @@ impl CoreHarness {
             // The domain's family is preserved through removal; it also orders the later reload.
             CatalogEffect::RemoveObject { token, object, .. } => {
                 // Counted before the probe, so a removal for an object that already left the store
-                // counts too — that is exactly the event #1548 removes.
+                // counts too.
                 self.state.delete_attempts = self.state.delete_attempts.saturating_add(1);
                 if let Some(index) =
                     self.state.route_ids.iter().position(|&id| id == object && kind == Some(CatalogObjectKind::Route))
@@ -448,8 +440,8 @@ impl CoreHarness {
                     // not composed here.
                     self.state.trip_present = false;
                 } else {
-                    // The subject vanished before the commit — a success for the goal state, and
-                    // the one shape that must not read as a failure (epic §13).
+                    // The subject vanished before the commit — a success for the goal state, and the
+                    // one shape that must not read as a failure.
                     return Done::Catalog {
                         outcome: CatalogOutcome::ObjectRemoved { token, object, existed: false },
                         refeed: Refeed::None,
@@ -462,24 +454,23 @@ impl CoreHarness {
             }
         }
     }
-    /// The corpus's answers that are scripted at the **action** rather than at the request,
-    /// delivered once per pass exactly as `CorpusState::run_pass` delivers them — so all three
-    /// frames answer the same script.
+    /// The corpus's answers that are scripted at the action rather than at the request, delivered
+    /// once per pass exactly as `CorpusState::run_pass` delivers them, so all three frames answer
+    /// the same script.
     ///
     /// Two are not request-keyed and cannot be: the detour splice's answer is armed by the Press
-    /// that asks for it and arrives without a command (like `DetourPlanned`, whose preview that
-    /// Press happens on), and a settings answer may be a *stale* ack for a revision a newer edit
-    /// has already superseded — the whole point of that scenario, and something no in-flight write
-    /// of its own would carry.
+    /// that asks for it and arrives without a command, and a settings answer may be a stale ack for
+    /// a revision a newer edit has already superseded — the whole point of that scenario, and
+    /// something no in-flight write of its own would carry.
     ///
     /// `persisted` is the revision a write went out for on this pass, when one did: the corpus's
     /// retry case is the one answer that must not precede its own request.
     fn serve_scripted(&mut self, persisted: Option<u16>, done: &mut Vec<Done>) {
         // The answer carries the token of the write the executor is holding, so the domain checks
-        // the operation *and* the revision — two independent guards (#810). The token is read
-        // **first**: with no write in flight there is nothing for this script to answer, and
-        // `scripted_settings` consumes the script, so asking it before knowing that would spend the
-        // scenario's only ack on a pass that could not deliver it.
+        // the operation and the revision — two independent guards. The token is read first: with no
+        // write in flight there is nothing for this script to answer, and `scripted_settings`
+        // consumes the script, so asking it before knowing that would spend the scenario's only ack
+        // on a pass that could not deliver it.
         let Some(token) = self.state.settings_token else { return };
         let Some((revision, failed)) = self.scripted_settings(persisted) else { return };
         done.push(if failed {
@@ -509,10 +500,8 @@ impl CoreHarness {
         Some((revision, matches!(result, PendingSettingsResult::FailLatest)))
     }
 
-    // ---- the two derived levels ----
-
     /// Answer each level with the key the need carried. Under a delayed runner the subject may have
-    /// moved by the time this lands, and the pass drops it — which is the corrected defect.
+    /// moved by the time this lands, and the pass drops it.
     fn serve_derived(&mut self, needs: &DerivedNeeds, done: &mut Vec<Done>) {
         if let Some(key) = needs.ride_track {
             self.served.insert("derived.ride-track");
@@ -602,8 +591,7 @@ impl TraceHarness<Action> for CoreHarness {
             }
             // A keyed ride-track answer fills two resident buffers — the elevation profile and the
             // preview polyline — and a nav-preview answer fills one. They are recorded as the bulk
-            // feeder calls they are: the data still crosses the seam, it just carries a key now
-            // instead of arriving on a `set_*` method of its own.
+            // feeder calls they are: the data still crosses the seam, it just carries a key.
             Done::RideTrack(input) => {
                 self.ride_preview = vec![(0, 0), (1, 1)];
                 trace.record_feeder(FeederCall::new(FeederKind::RideProfile, "core.ride-track", 1));
@@ -627,8 +615,6 @@ impl TraceHarness<Action> for CoreHarness {
     }
 }
 
-// ==================== the matrix ====================
-
 #[test]
 fn every_scenario_agrees_in_every_runner() {
     let mut compared = 0usize;
@@ -647,9 +633,8 @@ fn every_scenario_agrees_in_every_runner() {
             }
         }
 
-        // Immediate and delayed reach the same place — the executor conformance rule of #1433 §13,
-        // and the property the delayed runner exists for. A difference here would be timing
-        // sensitivity, never policy.
+        // Immediate and delayed reach the same place, which is the property the delayed runner
+        // exists for. A difference here would be timing sensitivity, never policy.
         assert_eq!(
             rider_visible(runs[1].1.settled.clone()),
             baseline,
@@ -662,12 +647,11 @@ fn every_scenario_agrees_in_every_runner() {
     assert!(differing.is_empty(), "the runners disagree, and nothing may ship over that: {differing:?}");
 }
 
-/// **The DC1 checklist is still a checklist.** Every behaviour row #1434 locked is claimed by at
-/// least one scenario, the table's names are stable unique trace keys, and no scenario is empty.
+/// The behaviour checklist is still a checklist. Every locked behaviour row is claimed by at least
+/// one scenario, the table's names are stable unique trace keys, and no scenario is empty.
 ///
-/// This gate lived in `device_core_legacy_traces.rs` and is corpus-side, not runner-side: it is a
-/// property of `SCENARIOS` × [`ALL_REQUIREMENTS`] and has nothing to do with which frame runs them.
-/// It is here because the file that held it retired with the legacy runner it was written against.
+/// This gate is corpus-side, not runner-side: it is a property of `SCENARIOS` ×
+/// [`ALL_REQUIREMENTS`] and has nothing to do with which frame runs them.
 #[test]
 fn every_dc1_requirement_is_claimed_by_a_scenario() {
     let names: BTreeSet<_> = SCENARIOS.iter().map(|scenario| scenario.name).collect();
@@ -679,10 +663,9 @@ fn every_dc1_requirement_is_claimed_by_a_scenario() {
     assert_eq!(covered, required, "every DC1 behaviour row must be claimed by a scenario");
 }
 
-/// **Every bulk feeder is exercised by a real call.** The feeders outlived the protocol — a typed
+/// Every bulk feeder is exercised by a real call. The feeders outlived the protocol — a typed
 /// executor fills the resident catalogs through them — so the loop that proves the corpus reaches
-/// all of them has to outlive it too, and it moves here from the retired legacy traces (#1516's
-/// open question 5). A feeder no scenario touches is a seam nothing is checking.
+/// all of them has to outlive it too. A feeder no scenario touches is a seam nothing is checking.
 #[test]
 fn every_feeder_kind_is_exercised_by_a_real_call() {
     let mut seen: BTreeSet<FeederKind> = BTreeSet::new();
@@ -695,13 +678,13 @@ fn every_feeder_kind_is_exercised_by_a_real_call() {
     assert_eq!(seen, ALL_FEEDER_KINDS.into_iter().collect(), "every feeder must be reached by a real call");
 }
 
-/// **The upload burst reaches the rider in order.** `Requirement::CatalogUploadOrder`'s claim is that
-/// each member route's commit is announced, each popup replacing the last, and that the trip object —
-/// which always lands after its members — replaces the final route popup with one card.
+/// The upload burst reaches the rider in order: each member route's commit is announced, each popup
+/// replacing the last, and the trip object — which always lands after its members — replaces the
+/// final route popup with one card.
 ///
 /// The upload fact slot is single and most-recent-wins, so this is only observable when each commit
 /// gets its own pass: two uploads reported before one pass consumes the slot leave the first
-/// unobserved, and the *order* untested. That is why the burst is three scenario actions.
+/// unobserved, and the order untested. That is why the burst is three scenario actions.
 #[test]
 fn each_upload_in_a_burst_reaches_the_rider_and_the_trip_card_lands_last() {
     for runner in Runner::ALL {
@@ -723,23 +706,21 @@ fn named(name: &'static str) -> &'static Scenario {
     SCENARIOS.iter().find(|scenario| scenario.name == name).unwrap_or_else(|| panic!("no scenario {name}"))
 }
 
-// ==================== the mandatory traces (#1440) ====================
-
-/// One of the sixteen traces #1440 requires, bound to the test that runs it.
+/// One of the sixteen mandatory traces, bound to the test that runs it.
 struct MandatoryTrace {
     /// The row, in the issue's words.
     row: &'static str,
     /// The `#[test]` that runs it.
     test: &'static str,
-    /// Set when the test exercises a *different* situation than the row names, saying why the row's
-    /// own situation is unreachable in Phase 1 and which slice makes it reachable. A row that
-    /// silently tested something else would let the issue's checklist read as covered when it is not.
+    /// Set when the test exercises a different situation than the row names, saying why the row's
+    /// own situation is unreachable and which slice makes it reachable. A row that silently tested
+    /// something else would let the checklist read as covered when it is not.
     substitution: Option<&'static str>,
 }
 
 /// All sixteen. The binding is checked rather than written down: the test below looks each name up
 /// in this file's own source as a real `#[test]`, so a renamed, deleted or un-attributed trace fails
-/// the gate instead of quietly leaving a row of the issue uncovered.
+/// the gate instead of quietly leaving a row uncovered.
 const MANDATORY_TRACES: [MandatoryTrace; 14] = [
     MandatoryTrace {
         row: "outcome after cancellation",
@@ -847,9 +828,9 @@ fn typed() -> CoreHarness {
     harness
 }
 
-/// A harness over a **mounted card**, with the read that report owes already served.
+/// A harness over a mounted card, with the read that report owes already served.
 ///
-/// `Capabilities::recorder` reads "a store has reported a revision", and it is the pass *before*'s
+/// `Capabilities::recorder` reads "a store has reported a revision", and it is the pass before's
 /// level — so a suite that records has to report the card and let a pass see it before the rider
 /// asks. Every real host does this at boot; the corpus fixture reports nothing by default.
 fn recording_harness() -> CoreHarness {
@@ -904,8 +885,8 @@ impl CoreHarness {
     }
 }
 
-/// **Outcome after cancellation.** A terminal answer invalidates the domain's token, so a repeat of
-/// it is no longer current and starts nothing — the rule a cancellation applies, reached through the
+/// Outcome after cancellation. A terminal answer invalidates the domain's token, so a repeat of it
+/// is no longer current and starts nothing — the rule a cancellation applies, reached through the
 /// one terminal event every operation ends with.
 #[test]
 fn an_outcome_after_cancellation_changes_nothing() {
@@ -925,8 +906,8 @@ fn an_outcome_after_cancellation_changes_nothing() {
     assert!(plan.effects.catalog.is_empty(), "a repeat of a terminal answer starts no work");
     assert_eq!(harness.state.route_ids.len(), 2, "and removes nothing a second time");
 
-    // The navigator half of the same rule, on the real machine (#1397 S2): the rider's Back
-    // invalidates the operation, so the planner's answer commits no route at all.
+    // The navigator half of the same rule, on the real machine: the rider's Back invalidates the
+    // operation, so the planner's answer commits no route at all.
     let mut harness = typed();
     assert!(harness.app().debug_start_nav((0, 0), (1_000, 1_000), "col"), "the plan is admitted");
     let mut plan = harness.pass();
@@ -941,8 +922,8 @@ fn an_outcome_after_cancellation_changes_nothing() {
         "and the rider is not shown an overview for a route they cancelled"
     );
 
-    // And it was *delivered*, not swallowed on the way: the slot the executor put it in is empty
-    // after the pass, so what refused it is the domain and not the plumbing losing it.
+    // And it was delivered, not swallowed on the way: the slot the executor put it in is empty after
+    // the pass, so what refused it is the domain and not the plumbing losing it.
     assert!(harness.state.outcomes.navigator.is_empty(), "the pass took the answer and refused it");
 }
 
@@ -970,12 +951,12 @@ fn an_outcome_after_a_replacement_request_changes_nothing() {
     assert_eq!(harness.state.route_ids.len(), 1, "both removals landed, neither twice");
 }
 
-/// **A store change during a catalog refresh.** The commit is an edge the pass records once, the
-/// domain keeps one operation in flight, and neither loses the other — the refresh the commit
-/// ordered simply waits for the removal that is already running.
+/// A store change during a catalog refresh. The commit is an edge the pass records once, the domain
+/// keeps one operation in flight, and neither loses the other — the refresh the commit ordered
+/// simply waits for the removal that is already running.
 ///
-/// Literal since #1397 S6a, re-grounded by #1541: `ExternalFacts::store_revision` arms the
-/// domain's owed refresh, so there is a real catalog refresh for a real store change to race.
+/// `ExternalFacts::store_revision` arms the domain's owed refresh, so there is a real catalog
+/// refresh for a real store change to race.
 #[test]
 fn a_store_change_during_a_catalog_operation_is_not_lost() {
     let mut harness = deleting(false);
@@ -1010,10 +991,10 @@ fn a_store_change_during_a_catalog_operation_is_not_lost() {
     assert_eq!(harness.state.route_ids.len(), 2, "and the removal completed");
 }
 
-/// **A transfer starts during route planning.** Heavy work is withdrawn while a transfer holds the
-/// store, so a *new* plan is never started — and the one already running is not failed by it either.
+/// A transfer starts during route planning. Heavy work is withdrawn while a transfer holds the
+/// store, so a new plan is never started — and the one already running is not failed by it either.
 ///
-/// The distinction is the rule: admission decides what may *begin*, and a capability going away is
+/// The distinction is the rule: admission decides what may begin, and a capability going away is
 /// not a reason to cancel an operation that is already owed an answer.
 #[test]
 fn a_transfer_during_planning_withdraws_heavy_capability() {
@@ -1049,7 +1030,7 @@ fn a_transfer_during_planning_withdraws_heavy_capability() {
     assert!(plan.effects.dfu.is_empty(), "nor an install");
     assert!(plan.effects.catalog.is_empty(), "nor a store operation");
     // The settings write is not heavy and is not withdrawn: the trusted-clock stamp this fixture
-    // makes is a rider edit like any other, and a transfer holding the *store* has nothing to say
+    // makes is a rider edit like any other, and a transfer holding the store has nothing to say
     // about a settings revision. That distinction is what `Capabilities` is for — asserted, not
     // merely tolerated, so a settings write that quietly stopped going out fails here.
     assert!(plan.effects.settings.take().is_some(), "the settings write is unaffected by the transfer");
@@ -1083,7 +1064,7 @@ fn a_transfer_during_planning_withdraws_heavy_capability() {
     );
 
     // The withdrawal above is derived from one level, so the fixture is what has to show that level
-    // arriving — and the pure `Capabilities` verdicts asserted at the top are what it means.
+    // arriving, and the pure `Capabilities` verdicts asserted at the top are what it means.
     assert_eq!(
         fixture.state.app.core_mode(),
         ModeState::Transferring,
@@ -1091,15 +1072,15 @@ fn a_transfer_during_planning_withdraws_heavy_capability() {
     );
 
     // …and the capability comes straight back when the transfer ends. This is the restoration claim,
-    // so it is asserted on the fixture after the fact *and* the pass that consumes it: recomputing
+    // so it is asserted on the fixture after the fact and on the pass that consumes it: recomputing
     // `Capabilities::calculate` here would depend on neither.
     fixture.state.facts.note_transfer(TransferState::Idle);
     fixture.pass();
     assert_eq!(fixture.state.app.core_mode(), ModeState::Free, "the transfer ended, so heavy work is admissible again");
 }
 
-/// **A route plan completes after the active route changed.** The answer carries the token the
-/// request went out with; a Navigator that has moved on refuses it.
+/// A route plan completes after the active route changed. The answer carries the token the request
+/// went out with; a Navigator that has moved on refuses it.
 #[test]
 fn a_route_plan_that_lands_after_the_active_route_changed_is_refused() {
     let mut harness = typed();
@@ -1128,9 +1109,9 @@ fn a_route_plan_that_lands_after_the_active_route_changed_is_refused() {
     );
 }
 
-/// **A settings result with an old revision.** The token and the revision are independent guards,
-/// and what a *host* can observe of them is what this row pins: the rider's second edit is written
-/// after the first write's stale answer lands, rather than being swallowed by it.
+/// A settings result with an old revision. The token and the revision are independent guards, and
+/// what a host can observe of them is what this pins: the rider's second edit is written after the
+/// first write's stale answer lands, rather than being swallowed by it.
 ///
 /// The token guard's own refusal is [`an_outcome_after_cancellation_changes_nothing`], where a
 /// superseded answer visibly adopts nothing. The revision guard sits behind it — a superseding edit
@@ -1138,8 +1119,8 @@ fn a_route_plan_that_lands_after_the_active_route_changed_is_refused() {
 /// is pinned in `obc-app`'s own suite rather than claimed here.
 #[test]
 fn a_settings_result_with_an_old_revision_is_refused() {
-    // The rider edits, the write goes out, the rider edits again, and the *first* write's answer
-    // lands — for a superseded revision. What must not happen is the second edit being lost, so the
+    // The rider edits, the write goes out, the rider edits again, and the first write's answer lands
+    // for a superseded revision. What must not happen is the second edit being lost, so the
     // observation is the sequence of revisions the executor was actually asked to write.
     let mut harness = typed();
     let mut trace = recorder();
@@ -1165,17 +1146,17 @@ fn a_settings_result_with_an_old_revision_is_refused() {
     assert_eq!(rider_visible(delayed.settled.clone()), rider_visible(immediate.settled.clone()));
 }
 
-/// **A saved ride orders exactly one catalog read.**
+/// A saved ride orders exactly one catalog read.
 ///
 /// Finalizing a ride commits an object into the store, so the rides list has to be re-read. It is
-/// one event, so it is one read — ordered by the catalog's own owed bit, whoever caused it (#1541).
-/// The executor answering the close must not re-feed the catalog beside that: a re-feed is a second
+/// one event, so it is one read — ordered by the catalog's own owed bit, whoever caused it. The
+/// executor answering the close must not re-feed the catalog beside that: a re-feed is a second
 /// copy of the same knowledge, living outside the domain that owns it.
 ///
-/// The count is executor re-feeds **plus** ordered reads on purpose. Either mechanism alone is one
-/// read of the store; what this refuses is the two of them for one save. The `RideFinalized`
-/// connection and the store-revision fact the same commit raises arm the **same** owed bit, so the
-/// two producers coalesce into the one read rather than adding up.
+/// The count is executor re-feeds plus ordered reads on purpose. Either mechanism alone is one read
+/// of the store; what this refuses is the two of them for one save. The `RideFinalized` connection
+/// and the store-revision fact the same commit raises arm the same owed bit, so the two producers
+/// coalesce into the one read rather than adding up.
 #[test]
 fn a_saved_ride_orders_exactly_one_catalog_read() {
     let mut harness = recording_harness();
@@ -1205,12 +1186,12 @@ fn a_saved_ride_orders_exactly_one_catalog_read() {
     assert_eq!(reads, 1, "…ordered by the catalog's own read, not by anything the executor did");
 }
 
-/// **The checkpoint cadence is the domain's.** A ride that has been open past the deadline owes a
-/// journal checkpoint, and it is Recorder that decides so — not an executor timing itself.
+/// The checkpoint cadence is the domain's. A ride that has been open past the deadline owes a
+/// journal checkpoint, and it is Recorder that decides so, not an executor timing itself.
 ///
-/// The corpus scenario `recorder.start-save-discard` runs this for real (its `start-recorder` action
-/// carries a clock mark past the deadline); this is the same property asserted directly, so
-/// `Requirement::RecorderCheckpointCadence` names something a test can fail on.
+/// The corpus scenario `recorder.start-save-discard` runs this for real; this is the same property
+/// asserted directly, so `Requirement::RecorderCheckpointCadence` names something a test can fail
+/// on.
 #[test]
 fn a_ride_open_past_the_deadline_owes_a_checkpoint() {
     let mut harness = recording_harness();
@@ -1231,14 +1212,14 @@ fn a_ride_open_past_the_deadline_owes_a_checkpoint() {
     assert!(harness.pass().effects.recorder.is_empty(), "and nothing is owed a millisecond later");
 }
 
-/// **A commit reported with its own finalize still orders one read** — the board's cadence.
+/// A commit reported with its own finalize still orders one read — the board's cadence.
 ///
-/// The board reports its flat store's live sequence immediately before `run_pass`, *after* the
-/// store phase that committed the ride, so one pass carries both arms: the `StoreRevision` the
-/// commit moved and Recorder's `RideFinalized`. They arm the same `refresh_owed` bit, and
+/// The board reports its flat store's live sequence immediately before `run_pass`, after the store
+/// phase that committed the ride, so one pass carries both arms: the `StoreRevision` the commit
+/// moved and Recorder's `RideFinalized`. They arm the same `refresh_owed` bit, and
 /// `CatalogState::next_effect` spends it when it issues the read, so the pair costs one read.
 ///
-/// Sampling the level *before* the store phase is what this refuses: the two arms then land in
+/// Sampling the level before the store phase is what this refuses: the two arms then land in
 /// consecutive passes, the bit is armed, spent, and armed again, and one saved ride costs two reads
 /// on the board while the host — whose pass runs before its executor — shows one.
 #[test]
@@ -1275,13 +1256,12 @@ fn a_commit_reported_with_its_own_finalize_still_orders_one_read() {
     assert_eq!(harness.ride_feeds - feeds_before, 1, "and one feed of the ride catalog");
 }
 
-/// **A ride finalize failure after the last checkpoint.** The rider closes the ride, the executor
-/// that performs the close fails it — and the ride is still there afterwards, with the rider told.
+/// A ride finalize failure after the last checkpoint. The rider closes the ride, the executor that
+/// performs the close fails it, and the ride is still there afterwards, with the rider told.
 ///
-/// The DC1 row this binds is "ride finalize failure after the last checkpoint". Both halves are the
-/// row: a failure the rider is not told about is the obvious defect, but a failure that leaves the
-/// app believing the ride is closed is the worse one — the object is still on the store and nothing
-/// on glass says so.
+/// Both halves are the row: a failure the rider is not told about is the obvious defect, but a
+/// failure that leaves the app believing the ride is closed is the worse one — the object is still
+/// on the store and nothing on glass says so.
 #[test]
 fn a_failed_finalize_leaves_the_ride_open_and_warns_the_rider() {
     let mut harness = recording_harness();
@@ -1334,13 +1314,12 @@ fn a_failed_finalize_leaves_the_ride_open_and_warns_the_rider() {
     assert!(!harness.state.app.recording(), "and the ride closes once the store commits it");
 }
 
-/// **A trip member disappears before the delete commit.** The rider holds to delete a folder, and
-/// one of its member routes is gone by the time that member's removal commits. The goal state holds,
-/// so the step is a success with `existed: false` — never a failure the rider is shown — and the
+/// A trip member disappears before the delete commit. The rider holds to delete a folder, and one
+/// of its member routes is gone by the time that member's removal commits. The goal state holds, so
+/// the step is a success with `existed: false` — never a failure the rider is shown — and the
 /// cascade walks on to the remaining member and then the folder.
 ///
-/// The literal situation, on the domain's own cascade (#1491). The generic rule — an object already
-/// absent is a success — is the trace below it.
+/// The generic rule, that an object already absent is a success, is the trace below it.
 #[test]
 fn a_trip_member_that_vanished_before_the_commit_is_a_success() {
     let mut harness = typed();
@@ -1408,10 +1387,9 @@ fn an_object_that_vanished_before_the_commit_is_a_success() {
     );
 }
 
-/// **A completed removal is followed by the re-read the domain orders** (#1541,
-/// `Requirement::CatalogDeleteOrdersRefresh`). No executor composes a refresh any more, so a deleted
-/// row leaves the rider's menu only because `CatalogMachine` ordered the read that re-fills it — and
-/// both answer cadences settle in the same place.
+/// A completed removal is followed by the re-read the domain orders. No executor composes a refresh
+/// any more, so a deleted row leaves the rider's menu only because `CatalogMachine` ordered the read
+/// that re-fills it — and both answer cadences settle in the same place.
 #[test]
 fn a_completed_removal_is_followed_by_the_re_read_the_domain_orders() {
     for runner in Runner::ALL {
@@ -1439,10 +1417,9 @@ fn a_completed_removal_is_followed_by_the_re_read_the_domain_orders() {
     }
 }
 
-/// **A read the store could not answer is re-offered until it lands** (#1541,
-/// `Requirement::CatalogRefreshRetry`). The store did not move, so no revision edge would ever order
-/// it again: without the domain's own retry the rescan is simply lost, and the rider is left looking
-/// at rows the store no longer has.
+/// A read the store could not answer is re-offered until it lands. The store did not move, so no
+/// revision edge would ever order it again: without the domain's own retry the rescan is simply
+/// lost, and the rider is left looking at rows the store no longer has.
 #[test]
 fn a_read_the_store_could_not_answer_is_re_offered_until_it_lands() {
     for runner in Runner::ALL {
@@ -1455,7 +1432,7 @@ fn a_read_the_store_could_not_answer_is_re_offered_until_it_lands() {
         );
     }
 }
-/// **A capability changes after a new map mounts**, and **a device without the detour capability**.
+/// A capability changes after a new map mounts, and a device without the detour capability.
 ///
 /// A capability is a level recomputed from what the image implements and what is true now. A missing
 /// graph or missing support withdraws the operation entirely, so "unsupported" never reaches the
@@ -1485,11 +1462,11 @@ fn capabilities_follow_the_mounted_data_and_the_platform() {
 /// A platform without the detour, for the capability traces.
 const NO_DETOUR: PlatformSupport = PlatformSupport { detour: false, ..EVERYTHING };
 
-/// **A detour without a path** is a planning failure, and it is a *different* value from the absence
-/// of the capability — the epic's "unsupported must not appear as NoPath".
+/// A detour without a path is a planning failure, and it is a different value from the absence of
+/// the capability: unsupported must not appear as NoPath.
 #[test]
 fn a_detour_without_a_path_is_a_failure_and_not_an_absent_capability() {
-    // A supported device asks the planner for real, and its "no path" is an *answer* to that
+    // A supported device asks the planner for real, and its "no path" is an answer to that
     // operation: the rider is shown the generic failure card, and not the range tier.
     let mut harness = typed();
     harness.apply(Action::PlanDetour);
@@ -1525,8 +1502,8 @@ fn a_detour_without_a_path_is_a_failure_and_not_an_absent_capability() {
     assert!(!Capabilities::calculate(NO_DETOUR, facts).navigator.plan_detour);
 }
 
-/// **Deleting the active route, with same-pass Navigator delivery.** The rider is not left being
-/// guided along a route the device has decided to remove.
+/// Deleting the active route, with same-pass Navigator delivery. The rider is not left being guided
+/// along a route the device has decided to remove.
 #[test]
 fn deleting_the_active_route_drops_it_in_the_same_pass() {
     let mut harness = typed();
@@ -1541,8 +1518,8 @@ fn deleting_the_active_route_drops_it_in_the_same_pass() {
     );
     assert_eq!(harness.state.app.active_route_index(), None, "and Navigator heard about it in that pass");
 }
-/// **A full effect slot and a full outcome slot.** Both preserve the value already there, and a
-/// refused one comes back to its owner rather than being dropped.
+/// A full effect slot and a full outcome slot. Both preserve the value already there, and a refused
+/// one comes back to its owner rather than being dropped.
 #[test]
 fn a_full_slot_preserves_work_on_both_sides_of_the_seam() {
     // The effect side: two objects expire together, the domain admits one, and the other is not
@@ -1565,9 +1542,9 @@ fn a_full_slot_preserves_work_on_both_sides_of_the_seam() {
     assert_eq!(refused.rejected, intruder, "and hands the value back to its owner");
     assert_eq!(outcomes.catalog.take(), Some(held), "the first answer is what the domain gets");
 }
-/// **A stale derived input after a subject change** — the corrected defect of this gate.
+/// A stale derived input after a subject change.
 ///
-/// The legacy feeders carry no subject, so a delayed fill for the ride the rider *was* looking at
+/// The bulk feeders carry no subject, so a delayed fill for the ride the rider was looking at
 /// satisfies the need for the one they are looking at now. DeviceCore keys the read, so the same
 /// delayed answer is dropped and the level asks again.
 #[test]
@@ -1583,7 +1560,7 @@ fn a_stale_derived_fill_is_dropped_and_the_level_asks_again() {
     let plan = harness.pass();
     assert_eq!(plan.derived_needs.ride_track, Some(key), "the need is untouched");
 
-    // A failure for the *right* key is an answer, so a dead source costs one read and not one per
+    // A failure for the right key is an answer, so a dead source costs one read and not one per
     // pass.
     harness.state.derived.ride_track = Some(DerivedInput { key, result: DerivedResult::Failed });
     let plan = harness.pass();
@@ -1633,7 +1610,7 @@ fn a_fact_raised_this_pass_reaches_the_rider_in_it() {
         "both notices reached one card"
     );
 }
-/// The conformance replay's wake profile and pass cost — #1440's last two resource rows.
+/// The conformance replay's wake profile and pass cost.
 ///
 /// The wake counts are deterministic, so they are asserted: a pass that starts polling, or a
 /// deferred connection that stops settling, moves them and this fails. The times are
@@ -1687,16 +1664,15 @@ fn the_conformance_replay_wake_profile_and_pass_cost() {
 }
 
 /// The wake counts for the complete scenario table. Cancelling a detour uncovers the Map while
-/// planner cleanup is pending, so its visible planning banner keeps a one-second animation deadline.
+/// planner cleanup is pending, so its visible planning banner keeps a one-second animation
+/// deadline.
 const WAKE_PROFILE: (u32, u32, u32, u32) = (190, 0, 126, 64);
-
-// ==================== the resource gate ====================
 
 /// The pass protocol's size budget, re-asserted from outside `obc-app`.
 ///
-/// The compile-time assertions inside the crate gate the same values; this one exists because a
-/// *host* is what puts both structs on its stack every pass, and because the gate's resource table
-/// has to be reproducible from a command anyone can run.
+/// The compile-time assertions inside the crate gate the same values; this one exists because a host
+/// is what puts both structs on its stack every pass, and because the resource table has to be
+/// reproducible from a command anyone can run.
 #[test]
 fn the_pass_protocol_stays_within_its_budget() {
     use std::mem::size_of;

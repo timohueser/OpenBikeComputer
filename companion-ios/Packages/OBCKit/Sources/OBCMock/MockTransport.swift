@@ -3,24 +3,18 @@ import Foundation
 import OBCDomain
 import OBCTransport
 
-/// Build-seam marker. This symbol exists **only in Debug builds** — the entire
-/// `OBCMock` module is behind `#if DEBUG`, so a Release build compiles it to nothing
-/// and the string never reaches the Release binary. B0's acceptance test greps the
-/// built binary for this exact value (see companion-ios/CLAUDE.md → "Prove the seam").
+/// Debug-only build seam: the whole `OBCMock` module is behind `#if DEBUG`, so this
+/// string never reaches a Release binary. An acceptance test greps for this exact value.
 public let obcMockBuildMarker = "OBCMock:DEBUG-only"
 
-/// Fixture-backed `DeviceTransport` — the default Debug transport (no BLE in the
-/// simulator). It **bypasses `BLEChannel` entirely**, serving domain objects straight
-/// from fixtures with simulated latency + throughput, driven by a live `MockControl`.
-///
-/// A thin value type: all live state lives in the shared `control` (a reference), so
-/// the debug panel (B1P) and tests manipulate the same instance this transport reads.
+/// Fixture-backed `DeviceTransport` for Debug builds. It bypasses `BLEChannel` and serves
+/// domain objects from fixtures with simulated latency. All live state is in the shared
+/// `control` reference, so the debug panel and the tests drive the same instance.
 public struct MockTransport: DeviceTransport {
     public let control: MockControl
 
     public init(control: MockControl = MockControl()) { self.control = control }
 
-    /// Convenience: a transport wired to a fresh control for `scenario`.
     public init(scenario: Scenario) { self.control = MockControl(scenario: scenario) }
 
     // MARK: Lifecycle
@@ -28,7 +22,7 @@ public struct MockTransport: DeviceTransport {
     public var state: AsyncStream<ConnectionState> { control.stateMulticast.stream() }
     public var battery: AsyncStream<Int> { control.batteryMulticast.stream() }
     public var catalogChanges: AsyncStream<CatalogChange> {
-        // Drop the `nil` seed — local edges are live only.
+        // Drop the `nil` seed: local edges are live only.
         let source = control.catalogChangedMulticast.stream()
         return AsyncStream { continuation in
             let pump = Task {
@@ -42,15 +36,11 @@ public struct MockTransport: DeviceTransport {
     }
 
     public func connect() async throws {
-        // The full link = both phases (bonded reconnect + the direct-connect tests).
         try await discover()
         try await authenticate()
     }
 
     public func discover() async throws {
-        // Phase 1 (#297): the un-gated surface. Radio/scan gate only (H7/H8 +
-        // `.timeout`); the pairing decline (D5 rejected) waits for `authenticate()`,
-        // so the D2 row appears before any passkey is modelled.
         control.connection = .connecting
         await control.delay()
         do {
@@ -63,8 +53,7 @@ public struct MockTransport: DeviceTransport {
     }
 
     public func authenticate() async throws {
-        // Phase 2 (#297): the gated ops. The pairing gate stands in for the real
-        // path's LESC passkey sheet, fired by the D2 row tap (`confirmPairing`).
+        // The pairing gate stands in for the real path's LESC passkey sheet.
         await control.delay()
         do {
             try control.pairingGate()
@@ -91,15 +80,7 @@ public struct MockTransport: DeviceTransport {
 
     public func writeConfig(_ config: DeviceConfig) async throws {
         try await preludeThrowing()
-        // The mock stands in for a device, so it applies the *device's* half of spec §11.8 rather
-        // than storing whatever it is handed: an interval it cannot honour is refused, and an
-        // absent refresh field leaves the stored one alone instead of resetting it. Without the
-        // second half, a rename through the mock would quietly switch a rider's `Off` back to the
-        // 30-minute default — the exact regression the wire rule exists to prevent, and one no
-        // test could catch against a mock that simply overwrote.
-        var stored = config
-
-        control.setConfig(stored)
+        control.setConfig(config)
     }
 
     public func readDiagnostics() async throws -> Data {
@@ -110,9 +91,8 @@ public struct MockTransport: DeviceTransport {
     // MARK: Data plane
 
     public func listRoutes() async throws -> [RouteCatalogEntry] {
-        // The device's catalog under device object ids — reconcile input for
-        // the "on device" badge, never list rows (the Planned list is
-        // library-first, #289). Mirrors the real protocol-v4 route catalog.
+        // The device catalog under device object ids: reconcile input for the "on device"
+        // badge, not for list rows.
         try await preludeThrowing()
         control.recordCancelledRouteCatalogReadIfNeeded()
         return control.deviceRoutes()
@@ -124,11 +104,10 @@ public struct MockTransport: DeviceTransport {
         control.removeRoute(id)
     }
 
-    // MARK: Trips (TR8)
+    // MARK: Trips
 
     public func listTrips() async throws -> [TripCatalogEntry] {
-        // The device's protocol-v4 trip catalog — reconcile input for the trip
-        // card badge, never list rows.
+        // Reconcile input for the trip card badge, not for list rows.
         try await preludeThrowing()
         try control.takeTripCatalogFailure()
         return control.deviceTripCatalog()
@@ -155,18 +134,10 @@ public struct MockTransport: DeviceTransport {
     }
 
     public func setClock(_ sample: WallClockSample) async throws -> ClockSyncOutcome {
-        // `setClock` (spec §4.4 cmd 5, epic #638). Same prelude as every
-        // control-plane op, so an unreachable link or armed fault behaves like the
-        // real write. Records the sample (the connect-time stamp tests assert it),
-        // and answers `unsupported` in the old-firmware scenario (the gated state
-        // S7 UI-tests) — validating like the firmware otherwise.
         try await preludeThrowing()
         return control.recordSetClock(sample)
     }
     public func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail {
-        // A device object id, exactly like the real transport ("download the
-        // route object"). Library-saved routes answer E2 from their own record
-        // (`preloadedDetail`), not from here.
         try await preludeThrowing()
         guard let entry = control.deviceRouteEntry(id) else {
             throw DeviceError.readFailed
@@ -195,26 +166,17 @@ public struct MockTransport: DeviceTransport {
     }
 
     public func installFirmware() async throws -> FirmwareInstallResult {
-        // Same prelude as every control-plane op, so an unreachable link or an
-        // armed fault behaves like the real `installFw` write.
         try await preludeThrowing()
         return control.installFirmware()
     }
 
     public func forgetBond() async throws {
-        // `forgetBond` (spec §4.4 cmd 4, #756). Same prelude as every control-plane
-        // op, so an unreachable link or an armed one-shot fault throws exactly as
-        // the real command's short-timeout / write failure would — which the
-        // Settings forget treats as best-effort and clears past anyway. The record
-        // is the observable effect (the mock models no device-side bond slot).
+        // The mock models no device-side bond slot, so the record is the only effect.
         try await preludeThrowing()
         control.recordForgetBond()
     }
 
-    // MARK: Shared op prelude
-
-    /// Every control-plane / list op: apply latency, require a reachable link, then
-    /// honor an armed one-shot failure. Keeps the per-op bodies to a single line.
+    /// Applies latency, requires a reachable link, then honors an armed one-shot failure.
     private func preludeThrowing() async throws {
         await control.delay()
         try control.requireReachable()

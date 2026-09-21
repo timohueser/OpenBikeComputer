@@ -1,50 +1,18 @@
-//! The **protocol-v4 USB adapter** (`FLAT_Store_Protocol.md` §5.2) — FS7.5-c3b, epic #1256.
-//!
-//! §5's brief is the same one the radio's adapter works to: "an adapter owns record boundaries,
-//! pacing, timeouts, drain, and nothing else. It never parses a payload, never mints an identifier,
-//! and never originates a frame." The record boundaries are [`super::records`]; this file is the
-//! rest.
-//!
-//! ## What changed on this link, and what did not
+//! The protocol-v4 USB adapter. An adapter owns record boundaries, pacing, timeouts and drain, and
+//! nothing else: it never parses a payload, never mints an identifier and never originates a frame.
+//! The record boundaries are [`super::records`]; this file is the rest.
 //!
 //! The engine is not here. It lives in [`crate::flat_store::storage_task`] beside the write half,
 //! because `obc_link::flat::Store` is synchronous throughout and the card has exactly one writing
-//! execution context (#1256's owner ruling). This module reaches it through
-//! [`Lane`](crate::flat_store::Lane), one record at a time — the same seam the BLE adapter uses,
-//! deliberately the *same code*, so the two links cannot drift into two answers to the same
-//! question.
+//! execution context. This module reaches it through [`Lane`](crate::flat_store::Lane), one record
+//! at a time, over the same seam the BLE adapter uses.
 //!
-//! What is genuinely different is everything below the records:
-//!
-//! - **Two endpoint pairs, both byte streams.** BLE's control channel is an ATT write and an
-//!   indication, which are messages; USB's is a bulk pipe, which is not. §5.2's length prefix is
-//!   what makes it one, and [`super::records`] owns that.
-//! - **No `psm`, no accept, no MTU.** A link comes up when the host sets a configuration and goes
-//!   away when the cable does. `Ceilings::for_usb` is a constant of the binding rather than
-//!   something read off a negotiation, which is why there is no floor refusal path here.
-//! - **One writer per endpoint.** The v1 plane shared its control IN endpoint between two futures
-//!   behind a mutex; here the driver owns both IN endpoints and nothing else writes them.
-//!
-//! ## §5's two obligations
-//!
-//! Both are met the way c3a met them, because both are properties of the shape rather than of the
-//! transport:
-//!
-//! - **Nothing consumed is dropped.** Each reader is its own future ([`control_pump`],
-//!   [`stream_pump`]), a sibling of the driver rather than a branch of a `select` the driver
-//!   re-enters. `RecordReader::next` is not cancellation-safe — it may have moved bytes out of the
-//!   endpoint into its buffer before it suspends — so a `select` that dropped it mid-record would
-//!   lose exactly those bytes. The readers are dropped only when the driver returns, which it does
-//!   only to tear the link down.
-//! - **Credit is withheld while a frame is held.** A pump receives one record, posts it, and waits
-//!   to be told the driver is done before reading again. Nothing reads the bulk OUT endpoint
-//!   meanwhile, so it NAKs — which is §5's "ceasing to accept stream records on USB", in the only
-//!   terms this transport has.
-//!
-//! **Cross-channel ordering** is the same `Admission` latch, from `obc-link`, for the same reason it
-//! is a type there rather than a flag in a binding: a `PUT`'s first stream record genuinely races
-//! its own control record, and a latch that only remembered *that* something was admitted would wave
-//! the second transfer of a session straight into an idle engine.
+//! Two obligations shape what follows. Nothing consumed is dropped: each reader is its own future
+//! ([`control_pump`], [`stream_pump`]) and not a branch of a `select` the driver re-enters, because
+//! `RecordReader::next` is not cancellation-safe and may have moved bytes out of the endpoint
+//! before it suspends. And credit is withheld while a frame is held: a pump receives one record,
+//! posts it, and waits to be told the driver is done before it reads again, so the bulk OUT
+//! endpoint NAKs and the host's own send loop is what stops.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -61,76 +29,58 @@ use crate::flat_store::{Lane, Outcome, Reply, Request, Writer};
 use super::records::{buffer_len, RecordEnd, RecordReader, RecordWriter};
 use super::{EpIn, EpOut, BULK_BURST_LEN, MAX_PACKET};
 
-// ══════════════════════════ the link's constants ══════════════════════════
-
-/// §5.2's record ceiling: the 16-byte stream frame plus 8,192 payload bytes.
+/// The record ceiling: the 16-byte stream frame plus 8,192 payload bytes.
 ///
-/// The payload width is the point. `obc_link`'s engine writes a whole aligned prefix of a stream
-/// record straight to the card, so a record of exactly eight 1 KiB blocks — sixteen 512-byte card
-/// blocks — is **one** card command rather than eight, and on this media a command costs about the
-/// same whatever it carries (`FLAT_Store_Format.md` §5.5). Everything else about this number follows
-/// from that one: it is the reaction buffer's size, the `LIST` page ceiling (46 entries), and the
-/// bound both readers refuse a record above.
+/// The payload width is the point. The engine writes a whole aligned prefix of a stream record
+/// straight to the card, so a record of exactly eight 1 KiB blocks is one card command and not
+/// eight, and on this media a command costs about the same whatever it carries. The same number is
+/// the reaction buffer's size, the `LIST` page ceiling, and the bound both readers refuse a record
+/// above.
 pub(crate) const RECORD_CEILING: usize = 16 + 8_192;
 
-/// §5.2's ceilings for this link, resolved once rather than per cable.
-///
-/// `for_usb` answers `Option` because §5.1's floor refusal is a real outcome on a link that
-/// *negotiates*; USB negotiates nothing, so on this binding the answer is fixed. Unwrapping it here
-/// — at a `static`, not inside a task — means a ceiling edited below the floor is a bring-up panic
-/// with a legible message rather than a link that silently refuses every cable.
+/// This link's ceilings, resolved once rather than per cable. USB negotiates nothing, so `for_usb`'s
+/// `Option` has a fixed answer here. Unwrapping it at a `static` makes a ceiling edited below the
+/// protocol floor a bring-up panic, and not a link that silently refuses every cable.
 static CEILINGS: Ceilings = match Ceilings::for_usb(RECORD_CEILING) {
     Some(ceilings) => ceilings,
     None => panic!("§5.2's record ceiling is below the protocol floor"),
 };
 
-/// §5.2's narrower bound on a **host → device control** record.
-///
-/// §3's largest request is the 100-byte `PUT`. Sizing this buffer to [`RECORD_CEILING`] would be
-/// sizing it to nothing — 8 KiB of `.bss` for a channel whose widest message is a small fraction of a
-/// packet — so the binding states the narrowing instead, and a longer record ends the record stream
-/// exactly as §5.2 says a length above the ceiling does.
+/// The narrower bound on a host-to-device control record. The largest request is the 100-byte
+/// `PUT`, so [`RECORD_CEILING`] here would be 8 KiB of `.bss` for a channel whose widest message is
+/// a fraction of a packet. A longer record ends the record stream, as any over-ceiling length does.
 pub(crate) const CONTROL_RECORD_CEILING: usize = 256;
 
 /// How long a stream record is held while the control channel is given its chance to admit it.
 ///
-/// §3.6 lets a client stream immediately, so the first record of a `PUT` races its own control
-/// record. The hold is bounded: a record still unadmitted when the window closes is handed over
-/// anyway, and §3.8's silent discard is then the right answer, because it genuinely belongs to no
-/// transfer the receiver can be sure of.
-///
-/// **250 ms, and it is a guess with a reason rather than a measurement.** It is meant to cover one
-/// pass of the control pump, which on this link is a bulk read already armed by the driver — there
-/// is no GATT event pump to wait on and no shared-store lock in the path, which is why it is
-/// shorter than the radio's 750 ms rather than copied from it. Neither number has been measured on
-/// glass; this comment is the marker, and the board session re-pins both.
+/// A client may stream immediately, so the first record of a `PUT` races its own control record.
+/// The hold is bounded: a record still unadmitted when the window closes is handed over anyway and
+/// silently discarded, because it belongs to no transfer the receiver can be sure of. The 250 ms
+/// covers one pass of the control pump, which on this link is a bulk read the driver already armed.
+/// It is a guess with a reason, not a measurement on glass.
 const ADMISSION_WINDOW: Duration = Duration::from_millis(250);
-
-// ══════════════════════════ the buffers ══════════════════════════
 
 /// Where a reaction's bytes land, and the ceiling both channels are pinned under.
 static mut OUT: [u8; RECORD_CEILING] = [0; RECORD_CEILING];
 
-/// A word-aligned reassembly buffer. USB binding v5 makes every record span a multiple of four and
-/// places its frame after a four-byte prefix, so this base alignment is the invariant that keeps
-/// every §3.8 payload on memcpy's fast path. Do not weaken it as a storage-only detail: it is a
-/// measured throughput property on the strict-align LM20 target.
+/// A word-aligned reassembly buffer. Every record spans a multiple of four bytes and places its
+/// frame after a four-byte prefix, so this base alignment keeps every payload on memcpy's fast
+/// path. It is a measured throughput property on the strict-align LM20 target.
 #[repr(C, align(4))]
 struct RxBuffer<const N: usize>([u8; N]);
 
-/// The control channel's reassembly buffer.
 static mut CONTROL_RX: RxBuffer<{ buffer_len(CONTROL_RECORD_CEILING, MAX_PACKET as usize) }> =
     RxBuffer([0; buffer_len(CONTROL_RECORD_CEILING, MAX_PACKET as usize)]);
 
-/// The stream channel's reassembly buffer. It is the largest static this plane owns, and the
-/// `+ BULK_BURST_LEN` term is what lets the burst-armed bulk OUT endpoint (#1173) keep its arming:
-/// the driver hands back everything the core absorbed while the CPU was busy, and a free tail
-/// shorter than one burst would have it refuse the read.
+/// The stream channel's reassembly buffer, and the largest static this plane owns. The
+/// `+ BULK_BURST_LEN` term is what lets the burst-armed bulk OUT endpoint keep its arming: the
+/// driver hands back everything the core absorbed while the CPU was busy, and a free tail shorter
+/// than one burst would make it refuse the read.
 static mut STREAM_RX: RxBuffer<{ buffer_len(RECORD_CEILING, BULK_BURST_LEN) }> =
     RxBuffer([0; buffer_len(RECORD_CEILING, BULK_BURST_LEN)]);
 
-/// USB's engine reply slot. One driver, one live call — [`Writer::call`]'s contract, honoured by
-/// there being exactly one caller rather than by call ordering.
+/// USB's engine reply slot. One driver, one live call: [`Writer::call`]'s contract, honoured by
+/// there being exactly one caller.
 static ENGINE_REPLY: Reply = Signal::new();
 
 /// This link's lane, in `.bss` — see [`lane`].
@@ -145,17 +95,17 @@ static CONTROL_TAKEN: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 static STREAM_IN: Signal<CriticalSectionRawMutex, &'static [u8]> = Signal::new();
 static STREAM_TAKEN: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-/// The plane's resident cost, for the budget table in `main.rs`.
+/// The plane's resident cost, summed into the resource report.
 pub(crate) const RESIDENT_BYTES: usize = RECORD_CEILING
     + buffer_len(CONTROL_RECORD_CEILING, MAX_PACKET as usize)
     + buffer_len(RECORD_CEILING, BULK_BURST_LEN);
 
-/// **The one lane, for the life of the image.**
+/// The one lane, for the life of the image.
 ///
-/// Built once and reached from inside the driver rather than carried as a local of the USB task,
-/// for the reason the radio's twin records: a lane carried across a task's awaits changes that
-/// coroutine's liveness enough for LLVM to stop sinking construction temporaries out of the poll
-/// frame, and on the BLE side that cost 8,628 bytes of frame for eight bytes of value (#677/#1084).
+/// Built once and reached from inside the driver rather than carried as a local of the USB task: a
+/// lane carried across a task's awaits changes that coroutine's liveness enough for LLVM to stop
+/// sinking construction temporaries out of the poll frame, which on the BLE side cost 8,628 bytes
+/// of frame for eight bytes of value.
 ///
 /// # Safety
 /// One caller: [`serve_objects`], which is the body of the one USB task.
@@ -173,14 +123,9 @@ fn lane() -> &'static mut Lane {
     }
 }
 
-// ══════════════════════════ the driver ══════════════════════════
-
-/// **Serve v4 records over the cable until the device is unplugged, then wait for the next cable —
-/// forever.**
-///
-/// The endpoints are owned for the life of the task and re-armed across an unplug rather than
-/// rebuilt, which is what keeps this plane's `.bss` footprint a property of the image instead of the
-/// cable cycle.
+/// Serve records over the cable until the device is unplugged, then wait for the next cable,
+/// forever. The endpoints are owned for the life of the task and re-armed across an unplug rather
+/// than rebuilt, which keeps this plane's `.bss` footprint a property of the image.
 pub(crate) async fn serve_objects(ctrl_in: EpIn, ctrl_out: EpOut, bulk_in: EpIn, bulk_out: EpOut) -> ! {
     // Read once, before the loop: `flat_store::arm` runs at its spawn site in `main`, which is
     // several statements ahead of this task's first poll on every boot path.
@@ -194,18 +139,14 @@ pub(crate) async fn serve_objects(ctrl_in: EpIn, ctrl_out: EpOut, bulk_in: EpIn,
     let mut stream_tx = RecordWriter::new(bulk_in);
     // Reached here rather than passed in: see `lane`.
     let lane = lane();
-    // Not an `expect` in a link task: §5.2's ceiling is a *constant*, so "is it above the protocol
-    // floor" is a question with one answer for the life of the image and a task is the wrong place
-    // to discover it. `CEILINGS` is that answer, computed once.
     let ceilings = CEILINGS;
 
     loop {
-        // Before configuration (and after an unplug) the endpoints are disabled; parking here is the
-        // idle state, woken by the host's SET_CONFIGURATION.
+        // Before configuration, and after an unplug, the endpoints are disabled. Parking here is
+        // the idle state, woken by the host's SET_CONFIGURATION.
         control.wait_enabled().await;
         let Some(writer) = writer else {
-            // Unreachable since c3a spawns the storage task on every card, and reported rather than
-            // unwrapped because a link task must never be why the board panics.
+            // Reported and not unwrapped, because a link task must never be why the board panics.
             warn!("usb: [v4] the store's write half is not armed — object service is down this boot");
             core::future::pending::<()>().await;
             continue;
@@ -225,16 +166,14 @@ pub(crate) async fn serve_objects(ctrl_in: EpIn, ctrl_out: EpOut, bulk_in: EpIn,
             Timer::after_millis(500).await;
             continue;
         }
-        // The two hand-off releases are level state from the previous cable's point of view; the
-        // record streams themselves were reset on the way *out* of that cable, where §5.2 wants
-        // them (see below).
+        // The two hand-off releases are level state from the previous cable. The record streams
+        // themselves are reset on the way out of a cable, below.
         CONTROL_TAKEN.reset();
         STREAM_TAKEN.reset();
 
-        // **Three siblings, not a `select` the driver re-enters.** Each reader may have moved bytes
+        // Three siblings, and not a `select` the driver re-enters: each reader may have moved bytes
         // out of its endpoint before it suspends, so a shape that dropped one of them per pass would
-        // throw those bytes away — the failure c3a's review found on the radio, in the one form this
-        // transport can also produce.
+        // throw those bytes away.
         let reason = match select3(
             driver(&writer, lane, &mut control_tx, &mut stream_tx),
             control_pump(&mut control),
@@ -244,32 +183,27 @@ pub(crate) async fn serve_objects(ctrl_in: EpIn, ctrl_out: EpOut, bulk_in: EpIn,
         {
             Either3::First(reason) | Either3::Second(reason) | Either3::Third(reason) => reason,
         };
-        // **Reset the record streams, then report teardown — in that order**, because §5.2 puts them
-        // in it: a bad record length "is `invalidFrame` and resets that record stream *before*
-        // teardown is reported to the engine". A peer that has lost a record boundary cannot be
-        // re-synchronised by guessing where the next one starts, so what is buffered is dropped and
-        // the link goes with it. Both `select3` borrows end at the statement above, which is what
-        // makes the resets reachable here rather than at the top of the next pass.
+        // Reset the record streams, then report teardown, in that order: a bad record length resets
+        // that record stream before teardown is reported to the engine. Both `select3` borrows end
+        // at the statement above, which is what makes the resets reachable here.
         control.reset();
         stream.reset();
         CONTROL_IN.reset();
         STREAM_IN.reset();
-        // §3.8's third form of cancel. On its own reply slot, so that an orphan the driver may have
-        // left in `ENGINE_REPLY` stays where `Lane::reclaim` can find it.
+        // On its own reply slot, so that an orphan the driver may have left in `ENGINE_REPLY` stays
+        // where `Lane::reclaim` can find it.
         let joined = release_engine(&writer).await;
         release_joined_stage(joined);
         info!("usb: [v4] link down ({}) — engine released", reason);
         if reason != RecordEnd::LinkDown.reason() {
-            // Not an unplug: a framing error or a driver failure with the endpoints still up. Back
-            // off before re-arming, or a persistent one hot-spins and starves the ride loop on this
-            // cooperative executor.
+            // Not an unplug: a framing error, or a driver failure with the endpoints still up.
+            // Back off before re-arming, or a persistent one starves the ride loop.
             Timer::after_millis(200).await;
         }
     }
 }
 
-/// **Release whatever the engine still holds for a link that has gone away** (§3.8's third form of
-/// cancel).
+/// Release whatever the engine still holds for a link that has gone away.
 async fn release_engine(writer: &Writer) -> JoinedUsbStage {
     static TEARDOWN_REPLY: Reply = Signal::new();
     if writer.call(Request::LinkLost { link: Link::Usb }, &TEARDOWN_REPLY).await.is_err() {
@@ -311,12 +245,9 @@ async fn control_pump(reader: &mut RecordReader) -> &'static str {
     }
 }
 
-/// Read stream records and hand them over one at a time.
-///
-/// **This is where §5's credit withholding lives on this link.** One record is outstanding at a
-/// time and nothing else reads the bulk OUT endpoint, so while a record is held the endpoint NAKs
-/// and the host's send loop is what stops. There is no second buffer for a second record to go to,
-/// and there does not need to be.
+/// Read stream records and hand them over one at a time. This is where credit withholding lives on
+/// this link: one record is outstanding at a time and nothing else reads the bulk OUT endpoint, so
+/// while a record is held the endpoint NAKs and the host's send loop is what stops.
 async fn stream_pump(reader: &mut RecordReader) -> &'static str {
     loop {
         let record = match reader.next().await {
@@ -336,8 +267,7 @@ async fn driver(
     control_tx: &mut RecordWriter,
     stream_tx: &mut RecordWriter,
 ) -> &'static str {
-    // Owned by the driver, so it is per cable by construction rather than by a `reset` someone has
-    // to remember.
+    // Owned by the driver, so it is per cable by construction.
     let mut admission = Admission::new();
     let mut staged_request: Option<RequestId> = None;
     let mut usb_stage: Option<UsbStage> = None;
@@ -348,10 +278,9 @@ async fn driver(
         // record the engine may be about to refuse anyway.
         let reaction = match embassy_futures::select::select(CONTROL_IN.wait(), STREAM_IN.wait()).await {
             embassy_futures::select::Either::First(record) => {
-                // A deferred batch owns the lane; its answer comes first. A non-idle answer ended
-                // the upload — it becomes this pass's reaction, and the control record goes back
-                // where the next pass will take it, exactly as the admission hold re-queues a
-                // stream record.
+                // A deferred batch owns the lane, so its answer comes first. A non-idle answer
+                // ended the upload: it becomes this pass's reaction, and the control record goes
+                // back where the next pass takes it.
                 match collect_pending(writer, lane, &mut usb_stage).await {
                     Some(Reaction::Idle) => match control_record(writer, lane, record).await {
                         Some(reaction) => reaction,
@@ -377,10 +306,9 @@ async fn driver(
                 }
             }
         };
-        // Most records are `Idle`; do not put another storage round trip in the 8 KiB hot path.
-        // A terminal/control reaction can end the USB upload, while the app-facing map projection
-        // may remain `Receiving` if BLE immediately admits another map. That edge requires the
-        // exact owner query below.
+        // Most records are `Idle`; do not put another storage round trip in the 8 KiB hot path. A
+        // terminal reaction can end the USB upload while the app-facing map projection stays
+        // `Receiving`, if BLE admits another map at once. That edge needs the exact query below.
         let may_have_ended = reaction != Reaction::Idle;
         if let Some(reason) = pump(writer, lane, control_tx, stream_tx, reaction).await {
             if usb_stage.is_some() {
@@ -397,9 +325,8 @@ async fn driver(
             false
         };
         if staged_ended {
-            // A still-outstanding deferred batch owns the lane; its answer (usually long since
-            // signalled) must be taken before the stage is released, and a non-idle one still owes
-            // the host its bytes.
+            // A still-outstanding deferred batch owns the lane. Its answer must be taken before
+            // the stage is released, and a non-idle one still owes the host its bytes.
             match collect_pending(writer, lane, &mut usb_stage).await {
                 Some(Reaction::Idle) => {}
                 Some(reaction) => {
@@ -441,9 +368,8 @@ fn log_staged_rate(started: Option<Instant>, bytes: u64) {
 /// Hand one control record to the engine, then release the pump's buffer.
 async fn control_record(writer: &Writer, lane: &mut Lane, record: &'static [u8]) -> Option<Reaction> {
     let reaction = lane.call(writer, |out| Request::Control { link: Link::Usb, record, out }).await;
-    // **Released here and not a statement earlier.** The engine consumes the record synchronously
-    // inside the storage task's `serve`, which is over by the time this call answers — so this is
-    // the first instant at which the pump may read over bytes the queue still borrowed.
+    // Released here and not a statement earlier: the engine consumes the record synchronously
+    // inside the storage task's `serve`, which is over by the time this call answers.
     CONTROL_TAKEN.signal(());
     reaction
 }
@@ -455,12 +381,10 @@ struct UsbStage {
     received: u64,
     bank: usize,
     fill: usize,
-    /// A mid-upload batch handed to the storage owner whose answer has not been taken yet.
-    ///
-    /// **The collect point is a correctness rule, not a latency choice.** The serve of batch N is
-    /// what joins the *other* bank's previous card DMA, so the driver must collect this ticket
-    /// before the first byte lands in a freshly-swapped bank — and before any other use of the
-    /// lane, whose buffer travels with the deferred request.
+    /// A mid-upload batch handed to the storage owner whose answer has not been taken yet. The
+    /// collect point is a correctness rule: the serve of batch N is what joins the other bank's
+    /// previous card DMA, so the driver must collect this ticket before the first byte lands in a
+    /// freshly swapped bank, and before any other use of the lane.
     pending: Option<crate::flat_store::Ticket>,
 }
 
@@ -473,9 +397,8 @@ impl UsbStage {
 /// Take the deferred batch's answer if one is outstanding, restoring the lane.
 ///
 /// `Some(Reaction::Idle)` is the ordinary mid-upload answer. Anything else means the engine ended
-/// the upload at that batch (a media refusal, a close); the caller must treat it as the pass's
-/// reaction — its bytes are in the lane, exactly as after `Lane::call`. `None` means the lane is
-/// gone and the link must die.
+/// the upload at that batch, and the caller must treat it as the pass's reaction: its bytes are in
+/// the lane, exactly as after `Lane::call`. `None` means the lane is gone and the link must die.
 async fn collect_pending(writer: &Writer, lane: &mut Lane, usb_stage: &mut Option<UsbStage>) -> Option<Reaction> {
     let Some(ticket) = usb_stage.as_mut().and_then(|stage| stage.pending.take()) else {
         return Some(Reaction::Idle);
@@ -492,9 +415,9 @@ async fn stream_record(
     staged_request: &mut Option<RequestId>,
     usb_stage: &mut Option<UsbStage>,
 ) -> Option<Reaction> {
-    // §5's admission hold. Reading four bytes of the §3.8 frame header is not "parsing a payload":
-    // it is the record boundary information the binding is explicitly responsible for, and a record
-    // too short to carry one is not decoded here — it goes to the engine, which owns that refusal.
+    // The admission hold. To read four bytes of the frame header is not to parse a payload: it is
+    // the record boundary information the binding is responsible for. A record too short to carry
+    // one goes to the engine, which owns that refusal.
     let frame_id =
         (record.len() >= 4).then(|| RequestId(u32::from_le_bytes([record[0], record[1], record[2], record[3]])));
     if let Some(frame_id) = frame_id {
@@ -503,18 +426,11 @@ async fn stream_record(
                 embassy_futures::select::select(CONTROL_IN.wait(), Timer::after(ADMISSION_WINDOW)).await
             {
                 let reaction = control_record(writer, lane, control).await?;
-                // **Re-signalling `STREAM_IN` with the record we are holding, rather than delivering
-                // it here.** §5 says a held frame must not be delivered before its admission and
-                // must not be dropped; this is the third option — put it back where the driver's
-                // next `select` will take it, having spent this pass on the control record that may
-                // be its admission. The pump is still not reading behind it (`STREAM_TAKEN` is
-                // un-signalled), so nothing overwrites the buffer meanwhile and §5's credit
-                // withholding continues to hold.
-                //
-                // It costs one extra trip round the driver loop, and it is deliberately not
-                // optimised into a direct call: the loop is where control records win ties, and
-                // delivering from here would jump that queue with a record that has just been told
-                // to wait.
+                // The held record is re-signalled on `STREAM_IN` instead of delivered here: a held
+                // frame must not be delivered before its admission, and must not be dropped. The
+                // pump is still not reading behind it, so nothing overwrites the buffer meanwhile.
+                // It costs one extra trip round the driver loop, which is where control records win
+                // ties; to deliver from here would jump that queue.
                 STREAM_IN.signal(record);
                 return Some(reaction);
             }
@@ -533,13 +449,11 @@ async fn stream_record(
     }
 
     if let Some(stage) = usb_stage {
-        // **The bank hand-back gate.** The serve of the deferred batch is what joins this bank's
+        // The bank hand-back gate. The serve of the deferred batch is what joins this bank's
         // previous card DMA, so a freshly swapped bank may not take its first byte before that
-        // answer is in — and the answer usually already is, the batch having been served while the
-        // record on the wire arrived. A non-idle answer ended the upload: it becomes this pass's
-        // reaction and the held record goes back to the pump, the admission hold's own move.
-        // `pending` can only be live on a bank's first record, so this one gate also restores the
-        // lane before any fallback `lane.call` below.
+        // answer is in. A non-idle answer ended the upload: it becomes this pass's reaction and the
+        // held record goes back to the pump. `pending` can only be live on a bank's first record,
+        // so this gate also restores the lane before any fallback `lane.call` below.
         if stage.fill == 0 {
             if let Some(ticket) = stage.pending.take() {
                 match lane.collect(writer, ticket).await {
@@ -590,16 +504,16 @@ async fn stream_record(
         let len = stage.fill;
         let request = stage.request;
         if stage.received >= stage.declared {
-            // The final batch produces the `PUT` answer, so it is awaited inline — on an idle
-            // pipeline, the previous batch having been collected at this bank's first record.
+            // The final batch produces the `PUT` answer, so it is awaited inline, on an idle
+            // pipeline.
             let reaction = lane.call(writer, |out| Request::StreamStagedBatch { request, offset, len, out }).await;
             stage.bank ^= 1;
             stage.fill = 0;
             return reaction;
         }
         // A mid-upload batch is fire-now-collect-later: the storage owner writes this bank to the
-        // card while the pump keeps receiving the next one. The answer is taken at the swapped
-        // bank's first record, above.
+        // card while the pump receives the next one. The answer is taken at the swapped bank's
+        // first record, above.
         stage.pending =
             lane.call_deferred(writer, |out| Request::StreamStagedBatch { request, offset, len, out }).await;
         stage.pending?;
@@ -613,11 +527,10 @@ async fn stream_record(
     reaction
 }
 
-/// Whether a transfer owns the engine right now — the query §5's hold is built on.
+/// Whether a transfer owns the engine right now: the query the admission hold is built on.
 ///
-/// Deliberately **not** a `Lane` call: it borrows no buffer, so it cannot be the thing that loses
-/// one. Its own reply slot for the reason the contract states — one slot per concurrently live
-/// call is a property of the types here rather than of call ordering.
+/// Not a `Lane` call, because it borrows no buffer and so cannot be what loses one. It has its own
+/// reply slot, because one slot per concurrently live call is a property of the types here.
 static LIVE_QUERY_REPLY: Reply = Signal::new();
 
 async fn live_transfer(writer: &Writer) -> Option<RequestId> {
@@ -630,16 +543,16 @@ async fn live_transfer(writer: &Writer) -> Option<RequestId> {
 /// The storage-owned admission proof for the cable-only scratch arm. The app's map progress state
 /// deliberately omits link ownership and therefore cannot distinguish a BLE map PUT from USB.
 async fn usb_map_upload(writer: &Writer, request: RequestId) -> Option<u64> {
-    // Sequential in this one USB driver with `live_transfer`; reusing the slot avoids paying a
-    // second Signal (72 linked resident bytes) for two mutually-exclusive engine queries.
+    // Sequential with `live_transfer` in this one driver, so the slot is reused instead of paying
+    // a second Signal for two mutually exclusive engine queries.
     match writer.call(Request::UsbMapUpload { request }, &LIVE_QUERY_REPLY).await {
         Ok(Outcome::UsbMap(declared)) => declared,
         _ => None,
     }
 }
 
-/// Send what the reaction names, then pump until the engine goes quiet — servicing control records
-/// in between, because §3.8's cancel is bilateral and a download must not deafen the control channel.
+/// Send what the reaction names, then pump until the engine goes quiet, servicing control records
+/// in between, because cancel is bilateral and a download must not deafen the control channel.
 async fn pump(
     writer: &Writer,
     lane: &mut Lane,
@@ -651,10 +564,9 @@ async fn pump(
     loop {
         match reaction {
             Reaction::Idle => return None,
-            // §3.1's unanswerable record: emit nothing and close that record stream. On this link
-            // the two channels are two endpoint pairs of one interface, which the host enables and
-            // disables together, so closing one means ending the link — and the log says which
-            // channel asked rather than pretending the distinction was honoured.
+            // An unanswerable record: emit nothing and close that record stream. The two channels
+            // are two endpoint pairs of one interface, which the host enables and disables
+            // together, so to close one is to end the link; the log says which channel asked.
             Reaction::Close(channel) => {
                 return Some(match channel {
                     Channel::Control => "control-closed",
@@ -673,7 +585,7 @@ async fn pump(
             Reaction::SendAndReboot { len } => {
                 // FORMAT invalidates the mounted store before it answers. Complete the USB record,
                 // give the controller one short drain beat, then remount the new empty store from a
-                // clean boot. ARM uses this same terminal reaction once board policy enables it.
+                // clean boot.
                 if !control_tx.send(lane.sent(len)).await {
                     return Some("send-reboot");
                 }
@@ -682,9 +594,9 @@ async fn pump(
                 cortex_m::peripheral::SCB::sys_reset();
             }
         }
-        // **Between iterations, not only when idle.** A `GET` streams for as long as the object is
-        // large, and §3.8's cancel is bilateral: a `CANCEL` sent mid-download has to reach the
-        // engine while there is still something to cancel.
+        // Between iterations, not only when idle: a `GET` streams for as long as the object is
+        // large, and cancel is bilateral, so a `CANCEL` sent mid-download must reach the engine
+        // while there is still something to cancel.
         if let Some(record) = CONTROL_IN.try_take() {
             match control_record(writer, lane, record).await {
                 Some(next) => reaction = next,

@@ -1,15 +1,14 @@
 //! Screen-space semantic land-cover generalisation for the coarse map tiers.
 //!
-//! This is the production form of the interactive semantic-coverage prototype.  It deliberately
-//! uses the same algorithm and constants: source polygons are sampled at 4x screen resolution,
-//! accumulated into 2-pixel cells, assigned by a local Potts/coverage energy over overlapping
-//! 10-cell windows, vectorised as one shared coverage, relaxed three times, and cleaned with a
-//! final one-cell coverage VW pass.  Hydrography is a separate one-pixel mask and never enters
-//! the categorical allocator.
+//! Source polygons are sampled at 4x screen resolution, accumulated into 2-pixel cells, assigned by
+//! a local Potts/coverage energy over overlapping 10-cell windows, vectorised as one shared
+//! coverage, relaxed three times, and cleaned with a final one-cell coverage VW pass. The
+//! cartographic constants are fixed on purpose. Hydrography is a separate one-pixel mask and never
+//! enters the categorical allocator.
 //!
-//! The grid is anchored in projected metres rather than to a viewport.  One shared ladder is built
-//! for the complete extract before canonical cells are clipped from it, so adjacent output cells
-//! have identical seams. The emitted geometry remains ordinary OBCM polygons; the device has no
+//! The grid is anchored in projected metres rather than to a viewport, and one shared ladder is
+//! built for the complete extract before canonical cells are clipped from it, so adjacent output
+//! cells have identical seams. The emitted geometry is ordinary OBCM polygons; the device has no
 //! semantic-grid code.
 
 use std::collections::{BinaryHeap, HashMap, VecDeque};
@@ -39,8 +38,7 @@ const BOUNDARY_WEIGHT: f64 = 1.20;
 const QUOTA_WEIGHT: f64 = 0.85;
 const RARE_PENALTY: f64 = 8.0;
 // Stay below one rendered pixel before relaxation. The final pass reaches one two-pixel semantic
-// cell; its shared-graph simplifier protects planarity and minimum face size directly rather than
-// weakening the approved block-scale geometry when one face is fragile.
+// cell, and its shared-graph simplifier protects planarity and minimum face size directly.
 const INITIAL_VW_PX: f64 = 0.45 * CELL_PX as f64;
 const SMOOTH_LIMIT_PX: f64 = 0.8;
 const SMOOTH_STEP: f64 = 0.34;
@@ -182,13 +180,12 @@ pub struct SemanticLod {
 
 pub type SemanticLevels = Vec<Option<Vec<(u8, Geom)>>>;
 
-/// Build the complete semantic ladder finer-to-coarser, preserving the prototype's 35% soft
-/// anchor between adjacent rungs. The returned vector has one slot per configured LOD; ordinary
-/// tiers are `None`, while an infinite fallback reuses the coarsest finite geometry verbatim.
+/// Build the complete semantic ladder finer-to-coarser, preserving the 35% soft anchor between
+/// adjacent rungs. The returned vector has one slot per configured LOD; ordinary tiers are `None`,
+/// while an infinite fallback reuses the coarsest finite geometry verbatim.
 ///
-/// Both the monolithic packer and the canonical-cell cutter call this function. Keeping the ladder
-/// construction here prevents the two production paths from quietly acquiring different semantic
-/// transitions.
+/// Both the monolithic packer and the canonical-cell cutter call this, so the two production paths
+/// cannot quietly acquire different semantic transitions.
 pub fn build_semantic_levels(
     features: &[IngestFeature],
     lods: &[Lod],
@@ -288,11 +285,9 @@ pub fn build_semantic_lod(
     let (relaxed, smoothing) = smooth_coverage(simplified, &grid, SMOOTH_LIMIT_PX * mpp)?;
     let smoothed = simplify_shared_coverage(&relaxed, &grid, FINAL_VW_PX * mpp)?;
 
-    // A sub-pixel pond is not a useful area feature at overview scale. Keep every component at
-    // its real location, but remove components too small to cover a stable screen mark. The old
-    // implementation preserved their aggregate area by gathering unrelated water pixels into one
-    // invented block per 20×20 region; those blocks were the conspicuous square "pools" alongside
-    // rivers. Rivers themselves remain independent line geometry and are never filtered here.
+    // A sub-pixel pond is not a useful area feature at overview scale. Keep every component at its
+    // real location, but remove components too small to cover a stable screen mark. Rivers remain
+    // independent line geometry and are never filtered here.
     if mpp > 50.0 {
         let min_pixels = if mpp > 120.0 {
             4
@@ -856,15 +851,15 @@ fn simplify_owned_coverage(polys: &[(u8, Geom)], tolerance: f64) -> Result<Vec<(
     let refs: Vec<&Geom> = polys.iter().map(|(_, geom)| geom).collect();
     // `vectorize_classes` polygonizes one shared line network, so its faces are a coverage by
     // construction. Validating that dense, unsimplified grid here made a country-scale bake spend
-    // minutes intersecting millions of redundant collinear segments. Retain the expensive audit in
-    // tests/debug builds, while production relies on the construction invariant.
+    // minutes intersecting millions of redundant collinear segments, so the audit runs in test and
+    // debug builds and production relies on the construction invariant.
     #[cfg(debug_assertions)]
     if !coverage_is_valid(&refs, 0.0) {
         return Err("semantic vectorization did not form a valid coverage".into());
     }
     let simplified = coverage_simplify_vw(&refs, tolerance, false).ok_or("semantic coverage VW failed")?;
-    // GEOSCoverageSimplifyVW preserves the input coverage by contract. Audit that contract in
-    // tests/debug builds without making every production bake re-run GEOS's global segment
+    // GEOSCoverageSimplifyVW preserves the input coverage by contract. That contract is audited in
+    // test and debug builds rather than by making every bake re-run GEOS's global segment
     // intersection machinery over the complete extract.
     #[cfg(debug_assertions)]
     {
@@ -1291,13 +1286,13 @@ fn shared_graph_is_planar(graph: &HashMap<PointKey, SimplifyVertex>, grid: &Grid
 
 /// Simplify the already-smoothed categorical coverage directly on its shared planar graph.
 ///
-/// GEOS coverage VW is topology-safe but permits a four-corner raster face to become a triangle.
-/// Retrying the *entire* country at a lower tolerance protected that face at the cost of roughly
-/// half again as many points everywhere else. Here a degree-two vertex is removed once globally,
-/// so both rings sharing an edge receive the identical chord. Junctions and the canonical frame
-/// are pinned, and every ring keeps at least four distinct vertices. A spatially indexed planarity
-/// audit rejects crossings, overlaps, and T-junctions; debug builds additionally cross-check the
-/// accepted graph with GEOS's independent polygon and coverage validators.
+/// GEOS coverage VW is topology-safe but permits a four-corner raster face to become a triangle, and
+/// retrying the entire country at a lower tolerance costs roughly half again as many points
+/// everywhere else. Here a degree-two vertex is removed once globally, so both rings sharing an edge
+/// receive the identical chord. Junctions and the canonical frame are pinned, and every ring keeps
+/// at least four distinct vertices. A spatially indexed planarity audit rejects crossings, overlaps
+/// and T-junctions; debug builds additionally cross-check the accepted graph with GEOS's own
+/// validators.
 fn simplify_shared_coverage(source: &[(u8, Geom)], grid: &Grid, tolerance: f64) -> Result<Vec<(u8, Geom)>, String> {
     let mut shared = HashMap::new();
     for (_, geom) in source {
@@ -1434,10 +1429,9 @@ fn smooth_coverage(source: Vec<(u8, Geom)>, grid: &Grid, limit: f64) -> Result<(
             || (y - top).abs() <= epsilon
     };
 
-    // The GEOS implementation first unioned every boundary, line-merged the result, moved each
-    // degree-two chain vertex, unioned again, and polygonized. The source is already a valid shared
-    // coverage: doing the same Laplacian update directly on its unique vertex graph preserves both
-    // copies of every edge and keeps each class attached to its face. No regional overlay is needed.
+    // The source is already a valid shared coverage, so the Laplacian update runs directly on its
+    // unique vertex graph. That preserves both copies of every edge and keeps each class attached to
+    // its face, with no regional overlay.
     for attempt in 0..4 {
         let attempt_limit = limit * 0.5f64.powi(attempt as i32);
         for vertex in graph.values_mut() {

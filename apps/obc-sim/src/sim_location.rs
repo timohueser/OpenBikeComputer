@@ -1,6 +1,5 @@
-//! The simulator's [`LocationSource`] — a manually-set fix the control panel edits, the
-//! host-side mirror of the device's GPS UART driver (same trait, same `Fix`, so
-//! [`obc_app::App`] can't tell them apart).
+//! The simulator's [`LocationSource`]: a manually-set fix the control panel edits, mirroring the
+//! device's GPS driver through the same trait and the same `Fix`.
 
 use obc_ports::{Fix, LocationSource};
 
@@ -14,13 +13,13 @@ impl SimLocationSource {
         SimLocationSource { fix }
     }
 
-    /// The current fix (for the control panel to display / seed its widgets).
+    /// The current fix, which the control panel displays and seeds its widgets from.
     pub fn current(&self) -> Option<Fix> {
         self.fix
     }
 
-    /// Move the simulated user to `(lat, lon)` microdegrees, preserving course and
-    /// speed (or starting a stationary fix if there wasn't one).
+    /// Move the simulated user to `(lat, lon)` microdegrees, keeping course and speed, or starting
+    /// a stationary fix when there was none.
     pub fn set_position(&mut self, lat: i32, lon: i32) {
         match &mut self.fix {
             Some(f) => {
@@ -41,10 +40,10 @@ impl SimLocationSource {
 }
 
 impl LocationSource for SimLocationSource {
-    // Deliberately returns the same fix on every poll — *not* the fresh-fix cadence a real sensor
-    // (or the GpxPlayer) follows. The manual panel is a position *override* for free-roaming, not a
-    // ride-recording source: a stationary user books no distance and a drag reads as a teleport
-    // (dropped), both acceptable. Ride recording exercises the fresh-fix path via the GPX player.
+    // Returns the same fix on every poll, and not the fresh-fix cadence a real sensor follows.
+    // The manual panel is a position override for free-roaming, not a ride-recording source: a
+    // stationary user books no distance and a drag reads as a dropped teleport. Ride recording
+    // exercises the fresh-fix path through the GPX player.
     fn poll(&mut self) -> Option<Fix> {
         self.fix
     }

@@ -1,9 +1,8 @@
 import XCTest
 
-/// B5 acceptance on the simulator: the upload sheet over the route detail —
-/// F with moving progress and a reachable Cancel, F₂ and its Done, the
-/// `uploadDrop` interrupted → resume path, and the E1 "uploading saves it
-/// too" landing. Host-side logic lives in `UploadSheetModelTests`.
+/// The upload sheet over the route detail: moving progress with a reachable Cancel, the done
+/// confirm, the interrupted and resume path, and the import landing that saves on upload.
+/// Host-side logic lives in `UploadSheetModelTests`.
 final class UploadSheetTests: XCTestCase {
     override func setUp() {
         super.setUp()
@@ -39,8 +38,8 @@ final class UploadSheetTests: XCTestCase {
         upload.tap()
     }
 
-    /// F → F₂ against the mock: moving progress at a realistic speed, the
-    /// done confirm, and the detail still underneath — the app never left it.
+    /// Moving progress at a realistic speed, the done confirm, and the detail still underneath:
+    /// the app never left it.
     @MainActor
     func testHappyPathUploadsThroughF2AndStaysOnTheRoute() {
         let app = launch()
@@ -62,8 +61,8 @@ final class UploadSheetTests: XCTestCase {
         )
     }
 
-    /// `uploadDrop`: the transfer drops at 62%, surfaces the resume framing,
-    /// and Resume carries it to F₂ from the committed offset.
+    /// The transfer drops partway, surfaces the resume framing, and Resume carries it to the done
+    /// confirm from the committed offset.
     @MainActor
     func testDropSurfacesInterruptedAndResumeFinishes() {
         let app = launch(scenario: "uploadDrop")
@@ -78,7 +77,7 @@ final class UploadSheetTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["On the device"].waitForExistence(timeout: 15), "resumed upload must finish")
     }
 
-    /// Cancel aborts and returns to the route detail — no confirm, no detour.
+    /// Cancel aborts and returns to the route detail: no confirm, no detour.
     @MainActor
     func testCancelAbortsBackToTheDetail() {
         let app = launch()
@@ -96,8 +95,8 @@ final class UploadSheetTests: XCTestCase {
         XCTAssertFalse(app.buttons["upload.cancel"].exists, "sheet must be gone")
     }
 
-    /// E1 → Upload: completing the upload also saves the route ("Uploading
-    /// saves it too") — the cover closes and the route sits in Planned.
+    /// Completing the upload from the import landing also saves the route: the cover closes and
+    /// the route sits in Planned.
     @MainActor
     func testUploadFromImportLandingSavesToPlanned() {
         let app = launch(importSample: true)

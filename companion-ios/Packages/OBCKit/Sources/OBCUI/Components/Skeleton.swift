@@ -1,9 +1,8 @@
 import SwiftUI
 
-/// **Skeleton Loader** (§9, NEW) — shimmering parchment placeholder blocks
-/// ("skeletons, not spinners", S2). `OBCSkeleton` is the raw shimmer block;
-/// `RouteCardSkeleton` is a placeholder shaped like a compact route card.
-/// Cached content appears instantly; only the fresh read shimmers.
+/// Shimmering parchment placeholder blocks: skeletons, not spinners. `OBCSkeleton` is
+/// the raw shimmer block and `RouteCardSkeleton` is shaped like a compact route card.
+/// Cached content appears instantly; only a fresh read shimmers.
 public struct OBCSkeleton: View {
     var cornerRadius: CGFloat = 8
 
@@ -33,8 +32,8 @@ public struct OBCSkeleton: View {
     }
 }
 
-/// A compact route card's shape while it loads: the 128pt track block plus a
-/// title and stat-line bar (S2's rows).
+/// A compact route card's shape while it loads: the track block plus a title and
+/// stat-line bar.
 public struct RouteCardSkeleton: View {
     public init() {}
 

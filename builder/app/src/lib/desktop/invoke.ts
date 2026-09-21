@@ -1,11 +1,11 @@
 // The desktop host's transport: Tauri commands. Only the desktop platform and
 // native device/library adapters import it, so it never reaches the other two
-// bundles — the same containment `api/client.ts` has on the dev side.
+// bundles.
 //
 // Every function here is one `invoke()`. The names are the Rust command names in
-// apps/obc-desktop/src/main.rs, and the argument shapes are what serde
-// deserializes there; that is the whole contract, and it is worth keeping in one
-// file so a rename is one place on each side.
+// apps/obc-desktop/src/main.rs, and the argument shapes are what serde deserializes
+// there; that is the whole contract, and it is worth keeping in one file so a rename
+// is one place on each side.
 
 import { invoke, type Channel } from "@tauri-apps/api/core";
 
@@ -20,11 +20,9 @@ export interface OpenedMapOutput {
     path: string;
 }
 
-// --- USB (D4 #909) ------------------------------------------------------------
-//
-// The Rust side moves bytes and nothing else; the protocol is C3's TS client, the
-// same one the hosted site runs. See apps/obc-desktop/src/usb/ for the plane
-// split and why the two binary calls below do not go through JSON.
+// The Rust side moves bytes and nothing else; the protocol is the TS client, the same
+// one the hosted site runs. See apps/obc-desktop/src/usb/ for the plane split and why
+// the two binary calls below do not go through JSON.
 
 /** Which endpoint pair a call means — `DeviceLink`'s two members, by name. */
 export type UsbPlane = "control" | "bulk";
@@ -40,16 +38,16 @@ export interface UsbDeviceSummary {
     serialNumber: string | null;
 }
 
-/** Hot-plug, as the backend reports it. `watchFailed` is not a device problem —
- *  it means the OS notification stream itself is gone, and a watch that died
- *  quietly is indistinguishable from "nothing is ever plugged in". */
+/** Hot-plug, as the backend reports it. `watchFailed` is not a device problem — it
+ *  means the OS notification stream itself is gone, and a watch that died quietly is
+ *  indistinguishable from "nothing is ever plugged in". */
 export type UsbEvent =
     | { type: "connected"; device: UsbDeviceSummary }
     | { type: "disconnected"; id: string }
     | { type: "watchFailed"; message: string };
 
 /** What `usb_open` hands back: the handle every later call carries, plus the two
- *  planes' packet sizes (512 on the LM20's high-speed core, by USB rule). */
+ *  planes' packet sizes. */
 export interface UsbLinkInfo {
     handle: number;
     deviceId: string;
@@ -60,9 +58,8 @@ export interface UsbLinkInfo {
     serialNumber: string | null;
 }
 
-/** A transport failure in `PipeError`'s own vocabulary — `closed`, `aborted` or
- *  `device-error`. Tauri rejects with the serialized `Err` value, so this arrives
- *  as a plain object rather than an `Error`. */
+/** A transport failure in `PipeError`'s own vocabulary. Tauri rejects with the
+ *  serialized `Err` value, so this arrives as a plain object rather than an `Error`. */
 export interface UsbFault {
     code: string;
     message: string;
@@ -70,9 +67,9 @@ export interface UsbFault {
 
 export const desktop = {
     catalog: () => invoke<FetchedCatalog>("catalog"),
-    /** Raw response path: catalog cells can be hundreds of MB, so a JSON byte
-     *  array is not an acceptable transport. Rust restricts this to the
-     *  configured catalog origin. */
+    /** Raw response path: catalog cells can be hundreds of MB, so a JSON byte array is
+     *  not an acceptable transport. Rust restricts this to the configured catalog
+     *  origin. */
     catalogGet: (url: string) => invoke<ArrayBuffer>("catalog_get", { url }),
     mapOutputBegin: (name: string) => invoke<OpenedMapOutput>("map_output_begin", { name }),
     mapOutputWrite: (id: number, name: string, bytes: Uint8Array) =>
@@ -96,9 +93,9 @@ export const desktop = {
     /**
      * One transfer onto a plane's OUT endpoint.
      *
-     * The bytes are the *whole* invoke body — that is what makes them raw rather
-     * than a JSON array of numbers (roughly 4 bytes of text per byte) — so the
-     * handle and the plane have nowhere to go but headers.
+     * The bytes are the *whole* invoke body — that is what makes them raw rather than a
+     * JSON array of numbers, roughly 4 bytes of text per byte — so the handle and the
+     * plane have nowhere to go but headers.
      */
     usbWrite: (handle: number, plane: UsbPlane, bytes: Uint8Array) =>
         invoke<void>("usb_write", bytes, { headers: { handle: String(handle), plane } }),
@@ -107,23 +104,9 @@ export const desktop = {
         invoke<void>("usb_cancel", { handle, plane, dir: dir ?? null }),
     usbReset: (handle: number, plane: UsbPlane) => invoke<void>("usb_reset", { handle, plane }),
 
-    // There is no `usb_file_digest` / `usb_send_file` wrapper any more. They fed the disk → endpoint
-    // path, which `FLAT_Store_Protocol.md` §3.8 ends: every stream record carries a `RequestId`, an
-    // absolute offset and a length, and the protocol client is what frames them — so a backend
-    // writing raw file bytes into the endpoint produces records the device cannot read. The Rust
-    // commands are still registered and are now unreachable from this host; giving them a framed
-    // form is the change that would bring the path back.
-
-    // --- the ride library (E2 #912) -----------------------------------------
-    //
     // `ridesImport` is the one command in this file whose *timing* is part of a
-    // contract: it resolves after the ride object, the GPX and the index have
-    // each been fsynced, which is what makes `PullReport` true. See
-    // apps/obc-desktop/src/rides.rs.
-    //
-    // `rides_ack_set` has no wrapper any more. It built the list of rides a pull acknowledged to the
-    // device, and §5.2.2 retires that command from the cable — a possession ack changes no object,
-    // so it keeps the BLE surface it had. The Rust command is still registered and unreachable.
+    // contract: it resolves after the ride object, the GPX and the index have each been
+    // fsynced, which is what makes `PullReport` true. See apps/obc-desktop/src/rides.rs.
 
     ridesIndex: () => invoke<RideIndexView>("rides_index"),
     ridesImport: (request: RideImportRequest) => invoke<RideImported>("rides_import", { request }),
@@ -134,12 +117,10 @@ export const desktop = {
     ridesChooseFolder: () => invoke<string | null>("rides_choose_folder"),
 };
 
-// --- the ride library's payloads ---------------------------------------------
-//
 // Field for field what `serde` reads and writes in apps/obc-desktop/src/rides.rs.
-// `lib/device/library.ts` owns the app-facing shapes; these are the wire ones, and
-// `lib/desktop/library.ts` is the (thin) translation between them.
-// StoreId is full lowercase hex; ObjectId is a decimal u64 string to preserve JSON precision.
+// `lib/device/library.ts` owns the app-facing shapes; these are the wire ones.
+// StoreId is full lowercase hex; ObjectId is a decimal u64 string, to keep JSON
+// precision.
 
 export interface RideIndexEntry {
     key: string;

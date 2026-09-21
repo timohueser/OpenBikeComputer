@@ -5,13 +5,13 @@
 
 use crate::grid::{axis_cells, id_width, CellId, MAX_CELL_LOG2, MIN_CELL_LOG2};
 
-/// Parse the canonical `<log2>/<i>/<j>` id (`OBCA_Spec.md` §1.3), **strictly**.
+/// Parse the canonical `<log2>/<i>/<j>` id, strictly.
 ///
-/// [`CellId::parse`] is deliberately lenient about the zero padding — a human types ids at
-/// a CLI. A catalog cannot be: producers MUST widen rather than truncate, so `18/1204/52`
-/// and `18/01204/1052` are *different strings for the same cell* and exactly the kind of
-/// ambiguity a content-addressed store must not have. Every id this module reads out of a
-/// document or off a path comes through here.
+/// [`CellId::parse`] is deliberately lenient about zero padding, because a human types ids at a CLI.
+/// A catalog cannot be: producers MUST widen rather than truncate, so `18/1204/52` and
+/// `18/01204/1052` are different strings for the same cell, which is the kind of ambiguity a
+/// content-addressed store must not have. Every id read out of a document or off a path comes
+/// through here.
 pub fn parse_strict_id(s: &str) -> Result<CellId, String> {
     let mut parts = s.split('/');
     let (Some(log2), Some(i), Some(j), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else {

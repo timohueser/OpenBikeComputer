@@ -1,18 +1,13 @@
 import SwiftUI
 import OBCDomain
 
-/// Recently Deleted (#292): the phone-side ride trash, pushed from the row
-/// under the Tracked list. Deleting a ride in the app is recoverable — the
-/// stored files stay until this screen removes them for good (or the
-/// `MainScreenModel` retention sweep does, after `trashRetentionDays`).
+/// The phone-side ride trash, pushed from the row under the Tracked list. Deleting a
+/// ride in the app is recoverable: the stored files stay until this screen removes
+/// them for good, or the retention sweep does.
 ///
-/// Rides only — planned routes stay hard-delete: a route is a re-importable
-/// file, a ride is the only copy of a recording the phone has. The device's
+/// Rides only. A planned route stays a hard delete because it is a re-importable
+/// file, while a ride is the only copy of a recording the phone has. The device's
 /// SD-card copy is never touched from here either way.
-///
-/// Row actions: tap → Recover / Delete Permanently dialog; the same two as
-/// swipes (leading Recover, trailing Delete — the swipe reveal is the
-/// deliberate second action, §9's rule, so the trailing delete is direct).
 public struct RecentlyDeletedView: View {
     private var model: MainScreenModel
 

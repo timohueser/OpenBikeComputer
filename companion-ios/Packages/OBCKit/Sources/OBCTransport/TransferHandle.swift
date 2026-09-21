@@ -1,20 +1,14 @@
 import Foundation
 import OBCDomain
 
-/// A running bulk transfer the UI observes and controls — the return of
-/// `uploadRoute` (B5) and `downloadRides` (B7). A `Sendable` value type backed by
-/// the runner driving the transfer: `progress` streams `TransferProgress`, and
-/// `cancel()` / `resume()` signal that runner.
+/// A running bulk transfer the UI observes and controls: the return of `uploadRoute` and
+/// `downloadRides`.
 ///
-/// `resume()` **restarts, it does not continue** (spec §1 principle 4): a dropped
-/// upload is re-sent whole (progress starts over from 0); a dropped ride batch
-/// re-requests only the rides that haven't fully landed — whole objects are the
-/// resume granularity.
+/// `resume()` restarts, it does not continue: a dropped upload is re-sent whole and progress
+/// starts again at 0. A dropped ride batch re-requests only the rides that did not fully land.
 public struct TransferHandle: Sendable {
-    /// Progress updates as the transfer advances. Finishes when the transfer
-    /// completes or is canceled. A **drop** does *not* finish it — the stream
-    /// stalls open so a restart can continue into it (the observable drop signal
-    /// is `DeviceLink.state` → `.outOfRange`).
+    /// Progress updates as the transfer advances. It finishes when the transfer completes or is
+    /// canceled. A drop does not finish it: the stream stays open so a restart continues into it.
     public let progress: AsyncStream<TransferProgress>
 
     private let outcomePromise: AsyncPromise<TransferOutcome>
@@ -36,23 +30,17 @@ public struct TransferHandle: Sendable {
         self.onResume = onResume
     }
 
-    /// The terminal state — resolves when the transfer completes, is canceled, or
-    /// fails for good, so the UI never infers success from byte counts. A drop
-    /// keeps it unresolved (the transfer is still restartable); pair with
-    /// `progress` + `DeviceLink.state` for the interrupted (F/H10)
-    /// presentation.
+    /// The terminal state. It resolves when the transfer completes, is canceled, or fails for
+    /// good, so the UI never infers success from byte counts. A drop keeps it unresolved.
     public var outcome: TransferOutcome {
         get async { await outcomePromise.value }
     }
 
-    /// The terminal state if already reached, `nil` while the transfer is live or
-    /// dropped-but-restartable (never suspends).
+    /// The terminal state if it is already reached, `nil` otherwise. It never suspends.
     public var currentOutcome: TransferOutcome? { outcomePromise.current }
 
-    /// The device-assigned object id, for a **route upload** — resolves after the
-    /// transfer commits (the protocol-v4 `PUT` result reports it). `nil` when
-    /// this handle carries no id (a download, an immediately-finished handle, or a
-    /// pre-bring-up BLE path). Await *after* `outcome == .completed`.
+    /// The device-assigned object id for a route upload. It resolves after the transfer commits.
+    /// `nil` when this handle carries no id, such as a download. Await it after `outcome`.
     public var assignedObjectID: DeviceObjectID? {
         get async { assignedObjectIDPromise == nil ? nil : await assignedObjectIDPromise!.value }
     }
@@ -60,12 +48,10 @@ public struct TransferHandle: Sendable {
     /// Abort the transfer and tear the channel down cleanly.
     public func cancel() { onCancel() }
 
-    /// Restart a dropped transfer (whole upload / the batch's missing rides).
     public func resume() { onResume() }
 
-    /// A degenerate handle: progress already finished, controls no-ops, and
-    /// `outcome` pre-resolved — `.completed` for "nothing to do" (H9 up to date),
-    /// `.failed(.notConnected)` for "no transfer possible" (H4).
+    /// A degenerate handle: progress is already finished, the controls do nothing, and
+    /// `outcome` is pre-resolved.
     public static func immediatelyFinished(_ outcome: TransferOutcome = .completed) -> TransferHandle {
         let (stream, continuation) = AsyncStream<TransferProgress>.makeStream()
         continuation.finish()

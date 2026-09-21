@@ -1,39 +1,34 @@
-//! The simulator's synthetic **BLE sensor** sources — heart rate, power, cadence.
+//! The simulator's synthetic BLE sensor sources: heart rate, power and cadence.
 //!
-//! The host-side mirror of the device's BLE central manager (SE6) + the `debug-uart` injection path
-//! (SE8): [`SimHeartRate`] / [`SimPower`] / [`SimCadence`] implement the SE2 HAL traits
-//! ([`HeartRateSource`] / [`PowerSource`] / [`CadenceSource`]) so [`obc_app::App`] can't tell them
-//! from a real strap. Each honours the **fresh-mailbox** contract: a value is emitted only ~1× per
-//! second of ride-clock time and `None` between polls — a source that returned a value on every
-//! ~8 ms frame would defeat the app's staleness gate (a stale strap must read `--`, not freeze).
+//! [`SimHeartRate`], [`SimPower`] and [`SimCadence`] implement the HAL sensor traits, so
+//! [`obc_app::App`] cannot tell them from a real strap. Each honours the fresh-mailbox contract: a
+//! value is emitted about once per second of ride-clock time and `None` between polls. A source
+//! that returned a value on every frame would defeat the app's staleness gate.
 //!
-//! The control panel edits a [`SensorConfig`] (per-quantity enable + slider, plus one *effort
-//! follows speed* switch that synthesizes all three from the replayed GPX's speed). [`feed`] is
-//! called once per frame with the ride clock + current speed; it resolves each quantity's target and
-//! hands it to the 1 Hz gate. Disabling a quantity mid-ride feeds `None`, so it goes stale → `--` on
-//! the tiles and absent from the recorded log.
+//! The control panel edits a [`SensorConfig`]. [`feed`] is called once per frame with the ride clock
+//! and the current speed; it resolves each quantity's target and hands it to the gate. Disabling a
+//! quantity mid-ride feeds `None`, so it goes stale on the tiles and is absent from the log.
 //!
 //! [`feed`]: SimSensors::feed
 
 use obc_ports::{CadenceSource, HeartRateSource, PowerSource};
 
-/// Emit at most one sample per this many milliseconds of **ride-clock** time (playback time under a
-/// GPX replay, wall-clock under manual control) — the ~1 Hz cadence a real BLE sensor notifies at,
-/// well inside the app's 5 s staleness window at every replay speed.
+/// Emit at most one sample per this many milliseconds of ride-clock time, which is playback time
+/// under a GPX replay and wall clock under manual control. It is the cadence a real BLE sensor
+/// notifies at, and stays inside the app's staleness window at every replay speed.
 const EMIT_MS: u32 = 1000;
 
-/// The shared 1 Hz fresh-mailbox gate, one per quantity — the direct analogue of
-/// [`obc_replay::BaroSensor`]'s cadence latch, generalised over the value type. [`feed`](Self::feed)
-/// sets the pending value (or `None` to go quiet); [`take`](Self::take) yields it at most once per
-/// [`EMIT_MS`].
+/// The shared fresh-mailbox gate, one per quantity. [`feed`](Self::feed) sets the pending value,
+/// or `None` to go quiet, and [`take`](Self::take) yields it at most once per [`EMIT_MS`].
 struct Emitter<T> {
-    /// The value most recently fed (`None` = the quantity is off / stale — emit nothing).
+    /// The value most recently fed. `None` means the quantity is off or stale, so nothing is
+    /// emitted.
     current: Option<T>,
     /// Ride-clock ms of the most recent `feed`.
     fed_ms: u32,
-    /// Ride-clock ms at the last emitted sample; `None` forces the next enabled feed to emit.
+    /// Ride-clock ms at the last emitted sample. `None` forces the next enabled feed to emit.
     emitted_ms: Option<u32>,
-    /// A sample is due (armed by `feed`, disarmed by `take`).
+    /// A sample is due: armed by `feed`, disarmed by `take`.
     due: bool,
 }
 
@@ -42,10 +37,9 @@ impl<T: Copy> Emitter<T> {
         Emitter { current: None, fed_ms: 0, emitted_ms: None, due: false }
     }
 
-    /// Feed this frame's value (`Some` while enabled, `None` while off/stale) at ride-clock `now_ms`.
-    /// Arms a sample once a full [`EMIT_MS`] has elapsed since the last emission; a backward jump in
-    /// `now_ms` (a replay seek / restart) re-arms immediately. A `None` feed disarms — the source
-    /// goes stale so the app renders `--`.
+    /// Feed this frame's value at ride-clock `now_ms`. It arms a sample once a full [`EMIT_MS`]
+    /// has elapsed since the last emission, and a backward jump in `now_ms`, such as a replay seek,
+    /// re-arms immediately. A `None` feed disarms, so the source goes stale.
     fn feed(&mut self, v: Option<T>, now_ms: u32) {
         self.current = v;
         self.fed_ms = now_ms;
@@ -59,7 +53,8 @@ impl<T: Copy> Emitter<T> {
         }
     }
 
-    /// Yield the pending value at most once per [`EMIT_MS`] (the `poll` body of each source trait).
+    /// Yield the pending value at most once per [`EMIT_MS`]. It is the `poll` body of each source
+    /// trait.
     fn take(&mut self) -> Option<T> {
         if self.due {
             self.due = false;
@@ -71,26 +66,26 @@ impl<T: Copy> Emitter<T> {
     }
 }
 
-/// The control-panel state driving the synthetic sensors: a per-quantity enable + fixed slider
-/// value, plus the *effort follows speed* switch (when set, all three are synthesized from the
-/// replayed speed and the individual toggles/sliders are ignored).
+/// The control-panel state driving the synthetic sensors: a per-quantity enable and fixed slider
+/// value, plus the effort-follows-speed switch, which synthesizes all three from the replayed speed
+/// and ignores the individual toggles.
 #[derive(Debug, Clone, Copy)]
 pub struct SensorConfig {
     pub hr_enabled: bool,
     pub power_enabled: bool,
     pub cadence_enabled: bool,
-    /// Slider values (bpm / W / rpm), used when *effort follows speed* is off.
+    /// Slider values, used when effort-follows-speed is off.
     pub hr_bpm: u16,
     pub power_w: u16,
     pub cadence_rpm: u8,
-    /// Synthesize all three from the replayed GPX speed (with light noise) — the no-babysitting path.
+    /// Synthesize all three from the replayed GPX speed, with light noise.
     pub effort_follows_speed: bool,
 }
 
 impl Default for SensorConfig {
     fn default() -> Self {
-        // All off at boot (tiles read `--`); sliders seeded mid-range so enabling one lands on a
-        // believable value.
+        // All off at boot, with the sliders seeded mid-range so enabling one lands on a believable
+        // value.
         SensorConfig {
             hr_enabled: false,
             power_enabled: false,
@@ -103,9 +98,9 @@ impl Default for SensorConfig {
     }
 }
 
-/// The three synthetic sensor sources plus their shared [`SensorConfig`]. Held by the GUI; its three
-/// source fields are handed to `Sensors::{hr, power, cadence}` each tick (disjoint borrows), and
-/// [`feed`](Self::feed) is called once per frame to advance the 1 Hz gates.
+/// The three synthetic sensor sources plus their shared [`SensorConfig`]. The GUI holds it, hands
+/// the three source fields to `Sensors` each tick as disjoint borrows, and calls
+/// [`feed`](Self::feed) once per frame to advance the gates.
 #[derive(Default)]
 pub struct SimSensors {
     pub hr: SimHeartRate,
@@ -119,12 +114,12 @@ impl SimSensors {
         Self::default()
     }
 
-    /// Resolve each quantity's target from the config (synthesizing from `speed_mps` when *effort
-    /// follows speed* is set) and feed the 1 Hz gates at ride-clock `now_ms`. Call once per frame,
-    /// before building the `Sensors` for the tick.
+    /// Resolve each quantity's target from the config, synthesizing from `speed_mps` when
+    /// effort-follows-speed is set, and feed the gates at ride-clock `now_ms`. Call it once per
+    /// frame, before building the `Sensors` for the tick.
     pub fn feed(&mut self, now_ms: u32, speed_mps: f32) {
         if self.cfg.effort_follows_speed {
-            // Light deterministic wobble keyed on the ride second, so a replayed ride records
+            // A light deterministic wobble keyed on the ride second, so a replayed ride records
             // lifelike curves rather than three flat lines.
             let e = obc_replay::effort_from_speed(speed_mps, now_ms / 1000);
             self.hr.0.feed(Some(e.hr_bpm), now_ms);
@@ -180,15 +175,15 @@ mod tests {
         let mut s = SimSensors::new();
         s.cfg.hr_enabled = true;
         s.cfg.hr_bpm = 150;
-        // First feed at t=0 emits promptly (emitted_ms starts empty).
+        // The first feed emits promptly, because `emitted_ms` starts empty.
         s.feed(0, 0.0);
         assert_eq!(s.hr.poll(), Some(150), "first sample emits at once");
-        // Frames 8 ms apart within the second: nothing between ticks.
+        // Frames a few milliseconds apart within the second emit nothing between ticks.
         for t in (8..1000).step_by(8) {
             s.feed(t, 0.0);
             assert_eq!(s.hr.poll(), None, "no value between 1 Hz ticks (t={t})");
         }
-        // Past the 1 s cadence → a fresh sample.
+        // Past the cadence, a fresh sample is emitted.
         s.feed(1000, 0.0);
         assert_eq!(s.hr.poll(), Some(150), "a new sample at the next second");
     }
@@ -200,13 +195,13 @@ mod tests {
         s.cfg.power_w = 250;
         s.feed(0, 0.0);
         assert_eq!(s.power.poll(), Some(250));
-        // Toggle off mid-ride: the source feeds `None`, so it emits nothing → app renders `--`.
+        // Toggled off mid-ride, the source feeds `None` and emits nothing.
         s.cfg.power_enabled = false;
         s.feed(1000, 0.0);
         assert_eq!(s.power.poll(), None, "disabled → no sample (goes stale on the app's 5 s gate)");
         s.feed(2000, 0.0);
         assert_eq!(s.power.poll(), None, "stays quiet while disabled");
-        // Re-enable: emits promptly again.
+        // Re-enabled, it emits promptly again.
         s.cfg.power_enabled = true;
         s.feed(3000, 0.0);
         assert_eq!(s.power.poll(), Some(250), "re-enabling resumes the stream");
@@ -232,7 +227,7 @@ mod tests {
         s.cfg.cadence_rpm = 90;
         s.feed(5000, 0.0);
         assert_eq!(s.cadence.poll(), Some(90));
-        // A replay seek jumps the clock back → the next feed emits at once, ignoring the 1 Hz gate.
+        // A replay seek jumps the clock back, so the next feed emits at once.
         s.feed(1000, 0.0);
         assert_eq!(s.cadence.poll(), Some(90), "a backward clock jump re-arms immediately");
     }

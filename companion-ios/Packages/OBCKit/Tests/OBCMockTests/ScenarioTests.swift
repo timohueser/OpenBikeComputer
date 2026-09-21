@@ -2,10 +2,9 @@ import XCTest
 import OBCDomain
 @testable import OBCMock
 
-/// The acceptance table: every `Scenario` produces its target screen's
-/// transport-observable behavior with no device and no firmware. Pure UI-layer
-/// scenarios (`unsupportedFile` H5, `syncUpToDate` H9) only assert the happy link +
-/// the scenario tag the UI branches on.
+/// The acceptance table: every `Scenario` produces its target screen's transport-observable
+/// behavior with no device and no firmware. Pure UI-layer scenarios only assert the happy link
+/// and the scenario tag the UI branches on.
 final class ScenarioTests: XCTestCase {
     private func transport(_ scenario: Scenario) -> (MockTransport, MockControl) {
         let control = MockControl(scenario: scenario)
@@ -36,7 +35,7 @@ final class ScenarioTests: XCTestCase {
     }
 
     func testColdReadArmsASlowRead() {
-        // S2 skeletons: the preset makes the first read slow (asserted as the knob, not a 3s wait).
+        // The preset makes the first read slow; assert the knob, not a 3 s wait.
         XCTAssertGreaterThanOrEqual(Scenario.coldRead.preset.latency, .seconds(3))
     }
 
@@ -73,8 +72,8 @@ final class ScenarioTests: XCTestCase {
     }
 
     func testPairingFailures() async {
-        // #297: `.timeout` fails in the un-gated scan (`discover`), `.rejected` in
-        // the gated `authenticate` — `connect()` runs both, so both surface here.
+        // `.timeout` fails in the un-gated scan (`discover`) and `.rejected` in the gated
+        // `authenticate`; `connect()` runs both, so both surface here.
         await assertConnectThrows(.pairingTimeout, .deviceNotFound)   // D5
         await assertConnectThrows(.pairingRejected, .pairingFailed)   // D5
     }

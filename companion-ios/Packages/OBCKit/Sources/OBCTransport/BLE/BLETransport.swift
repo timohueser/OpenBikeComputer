@@ -4,25 +4,20 @@ import Foundation
 import OBCDomain
 import OBCProtocolV4
 
-/// The **real** `DeviceTransport` (Tier 1 → CoreBluetooth). Scans for the OBC
-/// service, connects, discovers DIS/BAS/OBC Control, reads the PSM and opens the
-/// L2CAP CoC, and maps the semantic protocol onto GATT reads/writes/notifies +
-/// the `BLEChannel` byte layer.
+/// The real `DeviceTransport`: it scans for the OBC service, connects, discovers the services,
+/// reads the PSM and opens the L2CAP CoC, then maps the protocol onto GATT reads, writes and
+/// notifies plus the `BLEChannel` byte layer.
 ///
-/// Ids on this transport's data plane are **device-namespace** (`DeviceObjectID`,
-/// spec §4.1), enforced by the types (#359): route ops take the object id
-/// directly, and ride ids are minted here via `RideID(deviceObjectID:)`. The
-/// app's library ids never cross this boundary — the link between a library
-/// route and its device copy is the persisted `deviceObjectID`.
+/// Ids on this transport's data plane are device-namespace (`DeviceObjectID`). Library ids never
+/// cross this boundary; a persisted `deviceObjectID` is the link to a device copy.
 ///
-/// Protocol operation state lives in the one ``TransferClient``. This type supplies only the
-/// physical control-record inbox, CoC record channel, connection lifecycle, and BLE facts.
+/// Protocol operation state lives in the one `TransferClient`. All mutable state here is confined
+/// to the serial `queue`, which is the CoreBluetooth callback queue: async methods hop onto it and
+/// register continuations that the delegate callbacks resolve. That confinement is why this can be
+/// a plain `@unchecked Sendable` class instead of a fight with `Sendable` on CoreBluetooth's own
+/// object graph.
 ///
-/// All mutable state is confined to a single serial `queue` (the CoreBluetooth
-/// callback queue); async methods hop onto it and register continuations that the
-/// delegate callbacks resolve. That confinement is why this can be a plain
-/// `@unchecked Sendable` class rather than fighting `Sendable` on CoreBluetooth's
-/// (non-`Sendable`) object graph.
+/// CoreBluetooth delivers every delegate callback on that queue.
 public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.openbikecomputer.ble")
     private lazy var central = CBCentralManager(
@@ -38,52 +33,40 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
 
     private var peripheral: CBPeripheral?
     private var characteristics: [CBUUID: CBCharacteristic] = [:]
-    /// The live CoC byte pipe (`nil` until opened, or after a teardown). The
-    /// `BLEChannel` wrapper is rebuilt around it on every (re)open.
+    /// The live CoC byte pipe. The `BLEChannel` wrapper is rebuilt around it on every open.
     private var byteChannel: L2CAPByteChannel?
     private var bleChannel: BLEChannel?
     private lazy var transferClient = TransferClient(link: self)
     private var openingChannel = false
     private var channelWaiters: [CheckedContinuation<BLEChannel, Error>] = []
 
-    // Watchdogs for the connect/CoC-open phases that can silently stall (#302):
-    // an empty/partial GATT DB never fires `didDiscoverCharacteristicsFor`, and a
-    // PSM read that never yields `didOpen` leaves `openingChannel` latched with
-    // every future transfer parked. Each phase arms a one-shot on entry and
-    // disarms it on the resolving callback; if it fires the phase is wedged and
-    // gets unwound. Queue-confined like everything else.
+    // Watchdogs for the connect and CoC-open phases, which can stall silently: an empty or
+    // partial GATT DB never fires `didDiscoverCharacteristicsFor`, and a PSM read that never
+    // yields `didOpen` leaves `openingChannel` latched with every transfer parked. Each phase
+    // arms a one-shot on entry and disarms it on the resolving callback.
     private var discoveryWatchdog: DispatchWorkItem?
     private var channelWatchdog: DispatchWorkItem?
     private static let phaseTimeout: DispatchTimeInterval = .seconds(10)
-    /// The channel watchdog's budget across the gated PSM read while an
-    /// `authenticate()` is parked: on a fresh pair iOS holds that read pending
-    /// under the system passkey sheet while the rider reads the code off the
-    /// device and types it — human-paced, so the machine-stall budget above
-    /// would fail pairing at 10 s (and since the sheet stays up, pairing then
-    /// completed *behind* the failure screen, which is why a retry succeeded
-    /// instantly with no sheet). Once the read resolves, the watchdog re-arms
-    /// at `phaseTimeout` for the machine-only openL2CAPChannel → didOpen tail.
+    /// The channel watchdog's budget across the gated PSM read. On a fresh pair iOS holds that
+    /// read pending under the system passkey sheet while the rider reads the code off the device
+    /// and types it, which is human-paced. Once the read resolves the watchdog re-arms at
+    /// `phaseTimeout` for the machine-only openL2CAPChannel tail.
     private static let pairingTimeout: DispatchTimeInterval = .seconds(90)
     /// Imperative command acknowledgements are tiny and immediate. Bound the wait so a dropped
     /// `status` notification cannot hold the command lane forever. A timeout invalidates that lane
     /// until reconnect because command results have no exchange id that could reject a late reply.
     private static let commandResultTimeout: DispatchTimeInterval = .seconds(3)
-    // Outstanding operations (all touched only on `queue`). Connecting is a
-    // two-phase flow (#297): `discover()` (un-gated) then `authenticate()` (gated,
-    // raises the passkey sheet) — each parks its own continuation.
+    // Outstanding operations, touched only on `queue`. Connecting is two phases: `discover()`
+    // un-gated, then `authenticate()` gated, which raises the passkey sheet.
     private var discoverContinuation: CheckedContinuation<Void, Error>?
     private var authenticateContinuation: CheckedContinuation<Void, Error>?
 
-    /// True only across the #753 gated-phase retry beat — between a first,
-    /// retryable gated failure (`resolveAuthenticateRetryable`) and the second
-    /// attempt parking its continuation. In this window `authenticateContinuation`
-    /// is momentarily `nil`, so a disconnect must be treated as terminal here
-    /// (like a drop during a *pending* authenticate) rather than kicking the
-    /// reconnect loop — otherwise it could re-raise the passkey behind D5.
+    /// True only across the gated-phase retry beat, where `authenticateContinuation` is
+    /// momentarily nil. A disconnect in this window is terminal: kicking the reconnect loop
+    /// could re-raise the passkey sheet.
     private var awaitingGatedRetry = false
-    /// The beat before the one #753 gated-phase retry — long enough for the
-    /// firmware's post-PairingComplete window (bond save under the GATT-serve
-    /// lock) to drain, short enough to stay imperceptible inside the D3 beat.
+    /// The beat before the one gated-phase retry: long enough for the firmware's post-pairing
+    /// window to drain, short enough to stay imperceptible.
     private static let gatedRetryBeat: Duration = .milliseconds(500)
     /// Services still awaiting their characteristics during `discover()`; discovery
     /// is done (the un-gated surface is ready) when it reaches zero.
@@ -131,8 +114,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
 
     public var state: AsyncStream<ConnectionState> { stateMulticast.stream() }
     public var battery: AsyncStream<Int> {
-        // Drop the not-yet-known seed: subscribers get the first *real* reading
-        // (read at discovery + BAS notifies), never a fabricated 0%.
+        // Drop the not-yet-known seed: subscribers get the first real reading, never a 0%.
         let source = batteryMulticast.stream()
         return AsyncStream { continuation in
             let pump = Task {
@@ -150,18 +132,17 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     public func connect() async throws {
-        // The full link is the two phases back to back. On a bonded reconnect this
-        // raises no sheet (iOS re-encrypts from the stored keys); on a fresh pair it
-        // would — which is why the launch flow calls the phases separately (#297).
+        // The two phases back to back. A bonded reconnect raises no sheet, because iOS
+        // re-encrypts from the stored keys; a fresh pair does, which is why the launch flow
+        // calls the phases separately.
         try await discover()
         try await authenticate()
     }
 
     public func discover() async throws {
-        // Phase 1 (#297): scan → connect → discover services + the un-gated
-        // characteristics only. Resolves once every service's characteristics are
-        // in hand (so `deviceInfo()` can read DIS + `protocolVersion`), without ever
-        // touching a gated characteristic.
+        // Phase 1: scan, connect, and discover the services and the un-gated characteristics
+        // only. Resolves once every service's characteristics are in hand, so `deviceInfo()` can
+        // read them, and never touches a gated characteristic.
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             queue.async { [self] in
                 discoverContinuation = cont
@@ -172,16 +153,14 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     public func authenticate() async throws {
-        // Phase 2 (#297): the gated ops (subscribe the `status` notify, read the
-        // PSM, open the CoC) that establish the encrypted, LESC-authenticated link
-        // and raise the system passkey sheet. Resolves when the CoC opens.
+        // Phase 2: the gated ops (subscribe the `status` notify, read the PSM, open the CoC)
+        // that establish the encrypted, LESC-authenticated link and raise the system passkey
+        // sheet. Resolves when the CoC opens.
         //
-        // #753: on a fresh pair the gated phase can fail *once* in the firmware's
-        // post-PairingComplete window even though SMP pairing completed and both
-        // sides bonded — see `GatedPairingWindowError`. Retry the gated phase once,
-        // after a short beat, on the now-bonded link (no passkey re-raise) rather
-        // than dropping straight to D5. Only an auth-class-while-connected failure
-        // is retried; a decline / link drop / CoC failure is terminal, as today.
+        // On a fresh pair the gated phase can fail once inside the firmware's post-pairing
+        // window although both sides bonded, so retry it once on the now-bonded link. Only an
+        // auth-class failure while connected is retried; a decline, a link drop or a CoC failure
+        // is terminal.
         do {
             try await GatedPhaseRetry.runOnce(
                 beat: Self.gatedRetryBeat,
@@ -189,20 +168,16 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
                 attempt: { [self] in try await runGatedPhaseOnce() }
             )
         } catch is GatedPairingWindowError {
-            // The single retry also hit the pairing window — final. The retryable
-            // resolve deliberately left the link + intent up for the retry, so tear
-            // them down now (like `failAuthenticate`) and surface the D5 error.
+            // The retry also hit the pairing window. The retryable resolve left the link and the
+            // intent up for it, so tear them down here and surface the error.
             await teardownAfterFailedRetry()
             throw DeviceError.pairingFailed
         }
-        // A terminal `DeviceError` from `runGatedPhaseOnce` already tore the intent
-        // down (`failAuthenticate`) and isn't retryable, so `runOnce` rethrew it
-        // straight through to the caller — no beat, no retry, D5 as today.
+        // A terminal `DeviceError` already tore the intent down and is rethrown straight through.
     }
 
-    /// One gated-phase attempt (#753): park the authenticate continuation and kick
-    /// `beginAuthenticate()`; resolves on CoC open, throws `GatedPairingWindowError`
-    /// on a retryable failure or a plain `DeviceError` on a terminal one.
+    /// One gated-phase attempt: park the authenticate continuation and kick `beginAuthenticate()`.
+    /// Throws `GatedPairingWindowError` on a retryable failure, a `DeviceError` on a terminal one.
     private func runGatedPhaseOnce() async throws {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             queue.async { [self] in
@@ -228,23 +203,16 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
     }
 
-    // `suspendLink()` (#459) uses the protocol default — `disconnect()` — which
-    // is already the full suspend: it drops `wantsConnect` (the latch every
-    // reconnect re-issue in `didFailToConnect` / `didDisconnectPeripheral` and
-    // every `startConnectIfReady` checks), cancels the pending connect iOS
-    // holds, and stops the scan. That latch IS the background-reconnect loop's
-    // pause switch: while it's down, nothing in the delegate flow re-raises
-    // the link.
+    // `suspendLink()` uses the protocol default, `disconnect()`, which is already the full
+    // suspend: it drops the foreground intent latch that every reconnect path checks, cancels
+    // the pending connect iOS holds, and stops the scan. While that latch is down, nothing in
+    // the delegate flow re-raises the link.
 
     public func resumeLink() async {
-        // Foreground return (#459): re-arm the intent latch and let the existing
-        // delegate flow re-raise the link — scan → didDiscover → connect →
-        // discovery → `beginAuthenticate()` → CoC → `.connected`, the same
-        // unsolicited bonded silent-reconnect path a mid-ride drop takes (no
-        // passkey sheet; iOS re-encrypts from the stored keys). Deliberately
-        // NOT `connect()`: that parks fresh discover/authenticate continuations,
-        // clobbering (and leaking) any still waiting from a launch attempt the
-        // suspend interrupted.
+        // Re-arm the intent latch and let the existing delegate flow re-raise the link: the same
+        // bonded silent-reconnect path a mid-ride drop takes, with no passkey sheet. Deliberately
+        // not `connect()`, which parks fresh discover and authenticate continuations and would
+        // clobber any still waiting from an interrupted launch attempt.
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             queue.async { [self] in
                 discoveryPolicy.requestForeground()
@@ -289,8 +257,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     public func readDiagnostics() async throws -> Data {
-        // Protocol v4 has no diagnostics kind. Keep the capability's old surface fail-closed
-        // until a future registered kind replaces it.
+        // Protocol v4 has no diagnostics kind, so this surface stays fail-closed.
         throw DeviceError.readFailed
     }
 
@@ -308,10 +275,9 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
     }
     public func listRoutes() async throws -> [RouteCatalogEntry] {
-        // This catalog is reconcile-only: identity + CRC are its proof, and it never feeds route
-        // rows. Protocol v4 already carries both in LIST. Downloading every OBCR merely to rebuild
-        // legacy display fields creates an N+1 transfer storm (249 GETs on the flat-store bench
-        // card) and blocks a foreground PUT behind the TransferClient's operation gate.
+        // This catalog is reconcile-only: identity and CRC are its proof, and it never feeds
+        // route rows. LIST carries both. Downloading every object to fill the display fields
+        // would be an N+1 transfer storm and would block a foreground PUT behind the operation gate.
         try await headEntries(kind: .route).map { entry in
             RouteCatalogEntry(
                 id: DeviceObjectID(entry.objectID.rawValue), name: entry.displayName,
@@ -332,8 +298,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             && !entry.flags.contains(.reserved) && !entry.flags.contains(.recording) {
             let id = RideID(
                 deviceObjectID: DeviceObjectID(entry.objectID.rawValue), scope: scope)
-            // FS8's footer is not frozen yet. Keep the fielded ride decoder behind the new GET
-            // path; replacing this decode is deliberately outside FS10's iOS half.
+            // The ride footer is not frozen yet, so the fielded decoder stays behind the GET path.
             let source = RideSource(storeID: catalog.storeID.description,
                                     objectID: entry.objectID.rawValue, revision: entry.revision.rawValue,
                                     payloadLength: entry.payloadLength, payloadCRC32: entry.payloadCRC32)
@@ -346,16 +311,12 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     public func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail {
-        // Pinned by S0 as "download the route object" (spec §7.1): the stored OBCR
-        // v2 blob, decoded app-side for the waypoints + elevation profile — one
-        // layout, one truth.
+        // The stored route blob, decoded app-side for the waypoints and the elevation profile.
+        // Header totals are exact; the profile and max grade come from the stored geometry.
         let decoded = try RouteObjectCodec.decode(try await download(id))
-        // Header totals are exact (from the producer's raw-point pass); the profile
-        // + max grade come from the stored geometry, as E2 renders them.
         let geometry = RouteStats.compute(from: decoded.points)
-        // A device-stored object has no library identity — the summary rides
-        // under a placeholder id nothing keys on (the detail screen for library
-        // routes never comes through here, #289).
+        // A device-stored object has no library identity, so the summary rides under a
+        // placeholder id that nothing keys on.
         let summary = RouteSummary(
             id: RouteID("device-\(id.raw)"),
             name: decoded.name,
@@ -374,14 +335,12 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     public func rideDetail(_ id: RideID) async throws -> RideDetail {
-        // A ride's detail decodes from its downloaded ride object (B7/A7); the
-        // synced library copy answers this screen today.
+        // The synced library copy answers this screen; nothing reads a ride detail from a device.
         throw DeviceError.readFailed
     }
 
     public func listTrips() async throws -> [TripCatalogEntry] {
-        // Like routes, this is badge/reconcile input. LIST already carries every field that input
-        // consumes; stage details are fetched only when a caller explicitly downloads the trip.
+        // Badge and reconcile input, like routes. Stage details are fetched only by a download.
         try await headEntries(kind: .trip).map { entry in
             TripCatalogEntry(
                 id: DeviceObjectID(entry.objectID.rawValue), name: entry.displayName,
@@ -391,9 +350,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     public func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Decoded {
-        // "Download the trip object" (spec §7.7) — the stored trip blob, decoded
-        // app-side for its name + stage ids. Reconcile falls back to it only when
-        // the trip catalog's CRC can't confirm the fingerprint.
+        // The stored trip blob, decoded app-side for its name and stage ids. Reconcile falls back
+        // to it only when the trip catalog's CRC cannot confirm the fingerprint.
         try TripObjectCodec.decode(try await download(id))
     }
 
@@ -409,11 +367,9 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         } catch { throw deviceError(for: error) }
     }
 
-    /// One object's head revision, in one request. STATUS reports the current head
-    /// unconditionally (spec §3.4) — the revision in the *request* only chooses between the
-    /// `committed` and `superseded` verdicts — so any legal probe answers it, and zero is the
-    /// one value the request cannot carry. A catalog LIST is the wrong instrument here: it
-    /// pages at about two entries per round trip to answer one revision.
+    /// One object's head revision, in one request. STATUS reports the current head whatever
+    /// revision the request names, and zero is the one value the request cannot carry. A catalog
+    /// LIST is the wrong instrument: it pages about two entries per round trip to answer one.
     private func headRevision(of id: DeviceObjectID) async throws -> Revision {
         do {
             let result = try await transferClient.status(
@@ -473,8 +429,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         } catch { throw deviceError(for: error) }
     }
 
-    /// GET with no revision is the head (spec §3.5), so reading one object by id needs no
-    /// revision lookup at all.
+    /// GET with no revision returns the head, so reading one object by id needs no revision read.
     fileprivate func download(_ id: DeviceObjectID) async throws -> Data {
         do {
             return try await transferClient.get(objectID: ObjectID(rawValue: id.raw)).payload
@@ -541,7 +496,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     public func uploadRoute(_ route: RouteBlob) -> TransferHandle {
-        // A fresh upload sends ObjectId zero and keeps the id assigned by the PUT result.
+        // A fresh upload sends ObjectId zero and keeps the id the PUT result assigns.
         // Re-uploading an edited route names its stored id and exact revision.
         UploadService.start(
             over: self, payload: route.payload, kind: .route,
@@ -551,8 +506,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     public func uploadTrip(_ trip: TripBlob) -> TransferHandle {
-        // The trip sibling of `uploadRoute`, using the same v4 PUT path. It is uploaded last in a
-        // whole-trip push after its route stages.
+        // The trip sibling of `uploadRoute`. A whole-trip push sends it last, after the stages.
         UploadService.start(
             over: self, payload: trip.payload, kind: .trip,
             objectID: trip.targetObjectID, displayName: trip.name,
@@ -615,8 +569,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
 
     public func forgetBond() async throws {
         // The opaque CoreBluetooth identifier is useful only while this bond is trusted. Clear it
-        // even when the best-effort device command fails, so restoration can never act on a device
-        // the app has locally forgotten.
+        // even when the device command fails, so restoration cannot act on a forgotten device.
         defer {
             discoveryStore.clearKnownPeripheralID()
 
@@ -721,10 +674,9 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         if central.isScanning { central.stopScan() }
     }
 
-    /// Kick off phase 2 (#297): arm the gated notifies then read the PSM to open
-    /// the CoC — the first gated op is what raises the passkey sheet. Drives both
-    /// the explicit `authenticate()` call (fresh pair) and the auto-resume after a
-    /// background reconnect (bonded, no continuation waiting).
+    /// Kick off phase 2: arm the gated notifies, then read the PSM to open the CoC. The first
+    /// gated op is what raises the passkey sheet. Drives both an explicit `authenticate()` and
+    /// the auto-resume after a background reconnect.
     private func beginAuthenticate() {
         guard let peripheral, let psm = characteristics[GATT.psm] else {
             failAuthenticate(.notConnected)
@@ -734,39 +686,32 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         if let objectControl = characteristics[GATT.objectControl] {
             peripheral.setNotifyValue(true, for: objectControl)
         }
-        // #753: the gated retry can begin with the CoC already up — a CCCD write
-        // failed and resolved attempt 1 as retryable while attempt 1's PSM read
-        // stayed in flight on the serialized ATT bearer, and that read then
-        // succeeded and opened the channel *during* the retry beat (its
-        // `finishConnect` had no continuation to resolve). The phase's goal
-        // state is reached — notifies re-armed above, channel open — so resolve
-        // the parked authenticate now instead of waiting on a `didOpen` that
-        // already fired.
+        // The gated retry can begin with the CoC already up: a CCCD write failed and resolved
+        // attempt 1 as retryable while its PSM read stayed in flight on the serialized ATT
+        // bearer, and that read then opened the channel during the retry beat. The phase's goal
+        // state is reached, so resolve the parked authenticate instead of waiting for a `didOpen`
+        // that already fired.
         if bleChannel != nil, byteChannel?.isOpen == true {
             finishConnect()
             return
         }
         if bleChannel == nil, !openingChannel {
             openingChannel = true
-            // The gated PSM read is what raises the passkey sheet on a fresh
-            // pair, so with an `authenticate()` parked the budget must cover
-            // the rider typing the passkey. A bonded background reconnect (no
-            // continuation) re-encrypts silently — tight budget.
+            // The gated PSM read raises the passkey sheet on a fresh pair, so with an
+            // `authenticate()` parked the budget must cover the rider typing the code. A bonded
+            // background reconnect re-encrypts silently and keeps the tight budget.
             armChannelWatchdog(after: authenticateContinuation != nil ? Self.pairingTimeout : Self.phaseTimeout)
             peripheral.readValue(for: psm)  // → PSM update → openL2CAPChannel → didOpen
         } else if openingChannel, channelWatchdog == nil {
-            // #753: a CCCD-triggered retryable resolve disarms the watchdog while
-            // attempt 1's PSM read keeps `openingChannel` latched (its response is
-            // still owed on the serialized ATT bearer), so this retry entry can't
-            // re-issue the read — re-watch the in-flight open instead, or a read
-            // that never resolves would park the retry forever (#302's wedge,
-            // unwatched).
+            // A retryable resolve disarms the watchdog while attempt 1's PSM read keeps
+            // `openingChannel` latched, because its response is still owed on the serialized ATT
+            // bearer, so this entry cannot re-issue the read. Re-watch the in-flight open, or a
+            // read that never resolves parks the retry forever.
             armChannelWatchdog(after: authenticateContinuation != nil ? Self.pairingTimeout : Self.phaseTimeout)
         }
     }
 
-    /// Arm the GATT-discovery watchdog (start of `discoverServices`). If it fires,
-    /// discovery never completed — an empty/partial DB — so fail a parked
+    /// Arm the GATT-discovery watchdog. If it fires, discovery never completed, so fail a parked
     /// `discover()` and drop the link; a bonded reconnect then retries clean.
     private func armDiscoveryWatchdog() {
         discoveryWatchdog?.cancel()
@@ -787,12 +732,10 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         discoveryWatchdog = nil
     }
 
-    /// Arm the CoC-open watchdog (when `openingChannel` is raised). If it fires,
-    /// the open stalled (PSM read or `openL2CAPChannel` never yielded `didOpen`):
-    /// clear the latch, fail the parked opens, and unwind a pending authenticate —
-    /// the next transfer re-opens from scratch instead of parking forever.
-    /// `timeout` is `phaseTimeout` except across a fresh pair's PSM read, where
-    /// the passkey sheet makes the phase human-paced (`pairingTimeout`).
+    /// Arm the CoC-open watchdog. If it fires, the open stalled, so clear the latch, fail the
+    /// parked opens and unwind a pending authenticate; the next transfer re-opens from scratch.
+    /// `timeout` is `phaseTimeout` except across a fresh pair's PSM read, where the passkey sheet
+    /// makes the phase human-paced.
     private func armChannelWatchdog(after timeout: DispatchTimeInterval = BLETransport.phaseTimeout) {
         channelWatchdog?.cancel()
         let item = DispatchWorkItem { [weak self] in
@@ -829,8 +772,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         if let peripheral { central.cancelPeripheralConnection(peripheral) }
     }
 
-    /// Phase 2 failed (declined passkey / refused encryption / CoC open) — tear the
-    /// intent down so a background reconnect doesn't spin on a bond that won't take.
+    /// Phase 2 failed (declined passkey, refused encryption, CoC open). Tear the intent down so a
+    /// background reconnect does not spin on a bond that will not take.
     private func failAuthenticate(_ error: DeviceError) {
         disarmChannelWatchdog()
         awaitingGatedRetry = false
@@ -840,12 +783,10 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         authenticateContinuation = nil
     }
 
-    /// #753: resolve a parked fresh-pair `authenticate()` as *retryable* — throw
-    /// `GatedPairingWindowError` so `authenticate()` runs the gated phase once
-    /// more on this same bonded link. Unlike `failAuthenticate`, it leaves
-    /// `wantsConnect` and the (still-up) link intact and publishes no
-    /// `.disconnected`; it flags the beat with `awaitingGatedRetry` so a drop in
-    /// the window (before the retry parks its continuation) is terminal.
+    /// Resolve a parked fresh-pair `authenticate()` as retryable, so it runs the gated phase once
+    /// more on this same bonded link. Unlike `failAuthenticate` it leaves the intent and the live
+    /// link alone and publishes no `.disconnected`, and it flags the beat with `awaitingGatedRetry`
+    /// so a drop in the window is terminal.
     private func resolveAuthenticateRetryable() {
         disarmChannelWatchdog()
         awaitingGatedRetry = true
@@ -853,11 +794,9 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         authenticateContinuation = nil
     }
 
-    /// #753: the single retry also failed with the pairing-window error, so the
-    /// link may still be up with `wantsConnect` set (the retryable resolve left it
-    /// intact for the retry). Drop the half-bonded link and the intent so the
-    /// reconnect loop can't re-raise the passkey behind D5, and a fresh D5 "Try
-    /// again" can re-discover a disconnected peripheral.
+    /// The single retry also failed with the pairing-window error, so the link may still be up
+    /// with the intent set. Drop both, so the reconnect loop cannot re-raise the passkey and a
+    /// fresh "Try again" can re-discover a disconnected peripheral.
     private func teardownAfterFailedRetry() async {
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             queue.async { [self] in
@@ -870,11 +809,9 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
     }
 
-    /// Whether an ATT/CB error means the encrypted, LESC-authenticated link the
-    /// gated characteristics require (A8) wasn't established — the passkey was
-    /// declined/wrong or the bond was refused. Distinguishes a real pairing
-    /// failure from an ordinary read/open error so the launch flow can show the
-    /// right D5 copy.
+    /// Whether an ATT or CB error means the encrypted, LESC-authenticated link the gated
+    /// characteristics need was never established: the passkey was declined or wrong, or the bond
+    /// was refused. Separates a real pairing failure from an ordinary read or open error.
     private static func isAuthError(_ error: Error?) -> Bool {
         if let att = error as? CBATTError {
             switch att.code {
@@ -895,17 +832,11 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         return false
     }
 
-    /// #753 — the one shared retry proxy for a failed *gated op* (the `objectControl`
-    /// CCCD write or the PSM read), used by both delegate
-    /// branches so they can't drift: retryable only when the failure is
-    /// auth-class (`isAuthError`) **and** the peripheral is still connected
-    /// **and** a fresh-pair `authenticate()` is parked. Auth-class while still
-    /// connected is the conservative "SMP pairing visibly completed, firmware
-    /// momentarily refused" evidence (see `GatedPairingWindowError`); everything
-    /// else — a decline that drops the link, a non-auth failure, a background
-    /// re-arm with no authenticate pending — stays terminal, exactly as before.
-    /// `nil` (the op succeeded) is never retryable. Internal, not private, so
-    /// the mapping is unit-testable without a radio.
+    /// The one shared retry proxy for a failed gated op, the `objectControl` CCCD write or the PSM
+    /// read, so the two delegate branches cannot drift. Retryable only when the failure is
+    /// auth-class, the peripheral is still connected, and a fresh-pair `authenticate()` is parked:
+    /// the conservative "pairing visibly completed, firmware momentarily refused" evidence.
+    /// Everything else stays terminal, and a nil error (the op succeeded) is never retryable.
     static func isRetryableGatedFailure(
         _ error: Error?, peripheralConnected: Bool, authenticatePending: Bool
     ) -> Bool {
@@ -914,11 +845,9 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
 
     private func finishConnect() {
 
-        // Only announce an actual transition (#302): a mid-session CoC reopen
-        // (after a canceled-transfer `teardownChannel`) re-enters here, but the
-        // link never left `.connected` — re-sending would re-fire edge-triggered
-        // observers. The authenticate continuation still resolves unconditionally
-        // (a fresh `authenticate()` completes here regardless of the state edge).
+        // Announce only a real transition: a mid-session CoC reopen re-enters here although the
+        // link never left `.connected`, and re-sending would re-fire edge-triggered observers.
+        // The authenticate continuation still resolves either way.
         if stateMulticast.value != .connected { stateMulticast.send(.connected) }
         if let peripheral {
             // Reaching the authenticated CoC proves this opaque CoreBluetooth identifier belongs to
@@ -931,9 +860,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
 
     }
 
-    /// The link is gone: every parked continuation must resolve (a leaked
-    /// `CheckedContinuation` hangs its caller forever), and buffered notifications
-    /// from the dead link are dropped (a new connection re-announces).
+    /// The link is gone: every parked continuation must resolve, because a leaked
+    /// `CheckedContinuation` hangs its caller forever. Buffered notifications are dropped.
     private func failAllPending() {
         let reads = pendingReads.values.flatMap { $0 }
         pendingReads.removeAll()
@@ -977,9 +905,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
     }
 
-    /// Run one authenticated BLE imperative command. The protocol-v4 object client deliberately
-    /// has its own operation gate; this much smaller lane covers only the legacy command/status
-    /// pair that remains part of the BLE control surface.
+    /// Run one authenticated BLE imperative command. The protocol-v4 object client has its own
+    /// operation gate; this much smaller lane covers only the command and status pair.
     private func exchangeCommand(_ payload: Data, command: UInt8) async throws -> CommandResult {
         precondition(payload.first == command)
         let slot = await acquireCommandSlot()
@@ -1080,9 +1007,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
     }
 
-    /// Arm the command-result notification before writing. This stays lazy so the v4 object path
-    /// does not gain a second gated CCCD during pairing; the first imperative command enables it
-    /// after authentication is already established.
+    /// Arm the command-result notification before writing. Lazy, so pairing does not gain a second
+    /// gated CCCD: the first imperative command enables it after authentication is established.
     private func ensureStatusNotifications() async throws {
         try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<Void, Error>) in
@@ -1210,7 +1136,6 @@ private actor V4UploadRunner {
 /// the restored link; the batch keeps no resume cursor or reconciliation cache.
 private actor RideDownloadRunner {
     private let transport: BLETransport
-    /// The exact catalog source for each requested ride.
     private let requests: [(id: RideID, source: RideSource)]
     private let rides: AsyncThrowingStream<DownloadedRide, Error>.Continuation
     private let progress: AsyncStream<TransferProgress>.Continuation
@@ -1259,8 +1184,7 @@ private actor RideDownloadRunner {
         } catch is CancellationError {
             finish(.canceled)
         } catch DeviceError.crcMismatch {
-            // A corrupt ride object is a hard, non-retryable failure (the bytes on
-            // the card are bad) — surface it into the stream and end the batch.
+            // A corrupt ride object is a hard, non-retryable failure: the bytes on the card are bad.
             if !finished {
                 finished = true
                 progress.finish()
@@ -1318,10 +1242,9 @@ extension BLETransport: TransferLink {
     }
 
     /// Release the control receive its transfer has walked away from. A parked receive takes the
-    /// cancellation here and now; only a cancel that found nobody — because it beat its own
-    /// receive to the queue — is remembered for the receive about to park. Remembering it in both
-    /// cases would leave a second, unclaimed cancellation for whichever receive comes next, and
-    /// the next one is the reconciliation LIST. The next control write re-arms the lane.
+    /// cancellation here and now; only a cancel that found nobody is remembered for the receive
+    /// about to park, because remembering both would leave an unclaimed cancellation for the next
+    /// receive, and that next one is the reconciliation LIST. The next control write re-arms it.
     public func cancelControlReceive() async {
         let waiters = queue.sync { () -> [CheckedContinuation<Data, Error>] in
             let parked = objectControlWaiters
@@ -1431,26 +1354,20 @@ extension BLETransport: CBCentralManagerDelegate {
         discoveryPolicy.didDisconnect()
         characteristics.removeAll()
         disarmDiscoveryWatchdog()  // the channel watchdog is disarmed by failAllPending below
-        // Close the dead CoC, don't just drop the reference: an `L2CAPByteChannel`
-        // owns a dedicated run-loop thread + stall `Timer` that only stop via
-        // `close()`/`teardown`. Nil-ing the refs alone orphans a thread that keeps
-        // waking every 0.25 s — one leaked per disconnect (S4 out-of-range
-        // flapping). We're already on `queue`, so drop the refs inline and fire the
-        // async close (which also resolves the channel's own parked read/write
-        // waiters); the `Task` retains the channel until teardown completes.
+        // Close the dead CoC; do not just drop the reference. An `L2CAPByteChannel` owns a
+        // run-loop thread and a stall timer that stop only on `close()`, so nil-ing the refs
+        // orphans a thread that wakes every 0.25 s, one per disconnect. Drop the refs inline and
+        // fire the async close, which also resolves the channel's own parked waiters.
         let deadChannel = byteChannel
         byteChannel = nil
         bleChannel = nil
         if let deadChannel { Task { await deadChannel.close() } }
         failAllPending()
-        // A disconnect that lands while a connect phase is still pending IS that
-        // phase's failure. `failAllPending` deliberately leaves the two phase
-        // continuations alone, and a declined / wrong passkey commonly tears the
-        // link down instead of erroring the gated PSM read — so without this a
-        // fresh pair hangs `confirmPairing()` on the D3 beat forever (there is no
-        // timeout on `authenticate()`). Both helpers drop `wantsConnect`, which
-        // also stops the reconnect loop from silently re-raising the passkey sheet
-        // after a decline.
+        // A disconnect that lands while a connect phase is pending is that phase's failure.
+        // `failAllPending` leaves the two phase continuations alone, and a declined or wrong
+        // passkey commonly tears the link down instead of erroring the gated PSM read, so without
+        // this a fresh pair hangs forever: there is no timeout on `authenticate()`. Both helpers
+        // also drop the intent, which stops a silent passkey sheet after a decline.
         if discoverContinuation != nil {
             failDiscover(.notConnected)
             return
@@ -1459,10 +1376,9 @@ extension BLETransport: CBCentralManagerDelegate {
             failAuthenticate(.pairingFailed)
             return
         }
-        // #753: a drop during the gated-phase retry beat (continuation momentarily
-        // nil) is terminal, like a drop during a pending authenticate — the second
-        // attempt will fail `.notConnected` onto D5. Drop the intent so the
-        // reconnect loop below can't re-raise the passkey behind it.
+        // A drop during the gated-retry beat, where the continuation is momentarily nil, is
+        // terminal: the second attempt fails `.notConnected`. Drop the intent so the reconnect
+        // loop below cannot re-raise the passkey behind it.
         if awaitingGatedRetry {
             awaitingGatedRetry = false
             _ = discoveryPolicy.cancelForeground()
@@ -1502,13 +1418,10 @@ extension BLETransport: CBPeripheralDelegate {
         }
         for characteristic in service.characteristics ?? [] {
             characteristics[characteristic.uuid] = characteristic
-            // Only the **un-gated** BAS notify is armed here (#297). The gated
-            // `objectControl` indication and the PSM read wait for
-            // `authenticate()`, so first-time pairing doesn't raise the passkey
-            // sheet before the D2 row tap. The device's connect-time battery notify
-            // fires before this subscription lands (its next is ~30 s out) — read
-            // the level so the UI has it at once; it resolves through the same
-            // didUpdateValueFor path as a notify.
+            // Only the un-gated BAS notify is armed here. The gated `objectControl` indication
+            // and the PSM read wait for `authenticate()`, so first-time pairing raises no passkey
+            // sheet yet. The device's connect-time battery notify fires before this subscription
+            // lands, so read the level too and the UI has it at once.
             if characteristic.uuid == GATT.batteryLevel {
                 peripheral.setNotifyValue(true, for: characteristic)
                 peripheral.readValue(for: characteristic)
@@ -1518,11 +1431,9 @@ extension BLETransport: CBPeripheralDelegate {
         guard pendingServiceDiscovery <= 0 else { return }
         disarmDiscoveryWatchdog()
 
-        // Every service's characteristics are in hand — the un-gated surface is
-        // ready. A pending `discover()` resolves here (its caller runs
-        // `authenticate()` next, on the D2 row tap); an unsolicited background
-        // reconnect (bonded, no waiter) proceeds straight to the gated phase to
-        // restore the full link.
+        // Every service's characteristics are in hand, so the un-gated surface is ready. A pending
+        // `discover()` resolves here and its caller runs `authenticate()` next; an unsolicited
+        // bonded reconnect has no waiter and goes straight to the gated phase.
         if discoveryPolicy.foregroundRequested {
             if let cont = discoverContinuation {
                 discoverContinuation = nil
@@ -1536,7 +1447,6 @@ extension BLETransport: CBPeripheralDelegate {
     public func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         let uuid = characteristic.uuid
 
-        // BAS battery notify → multicast.
         if uuid == GATT.batteryLevel, let value = characteristic.value?.first {
             batteryMulticast.send(Int(value))
             return
@@ -1545,35 +1455,26 @@ extension BLETransport: CBPeripheralDelegate {
         if uuid == GATT.psm, bleChannel == nil {
             if error == nil, let data = characteristic.value, data.count >= 2 {
                 let psm = UInt16(data[0]) | (UInt16(data[1]) << 8)
-                // The read resolved, so any passkey entry is behind us — re-arm
-                // tight for the machine-only openL2CAPChannel → didOpen tail
-                // (#302's actual wedge). Only while this open is still the one
-                // being watched; a stale resolve after the watchdog fired
-                // (openingChannel already dropped) opens unwatched, as before.
+                // The read resolved, so any passkey entry is behind us: re-arm tight for the
+                // machine-only openL2CAPChannel tail. Only while this open is the one being
+                // watched; a stale resolve after the watchdog fired opens unwatched.
                 if openingChannel { armChannelWatchdog(after: Self.phaseTimeout) }
                 peripheral.openL2CAPChannel(CBL2CAPPSM(psm))
             } else {
-                // The PSM characteristic is `authenticated` (A8): the read is the
-                // first gated op of `authenticate()`, so a failure here is usually
-                // the pairing being declined / the wrong passkey (ATT insufficient-
-                // authentication). Fail the open waiters AND the pending
-                // authenticate — else `confirmPairing()` hangs in the D3 beat. An
-                // auth-class error → `pairingFailed` (D5 "didn't finish"); anything
-                // else → `channelOpenFailed`. (A decline that instead *disconnects*
-                // the link lands via `didDisconnectPeripheral`; on-glass polish.)
+                // The PSM characteristic is authenticated, and the read is the first gated op of
+                // `authenticate()`, so a failure here is usually a declined or wrong passkey. Fail
+                // the open waiters and the pending authenticate, or `confirmPairing()` hangs. An
+                // auth-class error maps to `pairingFailed`, anything else to `channelOpenFailed`.
+                // A decline that instead drops the link lands in `didDisconnectPeripheral`.
                 openingChannel = false
                 disarmChannelWatchdog()
                 let waiters = channelWaiters
                 channelWaiters.removeAll()
-                // #753: an auth-class failure on the gated PSM read while the
-                // peripheral is *still connected* is the conservative "pairing
-                // visibly completed, firmware momentarily refused" proxy (see
-                // `GatedPairingWindowError` — `isRetryableGatedFailure` is shared
-                // with the gated CCCD-write branch). Resolve a parked fresh-pair
-                // `authenticate()` as retryable — it retries the gated phase once
-                // on this bonded link instead of dropping to D5. Any transfer's
-                // channel waiters (none during a fresh pair) fail as before; the
-                // retry re-opens the CoC.
+                // An auth-class failure on the gated PSM read while the peripheral is still
+                // connected is the retryable pairing-window case, shared with the CCCD-write
+                // branch. Resolve a parked fresh-pair `authenticate()` as retryable: it retries
+                // the gated phase once on this bonded link instead of failing. Any channel
+                // waiters fail as before; the retry re-opens the CoC.
                 if Self.isRetryableGatedFailure(
                     error, peripheralConnected: peripheral.state == .connected,
                     authenticatePending: authenticateContinuation != nil
@@ -1620,7 +1521,6 @@ extension BLETransport: CBPeripheralDelegate {
             return
         }
 
-        // Resolve a pending read.
         resumeReads(uuid, error == nil ? .success(characteristic.value ?? Data()) : .failure(DeviceError.readFailed))
     }
 
@@ -1641,20 +1541,14 @@ extension BLETransport: CBPeripheralDelegate {
             }
             return
         }
-        // #753: on a fresh pair the FIRST gated op is a CCCD write, not the PSM
-        // read — `beginAuthenticate` arms the `objectControl` indication before reading the
-        // PSM — so it's the CCCD write that raises the passkey sheet, and iOS's
-        // post-passkey replay of the gated ops hits the CCCD write *first*. The
-        // firmware's post-PairingComplete refusal window therefore most likely
-        // clips the CCCD write; without this handler that failure was silently
-        // swallowed — and if the window then drained before the PSM read,
-        // `authenticate()` resolved with a dead control indication. Map it exactly like the PSM branch: the
-        // shared retryable proxy → resolve the parked authenticate as retryable,
-        // and the retry's `beginAuthenticate` re-arms the gated ops. Everything
-        // else keeps the pre-existing ignore: a background re-arm has no
-        // authenticate pending, and a real decline tears the link down
-        // (`didDisconnectPeripheral` owns that path). No notify-state bookkeeping
-        // beyond this. `objectControl` is the sole gated CCCD this window can clip.
+        // On a fresh pair the first gated op is the `objectControl` CCCD write, not the PSM read,
+        // so that write raises the passkey sheet and iOS's post-passkey replay hits it first. The
+        // firmware's post-pairing refusal window therefore most likely clips the CCCD write, and
+        // an unhandled failure there leaves the control indication dead while `authenticate()`
+        // resolves. Map it like the PSM branch: the shared proxy resolves the parked authenticate
+        // as retryable, and the retry's `beginAuthenticate` re-arms the gated ops. Anything else
+        // is ignored: a background re-arm has no authenticate pending, and a real decline tears
+        // the link down. `objectControl` is the sole gated CCCD this window can clip.
         guard characteristic.uuid == GATT.objectControl else { return }
         guard Self.isRetryableGatedFailure(
             error, peripheralConnected: peripheral.state == .connected,
@@ -1686,10 +1580,9 @@ extension BLETransport: CBPeripheralDelegate {
         let waiters = channelWaiters
         channelWaiters.removeAll()
         for cont in waiters { cont.resume(returning: ble) }
-        // CoC up + services discovered → the link is ready. `finishConnect`
-        // publishes .connected either way and resolves `authenticate()`'s
-        // continuation when one is pending — a background *re*connect (after a
-        // drop) has none, but must still flip the state stream back.
+        // CoC up and services discovered, so the link is ready. `finishConnect` publishes
+        // `.connected` either way and resolves `authenticate()` when one is pending; a background
+        // reconnect has none but must still flip the state stream back.
         finishConnect()
     }
 

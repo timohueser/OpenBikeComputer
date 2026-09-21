@@ -2,14 +2,13 @@ import SwiftUI
 import OBCDomain
 import OBCTransport
 
-/// The upload sheet (B5, design F/F₂) — presented over the route detail; the
-/// app never leaves the route. Uploading (F) shows the live bar, the
-/// plain-English size readout, the device-correspondence note, and an
-/// always-reachable **Cancel upload**; a drop swaps in the resume framing;
-/// completion holds the F₂ confirm briefly, then dismisses.
+/// The upload sheet, presented over the route detail: the app never leaves the route.
+/// Uploading shows the live bar, the size readout, the device-correspondence note and
+/// an always-reachable Cancel; a drop swaps in the resume framing; completion holds
+/// the confirm briefly, then dismisses.
 ///
-/// Present inside `.sheet` — the view brings its own `OBCSheetContainer`
-/// chrome and detent, and drives dismissal through `model.shouldDismiss`.
+/// Present it inside `.sheet`: the view brings its own `OBCSheetContainer` chrome and
+/// detent, and drives dismissal through `model.shouldDismiss`.
 public struct UploadSheetView: View {
     private let model: UploadSheetModel
     @Environment(\.dismiss) private var dismiss
@@ -32,8 +31,8 @@ public struct UploadSheetView: View {
             }
         }
         .presentationDetents([.height(sheetHeight)])
-        // Mid-transfer the sheet owns the upload — Cancel is the escape, not an
-        // accidental swipe that would silently abort (or orphan) the transfer.
+        // Mid-transfer the sheet owns the upload: Cancel is the escape, not an
+        // accidental swipe that would silently abort or orphan the transfer.
         .interactiveDismissDisabled(model.phase == .uploading || model.phase == .interrupted)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("upload.sheet")
@@ -44,8 +43,6 @@ public struct UploadSheetView: View {
         .onDisappear { model.sheetDismissed() }
     }
 
-    /// The design's sheet hugs its content — the interrupted framing carries
-    /// one extra button, F₂ the taller centered confirm.
     private var sheetHeight: CGFloat {
         switch model.phase {
         case .uploading: 280
@@ -54,7 +51,7 @@ public struct UploadSheetView: View {
         case .failed: 310
         }
     }
-    // MARK: F — uploading (and its interrupted framing)
+    // MARK: Uploading, and its interrupted framing
 
     @ViewBuilder
     private func progressContent(interrupted: Bool) -> some View {
@@ -115,7 +112,7 @@ public struct UploadSheetView: View {
         }
     }
 
-    // MARK: F₂ — done
+    // MARK: Done
 
     private var doneContent: some View {
         VStack(spacing: 0) {
@@ -151,7 +148,7 @@ public struct UploadSheetView: View {
         .frame(maxWidth: .infinity)
     }
 
-    // MARK: Failed for good (no resume offset to continue from)
+    // MARK: Failed for good, with no resume offset to continue from
 
     private var failedContent: some View {
         VStack(spacing: 0) {
@@ -183,8 +180,6 @@ public struct UploadSheetView: View {
         .frame(maxWidth: .infinity)
     }
 
-    // MARK: Pieces
-
     private func iconTile(systemImage: String, color: Color) -> some View {
         Image(systemName: systemImage)
             .font(.system(size: 20, weight: .medium))
@@ -195,8 +190,8 @@ public struct UploadSheetView: View {
 }
 
 #if DEBUG
-/// Preview-only transport whose upload pumps paced ticks (OBCUI can't import
-/// OBCMock) — F animates, then holds F₂.
+/// Preview-only transport whose upload pumps paced ticks, so the bar animates and
+/// then holds the confirm. OBCUI cannot import OBCMock.
 private struct PreviewUploadTransport: DeviceLink, DeviceObjects {
     var dropAt: Double?
 
@@ -246,8 +241,8 @@ private struct PreviewUploadTransport: DeviceLink, DeviceObjects {
     return Demo()
 }
 
-/// A real OBCR route (a short synthetic climb) so the preview's size readout shows
-/// the true kB scale, not a placeholder byte count.
+/// A real OBCR route, a short synthetic climb, so the preview's size readout shows
+/// the true kB scale and not a placeholder byte count.
 private var previewBlob: RouteBlob {
     let waypoint = Waypoint(
         index: 0, name: "Ottawa Lake trailhead",

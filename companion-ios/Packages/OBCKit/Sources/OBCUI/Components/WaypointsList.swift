@@ -1,9 +1,8 @@
 import SwiftUI
 import OBCDomain
 
-/// One **Waypoints List** row (W1): a numbered 30pt marker (9pt radius), name +
-/// mono note, and the mono distance-along. Marker color follows the design:
-/// forest for the first point, coral for the last, amber between.
+/// One waypoints-list row: a numbered marker, name and note, and the distance along.
+/// The marker is forest for the first point, coral for the last, amber between.
 public struct WaypointRow: View {
     let waypoint: Waypoint
     let isFirst: Bool
@@ -58,9 +57,8 @@ public struct WaypointRow: View {
     }
 }
 
-/// The **Waypoints dropdown** body (W1) under the disclosure row on route
-/// detail: the rows in ride order plus the provenance footer. The track pins
-/// live on the detail hero itself (`MapTrackPreviewView`), not in here.
+/// The waypoints dropdown under the disclosure row on route detail: the rows in ride
+/// order plus the provenance footer. The track pins live on the detail hero itself.
 public struct WaypointsDropdownContent: View {
     let waypoints: [Waypoint]
 
@@ -90,11 +88,11 @@ public struct WaypointsDropdownContent: View {
 }
 
 extension TrackPreviewView.Marker {
-    /// Middle waypoints pinned on the polyline (the start/end already have
-    /// node dots). Position = the track point nearest the waypoint's fraction
-    /// of total distance — a preview-grade approximation, honest as long as
-    /// the polyline sampling is roughly uniform (it is: `TrackPreview`
-    /// downsamples by uniform stride).
+    /// Middle waypoints pinned on the polyline; the start and end already have node
+    /// dots. The position is the track point nearest the waypoint's fraction of total
+    /// distance: a preview-grade approximation, honest while the polyline sampling is
+    /// roughly uniform, which it is because `TrackPreview` downsamples by a uniform
+    /// stride.
     static func middleWaypointPins(
         _ waypoints: [Waypoint],
         on preview: TrackPreview?,

@@ -3,11 +3,10 @@ import Testing
 import OBCDomain
 @testable import OBCFormats
 
-/// The ride → GPX encoder (SE4 #711): a Strava-shaped export whose sensor
-/// extensions mirror the firmware's on-device `track_to_gpx` (epic #707, SE3) —
-/// the `gpxtpx` namespace on the root, a per-point `gpxtpx:TrackPointExtension`
-/// (`hr`/`cad`) plus a bare `<power>`, each element omitted when absent and the
-/// whole block omitted when all three are. Segment flags and the v3 microdegree grid are retained.
+/// The ride to GPX encoder: a Strava-shaped export whose sensor extensions mirror the firmware's
+/// `track_to_gpx`. The `gpxtpx` namespace sits on the root, each point carries a
+/// `gpxtpx:TrackPointExtension` plus a bare `<power>`, and an absent value drops its element.
+/// Segment flags and the v3 microdegree grid are retained.
 struct GPXRideEncoderTests {
     private let encoder = GPXRideEncoder()
 
@@ -79,14 +78,13 @@ struct GPXRideEncoderTests {
 
         let gpx = String(decoding: try encoder.encode(plain), as: UTF8.self)
         #expect(gpx == expected)
-        // The defining "no regression" property: not a single per-point
-        // extension is emitted for a ride that carries no sensor data.
+        // Not a single per-point extension is emitted for a ride that carries no sensor data.
         #expect(!gpx.contains("<extensions>"))
         #expect(!gpx.contains("gpxtpx:"))
     }
 
     @Test func registersThroughTheExporter() throws {
-        // The B7 seam: the encoder plugs into `RideExporter` by extension.
+        // The encoder plugs into `RideExporter` by extension.
         let exporter = RideExporter(encoders: [GPXRideEncoder()], defaultFileExtension: "gpx")
         let file = try exporter.export(ride(name: "Loop", points: [
             point(47_000_000, 11_000_000, ele: 500, hr: 120),

@@ -2,15 +2,14 @@ import Foundation
 import OBCDomain
 
 /// One interchange file format a tracked ride exports to. An encoder is a pure
-/// `Ride → Data` function; B7's share/services flows encode through the registry
-/// below, never a hardcoded format.
+/// `Ride` to `Data` function; the share and services flows encode through the
+/// registry below, never a hardcoded format.
 public protocol RideFileEncoder: Sendable {
     /// Lowercase extension of the produced file (e.g. `"gpx"`, `"fit"`).
     var fileExtension: String { get }
     func encode(_ ride: Ride) throws -> Data
 }
 
-/// An encoded ride ready for a share sheet / Files / a connected service.
 public struct ExportedRideFile: Equatable, Sendable {
     public let fileExtension: String
     public let data: Data
@@ -21,13 +20,12 @@ public struct ExportedRideFile: Equatable, Sendable {
     }
 }
 
-/// The export edge. **Switching the app's tracked-file format (GPX → FIT) is:
-/// add the new `RideFileEncoder` conformer and change `defaultFileExtension` at
-/// the composition root.** Every consumer exports through here from the canonical
-/// `Ride`, so storage, sync, and screens are untouched by a format change.
+/// The export edge. To switch the app's tracked-file format, add the new
+/// `RideFileEncoder` conformer and change `defaultFileExtension` at the composition
+/// root. Every consumer exports through here from the canonical `Ride`, so storage,
+/// sync and screens are untouched by a format change.
 public struct RideExporter: Sendable {
     private let encoders: [any RideFileEncoder]
-    /// The format used when the caller doesn't ask for one.
     public let defaultFileExtension: String
 
     public init(encoders: [any RideFileEncoder], defaultFileExtension: String) {
@@ -35,7 +33,6 @@ public struct RideExporter: Sendable {
         self.defaultFileExtension = defaultFileExtension.lowercased()
     }
 
-    /// Every format the app can export — a future per-service or per-share picker.
     public var supportedFileExtensions: Set<String> {
         Set(encoders.map(\.fileExtension))
     }

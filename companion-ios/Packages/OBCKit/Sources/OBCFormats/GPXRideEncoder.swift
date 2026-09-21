@@ -1,18 +1,16 @@
 import Foundation
 import OBCDomain
 
-/// Exports a tracked ride to **GPX 1.1** — the app-side mirror of the firmware's
-/// on-device `track_to_gpx` (`obc-route/src/track.rs`), down to the sensor
-/// extensions (epic #707, SE3/SE4): the `gpxtpx` namespace on the root `<gpx>`,
-/// and per point a `gpxtpx:TrackPointExtension` carrying `<gpxtpx:hr>` / `<gpxtpx:cad>`
-/// plus a bare `<power>` (the de-facto Strava form). Each element is omitted when
-/// its field is absent; the whole `<extensions>` block when all three are — so a
-/// sensor-less ride produces a plain track with no extension blocks.
+/// Exports a tracked ride to GPX 1.1, the app-side mirror of the firmware's
+/// `track_to_gpx` (`obc-route/src/track.rs`), down to the sensor extensions: the
+/// `gpxtpx` namespace on the root `<gpx>`, and per point a
+/// `gpxtpx:TrackPointExtension` carrying `<gpxtpx:hr>` and `<gpxtpx:cad>` plus a bare
+/// `<power>`, the de-facto Strava form. Each element is omitted when its field is
+/// absent, and the whole `<extensions>` block when all three are.
 ///
-/// The app export encodes from the canonical `Ride` (decoded from the ride
-/// object), so — unlike the device exporter, which reads fixed samples from ride-v3 — a point may
-/// carry no elevation (`nil`): `<ele>` is omitted then, never a sentinel. The
-/// v3 preserves the recorded segment-start flag, so exports retain pause boundaries.
+/// It encodes from the canonical `Ride`, so a point may carry no elevation; `<ele>`
+/// is then omitted, never a sentinel. The recorded segment-start flag is preserved,
+/// so exports keep their pause boundaries.
 public struct GPXRideEncoder: RideFileEncoder {
     public let fileExtension = "gpx"
 
@@ -45,10 +43,9 @@ public struct GPXRideEncoder: RideFileEncoder {
         return Data(xml.utf8)
     }
 
-    /// The per-point `<extensions>` block, or `""` when the point carries no
-    /// sensor sample. `hr`/`cad` nest inside a `TrackPointExtension`; `power` is
-    /// a bare sibling. The wrapper itself is dropped when both `hr` and `cad`
-    /// are absent (power-only points), matching the firmware.
+    /// The per-point `<extensions>` block, or `""` when the point carries no sensor
+    /// sample. `hr` and `cad` nest inside a `TrackPointExtension`; `power` is a bare
+    /// sibling. The wrapper is dropped for power-only points, matching the firmware.
     private static func extensions(_ point: RidePoint) -> String {
         guard point.heartRate != nil || point.cadence != nil || point.power != nil else { return "" }
         var block = "<extensions>"
@@ -74,13 +71,13 @@ public struct GPXRideEncoder: RideFileEncoder {
         return "\(sign)\(whole).\(frac)"
     }
 
-    /// Elevation to the whole metre — the ride object's own quantum.
+    /// Elevation to the whole metre, the ride object's own quantum.
     private static func ele(_ value: Double) -> String {
         String(Int(value.rounded()))
     }
 
-    /// Minimal XML escaping for the track name — the same three entities the
-    /// firmware escapes.
+    /// Minimal XML escaping for the track name: the same three entities the firmware
+    /// escapes.
     private static func escaped(_ text: String) -> String {
         var out = ""
         out.reserveCapacity(text.count)

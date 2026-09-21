@@ -1,13 +1,11 @@
-//! Contours through the **whole** pipeline (EL10a, #1094).
+//! Contours through the whole pipeline.
 //!
-//! `src/contour.rs`'s own tests own the marching squares; these own the wiring, which is where the
-//! issue's acceptance actually lives: that an OBCT container on disk turns into ordinary features in
-//! a real `.obcm`, that a class with no style rule costs nothing, and — the one that has to keep
-//! being true for every map that is not asking for contours — that the whole feature is invisible
-//! when it is off.
+//! `src/contour.rs`'s own tests own the marching squares; these own the wiring: that an OBCT
+//! container on disk turns into ordinary features in a real `.obcm`, that a class with no style rule
+//! costs nothing, and that the whole feature is invisible when it is off.
 //!
 //! Land generation is skipped throughout: it needs the ~950 MB global land-polygon dataset, which is
-//! a network download and not a fixture. Nothing here is about land.
+//! a network download and not a fixture.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -21,9 +19,9 @@ use obc_pack::pipeline::{pack, PackOptions};
 use obc_pack::progress::{Phase, Progress};
 use obc_reader::{MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 
-/// The synthetic terrain's posting and cell size — both legal OBCT v1 header values, both small, so
-/// the rectangle covering the fixture is tens of KB instead of the tens of MB a production 2^19 cell
-/// would be. The sampler cannot tell the difference (`OBCT_Spec.md` §1.3).
+/// The synthetic terrain's posting and cell size: both legal OBCT header values, both small, so the
+/// rectangle covering the fixture is tens of KB instead of the tens of MB a production pairing would
+/// be. The sampler cannot tell the difference.
 const POSTING_LOG2: u8 = 9;
 const CELL_LOG2: u8 = 14;
 /// Metres of rise per lattice row. At a 512 µdeg posting (~57 m) the fixture's ~40 rows climb far
@@ -148,7 +146,7 @@ fn nothing_is_traced_unless_the_run_asks_for_all_three() {
     let terrain = write_terrain(&dir);
 
     // No terrain at all: the comparison has to be against a run that also had none, because
-    // `--terrain` is what fills the §8.3 per-edge ascent as well.
+    // `--terrain` is what fills the per-edge ascent as well.
     let (blind, _) = run(&dir, "blind", &config(OFF, BOTH_CLASSES), None);
     let (no_terrain, lines) = run(&dir, "no-terrain", &config(ON, BOTH_CLASSES), None);
     assert_eq!(no_terrain, blind, "contours on but no terrain must change nothing");
@@ -199,8 +197,6 @@ fn each_class_costs_only_what_it_is_asked_for() {
         nav_offset(&both)
     );
 }
-
-// --- the ladder reach, through the cutter (#1104) ----------------------------------------------
 
 /// The shipped ladder's shape (14 tiers) with the shipped reach: **both** classes from LOD 9. Only
 /// the numbers this test is about are the shipped ones — the styles are the minimum a contour class
@@ -268,14 +264,13 @@ fn features_per_lod(bytes: &[u8]) -> BTreeMap<usize, BTreeMap<u8, usize>> {
 /// The reach reaches the **cutter**, not only the whole-extract pipeline — and in particular the
 /// `coarse` band traces contours at all.
 ///
-/// #1103 named this as a risk: #1094 wired contours in as "the mid/fine cells", and if the cutter
-/// had hard-wired a band set the coarse cells would be silently contour-free no matter what the
-/// preset said. It does not — contours are traced once over the extract and then filtered by the
-/// ordinary `min_lod <= lod` ladder rule — and this is the test that keeps it that way:
+/// A cutter with a hard-wired band set would leave the coarse cells silently contour-free whatever
+/// the preset said. It has none: contours are traced once over the extract and then filtered by the
+/// ordinary `min_lod <= lod` ladder rule.
 ///
-/// - LOD 9 (fine band) carries **both** classes, each with a positive count. The two travel
-///   together on purpose: index-only at that tier was tried and rejected on glass, because a solid
-///   grey line with no dashes around it reads as a path (#1104).
+/// - LOD 9 (fine band) carries both classes, each with a positive count. The two travel together on
+///   purpose: index-only at that tier reads as a path on glass, a solid grey line with no dashes
+///   around it.
 /// - LODs 0–8 carry neither: semantic overview tiers stay terrain-free.
 /// - LOD 10 keeps both, so the tier below is not accidentally emptied either.
 #[test]

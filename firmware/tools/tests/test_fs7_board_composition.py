@@ -7,7 +7,7 @@ upload fact it produces, while transient reads must keep the prior snapshot and 
 The board drains no `HostCommand`s: the rescan is `CatalogEffect::ReadCatalog`'s body
 (`read_catalogs`), the delivery is `note_catalog_uploads` writing `ExternalFacts` for the *next*
 pass, and a partial read is answered `Failed { Unreadable }` so that `CatalogMachine` re-offers the
-read (#1541) — the executor keeps no retry of its own.
+read — the executor keeps no retry of its own.
 """
 
 from pathlib import Path
@@ -24,7 +24,7 @@ def body(source: str, start: str, end: str | None) -> str:
 
 class Fs7BoardCompositionTests(unittest.TestCase):
     def test_successful_upload_is_typed_only_after_catalog_rescan(self) -> None:
-        publish = body(FLAT_STORE, "fn publish_upload", "// ══════════════════════════ the protocol-v4 engine")
+        publish = body(FLAT_STORE, "fn publish_upload", "const ENGINE_STAGE: usize = 512;")
         self.assertIn("UploadEnd::Committed { id, replaced }", publish)
         # One expression per kind, so the kind, the committed id and the replaced flag are pinned
         # together rather than through a separate `kind` binding.

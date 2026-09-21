@@ -1,10 +1,9 @@
 import UIKit
 import OBCUI
 
-/// The real `BackgroundTaskRunner` (#459) — the one place `beginBackgroundTask`
-/// is allowed, app-target on purpose: the lifecycle logic lives in OBCKit where
-/// it runs under `swift test`, and UIKit stays at the composition root (the
-/// same rule that keeps CoreBluetooth inside `OBCTransport/BLE/`).
+/// The real `BackgroundTaskRunner`: the one place `beginBackgroundTask` is allowed. App-target on
+/// purpose, because the lifecycle logic lives in OBCKit where it runs under `swift test`, and UIKit
+/// stays at the composition root.
 struct UIKitBackgroundTaskRunner: BackgroundTaskRunner {
     @MainActor func begin(
         name: String,

@@ -1,19 +1,15 @@
-//! The **presenter conformance suite** — generic, backend-agnostic checks of the contracts'
-//! mandatory invariants, written once so every pairing (both shipping backends' host-testable
-//! halves and the test-only proof backend) runs the *same* semantics tests.
+//! The presenter conformance suite: generic, backend-agnostic checks of the contracts' mandatory
+//! invariants, written once so every pairing runs the same semantics tests.
 //!
 //! The checks observe a backend only through the contracts plus one test-side hook,
-//! [`GlassProbe`] — "what colour is on glass at (x, y)?" — implemented by each backend's test
-//! double (the simulator already keeps exactly this reconstruction for its exact-diff oracle).
-//! Everything else (regions, damage, colours, probe points) is passed in by the concrete test,
-//! because widening rules and quantization are pairing-specific.
+//! [`GlassProbe`], which answers "what colour is on glass at (x, y)?". Everything else, from
+//! regions to damage to probe points, is passed in by the concrete test, because widening rules
+//! and quantization are pairing-specific.
 //!
-//! Colour arguments must remain pairwise distinguishable **after the frame's native quantization**
-//! (on the RGB222 pairing: colours that land on different device-64 bytes).
+//! Colour arguments must stay pairwise distinguishable after the frame's native quantization.
 //!
-//! `no_std`, allocation-free, executor-agnostic (`async fn`s a host test drives with any
-//! `block_on`). Nothing here is compiled into a shipping image: generic functions that are never
-//! instantiated produce no code.
+//! `no_std`, allocation-free and executor-agnostic. Generic functions that are never instantiated
+//! produce no code, so nothing here reaches a shipping image.
 
 use core::fmt::Debug;
 
@@ -23,7 +19,7 @@ use embedded_graphics::primitives::Rectangle;
 use super::frame::NativeFrame;
 use super::presenter::{OverlayPresenter, Presenter};
 
-/// Test-side readback of what a backend actually put on glass, in the frame's draw-colour space.
+/// Test-side readback of what a backend put on glass, in the frame's draw-colour space.
 pub trait GlassProbe<F: NativeFrame> {
     /// The colour currently displayed at frame position `(x, y)`.
     fn glass(&self, x: u32, y: u32) -> F::Color;
@@ -54,10 +50,9 @@ where
     assert_eq!(p.glass(right, bottom), gb, "the repaint reached glass everywhere");
 }
 
-/// Damage translation: after a localized change, an *unknown*-damage present must still land the
-/// change (and only report the units its strategy pushed). With `expect_refinement` the pairing
-/// claims a real damage strategy: a localized change must not re-push the whole frame, and an
-/// unchanged frame must push nothing.
+/// Damage translation: after a localized change, an unknown-damage present must still land the
+/// change. With `expect_refinement` the pairing claims a real damage strategy, so a localized
+/// change must not re-push the whole frame and an unchanged frame must push nothing.
 pub async fn check_damage_translation<F, P>(
     frame: &mut F,
     p: &mut P,
@@ -87,16 +82,14 @@ pub async fn check_damage_translation<F, P>(
     }
 }
 
-/// Overlay backdrop composition: the composite reads the **clean frame** as its backdrop — pixels
-/// the overlay closure doesn't paint show the frame, painted ones show the overlay — and the
-/// frame's backing is **byte-identical when the call returns** (the clean-frame postcondition; a
-/// mutate-and-restore composite passes only if its restore is exact).
+/// Overlay backdrop composition: the composite reads the clean frame as its backdrop, so pixels
+/// the overlay closure does not paint show the frame, and the frame's backing is byte-identical
+/// when the call returns. A mutate-and-restore composite passes only if its restore is exact.
 ///
-/// `overlay_rect` is the frame-space overlay window; `mark_at` a pixel inside it the closure
-/// paints; `backdrop_at` a pixel inside it the closure leaves alone. `snapshot` captures the
-/// frame's full backing for equality comparison (the harness is `no_std`/alloc-free, so the
-/// caller owns the representation — e.g. `|f| f.bytes().to_vec()` on a std host, or a copy of an
-/// owned cell array).
+/// `overlay_rect` is the frame-space overlay window, `mark_at` a pixel inside it the closure
+/// paints, and `backdrop_at` one it leaves alone. `snapshot` captures the frame's full backing
+/// for the equality comparison; the harness is allocation-free, so the caller owns the
+/// representation.
 #[allow(clippy::too_many_arguments)] // a test harness taking explicit probe points, not an API to hold small
 pub async fn check_overlay_backdrop<F, P, S>(
     frame: &mut F,
@@ -130,15 +123,14 @@ pub async fn check_overlay_backdrop<F, P, S>(
     assert_eq!(p.glass(backdrop_at.0, backdrop_at.1), g_base, "un-drawn overlay pixels show the clean-frame backdrop");
 }
 
-/// Live-overlay exclusion: a base present *around* a live overlay updates the rest of the glass
-/// without ever flashing the overlay off; the overlay's next own re-present composites over the
-/// **current** clean frame (fresh backdrop, no map re-render); and the around-present must have
-/// kept the presenter's damage state tracking the **clean** frame for the excluded units — after
-/// the trailing clear, an unknown-damage present pushes nothing (`expect_refinement`).
+/// Live-overlay exclusion: a base present around a live overlay updates the rest of the glass
+/// without ever flashing the overlay off, the overlay's next re-present composites over the
+/// current clean frame, and the around-present must have kept the presenter's damage state
+/// tracking the clean frame for the excluded units, so after the trailing clear an
+/// unknown-damage present pushes nothing.
 ///
-/// `outside_at` must lie outside the presenter's *widened* region for `overlay_rect` (the concrete
-/// test knows the widening rule). `snapshot` is the clean-frame postcondition capture, as in
-/// [`check_overlay_backdrop`].
+/// `outside_at` must lie outside the presenter's widened region for `overlay_rect`. `snapshot` is
+/// the clean-frame postcondition capture, as in [`check_overlay_backdrop`].
 #[allow(clippy::too_many_arguments)] // a test harness taking explicit probe points, not an API to hold small
 pub async fn check_overlay_exclusion<F, P, S>(
     frame: &mut F,
@@ -193,9 +185,9 @@ pub async fn check_overlay_exclusion<F, P, S>(
     assert_eq!(p.glass(mark_at.0, mark_at.1), g_bulge, "the re-presented bulge is intact");
     assert_eq!(p.glass(backdrop_at.0, backdrop_at.1), g_fresh, "the overlay backdrop is the current clean frame");
 
-    // Retract + trailing clear: the excluded units' damage state must have tracked the CLEAN frame
-    // through the around-present, so once the clear restores the clean glass, nothing is left
-    // stale — an unknown-damage present finds the whole frame already agreeing.
+    // Retract and trailing clear: the excluded units' damage state must have tracked the clean
+    // frame through the around-present, so once the clear restores the clean glass an
+    // unknown-damage present finds the whole frame already agreeing.
     p.clear_overlay(frame, region).await.unwrap();
     assert_eq!(p.glass(mark_at.0, mark_at.1), g_fresh, "the trailing clear restores the current clean frame");
     if expect_refinement {
@@ -204,12 +196,10 @@ pub async fn check_overlay_exclusion<F, P, S>(
     }
 }
 
-/// Pop, retract, and the trailing clear: each overlay composite starts from the clean frame (so a
-/// shrinking bulge needs no undo pass — withdrawn pixels revert to backdrop), clearing the overlay
-/// restores the clean frame with **no map re-render**, and every overlay call leaves the frame's
-/// backing byte-identical (`snapshot`, as in [`check_overlay_backdrop`]). With
-/// `expect_refinement`, the presenter's damage state must already agree with the clean frame
-/// afterwards: the next unknown-damage present pushes nothing.
+/// Pop, retract and the trailing clear: each overlay composite starts from the clean frame, so a
+/// shrinking bulge needs no undo pass, clearing the overlay restores the clean frame with no map
+/// re-render, and every overlay call leaves the frame's backing byte-identical. With
+/// `expect_refinement`, the next unknown-damage present must push nothing.
 #[allow(clippy::too_many_arguments)] // a test harness taking explicit probe points, not an API to hold small
 pub async fn check_overlay_pop_retract_clear<F, P, S>(
     frame: &mut F,
@@ -247,8 +237,8 @@ pub async fn check_overlay_pop_retract_clear<F, P, S>(
     assert_ne!(p.glass(tip_at.0, tip_at.1), g_base, "pop: the bulge tip is on glass");
     assert_ne!(p.glass(edge_at.0, edge_at.1), g_base, "pop: the bulge edge is on glass");
 
-    // Retract: the next tick draws a smaller bulge — the tip pixel is withdrawn and must revert
-    // to the clean backdrop without any explicit erase (composites are not cumulative).
+    // Retract: the next tick draws a smaller bulge, so the tip pixel is withdrawn and must revert
+    // to the clean backdrop without an explicit erase, because composites are not cumulative.
     p.present_overlay(frame, region, |t| {
         let _ = t.fill_solid(&edge, mark);
     })

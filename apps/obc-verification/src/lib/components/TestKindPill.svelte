@@ -1,11 +1,10 @@
 <script lang="ts">
   // One pill per test kind. Every pill opens the same panel, which lists all the kinds, because a
-  // level pill and a manual pill look alike and answer different questions. A press opens and
-  // closes the panel; a press outside it, the Escape key, and the close button also close it. It
-  // does not open on hover: the list is long enough to read and to scroll, which a panel that
-  // leaves with the pointer cannot be.
+  // level pill and a manual pill look alike and answer different questions. It does not open on
+  // hover: the list is long enough to read and to scroll, which a panel that leaves with the
+  // pointer cannot be.
   //
-  // `$lib/popover` places the panel against the window; see it for why CSS alone cannot.
+  // `$lib/popover` places the panel against the window.
   import { tick } from 'svelte';
   import { portal, place, sizing, widthFor } from '$lib/popover';
   import { TEST_KIND_NOTES } from '$lib/types';

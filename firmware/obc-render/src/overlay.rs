@@ -10,27 +10,24 @@ use crate::stroke::Stroker;
 use crate::viewport::round_pt;
 use crate::{DrawScratch, RenderScratch, Viewport, MAX_CROSSINGS};
 
-// Route direction chevrons. Anchored to route distance (not screen) so each stays pinned to a
-// ground spot, drawn only in a window around the rider. Spacing + window are screen-relative (a
-// fixed pixel cadence and a chevron *count*, not ground metres) so chevrons keep an even spread
-// across the finest LOD's zoom range; the ground spacing is derived per-frame from the camera's
-// m/px. Glyph sizes are screen pixels.
+// Route direction chevrons are anchored to route distance, not to the screen, so each stays pinned
+// to a ground spot, and they are drawn only in a window around the rider. Spacing and window are
+// screen-relative, a fixed pixel cadence and a chevron count, so they keep an even spread across
+// the zoom range; the ground spacing is derived per frame from the camera's m/px.
 
-/// On-screen gap between consecutive chevrons (px). Each frame the route-distance spacing is
-/// `ARROW_SPACING_PX × m/px`, so chevrons stay evenly spread at any zoom. At the ~0.5 m/px riding
-/// zoom this is ≈ 33 m apart on the ground.
+/// On-screen gap between consecutive chevrons, px. The route-distance spacing is
+/// `ARROW_SPACING_PX × m/px` each frame, so chevrons stay evenly spread at any zoom.
 const ARROW_SPACING_PX: f32 = 66.0;
-/// How many chevrons lead *ahead* of the rider — a count, not a ground distance, so the look-ahead
-/// tracks the screen cadence.
+/// How many chevrons lead ahead of the rider: a count, so the look-ahead tracks the screen cadence.
 const ARROW_AHEAD_COUNT: u32 = 9;
-/// How many chevrons trail *behind* the rider. Zero — the breadcrumb shows the travelled line.
+/// How many chevrons trail behind the rider. Zero: the breadcrumb shows the travelled line.
 const ARROW_BEHIND_COUNT: u32 = 0;
 /// Chevron tip reach ahead of its centre (px).
 const ARROW_TIP: f32 = 8.0;
 /// Chevron base reach behind its centre (px).
 const ARROW_BACK: f32 = 2.5;
-/// Chevron base half-width (px). Kept under the route's half-stroke so the glyph sits *inside* the
-/// line, framed by the route colour whatever map colour the line crosses.
+/// Chevron base half-width (px), kept under the route's half-stroke so the glyph sits inside the
+/// line whatever map colour the line crosses.
 const ARROW_HALF: f32 = 4.5;
 
 /// What the route overlay needs to know about one route chunk.
@@ -40,26 +37,22 @@ pub struct OverlayChunk {
     pub cum_distance_m: u32,
 }
 
-/// The route overlay's view of an active route — implemented by the host over its
-/// route reader. Keeps obc-render ignorant of the OBCR format.
+/// The route overlay's view of an active route, implemented by the host over its route reader, so
+/// obc-render stays ignorant of the OBCR format.
 pub trait RouteOverlaySource {
     fn chunk_count(&self) -> usize;
     fn chunk(&self, k: usize) -> OverlayChunk;
     fn total_distance_m(&self) -> u32;
-    /// Decode chunk `k` and hand its points — `(lon, lat)` microdegrees — to `visit`
-    /// as one slice. Implementations own their decode scratch. A failed decode
-    /// (flaky SD) simply doesn't call `visit`.
-    // The `&mut dyn FnMut(&[…])` spelling *is* the seam (object-safe, alloc-free); a type
-    // alias would only hide what implementors must write anyway.
+    /// Decode chunk `k` and hand its `(lon, lat)` microdegree points to `visit` as one slice.
+    /// Implementations own their decode scratch, and a failed decode simply does not call `visit`.
     #[allow(clippy::type_complexity)]
     fn visit_points(&self, k: usize, visit: &mut dyn FnMut(&[(i32, i32)]));
 }
 
 impl RenderScratch {
-    /// Draw the user-position marker: a chevron at `(lon, lat)` pointing along `course` (degrees CW
-    /// from north), or a non-directional diamond when `course` is `None`. Fixed screen-space size.
-    /// Call **after** [`render`](RenderScratch::render). Skips drawing when the anchor projects outside
-    /// the view (with a small margin). `color` is the already-resolved device color.
+    /// Draw the user-position marker: a chevron at `(lon, lat)` pointing along `course`, or a
+    /// non-directional diamond when `course` is `None`. Fixed screen-space size. Call after
+    /// [`render`](RenderScratch::render). Skips drawing when the anchor projects outside the view.
     pub fn draw_marker<D>(
         &mut self,
         target: &mut D,
@@ -79,10 +72,9 @@ impl RenderScratch {
             return;
         }
 
-        // On-screen "forward" unit vector: project a point a ground step ahead along the course and
-        // take the screen delta. Letting the projection do the rotation makes this correct for both
-        // north-up and heading-up. The step is sized so integer rounding barely skews the direction;
-        // we normalize, so its exact length doesn't matter.
+        // On-screen forward unit vector: project a point a ground step ahead along the course and
+        // take the screen delta, so the projection does the rotation and this is correct for both
+        // north-up and heading-up. The result is normalized, so the step length does not matter.
         let forward = course.and_then(|deg| {
             let theta = deg.to_radians();
             let step = (64.0 / vp.zoom).clamp(1.0, 100_000.0);
@@ -113,21 +105,18 @@ impl RenderScratch {
     }
 
     /// Stroke an active route as a polyline overlay, with optional travel-direction chevrons. Call
-    /// **after** [`render`](RenderScratch::render).
+    /// after [`render`](RenderScratch::render).
     ///
-    /// The route arrives through the [`RouteOverlaySource`] seam — chunked `(lon, lat)`
-    /// microdegree polylines with per-chunk bbox + cumulative distance — so the renderer never
-    /// sees the route file format. Streams chunk-by-chunk: only chunks intersecting the view are
-    /// decoded (by the source) and stroked, via [`Stroker`] (view-clipped). Consecutive chunks
-    /// share a seam vertex so the strokes join.
+    /// The route arrives through the [`RouteOverlaySource`] seam, so the renderer never sees the
+    /// route file format. Only chunks intersecting the view are decoded and stroked, and
+    /// consecutive chunks share a seam vertex so the strokes join.
     ///
-    /// `arrows_at` is the rider's matched route distance (m), or `None` to skip chevrons. When set,
-    /// chevrons are drawn in a **second pass** (so they sit on top where the route doubles back)
-    /// within a window of [`ARROW_AHEAD_COUNT`] chevrons around that distance.
+    /// `arrows_at` is the rider's matched route distance in metres, or `None` to skip chevrons.
+    /// When set, chevrons are drawn in a second pass, so they sit on top where the route doubles
+    /// back, within a window around that distance.
     ///
-    /// Returns `(chunks, points, drawn)`: chunks decoded, points across them (route has no LOD, so
-    /// this grows as you zoom out), and vertices *actually* stroked after the view clip + subpixel
-    /// simplify (`drawn` ≪ `points` when most of the route is off-screen).
+    /// Returns `(chunks, points, drawn)`: chunks decoded, points across them, and vertices
+    /// actually stroked after the view clip and subpixel simplify.
     #[allow(clippy::too_many_arguments)]
     pub fn draw_route<D>(
         &mut self,
@@ -144,7 +133,7 @@ impl RenderScratch {
     {
         let (w, h) = (vp.w as i32, vp.h as i32);
         let view = vp.visible_bbox();
-        // Split the borrow so the fills can take `xs` while we build the polyline in the
+        // Split the borrow so the fills can take `xs` while the polyline is built in the
         // phase-shared projected-point buffer.
         let DrawScratch { points, xs } = &mut self.draw;
         let screen = points.screen();
@@ -160,8 +149,7 @@ impl RenderScratch {
                 route_chunks += 1;
                 route_points += pts.len();
                 let projected = pts.iter().map(|&(lon, lat)| vp.project(lon, lat));
-                // Per-chunk `Stroker` (a handful of copies): it must drop before the chevron pass
-                // below borrows `xs` on its own.
+                // Per-chunk `Stroker`: it must drop before the chevron pass below borrows `xs`.
                 route_drawn += Stroker::new(target, screen, color, weight, w, h).stroke(projected);
             });
         }
@@ -171,8 +159,8 @@ impl RenderScratch {
             return (route_chunks, route_points, route_drawn);
         };
         let total = route.total_distance_m();
-        // Ground spacing for *this* frame: a fixed screen cadence scaled by m/px (`.max` guards
-        // divide-by-zero at absurd zoom-in). The window is then a chevron *count* either side.
+        // Ground spacing for this frame: a fixed screen cadence scaled by m/px, with `.max`
+        // guarding divide-by-zero at absurd zoom-in.
         let spacing_m = (ARROW_SPACING_PX * vp.meters_per_pixel()).max(1e-3);
         let lo = (progress_m as f32 - ARROW_BEHIND_COUNT as f32 * spacing_m).max(0.0);
         let hi = (progress_m as f32 + ARROW_AHEAD_COUNT as f32 * spacing_m).min(total as f32);
@@ -191,12 +179,10 @@ impl RenderScratch {
                     let (bx, by) = vp.to_screen(b.0, b.1);
                     let (ax, ay, bx, by) = (ax as f32, ay as f32, bx as f32, by as f32);
                     let (dx, dy) = (bx - ax, by - ay);
-                    // Segment length by alpha-max-plus-beta-min (α=1, β=0.41) — a `sqrtf`-free
-                    // magnitude estimate. It is *not* exact: `m/|d|` spans [0.997, 1.081] over the
-                    // angle, so the direction below is only approximately normalized (|fwd| in
-                    // [0.925, 1.003]) and a ~22°-diagonal chevron draws up to 7.5% smaller than an
-                    // axis-aligned one. Accepted: the chevron is a direction glyph, not a measure,
-                    // and switching to `sqrtf` would shift every route-arrow render golden.
+                    // Segment length by alpha-max-plus-beta-min, a `sqrtf`-free magnitude
+                    // estimate. It is not exact: the direction below is only approximately
+                    // normalized, so a 22°-diagonal chevron draws up to 7.5% smaller than an
+                    // axis-aligned one. Accepted: the chevron is a direction glyph, not a measure.
                     let m = dx.abs().max(dy.abs()) + 0.41 * dx.abs().min(dy.abs());
                     if m < 1e-3 {
                         return;
@@ -210,9 +196,8 @@ impl RenderScratch {
         (route_chunks, route_points, route_drawn)
     }
 
-    /// Stroke a single polyline of `(lon, lat)` microdegree points as a view-clipped overlay — the
-    /// recorded **breadcrumb**, whose two tiers (spine, recent) are each one call. Call after
-    /// [`render`](RenderScratch::render).
+    /// Stroke a single polyline of `(lon, lat)` microdegree points as a view-clipped overlay: the
+    /// recorded breadcrumb, whose two tiers are each one call.
     pub fn stroke_path<D, I>(&mut self, target: &mut D, vp: &Viewport, pts: I, color: D::Color, weight: u32)
     where
         D: DrawTarget,
@@ -221,20 +206,18 @@ impl RenderScratch {
         let (w, h) = (vp.w as i32, vp.h as i32);
         let projected = pts.into_iter().map(|(lon, lat)| vp.project(lon, lat));
         // The thick-segment fill scan-converts from a stack edge record, so the stroker needs only
-        // projected points; `xs` stays reserved for the general polygon/chevron fills elsewhere.
+        // projected points and `xs` stays reserved for the polygon and chevron fills.
         let DrawScratch { points, .. } = &mut self.draw;
         let screen = points.screen();
         Stroker::new(target, screen, color, weight, w, h).stroke(projected);
     }
 }
 
-/// Walk a decoded route chunk (`(lon, lat)` microdegree points plus `s0`, the cumulative route
-/// distance in metres at its first point) and call `emit(a, b, f)` for every chevron whose route
-/// distance is a multiple of `spacing_m` inside `[lo, hi]` — `f` is the fraction along segment
-/// `a`→`b`. Anchoring to the route's cumulative distance pins each chevron to one ground spot as
-/// the camera pans; `[lo, hi]` keeps them near the rider. Segment length is real ground metres;
-/// `cl` is the viewport's hoisted `cos(lat)` (computed once per frame), so the walk costs no
-/// per-segment `cosf`.
+/// Walk a decoded route chunk and call `emit(a, b, f)` for every chevron whose route distance is a
+/// multiple of `spacing_m` inside `[lo, hi]`, where `f` is the fraction along segment `a`→`b`.
+/// Anchoring to the route's cumulative distance pins each chevron to one ground spot as the camera
+/// pans. Segment length is real ground metres, and `cl` is the viewport's hoisted `cos(lat)`, so
+/// the walk costs no per-segment `cosf`.
 fn walk_route_arrows<F>(pts: &[(i32, i32)], s0: f32, lo: f32, hi: f32, spacing_m: f32, cl: f32, mut emit: F)
 where
     F: FnMut((i32, i32), (i32, i32), f32),
@@ -258,11 +241,9 @@ where
 }
 
 /// Fill a 3-point direction chevron centred at `c`, pointing along `fwd`: a tip `tip` px ahead and
-/// two base corners swept `back` px behind and `half` px out each side. Shared by the user-position
-/// marker and the route arrows. `fwd` sets both the heading *and* the glyph's scale, so the caller
-/// normalizes it: the marker exactly (`sqrtf`), the route arrows only approximately (an
-/// alpha-max-plus-beta-min magnitude, |fwd| in [0.925, 1.003] — see [`draw_route`](RenderScratch::draw_route)), which is why a
-/// diagonal route chevron is drawn slightly smaller than an axis-aligned one.
+/// two base corners swept `back` px behind and `half` px out each side. `fwd` sets both the
+/// heading and the glyph's scale, so the caller normalizes it: the marker exactly, the route
+/// arrows only approximately, which is why a diagonal route chevron draws slightly smaller.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn fill_chevron<D>(
     target: &mut D,
@@ -295,11 +276,11 @@ mod tests {
     use heapless::Vec;
     use obc_map_scene::ground_dist_m;
 
-    /// Fixed spacing (m) to pin the grid maths; the app derives it per-frame from the zoom.
+    /// Fixed spacing in metres to pin the grid maths; the app derives it per frame from the zoom.
     const SPACING: f32 = 33.0;
 
-    /// A due-north two-point segment ~300 m long (fixed longitude, so length is pure latitude).
-    /// Returned with its ground length. Points are `(lon, lat)` microdegrees — the seam's shape.
+    /// A due-north two-point segment about 300 m long, returned with its ground length. Points are
+    /// `(lon, lat)` microdegrees.
     fn north_line() -> ([(i32, i32); 2], f32) {
         let v = [(7_800_000, 48_000_000), (7_800_000, 48_002_700)];
         let dl = ground_dist_m(v[0], v[1]);
@@ -318,8 +299,8 @@ mod tests {
 
     #[test]
     fn chevrons_land_on_the_spacing_grid() {
-        // Chevrons sit at 0, SPACING, 2·SPACING, … of route distance — they're anchored to the
-        // route, not the screen, so each is a fixed multiple of the spacing.
+        // Chevrons sit at whole multiples of the spacing in route distance, because they are
+        // anchored to the route and not to the screen.
         let (pts, dl) = north_line();
         let ds = distances(&pts, dl, 0.0, dl);
         assert!(ds.len() >= 5, "a {dl:.0} m segment should carry several chevrons");
@@ -344,10 +325,8 @@ mod tests {
 
     #[test]
     fn chevrons_are_pinned_to_route_distance_not_the_rider() {
-        // The exact property the redesign is about: slide the window forward (as the rider
-        // advances) and the chevrons still visible keep the *same* route distances — they do
-        // not crawl with the rider. Here the shared [80, 200] m band must match between a
-        // window centred earlier and one centred later.
+        // The property the design is about: slide the window forward as the rider advances and the
+        // chevrons still visible keep the same route distances rather than crawling with them.
         let (pts, dl) = north_line();
         let band = |lo, hi| -> Vec<i32, 64> {
             distances(&pts, dl, lo, hi).iter().copied().filter(|&d| (80..=200).contains(&d)).collect()
