@@ -1,22 +1,19 @@
 <script lang="ts">
-    // Step 1's ledger of parts (#1038, §8 U2): each composed part — a region,
-    // a box, a corridor — as one removable row with its own price.
+    // Step 1's ledger of parts: each composed part — a region, a box, a corridor —
+    // as one removable row with its own price.
     //
-    // The bytes shown are the part's **gross** bytes: the honest answer to "how
-    // big is this part". Cells shared with another part are counted in both, so
-    // rows do not sum to the map's total — the row's title says what removing
-    // it would actually free (the marginal bytes), which is the other question
-    // a ✕ button answers.
+    // The bytes shown are the part's **gross** bytes: the honest answer to "how big
+    // is this part". Cells shared with another part are counted in both, so rows do
+    // not sum to the map's total — the row's title says what removing it would
+    // actually free, which is the other question a ✕ button answers.
     //
     // While any corridor part exists, the ledger also carries the **one global
-    // corridor width** (#1041 A6, §8 U3's decided shape): the radius is a
-    // property of the map, not of the panel that first set it, so the control
-    // lives here with the parts it re-buffers — reachable after commit, not
-    // locked inside a closed panel. Moving it re-resolves every corridor part
-    // live, and each corridor row's price flashes as it re-prices: adjusting a
-    // committed map is the feature, and it should look like one, not like a
-    // silent mutation. The corridor panel's slider is this same value — one
-    // fact, two places, never two widths.
+    // corridor width**: the radius is a property of the map, not of the panel that
+    // first set it, so the control lives here with the parts it re-buffers, reachable
+    // after commit rather than locked inside a closed panel. Moving it re-resolves
+    // every corridor part live, and each corridor row's price flashes as it
+    // re-prices. The corridor panel's slider is this same value — one fact, two
+    // places, never two widths.
 
     import type { CoverageStore } from "../../lib/coverage/store.svelte";
     import {
