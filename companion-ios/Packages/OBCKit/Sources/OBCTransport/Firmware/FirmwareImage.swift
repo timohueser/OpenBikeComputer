@@ -100,7 +100,7 @@ public struct StagedFirmware: Equatable, Sendable {
     /// header's. Any failure throws a typed error the picker surfaces, so a bad download dies here
     /// and not on the device.
     ///
-    /// Any bytes past the container are FAT-cluster slack and ignored: the container is trimmed to
+    /// Any bytes past the container are trailing slack and ignored: the container is trimmed to
     /// exactly its declared length, so only those bytes stream. The signature trailer is part of
     /// the container and is never trimmed, because trimming it would stage a file the device
     /// refuses as truncated.
@@ -142,26 +142,11 @@ public enum FirmwareImageError: Error, Equatable, Sendable {
     /// at announce, so the app refuses it up front.
     case oversize
     /// The file is shorter than its header says, so it cannot hold the header, image and
-    /// signature. Trailing bytes past the container are not an error: they are cluster slack.
+    /// signature. Trailing bytes past the container are not an error: they are slack.
     case truncated
     /// The raw image failed its CRC-32: a corrupt download.
     case imageCRCMismatch
     /// The container carries no signature this device's firmware verifies. The device refuses to
     /// install it, so the app refuses to spend a transfer on it.
     case unsigned
-}
-
-extension FirmwareInstallResult {
-    /// Map a device command status for the install request onto the request outcome. The device
-    /// answers from cheaply-knowable edge state only, and the reference firmware never returns an
-    /// error here: a bad image surfaces on the confirm card instead.
-    public init(commandStatus status: CommandResult.Status) {
-        switch status {
-        case .ok: self = .accepted
-        case .notFound: self = .noStaged
-        case .busy: self = .busy
-        case .error: self = .rejected
-        case .unknownCommand: self = .unsupported
-        }
-    }
 }

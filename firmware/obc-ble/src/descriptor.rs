@@ -18,7 +18,7 @@ pub enum ObjectType {
     /// Reserved on the CoC — Config crosses GATT whole-blob.
     ConfigBlob = 3,
     Diagnostics = 4,
-    /// A complete `UPDATE.BIN` OBCU container, app to device, upload only. The transfer layer sees
+    /// A complete OBCU update container, app to device, upload only. The transfer layer sees
     /// opaque bytes; installing it is the separate, confirmed `installFw` command.
     FwImage = 5,
     RouteList = 6,
@@ -318,7 +318,7 @@ impl CommandResult {
 pub const CMD_DELETE_OBJECT: u8 = 1;
 /// `ackRides`: see [`AckRides`].
 pub const CMD_ACK_RIDES: u8 = 2;
-/// `installFw`: the `cmd` byte only. Asks the device to install the staged `/UPDATE.BIN`.
+/// `installFw`: the `cmd` byte only. Asks the device to install the staged update package.
 pub const CMD_INSTALL_FW: u8 = 3;
 /// `forgetBond`: the `cmd` byte only. The device answers `commandResult(ok)`, then clears its side
 /// of the bond, drops the link, and advertises for open pairing again. The gated `command`
@@ -330,16 +330,12 @@ pub const SET_CLOCK_MIN_UTC: u32 = 1_577_836_800;
 /// outside it is rejected.
 pub const SET_CLOCK_MAX_OFFSET_MIN: i16 = 14 * 60;
 
-/// Map the device state at the BLE edge to the `installFw` `commandResult.status`; the precedence
-/// is busy, then no stage, then invalid, then ok. The command never installs on its own: a physical
-/// confirm on the device is always necessary.
-pub const fn install_fw_reply(has_staged: bool, busy: bool, staged_invalid: bool) -> CommandStatus {
+/// Map the device state at the BLE edge to the `installFw` `commandResult.status`. The command
+/// never installs on its own: a physical confirm on the device is always necessary, and whether a
+/// package is staged is that flow's own answer rather than a second one given here.
+pub const fn install_fw_reply(busy: bool) -> CommandStatus {
     if busy {
         CommandStatus::Busy
-    } else if !has_staged {
-        CommandStatus::NotFound
-    } else if staged_invalid {
-        CommandStatus::Error
     } else {
         CommandStatus::Ok
     }

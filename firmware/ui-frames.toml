@@ -689,7 +689,7 @@ args = ["--gpx", "{gpx}", "--at", "30"]
 
 # The SD-sideload update flow (epic #615 S5, #620). The scan/arm runs board-side; the script leaves
 # the "Checking card..." wait on top (Firmware -> Install), and --dfu scan/error answer it
-# through the real notify_dfu_scan_result seam (the sim stages a synthetic UPDATE.BIN and runs the
+# through the real notify_dfu_scan_result seam (the sim stages a synthetic package and runs the
 # real obc-dfu scan). --dfu progress then presses Install so the "Preparing update..." spinner shows.
 [[frame]]
 name = "dfu-check"

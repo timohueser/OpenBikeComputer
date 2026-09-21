@@ -22,8 +22,8 @@ use super::error::StoreError;
 use super::journal::{self, Slot, TAIL_CAPACITY, ZERO_PAD};
 use super::layout::{
     catalog_gate, slot_block, slot_header_block, Geometry, Ranges, BLOCK, CATALOG, ENTRIES_PER_BLOCK, ENTRY_CAPACITY,
-    ENTRY_STRIDE, MOUNT_STREAM_BLOCKS, MOUNT_STREAM_WINDOW, PROGRAM_PAGE, SLOTS, SLOT_BLOCKS, STREAM_WINDOW,
-    SUPERBLOCK,
+    ENTRY_STRIDE, EXTENT_AREA, MAX_RANGES, MOUNT_STREAM_BLOCKS, MOUNT_STREAM_WINDOW, PROGRAM_PAGE, SLOTS, SLOT_BLOCKS,
+    STREAM_WINDOW, SUPERBLOCK,
 };
 use super::seam::{
     Allocation, EntryFlags, EntryMeta, Mutation, ObjectId, PutSource, Revision, RideCheckpoint, Store, StoreId,
@@ -124,6 +124,13 @@ impl Handle {
     pub fn revision(&self) -> Revision {
         self.revision
     }
+}
+
+/// One contiguous run of absolute 512-byte card blocks, as [`FlatStore::block_runs`] resolves it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BlockRun {
+    pub start_block: u64,
+    pub blocks: u64,
 }
 
 /// What a ride recovery found. The payload CRC is the seed the resumed session continues its
@@ -776,6 +783,36 @@ impl<D: BlockDevice> FlatStore<D> {
     /// That size, in bytes. A caller that wants free bytes rather than free extents needs both.
     pub fn extent_size(&self) -> u64 {
         self.geometry.extent_size()
+    }
+
+    /// The absolute block runs one committed entry's extents occupy, in payload order, and how many
+    /// runs there are.
+    ///
+    /// The one place above the seam that learns a block number. The firmware boot handoff has to
+    /// name physical runs, because the bootloader that consumes them has no catalog and no store.
+    /// A run is a whole extent range, so it also covers the slack past the payload's last byte.
+    pub fn block_runs(
+        &self,
+        id: ObjectId,
+        revision: Revision,
+        out: &mut [BlockRun; MAX_RANGES],
+    ) -> Result<usize, StoreError> {
+        if !self.mode().readable() {
+            return Err(StoreError::ReadOnly);
+        }
+        let (retained, head) = self.find(id)?;
+        let entry = [retained, head]
+            .into_iter()
+            .flatten()
+            .find(|entry| entry.meta.revision == revision)
+            .ok_or(StoreError::NotFound)?;
+        let blocks = self.geometry.extent_blocks();
+        let mut count = 0usize;
+        for (first, extents) in entry.ranges.iter() {
+            out[count] = BlockRun { start_block: EXTENT_AREA + blocks * first as u64, blocks: blocks * extents as u64 };
+            count += 1;
+        }
+        Ok(count)
     }
 
     /// The next `ObjectId` the cursor will hand out. Reading it reserves nothing: two creates that

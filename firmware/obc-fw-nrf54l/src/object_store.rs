@@ -184,10 +184,4 @@ impl ObjectStore {
     pub fn clear_bond(&mut self, shared: &mut SharedStore) -> Result<(), obc_app::ble::BondError> {
         shared.settings.clear_bond()
     }
-
-    /// Whether a staged `/UPDATE.BIN` exists in the card root: the `installFw` cheap existence
-    /// check. Presence only; the full CRC scan is the on-device flow's.
-    pub fn update_staged(&self, shared: &SharedStore) -> bool {
-        shared.storage.as_ref().is_some_and(|s| s.has_update_bin())
-    }
 }
