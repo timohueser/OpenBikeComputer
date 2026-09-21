@@ -1,12 +1,8 @@
 import Foundation
 
-/// A last-value multicast for `AsyncStream` — the epic's "replay latest for
-/// `state`/`battery` so a late subscriber gets the current value" (epic #234).
-/// Each `stream()` replays the most recent element, then receives live updates;
-/// `send` fans out to all live subscribers.
-///
-/// Pure (no CoreBluetooth), so it's unit-tested directly. `BLETransport` uses it
-/// to back its `state` and `battery` streams.
+/// A last-value multicast for `AsyncStream`: each `stream()` replays the most recent element
+/// and then receives live updates, and `send` fans out to every live subscriber. `BLETransport`
+/// backs its `state` and `battery` streams with it.
 public final class AsyncMulticast<Element: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var last: Element
@@ -17,23 +13,20 @@ public final class AsyncMulticast<Element: Sendable>: @unchecked Sendable {
         self.last = initial
     }
 
-    /// The current latest value.
     public var value: Element {
         lock.lock(); defer { lock.unlock() }
         return last
     }
 
-    /// A new subscription: replays the latest value, then streams live updates.
     public func stream() -> AsyncStream<Element> {
         AsyncStream { continuation in
             lock.lock()
             let done = finished
             let id = UUID()
             if !done { continuations[id] = continuation }
-            // Invariant: registration + replay are atomic w.r.t. `send` — the
-            // replay is yielded under the lock so a concurrent `send` cannot
-            // slip its (newer) value in before the (older) replay. Safe because
-            // `yield` only buffers; it never reenters consumer code.
+            // Registration and replay are atomic against `send`: the replay is yielded under
+            // the lock, so a concurrent `send` cannot slip its newer value in before the older
+            // replay. This is safe because `yield` only buffers; it never reenters consumer code.
             continuation.yield(last)
             lock.unlock()
 
@@ -46,7 +39,6 @@ public final class AsyncMulticast<Element: Sendable>: @unchecked Sendable {
         }
     }
 
-    /// Update the latest value and fan out to all live subscribers.
     public func send(_ value: Element) {
         lock.lock()
         last = value

@@ -1,17 +1,14 @@
 import Foundation
 import OBCDomain
 
-// Codecs/ is the home of the **device object layouts** (firmware-`S0`-owned byte
-// formats ↔ domain types): the `Config` blob today, the compact-binary route
-// encoder and ride decoder when their layouts land. Deliberately outside `BLE/`
-// so a device-format change touches a codec file, never the transport class —
-// and everything here stays pure + host-testable with no CoreBluetooth.
+// Codecs/ holds the device object layouts: the byte formats the firmware owns, mapped to
+// domain types. It sits outside `BLE/` so a device-format change touches a codec file and not
+// the transport class, and everything here stays pure and host-testable with no CoreBluetooth.
 
 enum ConfigObjectCodec {
     static func encode(_ config: DeviceConfig) -> Data {
-        // Cap at the S0 name limit on a Character boundary: an over-cap name would
-        // otherwise wrap the u16 length (≥ 65536 → a tiny/zero value) into a
-        // corrupt blob the decoder misreads.
+        // Cap at the name limit on a Character boundary: an over-cap name would wrap the u16
+        // length field into a corrupt blob the decoder misreads.
         let name = Data(config.name.truncatedToUTF8Bytes(DeviceConfig.maxNameUTF8Bytes).utf8)
         var data = Data()
         data.append(UInt8(name.count & 0xFF))

@@ -3,24 +3,17 @@ import Foundation
 import OBCDomain
 import OBCTransport
 
-/// One simulated bulk transfer. Instead of streaming real bytes over a channel, it
-/// emits `TransferProgress` ticks paced by `throughputBytesPerSec`, so a progress bar
-/// moves realistically with **no wire protocol** (the mock's realism comes from
-/// timing + faults, per the issue). An actor so `cancel()` / `resume()` and the pump
-/// loop don't race.
+/// One simulated bulk transfer. It emits `TransferProgress` ticks paced by
+/// `throughputBytesPerSec` instead of streaming bytes, so a progress bar moves realistically
+/// with no wire protocol. An actor, so `cancel()` and `resume()` cannot race the pump loop.
 ///
-/// Restart semantics match the real path (spec §1 principle 4 — transfers restart,
-/// not resume): a **drop** stops with the stream *open* and toggles the link
-/// `.outOfRange` (the realistic, observable cause behind F-interrupted/H10);
-/// `resume()` restores the link and **starts over** — from byte 0 for a single
-/// upload, or from the last fully-landed ride of a download batch (whole rides are
-/// the batch's elementary unit; a partially-transferred ride is re-sent whole).
-/// A **cancel** finishes the stream terminally.
+/// Restart semantics match the real path: a drop stops with the stream open and toggles the
+/// link to `.outOfRange`; `resume()` restores the link and starts over, from byte 0 for a
+/// single upload, or from the last fully-landed ride of a download batch. A cancel finishes
+/// the stream terminally.
 actor MockTransfer {
-    /// One ride inside a download batch — `byteCount` bytes of this batch belong to
-    /// ride `id` (pacing only). When the pump's committed count crosses a segment's
-    /// end, the ride is "landed" and its `payload` — the codec-encoded ride, built
-    /// up front by `beginRideDownload` — is yielded into `rides`.
+    /// One ride inside a download batch: `byteCount` bytes of the batch belong to ride `id`
+    /// (pacing only). When the committed count crosses a segment's end, its `payload` is yielded.
     struct Segment: Sendable {
         let id: RideID
         let byteCount: Int
@@ -102,10 +95,8 @@ actor MockTransfer {
         if !running { complete() }  // if the pump already parked (post-drop), finish now
     }
 
-    /// Restore the link and restart (spec §1 principle 4): rides that fully landed
-    /// stay landed; everything past the last segment boundary — or the whole object
-    /// for a single upload — is re-sent from its start. `didDrop` stays set so the
-    /// (one-time) drop point won't re-trigger on the second pass.
+    /// Restore the link and restart: rides that fully landed stay landed, and everything past
+    /// the last segment boundary is re-sent. `didDrop` stays set, so the drop point fires once.
     func resume() async {
         guard !canceled, !finished, committed < total else { return }
         committed = segments.prefix(nextSegment).reduce(0) { $0 + $1.byteCount }
@@ -113,9 +104,8 @@ actor MockTransfer {
         await pump()
     }
 
-    /// Yield every ride whose bytes are now fully committed. A drop stops
-    /// *between* rides landing, so partial batches match H10 exactly: what was
-    /// yielded stays, a restart lands the rest.
+    /// Yield every ride whose bytes are now fully committed. A drop stops between rides landing,
+    /// so what was yielded stays and a restart lands the rest.
     private func yieldLandedRides() {
         var boundary = segments.prefix(nextSegment).reduce(0) { $0 + $1.byteCount }
         while nextSegment < segments.count {

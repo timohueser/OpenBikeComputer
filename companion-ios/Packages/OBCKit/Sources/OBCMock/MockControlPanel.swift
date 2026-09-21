@@ -3,14 +3,9 @@ import SwiftUI
 import OBCDomain
 import OBCTransport
 
-/// The in-app dev control panel (B1P): every `MockControl` knob, live, while you
-/// click through the app. Deliberately utilitarian — a grouped list of pickers
-/// and buttons, not a designed screen. Opened via shake (or `-OBCShowDevPanel`);
-/// B8 adds the hidden Settings row.
-///
-/// The panel holds `@State` mirrors of the knobs (initialized from the live
-/// control, pushed back on change); picking a scenario re-applies the whole
-/// preset and re-reads every mirror.
+/// The in-app dev control panel: every `MockControl` knob, live, opened by shake or
+/// `-OBCShowDevPanel`. It holds `@State` mirrors of the knobs; picking a scenario re-applies
+/// the whole preset and re-reads every mirror.
 public struct MockControlPanel: View {
     private let control: MockControl
     @Environment(\.dismiss) private var dismiss
@@ -173,7 +168,6 @@ public struct MockControlPanel: View {
 
     // MARK: Helpers
 
-    /// Re-read every knob mirror from the control (after a preset/fixture apply).
     private func readBackKnobs() {
         connection = control.connection
         battery = Double(control.battery)
@@ -183,17 +177,15 @@ public struct MockControlPanel: View {
         bonded = control.bonded
     }
 
-    /// Fixed picker options, plus the current value if it's nonstandard (so the
-    /// picker never shows an empty selection).
+    /// Fixed picker options, plus the current value when it is nonstandard, so the picker never
+    /// shows an empty selection.
     private func options(_ fixed: [Int], including current: Int) -> [Int] {
         fixed.contains(current) ? fixed : (fixed + [current]).sorted()
     }
 }
 
-/// A one-line status tag for automation + at-a-glance state: the active scenario
-/// and the live connection state. Overlaid on the root view in Debug builds;
-/// XCUITests assert `mockScenarioTag` / `mockConnectionTag` to prove a launch
-/// argument booted the right state.
+/// A one-line status tag overlaid on the root view in Debug builds: the active scenario and
+/// the live connection state. XCUITests assert `mockScenarioTag` and `mockConnectionTag`.
 public struct MockStatusHUD: View {
     private let control: MockControl
     @State private var scenario: Scenario
@@ -219,9 +211,8 @@ public struct MockStatusHUD: View {
         .background(.black.opacity(0.55), in: Capsule())
         .foregroundStyle(.white)
         .task {
-            // The connection stream replays the latest value, so the HUD is
-            // correct immediately and tracks every change; the scenario is
-            // re-read on each event (it only changes via the panel).
+            // The connection stream replays the latest value, so the HUD is correct at once.
+            // The scenario changes only through the panel, so it is re-read on each event.
             for await state in control.stateMulticast.stream() {
                 connection = state
                 scenario = control.scenario
@@ -231,7 +222,7 @@ public struct MockStatusHUD: View {
 }
 
 extension ConnectionState {
-    /// The stable token used by `-OBCConnection` and shown in the HUD.
+    /// The stable token `-OBCConnection` uses, also shown in the HUD.
     public var launchToken: String {
         switch self {
         case .disconnected: return "disconnected"

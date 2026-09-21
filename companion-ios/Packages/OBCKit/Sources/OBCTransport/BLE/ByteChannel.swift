@@ -1,12 +1,11 @@
 import Foundation
 
-/// The byte-stream seam under `BLEChannel` — an ordered, reliable duplex pipe.
-/// The **real** conformer is `L2CAPByteChannel` (a CoreBluetooth `CBL2CAPChannel`);
-/// the tests use an in-memory pipe. This indirection keeps physical byte movement host-testable.
+/// The byte-stream seam under `BLEChannel`: an ordered, reliable duplex pipe. The real
+/// conformer is `L2CAPByteChannel`, a CoreBluetooth `CBL2CAPChannel`; the tests use an
+/// in-memory pipe.
 ///
-/// Reads return **however many bytes are available** (like a socket) — `BLEChannel`
-/// reassembles frames from arbitrary read sizes. A clean end-of-stream returns an
-/// empty `Data`.
+/// A read returns however many bytes are available, like a socket, so `BLEChannel` reassembles
+/// frames from arbitrary read sizes. A clean end of stream returns an empty `Data`.
 public protocol ByteChannel: Sendable {
     /// Write all of `data`, or throw if the channel dropped.
     func write(_ data: Data) async throws
@@ -22,8 +21,8 @@ public extension ByteChannel {
     func cancelRead() {}
 }
 
-/// Thrown by a `ByteChannel` when the underlying link drops mid-transfer. The
-/// protocol client catches this and reconciles durable state before restarting at offset zero.
+/// Thrown by a `ByteChannel` when the underlying link drops mid-transfer. The protocol client
+/// catches it and reconciles durable state before it restarts at offset zero.
 public struct ChannelDropped: Error, Sendable {
     public init() {}
 }

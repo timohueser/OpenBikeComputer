@@ -1,16 +1,13 @@
 import Foundation
 
-/// The phone's current time + local UTC offset, stamped onto the device's trusted
-/// wall clock on every connect via `setClock` (spec §4.4 cmd 5, epic #638). The
-/// device has no RTC; this is one of exactly two sources (GPS the other) that mark
-/// its clock trusted for this boot. Route upload dates use this clock.
+/// The phone's current time and local UTC offset, stamped onto the device's trusted wall clock
+/// on every connect. The device has no RTC: this and GPS are the only two sources that mark its
+/// clock trusted for a boot.
 public struct WallClockSample: Equatable, Sendable {
-    /// The phone's current time in **unix seconds** (UTC). The device sets its
-    /// wall-clock set-point from this; route age uses UTC.
+    /// The phone's current time in unix seconds (UTC).
     public var utcSeconds: UInt32
-    /// The phone's current **local UTC offset in minutes**, DST already applied
-    /// (`+02:00` → `120`). The device holds no timezone tables — the offset only
-    /// shifts the *displayed* hour; it is persisted and refreshed every connect.
+    /// The phone's current local UTC offset in minutes, DST already applied (`+02:00` is
+    /// `120`). The device holds no timezone tables, so the offset only shifts the displayed hour.
     public var offsetMinutes: Int16
 
     public init(utcSeconds: UInt32, offsetMinutes: Int16) {
@@ -18,14 +15,12 @@ public struct WallClockSample: Equatable, Sendable {
         self.offsetMinutes = offsetMinutes
     }
 
-    /// Sample the phone's clock **now** (the connect-time default): `Date` →
-    /// unix seconds and `TimeZone.current.secondsFromGMT()` → minutes (DST
-    /// already folded in). Times before 2020-01-01 or offsets past ±840 min are
-    /// clamped into the wire's valid range so a bogus host clock still encodes to
-    /// something the device accepts rather than rejecting the whole prologue.
+    /// Sample the phone's clock now. A time before 2020-01-01, or an offset past 840 minutes,
+    /// is clamped into the wire's valid range, so a bogus host clock still encodes to something
+    /// the device accepts instead of failing the whole prologue.
     public init(date: Date = Date(), timeZone: TimeZone = .current) {
         let seconds = date.timeIntervalSince1970
-        // Spec §4.4: `utc < 1577836800` (2020-01-01) is rejected device-side.
+        // The device rejects `utc < 1577836800` (2020-01-01).
         let clampedSeconds = min(max(seconds, 1_577_836_800), Double(UInt32.max))
         utcSeconds = UInt32(clampedSeconds)
         let minutes = timeZone.secondsFromGMT(for: date) / 60
