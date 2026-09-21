@@ -14,8 +14,9 @@
 
 use embedded_graphics::primitives::Rectangle;
 
-/// How many boxes one frame can hold. The list is transient stack inside the draw pass.
-const MAX_PLACED: usize = 24;
+/// How many boxes one frame can hold: the reserved chrome of [`super::RESERVED`], the map icons
+/// and the settlement names. The list is transient stack inside the draw pass.
+const MAX_PLACED: usize = super::RESERVED + crate::map_icons::DRAW_LIMIT + crate::settlements::MAX_LABELS;
 
 /// `(left, top, right, bottom)` of a box, in `i64`.
 type Edges = (i64, i64, i64, i64);
