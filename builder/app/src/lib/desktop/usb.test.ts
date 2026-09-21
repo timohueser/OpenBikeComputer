@@ -348,11 +348,11 @@ async function drain(pipe: BytePipe, total: number): Promise<Uint8Array> {
     return out;
 }
 
-// --- §5.2.1, which this host cannot ask ----------------------------------------
+// --- the device info this host cannot ask for ----------------------------------
 
 describe("the device info this host cannot read", () => {
     it("says so rather than answering with a version nobody read off the device", async () => {
-        // §5.2.1's `GET_DEVICE_INFO` is an EP0 vendor request and the Rust bridge exposes no
+        // `GET_DEVICE_INFO` is an EP0 vendor request and the Rust bridge exposes no
         // control-transfer command, so the link omits `vendorIn` entirely. The client turns that
         // absence into one specific code, which is what the connect flow catches.
         wire = loopbackLink();
@@ -503,8 +503,8 @@ describe("native discovery", () => {
 
     it("retries start()'s own initial adopt through the same window", async () => {
         // App launched moments after the cable went in: the initial probe hits the exact same
-        // not-yet-claimable window a hot-plug event does, and used to park in `error` with no
-        // event ever coming to rescue it.
+        // not-yet-claimable window a hot-plug event does, where a single failed attempt would
+        // park in `error` with no event ever coming to rescue it.
         wire = loopbackLink();
         device = new FlatDevice(wire.device);
         void device.run();
@@ -677,9 +677,7 @@ describe("native discovery", () => {
     });
 });
 
-// A note on what is *not* here any more: there used to be a `nativeFileSource` suite — a map sent
-// disk → endpoint inside Rust, its bytes never entering the page, with a flat-heap measurement over
-// a 300 MB object. §3.8 requires every stream record to be framed by the protocol client, and the
-// `usb_send_file` command writes raw bytes, so that path cannot exist until the Rust side frames
-// records. The heap claim it made now belongs to the shared upload loop and is tested where that
-// loop lives; the CRC constant it pinned is `usb/crc32.test.ts`'s.
+// A map sent disk to endpoint inside Rust cannot exist until the Rust side frames records: every
+// stream record carries a `RequestId`, an absolute offset and a length, and the `usb_send_file`
+// command writes raw bytes. The heap claim that path made belongs to the shared upload loop and is
+// tested where that loop lives; the CRC constant it pinned is `usb/crc32.test.ts`'s.
