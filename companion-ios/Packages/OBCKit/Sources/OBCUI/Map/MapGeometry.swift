@@ -2,8 +2,8 @@
 import MapKit
 import OBCDomain
 
-/// Small MapKit adapters shared by the basemap preview and the interactive map
-/// (#294). Kept out of the views so the projection/camera math has one home.
+/// Small MapKit adapters shared by the basemap preview and the interactive map, kept
+/// out of the views so the projection and camera math has one home.
 enum MapGeometry {
     static func clLocation(_ coordinate: Coordinate) -> CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: coordinate.latitude, longitude: coordinate.longitude)
@@ -13,9 +13,9 @@ enum MapGeometry {
         coordinates.map(clLocation)
     }
 
-    /// A region that frames the whole track with a little breathing room. `pad`
-    /// is a multiplier on the track's span (1.3 = 30% margin). A single-point or
-    /// zero-span track gets a small fixed span so the camera isn't fully zoomed.
+    /// A region that frames the whole track with a little breathing room. `pad` is a
+    /// multiplier on the track's span, so 1.3 leaves a 30% margin. A single-point or
+    /// zero-span track gets a small fixed span so the camera is not fully zoomed.
     static func boundingRegion(for coordinates: [Coordinate], pad: Double = 1.3) -> MKCoordinateRegion {
         guard let first = coordinates.first else {
             return MKCoordinateRegion(
@@ -33,7 +33,7 @@ enum MapGeometry {
             latitude: (minLat + maxLat) / 2,
             longitude: (minLon + maxLon) / 2
         )
-        // A minimum span keeps a tiny/degenerate track from zooming to the max.
+        // A minimum span keeps a tiny or degenerate track from zooming to the max.
         let span = MKCoordinateSpan(
             latitudeDelta: max((maxLat - minLat) * pad, 0.004),
             longitudeDelta: max((maxLon - minLon) * pad, 0.004)

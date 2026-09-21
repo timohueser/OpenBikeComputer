@@ -4,24 +4,17 @@ import OBCDomain
 import OBCTransport
 @testable import OBCUI
 
-/// The S7 screen's half of the published-release check (#773 U4): what the model does with the
-/// answer, and what "Download & Install" actually does.
-///
-/// The dialect itself is pinned in `FirmwareReleaseTests` (a port of the builder's matrix); what
-/// is proved here is the wiring — that the cached answer is on screen before the network is
-/// touched, that a device on an unparseable version is never offered anything, and that a
-/// downloaded container reaches the device only through the same `stage(_:)` gate a picked file
-/// goes through.
+/// The update screen's half of the published-release check: what the model does with the answer,
+/// and what "Download & Install" does. The version dialect itself is pinned in
+/// `FirmwareReleaseTests`; what is proved here is the wiring.
 @MainActor
 struct FirmwareUpdateCheckTests {
     // MARK: Helpers
 
     private static let containerURL = URL(string: "https://updates.openbikecomputer.com/fw/UPDATE.BIN")!
 
-    /// A phone-acceptable OBCU v2 container tagged with `version`: both CRCs are correct and the
-    /// signed-container marker/trailer are present, so `StagedFirmware` accepts it (the same
-    /// structural gate a download uses). The phone intentionally treats the signature as opaque;
-    /// device-side cryptographic verification is pinned by the shared Rust vectors/tests.
+    /// A phone-acceptable OBCU v2 container tagged with `version`: correct CRCs and a signature
+    /// marker, so `StagedFirmware` accepts it. The phone treats the signature itself as opaque.
     private func container(version: String, imageLen: Int = 96) -> Data {
         var image = Data()
         image.append(contentsOf: le32(0x2002_0000))
@@ -42,7 +35,6 @@ struct FirmwareUpdateCheckTests {
     private func le16(_ v: UInt16) -> [UInt8] { withUnsafeBytes(of: v.littleEndian, Array.init) }
     private func le32(_ v: UInt32) -> [UInt8] { withUnsafeBytes(of: v.littleEndian, Array.init) }
 
-    /// The manifest body describing `payload` as `version`.
     private func manifest(version: String, payload: Data, notes: String? = nil) -> Data {
         let notesField = notes.map { ",\"notes\":\"\($0)\"" } ?? ""
         return Data(
@@ -54,7 +46,7 @@ struct FirmwareUpdateCheckTests {
         )
     }
 
-    /// A model wired to a stubbed network + an in-memory cache.
+    /// A model wired to a stubbed network and an in-memory cache.
     private func makeModel(
         running: String = "1.3.0",
         published: (version: String, payload: Data, notes: String?)? = nil,
@@ -93,7 +85,7 @@ struct FirmwareUpdateCheckTests {
         let (model, _, fetcher, _) = makeModel(cached: cached)
 
         model.start()
-        // Synchronously, before any await: the cache is the point.
+        // Synchronously, before any await: the cached answer is the point.
         #expect(model.latestRelease?.version == "1.4.0")
         #expect(model.lastCheckedAt == cached.checkedAt)
 
@@ -140,17 +132,13 @@ struct FirmwareUpdateCheckTests {
         #expect(model.checkState == .idle)
     }
 
-    /// A check nobody asked for stays quiet when it can't reach the network — an unreachable
-    /// update server is not a problem the rider can act on. A check they *tapped* owes them a
-    /// sentence.
+    /// An unreachable update server is not a problem the rider can act on, so an automatic check
+    /// stays quiet. A check they tapped owes them a sentence.
     @Test func onlyAManualCheckReportsItsFailure() async throws {
         let (model, _, fetcher, _) = makeModel()
         fetcher.stub(UpdateChecker.manifestURL, status: 500)
 
         model.start()
-        // The automatic check always leaves `.checking` (the stub 500s) — this is
-        // an ordinary positive wait, so it gets the ordinary deadline rather than
-        // a one-second bound that only ever measured the scheduler.
         try await waitFor(interval: .milliseconds(5)) { model.checkState != .checking }
         #expect(model.checkState == .idle, "the automatic check fails silently")
 
@@ -174,8 +162,8 @@ struct FirmwareUpdateCheckTests {
         model.start()
         try await waitFor(interval: .milliseconds(5)) { model.latestRelease != nil }
 
-        // DIS may land after the manifest; until it does the screen must not claim this is a
-        // development build — it simply has no answer yet.
+        // DIS may land after the manifest. Until it does the screen has no answer; it must not
+        // call this a development build.
         #expect(model.hasUpdateAnswer == (model.runningVersion != nil))
         try await waitFor(interval: .milliseconds(5)) { model.runningVersion != nil }
         #expect(model.hasUpdateAnswer)
@@ -184,8 +172,7 @@ struct FirmwareUpdateCheckTests {
         #expect(model.canDownloadUpdate)
     }
 
-    /// #773's locked refusal, at the screen: a probe-flashed build reports a git hash, so no
-    /// update is offered no matter what is published.
+    /// A probe-flashed build reports a git hash, so nothing is offered whatever is published.
     @Test func neverOffersAnythingToADevelopmentBuild() async throws {
         let payload = container(version: "1.4.0")
         let (model, _, _, _) = makeModel(running: "abc1234", published: ("1.4.0", payload, nil))
@@ -196,15 +183,13 @@ struct FirmwareUpdateCheckTests {
         #expect(model.developmentBuild)
         #expect(!model.canDownloadUpdate)
 
-        // …and the offer stays refused even if the button is somehow reached.
+        // The offer stays refused even if the button is somehow reached.
         model.downloadUpdate()
         #expect(model.downloadState == .idle)
         #expect(model.phase == .idle, "the manual Files path is the only way in for a dev build")
     }
 
-    /// The state that is true *today*, before U3 publishes anything: a probe-flashed device on a
-    /// git hash still reads as a development build, because what makes it undecidable is the
-    /// version it reports — not whether a manifest exists (the builder's #1004 ordering).
+    /// What makes a build undecidable is the version it reports, not whether a manifest exists.
     @Test func namesADevelopmentBuildEvenBeforeAnythingIsPublished() async throws {
         let (model, _, fetcher, _) = makeModel(running: "abc1234")
         fetcher.stub(UpdateChecker.manifestURL, status: 404)
@@ -217,8 +202,6 @@ struct FirmwareUpdateCheckTests {
         #expect(!model.canDownloadUpdate)
     }
 
-    /// …and a device that hasn't reported its version yet is *not* that. The screen must not put
-    /// the dev-build line up while it's still waiting on DIS.
     @Test func aSilentDeviceIsNotADevelopmentBuild() {
         let (model, _, _, _) = makeModel()
         #expect(model.runningVersion == nil)
@@ -271,9 +254,8 @@ struct FirmwareUpdateCheckTests {
         model.downloadUpdate()
         #expect(model.downloadState == .downloading)
 
-        // The verified container goes through the *same* staging gate a picked file does, and
-        // then straight out to the device — where the on-glass confirm is still the only thing
-        // that installs anything.
+        // The verified container goes through the same staging gate a picked file does. The
+        // on-glass confirm is still the only thing that installs anything.
         try await waitFor(interval: .milliseconds(5)) { model.phase == .transferring }
         #expect(model.staged?.version == "1.4.0")
         #expect(model.progress.total == payload.count)
@@ -295,8 +277,6 @@ struct FirmwareUpdateCheckTests {
         #expect(!model.canSend)
     }
 
-    /// A download that doesn't match the manifest is thrown away on the phone — nothing is
-    /// staged, so nothing can be sent.
     @Test func refusesADownloadThatDoesNotMatchTheManifest() async throws {
         let payload = container(version: "1.4.0")
         let (model, _, fetcher, _) = makeModel(published: ("1.4.0", payload, nil))
@@ -320,8 +300,7 @@ struct FirmwareUpdateCheckTests {
         #expect(model.downloadState == .idle)
     }
 
-    /// A container that downloads intact but isn't an OBCU image dies in the *same* validator a
-    /// picked file dies in — the download path has no privileged way past `stage(_:)`.
+    /// The download path has no privileged way past `stage(_:)`.
     @Test func aVerifiedDownloadThatIsNotAnUpdateStillFailsInTheStager() async throws {
         let payload = Data(repeating: 0x42, count: 200)
         let (model, _, _, _) = makeModel(published: ("1.4.0", payload, nil))
@@ -400,8 +379,8 @@ private final class StubFetcher: ManifestFetching, @unchecked Sendable {
     }
 }
 
-/// The same minimal link + update capability pair the S7 state-machine tests use: a controllable
-/// link, a settable running version, and an inert firmware transfer.
+/// A minimal link and update stub: a controllable link, a settable running version, and an inert
+/// firmware transfer.
 private final class StubTransport: DeviceLink, DeviceUpdates, @unchecked Sendable {
     private var stateConts: [AsyncStream<ConnectionState>.Continuation] = []
     private var lastState: ConnectionState = .connected

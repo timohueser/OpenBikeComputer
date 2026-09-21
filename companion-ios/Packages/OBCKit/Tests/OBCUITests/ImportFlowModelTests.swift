@@ -3,17 +3,15 @@ import OBCDomain
 import OBCTransport
 @testable import OBCUI
 
-/// The import flow's state machine (C3, #357), host-side: decode → E1 vs the
-/// name-collision detour, the Replace fingerprint carry-through, the "Add as a
-/// new route" rename rules, and the H5 failure paths — driven through an
-/// `InMemoryLibraryStore` and a stub decoder (the real `RouteImporter` stays
-/// at the app edge; OBCUI never sees OBCFormats).
+/// The import flow's state machine: decode, the name-collision detour, the Replace fingerprint
+/// carry-through, the "Add as a new route" rename rules, and the failure paths. The real
+/// `RouteImporter` stays at the app edge; OBCUI never sees OBCFormats.
 @MainActor
 final class ImportFlowModelTests: XCTestCase {
     private struct StubDecodeError: Error {}
 
-    /// A model over a stub decoder: bytes spelling "bad" fail (H5), anything
-    /// else decodes to a route named after the file's stem.
+    /// A model over a stub decoder: bytes spelling "bad" fail, and anything else decodes to a
+    /// route named after the file's stem.
     private func makeModel(
         library: any LibraryStore = InMemoryLibraryStore(),
         isBonded: Bool = true,
@@ -57,7 +55,7 @@ final class ImportFlowModelTests: XCTestCase {
         )
     }
 
-    /// A scoped device link for the replace-import tests (#769).
+    /// A scoped device link for the replace-import tests.
     private func link(_ objectID: UInt16) -> DeviceRouteLink {
         DeviceRouteLink(serial: "OBC-24-000317", storeID: "0000000000000000000000000000002a", objectID: DeviceObjectID(objectID))
     }
@@ -74,7 +72,7 @@ final class ImportFlowModelTests: XCTestCase {
         )
     }
 
-    // MARK: Fresh import (→ E1)
+    // MARK: Fresh import
 
     func testFreshImportOpensThePendingCover() {
         let model = makeModel()
@@ -90,7 +88,6 @@ final class ImportFlowModelTests: XCTestCase {
         XCTAssertNil(pending?.replacing)
     }
 
-    /// No bond at arrival → the H4 framing bit is set on the pending import.
     func testUnbondedArrivalFramesThePendingImportAsNoDevicePaired() {
         let model = makeModel(isBonded: false)
         model.open(data: Data("<gpx/>".utf8), fileName: "Alpine Loop.gpx")
@@ -99,9 +96,8 @@ final class ImportFlowModelTests: XCTestCase {
 
     // MARK: Name collision (→ the update-or-add dialog)
 
-    /// The collision check reads the library **store directly** (a share can
-    /// arrive before the launch gate ever built the main screen), keys on the
-    /// trimmed lowercased name, and holds E1 until the user picks.
+    /// The collision check reads the library store directly: a share can arrive before the launch
+    /// gate has built the main screen. It keys on the trimmed, lowercased name.
     func testCollidingNameOffersTheDialogInsteadOfOpeningE1() {
         let library = InMemoryLibraryStore()
         let existing = savedRecord(name: "Schwarzwald Tour · Tag 2")
@@ -114,12 +110,9 @@ final class ImportFlowModelTests: XCTestCase {
         XCTAssertEqual(model.collision?.existing.id, existing.id)
     }
 
-    /// Replace: the pending import is pinned to the saved record, and
-    /// `record(for:)` carries its `deviceLink` + `uploadedCRC32` through —
-    /// the device keeps the old copy (old fingerprint → honest "out of date")
-    /// until the next push. (An upload committed during the flow records its
-    /// fresh link via `markRouteUploaded` — `record(for:)` never mints one,
-    /// #769.)
+    /// Replace pins the pending import to the saved record, and `record(for:)` carries its
+    /// `deviceLink` and `uploadedCRC32` through: the device still holds the old copy, so the old
+    /// fingerprint keeps the state honestly out of date. `record(for:)` never mints a new link.
     func testReplaceCarriesTheDeviceFingerprintThroughRecordFor() {
         let library = InMemoryLibraryStore()
         let existing = savedRecord(deviceLink: link(7), uploadedCRC32: 0xDEAD_BEEF)
@@ -169,8 +162,6 @@ final class ImportFlowModelTests: XCTestCase {
         XCTAssertEqual(model.newRouteName, "Schwarzwald Tour · Tag 2")
     }
 
-    /// The prompt's validation: empty and still-colliding names are rejected
-    /// (a duplicate would just re-collide on the next import).
     func testNewNameValidationRejectsEmptyAndStillCollidingNames() {
         let library = InMemoryLibraryStore()
         library.savePlannedRoute(savedRecord())
@@ -193,8 +184,6 @@ final class ImportFlowModelTests: XCTestCase {
         XCTAssertNotNil(model.addAsNewPrompt)
     }
 
-    /// An accepted rename opens E1 as a plain new import: trimmed name on the
-    /// route, `replacing` cleared.
     func testAcceptedRenameOpensE1AsAPlainNewImport() {
         let library = InMemoryLibraryStore()
         library.savePlannedRoute(savedRecord(deviceLink: link(7)))
@@ -226,7 +215,7 @@ final class ImportFlowModelTests: XCTestCase {
         XCTAssertNil(model.pendingImport)
     }
 
-    // MARK: Failure paths (H5)
+    // MARK: Failure paths
 
     func testUndecodableDataLandsInImportFailed() {
         let model = makeModel()
@@ -236,8 +225,7 @@ final class ImportFlowModelTests: XCTestCase {
         XCTAssertNil(model.collision)
     }
 
-    /// An unreadable URL is the same H5 failure — and the read happens off the
-    /// main actor (`openFile` is the async wrapper over `open`).
+    /// `openFile` is the async wrapper over `open`; an unreadable URL is the same failure.
     func testUnreadableFileLandsInImportFailed() async {
         let model = makeModel()
         let missing = URL(fileURLWithPath: "/nonexistent/\(UUID().uuidString).gpx")
@@ -246,7 +234,6 @@ final class ImportFlowModelTests: XCTestCase {
         XCTAssertNil(model.pendingImport)
     }
 
-    /// The happy read: a real temp file flows through `openFile` into E1.
     func testReadableFileFlowsThroughOpenFileIntoE1() async throws {
         let model = makeModel()
         let url = FileManager.default.temporaryDirectory

@@ -1,11 +1,8 @@
 import Foundation
 
-/// Statistics derived from a parsed route's geometry — what the import landing
-/// (E1) shows before the route exists anywhere else, and what `RouteSummary`
-/// construction on save reuses. Pure geometry: `[RoutePoint]` in, numbers out.
-///
-/// Device-stored routes don't come through here — their stats ride in
-/// `RouteSummary` / `RouteDetail` as the device (or fixture) reports them.
+/// Statistics derived from a parsed route's geometry: `[RoutePoint]` in, numbers out.
+/// Device-stored routes do not come through here. Their stats ride in `RouteSummary` and
+/// `RouteDetail` as the device or fixture reports them.
 public struct RouteStats: Equatable, Sendable {
     public var distanceMeters: Double
     public var elevationGainMeters: Double
@@ -16,19 +13,18 @@ public struct RouteStats: Equatable, Sendable {
     /// Steepest sustained climb over a ~100 m window, in percent. `nil` when the
     /// source carried no elevation.
     public var maxGradePercent: Double?
-    /// Planned-ride estimate: 16 km/h on the flat plus a minute per 10 m of
-    /// climb — the touring rule of thumb, not a fitness model.
+    /// Planned-ride estimate: 16 km/h on the flat plus a minute per 10 m of climb. A touring
+    /// rule of thumb, not a fitness model.
     public var estimatedDuration: TimeInterval
 
     /// Elevation-noise hysteresis: climb only accumulates once the track has
     /// risen this far above its last confirmed elevation.
     public static let climbHysteresisMeters = 3.0
-    /// Grades are measured over windows at least this long, so single noisy
-    /// samples can't spike the MAX stat.
+    /// Grades are measured over windows at least this long, so a single noisy sample cannot
+    /// spike the MAX stat.
     public static let gradeWindowMeters = 100.0
 
     public static func compute(from points: [RoutePoint], profileSampleCount: Int = 64) -> RouteStats {
-        // Cumulative distance along the track.
         var cumulative: [Double] = [0]
         cumulative.reserveCapacity(points.count)
         for i in 1..<max(points.count, 1) {
@@ -88,8 +84,8 @@ public struct RouteStats: Equatable, Sendable {
         )
     }
 
-    /// Uniform-stride downsample, always keeping the endpoints (mirrors
-    /// `TrackPreview.normalizing`'s approach — profile-grade, not analysis-grade).
+    /// Uniform-stride downsample that always keeps the endpoints. Profile-grade, not
+    /// analysis-grade.
     public static func downsample(_ samples: [Double], to maxCount: Int) -> [Double] {
         guard maxCount > 1, samples.count > maxCount else { return samples }
         let stride = Double(samples.count - 1) / Double(maxCount - 1)

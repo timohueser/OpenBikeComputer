@@ -2,10 +2,9 @@
 import Foundation
 import OBCTransport
 
-/// The mock `BondStore`: a view onto `MockControl.bonded`, so the scenario
-/// preset decides the launch branch (`noDevice` &co boot unpaired → D1) and the
-/// dev panel can flip it live to replay first-run pairing. Nothing persists —
-/// every launch starts from the scenario, which is exactly what automation wants.
+/// The mock `BondStore`: a view onto `MockControl.bonded`, so the scenario preset decides the
+/// launch branch and the dev panel can flip it live to replay first-run pairing. Nothing
+/// persists; every launch starts from the scenario, which is what automation wants.
 public struct MockBondStore: BondStore {
     private let control: MockControl
 
@@ -17,10 +16,9 @@ public struct MockBondStore: BondStore {
         control.bonded ? BondRecord(deviceName: control.bondedName ?? control.deviceInfo.name) : nil
     }
 
-    /// A save keeps the record's name (it's the *desired* name — after a rename
-    /// whose config write failed it deliberately diverges from `deviceInfo`,
-    /// which is what the reconcile pass detects, #361). Scenario boots have no
-    /// saved name and fall back to `deviceInfo` live.
+    /// A save keeps the record's name. That name is the desired one: after a rename whose
+    /// config write failed it diverges from `deviceInfo` on purpose, which is what the
+    /// reconcile pass detects. A scenario boot has no saved name and falls back to `deviceInfo`.
     public func save(_ record: BondRecord) {
         control.bonded = true
         control.bondedName = record.deviceName

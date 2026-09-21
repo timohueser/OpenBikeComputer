@@ -1,10 +1,9 @@
 import XCTest
 
-/// TR8 acceptance on the simulator: whole-trip upload driven through the real UI
-/// against the `trips` fixture. The queue-planner, adoption, and reconcile logic
-/// are host-tested (`TripUploadModelTests` / `TripReconcileModelTests`); this
-/// proves the wiring — Upload trip → queued sheet → done, the interrupt/resume
-/// framing, the resident-menu/storage boundary, and delete-trip-&-routes.
+/// Whole-trip upload driven through the real UI against the trips fixture. The queue planner,
+/// adoption and reconcile logic are host-tested; this proves the wiring: Upload trip, the queued
+/// sheet, the done confirm, the interrupt and resume framing, the capacity boundary, and delete
+/// trip and routes.
 final class TripUploadTests: XCTestCase {
     override func setUp() {
         super.setUp()
@@ -43,8 +42,7 @@ final class TripUploadTests: XCTestCase {
 
     // MARK: Happy path
 
-    /// Upload trip → the queued sheet walks the stages then the trip object, and
-    /// lands on the "Trip on the device" confirm.
+    /// The queued sheet walks the stages then the trip object, and lands on the done confirm.
     @MainActor
     func testWholeTripUploadHappyPath() {
         let app = launch()
@@ -76,11 +74,11 @@ final class TripUploadTests: XCTestCase {
 
     // MARK: Interrupt + resume
 
-    /// A mid-upload drop swaps in the interrupted framing; Resume restarts the
-    /// current stage and the trip still lands.
+    /// A mid-upload drop swaps in the interrupted framing; Resume restarts the current stage and
+    /// the trip still lands.
     @MainActor
     func testWholeTripUploadInterruptThenResume() {
-        // Arm the next transfer to drop partway through (the first stage).
+        // Arm the next transfer to drop partway through the first stage.
         let app = launch(scenario: "uploadDrop")
         openTrip(app)
         app.buttons["trip.upload"].tap()
@@ -96,10 +94,10 @@ final class TripUploadTests: XCTestCase {
         app.buttons["tripUpload.done"].tap()
     }
 
-    // MARK: Resident menu capacity is not storage capacity
+    // MARK: Menu capacity is not storage capacity
 
-    /// A route catalog at the 64-route resident-menu boundary still uploads: the
-    /// flat store's 1,916-entry catalog is the admission authority.
+    /// A route catalog at the resident-menu boundary still uploads: the flat store's much larger
+    /// catalog is the admission authority.
     @MainActor
     func testWholeTripUploadPastResidentMenuBoundary() {
         let app = launch(extraArgs: ["-OBCDeviceRoutesFull"])
@@ -115,8 +113,8 @@ final class TripUploadTests: XCTestCase {
 
     // MARK: Delete trip & routes while connected
 
-    /// Upload the trip, then Delete trip & routes — the trip and its members are
-    /// gone from the library; a loose route survives.
+    /// Upload the trip, then delete the trip and its routes: they are gone from the library, and a
+    /// loose route survives.
     @MainActor
     func testDeleteTripAndRoutesAfterUpload() {
         let app = launch()
@@ -130,7 +128,7 @@ final class TripUploadTests: XCTestCase {
         app.buttons["tripUpload.done"].tap()
         XCTAssertTrue(app.buttons[stageAID].waitForExistence(timeout: 10), "did not return to trip page")
 
-        // Delete trip & routes.
+        // Delete the trip and its routes.
         app.buttons["trip.overflow"].tap()
         let delete = app.buttons["trip.delete"]
         XCTAssertTrue(delete.waitForExistence(timeout: 5), "overflow menu did not open")

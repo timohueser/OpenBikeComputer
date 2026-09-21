@@ -4,22 +4,16 @@ import OBCMock
 import OBCTransport
 @testable import OBCUI
 
-/// B7 acceptance, host-side: the ride-sync state machine driven through
-/// `MockTransport` — extracted from `MainScreenModelTests` with the coordinator
-/// (#358). The SYNC button contract (idle → syncing → done → idle), H9
-/// up-to-date, the H10 drop / Resume / fresh-sync-supersession trio, the
-/// persistence-per-landed-ride rule, and the hard-failure path. List/reconcile
-/// behavior (what the model does with landed rides) stays in
+/// The ride-sync state machine driven through `MockTransport`: the sync button contract, the
+/// up-to-date case, the drop, Resume and fresh-sync-supersession trio, the persistence-per-landed
+/// ride rule, and the hard-failure path. What the model does with landed rides stays in
 /// `MainScreenModelTests`.
 @MainActor
 final class RideSyncCoordinatorTests: XCTestCase {
-    /// Sticky holds: the done-hold and line-hold timers race the poll loop on
-    /// wall-clock time, so a CI scheduling stall can expire `.done` (or the
-    /// confirm line) *between* two polls and the wait times out on a state
-    /// that's already gone. Holds this long are terminal within a test —
-    /// completion waits observe them race-free. The expiry behavior itself is
-    /// asserted separately with short timers, waiting only on the terminal
-    /// state *after* the timer (stable once reached).
+    /// Sticky holds: the done-hold and line-hold timers race the poll loop on wall-clock time, so
+    /// a scheduling stall can expire a state between two polls and the wait then times out on a
+    /// state that is already gone. Holds this long are terminal within a test. The expiry
+    /// behaviour itself is asserted separately with short timers.
     private static let stickyTiming = RideSyncCoordinator.Timing(
         syncDoneHold: .seconds(300),
         syncedLineHold: .seconds(300)
@@ -39,17 +33,16 @@ final class RideSyncCoordinatorTests: XCTestCase {
         return (coordinator, control)
     }
 
-    /// The coordinator's link mirror fills from the replayed `state` stream —
-    /// wait for it before pressing Sync (the gate reads it synchronously).
+    /// The coordinator's link mirror fills from the replayed `state` stream, so wait for it before
+    /// pressing Sync: the gate reads it synchronously.
     private func startConnected(_ coordinator: RideSyncCoordinator) async throws {
         try await waitFor("link up") { coordinator.connection == .connected && coordinator.syncState != .syncing }
     }
 
-    // MARK: Stream lifecycle (#356)
+    // MARK: Stream lifecycle
 
-    /// The coordinator's own `transport.state` subscription never finishes —
-    /// the loop must hold the coordinator weakly so it can deallocate with the
-    /// stream still live (the same convention as the model's loops).
+    /// The coordinator's own state subscription never finishes, so the loop must hold the
+    /// coordinator weakly and it can deallocate with the stream still live.
     func testStateWatchDoesNotRetainTheCoordinator() async throws {
         let control = MockControl(scenario: .happyPath)
         control.latency = .zero
@@ -60,8 +53,8 @@ final class RideSyncCoordinatorTests: XCTestCase {
             try await startConnected(coordinator)
             leaked = coordinator
         }
-        // The last strong ref is gone; push an event through the still-open
-        // stream so a strongly-capturing loop would show up as a live ref.
+        // The last strong ref is gone; push an event through the still-open stream, so a
+        // strongly-capturing loop would show up as a live ref.
         control.connection = .outOfRange
         for _ in 0..<10 { await Task.yield() }
         XCTAssertNil(leaked, "the state watch must hold the coordinator weakly")
@@ -70,26 +63,25 @@ final class RideSyncCoordinatorTests: XCTestCase {
     // MARK: The SYNC button contract
 
     func testFirstSyncPullsEverythingThenIdles() async throws {
-        // Short done-hold so the return to idle is observable; sticky line-hold
-        // so asserting the confirm line can't race its own expiry.
+        // Short done-hold so the return to idle is observable; sticky line-hold so asserting the
+        // confirm line cannot race its own expiry.
         let (coordinator, _) = makeCoordinator(
             .happyPath,
             timing: .init(syncDoneHold: .milliseconds(60), syncedLineHold: .seconds(300)))
         try await startConnected(coordinator)
 
         coordinator.sync()
-        // The sticky confirm line is the completion marker; `.done` itself is a
-        // 60 ms window here, and reaching `.idle` below proves it ran — the
-        // machine only idles out of a completed sync through the done-hold.
+        // The sticky confirm line is the completion marker. `.done` itself is a 60 ms window here,
+        // and reaching `.idle` below proves it ran: the machine only idles out of a completed sync
+        // through the done-hold.
         try await waitFor("confirm line") { coordinator.lastSyncCount == 4 }
         XCTAssertNil(coordinator.syncProgress)
         try await waitFor("done hold expires") { coordinator.syncState == .idle }
         XCTAssertEqual(coordinator.lastSyncCount, 4)   // the line outlives the check
     }
 
-    /// The confirm line expires on its own timer after the check. Both holds
-    /// short; the wait targets only the terminal end state (idle button, line
-    /// gone), armed *after* durable proof the batch landed (the library) — no
+    /// The confirm line expires on its own timer after the check. Both holds are short, and the
+    /// wait targets only the terminal end state, armed after durable proof the batch landed. No
     /// wait ever targets a transient window.
     func testConfirmLineExpiresAfterTheCheck() async throws {
         let library = InMemoryLibraryStore()
@@ -100,8 +92,8 @@ final class RideSyncCoordinatorTests: XCTestCase {
 
         coordinator.sync()
         try await waitFor("batch lands") { library.rideSummaries().count == 4 }
-        // From here the machine walks count-set → done → idle → line-expiry on
-        // its own; idle + nil only coexist once the whole sequence has run.
+        // From here the machine walks through its states on its own; idle and a cleared line only
+        // coexist once the whole sequence has run.
         try await waitFor("confirm line expires") {
             coordinator.syncState == .idle && coordinator.lastSyncCount == nil
         }
@@ -114,10 +106,10 @@ final class RideSyncCoordinatorTests: XCTestCase {
         coordinator.sync()
         try await waitFor("first sync done") { coordinator.lastSyncCount == 4 }
 
-        // Re-arm straight from the sticky `.done` — the gate only rejects
-        // a *running* sync, so waiting out the done-hold isn't needed.
+        // Re-arm straight from the sticky `.done`: the gate only rejects a running sync, so
+        // waiting out the done-hold is not needed.
         coordinator.sync()
-        // H9: quiet toast, straight back to idle — never an empty "done".
+        // A quiet toast and straight back to idle, never an empty "done".
         try await waitFor("up-to-date toast") { coordinator.upToDateToastVisible }
         XCTAssertEqual(coordinator.syncState, .idle)
         XCTAssertNil(coordinator.lastSyncCount)
@@ -146,8 +138,8 @@ final class RideSyncCoordinatorTests: XCTestCase {
         XCTAssertEqual(landed.last?.summary.name, "Lunch Loop")
     }
 
-    /// H10: the drop freezes what landed into the banner state — button idle,
-    /// progress down, and the interruption carries the landed counts.
+    /// The drop freezes what landed into the banner state: button idle, progress down, and the
+    /// interruption carrying the landed counts.
     func testDropMidSyncRaisesH10WithTheLandedCounts() async throws {
         let (coordinator, control) = makeCoordinator(.happyPath)
         try await startConnected(coordinator)
@@ -167,8 +159,8 @@ final class RideSyncCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.connection, .outOfRange)
     }
 
-    /// H10 → Resume: the same transfer continues from its last committed
-    /// offset and finishes; every ride of the batch counts once.
+    /// Resume continues the same transfer from its last committed offset and finishes; every ride
+    /// of the batch counts once.
     func testResumeContinuesTheDroppedSyncToCompletion() async throws {
         let library = InMemoryLibraryStore()
         let (coordinator, control) = makeCoordinator(.happyPath, library: library)
@@ -194,10 +186,9 @@ final class RideSyncCoordinatorTests: XCTestCase {
         XCTAssertEqual(library.rideSummaries().count, 4, "resumed rides persist like the rest")
     }
 
-    /// The user can also just sync again once back in range — what landed
-    /// stays synced, so the fresh batch is exactly the remainder. This is the
-    /// supersession path: the new `sync()` cancels the old task and its
-    /// stalled batch before touching shared state.
+    /// The rider can also just sync again once back in range: what landed stays synced, so the
+    /// fresh batch is exactly the remainder. This is the supersession path, where the new `sync()`
+    /// cancels the old task and its stalled batch before touching shared state.
     func testFreshSyncAfterADropPullsOnlyTheRemainder() async throws {
         let (coordinator, control) = makeCoordinator(.happyPath)
         try await startConnected(coordinator)
@@ -218,8 +209,8 @@ final class RideSyncCoordinatorTests: XCTestCase {
         XCTAssertLessThan(remainder, 4, "partial rides must not be re-counted")
     }
 
-    /// B7's decode path: a synced ride lands in the library with its tracklog
-    /// decoded from the payload — not as an empty-points summary shell.
+    /// A synced ride lands in the library with its tracklog decoded from the payload, not as an
+    /// empty-points summary shell.
     func testSyncedRideCarriesTheDecodedTracklog() async throws {
         let library = InMemoryLibraryStore()
         let (coordinator, _) = makeCoordinator(.happyPath, library: library)
@@ -257,8 +248,8 @@ final class RideSyncCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator.upToDateToastVisible)
     }
 
-    /// The injected `canSync` veto (#303 lives with the model): a false answer
-    /// must not start a transfer — no decode, no toast, no state movement.
+    /// The injected `canSync` veto: a false answer must not start a transfer. No decode, no toast,
+    /// no state movement.
     func testCanSyncVetoBlocksTheSync() async throws {
         let (coordinator, _) = makeCoordinator(.happyPath)
         try await startConnected(coordinator)
@@ -275,10 +266,9 @@ final class RideSyncCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator.upToDateToastVisible)
     }
 
-    /// A hard transfer failure (`crcMismatch` — the throwing end of the rides
-    /// stream, unlike a drop's stall): the batch is over, but `landed` keeps
-    /// the partial — what persisted stays persisted, the button returns to
-    /// idle with no confirm line and no Resume banner (nothing is resumable).
+    /// A hard transfer failure is the throwing end of the rides stream, unlike a drop's stall. The
+    /// batch is over, but what persisted stays persisted, and the button returns to idle with no
+    /// confirm line and no Resume banner, because nothing is resumable.
     func testHardStreamFailureKeepsThePartialAndIdles() async throws {
         let control = MockControl(scenario: .happyPath)
         control.latency = .zero
@@ -295,9 +285,9 @@ final class RideSyncCoordinatorTests: XCTestCase {
         try await startConnected(coordinator)
 
         coordinator.sync()
-        // The two yielded rides land and persist before the stream throws…
+        // The two yielded rides land and persist before the stream throws.
         try await waitFor("partial lands") { library.rideSummaries().count == 2 }
-        // …then the failed outcome brings the button straight back to idle.
+        // Then the failed outcome brings the button straight back to idle.
         try await waitFor("failure settles") {
             coordinator.syncState == .idle && coordinator.syncProgress == nil
         }
@@ -428,9 +418,9 @@ final class RideSyncCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.lastSyncCount)
     }
 
-    // MARK: Persistence across "relaunches" (B1S)
+    // MARK: Persistence across "relaunches"
 
-    /// #256 acceptance (H9): re-sync after a relaunch downloads nothing new.
+    /// Re-sync after a relaunch downloads nothing new.
     func testResyncAfterRelaunchIsUpToDate() async throws {
         let library = InMemoryLibraryStore()
         let (first, _) = makeCoordinator(.happyPath, library: library)
@@ -448,8 +438,8 @@ final class RideSyncCoordinatorTests: XCTestCase {
         XCTAssertNil(relaunched.lastSyncCount)
     }
 
-    /// #256 acceptance (H10): a sync interrupted at N of M keeps the N across
-    /// a relaunch — the next sync pulls only the remainder.
+    /// A sync interrupted partway keeps what landed across a relaunch, so the next sync pulls only
+    /// the remainder.
     func testPartialSyncSurvivesRelaunch() async throws {
         let library = InMemoryLibraryStore()
         let (first, control) = makeCoordinator(.happyPath, library: library)
@@ -470,14 +460,12 @@ final class RideSyncCoordinatorTests: XCTestCase {
         XCTAssertEqual(relaunched.lastSyncCount, 4 - landed)
     }
 
-    // MARK: v2 list truncation (spec §7.4)
+    // MARK: List truncation
 
-    /// The bounded ride catalog's truncation signal: a truncated read sets
-    /// `hiddenRideCount` (the banner trigger), and a link edge back into
-    /// `.connected` clears it **before** any new list read. A count carried
-    /// across a reconnect could be stale (the rider freed space while away) or
-    /// a different device's entirely (the banner names the connected device) —
-    /// unknown-until-read is the honest state.
+    /// The bounded ride catalog's truncation signal: a truncated read sets the hidden count, which
+    /// is the banner trigger, and a link edge back into `.connected` clears it before any new list
+    /// read. A count carried across a reconnect could be stale, or a different device's entirely,
+    /// and unknown-until-read is the honest state.
     func testTruncatedListSetsTheCountAndReconnectClearsIt() async throws {
         let control = MockControl(scenario: .happyPath)
         control.latency = .zero
@@ -490,8 +478,8 @@ final class RideSyncCoordinatorTests: XCTestCase {
 
         coordinator.sync()
         try await waitFor("truncation count from the list read") { coordinator.hiddenRideCount == 3 }
-        // Let the batch land before dropping the link, so the drop below is a
-        // clean idle-time edge (not an H10 interruption — separate machinery).
+        // Let the batch land before dropping the link, so the drop below is a clean idle-time
+        // edge and not an interruption, which is separate machinery.
         try await waitFor("batch done") { coordinator.syncState == .done }
 
         control.connection = .disconnected
@@ -503,9 +491,8 @@ final class RideSyncCoordinatorTests: XCTestCase {
     }
 }
 
-/// Forwards everything to the mock, but reports the device's ride catalog as
-/// **truncated** (`hiddenRideCount` rides beyond what the list carried) — the
-/// v2 header's `total > count` signal the mock's fixture catalog never trips.
+/// Forwards everything to the mock, but reports the device's ride catalog as truncated: the
+/// signal the mock's fixture catalog never trips.
 private struct TruncatedRideCatalogTransport: DeviceLink, DeviceObjects {
     let base: MockTransport
     let hiddenRideCount: Int

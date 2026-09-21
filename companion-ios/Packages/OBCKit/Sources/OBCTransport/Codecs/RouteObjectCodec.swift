@@ -1,23 +1,22 @@
 import Foundation
 import OBCDomain
 
-/// OBCR v4 encoder and decoder. Stored geometry owns route totals. Missing elevation and
-/// incoming graph validity remain explicit. Exact bytes and optional metadata are defined in
-/// specs/OBCR_Spec.md; shared Rust-produced vectors pin the reader.
+/// OBCR v4 encoder and decoder. Stored geometry owns the route totals. Missing elevation and
+/// incoming graph validity stay explicit. The exact bytes are in specs/OBCR_Spec.md, and shared
+/// Rust-produced vectors pin the reader.
 public enum RouteObjectCodec {
-    // MARK: Format constants (OBCR_Spec.md)
+    // MARK: Format constants
 
     static let magic = Data("OBCR".utf8)
-    /// The one version the device accepts (`OBCR_Spec.md`): v1/v2 are rejected on
-    /// both sides, so a stored route re-imports rather than mis-decoding.
+    /// The one version the device accepts. Older files are rejected on both sides, so a stored
+    /// route re-imports rather than mis-decoding.
     static let version: UInt8 = 4
-    /// The header's ride core; every ride-path field lives here. The 16-byte
-    /// waypoint extension follows at offset 112.
+    /// The header's ride core; every ride-path field lives here. The waypoint extension follows.
     static let headerBaseLength = 112
     static let headerLength = 160
     static let chunkMetaLength = 44
     static let waypointLength = 80
-    /// First byte of a waypoint record's name field (§4).
+    /// First byte of a waypoint record's name field.
     static let waypointNameOffset = 20
     /// Header route-name cap (matches the device `NAME_CAP`).
     static let nameCap = 48
@@ -26,9 +25,8 @@ public enum RouteObjectCodec {
     /// Points per chunk incl. the shared anchor; the resident device index is
     /// bounded by chunk count, not point count.
     static let maxPointsPerChunk = 256
-    /// Largest stored per-vertex delta (µdeg). A longer segment is densified with
-    /// interpolated vertices so `(x − px) as int16` never wraps — mirrors the
-    /// converter's `MAX_SEGMENT_UDEG` / the OBCM packer.
+    /// Largest stored per-vertex delta, in microdegrees. A longer segment is densified with
+    /// interpolated vertices, so a stored delta never wraps int16.
     static let maxSegmentMicrodegrees = 30_000
     /// Decimation tolerance: drop a vertex within this perpendicular distance (m)
     /// of the chord its neighbours span.
@@ -41,27 +39,23 @@ public enum RouteObjectCodec {
 
     // MARK: Encode
 
-    /// Encode an imported route's geometry + waypoints into an OBCR v4 file, named
-    /// `name` (truncated to ``nameCap`` on a char boundary). Convenience over the
-    /// `points`/`waypoints` form for the "ImportedRoute → payload" call site.
+    /// Encode an imported route's geometry and waypoints into an OBCR v4 file, named `name` and
+    /// truncated to ``nameCap`` on a character boundary.
     public static func encode(_ route: ImportedRoute, name: String) -> Data {
         encode(points: route.points, waypoints: route.waypoints, name: name)
     }
 
-    /// The CRC-32 of the payload an upload of this library record would send —
-    /// the `OnDeviceState` fingerprint. **The one canonical "payload for a
-    /// record" definition**: the record's geometry + waypoints under its display
-    /// name, exactly what the detail screen's upload blob encodes; keeping both
-    /// on this function is what makes "up to date" mean byte-identical.
+    /// The CRC-32 of the payload an upload of this library record would send: the record's
+    /// geometry and waypoints under its display name, exactly what the detail screen's upload blob
+    /// encodes. One definition, which is what makes "up to date" mean byte-identical.
     public static func payloadCRC(for record: PlannedRouteRecord) -> UInt32 {
         CRC32.checksum(encode(points: record.route.points, waypoints: record.route.waypoints, name: record.summary.name))
     }
 
-    /// `payload` with only its header name field replaced — the bytes a device
-    /// holds for a route the rider has since renamed on the phone. The name is a
-    /// fixed-width field (§1), so geometry, offsets and the payload's length are
-    /// untouched: this is a header splice, never a re-encode. A payload too short
-    /// to carry a header comes back unchanged.
+    /// `payload` with only its header name field replaced: the bytes a device holds for a route
+    /// the rider has since renamed on the phone. The name is a fixed-width field, so geometry,
+    /// offsets and length are untouched; this is a header splice, never a re-encode. A payload too
+    /// short to carry a header comes back unchanged.
     public static func renamed(_ payload: Data, to name: String) -> Data {
         guard payload.count >= headerLength else { return payload }
         let nameBytes = truncatedUTF8(name, maxBytes: nameCap)
@@ -73,18 +67,14 @@ public enum RouteObjectCodec {
         return out
     }
 
-    /// Encode geometry + waypoints into an OBCR v4 file. `waypoints` are stored
-    /// verbatim (already placed along the route by `WaypointPlacement`); `points`
-    /// carry the geometry and drive the exact header stats.
-    ///
-    /// An empty `points` yields an empty `Data` — there is no valid zero-geometry
-    /// OBCR, and the upload path only reaches here with a decoded route in hand.
+    /// Encode geometry and waypoints into an OBCR v4 file. `waypoints` are stored verbatim,
+    /// already placed along the route; `points` carry the geometry and drive the header stats.
+    /// Empty `points` yields empty `Data`: there is no valid zero-geometry OBCR.
     public static func encode(points: [RoutePoint], waypoints: [Waypoint], name: String) -> Data {
         guard !points.isEmpty, points.allSatisfy({ $0.coordinate.isValidGeographic }) else { return Data() }
 
-        // One pass over every raw point: exact stats (distance + dead-banded
-        // ascent/descent, mirroring RouteStats so the header matches the E1 display)
-        // and a per-point candidate carrying the cumulative distance/ascent a kept
+        // One pass over every raw point: exact stats, distance plus dead-banded ascent and
+        // descent, and a per-point candidate carrying the cumulative distance and ascent a kept
         // vertex records in its ChunkMeta.
         var candidates: [Candidate] = []
         candidates.reserveCapacity(points.count)
@@ -105,8 +95,8 @@ public enum RouteObjectCodec {
                 let rounded = roundToInt16(elevation)
                 minElevation = min(minElevation, rounded)
                 maxElevation = max(maxElevation, rounded)
-                // Dead-banded like RouteStats.compute: climb/descent only accrue
-                // once the track has moved past the hysteresis band.
+                // Dead-banded like `RouteStats.compute`: climb and descent accrue only once the
+                // track has moved past the hysteresis band.
                 if let confirmed = confirmedElevation {
                     if elevation >= confirmed + RouteStats.climbHysteresisMeters {
                         cumulativeAscent += elevation - confirmed
@@ -209,11 +199,9 @@ public enum RouteObjectCodec {
         return file
     }
 
-    /// The §4 waypoint records: 80 bytes each, in the caller's (already
-    /// distance-sorted) order. `category` is the §7.4 wire id the import mapped
-    /// from `<sym>`/`<type>` (`0` = generic), and the lateral offset is stored
-    /// **saturating** — a waypoint further off route than `Int16` metres reads as
-    /// "very far to that side", never as the opposite one.
+    /// The waypoint records, 80 bytes each, in the caller's already distance-sorted order. The
+    /// lateral offset is stored saturating, so a waypoint further off route than `Int16` metres
+    /// reads as "very far to that side", never as the opposite one.
     private static func encodeWaypoints(_ waypoints: [Waypoint]) -> Data {
         guard !waypoints.isEmpty else { return Data() }
         var data = Data(capacity: waypoints.count * waypointLength)
@@ -240,11 +228,9 @@ public enum RouteObjectCodec {
         return data
     }
 
-    /// A signed lateral offset in whole metres, saturating at ±`Int16.max` — the
-    /// magnitude is clamped and *then* signed, exactly as the firmware converter
-    /// does, so a waypoint dropped 40 km off route reads as "very far to that
-    /// side" and never wraps to the other one. A non-finite offset stores as `0`
-    /// (on-route), the same value an unplaced waypoint carries.
+    /// A signed lateral offset in whole metres, saturating at plus or minus `Int16.max`. The
+    /// magnitude is clamped and then signed, exactly as the firmware converter does, so a waypoint
+    /// dropped 40 km off route never wraps to the other side. A non-finite offset stores as 0.
     private static func lateralOffsetInt16(_ meters: Double) -> Int16 {
         guard meters.isFinite else { return 0 }
         let magnitude = min(abs(meters).rounded(), Double(Int16.max))
@@ -253,23 +239,20 @@ public enum RouteObjectCodec {
 
     // MARK: Decode
 
-    /// The parsed contents of an OBCR file — the header stats (exact, from the
-    /// producer's retained geometry), the deduped geometry (seams counted once), and
-    /// the waypoints. Feeds the BLE `routeDetail` read and pins the reader against
-    /// the shared firmware fixtures.
+    /// The parsed contents of an OBCR file: the header stats, the deduped geometry with seams
+    /// counted once, and the waypoints.
     public struct Decoded: Equatable, Sendable {
         public var name: String
         public var version: UInt8
-        /// Header `Point Count` (distinct stored points; may exceed `points.count`
-        /// only if the file's stored count disagrees with its geometry — it won't
-        /// for a well-formed file).
+        /// Header point count, the distinct stored points. It exceeds `points.count` only if the
+        /// file's stored count disagrees with its geometry.
         public var storedPointCount: UInt32
         public var totalDistanceMeters: UInt32
         public var totalAscentMeters: UInt32
         public var totalDescentMeters: UInt32
         public var minElevationMeters: Int16
         public var maxElevationMeters: Int16
-        /// First route point (camera centering).
+        /// First route point, for camera centering.
         public var start: Coordinate
         /// The decoded polyline, seams deduplicated — every stored vertex once.
         public var points: [RoutePoint]
@@ -279,11 +262,10 @@ public enum RouteObjectCodec {
         public var visitDescriptor: Data?
     }
 
-    /// Decode an OBCR v4 file. Every section is reached by an explicit offset
-    /// and bounds-checked — malformed device bytes throw ``DeviceError/readFailed``,
-    /// never trap. A v1/v2 file is **rejected**, not read: its waypoint records are
-    /// a different width and its category byte a retired taxonomy, so the honest
-    /// answer is "re-import it", exactly what the device does.
+    /// Decode an OBCR v4 file. Every section is reached by an explicit offset and bounds-checked,
+    /// so malformed device bytes throw ``DeviceError/readFailed`` and never trap. An older file is
+    /// rejected, not read: its waypoint records are a different width and its category byte a
+    /// retired taxonomy, so the honest answer is "re-import it", exactly what the device says.
     public static func decode(_ data: Data) throws -> Decoded {
         let reader = ByteView(data)
         guard try reader.bytes(at: 0, count: 4) == magic else { throw DeviceError.readFailed }
@@ -381,8 +363,7 @@ public enum RouteObjectCodec {
             let distanceAlong = try reader.u32(at: base)
             let lon = try reader.i32(at: base + 4)
             let lat = try reader.i32(at: base + 8)
-            // An unknown category byte reads as generic (§4's read-tolerance rule),
-            // never as a decode failure.
+                // An unknown category byte reads as generic, never as a decode failure.
             let category = WaypointCategory(wireID: try reader.u8(at: base + 14))
             let nameLength = min(Int(try reader.u8(at: base + 15)), waypointNameCap)
             let lateralOffset = try reader.i16(at: base + 16)
@@ -461,9 +442,9 @@ public enum RouteObjectCodec {
         return bytes
     }
 
-    /// Perpendicular distance (m) from `point` to the infinite chord `from → to`,
-    /// in a local-equirectangular metric (east scaled by cos(lat)) — accurate over
-    /// a route's short segments, the decimator's straight-chord test.
+    /// Perpendicular distance in metres from `point` to the infinite chord `from` to `to`, in a
+    /// local-equirectangular metric. Accurate over a route's short segments, and the decimator's
+    /// straight-chord test.
     private static func perpendicularDistanceMeters(
         _ point: Candidate, from: Candidate, to: Candidate
     ) -> Double {
@@ -515,9 +496,8 @@ private extension RouteObjectCodec {
         }
     }
 
-    /// Accumulates kept vertices into ≤``maxPointsPerChunk`` seam-sharing chunks,
-    /// streaming each finished chunk's body into `bodies` and its ``ChunkMeta`` into
-    /// `metas` (byte offsets absolute from the file start = ``headerLength`` + body).
+    /// Accumulates kept vertices into seam-sharing chunks of at most ``maxPointsPerChunk``,
+    /// streaming each finished chunk's body into `bodies` and its ``ChunkMeta`` into `metas`.
     struct ChunkEncoder {
         var waypoints: [Waypoint] = []
         init(waypoints: [Waypoint]) { self.waypoints = waypoints }
@@ -573,7 +553,7 @@ private extension RouteObjectCodec {
                 hasElevation = true
                 let elevation = Double(candidate.elevation)
                 if !first && UInt32(distance) == UInt32(before) {
-                    // Sub-metre spans own no distance cell in facts policy 1.
+                    // A sub-metre span owns no distance cell.
                 } else if let last = reference {
                     let delta = elevation - last
                     if delta >= 3 { ascent += delta; reference = elevation }
@@ -666,7 +646,7 @@ private extension RouteObjectCodec {
         }
     }
 
-    /// One chunk's index entry (`OBCR_Spec.md` §2).
+    /// One chunk's index entry.
     struct ChunkMeta {
         var minLon: Int32
         var minLat: Int32
@@ -685,10 +665,9 @@ private extension RouteObjectCodec {
 
 // MARK: - Little-endian byte plumbing
 
-/// A bounds-checked little-endian view for absolute-offset reads over untrusted
-/// device bytes — every under-run is a ``DeviceError/readFailed``, never a crash.
-/// (OBCR reaches every field by explicit offset, so this reads by offset, not a
-/// cursor.)
+/// A bounds-checked little-endian view for absolute-offset reads over untrusted device bytes:
+/// every under-run is a ``DeviceError/readFailed``, never a crash. OBCR reaches every field by
+/// explicit offset, so this reads by offset and not with a cursor.
 private struct ByteView {
     private let data: Data
     private let base: Data.Index

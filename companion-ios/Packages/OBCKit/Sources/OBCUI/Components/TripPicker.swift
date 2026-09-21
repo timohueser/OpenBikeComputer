@@ -1,25 +1,21 @@
 import SwiftUI
 import OBCDomain
 
-/// The choice returned by the **shared trip picker** (TR7): leave the route
-/// loose, file it in an existing trip, or start a new trip under a name. The
-/// one selection type every filing flow speaks — multi-select grouping, the
-/// import row, and the route menus all resolve to one of these three.
+/// The choice the shared trip picker returns: leave the route loose, file it in an
+/// existing trip, or start a new trip. Every filing flow resolves to one of these.
 public enum TripSelection: Equatable, Sendable {
-    /// Don't file the route (the import row's opt-in default; never offered by
-    /// the route menus, where Remove is a separate action).
+    /// Do not file the route. The route menus never offer this; Remove is separate.
     case none
-    /// File into an existing trip — the ≤ 1-trip invariant makes this an
-    /// implicit move when the route already sits in another trip.
+    /// File into an existing trip. A route sits in at most one trip, so this is an
+    /// implicit move when it already sits in another.
     case existing(TripID)
-    /// Start a new trip with this (trimmed, non-empty) name and file the route
-    /// as its first stage.
+    /// Start a new trip with this trimmed, non-empty name and file the route as its
+    /// first stage.
     case new(String)
 }
 
-/// A light projection of a `TripRecord` for the picker's rows — name + stage
-/// count, keyed by ``TripID`` — so the picker never depends on the whole
-/// library type. Built once by `MainScreenModel.tripPickerItems`.
+/// A light projection of a `TripRecord` for the picker's rows, so the picker never
+/// depends on the whole library type.
 public struct TripPickerItem: Identifiable, Equatable, Sendable {
     public let id: TripID
     public let name: String
@@ -32,15 +28,10 @@ public struct TripPickerItem: Identifiable, Equatable, Sendable {
     }
 }
 
-/// **The** trip picker (TR7, locked: all pickers are one component). A sheet
-/// offering the existing trips plus a **New trip…** inline name field; the
-/// import row adds the opt-in *Don't add to a trip* row (`allowsNone`), while
-/// the route menus present it without that row. Picking a row (or creating a
-/// new trip) calls `onPick` once and dismisses; Cancel dismisses with nothing.
-///
-/// Filing itself is the caller's — the picker only reports the choice, so the
-/// same sheet drives an import save, a loose route's context menu, and a filed
-/// route's Move/Add overflow without knowing which.
+/// The one trip picker: a sheet offering the existing trips plus a New trip inline
+/// name field. `allowsNone` adds the opt-in "Don't add to a trip" row. Picking a row
+/// calls `onPick` once and dismisses; Cancel dismisses with nothing. Filing is the
+/// caller's job, so the same sheet drives an import save and the route menus alike.
 public struct TripPickerSheet: View {
     private let title: String
     private let trips: [TripPickerItem]
@@ -123,9 +114,7 @@ public struct TripPickerSheet: View {
         .tint(OBCTheme.tint)
     }
 
-    /// The "New trip…" affordance — a plain row that expands into an inline name
-    /// field (prefilled "New trip", nothing fancier — the locked default) plus a
-    /// Create action.
+    /// A plain row that expands into an inline name field and a Create action.
     @ViewBuilder
     private var newTripArea: some View {
         if creatingNew {

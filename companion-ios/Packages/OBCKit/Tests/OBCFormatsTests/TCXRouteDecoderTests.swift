@@ -2,15 +2,14 @@ import XCTest
 import OBCDomain
 @testable import OBCFormats
 
-/// The TCX decoder — course geometry, altitude, name/author, and the course-point
-/// waypoints (incl. the PointType name fallback). Ends on the bundled sample
-/// (the `-OBCImportSample tcx` file) as the end-to-end pin.
+/// The TCX decoder: course geometry, altitude, name and author, and the course-point waypoints
+/// with their PointType name fallback. It ends on the bundled sample as the end-to-end pin.
 final class TCXRouteDecoderTests: XCTestCase {
     private let decoder = TCXRouteDecoder()
 
-    /// Three trackpoints marching north 0.005° (~556 m) apart, plus two
-    /// out-of-order course points the decoder must sort into ride order —
-    /// one named, one falling back to its PointType.
+    /// Three trackpoints marching north 0.005 degrees (about 556 m) apart, plus two out-of-order
+    /// course points the decoder must sort into ride order: one named, one falling back to its
+    /// PointType.
     private let sample = """
         <?xml version="1.0" encoding="UTF-8"?>
         <TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">
@@ -75,8 +74,8 @@ final class TCXRouteDecoderTests: XCTestCase {
         XCTAssertNil(route.waypoints[0].note, "no <Notes> → no note")
     }
 
-    /// A shared *workout* TCX (Activities, no Courses) still imports — its
-    /// trackpoints become the route; there's just no course name or waypoints.
+    /// A shared workout TCX (Activities, no Courses) still imports: its trackpoints become the
+    /// route, with no course name or waypoints.
     func testActivityTrackFallbackWhenThereIsNoCourse() throws {
         let activityOnly = """
             <TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">
@@ -92,8 +91,7 @@ final class TCXRouteDecoderTests: XCTestCase {
         XCTAssertTrue(route.waypoints.isEmpty)
     }
 
-    /// A trackpoint without a position (paused GPS — TCX allows it) is skipped,
-    /// not decoded as (0, 0).
+    /// TCX allows a trackpoint without a position (paused GPS); it is skipped, not read as (0, 0).
     func testPositionlessTrackpointsAreSkipped() throws {
         let gappy = """
             <TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">
@@ -129,11 +127,10 @@ final class TCXRouteDecoderTests: XCTestCase {
         }
     }
 
-    // MARK: Coordinate / altitude validation (#304)
+    // MARK: Coordinate and altitude validation
 
-    /// A non-finite position (`LatitudeDegrees` = inf) parses but must be a clean
-    /// `.malformed` reject, never a poisoning `NaN` coordinate — even with a
-    /// course point present (the `sorted` crash path).
+    /// A non-finite position parses as a `Double`, so it must be rejected explicitly rather than
+    /// becoming a poisoning `NaN` coordinate, even with a course point present to sort.
     func testNonFinitePositionRejectsTheFile() {
         let bad = """
             <TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">
@@ -149,7 +146,7 @@ final class TCXRouteDecoderTests: XCTestCase {
         assertMalformed(bad)
     }
 
-    /// An out-of-range position (`LongitudeDegrees` = 999) is finite but invalid.
+    /// `LongitudeDegrees` = 999 is finite but not a valid longitude.
     func testOutOfRangePositionRejectsTheFile() {
         let bad = """
             <TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">
@@ -161,8 +158,6 @@ final class TCXRouteDecoderTests: XCTestCase {
         assertMalformed(bad)
     }
 
-    /// A non-finite `<AltitudeMeters>` is dropped to `nil` — the route still
-    /// imports.
     func testNonFiniteAltitudeBecomesNil() throws {
         let mixed = """
             <TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">
@@ -186,9 +181,8 @@ final class TCXRouteDecoderTests: XCTestCase {
         }
     }
 
-    /// End-to-end on the real bundled sample (`OBCMock/Fixtures/sample-import.tcx`,
-    /// the `-OBCImportSample tcx` file) — read via the repo path so this pins the
-    /// exact bytes the E1 XCUITest imports.
+    /// Reads the bundled sample through the repo path, so this pins the exact bytes the import
+    /// UI test uses.
     func testDecodesTheBundledCourseSample() throws {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()   // → Tests/OBCFormatsTests

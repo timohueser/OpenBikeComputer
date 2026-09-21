@@ -1,8 +1,7 @@
 import XCTest
 @testable import OBCTransport
 
-/// `state`/`battery` replay semantics (epic #234: "replay latest so a late
-/// subscriber gets the current value").
+/// `state` and `battery` replay semantics: a late subscriber gets the current value.
 final class AsyncMulticastTests: XCTestCase {
     func testLateSubscriberGetsLatestThenLiveUpdates() async {
         let multicast = AsyncMulticast<Int>(0)
@@ -38,10 +37,8 @@ final class AsyncMulticastTests: XCTestCase {
         XCTAssertNil(terminated)        // then finished
     }
 
-    /// Ordering hammer (#364): a subscriber racing a sender must never observe
-    /// a stale replay *after* a newer value. Before the fix, `stream()` yielded
-    /// the replay after releasing the lock, so a `send` in that window landed
-    /// first and the subscriber's sequence went new-then-stale.
+    /// A subscriber racing a sender must never see a stale replay after a newer value: yielding
+    /// the replay outside the lock lets a `send` in that window arrive first.
     func testSubscribeRacingSendNeverYieldsStaleReplayAfterNewerValue() async {
         let multicast = AsyncMulticast<Int>(0)
         let total = 200_000
@@ -50,9 +47,8 @@ final class AsyncMulticastTests: XCTestCase {
             multicast.finish()
         }
 
-        // Subscribe over and over while the sender hammers; each subscription's
-        // first two elements (replay, then a live send) must be increasing —
-        // a stale replay delivered after a newer value inverts them.
+        // Subscribe over and over while the sender hammers. Each subscription's first two
+        // elements (the replay, then a live send) must increase; a late stale replay inverts them.
         var racedSubscriptions = 0
         while multicast.value < total {
             var iterator = multicast.stream().makeAsyncIterator()

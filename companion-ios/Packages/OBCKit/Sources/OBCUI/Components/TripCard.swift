@@ -1,18 +1,13 @@
 import SwiftUI
 import OBCDomain
 
-/// **Trip Card** (TR6) — the routes-list panel for a *trip*: every stage drawn
-/// on one multi-stage preview in its palette color, a serif name, and the
-/// `N stages · km · ↑m` stat line. Visually distinct from a ``RouteCard`` by
-/// its **full-width hero preview** (route cards use the compact side-cell
-/// layout) — the multi-color stage map is the "group of routes" signal. All
-/// within existing `OBCTheme` tokens (no new colors — repo rule).
+/// The routes-list panel for a trip: every stage drawn on one multi-stage preview in
+/// its palette color, a serif name, and the stage-count stat line. The full-width
+/// hero preview tells it apart from a ``RouteCard``, which uses the compact side-cell
+/// layout; the multi-color stage map is the "group of routes" signal.
 ///
-/// (An earlier cut added a stacked-cards deck edge behind the panel; the owner
-/// cut it 2026-07-13 — it read as noise and broke the list's card rhythm.)
-///
-/// The on-device badge is the trip-level ``OnDeviceState`` the caller resolves
-/// (check only when the trip object *and* every stage are up to date).
+/// The on-device badge is the trip-level ``OnDeviceState`` the caller resolves: a
+/// check only when the trip object and every stage are up to date.
 public struct TripCard: View {
     let name: String
     let subtitle: String
@@ -31,8 +26,8 @@ public struct TripCard: View {
         self.onDevice = onDevice
     }
 
-    /// Convenience: build the stat line + stage previews from a trip's summed
-    /// stats and its member summaries (palette color by stage index).
+    /// Builds the stat line and the stage previews from a trip's summed stats and its
+    /// member summaries, coloring each stage by index.
     public init(
         name: String,
         stats: TripStats,

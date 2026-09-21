@@ -2,39 +2,33 @@
 @preconcurrency import CoreBluetooth
 import Foundation
 
-/// A `ByteChannel` backed by a CoreBluetooth `CBL2CAPChannel` — the real CoC data
-/// plane. The channel's `InputStream`/`OutputStream` are scheduled on a dedicated
-/// run-loop thread; `read`/`write` bridge the stream delegate callbacks to
-/// async/await via continuations.
+/// A `ByteChannel` backed by a CoreBluetooth `CBL2CAPChannel`: the real CoC data plane. The
+/// channel's input and output streams are scheduled on a dedicated run-loop thread, and `read` and
+/// `write` bridge the stream delegate callbacks to async/await through continuations.
 ///
-/// **Every stream touch happens on that thread.** `NSStream` is not thread-safe:
-/// pumping the output stream from the async caller's thread (as this class first
-/// did) races the delegate events and can silently miss a `hasSpaceAvailable`
-/// re-arm — the transfer then sits wedged forever with the link nominally up. So
-/// `write` only enqueues and hops the pump over, and a **stall watchdog** on the
-/// same run loop backstops whatever slips through anyway: a parked read/write
-/// that moves no bytes for [`stallTimeout`] fails the channel (`ChannelDropped`),
-/// which the layers above already treat as a drop — the device discards its
-/// partial when the CoC closes, and the upload sheet offers Resume instead of
-/// hanging at N%.
+/// Every stream touch happens on that thread. `NSStream` is not thread-safe: pumping the output
+/// stream from the async caller's thread races the delegate events and can silently miss a
+/// space-available re-arm, and the transfer then sits wedged forever with the link nominally up.
+/// So `write` only enqueues and hops the pump over, and a stall watchdog on the same run loop
+/// backstops whatever slips through: a parked read or write that moves no bytes for
+/// [`stallTimeout`] fails the channel, which the layers above already treat as a drop. The device
+/// discards its partial when the CoC closes, and the upload sheet offers Resume instead of hanging.
 ///
-/// `public` so host tooling can wrap a `CBL2CAPChannel` in the same byte layer as `BLETransport`.
+/// Public so host tooling can wrap a `CBL2CAPChannel` in the same byte layer as `BLETransport`.
 public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unchecked Sendable {
-    /// The CoreBluetooth channel itself — retained for the byte layer's whole lifetime because
-    /// **CoreBluetooth closes the L2CAP channel when the `CBL2CAPChannel` is deallocated**. Holding
-    /// only its streams (as this class otherwise does) lets the object die at the end of the
-    /// `didOpen` delegate callback, and macOS tears the CoC down ~milliseconds later — the peer sees
-    /// `ChannelClosed` before a single byte flows.
+    /// The CoreBluetooth channel itself, retained for the byte layer's whole lifetime, because
+    /// CoreBluetooth closes the L2CAP channel when the `CBL2CAPChannel` is deallocated. Holding
+    /// only its streams lets the object die at the end of the `didOpen` callback, and the system
+    /// tears the CoC down milliseconds later, so the peer sees it close before a byte flows.
     private let channel: CBL2CAPChannel
     private let input: InputStream
     private let output: OutputStream
     private let lock = NSLock()
     private let thread: Thread
 
-    /// How long a parked read/write may sit with **zero byte movement** before the
-    /// channel is declared dead. Generous: even the slowest negotiated link moves a
-    /// chunk every connection interval, and the device's longest quiet stretch (the
-    /// pre-announce CRC pass) is well under a second per megabyte.
+    /// How long a parked read or write may sit with zero byte movement before the channel is
+    /// declared dead. Generous: even the slowest negotiated link moves a chunk every connection
+    /// interval.
     private let stallTimeout: TimeInterval
 
     private var inbound = Data()
@@ -43,7 +37,7 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
     private var writeWaiter: CheckedContinuation<Void, Error>?
     private var closed = false
     private var failed = false
-    /// When bytes last moved (or a waiter parked) — the watchdog's reference point.
+    /// When bytes last moved, or a waiter parked: the watchdog's reference point.
     private var lastActivity = Date()
     private var stallTimer: Timer?
 
@@ -52,10 +46,10 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
         self.input = channel.inputStream
         self.output = channel.outputStream
         self.stallTimeout = stallTimeout
-        // A dedicated run-loop thread services the CoC's NSStream delegate events. A run loop with no
-        // input sources returns from `run()` *immediately*, so pin it alive with a `Port` — without
-        // this the thread exits before the streams are ever scheduled, no CoC bytes flow, and the peer
-        // sees the channel close. The loop wakes periodically so a `cancel()` on teardown is prompt.
+        // A dedicated run-loop thread services the CoC's stream delegate events. A run loop with
+        // no input sources returns from `run()` immediately, so pin it alive with a `Port`, or the
+        // thread exits before the streams are ever scheduled, no bytes flow, and the peer sees the
+        // channel close. The loop wakes periodically so a cancel on teardown is prompt.
         self.thread = Thread {
             let runLoop = RunLoop.current
             runLoop.add(Port(), forMode: .default)
@@ -65,7 +59,6 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
         }
         super.init()
         thread.start()
-        // Schedule the streams on the run-loop thread and open them.
         perform(#selector(schedule), on: thread, with: nil, waitUntilDone: false)
     }
 
@@ -82,8 +75,8 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
         stallTimer = timer
     }
 
-    /// Whether the channel can still move bytes — `BLETransport` checks this to
-    /// decide between reusing the CoC and re-opening it (after a teardown/drop).
+    /// Whether the channel can still move bytes. `BLETransport` checks this to decide between
+    /// reusing the CoC and re-opening it.
     public var isOpen: Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -125,13 +118,13 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
     }
 
     public func close() async {
-        // Lock + thread-hop live in a synchronous helper (both are flagged inside
-        // an async body); resuming the waiter afterward is async-safe.
+        // The lock and the thread hop live in a synchronous helper, because both are flagged
+        // inside an async body; resuming the waiter afterwards is async-safe.
         beginClose()?.resume(returning: Data())
     }
 
-    /// Cancel the one physical read waiter without closing the CoC. Protocol v4 uses this after
-    /// the GET result arrives behind the final stream record.
+    /// Cancel the one physical read waiter without closing the CoC. The protocol uses this after
+    /// the result arrives behind the final stream record.
     public func cancelRead() {
         lock.lock()
         let read = readWaiter
@@ -148,12 +141,11 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
         let write = writeWaiter; writeWaiter = nil
         lock.unlock()
         perform(#selector(teardown), on: thread, with: nil, waitUntilDone: false)
-        // A parked writer (a backpressured `send` when the cancel/close lands) is
-        // never re-armed by a stream event on a self-initiated close, so resume it
-        // here or its continuation leaks (the awaiting `send` hangs forever). A
-        // write fails like any other drop; the read resolves to a clean EOF,
-        // returned to the async `close()`. `fail()` nils the same waiters under the
-        // lock, so at most one of the two paths resumes each.
+        // A parked writer, a backpressured send when the cancel or close lands, is never re-armed
+        // by a stream event on a self-initiated close, so resume it here or its continuation leaks
+        // and the awaiting send hangs forever. A write fails like any other drop, and the read
+        // resolves to a clean EOF. `fail()` nils the same waiters under the lock, so at most one of
+        // the two paths resumes each.
         write?.resume(throwing: ChannelDropped())
         return read?.cont
     }
@@ -224,10 +216,9 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
         lock.unlock()
     }
 
-    /// The watchdog tick (run-loop thread): a parked waiter with no byte movement
-    /// for [`stallTimeout`] means the CoC is wedged — the link may still be "up",
-    /// but this transfer will never finish. Fail the channel so the layers above
-    /// recover (teardown → the device discards its partial → restart/Resume).
+    /// The watchdog tick, on the run-loop thread: a parked waiter with no byte movement for
+    /// [`stallTimeout`] means the CoC is wedged. The link may still be up, but this transfer will
+    /// never finish, so fail the channel and the layers above recover.
     private func checkStall() {
         lock.lock()
         let stalled = !closed && !failed
@@ -246,9 +237,9 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
         lock.unlock()
         if cleanEnd { read?.cont.resume(returning: Data()) } else { read?.cont.resume(throwing: ChannelDropped()) }
         write?.resume(throwing: ChannelDropped())
-        // A failed channel never carries another transfer (`isOpen` is false; the
-        // transport opens a fresh CoC instead) — release the streams and the
-        // thread now, and let the `CBL2CAPChannel` close when this object dies.
+        // A failed channel never carries another transfer, because `isOpen` is false and the
+        // transport opens a fresh CoC instead, so release the streams and the thread now and let
+        // the `CBL2CAPChannel` close when this object dies.
         perform(#selector(teardown), on: thread, with: nil, waitUntilDone: false)
     }
 }

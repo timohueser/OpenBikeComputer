@@ -2,11 +2,9 @@ import Testing
 import OBCDomain
 @testable import OBCFormats
 
-/// The canonical symbol → category table (`OBCR_Spec.md` §4.1, #947). This is the
-/// phone's half of a mapping the firmware also carries
-/// (`firmware/obc-route/src/symbol.rs`); these cases mirror that crate's unit
-/// tests so a row added on one side and forgotten on the other shows up as a
-/// failure rather than as two devices disagreeing about the same GPX.
+/// The canonical symbol-to-category table. This is the phone's half of a mapping the firmware
+/// also carries in `firmware/obc-route/src/symbol.rs`; these cases mirror that crate's tests, so
+/// a row added on one side and forgotten on the other fails here.
 struct WaypointSymbolTests {
     @Test("each of the six categories has its curated vocabulary")
     func mapsTheCuratedVocabularies() {
@@ -46,8 +44,7 @@ struct WaypointSymbolTests {
         #expect(WaypointSymbol.symbol(sym: nil, type: nil) == "")
     }
 
-    /// The table is the spec's mirror: every key must already be in normal form,
-    /// or the row is unreachable and §4.1 lies about what maps.
+    /// Every key must already be in normal form, or the row is unreachable.
     @Test("every table key is already normalized and reachable")
     func everyKeyIsNormalized() {
         for entry in WaypointSymbol.vocabularies {
@@ -58,8 +55,7 @@ struct WaypointSymbolTests {
         }
     }
 
-    /// The wire ids are the map's, and generic is `0` — the byte the OBCR record
-    /// stores (`OBCR_Spec.md` §4).
+    /// The wire ids are the map's, and generic is `0`: the byte the OBCR record stores.
     @Test("wire ids match the map's categories")
     func wireIDsMatchTheMap() {
         #expect(WaypointCategory.wireID(nil) == 0)
