@@ -1,11 +1,10 @@
-// Exact selection pricing and coverage warnings. Totals sum published cell
-// bytes. Missing cells are holes, while partial coarse cells are tracked as
-// normal context rather than warning-hatched detail.
+// Exact selection pricing and coverage warnings. Totals sum published cell bytes.
+// Missing cells are holes, while partial coarse cells are tracked as normal context
+// rather than warning-hatched detail.
 //
-// Nothing here judges a size. A map is one object whose interior scales to
-// 64 GiB (`OBCM_Spec.md` §1.1), so the only size question left is whether it
-// fits the rider's card — which the device answers when the bytes arrive
-// (`lib/device/write.ts`), not the catalog beforehand.
+// Nothing here judges a size. A map is one object whose interior scales to 64 GiB, so
+// the only size question left is whether it fits the rider's card — which the device
+// answers when the bytes arrive, not the catalog beforehand.
 
 import type { BandRole, Catalog, ReferenceEntry, RegionEntry } from "./manifest";
 import type { CellIndexDocument } from "./satellites";
@@ -46,28 +45,28 @@ export interface CoverageReport {
 }
 
 /**
- * The elevation line (EL4, `OBCC_Spec.md` §13.3).
+ * The elevation line.
  *
  * Kept beside the bands rather than as one of them, because terrain is a second
- * artifact class with its own revision track — it is not in `bytes_by_band`.
- * What it does share is §5.7's discipline: every byte here is a published
- * `bytes` the catalog states, summed before anything is fetched.
+ * artifact class with its own revision track: it is not in `bytes_by_band`. What it
+ * does share is the discipline that every byte here is a published `bytes` the catalog
+ * states, summed before anything is fetched.
  */
 export interface TerrainLedger {
     /** Downloadable squares. */
     cellCount: number;
-    /** Squares that are canonically void — coverage that costs nothing (§13.6). */
+    /** Squares that are canonically void — coverage that costs nothing. */
     knownEmptyCount: number;
     /** Ground with no terrain object *and* no void assertion: elevation this map
      *  will not have. Legal, and shown rather than merely tolerated. */
     missingCount: number;
     /** Summed published `bytes` — what the raster adds to the download. */
     bytes: number;
-    /** The catalog's source credit, verbatim (§13.5). A consumer that displays
-     *  terrain MUST show this and MUST NOT hard-code it. */
+    /** The catalog's source credit, verbatim. A consumer that displays terrain MUST
+     *  show this and MUST NOT hard-code it. */
     attribution: string;
-    /** The finer models the raster's summit heights came from (§13.1). §13.5
-     *  covers each of them too, so they are shown where `attribution` is. */
+    /** The finer models the raster's summit heights came from. The same licence
+     *  obligation covers them, so they are shown where `attribution` is. */
     references: ReferenceEntry[];
 }
 
@@ -78,8 +77,8 @@ export interface Ledger {
      *  shows, because it is what the transfer actually costs. */
     totalBytes: number;
     cellCount: number;
-    /** The raster's own line, or `null` when the catalog publishes no terrain —
-     *  a complete map whose profiles are flat (§13). */
+    /** The raster's own line, or `null` when the catalog publishes no terrain — a
+     *  complete map whose profiles are flat. */
     terrain: TerrainLedger | null;
     /** The core band's line — the nav graph and the POIs. The disk-need
      *  projection prices it apart from the geometry (`DownloadStep`). */
@@ -95,10 +94,9 @@ export interface Ledger {
     /**
      * Whether every band and every part has reported in.
      *
-     * The one thing a summary card must consult before it prints a total. A
-     * pending region contributes 0 B, which is a perfectly ordinary number, so
-     * "DACH — 0 B, no holes" is what a confident card says half a second before
-     * it says 47 GB. Nothing about the total itself can tell the two apart.
+     * The one thing a summary card must consult before it prints a total. A pending
+     * region contributes 0 B, which is a perfectly ordinary number, so "DACH — 0 B, no
+     * holes" is what a confident card says half a second before it says 47 GB.
      */
     isFinal: boolean;
 }
@@ -198,13 +196,10 @@ export function ledgerFor(
 /**
  * Price a named region straight from the root document — no satellite fetch.
  *
- * This is `OBCC_Spec.md` §6's whole reason for putting `bytes`,
- * `bytes_by_band` and `cell_count` in the root: a builder must be able to price
- * a region the moment a rider hovers it, and pricing must not cost a round trip.
- * The result is the same shape as {@link ledgerFor}.
- *
- * Per-band partial counts apply the same coarse-context rule before the
- * satellite fetch.
+ * This is why `bytes`, `bytes_by_band` and `cell_count` are in the root: a builder must
+ * be able to price a region the moment a rider hovers it, and pricing must not cost a
+ * round trip. The result is the same shape as {@link ledgerFor}, and per-band partial
+ * counts apply the same coarse-context rule.
  */
 export function ledgerForRegion(catalog: Catalog, entry: RegionEntry): Ledger {
     // `hasOwn`, not `?? 0`: a band id is a document string and `"constructor"`
@@ -224,8 +219,8 @@ export function ledgerForRegion(catalog: Catalog, entry: RegionEntry): Ledger {
         };
     });
     const core = bands.find((b) => b.role === "core")!;
-    // §13.3 prices a region's raster in the root too, so hovering a region shows
-    // the whole download — map plus elevation — with no satellite fetch either.
+    // A region's raster is priced in the root too, so hovering a region shows the whole
+    // download — map plus elevation — with no satellite fetch either.
     const terrain: TerrainLedger | null =
         catalog.terrain && entry.terrain
             ? {
@@ -246,8 +241,8 @@ export function ledgerForRegion(catalog: Catalog, entry: RegionEntry): Ledger {
         coverage: coverageReport(new Map(), bands, entry.partial_cell_count_by_band),
         unresolvedBands: [],
         unresolvedParts: [],
-        // The root prices a region completely — that is §6's whole point —
-        // so this answer is final the moment the catalog is loaded.
+        // The root prices a region completely, so this answer is final the moment the
+        // catalog is loaded.
         isFinal: true,
     };
 }
