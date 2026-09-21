@@ -40,9 +40,10 @@
 //! 4. **Rows are flipped once, on ingest** (`OBCT_Spec.md` §2), so no downstream step has to decide
 //!    which way is north.
 //!
-//! [`bake::bake_cell`] is therefore a pure function of `(mosaic, cell)` and nothing else — which is
-//! why a cell baked inside a wide shard is byte-identical to the same cell baked on its own, and
-//! why the tests can pin a digest.
+//! [`bake::bake_cell`] is therefore a pure function of `(mosaic, cell, lift map)` and nothing else,
+//! and a [`crest::LiftMap`] is itself a pure function of the cell and the two DEMs — which is why a
+//! cell baked inside a wide shard is byte-identical to the same cell baked on its own, and why the
+//! tests can pin a digest.
 //!
 //! ## Attribution is a licence obligation
 //!

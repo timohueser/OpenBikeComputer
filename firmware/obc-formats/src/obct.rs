@@ -22,9 +22,8 @@ use crate::io::{validate_prefix, DecodeError};
 #[path = "obct_surface.rs"]
 mod surface;
 pub use surface::{
-    approximation_error, approximation_offset, CellIndexLayout, CrestDirectory, CrestLayout, SurfaceLayout,
-    SurfaceLevel, CELL_INDEX_FLAG, CREST_FLAG, CREST_QUANTUM, MAX_GROUP_BYTES, MAX_LEAF_LOG2, MAX_SURFACE_LEVELS,
-    SURFACE_FLAG, SURFACE_VERSION,
+    approximation_error, approximation_offset, CellIndexLayout, SurfaceLayout, SurfaceLevel, CELL_INDEX_FLAG,
+    MAX_GROUP_BYTES, MAX_LEAF_LOG2, MAX_SURFACE_LEVELS, SURFACE_FLAG, SURFACE_VERSION,
 };
 
 pub const MAGIC: [u8; 4] = *b"OBCT";
