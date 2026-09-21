@@ -1,27 +1,18 @@
 /**
  * "Is there a newer firmware than the one running?" — the check, and the version dialect it needs.
  *
- * #773 locks the distribution end of this and the builder does not relitigate it: the request is an
- * anonymous GET with no accounts and nothing sent about the device, for the one manifest at
- * {@link FIRMWARE_MANIFEST_URL}. This page reads that manifest and compares it against the running
- * version; it never decides what an update *is*.
+ * The request is an anonymous GET with no accounts and nothing sent about the device, for the one
+ * manifest at {@link FIRMWARE_MANIFEST_URL}. This page reads that manifest and compares it against
+ * the running version; it never decides what an update *is*.
  *
- * ## Published shape
- *
- * `release.yml` emits this manifest and mirrors it to the update bucket. Before the first tag the
+ * `release.yml` emits the manifest and mirrors it to the update bucket. Before the first tag the
  * fetch can legitimately return 404 and the UI says there is nothing published yet.
- * {@link parseFirmwareManifest} implements the pipeline's shape (version, size, SHA-256, image URL
- * and optional notes URL) and rejects anything else loudly.
  *
- * ## The version dialect, which is the part with teeth
- *
- * A firmware revision string comes from the Device Information Service. Today that is
- * `CARGO_PKG_VERSION+git-hash`; after #773's U1 it prefers the *installed* OBCU container's
- * version. Either way, some devices report something that is not a release version at all — a
- * probe-flashed dev build reports a bare hash — and #773 states the consequence plainly: the app
- * **cannot parse it as a version and never offers an auto-update**. That is a locked behaviour, not
- * a limitation to work around, so {@link compareVersions} refuses rather than guesses, and
- * {@link updateStatus} answers `unknown`.
+ * The version dialect is the part with teeth. A firmware revision string comes from the device, and
+ * some devices report something that is not a release version at all — a probe-flashed dev build
+ * reports a bare hash. The app then **cannot parse it and never offers an auto-update**. That is a
+ * locked behaviour, not a limitation to work around, so {@link compareVersions} refuses rather than
+ * guesses and {@link updateStatus} answers `unknown`.
  */
 
 /** What the manifest says about the newest published build. */
@@ -42,15 +33,12 @@ export interface FirmwareRelease {
  * Where the manifest is served from, and deliberately **not** GitHub.
  *
  * A release asset's stable download URL 302s to blob storage that sends no
- * `access-control-allow-origin` header, so a browser `fetch` for it fails — which kills the check
- * in both hosts that have a browser in them, the static web builder and the desktop app's
- * WKWebView. (The JSON API does send CORS headers, but it is the rate-limited surface #773's body
- * set out to avoid.) So #773's 2026-07-29 planning comment locks the serving end: `release.yml`
- * mirrors `manifest.json` + `UPDATE.BIN` to R2 behind this domain, under a per-channel `fw/`
- * prefix, and **GitHub Releases stays the source of truth** — the publish trigger, the versioned
- * archive, the release notes, the ELFs. Nothing about the trust chain moves with the bytes: the
- * Ed25519 signature the device verifies is what says an image is genuine, not the host that served
- * it. The SHA-256 here only proves that the download matches the manifest.
+ * `access-control-allow-origin` header, so a browser `fetch` for it fails — which kills the check in
+ * both hosts that have a browser in them. `release.yml` therefore mirrors `manifest.json` and
+ * `UPDATE.BIN` to R2 behind this domain, and GitHub Releases stays the source of truth. Nothing
+ * about the trust chain moves with the bytes: the Ed25519 signature the device verifies is what says
+ * an image is genuine, not the host that served it. The SHA-256 here only proves that the download
+ * matches the manifest.
  *
  * Overridable so a test never touches the network.
  */
@@ -67,8 +55,8 @@ export class FirmwareManifestError extends Error {
  * Parse a whole manifest body.
  *
  * Whole, not streamed, and every required field checked before any of it is used — the same posture
- * `OBCC_Spec.md` §11 takes for the map catalog, for the same reason: a half-understood manifest that
- * offers a download is worse than no manifest.
+ * the map catalog takes, for the same reason: a half-understood manifest that offers a download is
+ * worse than no manifest.
  */
 export function parseFirmwareManifest(body: string): FirmwareRelease {
     let doc: unknown;
@@ -112,9 +100,9 @@ function str(raw: Record<string, unknown>, key: string): string {
 /**
  * Fetch the published manifest.
  *
- * `null` means *there is nothing published* — a 404, which is the ordinary answer until #773's U3
- * ships — and is not an error. A malformed manifest **is** an error, because that one means
- * something is wrong at the publishing end and hiding it would hide it forever.
+ * `null` means *there is nothing published* — a 404 — and is not an error. A malformed manifest
+ * **is** an error, because that means something is wrong at the publishing end and hiding it would
+ * hide it forever.
  */
 export async function fetchFirmwareRelease(
     options: { url?: string; signal?: AbortSignal; fetch?: typeof globalThis.fetch } = {},
@@ -122,7 +110,7 @@ export async function fetchFirmwareRelease(
     const get = options.fetch ?? globalThis.fetch;
     const response = await get(options.url ?? FIRMWARE_MANIFEST_URL, {
         signal: options.signal,
-        // No credentials, no headers worth naming: #773's "anonymous GET, no accounts" rule.
+        // No credentials, no headers worth naming: the anonymous-GET rule.
         credentials: "omit",
     });
     if (response.status === 404) return null;
@@ -131,8 +119,6 @@ export async function fetchFirmwareRelease(
     }
     return parseFirmwareManifest(await response.text());
 }
-
-// --- the version dialect ------------------------------------------------------
 
 interface Version {
     major: number;
@@ -146,8 +132,8 @@ interface Version {
  * Parse a release version, or `null` for anything that is not one.
  *
  * Accepts an optional leading `v`, a three-part numeric core, an optional `-pre` tag and optional
- * `+build` metadata — the last of which is *ignored*, so `1.2.0+abc1234` (what DIS reports today)
- * and `1.2.0` are the same version. A bare git hash parses as nothing at all, which is the point.
+ * `+build` metadata — the last of which is *ignored*, so `1.2.0+abc1234` and `1.2.0` are the same
+ * version. A bare git hash parses as nothing at all, which is the point.
  */
 export function parseVersion(text: string): Version | null {
     const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(text.trim());
@@ -163,8 +149,8 @@ export function parseVersion(text: string): Version | null {
  * Order two version strings: negative if `a` is older, 0 if equal, positive if newer.
  *
  * `null` when either side is not a release version. Callers must treat that as "cannot say" rather
- * than as "not newer" — #773's rule is that an unparseable running version means no update is ever
- * offered, and collapsing `null` into `0` would silently offer one.
+ * than as "not newer": an unparseable running version means no update is ever offered, and
+ * collapsing `null` into `0` would silently offer one.
  */
 export function compareVersions(a: string, b: string): number | null {
     const left = parseVersion(a);
@@ -208,16 +194,14 @@ function comparePrerelease(left: string, right: string): number {
 /**
  * What to say about a device running `running` when the newest published build is `latest`.
  *
- * - `unknown` — the running version is not a release version (a probe-flashed dev build). No
- *   update is offered; #773 locks that.
- * - `ahead` — the device is running something newer than what is published. Says so; does not
- *   offer to downgrade.
+ * - `unknown` — the running version is not a release version. No update is offered.
+ * - `ahead` — the device is running something newer than what is published. Says so; does not offer
+ *   to downgrade.
  *
  * An unparseable running version answers `unknown` **even when nothing is published**, and that
  * ordering is deliberate: what makes a dev build undecidable is the version it reports, not the
- * absence of a manifest. Answering `no-release` there would hide the state #773's U4/U5 amendment
- * asks the apps to show — "development build, automatic updates paused" — behind whichever
- * publication happens to exist that day.
+ * absence of a manifest. Answering `no-release` there would hide "development build, automatic
+ * updates paused" behind whichever publication happens to exist that day.
  */
 export function updateStatus(
     running: string | null | undefined,
