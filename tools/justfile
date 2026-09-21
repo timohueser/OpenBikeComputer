@@ -750,6 +750,7 @@ check *args:
       cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     if want test; then
       rm -rf .artifacts/python/repository-tools
+      step "firmware production dependency direction" python3 "$OBC_ROOT/firmware/tools/check_dependencies.py"
       step "fixture registry unit tests" python3 -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools
       step "test (fast hermetic binaries)" bash tools/ci/test.sh nextest-fast
       step "doctests (selected packages)" bash tools/ci/test.sh doctests
@@ -783,7 +784,6 @@ check *args:
       else _warn "skip frontend — npm not installed"; SKIPPED+=("frontend"); fi
     fi
     if want deny; then
-      step "firmware production dependency direction" python3 "$OBC_ROOT/firmware/tools/check_dependencies.py"
       if command -v cargo-deny >/dev/null 2>&1; then
         step "deny (workspace)"    cargo deny --manifest-path "$OBC_ROOT/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
         step "deny (board crate)"  cargo deny --manifest-path "$OBC_ROOT/firmware/obc-fw-nrf54l/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
@@ -825,6 +825,8 @@ clean *args:
 # Run the gates this change selects, then print a pull-request skeleton. The plan gives one line
 # and one reason for each gate, the skipped ones included, so the run stays proportional to the
 # change. `obc test affected` executes the declared suites, so a gate it covers is skipped there.
+# A selection that takes the whole graph is CI's run: the plan then keeps only the suites that
+# build nothing and names the rest as left to CI.
 #   obc ready --dry-run          obc ready --base origin/develop
 # Run the gates this change selects, then print a PR skeleton. Args: [--base REF] [--dry-run]
 [group('agent')]

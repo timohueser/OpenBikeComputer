@@ -33,14 +33,22 @@ PACKAGES = {
 
 RENDERING = ("firmware/obc-app/src/**", "firmware/ui-frames.toml", "firmware/obc-app/i18n/*.toml")
 
+EDGE = "changed Rust package obc-app: firmware/obc-app/src/app.rs"
+FOUNDATION = f"{test_plan.FOUNDATION_CHANGED} Cargo.toml"
+
+
+def unit(identifier: str, command: str = "", reason: str = EDGE) -> test_plan.Unit:
+    return test_plan.Unit(id=identifier, jobs=["test"], command=command, reasons=[reason])
+
 
 class ReadyPlanTests(unittest.TestCase):
     def plan(self, *changed: str, suites=()):
+        selected = [value if isinstance(value, test_plan.Unit) else unit(value) for value in suites]
         return ready.plan(
             list(changed),
             base="origin/develop",
             packages=PACKAGES,
-            suites=set(suites),
+            selected=selected,
             rendering=RENDERING,
         )
 
@@ -110,6 +118,77 @@ class ReadyPlanTests(unittest.TestCase):
         )
         # The format gate writes; the suite behind it only checks, so it is never covered.
         self.assertIn("cargo fmt --all", self.running("firmware/obc-app/src/app.rs", suites=suites))
+
+    def test_a_wholesale_selection_keeps_the_free_suites_and_leaves_the_rest_to_ci(self):
+        # A foundation input selects the whole graph. That run is CI's, but the suites that
+        # build nothing cost a fraction of a second, so they must not disappear with it.
+        tools_tests = "mkdir -p .artifacts && rm -rf .artifacts/python && PYTHONPATH=. python3 -m unittest discover"
+        selected = [
+            unit("rust.obc-app", reason=FOUNDATION),
+            unit("ci.rust-clippy", "obc check clippy", FOUNDATION),
+            unit("ci.dependency-direction", "python3 firmware/tools/check_dependencies.py", FOUNDATION),
+            unit("python.repository-tools", tools_tests, FOUNDATION),
+            unit("ci.wasm-size", "bash builder/build-wasm-bridges.sh", FOUNDATION),
+            unit("ci.licenses", "tools/licenses/gen-third-party.sh --check", FOUNDATION),
+            unit("ci.ui-snapshots", "obc shot --check", FOUNDATION),
+            unit("ci.docs", "obc check docs", FOUNDATION),
+            test_plan.Unit(
+                id="ios.checks",
+                jobs=["ios-unit"],
+                command="python3 companion-ios/scripts/check.py",
+                platforms=("windows",),
+                reasons=[FOUNDATION],
+            ),
+        ]
+        gates = self.plan("Cargo.toml", "firmware/obc-app/src/app.rs", suites=selected)
+        lines = {gate.command: gate for gate in gates}
+
+        affected = lines["obc test affected --base origin/develop"]
+        self.assertFalse(affected.run)
+        self.assertIn(FOUNDATION, affected.reason)
+        self.assertEqual(
+            [gate.command for gate in gates if gate.run],
+            ["cargo fmt --all", "python3 firmware/tools/check_dependencies.py", tools_tests],
+        )
+        self.assertEqual(lines["bash builder/build-wasm-bridges.sh"].reason, "ci.wasm-size is left to CI")
+        self.assertEqual(
+            lines["python3 companion-ios/scripts/check.py"].reason, "ios.checks runs only on windows"
+        )
+        # Nothing under docs/ changed, so the documentation gate does not speak for ci.docs.
+        # A suite no running gate covers keeps its own line; that is the whole point here.
+        self.assertEqual(lines["obc check docs"].reason, "ci.docs is left to CI")
+        self.assertEqual(
+            lines["python3 docs/build_docs.py --check-links"].reason, "nothing under docs/ changed"
+        )
+        # The snapshot sweep stays CI's work: the budget gives it one run, and CI has it.
+        self.assertEqual(lines["obc shot --check"].reason, "ci.ui-snapshots is left to CI")
+        # The clippy gate does that suite's work locally, so the suite has no second line.
+        self.assertNotIn("obc check clippy", lines)
+        self.assertEqual(
+            lines["cargo clippy -p obc-app --all-targets -- -D warnings"].reason,
+            "ci.rust-clippy is left to CI",
+        )
+        # A selected Cargo package has no command of its own; the affected gate counts it.
+        self.assertNotIn("", lines)
+        for gate in gates:
+            self.assertTrue(gate.reason.strip(), gate.command)
+
+    def test_the_free_command_rule_reads_every_executable_a_command_names(self):
+        # Each row is a form a suite command can take. A separator the lexer does not cut out
+        # of its neighbour would hide the executable behind it, which is how a build slips in.
+        for command, free in (
+            ("python3 tools/check_one_home.py", True),
+            ("mkdir -p .artifacts && rm -rf .artifacts/x && python3 -m unittest discover", True),
+            ("PYTHONPATH=. python3 -m pytest builder/tests/", True),
+            ("python3 a.py; cargo build --release", False),
+            ("python3 a.py&&cargo build --release", False),
+            ("python3 a.py | cargo build --release", False),
+            ("python3 a.py & cargo build --release", False),
+            ("python3 a.py\ncargo build --release", False),
+            ("cd builder/app && npm test", False),
+            ("xvfb-run -a dbus-run-session -- python3 apps/obc-desktop/e2e/launch.py", False),
+        ):
+            self.assertEqual(ready.builds_nothing(command), free, command)
 
     def test_a_rendering_input_selects_the_sweep_when_no_suite_runs_it(self):
         self.assertIn(

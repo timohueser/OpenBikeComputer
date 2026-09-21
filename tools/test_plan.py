@@ -143,6 +143,10 @@ CODE_OR_POLICY_SUFFIXES = {
 FIXTURE_FEATURE = "external-fixtures"
 # The reason prefix that means "run everything, including the snapshot sweep".
 WHOLE_GRAPH = "whole graph:"
+# The other two reasons that claim the graph as a whole instead of following an edge.
+POLICY_CHANGED = "test policy changed:"
+FOUNDATION_CHANGED = "foundational Rust input changed:"
+WHOLESALE = (WHOLE_GRAPH, POLICY_CHANGED, FOUNDATION_CHANGED)
 
 class PlanError(Exception):
     """The plan or its inputs are invalid."""
@@ -462,11 +466,11 @@ def select(
             owned = True
             for unit in units:
                 if unit.declared:
-                    claim(unit, f"test policy changed: {path}")
+                    claim(unit, f"{POLICY_CHANGED} {path}")
 
         if path in RUST_FOUNDATION_PATHS:
             owned = True
-            reason = f"foundational Rust input changed: {path}"
+            reason = f"{FOUNDATION_CHANGED} {path}"
             for name, package in graph.packages.items():
                 if path in {"Cargo.toml", "Cargo.lock"} and package.product_root != ROOT_WORKSPACE:
                     continue
@@ -548,6 +552,19 @@ def select(
         units=units,
         packages=sorted(selected_packages),
         errors=sorted(set(errors)),
+    )
+
+def wholesale_reason(units: Iterable[Unit]) -> str:
+    """The first reason that claimed the graph as a whole, or "" when every unit came by edge.
+
+    A foundation input, the test policy and a deleted path with no owner each select nearly
+    everything. That selection says what changed reached the whole repository; it does not say
+    that the whole repository is worth compiling again on one machine.
+    """
+
+    return next(
+        (reason for unit in units for reason in unit.reasons if reason.startswith(WHOLESALE)),
+        "",
     )
 
 # A release candidate is verified whole, not by its diff. The sweep keeps its
