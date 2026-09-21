@@ -303,6 +303,13 @@ bake *args:
     ( cd "$OBC_ROOT" && _run cargo build --release -p obc-bake )
     bin="$OBC_ROOT/target/release/obc-bake"
     tree="${OBC_BAKE_TREE:-$HOME/obc-bake}"
+    # The terrain stage reads the reference archive for its crest lifts. A run that forgets
+    # `--reference` re-bakes every lifted cell without lifts, so obc.local names the archive
+    # once and every bake passes it unless the command line already does.
+    reference=()
+    if [[ -n "${OBC_REFERENCE_ARCHIVE:-}" ]]; then
+      case " $* " in *" --reference "*) ;; *) reference=(--reference "$OBC_REFERENCE_ARCHIVE") ;; esac
+    fi
     case "${1:-}" in
       verify)
         shift
@@ -373,17 +380,19 @@ bake *args:
         export RCLONE_CONFIG_OBCR2_ACCESS_KEY_ID="$OBC_R2_ACCESS_KEY_ID"
         export RCLONE_CONFIG_OBCR2_SECRET_ACCESS_KEY="$OBC_R2_SECRET_ACCESS_KEY"
         export RCLONE_CONFIG_OBCR2_NO_CHECK_BUCKET=true
-        root="obcr2:${OBC_R2_BUCKET}"
-        catalog="$root/$prefix/catalog.json"
+        # The catalog prefix only: the bucket also holds the terrain reference archive
+        # (host/obc-dem/reference), which is days of ingest and no part of a bake.
+        root="obcr2:${OBC_R2_BUCKET}/$prefix"
+        catalog="$root/catalog.json"
         _say "checking live catalog before cleanup: $catalog"
         rclone lsjson "$catalog" --stat >/dev/null || {
           _err "catalog is not readable at the configured prefix; refusing to purge it"
           exit 1
         }
         if (( apply )); then
-          _warn "deleting every object in the R2 bucket: $root"
+          _warn "deleting every object under the catalog prefix: $root"
           _run rclone delete "$root" --rmdirs
-          _ok "R2 bucket emptied; publish the verified bake tree immediately"
+          _ok "catalog prefix emptied; publish the verified bake tree immediately"
         else
           _say "dry run — review this list, then repeat with: obc bake clean-r2 --apply"
           _run rclone delete "$root" --rmdirs --dry-run
@@ -393,12 +402,12 @@ bake *args:
         # tree as `bake`, deliberately a separate command: it needs DEM tiles and no OSM
         # extract, and it must never be a step of a schema re-bake.
         shift
-        _run "$bin" terrain --out "$tree" "$@"
+        _run "$bin" terrain --out "$tree" ${reference[@]+"${reference[@]}"} "$@"
         _say "bake tree: $tree — now re-bake the cells so their ascents match: obc bake" ;;
       regions|check-obcm-version|help|-h|--help)
         _run "$bin" "$@" ;;
       *)
-        _run "$bin" bake --out "$tree" "$@"
+        _run "$bin" bake --out "$tree" ${reference[@]+"${reference[@]}"} "$@"
         _say "bake tree: $tree — verify with: obc bake verify" ;;
     esac
 

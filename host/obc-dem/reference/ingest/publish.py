@@ -37,7 +37,6 @@ def r2_remote() -> Remote:
 
     endpoint = os.environ.get("OBC_R2_ENDPOINT") or f"https://{need('OBC_R2_ACCOUNT_ID')}.r2.cloudflarestorage.com"
     bucket = need("OBC_R2_BUCKET")
-    prefix = os.environ.get("OBC_R2_PREFIX", "").strip("/")
     env = {
         "RCLONE_CONFIG_OBCR2_TYPE": "s3",
         "RCLONE_CONFIG_OBCR2_PROVIDER": "Cloudflare",
@@ -47,8 +46,9 @@ def r2_remote() -> Remote:
         "RCLONE_CONFIG_OBCR2_SECRET_ACCESS_KEY": need("OBC_R2_SECRET_ACCESS_KEY"),
         "RCLONE_CONFIG_OBCR2_NO_CHECK_BUCKET": "true",
     }
-    key_root = "/".join(part for part in (bucket, prefix, ARCHIVE_PREFIX) if part)
-    return Remote(f"OBCR2:{key_root}", env)
+    # Beside the catalog prefix, never under it: `obc bake clean-r2` purges the catalog prefix
+    # before a fresh publish, and an archive that took days to ingest must not go with it.
+    return Remote(f"OBCR2:{bucket}/{ARCHIVE_PREFIX}", env)
 
 
 def run_rclone(argv: list[str], env: dict[str, str], capture: bool = False) -> str:

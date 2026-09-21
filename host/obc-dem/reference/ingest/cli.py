@@ -17,6 +17,7 @@ source pixel wide survives the 7 m step, and writes whole tiles.
 
 import argparse
 import json
+import shutil
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -25,7 +26,7 @@ from pathlib import Path
 from . import publish, wizard
 from .archive import (contributors, ingest_raster, load_manifests, local_rasters, rebuild_index,
                       read_index, tile_path, tile_problems, tile_digest, write_manifest)
-from .lattice import Refuse, box_tiles, check_world, tile_id
+from .lattice import Refuse, box_tiles, check_world, tile_bounds, tile_id
 from .pool import open_raster
 from .sources import SOURCES
 
@@ -71,7 +72,11 @@ def command_ingest(args) -> int:
         print(f"warning: {args.bbox} looks outside {source.country}", file=sys.stderr)
     root = Path(args.archive)
     work = Path(args.work) if args.work else Path(tempfile.gettempdir()) / f"obc-reference-{source.key}"
+    per_tile = getattr(args, "per_tile", False)
     if args.input:
+        if per_tile:
+            raise Refuse("--per-tile fetches one tile's box at a time from the service; a delivery "
+                         "is already on disk, so ingest it in one box")
         require_datum(source, getattr(args, "datum", None))
         inputs = Path(args.input)
         # The work directory is where the tool writes and the delivery directory is what
@@ -83,9 +88,42 @@ def command_ingest(args) -> int:
         rasters = local_rasters(source, inputs, bbox, work)
     else:
         source.require_credential()
+        if per_tile:
+            ingest_per_tile(bbox, source, root, work)
+            return finish(root, source)
         rasters = source.fetch(bbox, work)
     if not rasters:
         raise Refuse("no rasters cover that box")
+    ingest_rasters(rasters, source, root)
+    return finish(root, source)
+
+
+def ingest_per_tile(bbox, source, root: Path, work: Path) -> None:
+    """A country-scale run: the box one archive tile at a time, the work directory wiped
+    after each.
+
+    Disk holds one tile's source rasters however large the box is, and every tile whose box
+    has been asked for is in the source's manifest as `done`, so a run that stopped resumes
+    at the tile it was on. A tile that stopped half-way is not done and is asked for again;
+    the pixels it already holds merge by the maximum, as any second box does.
+    """
+
+    tiles = box_tiles(bbox, halo=0)
+    done = set(load_manifests(root).get(source.key, {}).get("done", []))
+    todo = [tile for tile in tiles if tile not in done]
+    print(f"{len(tiles)} tile(s) in the box, {len(tiles) - len(todo)} already done for {source.key}")
+    for n, tile in enumerate(todo, 1):
+        ti, tj = (int(part) for part in tile.split("/"))
+        print(f"tile {tile} [{n}/{len(todo)}]")
+        shutil.rmtree(work, ignore_errors=True)
+        ingest_rasters(source.fetch(tile_bounds(ti, tj), work), source, root)
+        manifest = load_manifests(root)[source.key]
+        write_manifest(root, {**manifest, "done": sorted({*manifest.get("done", []), tile})})
+    shutil.rmtree(work, ignore_errors=True)
+
+
+def ingest_rasters(rasters: list[Path], source, root: Path) -> None:
+    """The shared tail over rasters on disk: pool each one, merge, and write the manifests."""
 
     manifests = load_manifests(root)
     held = contributors(manifests)
@@ -104,6 +142,7 @@ def command_ingest(args) -> int:
     fetched = datetime.now(timezone.utc).date().isoformat()
     mine = sorted(tile for tile, keys in held.items() if source.key in keys)
     write_manifest(root, {
+        **manifests.get(source.key, {}),
         "key": source.key,
         "country": source.country,
         "product": source.product,
@@ -120,11 +159,19 @@ def command_ingest(args) -> int:
         kept = [tile for tile in manifest.get("tiles", []) if key in held.get(tile, set())]
         if kept != manifest.get("tiles", []):
             write_manifest(root, {**manifest, "tiles": kept})
+    print(f"  {len(touched)} tile(s) written, {outside} source pixel centre(s) fell outside "
+          "their lattice window")
+
+
+def finish(root: Path, source) -> int:
+    """Rebuild the index once, at the end: it digests every tile the archive holds."""
+
     index = rebuild_index(root)
     total = sum(tile_path(root, *(int(p) for p in tile.split("/"))).stat().st_size for tile in index["tiles"])
-    print(f"{root}: {len(index['tiles'])} tile(s), {total} bytes, {len(touched)} written this run")
-    print(f"  {outside} source pixel centre(s) fell outside their lattice window")
-    print(f"Attribution: {source.credit(fetched)} ({source.licence})")
+    print(f"{root}: {len(index['tiles'])} tile(s), {total} bytes")
+    facts = index["sources"].get(source.key)
+    if facts:
+        print(f"Attribution: {facts['attribution']} ({facts['licence']})")
     return 0
 
 
@@ -290,9 +337,13 @@ def main(argv=None) -> int:
         sub.add_argument("--work", help="where fetched rasters are cached (default: the system temp dir)")
         sub.add_argument("--datum", help="the vertical datum the delivery states, for a source "
                                          "whose portal publishes more than one")
-        sub.set_defaults(run=run)
+        sub.set_defaults(run=run, per_tile=False)
+        return sub
 
-    for_source("ingest", "warp a source's rasters onto the lattice and write tiles", command_ingest)
+    for_source("ingest", "warp a source's rasters onto the lattice and write tiles", command_ingest).add_argument(
+        "--per-tile", action="store_true",
+        help="fetch and pool one archive tile at a time, wiping --work after each; resumes a "
+             "stopped run (a country-scale box)")
     for_source("wizard", "walk the account and download steps of a source behind a login",
                command_wizard)
 
