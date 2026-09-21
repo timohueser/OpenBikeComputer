@@ -3,7 +3,7 @@
 
 use obc_formats::{
     io::{ByteSource, Error},
-    obct::{self, CellIndexLayout, CrestDirectory, CrestLayout, SurfaceLayout, SurfaceLevel, NODATA, TILE_BYTES},
+    obct::{self, CellIndexLayout, SurfaceLayout, SurfaceLevel, NODATA, TILE_BYTES},
 };
 
 use crate::{TerrainHeader, TerrainReader};
@@ -79,11 +79,6 @@ impl<const N: usize, const WORDS: usize> Bank<N, WORDS> {
     fn word(&self, slot: usize, byte: usize) -> i16 {
         i16::from_le(self.words[slot][byte / 2])
     }
-
-    /// Crest planes hold one byte per sample, so they read through this bank as bytes.
-    fn byte(&self, slot: usize, byte: usize) -> u8 {
-        (self.words[slot][byte / 2].to_le_bytes())[byte % 2]
-    }
 }
 
 /// One shared cache for all terrain levels/sources. Initialize directly in the memory arena.
@@ -93,7 +88,6 @@ pub struct SurfaceCache {
     bounds: Bank<16, 256>,
     directory: Bank<6, 256>,
     last_cell: [u32; 4],
-    last_crest: [u32; 4],
     // Whole-cell maxima are visited across many sectors. Keep their scalar values
     // separately instead of retaining an almost empty bounds block for each cell.
     root_keys: [u32; 1024],
@@ -133,8 +127,6 @@ pub struct SurfaceReader<'a> {
     header: TerrainHeader,
     levels: [Option<Level>; obct::MAX_SURFACE_LEVELS],
     cell_index: Option<CellIndexLayout>,
-    /// §9's crest layer, when the container carries one. Panorama-only: nothing else reads it.
-    crest: Option<(CrestDirectory, CrestLayout)>,
     generation: u32,
 }
 impl<'a> SurfaceReader<'a> {
@@ -156,20 +148,6 @@ impl<'a> SurfaceReader<'a> {
             None
         };
         let layout = SurfaceLayout::new(header.posting_log2, header.cell_log2).ok_or(Error::BadOffset)?;
-        let crest = if header.flags & obct::CREST_FLAG != 0 {
-            let entries = u32::from(header.cell_rows)
-                .checked_mul(u32::from(header.cell_cols))
-                .and_then(|n| n.checked_mul(4))
-                .ok_or(Error::BadOffset)?;
-            let after = match cell_index {
-                Some(index) => index.end(),
-                None => header.directory_offset.checked_add(entries).ok_or(Error::BadOffset)?,
-            };
-            let directory = CrestDirectory::new(header.cell_rows, header.cell_cols, after).ok_or(Error::BadOffset)?;
-            Some((directory, CrestLayout::new(layout)))
-        } else {
-            None
-        };
         let levels = core::array::from_fn(|index| {
             let level = layout.level(index)?;
             let mut bounds = [BoundAddress::default(); 16];
@@ -184,7 +162,7 @@ impl<'a> SurfaceReader<'a> {
             }
             Some(Level { layout: level, bounds })
         });
-        Ok(Self { source, header, levels, cell_index, crest, generation: reader.generation() })
+        Ok(Self { source, header, levels, cell_index, generation: reader.generation() })
     }
 
     pub fn level_count(&self) -> usize {
@@ -231,9 +209,8 @@ impl<'a> SurfaceReader<'a> {
 
     /// Global sample-lattice coordinates of the patch's southwest corner.
     pub fn patch(&self, cache: &mut SurfaceCache, level: usize, y: u32, x: u32) -> Option<Patch> {
-        let index = level;
         let level = self.levels.get(level)?.as_ref()?.layout;
-        match self.patch_inner(cache, index, level, y, x) {
+        match self.patch_inner(cache, level, y, x) {
             Ok(value) => value,
             Err(_) => {
                 cache.failed = true;
@@ -251,8 +228,7 @@ impl<'a> SurfaceReader<'a> {
         // from the most compact level instead of fetching distant native-height tiles.
         let shift = usize::from(log2).min(self.level_count().checked_sub(level + 1)?);
         let (y, x, log2) = (y >> shift, x >> shift, log2 - shift as u8);
-        let index = level + shift;
-        let level = self.levels.get(index)?.as_ref()?.layout;
+        let level = self.levels.get(level + shift)?.as_ref()?.layout;
         if log2 > level.samples_log2 {
             return None;
         }
@@ -269,10 +245,10 @@ impl<'a> SurfaceReader<'a> {
                 }
             }
             Ok(Patch::from_corners([
-                self.corner(cache, index, level, home, y, x)?,
-                self.corner(cache, index, level, home, y, x + width)?,
-                self.corner(cache, index, level, home, y + width, x)?,
-                self.corner(cache, index, level, home, y + width, x + width)?,
+                self.corner(cache, level, home, y, x)?,
+                self.corner(cache, level, home, y, x + width)?,
+                self.corner(cache, level, home, y + width, x)?,
+                self.corner(cache, level, home, y + width, x + width)?,
             ]))
         };
         match read(cache) {
@@ -330,7 +306,6 @@ impl<'a> SurfaceReader<'a> {
     fn patch_inner(
         &self,
         cache: &mut SurfaceCache,
-        index: usize,
         level: SurfaceLevel,
         y: u32,
         x: u32,
@@ -346,27 +321,23 @@ impl<'a> SurfaceReader<'a> {
             let (slot, base) = self.height_slot(cache, level, start, tile)?;
             let at = base + ((ly & 15) * 16 + (lx & 15)) as usize * 2;
             let bank = &cache.heights;
-            let corners =
-                [bank.word(slot, at), bank.word(slot, at + 2), bank.word(slot, at + 32), bank.word(slot, at + 34)];
-            // A crest read can evict this slot, so the heights are taken first.
-            let mut lifted = corners;
-            for (k, (dy, dx)) in [(0, 0), (0, 1), (1, 0), (1, 1)].into_iter().enumerate() {
-                let lift = self.lift(cache, index, (cy, cx), ly + dy, lx + dx)?;
-                lifted[k] = Self::lifted(corners[k], lift);
-            }
-            return Ok(Patch::from_corners(lifted));
+            return Ok(Patch::from_corners([
+                bank.word(slot, at),
+                bank.word(slot, at + 2),
+                bank.word(slot, at + 32),
+                bank.word(slot, at + 34),
+            ]));
         }
-        let a = self.corner(cache, index, level, (cy, cx, home), y, x)?;
-        let b = self.corner(cache, index, level, (cy, cx, home), y, x + 1)?;
-        let c = self.corner(cache, index, level, (cy, cx, home), y + 1, x)?;
-        let d = self.corner(cache, index, level, (cy, cx, home), y + 1, x + 1)?;
+        let a = self.corner(cache, level, (cy, cx, home), y, x)?;
+        let b = self.corner(cache, level, (cy, cx, home), y, x + 1)?;
+        let c = self.corner(cache, level, (cy, cx, home), y + 1, x)?;
+        let d = self.corner(cache, level, (cy, cx, home), y + 1, x + 1)?;
         Ok(Patch::from_corners([a, b, c, d]))
     }
 
     fn corner(
         &self,
         cache: &mut SurfaceCache,
-        index: usize,
         level: SurfaceLevel,
         home: (u32, u32, u32),
         y: u32,
@@ -376,9 +347,6 @@ impl<'a> SurfaceReader<'a> {
         let mask = (1u32 << level.samples_log2) - 1;
         let mut ly = y & mask;
         let mut lx = x & mask;
-        // Which cell the height is actually read from, which is also the cell whose crest plane
-        // describes it: the neighbour when it is present, the home cell when the corner clamps.
-        let mut from = (cy, cx);
         let cell = if (cy, cx) == (home.0, home.1) {
             home.2
         } else if let Some(cell) = self.cell(cache, cy, cx)? {
@@ -390,15 +358,12 @@ impl<'a> SurfaceReader<'a> {
             if cx != home.1 {
                 lx = mask;
             }
-            from = (home.0, home.1);
             home.2
         };
         let start = cell + level.offset;
         let tile = start + (((ly >> 4) << (level.samples_log2 - 4)) + (lx >> 4)) * TILE_BYTES as u32;
         let (slot, base) = self.height_slot(cache, level, start, tile)?;
-        let height = cache.heights.word(slot, base + ((ly & 15) * 16 + (lx & 15)) as usize * 2);
-        let lift = self.lift(cache, index, from, ly, lx)?;
-        Ok(Self::lifted(height, lift))
+        Ok(cache.heights.word(slot, base + ((ly & 15) * 16 + (lx & 15)) as usize * 2))
     }
 
     fn height_slot(
@@ -486,58 +451,6 @@ impl<'a> SurfaceReader<'a> {
             cache.root_values[memo] = value;
         }
         Ok((value != i16::MAX).then_some(value))
-    }
-
-    /// Byte offset of a cell's crest block, or `None` when the cell has no reference data.
-    fn crest_block(&self, cache: &mut SurfaceCache, y: u32, x: u32) -> Result<Option<u32>, Error> {
-        let Some((directory, _)) = self.crest else { return Ok(None) };
-        let last = cache.last_crest;
-        if last[0] == self.generation && last[1] == y && last[2] == x {
-            return Ok((last[3] != 0).then_some(last[3]));
-        }
-        let Some(dy) = y.checked_sub(self.header.cell_min_i) else { return Ok(None) };
-        let Some(dx) = x.checked_sub(self.header.cell_min_j) else { return Ok(None) };
-        if dy >= u32::from(self.header.cell_rows) || dx >= u32::from(self.header.cell_cols) {
-            return Ok(None);
-        }
-        let Some(at) = directory.entry_offset(dy * u32::from(self.header.cell_cols) + dx) else {
-            return Ok(None);
-        };
-        let first = at & !511;
-        let bytes = (self.source.len() - u64::from(first)).min(512) as usize;
-        let slot = cache.directory.slot(self.source, self.generation, first, bytes)?;
-        let local = (at - first) as usize;
-        let offset = u32::from(cache.directory.word(slot, local) as u16)
-            | (u32::from(cache.directory.word(slot, local + 2) as u16) << 16);
-        cache.last_crest = [self.generation, y, x, offset];
-        Ok((offset != 0).then_some(offset))
-    }
-
-    /// Metres the panorama surface stands above the native sample (§9.2), or zero where the
-    /// container carries no lift. Crest planes share the height bank: the keys are absolute file
-    /// offsets, so one LRU divides itself between heights and lifts instead of a fixed split.
-    fn lift(&self, cache: &mut SurfaceCache, index: usize, cell: (u32, u32), y: u32, x: u32) -> Result<i16, Error> {
-        let Some((_, crest)) = self.crest else { return Ok(0) };
-        let Some(block) = self.crest_block(cache, cell.0, cell.1)? else { return Ok(0) };
-        let (Some(at), Some((plane, bytes))) = (crest.sample_offset(index, y, x), crest.plane(index)) else {
-            return Ok(0);
-        };
-        let len = bytes.min(1024);
-        let start = block + plane;
-        let at = block + at;
-        let first = start + (at - start) / len * len;
-        let read = (start + bytes - first).min(len) as usize;
-        let slot = cache.heights.slot(self.source, self.generation, first, read)?;
-        Ok(i16::from(cache.heights.byte(slot, (at - first) as usize)) * obct::CREST_QUANTUM as i16)
-    }
-
-    /// A lift never applies to a hole: §9.2 keeps `NODATA` whatever the plane says.
-    fn lifted(height: i16, lift: i16) -> i16 {
-        if height == NODATA {
-            height
-        } else {
-            height.saturating_add(lift)
-        }
     }
 
     fn cell(&self, cache: &mut SurfaceCache, y: u32, x: u32) -> Result<Option<u32>, Error> {

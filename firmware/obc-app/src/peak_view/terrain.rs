@@ -41,10 +41,11 @@ impl<'a> Terrain<'a> {
 
     /// The height a rider standing here is standing **on**, which is not the same thing.
     ///
-    /// Crest planes lift lattice nodes, so the bilinear value between two lifted nodes is below
-    /// both of them. An eye placed there is inside the surface: from the top of the Rigidalstock
-    /// the panorama came back blocked at 19 m by the summit the rider was standing on. A rider is
-    /// on the ground, and the ground under a crest is the crest, so the cell's corners decide.
+    /// A lattice node can stand on a summit the posting cannot resolve, and the bilinear value
+    /// between two such nodes is below both of them. An eye placed there is inside the surface:
+    /// from the top of the Rigidalstock the panorama came back blocked at 19 m by the summit the
+    /// rider was standing on. A rider is on the ground, and the ground under a summit is the
+    /// summit, so the cell's corners decide.
     pub fn observer_ground(&mut self, lat: i32, lon: i32) -> Option<f32> {
         let (p, _, _) = self.patch_at(lat, lon)?;
         Some(cell_top(p))
@@ -120,11 +121,11 @@ mod tests {
         // Rigidalstock: the summit node is lifted to 2592 m and the rider's own position
         // interpolates to 2588 m between it and the ridge below. An eye at 2588 + 2 is inside the
         // surface, and the panorama came back blocked at 19 m by the summit under the rider.
-        let crest = Patch { height: 2570.0, east: 22.0, north: -14.0, cross: 14.0 };
-        assert_eq!(cell_top(crest), 2592.0);
+        let summit = Patch { height: 2570.0, east: 22.0, north: -14.0, cross: 14.0 };
+        assert_eq!(cell_top(summit), 2592.0);
         // The far corner can be the highest one, which is the case the three-way max exists for.
         assert_eq!(cell_top(Patch { height: 2570.0, east: 4.0, north: 6.0, cross: 12.0 }), 2592.0);
-        // Flat ground is unchanged, so nothing moves where there is no crest.
+        // Flat ground is unchanged, so nothing moves where the posting resolves the ground.
         assert_eq!(cell_top(Patch { height: 800.0, east: 0.0, north: 0.0, cross: 0.0 }), 800.0);
     }
 }
