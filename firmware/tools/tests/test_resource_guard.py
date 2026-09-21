@@ -153,6 +153,7 @@ other:
     def _board_baseline(self, **overrides):
         profile = {
             "framebuffer_bytes": 76_800,
+            "measured_resident": 112,
             "resident_ram_max": 120,
             "resident_ram_slack": 8,
             "uninit_max": UNINIT_BYTES,
@@ -176,41 +177,27 @@ other:
         fields.update(overrides)
         return resource_guard.BoardMeasurement(**fields)
 
-    def _check_board(self, measured, baseline, ci_authority=True):
-        args = SimpleNamespace(profile="default", elf=Path("fake"), ci_authority=ci_authority)
+    def _check_board(self, measured, baseline):
         with mock.patch.object(resource_guard, "measure_board", return_value=measured):
-            resource_guard.check_board(args, baseline)
+            resource_guard.check_board(SimpleNamespace(profile="default", elf=Path("fake")), baseline)
 
     def test_board_guard_explains_resident_ram_growth(self):
         with self.assertRaisesRegex(resource_guard.GuardError, "resident RAM grew.*itemize/approve"):
             self._check_board(self._board_measured(bss=101), self._board_baseline())
 
-    def test_board_guard_fails_when_the_link_shrinks_out_of_the_resident_band(self):
-        """The half a `<=` ceiling cannot have: a link that saves RAM must re-pin the row.
+    def test_board_guard_fails_when_the_link_shrinks_past_the_slack(self):
+        """The half a `<=` ceiling cannot have: a link that saves more than the slack re-pins.
 
         Without it the recorded ceiling drifts above the real link one saving at a time, and the
-        headroom the next slice reads off the baseline is fiction.
+        headroom the next slice reads off the baseline is fiction. The floor is a slack below the
+        PINNED link, so an ordinary deletion rides until the next re-pin.
         """
+        self._check_board(self._board_measured(bss=84), self._board_baseline())  # saves the slack
         with self.assertRaisesRegex(
-            resource_guard.GuardError, "111 B .*, 9 B below the 120 B ceiling.*8 B slack"
+            resource_guard.GuardError,
+            "103 B .*, 9 B below the 112 B pinned link.*8 B slack.*`embedded` CI job",
         ):
-            self._check_board(self._board_measured(bss=91), self._board_baseline())
-        self._check_board(self._board_measured(bss=92), self._board_baseline())  # 8 B below: in band
-
-    def test_the_shrink_gate_is_a_warning_without_CI_authority(self):
-        """`measured_resident` is the `embedded` job's link, and a host toolchain links less.
-
-        So a head build outside that job must not fail this end of the band — it would reject every
-        local measurement run for a reason outside the change, and name a build that is not the
-        gate's source as the place to re-pin from.
-        """
-        with mock.patch("builtins.print") as printed:
-            self._check_board(
-                self._board_measured(bss=91), self._board_baseline(), ci_authority=False
-            )
-        warning = next(c.args[0] for c in printed.call_args_list if "WARNING" in str(c.args[0]))
-        self.assertIn("9 B below the 120 B ceiling", warning)
-        self.assertIn("`embedded` CI job", warning)
+            self._check_board(self._board_measured(bss=83), self._board_baseline())
 
     def test_board_guard_explains_missing_framebuffer_symbol(self):
         with self.assertRaisesRegex(resource_guard.GuardError, "framebuffer symbol count is 0"):
@@ -535,6 +522,7 @@ class BootChainTests(unittest.TestCase):
     def _boot_baseline(self, **overrides):
         profile = {
             "framebuffer_bytes": 76_800,
+            "measured_resident": 112,
             "resident_ram_max": 120,
             "resident_ram_slack": 8,
             "uninit_max": UNINIT_BYTES,
@@ -578,9 +566,7 @@ class BootChainTests(unittest.TestCase):
 
     def _check(self, measured, baseline):
         with mock.patch.object(resource_guard, "measure_board", return_value=measured):
-            resource_guard.check_board(
-                SimpleNamespace(profile="default", elf=Path("fake"), ci_authority=True), baseline
-            )
+            resource_guard.check_board(SimpleNamespace(profile="default", elf=Path("fake")), baseline)
 
     def test_a_residual_under_the_measured_deep_ride_peak_fails(self):
         """**The gate FS7.5-c1 walked through.** Every other stack check here compares the residual
