@@ -195,10 +195,15 @@ makes the mountain recognisable.
 
 The bakery corrects this with a **crest lift**. Where a finer national elevation model says the
 ground inside a sample's own cell stands more than 10 m above our surface, **and** the ground
-there is convex, the baker raises that sample to the finer model's height. The convexity test is
-what keeps a steep flat face and a mountain pass unchanged: only a crest moves. The lift goes
-into the baked sample, so contours, ascent, the route profile, the altimeter and Peak View all
-read one surface.
+there is convex, the baker raises that sample. The convexity test is what keeps a steep flat face
+and a mountain pass unchanged: only a crest moves. The lift goes into the baked sample, so
+contours, ascent, the route profile, the altimeter and Peak View all read one surface.
+
+The sample rises by the **gap**: how far the finer model stands above the surface we draw. It does
+not rise to the highest ground in its cell, because on a slope most of that height is the cell's
+own fall and a lift by it makes the ground around a summit too high. The highest ground in the
+cell is still the ceiling, so a lift never puts a sample above what the finer model measured
+there.
 
 Copernicus stays the base model. A national model gives lifts only, because it measures bare
 ground and therefore sits below Copernicus over every forest and town.
