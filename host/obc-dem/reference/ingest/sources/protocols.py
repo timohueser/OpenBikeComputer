@@ -13,7 +13,9 @@ import os
 import urllib.parse
 from pathlib import Path
 
+import rasterio
 from pyproj import Transformer
+from rasterio.crs import CRS
 
 from ..lattice import Refuse
 from .base import Source, http_get
@@ -56,11 +58,17 @@ def degree_pixels(box, resolution_m: float) -> tuple[int, int]:
 
 
 def projected_box(box, epsg: int):
-    """A WGS84 box as the service's own grid: the two opposite corners, and the span."""
+    """A WGS84 box as the service's own grid: the enclosing rectangle, and its span.
+
+    All four corners are transformed and the extremes taken, because a projected grid's
+    axes are not the box's: EPSG:3979 turns a European box inside out, and a LAEA grid
+    turns every box a little. Two opposite corners would give a negative span there.
+    """
 
     west, south, east, north = box
     transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
-    (lo_x, lo_y), (hi_x, hi_y) = transformer.transform(west, south), transformer.transform(east, north)
+    xs, ys = transformer.transform([west, east, west, east], [south, south, north, north])
+    lo_x, hi_x, lo_y, hi_y = min(xs), max(xs), min(ys), max(ys)
     return (lo_x, lo_y, hi_x, hi_y), (hi_x - lo_x, hi_y - lo_y)
 
 
@@ -94,9 +102,27 @@ class TiledService(Source):
                 part = path.with_name(name + ".part")
                 part.write_bytes(self.request(box))
                 os.replace(part, path)
+                self.stamp_crs(path)
             print(f"  fetch [{i}/{len(boxes)}] {box[0]:.4f},{box[1]:.4f} → {box[2]:.4f},{box[3]:.4f}")
             paths.append(path)
         return paths
+
+    def stamp_crs(self, path: Path) -> None:
+        """Name the CRS of an answer that arrived without one.
+
+        Brandenburg's coverage answers a GeoTIFF with a transform and no projection at
+        all. The row already declares the grid the subset was stated in, so the raster is
+        stamped with it rather than refused: the tail cannot place a raster with no CRS.
+        """
+
+        epsg = getattr(self, "epsg", None)
+        if epsg is None:
+            return
+        with rasterio.open(path) as src:
+            if src.crs is not None:
+                return
+        with rasterio.open(path, "r+") as dst:
+            dst.crs = CRS.from_epsg(epsg)
 
     def request(self, box) -> bytes:
         raise NotImplementedError
@@ -129,14 +155,19 @@ class Wcs20Source(TiledService):
     """WCS 2.0.1 `GetCoverage`.
 
     WCS 2.0 answers at the coverage's native step unless it is asked otherwise, and
-    half-metre LiDAR overruns every server's size cap, so the output size is always stated.
-    The axis labels are the coverage's own: `x`/`y` on a projected grid, `long`/`lat` on a
-    geographic one, and a server refuses a subset it does not recognise the label of.
+    half-metre LiDAR overruns every server's size cap, so the output size is stated where
+    the server accepts it. Several coverages refuse `scalesize` with `ScaleAxisUndefined`
+    however the axes are named, and those rows set `scale=False` and take the native step;
+    `request_boxes` already keeps a box inside the pixel cap at that step.
+
+    The axis labels are the coverage's own: `x`/`y` or `E`/`N` on a projected grid,
+    `long`/`lat` on a geographic one, and a server refuses a label it does not know.
     """
 
-    def __init__(self, *args, url, coverage, epsg, axes, **kw):
+    def __init__(self, *args, url, coverage, epsg, axes, scale=True, **kw):
         super().__init__(*args, **kw)
         self.service, self.coverage, self.epsg, self.axes = url, coverage, epsg, axes
+        self.scale = scale
 
     def url(self, box) -> str:
         if self.epsg == 4326:
@@ -146,10 +177,12 @@ class Wcs20Source(TiledService):
             (lo_x, lo_y, hi_x, hi_y), (span_x, span_y) = projected_box(box, self.epsg)
             px, py = clamp(span_x / self.resolution_m), clamp(span_y / self.resolution_m)
         ax, ay = self.axes
-        return (f"{self.service}?service=WCS&version=2.0.1&request=GetCoverage"
-                f"&coverageId={self.coverage}"
-                f"&subset={ax}({lo_x},{hi_x})&subset={ay}({lo_y},{hi_y})"
-                f"&scalesize={ax}({px}),{ay}({py})&format=image/tiff")
+        query = (f"{self.service}?service=WCS&version=2.0.1&request=GetCoverage"
+                 f"&coverageId={self.coverage}"
+                 f"&subset={ax}({lo_x},{hi_x})&subset={ay}({lo_y},{hi_y})")
+        if self.scale:
+            query += f"&scalesize={ax}({px}),{ay}({py})"
+        return query + "&format=image/tiff"
 
     def request(self, box) -> bytes:
         return raster_bytes(self.url(box), f"{self.key} {box}")
@@ -168,6 +201,37 @@ class Wcs10Source(TiledService):
         return (f"{self.service}?service=WCS&version=1.0.0&request=GetCoverage"
                 f"&coverage={self.coverage}&crs=EPSG:{self.epsg}"
                 f"&bbox={lo_x},{lo_y},{hi_x},{hi_y}&width={px}&height={py}&format=GeoTIFF")
+
+    def request(self, box) -> bytes:
+        return raster_bytes(self.url(box), f"{self.key} {box}")
+
+
+class Wcs11Source(TiledService):
+    """WCS 1.1.1 `GetCoverage`, which states the grid itself rather than an output size.
+
+    A 1.1.1 server answers one pixel if it is not given the grid, so the origin and the
+    offsets are always in the request. The origin is the grid's first pixel centre, which
+    is the north-west corner, and the offsets step east and south from it.
+    """
+
+    def __init__(self, *args, url, coverage, epsg, **kw):
+        super().__init__(*args, **kw)
+        self.service, self.coverage, self.epsg = url, coverage, epsg
+
+    def url(self, box) -> str:
+        (lo_x, lo_y, hi_x, hi_y), (span_x, span_y) = projected_box(box, self.epsg)
+        step = self.resolution_m
+        # The request is clamped by the pixel cap, not by the box, so a box wider than the
+        # cap comes back coarser rather than failing. `request_boxes` keeps that rare.
+        step = max(step, span_x / MAX_PIXELS, span_y / MAX_PIXELS)
+        crs = f"urn:ogc:def:crs:EPSG::{self.epsg}"
+        return (f"{self.service}?service=WCS&version=1.1.1&request=GetCoverage"
+                f"&identifier={self.coverage}&format=image/geotiff"
+                f"&boundingbox={lo_x},{lo_y},{hi_x},{hi_y},{crs}"
+                f"&gridbasecrs={crs}"
+                f"&gridcs=urn:ogc:def:cs:OGC:0.0:Grid2dSquareCS"
+                f"&gridtype=urn:ogc:def:method:WCS:1.1:2dSimpleGrid"
+                f"&gridorigin={lo_x},{hi_y}&gridoffsets={step},-{step}")
 
     def request(self, box) -> bytes:
         return raster_bytes(self.url(box), f"{self.key} {box}")

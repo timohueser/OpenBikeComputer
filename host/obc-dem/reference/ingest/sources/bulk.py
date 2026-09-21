@@ -13,7 +13,13 @@ from .base import RASTER_SUFFIXES, Source, http_download, unpack
 
 
 class BulkSource(Source):
-    """A source whose adapter maps a box to files. `files` is the only thing it writes."""
+    """A source whose adapter maps a box to files. `files` is the only thing it writes.
+
+    `skip_missing` is for a source whose file names are arithmetic rather than an index: a
+    name it does not publish answers 404, and that is a coverage edge, not a fault.
+    """
+
+    skip_missing = False
 
     def files(self, bbox) -> list[tuple[str, str]]:
         """The `(name, url)` of every file the box needs, biggest unit first."""
@@ -25,14 +31,21 @@ class BulkSource(Source):
         if not wanted:
             raise Refuse(f"{self.key}: nothing published covers {bbox}")
         workdir.mkdir(parents=True, exist_ok=True)
-        rasters = []
+        rasters, absent = [], 0
         for i, (name, url) in enumerate(wanted, 1):
+            path = http_download(url, workdir / name, optional=self.skip_missing)
+            if path is None:
+                absent += 1
+                continue
             print(f"  fetch [{i}/{len(wanted)}] {name}")
-            path = http_download(url, workdir / name)
             if path.suffix.lower() == ".zip":
                 rasters.extend(unpack(path, workdir / f"{path.stem}.d"))
             elif path.suffix.lower() in RASTER_SUFFIXES:
                 rasters.append(path)
             else:
                 raise Refuse(f"{path}: the registry expected a raster or a zip, not {path.suffix}")
+        if absent:
+            print(f"  {absent} of {len(wanted)} square(s) are not published: a coverage edge")
+        if not rasters:
+            raise Refuse(f"{self.key}: none of the {len(wanted)} file(s) the box needs is published")
         return rasters

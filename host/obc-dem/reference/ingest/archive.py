@@ -21,7 +21,12 @@ from .sources.base import Source
 # Priority, finest and best-maintained national product first. Where two sources cover the
 # same pixel, the one earlier in this list keeps it. Keys with no adapter yet are listed so
 # the ranking does not move when an adapter lands.
-PRIORITY = ("nl", "de-nw", "fr", "no", "us", "ch", "es")
+PRIORITY = (
+    "nl", "it-tn",
+    "de-nw", "de-he", "de-ni", "de-by", "de-sn", "de-th", "de-mv", "de-st", "de-bw",
+    "fr", "at", "no", "uk", "us", "ca", "nz",
+    "ch", "it-bz", "es",
+)
 
 def priority_rank(key: str) -> int:
     """Lower is better. An unlisted key ranks last, so it never displaces a listed one."""

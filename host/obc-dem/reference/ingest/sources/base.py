@@ -64,11 +64,13 @@ class ManualSource(Source):
         raise Refuse(f"{self.key}: {self.why}. Fetch the rasters by hand and pass --input")
 
 
-def http_download(url: str, path: Path) -> Path:
+def http_download(url: str, path: Path, optional: bool = False) -> Path | None:
     """Stream one file to disk, which is how a bulk product of several gigabytes arrives.
 
     The bytes land beside the name and are moved onto it at the end, so a download that
     was cut short is never mistaken for a complete one by the next run.
+
+    `optional` turns a 404 into absence, which is what a grid square outside its state is.
     """
 
     if path.exists():
@@ -89,6 +91,8 @@ def http_download(url: str, path: Path) -> Path:
         print()
     except urllib.error.HTTPError as error:
         part.unlink(missing_ok=True)
+        if optional and error.code == 404:
+            return None
         raise Refuse(f"{url}: HTTP {error.code}") from error
     os.replace(part, path)
     return path
