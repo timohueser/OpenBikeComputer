@@ -1,47 +1,22 @@
-//! The aliasing invariant, measured rather than asserted: **what a caller can still do while the
-//! store is in the middle of a card command.**
+//! The aliasing invariant, measured rather than asserted: what a caller can still do while the store
+//! is in the middle of a card command.
 //!
-//! [`store`](super::store)'s rules 2 and 3 are the whole point of FS7 slice 1 and, until this file,
-//! they lived only in comments — a borrow of the free map held across an entire commit conflicts with
-//! nothing the rest of the suite does, so all 499 tests pass with the invariant broken. That is not a
-//! gap worth leaving open, because slice 3 (the board's storage task) is *built on* the invariant: it
-//! interleaves a render read into a commit's gaps, and if there are no gaps the design does not work.
+//! [`ReentrantCard`] wraps the sim card and, on every card command the store issues, re-enters the
+//! store and tries four things a real caller does: a read through [`FlatStore::with_source`], which
+//! needs `holds` and then `free` exclusively; a drained [`Store::entries`] listing, which should need
+//! no cell at all; [`FlatStore::free_extents`], which shares `free`; and a [`FlatStore::cancel`] of a
+//! token naming no row, which needs `reservations` exclusively. Each runs under
+//! [`catch_unwind`](std::panic::catch_unwind), so a `RefCell` that refuses is recorded rather than
+//! fatal — on the device that same refusal is a hard fault.
 //!
-//! So this measures it. A [`ReentrantCard`] wraps the sim card and, on **every** card command the
-//! store issues, re-enters the store from inside the driver and tries four things a real caller
-//! does:
+//! The three reader-side probes are served at every command of a `write` and of a `commit`, the
+//! staging flush, the body stream and the gate write included. That is [`store`](super::store)'s
+//! rule 2, and it is what lets the board's storage task interleave a render read into a commit's
+//! gaps. The writer probe is refused at exactly the commands a reservation's staging block is written
+//! out of — one command per reservation, not a phase.
 //!
-//! | Probe | Seam call | Cells it needs |
-//! |---|---|---|
-//! | `reader` | [`FlatStore::with_source`] — open, read, close | `holds` (exclusive), then `free` (exclusive) |
-//! | `listing` | [`Store::entries`] drained + `entries_ok` | none — the claim is that it needs none |
-//! | `free_space` | [`FlatStore::free_extents`] | `free` (shared) |
-//! | `writer` | [`FlatStore::cancel`] of a token naming no row | `reservations` (exclusive) |
-//!
-//! Each runs under [`catch_unwind`](std::panic::catch_unwind), so a `RefCell` that refuses is
-//! recorded rather than fatal — on the device that same refusal is a hard fault, which is exactly why
-//! the counts below have to be pinned instead of trusted.
-//!
-//! **What the numbers say**, for the one scenario below — a `write` that leaves a partial block, then
-//! the `commit` that publishes it:
-//!
-//! | Phase | commands | reader | listing | free space | writer |
-//! |---|---|---|---|---|---|
-//! | `write` | 1 | 1 / 0 | 1 / 0 | 1 / 0 | 0 / **1** |
-//! | `commit` | 10 | 10 / 0 | 10 / 0 | 10 / 0 | 9 / **1** |
-//!
-//! (served / refused.) The three reader-side probes succeed at *every* command of both — including the
-//! staging flush, the body stream and the gate write. That is rule 2, and it is the property slice 3
-//! needs. The `writer` probe is refused at exactly the commands rule 3 discloses — the ones a
-//! reservation's staging block is written out of — and nowhere else: **one command per reservation,
-//! not a phase**. A whole-commit lock would show `served: 0` on that row, and a free map held across
-//! the gate write takes the `reader` and `free space` rows to `8 / 2` — both checked by hand against
-//! this probe before it was pinned.
-//!
-//! **Mount is not measured, and cannot be**: the probe is armed with a pointer to the store, and
-//! `mount` runs inside the constructor that produces it. `load` holds the free map across its scan,
-//! which `load`'s own docs disclose as the constructor exemption; nothing else can reach a store that
-//! does not exist yet.
+//! Mount is not measured, and cannot be: the probe is armed with a pointer to the store, and `mount`
+//! runs inside the constructor that produces it.
 
 use std::cell::Cell;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -87,9 +62,9 @@ struct Phase {
 
 /// A sim card that re-enters the store on every command it is asked to perform.
 ///
-/// The store owns its device by value, and here that value is a `&ReentrantCard` — so the card is a
-/// separate local that outlives nothing and is outlived by nothing. That is what makes the back
-/// pointer expressible at all: the card does not own the store and the store does not own the card.
+/// The store owns its device by value, and here that value is a `&ReentrantCard`, so the card does
+/// not own the store and the store does not own the card. That is what makes the back pointer
+/// expressible at all.
 struct ReentrantCard {
     inner: SparseDisk,
     /// The store to re-enter, erased to `*const ()` because the honest type is self-referential:
@@ -101,8 +76,8 @@ struct ReentrantCard {
     tally: Cell<Phase>,
     /// The object the reader probe reads, once one exists.
     subject: Cell<Option<ObjectId>>,
-    /// A token naming no live row. `cancel` takes the reservations borrow *before* it discovers that,
-    /// which is precisely the borrow this probe is measuring.
+    /// A token naming no live row. `cancel` takes the reservations borrow before it discovers that,
+    /// which is the borrow this probe measures.
     bogus: Allocation,
 }
 
@@ -137,23 +112,13 @@ impl ReentrantCard {
 
     /// The store, as a shared reference.
     ///
-    /// SAFETY: three facts, and all three are checked by construction rather than assumed.
-    ///
-    /// 1. **The pointer is valid whenever it is `Some`.** [`arm`](Self::arm) sets it from a live
-    ///    `&FlatStore` that is a local in the test body, already returned from `mount` and never moved
-    ///    afterwards; [`disarm`](Self::disarm) clears it before that local goes out of scope. The only
-    ///    code that dereferences it runs *inside* a card command, which can only be running because
-    ///    the store is executing a method — so the store is alive, borrowed, and at a fixed address.
-    /// 2. **It is only ever a shared reference.** The whole point of this slice is that the seam is
-    ///    `&self`, so `&FlatStore` is all a caller needs, and no `&mut` to the store exists anywhere in
-    ///    the program while it is armed. Several live `&` to one store is exactly the aliasing the
-    ///    board will have.
-    /// 3. **It is single-threaded and synchronous.** The re-entry happens on the same thread, inside
-    ///    the store's own call stack. `FlatStore` is neither `Send` nor `Sync` (it holds `Cell`s), so
-    ///    the compiler rules out the case this reasoning does not cover.
-    ///
-    /// This is `cfg(test)`-only — the module is declared `#[cfg(test)]` in
-    /// [`flat`](super), alongside `crash` and `cost`, so no device build can reach it.
+    /// SAFETY: [`arm`](Self::arm) sets the pointer from a live `&FlatStore` local that is never moved
+    /// afterwards, and [`disarm`](Self::disarm) clears it before that local goes out of scope. The only
+    /// code that dereferences it runs inside a card command, which can only be running because the
+    /// store is executing a method. It is only ever a shared reference, and no `&mut` to the store
+    /// exists anywhere while it is armed. The re-entry is on the same thread inside the store's own
+    /// call stack, and `FlatStore` is neither `Send` nor `Sync`, so the compiler rules out the rest.
+    /// This is `cfg(test)`-only, so no device build can reach it.
     fn store(&self) -> Option<&FlatStore<&Self>> {
         let raw = self.store.get()?;
         Some(unsafe { &*(raw.as_ptr() as *const FlatStore<&Self>) })
@@ -168,9 +133,9 @@ impl ReentrantCard {
         self.probing.set(true);
         let mut phase = self.tally.get();
 
-        // A read of a whole object, through the public read seam: open, read, close. It needs the hold
+        // A read of a whole object through the public read seam: open, read, close. It needs the hold
         // table exclusively and then the free map exclusively, so it is the strongest statement rule 2
-        // makes — a render's chunk read is this call.
+        // makes.
         if let Some(id) = self.subject.get() {
             let ok = catch_unwind(AssertUnwindSafe(|| {
                 store.with_source(id, None, |source| {
@@ -295,24 +260,18 @@ fn measure() -> (Phase, Phase) {
     (write, commit)
 }
 
-/// **Rule 2, pinned: a reader is served at every card command a writer issues.**
+/// Rule 2, pinned: a reader is served at every card command a writer issues. `refused` on the three
+/// reader-side probes must be zero in both phases.
 ///
-/// The numbers are this scenario's and are meant to be re-derived if it changes; what must not change
-/// is the shape. `refused` on the three reader-side probes is **zero**, in both phases, or the
-/// interleaving slice 3 is designed around does not exist.
-///
-/// The `writer` row is rule 3, stated as a measurement rather than a promise: it is refused at
-/// exactly the commands that write a reservation's staging block out — one in the `write` (the
-/// partial block `fill` stages) and one in the `commit` (the staging flush) — and served at every
-/// other command, including all of the body stream and the gate write. A whole-commit lock would show
+/// The `writer` row is rule 3 as a measurement: refused at exactly the two commands that write a
+/// reservation's staging block out, and served at every other command. A whole-commit lock would show
 /// `served: 0` here.
 #[test]
 fn a_reader_is_served_at_every_command_of_a_write_and_a_commit() {
     let (write, commit) = measure();
 
     // The command counts this scenario issues, pinned so "zero refusals" cannot become vacuous by a
-    // scenario that quietly stopped issuing commands. These two are the *scenario's*, not the format's
-    // — `flat::cost` is where a command count is a contract — so re-derive them if the scenario moves.
+    // scenario that quietly stopped issuing commands. These are the scenario's, not the format's.
     assert_eq!(write.listing.commands(), 1, "the write issues one command: the partial staging block ({write:?})");
     assert_eq!(commit.listing.commands(), 10, "the commit's command count moved ({commit:?})");
 
@@ -323,23 +282,19 @@ fn a_reader_is_served_at_every_command_of_a_write_and_a_commit() {
         assert_eq!(phase.reader.served, phase.listing.commands(), "{name}: the reader probe skipped a command");
     }
 
-    // Rule 3, both halves: the exception is real, and it is *one command per reservation* rather than
-    // a phase. A regression that widened it — a reservations borrow taken for the whole commit — would
-    // fail the second assertion, and one that removed the disclosure would fail the first.
+    // Rule 3, both halves: the exception is real, and it is one command per reservation rather than a
+    // phase. A reservations borrow taken for the whole commit would fail the second assertion.
     assert_eq!(write.writer.refused, 1, "the write's staging command is rule 3's, and there is one ({write:?})");
     assert_eq!(commit.writer.refused, 1, "the commit's staging flush is one command, not a phase ({commit:?})");
     assert_eq!(commit.writer.served, 9, "every other command of the commit is open to a writer ({commit:?})");
 }
 
-/// **The probe's positive control.** It is only worth its lines if it can *see* the failure it is
-/// aiming at, and a probe that quietly stopped re-entering — an arming bug, a stuck `probing` flag —
-/// would report zero refusals forever and read as a pass.
+/// The probe's positive control. A probe that quietly stopped re-entering would report zero refusals
+/// forever and read as a pass.
 ///
-/// [`FlatStore::hold_free_across_a_command`] is rule 2 broken on purpose: one card command with the
-/// free map held. Everything that needs that cell must be refused during it.
-///
-/// The listing is the interesting row: it comes through anyway, because it borrows no cell at all.
-/// That is not incidental — it is why a `LIST` page can be drained while a commit runs.
+/// [`FlatStore::hold_free_across_a_command`] holds the free map across one card command, so everything
+/// that needs that cell must be refused during it. The listing comes through anyway, because it
+/// borrows no cell at all.
 #[test]
 fn the_probe_detects_a_borrow_held_across_a_command() {
     let blank = SparseDisk::blank(EXTENT_AREA + Geometry::DEFAULT.extent_blocks() * 12, 11);
