@@ -8,8 +8,7 @@
   // differently and which hides the counts that tell one group from another.
   //
   // The typed name is kept here until it is chosen or the field is left. A group applied on every
-  // keystroke makes a group for each prefix of the name, which rewrites the sidebar under the
-  // reader's hands and leaves the list with nothing new to offer.
+  // keystroke would make a group for each prefix of the name.
   import { tick } from 'svelte';
   import { portal, place, sizing, widthFor } from '$lib/popover';
   export let value = '';
