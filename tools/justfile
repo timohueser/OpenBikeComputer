@@ -282,6 +282,7 @@ inspect *args:
 #
 #   obc bake europe/germany/baden-wuerttemberg
 #   obc bake terrain --sources /tmp/dem   # the OBCT band, own revision track
+#   obc bake landmarks europe/switzerland # capture + compile, own revision track
 #   obc bake verify
 #   obc bake publish                  # plan only
 #   obc bake publish --target r2      # upload content first, catalog root last
@@ -300,6 +301,7 @@ bake *args:
     if [[ -z "${OBC_PYOSMIUM_UP_TO_DATE:-}" && -x "$OBC_ROOT/.venv/bin/pyosmium-up-to-date" ]]; then
       export OBC_PYOSMIUM_UP_TO_DATE="$OBC_ROOT/.venv/bin/pyosmium-up-to-date"
     fi
+    export OBC_LANDMARK_CAPTURE_TOOL="${OBC_LANDMARK_CAPTURE_TOOL:-$OBC_ROOT/tools/landmark_capture.py}"
     ( cd "$OBC_ROOT" && _run cargo build --release -p obc-bake )
     bin="$OBC_ROOT/target/release/obc-bake"
     tree="${OBC_BAKE_TREE:-$HOME/obc-bake}"
@@ -395,6 +397,13 @@ bake *args:
         shift
         _run "$bin" terrain --out "$tree" "$@"
         _say "bake tree: $tree — now re-bake the cells so their ascents match: obc bake" ;;
+      landmarks)
+        # The landmark artifact class, on its own revision track. Capture reads live Wikidata,
+        # Wikipedia and Commons — the one non-reproducible step of any bake — and is resumable, so
+        # an interrupted country is continued by repeating the command.
+        shift
+        _run "$bin" landmarks --out "$tree" "$@"
+        _say "bake tree: $tree — landmark artifacts under $tree/landmarks" ;;
       regions|check-obcm-version|help|-h|--help)
         _run "$bin" "$@" ;;
       *)
