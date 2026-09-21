@@ -1,228 +1,141 @@
 # OBC firmware (Rust)
 
-This directory holds the crates the **device image actually reaches** — the
-shared `no_std` render path, the platform adapters, the board crate and the
-bootloader. The device application and a desktop simulator share **one**
-rendering path for `.obcm` maps.
+This directory holds the crates the device image reaches: the shared `no_std` render path, the
+platform adapters, the board crate and the bootloader. The device application and the desktop
+simulator share one rendering path for `.obcm` maps.
 
-This file is the **build / test / dev-loop guide** for all the Rust in the repo,
-not just this directory — for *how the system works* (crate graph, render
-pipeline, formats, UI) read the docs site:
-<https://openbikecomputer.com/>. Per-crate roles are tabulated
-in the [repo README](../README.md#repository-layout).
+This file is the build, test and dev-loop guide for all the Rust in the repo. For how the system
+works, read the docs site: <https://openbikecomputer.com/>. Per-crate roles are tabulated in the
+[repo README](../README.md#repository-layout).
 
-The workspace is rooted at the **repo root** (`../Cargo.toml`), and spans three
-trees — one `Cargo.lock`, one `target/`:
+The workspace is rooted at the repo root (`../Cargo.toml`) and spans `firmware/`, `../host/` and
+`../apps/` — one `Cargo.lock`, one `target/`. Only `firmware/` is device-reachable; that is the
+rule `firmware/tools/check_dependencies.py` enforces. Dev-dependencies cross the boundary on
+purpose, because a dev-dep never enters the `no_std` build, so `cargo test` wants GEOS.
 
-| Tree | Holds | Reached by the device image? |
-| :-- | :-- | :-- |
-| `firmware/` | `obc-crc`, `obc-link`, `obc-formats`, `obc-ports`, `obc-map-scene`, `obc-reader`, `obc-route`, `obc-render`, `obc-app`, `obc-ble`, `obc-dfu`, the platform adapters | **yes** — that is the rule |
-| `../host/` | the packer (`obc-pack`), the bakery (`obc-bake`), the terrain baker (`obc-dem`), the cell assembler (`obcm-assemble`), `obc-mkimage`, `obc-bench`, the oracles (`obcm-testkit`, `obc-vectors`), `obc-host-core`, `obc-replay`, `obc-usb-host` | no |
-| `../apps/` | `obc-sim`, `obc-web-demo`, `obc-web-convert`, `obc-web-assemble`, `obc-skin-preview`, `obc-desktop` | no |
-
-Dev-dependencies cross that boundary on purpose — `obc-render` and `obc-reader`
-test against `obcm-testkit`, `obc-route` against `obc-pack` — because a dev-dep
-never enters the `no_std` build. `cargo test` therefore wants GEOS.
-
-Three crates are **`exclude`d** from the workspace and built on their own, each
-because it drags a toolchain the rest has no use for:
+Three crates are excluded from the workspace and built from **inside their own directory**, each
+with its own `Cargo.lock`, `fmt`, `clippy`, `test` and CI job:
 
 | Crate | Why it stands alone |
 | :-- | :-- |
-| [`obc-fw-nrf54l`](obc-fw-nrf54l/README.md) | the real board: its own MCU target + `.cargo/config.toml` |
+| [`obc-fw-nrf54l`](obc-fw-nrf54l/README.md) | the board: its own MCU target and `.cargo/config.toml` |
 | [`obc-boot`](obc-boot/README.md) | the 32 KB bootloader, same target, its own link script |
-| [`obc-desktop`](../apps/obc-desktop/README.md) | the Tauri app: a platform webview (WebKitGTK on Linux) |
-
-Each has its own `Cargo.lock` and needs its own `fmt` / `clippy` / `test`
-invocation — and its own CI job.
+| [`obc-desktop`](../apps/obc-desktop/README.md) | the Tauri app: a platform webview |
 
 ## Prerequisites
 
 | For… | You need |
 | :-- | :-- |
 | Anything Rust | A stable toolchain (`rustup`). |
-| The desktop simulator | Just Rust — the GUI is pure eframe/egui, **no SDL/Homebrew**. |
-| The packer (`obc-pack`) | System **GEOS ≥ 3.14** (`brew install geos`) — its only native dependency. Multi-`.pbf` merge, `--bbox` and the land-dataset download all run in-process; no `osmium`, `curl` or `unzip`. |
-| The desktop app (`obc-desktop`) | **Not** GEOS — it builds a vendored copy in, so it needs **CMake** and a C++ compiler instead. Plus Node for the frontend it embeds. Linux also wants WebKitGTK — see [its README](../apps/obc-desktop/README.md). |
+| The desktop simulator | Just Rust — the GUI is pure eframe/egui. |
+| The packer (`obc-pack`) | System **GEOS ≥ 3.14** (`brew install geos`), its only native dependency. |
+| The desktop app (`obc-desktop`) | **CMake** and a C++ compiler (it vendors GEOS), plus Node. Linux also wants WebKitGTK — see [its README](../apps/obc-desktop/README.md). |
 | Compiling the shared crates for the device | `rustup target add thumbv8m.main-none-eabihf`. |
 
 ## Build
 
 ```sh
-# From the repo root (or anywhere inside it — cargo walks up to the workspace).
-# Builds the simulator + shared crates + packer for the host.
+# From anywhere inside the repo. Builds the simulator, the shared crates and the packer.
 cargo build --release        # → target/release/{obc-sim, obc-pack}
 
-# Confirm the shared stack still compiles for the nRF54L application core:
+# Confirm the shared stack still compiles for the nRF54L application core.
 cargo build -p obc-app --target thumbv8m.main-none-eabihf
 ```
 
-The board crate is built from **inside** its own directory (its target is
-discovered from `.cargo/config.toml` by the working directory, not by
-`--manifest-path` — building it via `--manifest-path` from here
-silently targets the host and fails):
+The board crate is built from inside its own directory. Its target comes from
+`.cargo/config.toml`, which cargo finds by working directory, so building it through
+`--manifest-path` from here silently targets the host and fails:
 
 ```sh
-# One image: the map/ride app, the nrf-sdc + TrouBLE radio stack and the USB device plane.
-# The board crate README has the pins, flashing, and on-glass verify.
 cd firmware/obc-fw-nrf54l && cargo build --release    # see that crate's README to flash
 ```
-
-The host-tested, radio-free BLE core (`obc-ble`) is a normal workspace member. Its command,
-status and config bytes are specified in
-[`obc-ble-interface-spec.md`](../specs/obc-ble-interface-spec.md). Object transfers use
-[`FLAT_Store_Protocol.md`](../specs/FLAT_Store_Protocol.md), on both BLE and USB. The concepts are
-on the docs site under [the companion link](https://openbikecomputer.com/software/companion-link/).
-
-`obc-link::flat` is the protocol-v4 codec and transfer engine. It owns control and stream records,
-exact identity types, and one transfer state machine. It owns no transport or storage I/O: the
-board adapters supply records and implement its store seam. The independent fixture producer
-builds [`specs/vectors/flat-store-v4/`](../specs/vectors/flat-store-v4/) directly from the contract's
-offset tables. Regenerate these fixtures deliberately with
-`cargo run -p obc-link --features std --example flat_vectors --locked`. Host tests exercise the engine against the
-real flat store and its faulting card model.
-
-`obc-storage::flat` is the **flat card store** (Device Object System v3): the whole of
-[`FLAT_Store_Format.md`](../specs/FLAT_Store_Format.md) and §2 of
-[`FLAT_Store_Protocol.md`](../specs/FLAT_Store_Protocol.md). `seam` is the five-operation `Store`
-trait everything above the card sees; `device` is the 512-byte block seam it sits on; `layout`,
-`superblock`, `catalog` and `journal` are the geometry and the three record shapes; `bitmap` is the
-free map, which is the catalog's complement and nothing else; and `store` composes them into mount,
-initialization, the alternating gate-sector commit and the ride journal's write half. Resident state
-is the 8 KiB free bitmap plus a handful of rows — the entry array stays on the card. Host-only, behind
-the same `std` feature: `sim`, a sparse card that tears exactly the program pages §1's fault model
-admits, and `model`, the reference state a recovered card is compared against byte for byte. Under
-`cfg(test)`: the crash matrix (every media operation of every durable path, cut before, during and
-after), the decoder fuzz, and both specs' vectors.
 
 ## Test
 
 ```sh
-cargo test            # the whole host workspace
-cargo test -p obc-pack    # just the packer (fixtures under builder/tests/corpus/)
+cargo test                # the whole host workspace
+cargo test -p obc-pack    # just the packer
 ```
 
-`cargo test` does **not** touch the excluded board crate.
+`cargo test` does not touch the three excluded crates.
 
-### Render benchmark + hash and read-counter gate
+The frozen resource numbers are in [`tools/resource_baseline.json`](tools/resource_baseline.json),
+enforced by [`tools/resource_guard.py`](tools/resource_guard.py). A build with
+`--features resource-report` is diagnostic and must never be flashed or packaged.
 
-`obc-bench` renders seven fixed scenes (riding / mid / overview × north-up /
-rotated, plus route) through the real reader → renderer pipeline over a deterministic
-fixture and prints per-stage timings, a frame hash and the map read path's counters
-per scene. `--check` re-runs those scenes **and** the nine route-corridor snapshot
-cases, and fails if any frame hash or any read counter — leaves visited, chunk cache
-hits/misses, SD reads, bytes read — drifts from `host/obc-bench/golden.txt`. The
-counters are what catch a cache change that regresses the hit rate while leaving
-every pixel identical. Timings are printed but never gated.
+### Render benchmark and golden gate
+
+`obc-bench` renders seven fixed scenes through the real reader and renderer over a deterministic
+fixture, and prints per-stage timings, a frame hash and the map read path's counters. `--check`
+also runs the nine route-corridor cases and fails if any frame hash or read counter drifts from
+`host/obc-bench/golden.txt`. Timings are printed but never gated.
 
 ```sh
-cargo run -p obc-bench --release                                  # the timing/hash/counter table
+cargo run -p obc-bench --release                                       # the table
 cargo run -p obc-bench --release -- --check host/obc-bench/golden.txt  # what CI runs
-cargo run -p obc-bench --release -- --repeat 9                    # stable local timing sample
-cargo run -p obc-bench --release -- --corridor                    # the corridor matrix alone
-```
-
-A pure refactor must leave the golden file untouched. An **intentional** rendering
-or cache change regenerates it in the same PR, with the reason stated (that's the
-review signal):
-
-```sh
+cargo run -p obc-bench --release -- --repeat 9                         # stable timing sample
+cargo run -p obc-bench --release -- --corridor                         # the corridor matrix alone
 cargo run -p obc-bench --release -- --write-golden host/obc-bench/golden.txt
 ```
 
-One-off runs against a real map:
-`cargo run -p obc-bench --release -- --map freiburg.obcm --mpp 4 --heading 35`.
-
-The frozen firmware resource numbers, dependency-direction contract, benchmark
-reference host, and repeatable on-device capture procedure live in
-[`docs/ARCHITECTURE_RESOURCE_BASELINE.md`](docs/ARCHITECTURE_RESOURCE_BASELINE.md). Read it
-before approving a resource-baseline change: report-only firmware is diagnostic
-and must never be flashed as the shipping artifact.
+A pure refactor must leave the golden file untouched. An intentional rendering or cache change
+regenerates it in the same pull request, with the reason stated.
 
 ## Format
 
-`rustfmt.toml` is committed (`max_width = 120`, `use_small_heuristics = "Max"`),
-so let rustfmt own style — don't hand-format. Formatting takes **four
-invocations**, and CI checks all of them (the workspace is a *virtual* manifest,
-so `--all` is required or it formats nothing; the three excluded crates above are
-skipped by `--all` and each needs its own):
+`rustfmt.toml` is committed, so let rustfmt own style. Formatting takes four invocations, and CI
+checks all of them: the workspace is a *virtual* manifest, so `--all` is required or it formats
+nothing, and `--all` skips the three excluded crates.
 
 ```sh
-cargo fmt --all                                    # the workspace
-cargo fmt --manifest-path firmware/obc-fw-nrf54l/Cargo.toml # the board crate, separately
-cargo fmt --manifest-path firmware/obc-boot/Cargo.toml      # the bootloader, separately
-cargo fmt --manifest-path apps/obc-desktop/Cargo.toml       # the desktop app, separately
+cargo fmt --all                                             # the workspace
+cargo fmt --manifest-path firmware/obc-fw-nrf54l/Cargo.toml
+cargo fmt --manifest-path firmware/obc-boot/Cargo.toml
+cargo fmt --manifest-path apps/obc-desktop/Cargo.toml
 ```
+
+`obc fmt` runs all four.
 
 ## Run the simulator
 
-`obc-sim` renders `.obcm` maps (which must be **v13**) through the exact code the
-firmware runs. `freiburg.obcm` in the repo root is a current sample.
+`obc-sim` renders a packed `.obcm` map through the exact code the firmware runs. Pack one with
+`obc pack <region.osm.pbf>`.
 
 ```sh
-# Interactive: device look (240×320, 64 colors), 3× window scale. Drag to pan,
-# scroll to zoom.
-./target/release/obc-sim freiburg.obcm
-
-./target/release/obc-sim freiburg.obcm --size 480x640 --scale 2  # bigger window
-./target/release/obc-sim freiburg.obcm --gpx kandel.gpx         # replay a GPX as a fake GPS
-./target/release/obc-sim freiburg.obcm --png out.png            # headless one-frame render
+./target/release/obc-sim map.obcm                      # device look, 240×320, 3× window scale
+./target/release/obc-sim map.obcm --size 480x640 --scale 2
+./target/release/obc-sim map.obcm --gpx ride.gpx       # replay a GPX as a fake GPS
+./target/release/obc-sim map.obcm --png out.png        # headless one-frame render
 ```
 
-See the [simulator guide](../apps/obc-sim/README.md) or run `obc-sim --help` for the grouped flag
-reference, screenshot workflow, GUI-only housing/calibration controls, and fixture syntax. Packing
-maps and the web builder are covered in the [repo README](../README.md).
+See the [simulator guide](../apps/obc-sim/README.md) or `obc-sim --help` for the rest.
 
 ## Run the web demo (`obc-web-demo`)
 
-The landing page's live demo is the same shared crates compiled to wasm behind a
-small `obc_demo_*` API (no egui/wgpu — the page's JS owns the frame loop). Trunk
-drives the build from the site config (`rustup target add wasm32-unknown-unknown`
-+ `cargo install trunk` once):
+The landing page's live demo is the same shared crates compiled to wasm. Trunk drives the build
+(`rustup target add wasm32-unknown-unknown` and `cargo install trunk` once):
 
 ```sh
-# From the repo root. Dev server with rebuild-on-change:
-trunk serve --config docs/Trunk.toml           # http://127.0.0.1:8080/
-
-# The shipped, wasm-opt'd binary (what CI + Pages deploy build):
-trunk build --release --config docs/Trunk.toml # → docs/dist/
+trunk serve --config docs/Trunk.toml            # http://127.0.0.1:8080/
+trunk build --release --config docs/Trunk.toml  # → docs/dist/, what CI and Pages deploy
 ```
 
-The demo core is target-independent, so its unit tests run in the plain
-`cargo test` above — no browser needed for the logic.
+## Build the web builder's wasm bridges
 
-## Build the web builder's wasm bridges (`obc-web-convert`, `obc-web-assemble`)
-
-The hosted web builder has no backend, so two things it needs run as wasm in
-the tab, each a thin host over a shared crate:
-
-- **`obc-web-convert`** — `obc-route`'s `gpx_to_obcr` / `track_to_gpx`, so a
-  dropped GPX becomes the *same* `.obcr` the device and the CLI produce.
-- **`obc-web-assemble`** — `obcm-assemble`, so downloaded OBCA cells become one
-  map in the tab, verified (spec §4.8) before anything leaves it. The only one
-  wrapping a `host/` crate rather than a firmware one.
-
-Both are normal workspace members — their cores are target-independent and
-covered by the `cargo test` above; only the shipping artifacts are wasm.
-
-Unlike the demo these are **libraries** consumed by Vite, not apps Trunk
-bundles, so they build with `wasm-pack` (`cargo install wasm-pack` once):
+The hosted builder has no backend, so `obc-web-convert` (GPX → `.obcr`) and `obc-web-assemble`
+(OBCA cells → one map) run as wasm in the tab. They are libraries consumed by Vite, so they build
+with `wasm-pack` (`cargo install wasm-pack` once):
 
 ```sh
 # From builder/app — writes src/lib/{convert,assemble}/pkg/ (gitignored).
 npm run build:wasm            # both; :convert / :assemble build one
 ```
 
-The frontend needs that output before `npm run check`, `npm test` or
-`npm run build` will work: the TypeScript wrappers import the generated
-bindings, and two vitest suites push checked-in fixtures through the wasm
-modules and compare **byte-for-byte** against the native tools' checked-in
-output — `specs/vectors/` for the converter, and the cell tree in
-`apps/obc-web-assemble/tests/fixture/` for the assembler. CI does the same in
-its `wasm-bridges` job, which also enforces the per-module bundle-size budgets:
+The frontend needs that output before `npm run check`, `npm test` or `npm run build` will work.
+CI's `wasm-bridges` job does the same and enforces the per-module bundle-size budgets:
 
 ```sh
-# From the repo root; --pkg overrides the module's default location.
+# From the repo root.
 python3 firmware/tools/wasm_size_guard.py --module convert
 python3 firmware/tools/wasm_size_guard.py --module preview
 python3 firmware/tools/wasm_size_guard.py --module assemble
@@ -230,65 +143,47 @@ python3 firmware/tools/wasm_size_guard.py --module assemble
 
 ## Firmware update images (OBCU)
 
-Field firmware updates (epic #615) ship as an **OBCU** container — a 64-byte header,
-the raw app image, and an Ed25519 signature trailer (OBCU v2, #997) — dropped on the SD
-card as `/UPDATE.BIN`. The byte format is
-[`OBCU_Spec.md`](../specs/OBCU_Spec.md); the shared codec + boot-decision logic live in
-`obc-dfu` (a `no_std` workspace member, host-tested by the `cargo test` above). The
-producer is `obc-mkimage`.
-
-The pipeline is **objcopy → wrap+sign**. Strip the board ELF to a raw binary (vector
-table first), then wrap and sign it:
+A field update is an OBCU container dropped on the SD card as `/UPDATE.BIN`. The byte format is
+[`OBCU_Spec.md`](../specs/OBCU_Spec.md); the shared codec and boot decision live in `obc-dfu`, and
+the producer is `obc-mkimage`. The pipeline is objcopy, then wrap and sign:
 
 ```sh
-# From the board crate — its .cargo/config.toml selects the nRF54L target (see its README).
-# cargo-binutils provides `cargo objcopy`; `-O binary` emits the raw image in LMA order.
+# From the board crate, whose .cargo/config.toml selects the nRF54L target.
+# cargo-binutils provides `cargo objcopy`; -O binary emits the raw image in LMA order.
 cd obc-fw-nrf54l
 cargo objcopy --release -- -O binary app.bin
-# (equivalently, on the ELF: llvm-objcopy -O binary target/<triple>/release/obc-fw-nrf54l app.bin)
 
-# Wrap into a signed OBCU container tagged with the build's git describe. On a dev machine
-# the committed test seed is the right key (the firmware trusts it until the release key is
-# rotated — see firmware/obc-dfu/keys/README.md); CI passes --sign-seed-env instead.
+# Wrap and sign. On a dev machine the committed test seed is the right key; CI passes
+# --sign-seed-env instead.
 cargo run -p obc-mkimage -- wrap \
     --bin app.bin \
     --version "$(git describe --always --dirty)" \
     --out UPDATE.BIN \
     --sign-seed ../obc-dfu/keys/test/obcu-test.seed
 
-# Inspect: decode + verify both CRCs AND the signature (non-zero exit if invalid).
+# Decode and verify both CRCs and the signature. Non-zero exit if invalid.
 cargo run -p obc-mkimage -- inspect UPDATE.BIN
 ```
 
-`wrap` refuses an image over the app-slot limit (`MAX_IMAGE_LEN`, 1,480,000 bytes)
-and **warns** if the binary's first word isn't a plausible initial stack pointer in
-RAM (`0x2000_0000 … 0x2004_0000`) — a raw `.bin` starts with the vector table, so a
-failed check usually means an ELF or a wrong-section-order strip slipped through.
+`wrap` refuses an image over `MAX_IMAGE_LEN` and warns if the binary's first word is not a
+plausible initial stack pointer, which usually means an ELF or a wrong section order slipped
+through.
 
-**Signing is not optional on the device.** Without `--sign-seed`/`--sign-seed-env`,
-`wrap` emits a v1/unsigned container, warns loudly, and the armer **rejects** it
-("This update file is not signed for this device") — the signature would be pointless if
-an unsigned wrapper still installed. `obc-mkimage sign --in … --out …` attaches the
-trailer to an already-wrapped container, so an artifact can be built on one machine and
-signed on the one that holds the key; `keygen` makes a keypair. Everything about keys —
-the file format, the `OBCU_SIGNING_SEED` CI secret, and the **rotation still owed before
-the first real release** — is in [`obc-dfu/keys/README.md`](obc-dfu/keys/README.md).
+**Signing is not optional on the device.** Without a seed, `wrap` emits an unsigned container and
+the armer rejects it. `obc-mkimage sign` attaches the trailer to an already-wrapped container, so
+an artifact can be built on one machine and signed on the one that holds the key; `keygen` makes a
+keypair. Keys, the `OBCU_SIGNING_SEED` secret and the **rotation still owed before the first real
+release** are in [`obc-dfu/keys/README.md`](obc-dfu/keys/README.md).
 
-Installing a staged `UPDATE.BIN` on the device is the app-side armer (S4, #619): copy
-the file to the card root and trigger the install — from the S5 UI once it lands, or
-today over the debug VCOM link (`dfu-install`; recipe in the
-[board README](obc-fw-nrf54l/README.md#triggering-a-firmware-update-over-the-vcom-dfu-install-s4-619)).
-The armer validates the file, snapshots the running image to `/ROLLBACK.BIN`, arms the
-boot-state page, and resets into `obc-boot`, which does the actual flash
-([its README](obc-boot/README.md) has the LED codes).
+To install a staged `UPDATE.BIN`, copy it to the card root and trigger the armer over the debug
+VCOM link ([board README](obc-fw-nrf54l/README.md#driving-it-from-a-host-debug-uart)). The armer
+validates the file, snapshots the running image to `/ROLLBACK.BIN`, arms the boot-state page and
+resets into `obc-boot` ([its README](obc-boot/README.md) has the LED codes).
 
 ## Terrain tiles (OBCT)
 
-`obc-dem` turns the source DEM into the terrain artifact carried **beside** a map:
-Copernicus GLO-30 GeoTIFF in, `.obcd` out ([`OBCT_Spec.md`](../specs/OBCT_Spec.md),
-epic #1068). It is a plain host tool with **no native dependency at all** — the
-GeoTIFF decode is pure Rust and the download is `ureq`/rustls, which is what keeps
-libGEOS the last one in the tree (#907).
+`obc-dem` turns Copernicus GLO-30 GeoTIFF into the `.obcd` artifact carried beside a map
+([`OBCT_Spec.md`](../specs/OBCT_Spec.md)). It has no native dependency.
 
 ```sh
 # The tiles a box needs, from the AWS Open Data mirror (~44 MB each).
@@ -304,30 +199,21 @@ cargo run --release -p obc-dem -- bake --sources /tmp/dem \
     --bbox 46.48261,8.15034,46.72070,8.46007 --cell-log2 16 --shard grimsel.obcd
 ```
 
-**`--bbox` is latitude first** (`min_lat,min_lon,max_lat,max_lon`) — the opposite
-of `obc-pack --bbox`, because this tool selects grid *cells* and every grid
-expression in the platform puts latitude first. For an Alpine box both numbers are
-plausible on either axis, so nothing catches the mix-up; read the flag.
+**`--bbox` is latitude first** (`min_lat,min_lon,max_lat,max_lon`), the opposite of
+`obc-pack --bbox`. For an Alpine box both numbers are plausible on either axis, so nothing catches
+the mix-up.
 
-`--posting-log2` / `--cell-log2` default to the v1 baked pairing (`2^9` µdeg
-posting, `2^19` µdeg cell — a 2 MiB block). Both are OBCT *header data*, so a
-different pairing is a re-bake and not a format change; the committed sim sidecars
-use a `2^16` cell for that reason.
+`--posting-log2` and `--cell-log2` default to the v1 baked pairing. Both are OBCT header data, so
+a different pairing is a re-bake, not a format change.
 
-For a *published* catalog you do not run `obc-dem bake` by hand: `obc bake terrain`
-drives this crate as a library over the curated coverage and lays the cells out as
-`cells/terrain/<i>/<j>.obcd` with the sidecars and known-empty runs the catalog
-needs (see the root [README](../README.md#baking-and-publishing-the-catalog) and
-`OBCC_Spec.md` §13). `obc-dem` on its own stays the way to build a one-off shard.
+`fetch` is the only thing that touches the network. A bake is a pure function of a tile directory
+and a box, and byte-identical output for identical inputs is a contract pinned by a digest test. A
+source void becomes `NODATA` and nothing is ever inpainted.
 
-`fetch` is the only thing that touches the network — a bake is a pure function of
-a tile directory and a box, and **byte-identical output for identical inputs is a
-contract**, pinned by a digest test. A source void becomes `NODATA`, an uncovered
-lattice point becomes `NODATA`, and nothing is ever inpainted.
+Anything derived from GLO-30 must carry the Copernicus credit; `bake` prints it, and
+`obc_elevation::COPERNICUS_ATTRIBUTION` is its single copy in the repo.
 
-Anything derived from GLO-30 must carry the Copernicus credit; `bake` prints it,
-and `obc_elevation::COPERNICUS_ATTRIBUTION` is its single copy in the repo.
-
-The two committed terrain sidecars are regenerated by
-[`fixtures/build-map-package.sh terrain`](../fixtures/build-map-package.sh), the
-same provenance script as the `.obcm` fixtures.
+For a published catalog, use `obc bake terrain`, which drives this crate as a library over the
+curated coverage (see the root [README](../README.md#baking-and-publishing-the-catalog)). The two
+committed terrain sidecars are regenerated by
+[`fixtures/build-map-package.sh terrain`](../fixtures/build-map-package.sh).
