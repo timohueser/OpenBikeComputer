@@ -80,39 +80,52 @@ fn photo(name: &str) -> Photo {
     }
 }
 
-/// The whole circle, drawn the way the device draws it.
-fn draw(terrain: &mut Terrain<'_>, photo: &Photo) -> Builder {
+/// The whole circle, drawn the way the device draws it, and the row terrain reached in each of its
+/// columns.
+///
+/// `Builder` keeps only the last finished sector's skyline — it sits in the device's panorama
+/// arena and a full circle of rows would spend most of the space that arena has left — so the
+/// circle is collected a sector at a time. One unit of work per `step` is what makes that exact:
+/// a unit finishes at most one sector, and the same call begins the next one over the same
+/// scratch.
+fn draw(terrain: &mut Terrain<'_>, photo: &Photo) -> (PeakViewProfile<'static>, [u8; COLUMNS]) {
     let mut profile = PeakViewProfile::at(photo.lat, photo.lon, photo.eye_m);
     profile.default_heading_q4 = photo.heading_q4;
     let mut builder = Builder::new(&profile);
-    // The device spends a budget per frame; a test only has to reach the same end state.
-    for _ in 0..10_000 {
-        if builder.complete() {
-            return builder;
+    let mut rows = [ROWS as u8; COLUMNS];
+    let mut collected = 0u64;
+    while !builder.complete() {
+        builder.step(terrain, 1);
+        if builder.finished_sectors() == collected {
+            continue;
         }
-        builder.step(terrain, 4096);
+        collected = builder.finished_sectors();
+        let (column, sector) = builder.last_sector_skyline();
+        for (offset, &row) in sector.iter().enumerate() {
+            rows[(column + offset) % COLUMNS] = row;
+        }
     }
-    panic!("the panorama did not finish");
+    (builder.profile(), rows)
 }
 
 /// The elevation of the drawn skyline in a panorama column, in degrees.
 ///
-/// The row the terrain reached is the first row below the skyline, so the skyline itself lies
-/// between that row's centre and the centre of the row above it — their shared edge.
-fn column_elevation(builder: &Builder, profile: &PeakViewProfile, column: usize) -> f32 {
+/// The row terrain reached is the first row below the skyline, so the skyline itself lies between
+/// that row's centre and the centre of the row above it — their shared edge.
+fn column_elevation(rows: &[u8; COLUMNS], profile: &PeakViewProfile, column: usize) -> f32 {
     let (bottom, top) = profile.vertical_bounds_q4();
     let per_row = (top - bottom) as f32 / ROWS as f32;
-    (top as f32 - builder.skyline_row(column) as f32 * per_row) / 4.0
+    (top as f32 - f32::from(rows[column % COLUMNS]) * per_row) / 4.0
 }
 
 /// The drawn skyline at an arbitrary bearing: the two columns either side of it, interpolated.
-fn elevation_at(builder: &Builder, profile: &PeakViewProfile, bearing_deg: f32) -> f32 {
+fn elevation_at(rows: &[u8; COLUMNS], profile: &PeakViewProfile, bearing_deg: f32) -> f32 {
     let position = bearing_deg.rem_euclid(360.0) / COLUMN_DEG;
     let low = position.floor();
     let fraction = position - low;
     let low = low as usize;
-    let a = column_elevation(builder, profile, low);
-    let b = column_elevation(builder, profile, low + 1);
+    let a = column_elevation(rows, profile, low);
+    let b = column_elevation(rows, profile, low + 1);
     a + (b - a) * fraction
 }
 
@@ -128,12 +141,11 @@ fn the_drawn_skyline_matches_the_engelberg_photographs() {
     let mut failures = Vec::new();
     for name in VIEWS {
         let photo = photo(name);
-        let builder = draw(&mut terrain, &photo);
-        let profile = builder.profile();
+        let (profile, rows) = draw(&mut terrain, &photo);
         let squares: f32 = photo
             .columns
             .iter()
-            .map(|&(bearing, elevation)| (elevation_at(&builder, &profile, bearing) - elevation).powi(2))
+            .map(|&(bearing, elevation)| (elevation_at(&rows, &profile, bearing) - elevation).powi(2))
             .sum();
         let rms = (squares / photo.columns.len() as f32).sqrt();
         println!("{name:26} rms {rms:.3} deg over {} columns, limit {:.2}", photo.columns.len(), photo.limit_deg);
