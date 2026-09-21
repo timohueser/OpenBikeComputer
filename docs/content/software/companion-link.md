@@ -1,36 +1,21 @@
 ---
 title: The companion link
-description: How protocol v4 moves flat-store objects over BLE and USB binding v5.
+description: How the device and a client move stored objects over Bluetooth and USB.
 copy: ai
 ---
 
 # The companion link
 
-The companion link moves stored objects between OpenBikeComputer and a client.
-BLE and USB use the same protocol-v4 frames.
-BLE also supplies pairing, settings, clock, and bond removal controls.
-USB supplies object transfer and device information only.
+The companion link moves stored objects between the device and a client: routes and maps in, rides
+out. Bluetooth and USB carry the same protocol frames, so there is one transfer engine and one set
+of rules. Bluetooth adds the device-local controls: pairing, the clock, the settings, and bond
+removal. USB carries objects and device information only.
 
-The normative contracts are:
-
-- [Flat-store protocol v4](src:specs/FLAT_Store_Protocol.md)
-- [Flat-store card format](src:specs/FLAT_Store_Format.md)
-- [BLE control surface](src:specs/obc-ble-interface-spec.md)
+The normative contracts are the [flat-store protocol](src:specs/FLAT_Store_Protocol.md), the
+[card format](src:specs/FLAT_Store_Format.md), and the
+[BLE control surface](src:specs/obc-ble-interface-spec.md).
 
 ## Two planes: control and data
-
-Protocol v4 has a control channel and a stream channel.
-Control frames select an operation and report its result.
-Stream frames carry PUT and GET payload bytes.
-Only one PUT or GET can be active.
-
-BLE maps control frames to the `objectControl` GATT characteristic.
-It maps stream frames to one L2CAP connection-oriented channel (CoC).
-The open `protocolVersion` characteristic contains `u16` value 4.
-After authentication, the `psm` characteristic identifies the CoC.
-
-USB binding v5 uses one bulk endpoint pair for each plane.
-Both transports deliver identical protocol-v4 frame bytes to one transfer engine.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -71,84 +56,28 @@ Both transports deliver identical protocol-v4 frame bytes to one transfer engine
 <figcaption>BLE and USB carry the same protocol-v4 frames. BLE pairing, clock, and settings controls remain outside this transfer protocol.</figcaption>
 </figure>
 
-Each control frame has a 16-byte header.
-It contains the `OBC4` magic, protocol major, opcode, flags, length, and `RequestId`.
-The client selects a nonzero `RequestId`.
-The terminal response echoes it.
-The same value identifies all stream frames for a PUT or GET.
+The protocol has a control channel and a stream channel. Control frames select an operation and
+report its result; stream frames carry the payload. Only one transfer is active at a time, which
+keeps the device's buffers fixed.
 
-The adapter delivers the control frame before related stream frames.
-It uses link backpressure if a stream frame arrives first.
-BLE credits and USB packet completion do not mean that data are durable.
-Only a successful store commit makes an upload durable.
+Over Bluetooth the control channel is a GATT characteristic and the stream channel is an L2CAP
+channel; over USB each plane is a pair of bulk endpoints. The frame bytes are identical.
 
-## Protocol-v4 operations
+The operations are the ones a small object store needs: list the catalog, check one object, get,
+put, remove, cancel the active transfer, format the card, and arm an uploaded firmware package.
+There is no negotiation, no session, and no unsolicited status frame: a client lists first, and
+lists again when the store identity or the commit sequence changes.
 
-| Operation | Function |
-| :-- | :-- |
-| `LIST` | Read paged catalog entries, `StoreId`, and commit sequence. |
-| `STATUS` | Check one known object and revision. |
-| `GET` | Download one committed object revision. |
-| `PUT` | Create or replace one object with one commit. |
-| `REMOVE` | Remove one object head and any retained revision. |
-| `CANCEL` | Stop the active PUT or GET. |
-| `ARM` | Request validation and installation of an uploaded firmware package. |
-| `FORMAT` | Replace the card with a new empty flat store. |
+Link credits and packet completion do not mean the data is safe. Only a store commit does.
 
-The protocol, clients, and board adapters implement the `ARM` request and response.
-The current nRF54LM20 board policy rejects every `ARM` request with `rejected`.
-Uploading an update package does not install it.
+## Objects
 
-There is no protocol negotiation, wire minor, session, operation ID, or unsolicited status frame.
-A client sends `LIST` before other operations.
-A new `StoreId` invalidates all cached catalog data.
-A changed commit sequence tells the client to read the catalog again.
-
-## Stored object kinds
-
-| Value | Kind | Payload or function |
-| --: | :-- | :-- |
-| 1 | Route | OBCR route |
-| 2 | Trip | Ordered route membership |
-| 3 | Ride | Device-produced recording |
-| 5 | Map | One OBCM file with embedded terrain |
-| 6 | Retired | Map-set manifest; producers must not write it |
-| 7 | Update package | OBCU firmware package |
-| 8 | Rollback reserve | Bootloader rollback space |
-
-`ObjectId` and `Revision` are unsigned 64-bit values.
-Object IDs are store-global and are not reused.
-A create starts at revision 1.
-A replace increments the revision.
-A LIST entry also supplies kind, flags, length, CRC-32, and a UTF-8 display name.
-The display name has a maximum of 48 bytes.
+The store holds routes, trips, rides, one map, the firmware package, and the rollback reserve.
+Object identifiers are never reused; a create starts at revision one and a replace raises the
+revision. A catalog entry carries the kind, length, CRC, and display name, so a client can show the
+store without downloading anything.
 
 ## Transfers and commits
-
-### PUT
-
-A PUT declares the object identity, expected revision, kind, name, length, and CRC-32.
-Object ID zero creates an object.
-A nonzero ID replaces the expected revision.
-
-The client sends stream frames from absolute offset zero.
-Offsets must be contiguous and increasing.
-The device writes to an unpublished allocation.
-The PUT contract requires these checks after the final byte:
-
-- Declared payload length.
-- Whole-payload CRC-32/IEEE.
-- Validator rules for the object kind.
-- Expected revision immediately before commit.
-
-The current [board policy](src:firmware/obc-fw-nrf54l/src/flat_store.rs) checks transfer length
-and CRC through the shared engine, but does not yet inspect the payload with a validator for
-each object kind. A successful upload is therefore not proof that the object can be read.
-
-A successful response supplies the object ID, new revision, length, and CRC.
-An error makes the new bytes unreachable.
-A cancelled or disconnected transfer releases its allocation.
-There is no resume or checkpoint operation.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -197,40 +126,21 @@ There is no resume or checkpoint operation.
 <figcaption>A PUT is one request. A successful response follows the store commit. The current board checks length and CRC but has no object-specific payload validator.</figcaption>
 </figure>
 
-### GET
+An upload declares the identity, the expected revision, the length, and the CRC before any bytes
+move, and the device writes into an unpublished allocation. After the last byte it checks all four
+and only then commits. An error or a lost link makes the new bytes unreachable and leaves the old
+object exactly as it was. There is no resume: a half-written object is not a state the store can be
+in.
 
-A GET selects an object ID and an optional revision.
-The device opens that revision and streams bytes in increasing offset order.
-The response supplies the served revision, length, and CRC.
-The client verifies the complete length and CRC.
+The current [board policy](src:firmware/obc-fw-nrf54l/src/flat_store.rs) checks the length and the
+CRC, but does not yet parse the payload for its kind, so a successful upload is not proof that the
+object can be read.
 
-### REMOVE and CANCEL
-
-REMOVE uses the object ID and expected head revision.
-It removes the head and its retained revision in one commit.
-It cannot remove an active recording or reserved object.
-
-CANCEL names the active PUT or GET `RequestId`.
-It stops the transfer but does not remove an existing committed object.
-A link loss has the same transfer result.
+A download serves one committed revision and reports its length and CRC, and the client verifies
+both. Removing an object removes its head and its retained revision in one commit, and cannot
+remove an active recording.
 
 ### Reconciliation
-
-A storage error during the final catalog write can occur after the new revision reached the card.
-The store then blocks further writes, allocation reuse, and fresh catalog reads until it is mounted
-again. Existing readers keep their exact revision. The link reports a read-only, unreadable catalog;
-clients must reconcile after the device mounts the card again.
-
-Use STATUS after an interrupted replacement.
-A committed result confirms the requested revision.
-An absent or superseded result means that replacement did not become the head.
-
-A create has no assigned ID before its commit response.
-After a lost create response, use LIST.
-Match kind, payload length, payload CRC, and display name.
-If multiple entries match, the iOS client keeps the greatest `ObjectId`.
-It removes the other matches with their exact revisions.
-Do not infer state from a notification or operation log.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -287,56 +197,23 @@ Do not infer state from a notification or operation log.
 <figcaption>LIST supplies the store identity, commit sequence, and catalog entries. Clients use it to reconcile state.</figcaption>
 </figure>
 
-Rides become downloadable after the `RECORDING` flag clears.
-The iOS client downloads the exact listed revision and verifies its store identity, length and CRC.
-It saves the canonical summary, samples and source identity in one atomic archive generation.
-A local archive receipt is returned only after the file and directory persistence barriers succeed.
-A failed save reports no success. A different revision or missing archive remains eligible for download.
+A reply can be lost after the device has committed, so a client must be able to ask what happened
+instead of guessing. After an interrupted replacement, a status request says whether the revision
+became the head. After a lost create, whose identifier the client never learned, the client lists
+the catalog, matches the kind, length, CRC, and name, and removes the duplicates it finds. A
+notification is never evidence.
 
-Protocol v4 can persist proof that a client holds the exact finalized ride. The device checks the
-card, object, revision, length and CRC, then commits and reads back the proof. A duplicate keeps
-the existing proof. A lost reply can be retried from the durable archive.
+Rides become downloadable when their recording flag clears. The phone downloads the listed
+revision, verifies it, saves it in one atomic archive generation, and reports success only after
+the file is durable.
 
-The companion sends proof after saving a ride and after revalidating an existing archive.
-Reconnect retries these confirmations without downloading missing rides. Manual sync can download
-missing rides. If confirmation fails, the phone keeps its archive and shows the existing sync
-warning with the Resume action. A lost reply can mean the device already saved the proof; retry
-is safe. Local save counts do not establish device confirmation.
+The phone then sends the device proof that it holds that exact finalized ride, and the device
+commits and reads back that proof. Proof turns the synced indicator on. It is deliberately not a
+deletion trigger: routes and rides stay on the device until the rider removes them, and a full card
+offers the rider an age-based cleanup instead of deciding alone. The durable format is in the
+[metadata contract](src:specs/Ride_Archive_Metadata.md).
 
-Archive proof controls the device's synced indicator. Routes and rides remain on the device
-until the rider deletes them. A storage-full route upload offers explicit age-based cleanup
-on the device; the rider confirms deletion and then retries the upload.
-
-The exact durable format is in the [metadata contract](src:specs/Ride_Archive_Metadata.md).
-
-## Pairing and BLE controls
-
-The phone uses LE Secure Connections passkey entry.
-The device displays a six-digit passkey.
-The rider enters it in the phone system dialog.
-This process creates one authenticated bond.
-
-The device stores one phone bond.
-While this bond exists, it rejects pairing from a different phone.
-The device action **Forget phone** removes the stored phone keys.
-It first writes and verifies the empty persistent slot, then removes the host keys.
-A failed persistent write or verification leaves the host keys untouched.
-A failed host-key removal can leave a partial result: the persistent slot is empty, but host keys can remain.
-The screen shows the failure and permits another guarded attempt.
-Disconnect and an unpaired link status do not confirm removal.
-
-The BLE host queues controller address-resolution cleanup without a completion receipt.
-After durable and host keys are removed, the screen shows **Restart to finish**.
-Restart resets the controller; the empty persistent slot supplies no phone keys at startup.
-The device does not restart automatically.
-
-The bonded phone can also send `forgetBond`.
-Its response accepts the request before removal and disconnect; it does not confirm durable completion.
-The Bluetooth power setting does not remove the bond.
-
-Device Information, Battery, and `protocolVersion` are open before pairing.
-`psm`, `objectControl`, commands, and configuration require encryption and authentication.
-The device also refuses an unencrypted CoC.
+## Pairing and the Bluetooth controls
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -426,30 +303,21 @@ The device also refuses an unencrypted CoC.
 <figcaption>One passkey creates one bond. Later connections use the stored keys. A bonded device rejects a second phone.</figcaption>
 </figure>
 
-BLE keeps a device-local command and configuration surface beside protocol v4.
-It supports clock setting, bond removal, and settings.
-These controls are not flat-store objects.
-They do not exist in USB binding v5.
+Pairing uses Secure Connections passkey entry: the device shows six digits and the rider types them
+on the phone. That produces one authenticated bond, and the device stores one phone. While a bond
+exists it refuses a second phone, so a bike computer in a group ride cannot be taken over from the
+next wheel.
 
-The phone sets UTC and local offset after encryption.
-A GPS fix can also establish trusted UTC.
+**Forget phone** removes the stored keys. It writes and verifies the empty persistent slot first,
+then removes the host keys, because the order decides what a failure leaves behind. Controller
+cleanup has no receipt, so the screen asks for a restart to finish. A disconnect proves nothing
+about stored keys.
 
-## Sensors: the device as BLE central
+Device information, the battery level, and the protocol version are readable before pairing.
+Everything else needs an authenticated, encrypted link. The clock is set by the phone or by a GPS
+fix; the local offset has to come from the phone or the rider.
 
-For the phone, the device is a BLE peripheral.
-For sensors, the device is a BLE central.
-Both roles use one radio at the same time.
-
-The sensor manager supports these standard services:
-
-- Heart Rate Service.
-- Cycling Power Service.
-- Cycling Speed and Cadence Service.
-- Battery Service.
-
-Sensors use their saved address and do not use the phone bond.
-The device has one saved slot for heart rate, power, and cadence.
-A power meter can supply cadence when no dedicated cadence sensor is configured.
+## Sensors: the device as central
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -506,50 +374,33 @@ A power meter can supply cadence when no dedicated cadence sensor is configured.
 <figcaption>The device is a BLE peripheral for the phone and a BLE central for sensors.</figcaption>
 </figure>
 
-The manager scans, connects, discovers, subscribes, decodes, and dispatches measurements.
-It reconnects after a link failure while Bluetooth is enabled.
-A value older than 5 seconds becomes unavailable.
-The ride recorder stores fresh sensor samples and summary statistics.
-The device does not stream live sensor values to the phone.
+For the phone the device is a peripheral. For sensors it is a central, on the same radio at the
+same time. It supports the standard heart rate, cycling power, speed and cadence, and battery
+services, with one saved slot each for heart rate, power, and cadence.
 
-## BLE and USB binding differences
+Sensors use their own saved address and have nothing to do with the phone bond. A reading older
+than a few seconds becomes unavailable rather than stale, and the recorder stores the fresh samples
+with the ride. The device does not stream live sensor values to the phone.
 
-| Property | BLE | USB binding v5 |
+## Where the two transports differ
+
+| Property | Bluetooth | USB |
 | :-- | :-- | :-- |
-| Protocol frames | Version 4 | Version 4 |
-| Control plane | GATT `objectControl` | Control bulk endpoint pair |
-| Stream plane | L2CAP CoC | Stream bulk endpoint pair |
+| Protocol frames | Same | Same |
 | Authorization | Authenticated bond | Physical cable access |
 | Device-local controls | Available | Not available |
-| Device information | GATT services | EP0 `GET_DEVICE_INFO` |
+| Device information | GATT services | Control request |
 
-USB advertises `bInterfaceProtocol = 5` and `bcdDevice = 0x0500`.
-A host checks these values before it exchanges a record.
-Protocol frames still contain major 4.
-
-Each USB record contains these parts:
-
-1. A little-endian 32-bit record length.
-2. Exactly that many protocol-frame bytes.
-3. Zero padding to a four-byte boundary.
-
-USB packet boundaries have no record meaning.
-A record can span multiple packets.
-The stream-record ceiling is 8,208 bytes, including its 16-byte header.
-A stream payload is therefore at most 8,192 bytes.
-The host-to-device control-record ceiling is 256 bytes.
-
-USB has no mass-storage binding.
-The firmware remains the only owner of the card.
+USB frames travel inside length-prefixed records, and a record can span packets. There is no
+mass-storage mode: the firmware stays the only owner of the card, so a computer can never leave the
+card in a state the firmware did not make.
 
 ## Implementation
 
-- Protocol engine: [`firmware/obc-link/src/flat`](src:firmware/obc-link/src/flat)
-- Flat store: [`firmware/obc-storage/src/flat`](src:firmware/obc-storage/src/flat)
-- BLE adapter: [`firmware/obc-fw-nrf54l/src/ble`](src:firmware/obc-fw-nrf54l/src/ble)
-- USB device adapter: [`firmware/obc-fw-nrf54l/src/usb`](src:firmware/obc-fw-nrf54l/src/usb)
-- USB host library: [`host/obc-usb`](src:host/obc-usb)
+- Protocol engine: [`obc-link`](src:firmware/obc-link/src/flat)
+- Flat store: [`obc-storage`](src:firmware/obc-storage/src/flat)
+- BLE and USB adapters: [`ble`](src:firmware/obc-fw-nrf54l/src/ble), [`usb`](src:firmware/obc-fw-nrf54l/src/usb)
+- USB host library: [`obc-usb`](src:host/obc-usb)
 - iOS protocol client: [`OBCProtocolV4`](src:companion-ios/Packages/OBCKit/Sources/OBCProtocolV4)
 - Builder USB client: [`builder/app/src/lib/usb`](src:builder/app/src/lib/usb)
 - BLE codecs and sensor decoders: [`obc-ble`](src:firmware/obc-ble)
-- Sensor mailbox: [`sensor_hub.rs`](src:firmware/obc-platform/src/sensor_hub.rs)
