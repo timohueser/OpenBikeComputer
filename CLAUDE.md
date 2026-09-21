@@ -49,8 +49,9 @@ and test them from their own directories. The nearest README has the surface's s
 
 A pull request gets one review round; a re-review covers the delta. Do not demonstrate a test
 against deliberately broken code unless the reviewer asks for one specific case. Do not mirror
-the CI suite locally before a push; run the affected suites, CI is the gate. Resource figures come
-from one head build compared against `resource_baseline.json`; never rebuild the base.
+the CI suite locally before a push; run the affected suites, CI is the gate. `obc ci` prints a red
+run's failures; never read a raw CI log. Resource figures come from one head build compared
+against `resource_baseline.json`; never rebuild the base.
 
 ## What gets recorded where
 
