@@ -1,2 +1,0 @@
-nodes=1010635 neighbors=2633471 chunks=116320 output_bytes=247837696 scratch_bytes=12127620 layout_ms=528.820 convert_ms=1460.126 verification_ms=692.302
-source=Counts { reads: 379216, read_bytes: 426505313, writes: 0, write_bytes: 0 } table=Counts { reads: 4654741, read_bytes: 55856892, writes: 1012116, write_bytes: 24255240 } output=Counts { reads: 2749791, read_bytes: 1407892992, writes: 146575, write_bytes: 307393537 }
