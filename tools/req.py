@@ -476,6 +476,16 @@ def head_sha() -> str:
     return sha
 
 
+def source_sha(argv: list[str], flags: set[str]) -> str:
+    """The commit a submission records: `--sha=<40 chars>`, or the commit checked out here."""
+    sha = flag_value(argv, "sha")
+    if "--sha" in flags and not sha:
+        raise Problem("--sha needs a 40-character commit")
+    if sha and (len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha.lower())):
+        raise Problem(f"--sha takes the exact 40-character commit, not {sha!r}")
+    return sha or head_sha()
+
+
 def propose(console: Console, paths: list[str], sha: str, check_only: bool) -> int:
     revision = console.call("/api/bootstrap")["revision"]
     requirements = {r["id"]: r for r in revision["requirements"]}
@@ -730,22 +740,12 @@ def main(argv: list[str]) -> int:
     if command == "suggest":
         if not rest:
             raise Problem("name at least one suggestion file, for example: obc req suggest suggestion.json")
-        sha = flag_value(argv, "sha")
-        if "--sha" in flags and not sha:
-            raise Problem("--sha needs a 40-character commit")
-        if sha and (len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha.lower())):
-            raise Problem(f"--sha takes the exact 40-character commit, not {sha!r}")
-        return suggest(console, rest, sha or head_sha(), "--check" in flags)
+        return suggest(console, rest, source_sha(argv, flags), "--check" in flags)
 
     if command == "propose":
         if not rest:
             raise Problem("name at least one plan file, for example: obc req propose plan.json")
-        sha = flag_value(argv, "sha")
-        if "--sha" in flags and not sha:
-            raise Problem("--sha needs a 40-character commit")
-        if sha and (len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha.lower())):
-            raise Problem(f"--sha takes the exact 40-character commit, not {sha!r}")
-        return propose(console, rest, sha or head_sha(), "--check" in flags)
+        return propose(console, rest, source_sha(argv, flags), "--check" in flags)
 
     raise Problem(f"unknown command {command!r}. Run `obc req` with no arguments for the list.")
 

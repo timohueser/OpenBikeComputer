@@ -119,7 +119,8 @@ has an open change suggestion, and the requirement itself shows a line that open
 
 Write the requirement yourself, then tick the item. The tick records your acknowledgment and
 changes nothing else: no draft, no statement, and no coverage. A ticked item stays in place, struck
-through, until you load the page again, and then it is under **Decided**. The cross dismisses an
+through, until you load the page again, and then it is under **Decided**. The panel is ordered by
+the moment the agent wrote each suggestion, so nothing moves when you decide. The cross dismisses an
 item and asks for feedback, which the agent reads with `obc req suggestions --decided`. A
 suggestion for a requirement you deleted can only be dismissed.
 
@@ -596,12 +597,16 @@ Send `POST /api/requirement-suggestions` with:
 
 Leave out `requirementId` to suggest a new requirement; `group` says where it belongs. A change
 carries the full replacement title and statement, not a patch. Keep `reason` to two or three
-sentences: the observation behind the suggestion. `baseRevision` must be the current revision, and
-`sourceSha` is the commit you read.
+sentences: the observation behind the suggestion. `baseRevision` must be the current revision.
+`sourceSha` is optional: give the commit you read, so the owner knows what you looked at.
+`obc req suggest` always fills it in.
 
-An identical open suggestion is reused. A new change for the same requirement replaces the open
-one, which stays in history as superseded. Suggestions for a new requirement stand beside each
-other, because they have no requirement in common.
+A suggestion that is identical, and that names the same revision and commit, is reused. A new
+change for the same requirement replaces the open one, which stays in history as superseded. Send
+the same change again against the current revision after the owner edited the requirement: that
+replaces the record too, and the stale warning goes. Two different new requirements stand beside
+each other, because they have no requirement in common; the same new requirement, read again
+against a later revision, replaces itself.
 
 Read the decisions with `GET /api/requirement-suggestions`. An open suggestion for a requirement
 that changed after the suggestion carries `stale`; one for a deleted requirement carries `missing`.
