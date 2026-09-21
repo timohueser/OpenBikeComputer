@@ -1,9 +1,8 @@
 //! `obc-dem` — the source DEM to OBCT terrain cells, deterministically.
 //!
-//! This crate owns exactly one arrow of the elevation epic (#1068): **Copernicus GLO-30 → OBCT**.
-//! It knows nothing about OSM, maps, routes or the catalog. `obc-pack` samples the cells this
-//! writes; it never sees a GeoTIFF, which is what keeps libGEOS the last native dependency in the
-//! tree (#907) — this crate has none at all.
+//! This crate owns exactly one arrow: Copernicus GLO-30 to OBCT. It knows nothing about OSM, maps,
+//! routes or the catalog. `obc-pack` samples the cells this writes; it never sees a GeoTIFF, which
+//! is what keeps libGEOS the last native dependency in the tree — this crate has none at all.
 //!
 //! ```text
 //! obc-dem fetch --bbox 46.48,8.15,46.73,8.47 --out sources/
@@ -11,64 +10,53 @@
 //! obc-dem bake  --sources sources/ --bbox 46.48,8.15,46.73,8.47 --shard grimsel.obcd
 //! ```
 //!
-//! `fetch` is the only thing here that touches the network, and `bake` never does — a bake is a
-//! pure function of a directory of tiles and a bounding box, which is the precondition for the
-//! determinism contract below.
+//! `fetch` is the only thing here that touches the network, and `bake` never does: a bake is a pure
+//! function of a directory of tiles and a bounding box.
 //!
-//! ## What a bake is, precisely
-//!
-//! For every OBCT lattice point (`OBCT_Spec.md` §1.1) owned by a cell that intersects the requested
-//! box, take a **bilinear point sample of the source surface at that exact coordinate** and quantise
-//! it to whole metres. There is no reprojection, no smoothing and no gap filling. The lattice is
-//! µdeg-uniform, so the ground spacing is anisotropic (≈ 57 × 39 m at 47 °N) and narrows towards the
-//! poles — accepted exactly as OBCA accepts non-square-on-the-ground cells, and for the same reason:
-//! the whole addressing contract rests on the lattice being a shift of the coordinate.
+//! For every OBCT lattice point owned by a cell that intersects the requested box, a bake takes a
+//! bilinear point sample of the source surface at that exact coordinate and quantises it to whole
+//! metres. There is no reprojection, no smoothing and no gap filling. The lattice is µdeg-uniform,
+//! so the ground spacing is anisotropic (≈ 57 × 39 m at 47 °N) and narrows towards the poles,
+//! accepted for the same reason OBCA accepts non-square-on-the-ground cells: the whole addressing
+//! contract rests on the lattice being a shift of the coordinate.
 //!
 //! ## Determinism is a contract, not an aspiration
 //!
-//! Same tiles + same box ⇒ **byte-identical** output, on any host. Four things make that true, and
-//! all four are load-bearing:
+//! Same tiles plus same box gives byte-identical output, on any host. Four things make that true,
+//! and all four are load-bearing:
 //!
-//! 1. **The resample is `f64` with a fixed expression order** ([`geotiff::DemMosaic::height`]).
+//! 1. The resample is `f64` with a fixed expression order ([`geotiff::DemMosaic::height`]).
 //!    IEEE-754 `+ - * /` are correctly rounded, Rust does not contract them into FMAs, and nothing
-//!    here reads a rounding mode — so the arithmetic is a function of its inputs alone.
-//! 2. **One stated rounding rule**: half away from zero ([`bake::quantise`]), the same rule
-//!    `OBCT_Spec.md` §5.2 pins for the read side, so the producer and the consumer round the same
-//!    way and a value never shifts a metre as it crosses the format.
-//! 3. **Fixed iteration order everywhere.** Cells are walked row-major over the rectangle, tiles
-//!    are loaded in sorted path order, and nothing in the crate iterates a `HashMap`.
-//! 4. **Rows are flipped once, on ingest** (`OBCT_Spec.md` §2), so no downstream step has to decide
-//!    which way is north.
+//!    here reads a rounding mode.
+//! 2. One stated rounding rule: half away from zero ([`bake::quantise`]), the same rule the format
+//!    pins for the read side, so a value never shifts a metre as it crosses the format.
+//! 3. Fixed iteration order everywhere. Cells are walked row-major over the rectangle, tiles are
+//!    loaded in sorted path order, and nothing in the crate iterates a `HashMap`.
+//! 4. Rows are flipped once, on ingest, so no downstream step has to decide which way is north.
 //!
 //! [`bake::bake_cell`] is therefore a pure function of `(mosaic, cell, lift map)` and nothing else,
 //! and a [`crest::LiftMap`] is itself a pure function of the cell and the two DEMs — which is why a
-//! cell baked inside a wide shard is byte-identical to the same cell baked on its own, and why the
-//! tests can pin a digest.
+//! cell baked inside a wide shard is byte-identical to the same cell baked on its own.
 //!
-//! ## The reference archive
-//!
-//! `bake --reference <archive root>` raises the samples at crest nodes to a finer national DTM
-//! (`OBCT_Spec.md` §9). That reference is **not** a directory of arbitrary GeoTIFFs: it is the
-//! archive [`reference`] describes — max-pooled whole metres on a `2^6` µdeg lattice, in `2^16` µdeg
-//! tiles, written by `reference/ingest.py`. A bake streams the hundred tiles one cell's rule reads,
-//! one decoded tile in memory at a time, so a country-sized reference costs the same memory as a
-//! one-box one. A mirror of the box is enough; a cell with no coverage is byte-identical to a cell
-//! baked without a reference.
-//!
-//! ## Attribution is a licence obligation
+//! `bake --reference <archive root>` raises the samples at crest nodes to a finer national DTM.
+//! That reference is not a directory of arbitrary GeoTIFFs: it is the archive [`reference`]
+//! describes, written by `reference/ingest.py`. A bake streams the hundred tiles one cell's rule
+//! reads, one decoded tile in memory at a time, so a country-sized reference costs the same memory
+//! as a one-box one. A mirror of the box is enough; a cell with no coverage is byte-identical to a
+//! cell baked without a reference.
 //!
 //! `obc_elevation::COPERNICUS_ATTRIBUTION` must travel with anything derived from GLO-30. `bake`
 //! prints it, and the catalog and the builder carry it onward to a rider. It is a `const` in the
 //! elevation leaf so there is one copy of the wording in the repository.
 
 /// The producer half — a GeoTIFF decoder (`geotiff`) and an HTTP client (`fetch`), together the
-/// default `dem` feature. [`container`] stands without either, so the assembler (EL4) can reuse the
-/// one OBCT writer from a browser tab; see the `[features]` note in `Cargo.toml`.
+/// default `dem` feature. [`container`] stands without either, so the assembler can reuse the one
+/// OBCT writer from a browser tab.
 #[cfg(feature = "geotiff")]
 pub mod bake;
 pub mod container;
-/// The §9 lift rule. On the `geotiff` feature because it reads the reference archive's GeoTIFF
-/// tiles; nothing in the wasm-reachable half ([`container`], [`surface`]) knows about a lift.
+/// The lift rule. On the `geotiff` feature because it reads the reference archive's GeoTIFF tiles;
+/// nothing in the wasm-reachable half knows about a lift.
 #[cfg(feature = "geotiff")]
 pub mod crest;
 #[cfg(feature = "fetch")]
@@ -90,15 +78,13 @@ pub struct BboxUdeg {
 }
 
 impl BboxUdeg {
-    /// Parse `min_lat,min_lon,max_lat,max_lon` in **degrees**.
+    /// Parse `min_lat,min_lon,max_lat,max_lon` in degrees.
     ///
-    /// Latitude first. That is the opposite of `obc-pack --bbox`, which is `lon,lat,lon,lat`
-    /// (Geofabrik/osmium order), and the difference is deliberate rather than accidental: this tool
-    /// selects *grid cells*, and every grid expression in the platform — `cell(S, ci, cj)`, the
-    /// directory's `(row, col)`, `Cell Min I` / `Cell Min J` — puts latitude first. Getting the two
-    /// orders confused mostly produces a box that fails the range checks below; in the Alps, where
-    /// both numbers are plausible longitudes, it does not, so the flag is spelled out in every
-    /// usage string and in `fixtures/build-map-package.sh`.
+    /// Latitude first. That is the opposite of `obc-pack --bbox`, which is `lon,lat,lon,lat`, and
+    /// the difference is deliberate: this tool selects grid cells, and every grid expression in the
+    /// platform puts latitude first. Getting the two orders confused mostly produces a box that
+    /// fails the range checks below; in the Alps, where both numbers are plausible longitudes, it
+    /// does not, so the flag is spelled out in every usage string.
     pub fn parse(text: &str) -> Result<BboxUdeg, String> {
         let parts: Vec<&str> = text.split(',').map(str::trim).collect();
         let [min_lat, min_lon, max_lat, max_lon] = parts[..] else {
@@ -142,11 +128,10 @@ mod tests {
         // A latitude out of range catches most lon,lat,lon,lat mix-ups…
         assert!(BboxUdeg::parse("100,0,110,1").is_err());
         assert!(BboxUdeg::parse("0,-200,1,-190").is_err());
-        // …but **not** the Alpine ones, where both numbers are plausible on either axis. Monaco's
-        // packer bbox parses here as a box off the coast of Somalia, and nothing about the numbers
-        // says otherwise. This is why the flag is spelled out wherever it is written down rather
-        // than guarded at parse time — a heuristic that fires on some inputs and not others would
-        // be worse than a rule an operator can read.
+        // …but not the Alpine ones, where both numbers are plausible on either axis. Monaco's packer
+        // bbox parses here as a box off the coast of Somalia, and nothing about the numbers says
+        // otherwise. A heuristic that fired on some inputs and not others would be worse than a
+        // rule an operator can read.
         assert!(BboxUdeg::parse("7.39,43.71,7.47,43.77").is_ok());
     }
 }

@@ -219,7 +219,7 @@ fn summarise(report: &BakeReport) {
     if lifts.nodes == 0 {
         return;
     }
-    // §9 puts no ceiling on a lift, so the size of the largest one is the operator's only signal
+    // There is no ceiling on a lift, so the size of the largest one is the operator's only signal
     // that a reference carries a spike rather than a cliff the source lost.
     let (lat, lon) = lifts.max_at;
     println!(

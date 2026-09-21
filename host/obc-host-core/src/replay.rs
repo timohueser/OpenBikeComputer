@@ -15,7 +15,7 @@ pub fn initial_camera(reader: &obc_reader::Reader, width: u32) -> (i32, i32, f32
 }
 
 /// The optional synthetic BLE-sensor sources (HR / power / cadence) a host can drive alongside the
-/// replay (epic #707 SE8). Bundled so [`replay_step`]'s signature doesn't grow three parameters;
+/// replay. Bundled so [`replay_step`]'s signature doesn't grow three parameters;
 /// every field defaults to `None` (a plain GPX replay with no sensors — the [`Default`]).
 #[derive(Default)]
 pub struct ReplaySensors<'s> {

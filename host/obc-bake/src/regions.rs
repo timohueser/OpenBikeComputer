@@ -1,16 +1,13 @@
 //! The curated region list: what the bakery bakes.
 //!
-//! The list itself is [`regions.toml`](../regions.toml), compiled into the binary
-//! with `include_str!` so an `obc-bake` copied onto a build box carries the list it
-//! is supposed to bake, and overridable with `--regions <file>` (which is how the
-//! tests get a two-region list without touching the real one).
+//! The list itself is [`regions.toml`](../regions.toml), compiled into the binary with
+//! `include_str!` so an `obc-bake` copied onto a build box carries the list it is supposed to bake,
+//! and overridable with `--regions <file>`.
 //!
-//! A region's `id` does double duty: it is the catalog's `region_id`
-//! (`OBCC_Spec.md` §6) *and* the Geofabrik path the extract is downloaded from. One
-//! string rather than two because the two can only ever disagree by mistake — a
-//! separate `geofabrik = …` field would let a region be published under an id whose
-//! extract came from somewhere else, which is exactly the confusion the manifest
-//! exists to prevent.
+//! A region's `id` does double duty: it is the catalog's `region_id` and the Geofabrik path the
+//! extract is downloaded from. One string rather than two, because the two can only ever disagree
+//! by mistake — a separate `geofabrik = …` field would let a region be published under an id whose
+//! extract came from somewhere else.
 
 use serde::Deserialize;
 
@@ -21,8 +18,8 @@ pub const BUILTIN_REGIONS_TOML: &str = include_str!("../regions.toml");
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Region {
-    /// Slash-separated Geofabrik path, e.g. `europe/germany/bayern`. Also the
-    /// catalog's `region_id` and the selection-metadata path in the bake tree.
+    /// Slash-separated Geofabrik path, e.g. `europe/germany/bayern`. Also the catalog's `region_id`
+    /// and the selection-metadata path in the bake tree.
     pub id: String,
     /// Human-readable name, recorded verbatim in the region document.
     pub name: String,
@@ -34,20 +31,20 @@ impl Region {
         self.id.split('/').collect()
     }
 
-    /// The extract URL under `base` (`https://download.geofabrik.de`, or a local
-    /// directory / `file://` root in tests).
+    /// The extract URL under `base`, which is Geofabrik in production and a local directory or
+    /// `file://` root in tests.
     pub fn extract_url(&self, base: &str) -> String {
         format!("{}/{}-latest.osm.pbf", base.trim_end_matches('/'), self.id)
     }
 
-    /// Cache filename for the downloaded extract: the id flattened, so
-    /// `europe/germany/bayern` and a hypothetical `europe/bayern` cannot collide.
+    /// Cache filename for the downloaded extract: the id flattened, so `europe/germany/bayern` and
+    /// a hypothetical `europe/bayern` cannot collide.
     pub fn cache_name(&self) -> String {
         format!("{}-latest.osm.pbf", self.id.replace('/', "_"))
     }
 
-    /// The region's Osmosis polygon under `base` — Geofabrik serves it beside the
-    /// extract, at the same path with a `.poly` extension.
+    /// The region's Osmosis polygon under `base` — Geofabrik serves it beside the extract, at the
+    /// same path with a `.poly` extension.
     pub fn poly_url(&self, base: &str) -> String {
         format!("{}/{}.poly", base.trim_end_matches('/'), self.id)
     }
@@ -66,9 +63,8 @@ struct RegionsDoc {
 
 /// Parse and validate a region list.
 ///
-/// Validation is deliberately strict and happens before any byte is downloaded: an
-/// id the catalog generator would later reject (§8's lowercase-kebab path segments)
-/// must fail in a second, not four hours into a bake.
+/// Validation is deliberately strict and happens before any byte is downloaded: an id the catalog
+/// generator would later reject must fail in a second, not four hours into a bake.
 pub fn parse(toml_text: &str) -> Result<Vec<Region>, String> {
     let doc: RegionsDoc = toml::from_str(toml_text).map_err(|e| format!("region list: {e}"))?;
     if doc.regions.is_empty() {
@@ -98,9 +94,9 @@ pub fn load(path: Option<&std::path::Path>) -> Result<Vec<Region>, String> {
     }
 }
 
-/// The id rules of `OBCC_Spec.md` §6/§8: slash-separated lowercase kebab-case
-/// segments. The catalog generator enforces the same rules on the tree it walks;
-/// checking here means the failure names the region list line, not a directory.
+/// The catalog's id rules: slash-separated lowercase kebab-case segments. The catalog generator
+/// enforces the same rules on the tree it walks; checking here means the failure names the region
+/// list line, not a directory.
 fn validate_id(id: &str) -> Result<(), String> {
     if id.is_empty() {
         return Err("region id is empty".into());

@@ -1,10 +1,10 @@
-//! Test support: **hand-written** GeoTIFFs — a float32 source DEM and an `int16` reference-archive
-//! tile — and the closed-form surface the bake is checked against.
+//! Test support: hand-written GeoTIFFs — a float32 source DEM and an `int16` reference-archive tile
+//! — and the closed-form surface the bake is checked against.
 //!
 //! The TIFF is assembled from the format's own field tables rather than through the `tiff` crate's
 //! encoder, for the reason `obcm-testkit` exists on the OBCM side: a fixture built by the same
 //! library that reads it proves only that the library is self-consistent. Written by hand, it also
-//! exercises the *plainest* possible layout — uncompressed, one strip, `PixelIsArea` or
+//! exercises the plainest possible layout — uncompressed, one strip, `PixelIsArea` or
 //! `PixelIsPoint` on request — which is the layout a reprojected or hand-cut source would have,
 //! while the real GLO-30 tiles the gated test uses are tiled, DEFLATE'd and float-predicted.
 
@@ -35,7 +35,7 @@ pub struct SyntheticDem {
     pub step_deg: f64,
     pub rows: usize,
     pub cols: usize,
-    /// Samples in **GeoTIFF order**: row 0 is the northernmost.
+    /// Samples in GeoTIFF order: row 0 is the northernmost.
     pub north_up: Vec<f32>,
     pub raster_type: u16,
     pub nodata: Option<f64>,
@@ -67,7 +67,7 @@ impl SyntheticDem {
         SyntheticDem { tie_lon_deg, tie_lat_deg, step_deg, rows, cols, north_up, raster_type, nodata: None }
     }
 
-    /// Overwrite one post, in **north-up** indices — how a void is punched into a fixture.
+    /// Overwrite one post, in north-up indices — how a void is punched into a fixture.
     pub fn set_north_up(&mut self, row: usize, col: usize, value: f32) {
         self.north_up[row * self.cols + col] = value;
     }
@@ -99,8 +99,8 @@ impl SyntheticDem {
     }
 }
 
-/// The TIFF envelope every fixture here shares: one north-up, uncompressed, single-strip
-/// geographic raster, assembled from the format's own field tables.
+/// The TIFF envelope every fixture here shares: one north-up, uncompressed, single-strip geographic
+/// raster, assembled from the format's own field tables.
 ///
 /// The sample type is a parameter because this crate reads two rasters of different shapes — a
 /// `float32` source DEM and an `int16` reference archive tile — and one envelope is what keeps the
@@ -116,7 +116,7 @@ pub struct RasterTiff {
     pub sample_format: u16,
     /// `SamplesPerPixel`. One for every DEM; a refusal test sets it to two.
     pub bands: u16,
-    /// The samples, little-endian, row-major, **north-up**.
+    /// The samples, little-endian, row-major, north-up.
     pub pixels: Vec<u8>,
     pub raster_type: u16,
     /// `GeographicTypeGeoKey`. 4326 for every DEM; a refusal test sets another datum.
@@ -219,13 +219,13 @@ impl RasterTiff {
 /// One reference-archive tile: `TILE_PIXELS²` whole metres on the archive lattice.
 ///
 /// The real archive's tiles are DEFLATE'd with 256 × 256 internal blocks. A fixture written the
-/// plainest way — uncompressed, one strip — exercises the only thing the reader promises about a
-/// tile, which is that its transform **is** the lattice its id names; the compression and the block
-/// layout are the decoder's business and `ingest.py check`'s.
+/// plainest way exercises the only thing the reader promises about a tile, which is that its
+/// transform is the lattice its id names; the compression and the block layout are the decoder's
+/// business.
 pub struct ArchiveTile {
     pub ti: u32,
     pub tj: u32,
-    /// Heights in **north-up** rows, so row 0 is the northernmost, as a GeoTIFF stores them.
+    /// Heights in north-up rows, so row 0 is the northernmost, as a GeoTIFF stores them.
     north_up: Vec<i16>,
 }
 
@@ -235,17 +235,17 @@ impl ArchiveTile {
         ArchiveTile { ti, tj, north_up: vec![NO_PIXEL; TILE_PIXELS * TILE_PIXELS] }
     }
 
-    /// Fill it by **pooling** `height` over every pixel's own square, in µdeg.
+    /// Fill it by pooling `height` over every pixel's own square, in µdeg.
     ///
     /// An archive pixel is the maximum of the source inside its square, not a sample at its centre,
     /// and the baker's rule depends on that: it measures a gap against the highest our surface
-    /// reaches over the same square. A fixture that point-sampled the centre would therefore be a
-    /// different kind of reference from the one the contract describes.
+    /// reaches over the same square. A fixture that point-sampled the centre would be a different
+    /// kind of reference from the one the contract describes.
     ///
     /// The maximum is taken over the square's four corners and its centre, which is exact for a
     /// surface that is affine inside a square and for one that peaks on a lattice node — the two
-    /// shapes these fixtures use. **Presence** is the centre's alone, so a fixture can stop coverage
-    /// on an exact line.
+    /// shapes these fixtures use. Presence is the centre's alone, so a fixture can stop coverage on
+    /// an exact line.
     pub fn filled(ti: u32, tj: u32, mut height: impl FnMut(i64, i64) -> Option<i16>) -> ArchiveTile {
         let mut tile = ArchiveTile::empty(ti, tj);
         let step = 1i64 << STEP_LOG2;
@@ -275,8 +275,8 @@ impl ArchiveTile {
         (i64::from(GRID_ORIGIN) + i64::from(self.ti) * tile, i64::from(GRID_ORIGIN) + i64::from(self.tj) * tile)
     }
 
-    /// This tile as the raster the contract describes, so a refusal test can break exactly one
-    /// field of it and leave the rest right.
+    /// This tile as the raster the contract describes, so a refusal test can break exactly one field
+    /// of it and leave the rest right.
     pub fn raster(&self) -> RasterTiff {
         let tile = 1i64 << TILE_LOG2;
         let (_, lon0) = self.origin_udeg();
