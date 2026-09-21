@@ -251,7 +251,7 @@ The current FLPR uses approximately 210 ns for each `BCK` half-period.
 This gives a 420 ns period and approximately 2.38 MHz.
 It exceeds the 0.758 MHz maximum and violates the 660 ns minimum high and low times.
 
-This timing passed a visual test on one panel at room temperature. It is not production validation. See the [timing record](src:firmware/docs/flpr-timing.md).
+This timing passed a visual test on one panel at room temperature. It is not production validation.
 
 ## Power
 

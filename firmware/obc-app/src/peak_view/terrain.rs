@@ -34,14 +34,13 @@ impl<'a> Terrain<'a> {
         self.cache.failed()
     }
 
-    /// The height a rider standing here is standing **on**, which the bilinear surface is not.
+    /// The height a rider standing here is standing on, which the bilinear surface is not.
     ///
     /// A lattice node can stand on a summit the posting cannot resolve, and the bilinear value
-    /// between two such nodes is below both of them. An eye placed there is inside the surface:
-    /// from the top of the Rigidalstock the panorama came back blocked at 19 m by the summit the
-    /// rider was standing on. A rider is on the ground, and the ground under a summit is the
-    /// summit, so the cell's corners decide — unless `measured`, the host's settled map-referenced
-    /// altitude, is the better answer. [`super::eye_ground`] holds that rule.
+    /// between two such nodes is below both of them, so an eye placed there is inside the surface.
+    /// A rider is on the ground, and the ground under a summit is the summit, so the cell's corners
+    /// decide — unless `measured`, the host's settled map-referenced altitude, is the better
+    /// answer. [`super::eye_ground`] holds that rule.
     pub fn eye_ground(&mut self, lat: i32, lon: i32, measured: Option<f32>) -> Option<f32> {
         let (p, fy, fx) = self.patch_at(lat, lon)?;
         Some(super::eye_ground(bilinear(p, fy, fx), cell_top(p), measured))

@@ -163,12 +163,11 @@ impl PeakViewProfile<'_> {
 
 /// The height the observer's eye stands on, before the 2 m of rider.
 ///
-/// The lattice has two answers and both are wrong inside a cell of a crest: the bilinear surface
+/// The lattice has two answers and both are wrong inside the cell of a crest: the bilinear surface
 /// (`ground`) runs below two lifted nodes, and the cell's highest corner (`cell_top`) puts every
-/// position in the cell on the summit. A settled map-referenced altimeter resolves single metres,
-/// so it decides whenever it lands inside the band the lattice itself allows: one cell can hold
-/// 57 m of relief, so a real height here is anywhere from `ground` to `cell_top`, plus the slack
-/// the surface is wrong by at either end.
+/// position in the cell on the summit. One cell can hold 57 m of relief, so a settled
+/// map-referenced altimeter, which resolves single metres, decides whenever it lands inside the
+/// band the lattice itself allows.
 pub fn eye_ground(ground: f32, cell_top: f32, measured: Option<f32>) -> f32 {
     const SLACK_M: f32 = 30.0;
     match measured {

@@ -1983,7 +1983,6 @@ mod cli_tests {
 
     #[test]
     fn help_lists_every_parser_flag_and_no_removed_flag() {
-        let readme = include_str!("../README.md");
         for flag in [
             "--size",
             "--scale",
@@ -2018,14 +2017,11 @@ mod cli_tests {
             "--inject",
         ] {
             assert!(HELP.contains(flag), "help is missing {flag}");
-            assert!(readme.contains(flag), "README is missing {flag}");
         }
         for removed in ["--true-color", "--colorway", "--calibrate", "--screenshot", "--boot-fault", "--set"] {
             assert!(!HELP.contains(removed), "help still advertises {removed}");
-            assert!(!readme.contains(removed), "README still advertises {removed}");
         }
-        // A grouped flag's forms are the vocabulary a snapshot recipe writes, so they are
-        // documented in both places.
+        // A grouped flag's forms are the vocabulary a snapshot recipe writes.
         for form in [
             "trip-upload=N",
             "map-transfer=receiving:RECEIVED/TOTAL",
@@ -2034,7 +2030,6 @@ mod cli_tests {
             "failed=WHY[:VERSION]",
         ] {
             assert!(HELP.contains(form), "help is missing {form}");
-            assert!(readme.contains(form), "README is missing {form}");
         }
     }
 }

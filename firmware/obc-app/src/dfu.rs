@@ -1,23 +1,20 @@
-//! The app-side view of the SD-sideload firmware-update flow (epic #615 S5, #620).
+//! The app-side view of the SD-sideload firmware-update flow.
 //!
-//! The scan/arm machinery runs **board-side** (`obc_dfu::armer` + `obc-fw-nrf54l`'s `dfu.rs`); the
-//! app only posts the [`DfuAction`](crate::activity::DfuAction) one-shots and receives the scan's
-//! answer through the pass's fact stage. These two
-//! types are that answer, kept **host-agnostic** (no `obc-dfu` dependency reaches `obc-app`): the
-//! board maps `obc_dfu::ScanError` into a [`DfuScanError`] and fills a [`DfuScanReport`] with the
-//! version strings it read off the card + the running image.
+//! The scan and arm machinery runs board-side; the app posts the
+//! [`DfuAction`](crate::activity::DfuAction) one-shots and receives the answer through the pass's
+//! fact stage. The types here are that answer, kept host-agnostic so no `obc-dfu` dependency
+//! reaches `obc-app`: the board maps its own errors into a [`DfuScanError`] and fills a
+//! [`DfuScanReport`].
 //!
-//! Version strings are never translated — they are `git describe` identifiers, not UI copy — so
-//! they ride as fixed inline buffers and the confirm screen prints them verbatim.
+//! Version strings are `git describe` identifiers, not UI copy, so they are never translated: they
+//! ride as fixed inline buffers and the confirm screen prints them verbatim.
 
-/// A firmware version string (`git describe`: `vMAJOR.MINOR.PATCH-N-gHASH`), the OBCU container's
-/// 32-byte field. Sized to match `obc_dfu::image::FW_VERSION_LEN` without depending on that crate.
+/// A firmware version string, the OBCU container's 32-byte field. Sized to match
+/// `obc_dfu::image::FW_VERSION_LEN` without depending on that crate.
 pub type Version = heapless::String<32>;
 
-/// Copy `s` into a [`Version`], truncating to the buffer's cap on a char boundary. `pub` so a
-/// fully-typed host reporting this boot's update verdict from its `&str` boot-outcome versions
-/// applies
-/// the same bound.
+/// Copy `s` into a [`Version`], truncating to the buffer's cap on a char boundary. `pub` so a host
+/// reporting this boot's update verdict from its own `&str` versions applies the same bound.
 pub fn clamp(s: &str) -> Version {
     let mut v = Version::new();
     let mut end = s.len().min(v.capacity());
@@ -28,141 +25,114 @@ pub fn clamp(s: &str) -> Version {
     v
 }
 
-/// A successful staging scan's result, handed to
-/// the pass's fact stage so the confirm screen can
-/// show *installed → update* and warn on the no-undo / same-version cases (issue #620 §2).
+/// A successful staging scan's result, so the confirm screen can show installed against staged and
+/// warn on the no-undo and same-version cases.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DfuScanReport {
-    /// The **running** firmware's version (the board's `OBC_FW_GIT`) — what an install replaces.
+    /// The running firmware's version: what an install replaces.
     pub installed: Version,
-    /// The **staged** image's version, read from the validated `UPDATE.BIN` header.
+    /// The staged image's version, read from the validated `UPDATE.BIN` header.
     pub staged: Version,
-    /// This install would arm with **no rollback snapshot** — knowable before arming from the
-    /// boot-state page reading `Idle { installed: None }` (a dev-flashed device, spec §2.4). An
-    /// unconfirmed trial is then *accepted* rather than rolled back, so the confirm screen notes
-    /// there is no automatic undo. (The rarer running-mismatch no-rollback case needs the slot
-    /// CRC, too heavy to read pre-confirm, so it is not surfaced here — see the PR.)
+    /// This install would arm with no rollback snapshot, which is knowable before arming from the
+    /// boot-state page. An unconfirmed trial is then accepted rather than rolled back, so the
+    /// confirm screen notes there is no automatic undo.
     pub first_install: bool,
 }
 
 impl DfuScanReport {
-    /// Build a report from `&str` versions (each truncated to [`Version`]'s cap on a char
-    /// boundary) — the board fills this from `OBC_FW_GIT` + the scanned header, and the sim from a
-    /// synthetic scan, without either reaching for `heapless` directly.
+    /// Build a report from `&str` versions, each truncated to [`Version`]'s cap on a char boundary,
+    /// so no caller reaches for `heapless` directly.
     pub fn new(installed: &str, staged: &str, first_install: bool) -> DfuScanReport {
         DfuScanReport { installed: clamp(installed), staged: clamp(staged), first_install }
     }
 
-    /// Whether the staged image is the **same version** already running — a plain byte-for-byte
-    /// string match (issue #620 §2: "string compare is fine for equality"). The confirm screen
-    /// warns on it; a true downgrade ("predates") isn't cleanly determinable from `git describe`
-    /// strings, so only equality is flagged.
+    /// Whether the staged image is the same version already running, as a byte-for-byte string
+    /// match. Only equality is flagged: a true downgrade is not cleanly determinable from
+    /// `git describe` strings.
     pub fn same_version(&self) -> bool {
         self.installed == self.staged
     }
 }
 
-/// Why an **armed update is not the running firmware** — the boot-time reconcile's verdict, shown
-/// once by the "UPDATE FAILED" card ([`DfuFailedScreen`](crate::screen::DfuFailedScreen)). The
-/// board derives it from the boot-state page + the arm marker it left before the install reboot
-/// (its `dfu::reconcile_boot_outcome`); the app only carries the fact to the card, like
-/// [`DfuScanError`].
+/// Why an armed update is not the running firmware: the boot-time reconcile's verdict, shown once
+/// by the "UPDATE FAILED" card. The board derives it from the boot-state page and the arm marker it
+/// left before the install reboot; the app only carries the fact to the card.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DfuFailure {
-    /// The `Armed` record survived into a running app — the bootloader never consumed it (stale
-    /// or missing bootloader). The board clears the leftover arm so it can't fire by surprise on
-    /// some later reboot.
+    /// The `Armed` record survived into a running app, so the bootloader never consumed it. The
+    /// board clears the leftover arm so it cannot fire by surprise on a later reboot.
     NotStarted,
-    /// The bootloader consumed the arm but the staged image is not what's running: it was
-    /// rejected before the erase (old app intact) or its trial boot went unconfirmed and was
-    /// rolled back.
+    /// The bootloader consumed the arm but the staged image is not what is running: it was rejected
+    /// before the erase, or its trial boot went unconfirmed and was rolled back.
     Reverted,
 }
 
-/// Why the **install drain refused or failed to arm** an update (issue #755) — the failure twin of
-/// [`DfuScanError`], carried to the app by
-/// the pass's fact stage so a live
-/// [`DfuProgress`](crate::screen::DfuProgressScreen) spinner is replaced by the error card instead
-/// of hanging forever. Every non-reboot outcome of the board's `DfuAction::Install` drain maps to
-/// one of these. Kept **host-agnostic** like [`DfuScanError`]: the board maps its refusal guards and
-/// `obc_dfu` arm errors into these buckets (the re-scan bucket reuses [`DfuScanError`]'s fold).
+/// Why the install drain refused or failed to arm an update: the failure twin of [`DfuScanError`],
+/// so a live spinner is replaced by the error card instead of hanging forever. Every non-reboot
+/// outcome of the board's install drain maps to one of these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DfuInstallError {
-    /// Refused: a ride is recording. Arming ends in a reboot that would lose the live ride, so the
-    /// drain declines (the board's `is_tracking` guard).
+    /// Refused: a ride is recording, and arming ends in a reboot that would lose the live ride.
     Recording,
     /// Refused: no SD card is mounted, so there is nothing to install from.
     NoCard,
-    /// The arm re-scanned `UPDATE.BIN` (the confirm carried no validated ref) and it failed
-    /// validation — folded into the same [`DfuScanError`] buckets the scan card shows.
+    /// The arm re-scanned `UPDATE.BIN` and it failed validation, folded into the same
+    /// [`DfuScanError`] buckets the scan card shows.
     Scan(DfuScanError),
-    /// Writing the rollback snapshot (`ROLLBACK.BIN`) to the card failed — an SD IO error before
-    /// anything was armed.
+    /// Writing the rollback snapshot to the card failed, before anything was armed.
     SnapshotFailed,
-    /// An RRAM write on the arm path failed — the boot-state page, or (#1158) the sEMMC blob
-    /// stage the bootloader needs to read the card. Either way nothing was armed; the device
-    /// keeps running the old image. One bucket because the user story is identical ("could not
-    /// prepare the update, nothing changed"); the board's `D`-line breadcrumb tells them apart.
+    /// An RRAM write on the arm path failed. Either way nothing was armed and the device keeps
+    /// running the old image, so all such failures share one bucket; the board's breadcrumb tells
+    /// them apart.
     StateWriteFailed,
 }
 
-/// Why the staging scan rejected `UPDATE.BIN`, phrased for the app's error card (issue #620 §2).
-/// The board folds `obc_dfu::ScanError`'s finer variants into these six user-facing buckets.
+/// Why the staging scan rejected `UPDATE.BIN`, phrased for the app's error card. The board folds
+/// its own finer variants into these six user-facing buckets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DfuScanError {
-    /// No `UPDATE.BIN` in the card root (`obc_dfu::ScanError::Missing`).
+    /// No `UPDATE.BIN` in the card root.
     NotFound,
-    /// An SD read failed — possibly transient (`obc_dfu::ScanError::Io`).
+    /// An SD read failed, possibly transiently.
     Unreadable,
-    /// The file isn't a valid update image: bad magic/header, a failed CRC, or a torn/short copy
-    /// (`obc_dfu::ScanError::{BadHeader, BadCrc, Truncated}`).
+    /// The file is not a valid update image: bad header, a failed CRC, or a torn copy.
     Damaged,
-    /// The image is larger than the app slot can hold (`obc_dfu::ScanError::Oversize`).
+    /// The image is larger than the app slot can hold.
     TooLarge,
-    /// The file resolves to too many block runs to install — the fix is deleting and re-copying it
-    /// (`obc_dfu::ScanError::TooFragmented`).
+    /// The file resolves to too many block runs to install. The fix is to delete and re-copy it.
     TooFragmented,
-    /// The file is intact but **not trusted**: it carries no signature this firmware verifies, or a
-    /// signature that doesn't check out against the release key
-    /// (`obc_dfu::ScanError::{Unsigned, BadSignature}`, OBCU v2 / #997). Deliberately its own bucket
-    /// rather than folded into [`Damaged`](Self::Damaged) — "this file is corrupt" and "this file is
-    /// not ours" are different problems with different fixes, and telling a rider to re-copy a
-    /// perfectly intact forged image would be a lie.
+    /// The file is intact but not trusted: no signature this firmware verifies, or one that does
+    /// not check out. Its own bucket rather than [`Damaged`](Self::Damaged), because "corrupt" and
+    /// "not ours" are different problems with different fixes.
     Untrusted,
 }
 
-// ==================== DFU arm marker (boot-outcome popup) ====================
-//
-// The armer's breadcrumb: written to its settings-page line right after the `Armed` boot-state
-// write, just before the reboot into the bootloader. At the next boot the board's
-// `dfu::reconcile_boot_outcome` reads it back and — together with the boot-state page — derives
-// the one-time verdict card: `Trial` = the confirm path owns it, `Armed` = the bootloader never
-// ran the install, `Idle` + this marker = the staged version either accepted (it IS the installed
-// header, first-install case) or failed (rejected / rolled back). Cleared wherever a verdict is
-// delivered. Torn/blank/foreign decodes to `None` — "no arm happened", a plain boot.
+// The armer's breadcrumb, written right after the `Armed` boot-state write and just before the
+// reboot into the bootloader. At the next boot the board reads it back and, together with the
+// boot-state page, derives the one-time verdict card. Cleared wherever a verdict is delivered. A
+// torn, blank or foreign slot decodes to `None`, which means no arm happened.
 
 /// The arm marker's fixed slot length: 3 whole 16-byte RRAM lines.
 pub const ARM_MARKER_LEN: usize = 48;
 /// The arm-marker tag; anything else there decodes to "no arm happened".
 const ARM_MARKER_MAGIC: [u8; 4] = *b"OBCA";
-/// Arm-marker layout version — bump on any field change (an old version reads as no marker).
+/// Arm-marker layout version. Bump it on any field change; an old version reads as no marker.
 const ARM_MARKER_VERSION: u8 = 1;
 /// CRC-covered prefix: `magic(4) · version(1) · vlen(1) · pad(2) · generation u32 LE · version
 /// string bytes(32)`.
 const ARM_MARKER_PAYLOAD: usize = 44;
 
 /// What the armer records before rebooting into the bootloader: the arm's generation and the
-/// staged image's OBCU version string (the popup's "which update" fact).
+/// staged image's version string, which is the popup's "which update" fact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArmMarker {
-    /// The `Armed` record's generation (the ticket the armer reported).
+    /// The `Armed` record's generation, the ticket the armer reported.
     pub generation: u32,
-    /// The staged image's version string, verbatim from its OBCU header (≤ 32 bytes).
+    /// The staged image's version string, verbatim from its OBCU header.
     pub staged: heapless::String<32>,
 }
 
-/// Pack an arm marker into its fixed [`ARM_MARKER_LEN`]-byte slot. Inverse of
-/// [`decode_arm_marker`].
+/// Pack an arm marker into its fixed [`ARM_MARKER_LEN`]-byte slot.
 pub fn encode_arm_marker(m: &ArmMarker) -> [u8; ARM_MARKER_LEN] {
     let mut b = [0u8; ARM_MARKER_LEN];
     b[0..4].copy_from_slice(&ARM_MARKER_MAGIC);
@@ -177,9 +147,9 @@ pub fn encode_arm_marker(m: &ArmMarker) -> [u8; ARM_MARKER_LEN] {
     b
 }
 
-/// Decode an arm-marker slot, or `None` for anything but a clean read of this format — a blank
-/// slot, a torn write, a short slice, an older layout, or a version string that isn't UTF-8.
-/// `None` means **no arm happened**: the boot-outcome reconcile treats the boot as plain.
+/// Decode an arm-marker slot, or `None` for anything but a clean read of this format: a blank slot,
+/// a torn write, a short slice, an older layout, or a version string that is not UTF-8. `None`
+/// means no arm happened, and the boot-outcome reconcile treats the boot as plain.
 pub fn decode_arm_marker(bytes: &[u8]) -> Option<ArmMarker> {
     if bytes.len() < ARM_MARKER_LEN {
         return None;
@@ -205,8 +175,7 @@ pub fn decode_arm_marker(bytes: &[u8]) -> Option<ArmMarker> {
 mod arm_marker_tests {
     use super::*;
 
-    /// The 48-byte arm-marker slot round-trips (generation + verbatim version string), and every
-    /// torn/blank/foreign shape decodes to `None` — "no arm happened", a plain boot.
+    /// The arm-marker slot round-trips, and every torn, blank or foreign shape decodes to `None`.
     #[test]
     fn arm_marker_codec_round_trips_and_rejects_torn_slots() {
         let m = ArmMarker { generation: 3, staged: heapless::String::try_from("v0.4.0-12-gabc1234").unwrap() };
@@ -218,7 +187,7 @@ mod arm_marker_tests {
         assert_eq!(decode_arm_marker(&[0xFF; ARM_MARKER_LEN]), None, "an erased (all-ones) slot is no marker");
         assert_eq!(decode_arm_marker(&encode_arm_marker(&m)[..ARM_MARKER_LEN - 1]), None, "a short slice is rejected");
         let mut torn = encode_arm_marker(&m);
-        torn[15] ^= 0xFF; // flip a version-string byte without fixing the CRC — the torn-write shape
+        torn[15] ^= 0xFF; // flip a version-string byte without fixing the CRC
         assert_eq!(decode_arm_marker(&torn), None, "a CRC mismatch (torn write) is no marker");
         let mut old = encode_arm_marker(&m);
         old[4] = ARM_MARKER_VERSION + 1;
@@ -233,14 +202,10 @@ mod arm_marker_tests {
     }
 }
 
-// ==================== the DFU domain protocol (#1436) ====================
-//
-// `DfuState` owns the update's user-visible lifecycle: when a scan may run, whether an install is
-// admissible, and what terminal state the panel holds through the bootloader. The executor scans a
-// package or arms an install — both bounded, both failable, neither of them a policy decision.
-//
-// The two errors here are reused, not restated: [`DfuScanError`] and [`DfuInstallError`] already
-// name every bucket the rider can be shown, and a parallel vocabulary would only drift from them.
+// The DFU domain protocol. `DfuState` owns the update's user-visible lifecycle: when a scan may
+// run, whether an install is admissible, and what terminal state the panel holds through the
+// bootloader. The executor scans a package or arms an install, both bounded and both failable, and
+// neither of them a policy decision.
 
 use crate::device_core::{DfuTag, OperationToken};
 
@@ -264,7 +229,6 @@ pub enum DfuEffect {
 }
 
 impl DfuEffect {
-    /// The operation this effect belongs to.
     pub fn token(&self) -> OperationToken<DfuTag> {
         match self {
             DfuEffect::Scan { token } | DfuEffect::ArmInstall { token } => *token,
@@ -274,9 +238,9 @@ impl DfuEffect {
 
 /// The result of one [`DfuEffect`].
 ///
-/// [`InstallBegan`](DfuOutcome::InstallBegan) is the *terminal* answer of a successful arm: the
-/// board reboots immediately after it, so the panel swaps to the installing card and holds it
-/// through the bootloader. Whether the update took is not an outcome at all — it is next boot's
+/// [`InstallBegan`](DfuOutcome::InstallBegan) is the terminal answer of a successful arm: the board
+/// reboots immediately after it, so the panel swaps to the installing card and holds it through the
+/// bootloader. Whether the update took is not an outcome at all; it is next boot's
 /// [`UpdateResult`](crate::device_core::UpdateResult) external fact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DfuOutcome {
@@ -293,7 +257,6 @@ pub enum DfuOutcome {
 }
 
 impl DfuOutcome {
-    /// The operation this outcome answers.
     pub fn token(&self) -> OperationToken<DfuTag> {
         match self {
             DfuOutcome::ScanFinished { token, .. }
@@ -305,32 +268,26 @@ impl DfuOutcome {
     }
 }
 
-// Layout tripwires. `DfuOutcome` is the largest message in the whole DeviceCore protocol and it is
-// meant to be: [`DfuScanReport`] carries the two fixed 32-byte version strings the confirm screen
-// prints verbatim. Bounded, never allocating — and the reason the outcome enum is `Clone` rather
-// than `Copy`, like the [`UpdateResult`](crate::device_core::UpdateResult) fact it neighbours.
+// Layout tripwires. `DfuOutcome` is the largest message in the DeviceCore protocol and is meant to
+// be: [`DfuScanReport`] carries the two fixed 32-byte version strings the confirm screen prints
+// verbatim. That is also why the outcome enum is `Clone` rather than `Copy`.
 const _: () = assert!(core::mem::size_of::<DfuIntent>() <= 1, "two fieldless requests");
 const _: () = assert!(core::mem::size_of::<DfuEffect>() <= 8, "a bare token");
 const _: () = assert!(core::mem::size_of::<DfuOutcome>() <= 96, "the two fixed version strings dominate");
 
-// ==================== the DFU state machine (#1397 S2) ====================
-
 use crate::activity::DfuAction;
 
-/// The update domain's own state: the single phase slot, the operation token, and whether an
-/// executor is running one.
+/// The update domain's own state: the single phase slot and the operation token.
 ///
-/// **One phase at a time, most-recent-wins.** There is never more than one update phase in flight,
-/// so a rider's later post replaces an undelivered earlier one rather than queueing behind it — a
-/// scan the rider walked away from must not run after the install they asked for instead. The
-/// remote BLE door is the one caller that must *not* replace: `App::open_remote_dfu_check` reads
-/// [`request_pending`](DfuState::request_pending) and defers, because a phone must never displace
-/// what the rider is doing on the device.
+/// One phase at a time, most-recent-wins: a rider's later post replaces an undelivered earlier one
+/// rather than queueing behind it, because a scan the rider walked away from must not run after the
+/// install they asked for instead. The remote BLE door is the one caller that must not replace;
+/// it reads [`request_pending`](DfuState::request_pending) and defers, because a phone must never
+/// displace what the rider is doing on the device.
 #[derive(Debug, Default)]
 pub struct DfuState {
-    /// The rider's (or the remote door's) request, until an executor takes it.
+    /// The rider's or the remote door's request, until an executor takes it.
     request: Option<DfuAction>,
-    /// The operation token for the phase an executor is running.
     ops: crate::device_core::TokenSource<DfuTag>,
 }
 
@@ -368,8 +325,7 @@ impl DfuState {
         self.ops.invalidate();
     }
 
-    /// Whether a request is posted but undelivered — the `Dfu` peek, and the remote door's
-    /// deferral gate.
+    /// Whether a request is posted but undelivered: the remote door's deferral gate.
     pub(crate) fn request_pending(&self) -> bool {
         self.request.is_some()
     }
@@ -409,8 +365,8 @@ mod dfu_state_tests {
         assert_eq!(phase(&mut state), None, "…exactly once");
     }
 
-    /// A scan answer that belongs to a superseded phase changes nothing — the rider is not shown a
-    /// scan report for an update they already asked to install.
+    /// A scan answer that belongs to a superseded phase changes nothing, so the rider is not shown
+    /// a scan report for an update they already asked to install.
     #[test]
     fn an_answer_to_a_superseded_phase_is_refused() {
         let mut state = DfuState::new();

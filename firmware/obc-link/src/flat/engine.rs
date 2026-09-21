@@ -1,38 +1,13 @@
-//! The transfer engine: one state machine, both links, protocol v4.
+//! The transfer engine for `FLAT_Store_Protocol.md`: one state machine, both links.
 //!
-//! `FLAT_Store_Protocol.md` §3 is what it speaks and §2 is what it speaks to. It owns **no**
-//! transport — a record comes in and what comes back is a [`Reaction`] naming bytes to send — and it
-//! owns no medium: every card access goes through [`Store`], which the board binds to the flat
-//! store. That is what lets one engine serve BLE and USB and be proved without a radio or a card.
+//! It owns no transport and no medium. A record comes in, a [`Reaction`] names the bytes to send,
+//! and every card access goes through [`Store`]. An adapter hands the engine whole records and then
+//! pumps [`Engine::poll`] until it answers [`Reaction::Idle`]; a driver that stops pumping stalls a
+//! download. [`Engine::on_link_lost`] is not optional: it is the third form of cancel.
 //!
-//! ## The driver loop
-//!
-//! An adapter hands the engine whole records and then pumps it until it goes quiet. Ten lines:
-//!
-//! ```text
-//! let mut reaction = engine.on_control(&mut store, &mut policy, record, &mut out);
-//! loop {
-//!     match reaction {
-//!         Reaction::Send { channel, len } => link.send(channel, &out[..len]),
-//!         Reaction::SendAndReboot { len } => { link.send(Channel::Control, &out[..len]); link.drain(); reboot() }
-//!         Reaction::Close(channel) => { link.close(channel); break }
-//!         Reaction::Idle => break,
-//!     }
-//!     reaction = engine.poll(&mut store, &mut out);
-//! }
-//! ```
-//!
-//! [`Engine::poll`] is where a `GET` streams and where an error owed to a transfer the engine has
-//! already dropped comes out, so a driver that stops pumping stalls a download. Link teardown is one
-//! call, [`Engine::on_link_lost`], and it is not optional: it is the third form of cancel (§3.8).
-//!
-//! ## What it refuses to have
-//!
-//! No resume, no checkpoint, no operation identifier, no durable result, no session. One transfer at
-//! a time, and the answer to a second one is `busy`. Any break before the commit — a cancel, a cable
-//! pull, a CRC failure, a validator refusal — releases the allocation and leaves the card as if
-//! nothing happened, and the client restarts from zero. The catalog is the only durable record of a
-//! result, and §3.4's `STATUS` is how a client reads it after a break.
+//! One transfer at a time; a second is `busy`. Any break before the commit releases the allocation
+//! and leaves the card unchanged, and the client restarts from zero. There is no resume and no
+//! session.
 
 use obc_crc::Crc32;
 
@@ -45,44 +20,40 @@ use super::wire::{
     StatusRequest, StatusResponse, StreamFrame, CONTROL_FLOOR, STREAM_HEADER_LEN,
 };
 
-/// The staging buffer a transfer accumulates into before it reaches the card, in bytes.
-///
-/// Whole 512-byte blocks leave an allocation in one media write, so a stage that is a multiple of
-/// the block size turns a burst of small link records into few large writes — which is the whole of
-/// what "staging buffers for throughput" means here. A board with RAM to spare raises it.
+/// The staging buffer a transfer fills before it reaches the card, in bytes. Whole 512-byte blocks
+/// leave an allocation in one media write, so the stage must be a multiple of the block size.
 pub const DEFAULT_STAGE: usize = 4_096;
 
-/// Which of a binding's two record channels a record belongs to (§5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Channel {
     /// One control frame per record, in strict request/response order.
     Control,
-    /// One stream frame plus its payload per record.
     Stream,
 }
 
 /// What the engine wants done after one record or one pump.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reaction {
-    /// Nothing to do. A silently discarded stream frame lands here (§3.8).
     Idle,
     /// Send `out[..len]` on this channel.
-    Send { channel: Channel, len: usize },
-    /// §4 steps 4 and 5: send `out[..len]` on the control channel, drain the link, then reboot.
-    SendAndReboot { len: usize },
-    /// Close this record stream and emit nothing: §3.1's unanswerable record.
+    Send {
+        channel: Channel,
+        len: usize,
+    },
+    /// Send `out[..len]` on the control channel, drain the link, then reboot.
+    SendAndReboot {
+        len: usize,
+    },
     Close(Channel),
 }
 
-/// Why the device is dropping a transfer of its own accord (§3.9's `cancelled` details).
+/// Why the device drops a transfer of its own accord.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CancelCause {
-    /// A device-local decision: a ride starting, a battery too low to install, a shutdown, or a
-    /// transfer that stopped moving ([`Engine::watch_stall`]).
+    /// A device-local decision, or a transfer that stopped moving ([`Engine::watch_stall`]).
     Device,
-    /// The transfer's own channel died under a link that can still carry the answer — a CoC that
-    /// closed while ATT stayed up. A link that went away entirely is [`Engine::on_link_lost`],
-    /// which answers nobody.
+    /// The transfer's own channel died under a link that can still carry the answer. A link that
+    /// went away entirely is [`Engine::on_link_lost`], which answers nobody.
     LinkLost,
 }
 
@@ -95,35 +66,17 @@ impl CancelCause {
     }
 }
 
-/// **How long the live transfer may move no bytes before the engine gives up on it**, in ms.
-///
-/// It bounds the *gap between two byte-moving records*, never a transfer's duration: a 300 MB map is
-/// not on a clock, a wedged peer is. The value is a budget of the three waits that can legitimately
-/// sit between two records, not a round number:
-///
-/// - **15 000** — the client's own round-trip patience (`DEFAULT_TIMEOUT_MS`,
-///   `builder/app/src/lib/usb/client.ts`, itself the iOS app's bounded status-wait). A peer quiet for
-///   longer than *it* is willing to wait has, by its own contract, already stopped.
-/// - **4 000** — one BLE link recovery: the supervision timeout the board requests (`conn_params`).
-///   Radio silence past it drops the link and [`on_link_lost`](Engine::on_link_lost) releases the
-///   transfer already, so nothing shorter may pre-empt that path.
-/// - **2 000** — one device-side service window: the longest a board lane holds the write path
-///   (`flat_store::RECLAIM_TIMEOUT`).
-///
-/// The floor it imposes is the check that matters. One BLE stream record (245 B, §5.1) per 21 s is
-/// 11.7 B/s, against 5.4 kB/s for a radio delivering one record per 45 ms connection interval; one
-/// USB record (8,192 B, §5.2) per 21 s is 390 B/s, against a measured ~3 MB/s cable. A healthy link
-/// — throttled, dawdling, or on the worst connection parameters the board asks for — is two to four
-/// orders of magnitude clear of it.
+/// How long the live transfer may move no bytes before the engine gives up on it, in ms. It bounds
+/// the gap between two byte-moving records, never a transfer's duration: the three terms are the
+/// three waits that may legitimately sit between two records.
 pub const STALL_TIMEOUT_MS: u32 = 15_000 + 4_000 + 2_000;
 
-/// What one turn of the stall watchdog found. See [`Engine::watch_stall`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stall {
-    /// Nothing is live: nothing to watch, and no wake worth scheduling.
     Idle,
-    /// The transfer is inside its deadline. Look again in this many milliseconds.
-    Watching { again_in_ms: u32 },
+    Watching {
+        again_in_ms: u32,
+    },
     /// The transfer was abandoned for want of progress. The engine is idle and the transfer's
     /// `cancelled` answer is owed on the next [`poll`](Engine::poll).
     Abandoned(RequestId),
@@ -138,11 +91,9 @@ struct Anchor {
     at_ms: u32,
 }
 
-/// The record ceilings the binding imposes (§5.1, §5.2).
-///
-/// A link whose control records cannot carry a header, a `LIST` prefix and one entry cannot carry
-/// this protocol; §5.1 says the adapter refuses the connection rather than truncating, and
-/// [`Ceilings::new`] returning `None` is that refusal.
+/// The record ceilings the binding imposes. A link whose control records cannot carry a header, a
+/// `LIST` prefix and one entry cannot carry this protocol, and the adapter refuses it rather than
+/// truncating.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ceilings {
     control: usize,
@@ -160,91 +111,43 @@ impl Ceilings {
         }
     }
 
-    /// §5.1's ceilings for a BLE link, from what the link negotiated and what the adapter can hold.
-    ///
-    /// Three facts, in one place because they are one rule and an adapter that re-derived it would
-    /// be re-deriving a specification:
-    ///
-    /// - **The control ceiling is `ATT_MTU - 3`** (§5.1). An `att_mtu` below 3 cannot carry a
-    ///   handle-value payload at all and yields `None` rather than an underflow.
-    /// - **The stream ceiling is the CoC SDU**, fixed at channel establishment.
-    /// - **Both are clamped to `buffer`**, the adapter's reaction buffer. That clamp is
-    ///   load-bearing rather than defensive: the engine frames a `LIST` page and a stream record
-    ///   against these numbers, so a link that negotiated *upward* of the adapter's buffer would
-    ///   otherwise have it framing into bytes that are not there.
-    ///
-    /// `None` is §5.1's "a link below that floor cannot carry this protocol and the adapter refuses
-    /// the connection rather than truncating" — including the case where the clamp itself is what
-    /// puts the link under the floor, since a buffer too small to hold a single-entry page is the
-    /// same refusal for the same reason.
+    /// The control ceiling is `ATT_MTU - 3` and the stream ceiling is the CoC SDU. Both are clamped
+    /// to `buffer`, the adapter's reaction buffer, because the engine frames a `LIST` page and a
+    /// stream record against these numbers.
     pub fn for_ble(att_mtu: usize, coc_sdu: usize, buffer: usize) -> Option<Self> {
         let control = att_mtu.checked_sub(3)?.min(buffer);
         let stream = coc_sdu.min(buffer);
         Ceilings::new(control, stream)
     }
 
-    /// §5.2's ceilings for a USB link — the adapter's record buffer, on both channels.
-    ///
-    /// **There is nothing to negotiate and therefore nothing to derive.** §5.1 reads BLE's two
-    /// numbers off a link that fixed them at connection time; USB fixes neither, because a bulk
-    /// endpoint's max packet is a *packet* size and §5.2's records span packets by design. So the
-    /// ceiling is a constant of the binding, and the constant is the buffer the adapter frames into
-    /// — which is the same clamp `for_ble` applies last, arrived at directly instead of after two
-    /// link facts that do not exist here.
-    ///
-    /// One number for both channels, because one buffer serves both: the engine frames a `LIST`
-    /// page and a `GET`'s stream records into the same reaction buffer, so a control ceiling above
-    /// the stream one (or the reverse) would describe bytes the adapter does not have.
-    ///
-    /// `None` is §5.1's refusal, unchanged: a buffer too small for a single-entry page cannot carry
-    /// this protocol, and truncating it is not on the table.
+    /// A USB binding negotiates nothing — a bulk endpoint's max packet is a packet size, and its
+    /// records span packets by design — so both ceilings are the buffer the adapter frames into.
     pub const fn for_usb(record: usize) -> Option<Self> {
         Ceilings::new(record, record)
     }
 
-    /// The largest control record this link carries.
     pub const fn control(&self) -> usize {
         self.control
     }
 
-    /// The largest stream record this link carries.
     pub const fn stream(&self) -> usize {
         self.stream
     }
 }
 
-/// **The adapter's admission latch** (§3.6, §5), and the reason it is a type here rather than a
-/// `bool` in a binding.
+/// The adapter's admission latch.
 ///
-/// §3.6 lets a client stream a `PUT` immediately, without waiting for an acceptance, so the first
-/// stream frame of a transfer races its own control frame. A binding therefore has to know whether a
-/// frame is *already admitted* — a continuation of a live transfer, deliverable at once — or
-/// possibly the leading edge of one whose control frame has not arrived, which §5 says it must
-/// **hold** rather than deliver (the engine would discard it in silence and the upload would die at
-/// offset zero) and rather than drop.
-///
-/// Asking the engine per frame answers that correctly and costs a round trip on every record of a
-/// multi-megabyte upload. Latching "something has been admitted" is cheap and **wrong**: it stays
-/// set when the transfer it was set for finishes, so the *second* `PUT` on one channel — the
-/// ordinary "upload three routes" session — has its leading frame waved through to an idle engine
-/// and dies exactly as the unlatched race did. That is not hypothetical; it is the bug this type
-/// replaces.
-///
-/// So the latch remembers **which** `RequestId` was admitted. A frame bearing that id is a
-/// continuation and skips the query; any other id — including the first frame of the next transfer
-/// on the same channel — is queried. The hot path stays free and the race stays closed.
-///
-/// One deliberate narrowing: a client that reuses a `RequestId` immediately after its transfer ended
-/// is treated as a continuation. §3.8 already tells clients not to (`SHOULD NOT`, because in-flight
-/// frames from the old transfer would be absorbed by the new one) and describes this same failure,
-/// so the latch inherits the specification's own boundary rather than drawing a new one.
+/// A client may stream a `PUT` without waiting for an acceptance, so the first stream frame of a
+/// transfer races its own control frame. The adapter must hold a frame that is not admitted yet:
+/// the engine discards it in silence and the upload dies at offset zero. The latch remembers which
+/// `RequestId` was admitted, so a continuation skips the query and the first frame of the next
+/// transfer on the same channel is queried again.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Admission {
     admitted: Option<RequestId>,
 }
 
 impl Admission {
-    /// A latch that has admitted nothing — what every new channel starts with.
     pub fn new() -> Self {
         Admission { admitted: None }
     }
@@ -254,69 +157,47 @@ impl Admission {
         self.admitted != Some(frame)
     }
 
-    /// Record what the engine reported while `frame` was waiting. Returns **true when the frame must
-    /// be held** — nothing is live, or what is live is a different transfer, and either way this
-    /// frame is not admitted yet.
+    /// Record what the engine reported while `frame` was waiting. Returns true when the frame must
+    /// be held, because it is not admitted yet.
     pub fn observed(&mut self, frame: RequestId, live: Option<RequestId>) -> bool {
         if live == Some(frame) {
             self.admitted = Some(frame);
             return false;
         }
-        // Not this transfer. Forget any earlier admission too: whatever it named is not what is
-        // arriving, so keeping it could only wave a later frame through on a stale identity.
+        // Not this transfer. Forget any earlier admission too, or a later frame goes through on a
+        // stale identity.
         self.admitted = None;
         true
     }
 
-    /// Forget every admission — a new channel has admitted nothing.
     pub fn reset(&mut self) {
         self.admitted = None;
     }
 }
 
-/// **What a live upload has landed so far** — the one thing a *device* needs from the engine that no
-/// client ever asks for.
-///
-/// A map is hundreds of megabytes and lands over twenty minutes, and a rider watching a progress
-/// bar is not a client of this protocol: the wire's answer to "how is it going" is the transfer's
-/// one response, twenty minutes later. So the device reads the engine directly, and reads it where
-/// the engine already is — no round trip, no second counter, nothing on the wire.
-///
-/// It is a report, not a hook. The engine calls nothing back and knows nothing about screens.
+/// What a live upload has landed so far. A multi-megabyte upload answers the wire once, at the end,
+/// so a device that shows progress reads the engine directly instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UploadProgress {
-    /// The transfer's identifier (§3.1), so a reader can tell one upload from the next.
     pub request: RequestId,
-    /// What is being uploaded — the only input a device needs to decide whether it has a screen
-    /// for this.
     pub kind: ObjectKind,
     /// Payload bytes absorbed so far.
     pub received: u64,
-    /// What the `PUT` declared (§3.6).
+    /// The payload length the `PUT` declared.
     pub declared: u64,
 }
 
-/// The input record and output workspace for one staged stream call.
-///
-/// These buffers have independent lifetimes and no coupled invariant; grouping them keeps the
-/// adapter-specific bank identity and its stage slice explicit at the call site.
 pub struct StreamBuffers<'record, 'out> {
     record: &'record [u8],
     out: &'out mut [u8],
 }
 
 impl<'record, 'out> StreamBuffers<'record, 'out> {
-    /// Group a received stream record with the workspace used for the engine's response.
     pub fn new(record: &'record [u8], out: &'out mut [u8]) -> Self {
         Self { record, out }
     }
 }
 
-/// One adapter-assembled map batch and the arena bank that owns its bytes.
-///
-/// Keeping the continuity fields beside the borrowed stage makes the batch one value at the engine
-/// seam: an adapter cannot accidentally pass a bank from one handoff with the offset or length from
-/// another.
 pub struct UsbMapBatch<'stage> {
     request: RequestId,
     offset: u64,
@@ -326,55 +207,33 @@ pub struct UsbMapBatch<'stage> {
 }
 
 impl<'stage> UsbMapBatch<'stage> {
-    /// Bind one validated adapter batch to the arena bank containing its bytes.
     pub fn new(request: RequestId, offset: u64, len: usize, bank: usize, stage: &'stage mut [u8]) -> Self {
         Self { request, offset, len, bank, stage }
     }
 }
 
-/// **How the last upload ended**, latched once and taken once.
-///
-/// Latched rather than reported live for the same reason the progress above is read rather than
-/// pushed: the terminal fact exists for exactly one instant — the call that commits or refuses — and
-/// a device that only looks between calls would otherwise see an upload vanish with no verdict. A
-/// caller that never looks costs one stale enum.
+/// How the last upload ended, latched once and taken once. The fact exists for one instant, the
+/// call that commits or refuses, so a device that only looks between calls would otherwise see an
+/// upload vanish with no verdict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UploadEnd {
-    /// §3.6's commit landed. `id` is the resulting head and `replaced` distinguishes a create from
-    /// replace-at-same-id so a board can invalidate state derived from the displaced revision.
+    /// The commit landed. `id` is the resulting head, and `replaced` distinguishes a create from a
+    /// replace at the same id, so a board can invalidate state derived from the displaced revision.
     Committed { id: ObjectId, replaced: bool },
-    /// The transfer was refused, with the code its error response carried (§3.9). The detail is
-    /// deliberately not here: a device turns this into one of a handful of screens, and every
-    /// narrower fact belongs to the client that asked.
+    /// The transfer was refused, with the code its error response carried.
     Refused(ErrorCode),
 }
 
-/// **Which wire a call arrived on.**
-///
-/// The engine is one value serving two links at once — a phone in a pocket and a cable in J3 — and
-/// almost nothing it does needs to know which. §1's "one engine, one owner" and §1's one-transfer
-/// rule are *why* it is one value: a second `PUT` is `busy` whichever wire asked, and that falls out
-/// of there being one `live` rather than out of any arbitration.
-///
-/// Three things do need to know, and each is a fact about a *link* rather than about the store:
-///
-/// - **Ceilings are per link** (§5.1 vs §5.2): 245 bytes of CoC SDU against 8,208 bytes of USB
-///   record. One shared number would have each link framing against the other's.
-/// - **A link coming up may not disturb the other one's transfer.** It is a new peer on one wire,
-///   not a new state of the device.
-/// - **A link going away releases only what that link held** (§3.8's third form of cancel answers
-///   "the transfer whose link went away", not "the transfer").
+/// Which wire a call arrived on. One engine serves both links and almost nothing it does needs to
+/// know which. Three things do: ceilings are per link, a link coming up must not disturb the other
+/// link's transfer, and a link going away releases only what that link held.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Link {
-    /// The radio (§5.1).
     Ble,
-    /// The cable (§5.2).
     Usb,
 }
 
 impl Link {
-    /// Index into the per-link tables. `usize` rather than a map because there are two links and
-    /// there will not be a third — a third *transport* would be a new binding section in the spec.
     const fn index(self) -> usize {
         match self {
             Link::Ble => 0,
@@ -383,42 +242,33 @@ impl Link {
     }
 }
 
-/// The live upload, if one owns the engine.
 struct Upload<A> {
     /// The link that admitted it. Only this link may stream into it, pump it, or lose it.
     link: Link,
-    /// **The ceilings this transfer was admitted under**, captured once at admission rather than
-    /// read per record. A `GET` frames every one of its stream records against the link it is being
-    /// served to, and that link's numbers must not be able to change under it — which is exactly
-    /// what a shared `Engine::ceilings` allowed the *other* link to do.
+    /// Captured at admission: the numbers a transfer frames against must not change under it.
     ceilings: Ceilings,
     request: RequestId,
-    /// The object being replaced, or [`ObjectId::NONE`] for a create — whose id the commit assigns,
-    /// because `next_object_id` reserves nothing and a device-local commit may take it meanwhile.
+    /// The object being replaced, or [`ObjectId::NONE`] for a create, whose id the commit assigns.
     id: ObjectId,
     revision: Revision,
     kind: ObjectKind,
     name: DisplayName,
     declared_len: u64,
     declared_crc: u32,
-    /// The head this replaces, if any. Re-checked immediately before the commit (§3.6).
+    /// The head this replaces, if any. Re-checked immediately before the commit.
     displaced: Option<Revision>,
     received: u64,
     staged: usize,
     /// Which half of a double-width adapter stage is currently being filled.
     stage_bank: usize,
-    /// Whole-payload verification for links/kinds that need it. USB already protects every packet
-    /// in hardware and retries failures; recomputing an 800 MiB map on the M33 duplicated that
-    /// work and throttled the cable path. Other objects and BLE retain end-to-end verification.
+    /// Whole-payload verification, for every link and kind but a USB map shard: the cable already
+    /// protects and retries each packet in hardware, and a second pass throttles that path.
     crc: Option<Crc32>,
     allocation: A,
 }
 
-/// The live download, if one owns the engine.
 struct Download<H> {
-    /// As [`Upload::link`].
     link: Link,
-    /// As [`Upload::ceilings`].
     ceilings: Ceilings,
     request: RequestId,
     revision: Revision,
@@ -434,28 +284,24 @@ enum Live<S: Store> {
     Download(Download<S::Handle>),
 }
 
-/// A response the engine still owes a transfer it has already dropped (§3.8: a cancelled `PUT` or
-/// `GET` receives its own error response, and the `CANCEL` receives a different one).
+/// A response the engine still owes a transfer it has already dropped: a cancelled `PUT` or `GET`
+/// receives its own error response, and the `CANCEL` receives a different one.
 #[derive(Debug, Clone, Copy)]
 struct Owed {
-    /// The link the answer is owed *to*. A response cannot be pumped out of the other one.
+    /// The link the answer is owed to. It cannot be pumped out of the other one.
     link: Link,
     opcode: Opcode,
     request: RequestId,
     refusal: Refusal,
 }
 
-/// The one transfer engine.
 pub struct Engine<S: Store, const STAGE: usize = DEFAULT_STAGE> {
-    /// What each link negotiated, indexed by [`Link::index`]. `None` until that link comes up, and
-    /// `None` again when it goes away — a link with no ceilings cannot be served, which is the
-    /// honest state of a wire nobody is on.
+    /// What each link negotiated, indexed by [`Link::index`]. `None` while that link is down; a
+    /// link with no ceilings cannot be served.
     ceilings: [Option<Ceilings>; 2],
     live: Live<S>,
-    /// The stall deadline's anchor, `None` while nothing is live. See [`Engine::watch_stall`].
     stall: Option<Anchor>,
     owed: Option<Owed>,
-    /// The verdict on the last upload, for a device with a screen. See [`UploadEnd`].
     upload_end: Option<(ObjectKind, UploadEnd)>,
     staging: [u8; STAGE],
 }
@@ -467,7 +313,7 @@ impl<S: Store, const STAGE: usize> Default for Engine<S, STAGE> {
 }
 
 impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
-    /// An idle engine with **no link up**. Each link announces itself with
+    /// An idle engine with no link up. Each link announces itself with
     /// [`on_link_up`](Engine::on_link_up) and is served only while it has.
     pub fn new() -> Self {
         const {
@@ -483,12 +329,10 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         }
     }
 
-    /// What `link` negotiated, or `None` while it is down.
     fn link_ceilings(&self, link: Link) -> Option<Ceilings> {
         self.ceilings[link.index()]
     }
 
-    /// The link that owns the live transfer, if one does.
     fn live_link(&self) -> Option<Link> {
         match &self.live {
             Live::Idle => None,
@@ -497,7 +341,6 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         }
     }
 
-    /// The `RequestId` of the live transfer, if one owns the engine.
     pub fn live_transfer(&self) -> Option<RequestId> {
         match &self.live {
             Live::Idle => None,
@@ -506,7 +349,6 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         }
     }
 
-    /// Payload bytes the live transfer has moved in either direction, `0` when nothing is live.
     fn live_bytes(&self) -> u64 {
         match &self.live {
             Live::Idle => 0,
@@ -515,19 +357,12 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         }
     }
 
-    /// **One turn of the transfer stall watchdog.**
+    /// One turn of the transfer stall watchdog. Nothing else bounds how long a transfer stays live.
     ///
-    /// Nothing else bounds how long a transfer stays live. A peer that wedges mid-stream holds the
-    /// store — and with it every consumer that withdraws heavy work while a transfer is running —
-    /// until its link drops, which for an app that is connected but no longer sending is never.
-    ///
-    /// `now_ms` is the caller's monotonic millisecond clock; the engine has none of its own, and a
-    /// deadline is the one thing here that cannot be derived from records. Call this after every
-    /// engine call and again when [`Stall::Watching`]'s deadline arrives: it re-anchors whenever the
-    /// transfer has moved a byte, so a slow-but-moving transfer is never abandoned, and it abandons
-    /// one that has been still for [`STALL_TIMEOUT_MS`] exactly as
-    /// [`cancel_live`](Engine::cancel_live) does — the allocation released or the handle closed, and
-    /// a `cancelled` answer owed to the peer that may yet be listening.
+    /// `now_ms` is the caller's monotonic millisecond clock; the engine has none. Call this after
+    /// every engine call and again when [`Stall::Watching`]'s deadline arrives. It re-anchors
+    /// whenever the transfer moved a byte, and abandons a still one as
+    /// [`cancel_live`](Engine::cancel_live) does.
     pub fn watch_stall(&mut self, store: &S, now_ms: u32) -> Stall {
         let Some(request) = self.live_transfer() else { return Stall::Idle };
         let bytes = self.live_bytes();
@@ -544,7 +379,6 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         }
     }
 
-    /// What the live upload has landed so far, or `None` when none is live. See [`UploadProgress`].
     pub fn live_upload(&self) -> Option<UploadProgress> {
         match &self.live {
             Live::Upload(upload) => Some(UploadProgress {
@@ -557,11 +391,9 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         }
     }
 
-    /// Whether this exact upload owns the engine.
-    ///
-    /// Adapter-specific resources must use this rather than an app-facing progress projection:
-    /// progress deliberately omits the owner link, so it cannot prove that USB — rather than BLE —
-    /// is entitled to claim a cable-only staging arena.
+    /// Whether this exact upload owns the engine. Adapter-specific resources must use this rather
+    /// than [`UploadProgress`], which omits the owner link and so cannot prove that USB, not BLE,
+    /// may claim a cable-only staging arena.
     pub fn upload_matches(&self, link: Link, request: RequestId, kind: ObjectKind) -> bool {
         matches!(
             &self.live,
@@ -569,11 +401,8 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         )
     }
 
-    /// The declared length when this exact upload owns the engine.
-    ///
-    /// The USB adapter uses this once, immediately after a map `PUT` is admitted, to know when its
-    /// arena-local 64 KiB batch contains the transfer's final byte. Keeping the query here avoids
-    /// teaching the transport to remember or decode control-plane policy.
+    /// The declared length when this exact upload owns the engine. The USB adapter reads it once,
+    /// after a map `PUT` is admitted, to know when a batch holds the transfer's final byte.
     pub fn upload_declared_len(&self, link: Link, request: RequestId, kind: ObjectKind) -> Option<u64> {
         match &self.live {
             Live::Upload(upload) if upload.link == link && upload.request == request && upload.kind == kind => {
@@ -583,10 +412,8 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         }
     }
 
-    /// **Take the verdict on the last upload**, clearing it. See [`UploadEnd`].
-    ///
-    /// A link that goes away leaves nothing here: §3.8's third form of cancel answers nobody, and a
-    /// device whose cable was pulled needs no card explaining that back to the rider who pulled it.
+    /// Take the verdict on the last upload, clearing it. A link that goes away leaves nothing here,
+    /// because that form of cancel answers nobody.
     pub fn take_upload_end(&mut self) -> Option<(ObjectKind, UploadEnd)> {
         self.upload_end.take()
     }
@@ -596,7 +423,6 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         self.owed.is_none() && matches!(self.live, Live::Idle)
     }
 
-    /// One whole control record arrived.
     pub fn on_control<P: Policy>(
         &mut self,
         link: Link,
@@ -609,11 +435,10 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         let Some(ceilings) = self.link_ceilings(link) else { return Reaction::Idle };
         let (header, request) = match decode_request(record) {
             Ok(decoded) => decoded,
-            // §3.1: a zero `RequestId` is unanswerable, and so is a record too short to carry one.
+            // A zero `RequestId` is unanswerable, and so is a record too short to carry one.
             Err(ControlError::Unanswerable) => return Reaction::Close(Channel::Control),
             Err(ControlError::Refused { request, refusal }) => {
-                // The opcode is echoed where it is known; a frame this malformed has none to echo,
-                // and `LIST` is the opcode a client sends first.
+                // A frame this malformed has no opcode to echo; `LIST` is what a client sends first.
                 let opcode = Opcode::decode(record.get(5).copied().unwrap_or(0)).unwrap_or(Opcode::List);
                 return self.emit_error(out, opcode, request, refusal);
             }
@@ -662,9 +487,8 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             Ok(()) => encode_format(out, request, format.replacement),
             Err(error) => encode_error(out, Opcode::Format, request, &media_refusal(error, detail::media_io::WRITE)),
         };
-        // Once formatting starts, the old superblocks are invalidated first. Success or media
-        // failure, the current in-memory store must never continue serving after this answer leaves
-        // the link.
+        // Formatting invalidates the old superblocks first, so the in-memory store must not serve
+        // again after this answer leaves the link, whether the format succeeded or not.
         match len {
             Some(len) => Reaction::SendAndReboot { len },
             None => Reaction::Close(Channel::Control),
@@ -682,7 +506,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         Ok(())
     }
 
-    /// One whole stream record arrived: §3.8's 16-byte frame followed by exactly its payload.
+    /// One whole stream record arrived: a 16-byte frame followed by exactly its payload.
     pub fn on_stream<P: Policy>(
         &mut self,
         link: Link,
@@ -694,11 +518,9 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         self.on_stream_with_stage(link, store, policy, record, out, None)
     }
 
-    /// The bank the cable adapter must lend to [`on_stream_staged`](Self::on_stream_staged).
-    ///
-    /// Exposing the index before the borrow lets an arena-backed adapter form `&mut` for only the
-    /// inactive half. The opposite half may still be borrowed by deferred card DMA and must not be
-    /// covered by a whole-arena mutable reference.
+    /// The bank the cable adapter must lend to [`on_stream_staged`](Self::on_stream_staged). The
+    /// index comes before the borrow so an arena-backed adapter forms `&mut` for the inactive half
+    /// alone; deferred card DMA may still hold the other half.
     pub fn upload_stage_bank(&self) -> Option<usize> {
         match &self.live {
             Live::Upload(upload) => Some(upload.stage_bank),
@@ -707,19 +529,12 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
     }
 
     /// One whole stream record, using `stage` as the current bank of this upload's two-bank
-    /// write-combining buffer.
+    /// write-combining buffer, so several records reach [`Store::write`] as one contiguous run.
+    /// Radio adapters use [`on_stream`](Self::on_stream) and the engine's resident stage.
     ///
-    /// This is the cable adapter's high-throughput seam. The protocol record ceiling is deliberately
-    /// independent of the card's efficient command width: a USB adapter may retain a scratch arm
-    /// for the whole `PUT` and lend it here on every record, letting several records reach
-    /// [`Store::write`] as one contiguous run. Radio adapters use [`on_stream`](Self::on_stream) and
-    /// retain the engine's small resident stage.
-    ///
-    /// A buffer at the same bank index and with the same length must be supplied until it fills;
-    /// then the engine advances [`upload_stage_bank`](Self::upload_stage_bank). The bank must be a
-    /// non-zero multiple of 512 bytes. Supplying no stage part-way through would
-    /// change the backing storage beneath `Upload::staged`; adapters must instead cancel the
-    /// transfer if their scratch ownership is revoked.
+    /// The bank must be a non-zero multiple of 512 bytes, and the same index and length must be
+    /// supplied until it fills. An adapter that loses its scratch must cancel the transfer:
+    /// stopping part-way changes the storage beneath `Upload::staged`.
     pub fn on_stream_staged<P: Policy>(
         &mut self,
         link: Link,
@@ -736,11 +551,8 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         self.on_stream_with_stage(link, store, policy, record, out, Some((bank, stage)))
     }
 
-    /// Commit one adapter-assembled USB map batch already resident in the current arena bank.
-    ///
-    /// USB record framing is still validated by the adapter record by record; this seam merely
-    /// amortises the storage-owner crossing. The engine remains authoritative for transfer
-    /// ownership, offset continuity, declared length, media errors, validation and publication.
+    /// Commit one adapter-assembled USB map batch already resident in the current arena bank. The
+    /// adapter still validates record framing; this seam only amortises the storage-owner crossing.
     pub fn on_usb_map_batch<P: Policy>(
         &mut self,
         store: &S,
@@ -798,14 +610,13 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         out: &mut [u8],
         mut stage: Option<(usize, &mut [u8])>,
     ) -> Reaction {
-        // §3.8's silent discard, one step earlier: bytes on a wire that owns no transfer belong to
-        // no transfer this can be sure of, and that includes bytes on the *other* link's wire.
+        // The silent discard, one step earlier: bytes on a wire that owns no transfer, including
+        // the other link's wire, belong to no transfer this can be sure of.
         if self.live_link() != Some(link) {
             return Reaction::Idle;
         }
         let Some((frame, payload)) = StreamFrame::split(record) else {
-            // A record that does not split names no transfer this can be sure of. §3.8 makes a
-            // malformed stream record terminate the transfer, and there is exactly one to terminate.
+            // A malformed stream record terminates the transfer, and there is exactly one live.
             let Live::Upload(upload) = &self.live else { return Reaction::Idle };
             let request = upload.request;
             self.abandon(store);
@@ -816,9 +627,8 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
                 Refusal::new(ErrorCode::InvalidFrame, detail::invalid_frame::LENGTH),
             );
         };
-        // §3.8: a frame bearing a `RequestId` that is not the live transfer's is discarded in
-        // silence, and so is one bearing a live *download*'s — those bytes go the other way. One
-        // match settles both, and leaves nothing later in this function to be sure about.
+        // A frame whose `RequestId` is not the live upload's is discarded in silence, and so is one
+        // bearing a live download's: those bytes go the other way.
         let Live::Upload(upload) = &self.live else { return Reaction::Idle };
         if frame.transfer != upload.request {
             return Reaction::Idle;
@@ -827,8 +637,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         if frame.len as usize > upload.ceilings.stream - STREAM_HEADER_LEN {
             return self.fail_upload(store, Refusal::new(ErrorCode::InvalidFrame, detail::invalid_frame::LENGTH), out);
         }
-        // "Frames are contiguous and ascending; the offset equals the receiver's next expected
-        // offset." A gap and an overlap are the same refusal.
+        // Frames are contiguous and ascending. A gap and an overlap are the same refusal.
         if frame.offset != offset || offset + payload.len() as u64 > declared {
             let refusal = Refusal::new(ErrorCode::InvalidRequest, detail::invalid_request::STREAM_OFFSET);
             return self.fail_upload(store, refusal, out);
@@ -844,7 +653,6 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
     }
 
     /// Pumps the engine: a live download's next record, or an error owed to a dropped transfer.
-    ///
     /// A driver calls this until it answers [`Reaction::Idle`].
     pub fn poll(&mut self, link: Link, store: &S, out: &mut [u8]) -> Reaction {
         if self.owed.is_some_and(|owed| owed.link == link) {
@@ -852,8 +660,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             return self.emit_error(out, owed.opcode, owed.request, owed.refusal);
         }
         let Live::Download(download) = &self.live else { return Reaction::Idle };
-        // Only the link being served pumps its own download. The other one asking is not an error —
-        // an adapter pumps until it is told there is nothing to do — it simply has nothing here.
+        // Only the link being served pumps its own download. The other one asking is not an error.
         if download.link != link {
             return Reaction::Idle;
         }
@@ -866,17 +673,14 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             download.ceilings.stream,
         );
         if offset >= payload_len {
-            // Every byte has been handed to the transport, so §3.5's answer to the request goes out
-            // and the hold is released.
+            // Every byte has reached the transport, so the answer goes out and the hold is released.
             self.abandon(store);
             return match encode_get(out, request, revision, payload_len, payload_crc) {
                 Some(len) => Reaction::Send { channel: Channel::Control, len },
                 None => Reaction::Idle,
             };
         }
-        // A buffer that cannot hold a frame and one payload byte would stall the download forever,
-        // so it ends it instead of looping on `Idle`. An adapter that reports a ceiling it will not
-        // supply is the device's own fault, not the client's.
+        // A buffer that cannot hold a frame and one payload byte would stall the download forever.
         if out.len() <= STREAM_HEADER_LEN {
             return self.fail_download(store, Refusal::plain(ErrorCode::Internal), out);
         }
@@ -884,8 +688,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         let want = room.min((payload_len - offset) as usize);
         let read = store.read(&download.handle, offset, &mut out[STREAM_HEADER_LEN..STREAM_HEADER_LEN + want]);
         match read {
-            // A short read before the end of the payload is a media failure with no other way to
-            // report itself: the length is the catalog's, not the reader's.
+            // The length is the catalog's, not the reader's, so a short read is a media failure.
             Ok(0) => self.fail_download(store, media_refusal(StoreError::Media, detail::media_io::READ), out),
             Ok(read) => {
                 if let Live::Download(download) = &mut self.live {
@@ -900,20 +703,11 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         }
     }
 
-    /// **A link came up with these ceilings** (§5.1, §5.2).
+    /// A link came up with these ceilings. It touches `link` and nothing else.
     ///
-    /// It touches `link` and nothing else, and that is the fix this method exists for. It used to
-    /// release the live transfer and rebuild the whole engine — which was correct while one link
-    /// existed and became a bug the moment two did: a phone reconnecting destroyed a cable's
-    /// twenty-minute map upload, with no answer to the client that was sending it, and re-pinned the
-    /// stream ceiling to the radio's 245 bytes so the cable's next 8,208-byte record terminated
-    /// over-ceiling. Neither peer had done anything wrong.
-    ///
-    /// So: a link coming up is a **new peer on one wire**, not a new state of the device. If this
-    /// link owned the live transfer, that transfer's peer is gone and it is released (nobody is left
-    /// to answer, exactly as §3.8's third form of cancel says). If the *other* link owned it, it is
-    /// left completely alone, and the newcomer's own `PUT` or `GET` meets §1's one-at-a-time rule in
-    /// the ordinary way: `busy`, with the live `RequestId` as context, whichever wire asked.
+    /// A link coming up is a new peer on one wire, not a new state of the device. A transfer this
+    /// link owned is released, because its peer is gone. A transfer the other link owns is left
+    /// alone, and the newcomer's own `PUT` or `GET` meets the one-at-a-time rule as `busy`.
     pub fn on_link_up(&mut self, link: Link, store: &S, ceilings: Ceilings) {
         if self.live_link() == Some(link) {
             self.abandon(store);
@@ -924,12 +718,10 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         self.ceilings[link.index()] = Some(ceilings);
     }
 
-    /// **The link went away** (§3.8's third form of cancel), scoped to the link that went.
+    /// The link went away: the third form of cancel, scoped to the link that went.
     ///
-    /// Nothing is answered, because there is nobody left to answer: an error owed to a transfer the
-    /// peer can no longer hear is dropped with it. What is *not* dropped is the other link's
-    /// transfer — a cable being unplugged is not a reason to kill a phone's download, and the
-    /// unscoped version of this method was how it became one.
+    /// Nothing is answered, because nobody is left to answer. The other link's transfer is not
+    /// touched: a cable being unplugged is not a reason to kill a phone's download.
     pub fn on_link_lost(&mut self, link: Link, store: &S) {
         if self.live_link() == Some(link) {
             self.abandon(store);
@@ -940,27 +732,21 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         self.ceilings[link.index()] = None;
     }
 
-    /// The **device's** half of §3.8's bilateral cancel: "The device cancels by answering the
-    /// outstanding `PUT` or `GET` with an error and dropping the transfer."
+    /// The device's half of the bilateral cancel: answer the outstanding `PUT` or `GET` with an
+    /// error and drop the transfer. Reports whether there was one.
     ///
-    /// Reports whether there was one. The allocation is released or the handle closed exactly as
-    /// every other abandonment does, and the transfer's `cancelled` answer goes out on the next
-    /// [`poll`](Engine::poll) — the caller is a device-local decision (a ride starting, a battery
-    /// below the install threshold, a stream channel that died under a control channel that did
-    /// not), not a wire request, so there is no second response to pair it with.
+    /// The transfer's `cancelled` answer goes out on the next [`poll`](Engine::poll). The caller is
+    /// a device-local decision, not a wire request, so there is no second response to pair with it.
     pub fn cancel_live(&mut self, store: &S, cause: CancelCause) -> bool {
         let Some(request) = self.live_transfer() else { return false };
         let opcode = if matches!(self.live, Live::Upload(_)) { Opcode::Put } else { Opcode::Get };
-        // The owning link, read **before** the abandon that forgets it: the answer is owed to the
-        // wire the transfer was on, and pumping it out of the other one would hand a client an error
-        // for a `RequestId` it never sent.
+        // Read the owning link before the abandon that forgets it: the answer is owed to the wire
+        // the transfer was on.
         let link = self.live_link().expect("live_transfer just answered Some");
         self.abandon(store);
         self.owed = Some(Owed { link, opcode, request, refusal: Refusal::new(ErrorCode::Cancelled, cause.detail()) });
         true
     }
-
-    // -- the opcodes -----------------------------------------------------------------------------
 
     fn on_list(
         &mut self,
@@ -1061,9 +847,8 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             let detail = if found.head.is_none() { detail::not_found::OBJECT } else { detail::not_found::REVISION };
             return self.emit_error(out, Opcode::Get, request, Refusal::new(ErrorCode::NotFound, detail));
         };
-        // §3.5: the store did not write a reserve's bytes, and a recording ride's length and CRC are
-        // zero until the commit that ends it, so serving one would report success over an empty
-        // payload.
+        // A reserve has no bytes on the card, and a recording ride's length and CRC are zero until
+        // the commit that ends it, so serving either reports success over an empty payload.
         if meta.flags.is_untouchable() {
             let refusal = Refusal::new(ErrorCode::InvalidRequest, detail::invalid_request::BAD_COMBINATION);
             return self.emit_error(out, Opcode::Get, request, refusal);
@@ -1086,8 +871,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             sent: 0,
             handle,
         });
-        // The first record of the payload, so that `Idle` keeps meaning "nothing to do" and a
-        // driver that stops pumping on it cannot stall a download.
+        // Send the first record now, so that `Idle` keeps meaning "nothing to do".
         self.poll(link, store, out)
     }
 
@@ -1111,7 +895,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         }
     }
 
-    /// §3.6's admission: every check that must pass before a byte is allocated for.
+    /// Every check that must pass before a byte is allocated for.
     fn admit_put(
         &mut self,
         store: &S,
@@ -1126,12 +910,11 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         if let Some(refusal) = write_refusal(store.mode()) {
             return Err(refusal);
         }
-        // §5.3 of the format: an object with no bytes is a `Remove`, not a `Put`, because an entry
-        // that owns extents while needing none is the slack that rule forbids.
+        // An object with no bytes is a `Remove`, not a `Put`: an entry may not own unneeded extents.
         if put.payload_len == 0 {
             return Err(bad_combination());
         }
-        // §3.6: kinds 3 and 8 are produced by the device, whether the request creates or replaces.
+        // Device-owned kinds are produced by the device, whether the request creates or replaces.
         if put.kind.is_device_owned() {
             return Err(bad_combination());
         }
@@ -1161,11 +944,9 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             };
             (put.id, next, Some(head.revision))
         } else {
-            // A create names no id until it commits. `next_object_id` reserves nothing, and a
-            // device-local commit — a ride starting mid-upload — takes the id this would have pinned
-            // and turns the publish into a `revisionConflict` naming an object the client never sent.
-            // The cursor never rewinds (`FLAT_Store_Format.md` §5.2), so reading it at the commit is
-            // both fresh and free.
+            // A create names no id until it commits: `next_object_id` reserves nothing, so a
+            // device-local commit could take an id pinned here. The cursor never rewinds, so
+            // reading it at the commit is both fresh and free.
             (ObjectId::NONE, Revision::FIRST, None)
         };
         let allocation = store.allocate(put.payload_len).map_err(|error| allocate_refusal(error, put.payload_len))?;
@@ -1179,7 +960,6 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             name: put.name,
             declared_len: put.payload_len,
             declared_crc: put.payload_crc,
-            // A create has no displaced revision to retain, so the flag has nothing to ask for.
             displaced,
             received: 0,
             staged: 0,
@@ -1221,7 +1001,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         if head.kind == ObjectKind::Metadata || head.flags.is_untouchable() {
             return Err(bad_combination());
         }
-        // §3.7: "a retained previous revision of the same object goes with it".
+        // A retained previous revision of the same object goes with the head.
         let head_mutation = Mutation::Remove { id: head.id, revision: head.revision };
         let sequence = match found.retained {
             None => store.commit(&[head_mutation]),
@@ -1241,23 +1021,15 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         transfer: RequestId,
         out: &mut [u8],
     ) -> Reaction {
-        // **Both halves: the identifier *and* the wire.** `RequestId` spaces are per client — §3.1
-        // makes the client choose them and nothing coordinates two clients — so a phone and a cable
-        // picking the same small number is ordinary, not adversarial. Matching on the identifier
-        // alone let a `CANCEL` from one link destroy the other link's transfer *and* mint the
-        // cancelled error to the asking link, so the victim was killed silently and its peer was
-        // never told. This was the one entry point that missed the link identity when the rest of
-        // the lifecycle gained it.
-        //
-        // A `CANCEL` naming a transfer the asking link does not own answers `cancelled = false`,
-        // which is §3.8's own honest answer: there is no such transfer *of yours*.
+        // The identifier and the wire both. `RequestId` spaces are per client, so two links can
+        // pick the same small number. A `CANCEL` naming a transfer the asking link does not own
+        // answers `cancelled = false`: there is no such transfer of yours.
         let live = self.live_transfer();
         let cancelled = live == Some(transfer) && self.live_link() == Some(link);
         if cancelled {
             let opcode = if matches!(self.live, Live::Upload(_)) { Opcode::Put } else { Opcode::Get };
             self.abandon(store);
-            // §3.8: the cancelled transfer receives its own error response, and the `CANCEL`
-            // receives a different one. The transfer's goes out on the next pump.
+            // The cancelled transfer receives its own error response, on the next pump.
             self.owed = Some(Owed {
                 link,
                 opcode,
@@ -1281,7 +1053,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
     ) -> Reaction {
         match self.apply_arm(store, policy, arm) {
             Ok((reserve, sequence)) => match encode_arm(out, request, reserve, sequence) {
-                // §4 steps 4 and 5: the answer must reach the transport before the reboot.
+                // The answer must reach the transport before the reboot.
                 Some(len) => Reaction::SendAndReboot { len },
                 None => self.emit_error(out, Opcode::Arm, request, Refusal::plain(ErrorCode::Internal)),
             },
@@ -1313,14 +1085,12 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         if head.kind != ObjectKind::UpdatePackage {
             return Err(bad_combination());
         }
-        // Step 1. Every refusal here — structure, CRC, signature, monotonicity, a recording ride, a
-        // flat battery — is `rejected` with the update kind's detail, and changes nothing.
+        // Every refusal here is `rejected` with the update kind's detail, and changes nothing.
         let bytes = policy
             .validate_package(head.id, head.revision)
             .map_err(|reason| Refusal::new(ErrorCode::Rejected, reason))?;
-        // Step 2: one entry of kind 8 carrying `RESERVED`, with enough extents for the running
-        // image. This is the one commit `ARM` makes, and it exists because the bootloader cannot
-        // allocate.
+        // One `RESERVED` entry with enough extents for the running image. This is the one commit
+        // `ARM` makes, and it exists because the bootloader cannot allocate.
         let allocation = store.allocate(bytes).map_err(|error| allocate_refusal(error, bytes))?;
         let reserve = EntryMeta {
             id: store.next_object_id(),
@@ -1338,26 +1108,19 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
                 return Err(commit_refusal(error, bytes));
             }
         };
-        // Step 3. A *cut* before this completes is survivable because the reboot that follows it runs
-        // the reconciliation §4 describes: the boot page does not decode, the bootloader reads no
-        // pending update, and the reserve is an ordinary object the next boot removes. A **refusal**
-        // reaches no reboot and therefore no reconciliation, and a `RESERVED` entry cannot be removed
-        // from the wire at all (§3.7) — so leaving it would strand extents the client can never free
-        // and let every retry commit another one. The refusal takes its own commit back instead,
-        // which is what makes §3.9's "an error means the mutation did not happen" true here.
+        // A cut here is survivable: the next boot reconciles and removes the reserve. A refusal
+        // reaches no reboot, and a `RESERVED` entry cannot be removed from the wire, so it takes its
+        // own commit back instead. That is what makes "an error changed nothing" true here.
         if policy.hand_off((head.id, head.revision), (reserve.id, reserve.revision)).is_err() {
-            // Best effort: a card that refuses both the handoff and the way back leaves the reserve
-            // for the next boot's reconciliation, and there is nothing further this can do about it.
+            // Best effort: a card that refuses the way back too leaves the reserve for the next
+            // boot's reconciliation.
             let _ = store.commit(&[Mutation::Remove { id: reserve.id, revision: reserve.revision }]);
             return Err(Refusal::plain(ErrorCode::Internal));
         }
         Ok((reserve.id, sequence))
     }
 
-    // -- the upload's own machinery --------------------------------------------------------------
-
-    /// Folds one stream payload into the running CRC and the staging buffer, writing whole stages
-    /// through to the card.
+    /// Folds one payload into the running CRC and the stage, writing whole stages to the card.
     fn absorb(&mut self, store: &S, payload: &[u8], stage: Option<(usize, &mut [u8])>) -> Result<(), StoreError> {
         let external = stage.is_some();
         let staging: &mut [u8] = match stage {
@@ -1367,10 +1130,8 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         let Live::Upload(upload) = &mut self.live else { return Err(StoreError::Invalid) };
         let stage_len = staging.len();
         let base = 0;
-        // An oddly-sized record could otherwise fill this bank and need the next one in the same
-        // call. The board cannot safely borrow that next bank until this borrow ends because the
-        // write starts deferred DMA. Production 8 KiB records divide the 64 KiB bank exactly; a
-        // final short record cannot cross it.
+        // A record must not fill this bank and need the next one in the same call: the board cannot
+        // borrow that next bank until this borrow ends, because the write starts deferred DMA.
         if external && upload.staged + payload.len() > stage_len {
             return Err(StoreError::Invalid);
         }
@@ -1380,13 +1141,8 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         upload.received += payload.len() as u64;
         let mut input = payload;
         while !input.is_empty() {
-            // A record at or above one stage goes straight to the card: the copy through staging
-            // would buy nothing, and this is the path a bulk USB record takes.
-            //
-            // **The whole aligned prefix, in one call.** Splitting a large transport record into
-            // 512-byte card writes would pay one command per packet, and on this card a write
-            // command costs about the same whether it carries one block or a hundred
-            // (`FLAT_Store_Format.md` §5.5). The remainder below is the transfer's last short span.
+            // A record at or above one stage goes straight to the card, whole aligned prefix in one
+            // call: a card write command costs about the same for one block or a hundred.
             if upload.staged == 0 && input.len() >= stage_len {
                 let (chunk, rest) = input.split_at(input.len() - input.len() % stage_len);
                 store.write(&mut upload.allocation, chunk)?;
@@ -1408,8 +1164,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         Ok(())
     }
 
-    /// §3.6's last byte: verify the length and the whole-payload CRC, run the kind's validator, and
-    /// commit.
+    /// The last byte: verify the whole-payload CRC, run the kind's validator, and commit.
     fn finish_upload<P: Policy>(
         &mut self,
         store: &S,
@@ -1441,13 +1196,11 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         let request = self.owed_request();
         match self.publish(store) {
             Ok((id, revision, len, crc)) => {
-                // The commit consumed the allocation and the catalog is the result. Nothing is live
-                // from here, whatever the response does.
+                // The commit consumed the allocation, so nothing is live from here.
                 self.live = Live::Idle;
                 self.upload_end = Some((kind, UploadEnd::Committed { id, replaced }));
                 match encode_put(out, request, id, revision, len, crc) {
                     Some(len) => Reaction::Send { channel: Channel::Control, len },
-                    // §3.4 is what a client does with a response it never saw.
                     None => Reaction::Idle,
                 }
             }
@@ -1455,7 +1208,6 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         }
     }
 
-    /// Writes whatever the staging buffer still holds.
     fn flush(&mut self, store: &S, stage: Option<(usize, &mut [u8])>) -> Result<(), StoreError> {
         let Live::Upload(upload) = &mut self.live else { return Ok(()) };
         if upload.staged == 0 {
@@ -1472,8 +1224,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         Ok(())
     }
 
-    /// The `RequestId` the live transfer's answer echoes. Zero when there is none, which only a
-    /// caller with nothing to answer ever sees.
+    /// The `RequestId` the live transfer's answer echoes, or zero when there is none.
     fn owed_request(&self) -> RequestId {
         self.live_transfer().unwrap_or(RequestId(0))
     }
@@ -1484,8 +1235,8 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         // A create takes its id here rather than at admission: the cursor only moves forward, so
         // reading it at the commit cannot collide with a device-local commit that ran meanwhile.
         let id = if upload.id.is_some() { upload.id } else { store.next_object_id() };
-        // §3.6: the expected `Revision` is checked at admission and again immediately before the
-        // commit. For a create the expectation is that nothing names this id at all.
+        // The expected `Revision` is checked at admission and again immediately before the commit.
+        // For a create the expectation is that nothing names this id at all.
         let found = lookup(store, id);
         if !store.entries_ok() {
             return Err(media_refusal(StoreError::Media, detail::media_io::READ));
@@ -1518,13 +1269,10 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         Ok((meta.id, meta.revision, meta.payload_len, meta.payload_crc))
     }
 
-    // -- unwinding -------------------------------------------------------------------------------
-
     /// Drops the live transfer and releases what it holds. The one path every abandonment takes.
     fn abandon(&mut self, store: &S) {
-        // Every way a transfer ends passes through here, so the stall anchor dies with it: the next
-        // transfer starts its deadline from its own first look, even when a client reuses a
-        // `RequestId` that a stalled one had.
+        // Every way a transfer ends passes through here, so the stall anchor dies with it and the
+        // next transfer starts its deadline from its own first look.
         self.stall = None;
         match core::mem::replace(&mut self.live, Live::Idle) {
             Live::Idle => {}
@@ -1545,7 +1293,6 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         self.emit_error(out, Opcode::Put, request, refusal)
     }
 
-    /// The same for a download, whose only hold is the open handle.
     fn fail_download(&mut self, store: &S, refusal: Refusal, out: &mut [u8]) -> Reaction {
         let request = self.owed_request();
         self.abandon(store);
@@ -1555,35 +1302,34 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
     fn emit_error(&mut self, out: &mut [u8], opcode: Opcode, request: RequestId, refusal: Refusal) -> Reaction {
         match encode_error(out, opcode, request, &refusal) {
             Some(len) => Reaction::Send { channel: Channel::Control, len },
-            // A buffer that cannot hold a 32-byte error response is below the §5.1 floor, which the
-            // adapter refused at connection time. There is nothing to say and nowhere to say it.
+            // A buffer too small for a 32-byte error response is below the floor the adapter
+            // refuses at connection time. There is nothing to say and nowhere to say it.
             None => Reaction::Idle,
         }
     }
 
-    /// §1: the device serves exactly one `PUT` or `GET`; a second is `busy`, and the context is the
-    /// live transfer's own `RequestId`.
+    /// The device serves exactly one `PUT` or `GET`; a second is `busy`, with the live transfer's
+    /// own `RequestId` as context.
     fn busy_refusal(&self) -> Option<Refusal> {
         self.live_transfer()
             .map(|live| Refusal::with_context(ErrorCode::Busy, detail::busy::TRANSFER, u64::from(live.0)))
     }
 }
 
-/// The entries one `ObjectId` has: a head, and at most one retained revision (§5.3).
+/// The entries one `ObjectId` has: a head, and at most one retained revision.
 struct Found {
     head: Option<EntryMeta>,
     retained: Option<EntryMeta>,
 }
 
-/// Resolves one `ObjectId` out of the catalog view. The caller checks
-/// [`entries_ok`](Store::entries_ok) afterwards — a listing that stopped early would make an absent
+/// Resolves one `ObjectId` out of the catalog view. The caller must check
+/// [`entries_ok`](Store::entries_ok) afterwards: a listing that stopped early would make an absent
 /// object out of a media failure.
 fn lookup<S: Store>(store: &S, id: ObjectId) -> Found {
     let mut found = Found { head: None, retained: None };
     for meta in store.entries() {
         if meta.id != id {
-            // The catalog is sorted by `(ObjectId, Revision)`, so once the array is past the id
-            // there is nothing left to find.
+            // The catalog is sorted by `(ObjectId, Revision)`.
             if meta.id > id {
                 break;
             }
@@ -1602,7 +1348,7 @@ fn bad_combination() -> Refusal {
     Refusal::new(ErrorCode::InvalidRequest, detail::invalid_request::BAD_COMBINATION)
 }
 
-/// §3.9's `readOnly` for an opcode that only reads. Only the two exhausted cases still serve reads.
+/// `readOnly` for an opcode that only reads. Only the two exhausted modes still serve reads.
 fn read_refusal(mode: Mode) -> Option<Refusal> {
     if mode.readable() {
         return None;
@@ -1610,7 +1356,7 @@ fn read_refusal(mode: Mode) -> Option<Refusal> {
     Some(Refusal::new(ErrorCode::ReadOnly, read_only_detail(mode)))
 }
 
-/// The same for an opcode that commits, which the exhausted cases refuse too.
+/// The same for an opcode that commits, which the exhausted modes refuse too.
 fn write_refusal(mode: Mode) -> Option<Refusal> {
     if mode.writable() {
         return None;
@@ -1623,15 +1369,14 @@ fn read_only_detail(mode: Mode) -> u16 {
         Mode::ReadWrite => 0,
         Mode::RevisionSpaceExhausted | Mode::SequenceSpaceExhausted => detail::read_only::REVISION_SPACE_EXHAUSTED,
         Mode::CatalogUnreadable => detail::read_only::CATALOG_UNREADABLE,
-        // A card that is not a flat store and a card that is not the card the superblock describes
-        // are the same answer: there is no flat store here.
+        // A card that is not a flat store and a card the superblock does not describe are the same
+        // answer: there is no flat store here.
         Mode::Unformatted | Mode::CardTooSmall => detail::read_only::UNFORMATTED,
     }
 }
 
-/// A refusal from a `write` or a `read`. A store that answers `ReadOnly` mid-transfer says so —
-/// detail `0`, because the mode that produced it was `ReadWrite` when the transfer was admitted and
-/// this path has no narrower fact to offer.
+/// A refusal from a `write` or a `read`. A store that turns `ReadOnly` mid-transfer says so with
+/// detail `0`: it was writable when the transfer was admitted, and there is no narrower fact here.
 fn media_refusal(error: StoreError, when: u16) -> Refusal {
     match error {
         StoreError::ReadOnly => Refusal::new(ErrorCode::ReadOnly, 0),
@@ -1639,14 +1384,10 @@ fn media_refusal(error: StoreError, when: u16) -> Refusal {
     }
 }
 
-/// A refusal from `allocate`. `Invalid` here is a full reservation table — a transient fact about
-/// the device, which §3.9 answers with `busy` and never with `invalidRequest`.
-///
-/// That reading is only sound because the caller has already ruled out every other way `allocate`
-/// says `Invalid`: `admit_put` refuses a zero declared length and a `RECORDING`/`RESERVED` head
-/// before it ever reaches here, and `apply_arm` allocates only what its policy asked for. Those
-/// pre-checks are load-bearing for this mapping, not decoration — remove one and a client's own bad
-/// request comes back as "the device is busy, try again", forever.
+/// A refusal from `allocate`. `Invalid` here means a full reservation table, which is transient and
+/// answered with `busy`. That reading holds only because the callers rule out every other way
+/// `allocate` says `Invalid` first; remove one of those checks and a client's own bad request comes
+/// back as "busy, try again" forever.
 fn allocate_refusal(error: StoreError, bytes: u64) -> Refusal {
     match error {
         StoreError::NoSpace { required } => {
@@ -1657,21 +1398,16 @@ fn allocate_refusal(error: StoreError, bytes: u64) -> Refusal {
         StoreError::Invalid => Refusal::plain(ErrorCode::Busy),
         StoreError::Media => Refusal::new(ErrorCode::MediaIo, detail::media_io::WRITE),
         StoreError::ReadOnly => Refusal::new(ErrorCode::ReadOnly, detail::read_only::REVISION_SPACE_EXHAUSTED),
-        // `allocate` takes no hold row, so this is unreachable from here — mapped rather than
-        // funnelled into `Internal`, because a store that ever does say it is the same transient
-        // fact the arm above reports and a client should read it the same way.
+        // `allocate` takes no hold row, so this is unreachable. It is mapped rather than funnelled
+        // into `Internal` so that a store that ever does say it reads as the same transient fact.
         StoreError::Busy => Refusal::new(ErrorCode::Busy, detail::busy::HOLDS),
         StoreError::NotFound | StoreError::RevisionConflict { .. } => Refusal::plain(ErrorCode::Internal),
     }
 }
 
-/// A refusal from `open`. A full hold table is the same transient fact as a full reservation table,
-/// and since FS7.5-c2 it **says which** — `busy` detail `holds 2` rather than a plain `busy`, so a
-/// client can tell "another transfer owns the device" from "every read slot is taken".
-///
-/// `Invalid` still maps to a plain `busy` here for the reservation case, and it is also what a `GET`
-/// on a `RESERVED` entry produces — which is a genuine client error the store has no other way to
-/// spell at this seam. That conflation is older than this slice and is not resolved by it.
+/// A refusal from `open`. A full hold table answers `busy` with the `holds` detail, so a client can
+/// tell "another transfer owns the device" from "every read slot is taken". `Invalid` maps to a
+/// plain `busy`, and it is also what a `GET` on a `RESERVED` entry produces.
 fn open_refusal(error: StoreError) -> Refusal {
     match error {
         StoreError::NotFound => Refusal::new(ErrorCode::NotFound, detail::not_found::OBJECT),
@@ -1683,9 +1419,8 @@ fn open_refusal(error: StoreError) -> Refusal {
     }
 }
 
-/// A refusal from `commit`. A commit that returns `Err` changed nothing, so every one of these is a
-/// mutation that did not happen. `bytes` is what the mutation needed, which is §3.9's context for
-/// `noSpace` however the store phrased its refusal.
+/// A refusal from `commit`, which changed nothing. `bytes` is what the mutation needed: the context
+/// `noSpace` carries, however the store phrased its refusal.
 fn commit_refusal(error: StoreError, bytes: u64) -> Refusal {
     match error {
         StoreError::NotFound => Refusal::new(ErrorCode::NotFound, detail::not_found::OBJECT),
@@ -1699,12 +1434,9 @@ fn commit_refusal(error: StoreError, bytes: u64) -> Refusal {
         StoreError::CatalogFull => Refusal::with_context(ErrorCode::NoSpace, detail::no_space::CATALOG_FULL, bytes),
         StoreError::Media => Refusal::new(ErrorCode::MediaIo, detail::media_io::SYNC),
         StoreError::ReadOnly => Refusal::new(ErrorCode::ReadOnly, detail::read_only::REVISION_SPACE_EXHAUSTED),
-        // The engine built the batch, so a structural refusal is this crate's fault and not the
-        // client's.
+        // The engine built the batch, so a structural refusal is this crate's fault.
         StoreError::Invalid => Refusal::plain(ErrorCode::Internal),
-        // A commit takes no hold row either. Same reasoning as `allocate_refusal`'s arm: mapped to
-        // the transient answer rather than to `Internal`, so a store that ever reports it is read
-        // as *ask again* and not as a device defect.
+        // A commit takes no hold row either. Same reasoning as `allocate_refusal`'s arm.
         StoreError::Busy => Refusal::new(ErrorCode::Busy, detail::busy::HOLDS),
     }
 }
@@ -1713,26 +1445,20 @@ fn commit_refusal(error: StoreError, bytes: u64) -> Refusal {
 mod tests {
     use super::*;
 
-    /// The tables between §2's refusals and §3.9's codes, checked where they are written. Every one
-    /// of these also has a behaviour test over a real card in `tests/flat_engine.rs`; these are the
-    /// rows a card cannot easily be made to produce.
+    /// The rows a card cannot easily be made to produce; the rest are covered over a real card in
+    /// `tests/flat_engine.rs`.
     #[test]
     fn a_full_table_is_busy_and_never_invalid_request() {
         assert_eq!(allocate_refusal(StoreError::Invalid, 1).code, ErrorCode::Busy);
         assert_eq!(open_refusal(StoreError::Invalid).code, ErrorCode::Busy);
-        // The same variant from a commit is the engine's own batch being wrong, which is not the
-        // client's fault either — but it is not transient, so it is not `busy`.
+        // The same variant from a commit is the engine's own batch being wrong: not transient.
         assert_eq!(commit_refusal(StoreError::Invalid, 0).code, ErrorCode::Internal);
     }
 
-    /// A full **hold** table says which kind of busy it is. The detail is the half a client's retry
-    /// policy reads, and it is frozen in `FLAT_Store_Protocol.md` §3.9 — so it is pinned here rather
-    /// than left to whoever next edits the match.
+    /// The detail is what a client's retry policy reads, and `FLAT_Store_Protocol.md` freezes it.
     #[test]
     fn a_full_hold_table_is_busy_with_the_holds_detail() {
         assert_eq!(open_refusal(StoreError::Busy), Refusal::new(ErrorCode::Busy, detail::busy::HOLDS));
-        // The other two seams cannot produce it — neither takes a hold row — but they map it rather
-        // than funnelling it into `Internal`, so a store that ever does say it reads as *ask again*.
         assert_eq!(allocate_refusal(StoreError::Busy, 1), Refusal::new(ErrorCode::Busy, detail::busy::HOLDS));
         assert_eq!(commit_refusal(StoreError::Busy, 0), Refusal::new(ErrorCode::Busy, detail::busy::HOLDS));
         assert_ne!(detail::busy::HOLDS, detail::busy::TRANSFER, "the two reasons must stay distinguishable");
@@ -1752,7 +1478,6 @@ mod tests {
             read_refusal(Mode::CatalogUnreadable),
             Some(Refusal::new(ErrorCode::ReadOnly, detail::read_only::CATALOG_UNREADABLE))
         );
-        // The two exhausted cases still serve reads, and refuse every commit.
         for mode in [Mode::RevisionSpaceExhausted, Mode::SequenceSpaceExhausted] {
             assert_eq!(read_refusal(mode), None, "{mode:?} stopped serving reads");
             assert_eq!(
@@ -1771,14 +1496,11 @@ mod tests {
         assert_eq!(allocate_refusal(StoreError::CatalogFull, 42_137).context, 42_137);
         assert_eq!(commit_refusal(StoreError::RevisionConflict { current: Revision(5) }, 0).context, 5);
         assert_eq!(commit_refusal(StoreError::Media, 0), Refusal::new(ErrorCode::MediaIo, detail::media_io::SYNC));
-        // §3.9 gives code 6 one context — the bytes required — however the store phrased its
-        // refusal, so a commit's `noSpace` carries it too.
+        // `noSpace` carries one context, the bytes required, however the store phrased its refusal.
         assert_eq!(commit_refusal(StoreError::TooFragmented, 42_137).context, 42_137);
         assert_eq!(commit_refusal(StoreError::CatalogFull, 42_137).context, 42_137);
         assert_eq!(media_refusal(StoreError::Media, detail::media_io::READ).detail, detail::media_io::READ);
-        // A store that refuses a write because it is read-only says so, rather than blaming media —
-        // with detail `0`, because the mode was writable when the transfer was admitted and this
-        // path has no narrower fact than "not any more".
+        // A store that refuses a write because it is read-only says so rather than blaming media.
         assert_eq!(media_refusal(StoreError::ReadOnly, detail::media_io::WRITE), Refusal::new(ErrorCode::ReadOnly, 0));
     }
 
@@ -1787,31 +1509,25 @@ mod tests {
         let (a, b) = (RequestId(0x2A01), RequestId(0x2A02));
         let mut admission = Admission::new();
 
-        // Transfer A: the leading frame is always queried, and is held while nothing is live.
         assert!(admission.needs_query(a));
         assert!(admission.observed(a, None), "an idle engine must hold the leading frame");
-        // Still unadmitted, so the next frame is queried again rather than waved through.
         assert!(admission.needs_query(a));
         assert!(!admission.observed(a, Some(a)), "the engine admitted it — deliver");
-        // Now it is a continuation: no further round trip for the rest of the upload.
         assert!(!admission.needs_query(a));
 
-        // **The second transfer on the same channel.** A has ended — which the adapter never sees,
-        // because a transfer ends on a *stream* frame — so the latch must not still be answering for
-        // it. This is the regression a plain "something was admitted" flag shipped.
+        // The second transfer on the same channel. The adapter never sees A end, because a transfer
+        // ends on a stream frame, so the latch must not still answer for it.
         assert!(admission.needs_query(b), "B's leading frame must be queried, not waved through on A");
         assert!(admission.observed(b, None), "B is not admitted yet — hold, do not deliver to an idle engine");
         assert!(!admission.observed(b, Some(b)));
         assert!(!admission.needs_query(b));
-        // A's identity is stale now and must not be honoured either.
         assert!(admission.needs_query(a));
 
-        // A frame for a transfer other than the live one is held rather than delivered, and it
-        // clears the latch so the *live* transfer's next frame is re-queried rather than trusted.
+        // A frame for another transfer is held, and it clears the latch so the live transfer's next
+        // frame is re-queried.
         assert!(admission.observed(a, Some(b)));
         assert!(admission.needs_query(b));
 
-        // A new channel admits nothing.
         assert!(!admission.observed(b, Some(b)));
         assert!(!admission.needs_query(b));
         admission.reset();
@@ -1821,23 +1537,18 @@ mod tests {
 
     #[test]
     fn the_ble_binding_reads_its_ceilings_off_the_link_and_the_adapters_buffer() {
-        // §5.1's own example: the device's preferred 247-byte MTU gives 244 bytes of control.
+        // A 247-byte MTU gives 244 bytes of control.
         let ceilings = Ceilings::for_ble(247, 245, 256).expect("the device's preferred BLE link");
         assert_eq!((ceilings.control(), ceilings.stream()), (244, 245));
-        // A link that negotiates upward of the adapter's buffer is clamped to it, both channels.
         let clamped = Ceilings::for_ble(517, 1_024, 256).expect("a large link, small buffer");
         assert_eq!((clamped.control(), clamped.stream()), (256, 256));
-        // The floor still applies after the clamp: a buffer under a single-entry page is refused
-        // rather than truncated, exactly as an under-floor MTU is.
         assert_eq!(Ceilings::for_ble(247, 245, CONTROL_FLOOR - 1), None);
-        // An MTU below the floor is refused however roomy the buffer.
         assert_eq!(Ceilings::for_ble(CONTROL_FLOOR + 2, 245, 4_096), None);
         assert!(Ceilings::for_ble(CONTROL_FLOOR + 3, 245, 4_096).is_some());
         // An `ATT_MTU` too small to subtract the 3-byte header from is `None`, never an underflow.
         for att in [0, 1, 2, 3] {
             assert_eq!(Ceilings::for_ble(att, 245, 4_096), None, "att_mtu {att} underflowed");
         }
-        // A stream ceiling that cannot carry a frame header plus one payload byte is refused.
         assert_eq!(Ceilings::for_ble(247, STREAM_HEADER_LEN, 4_096), None);
         assert!(Ceilings::for_ble(247, STREAM_HEADER_LEN + 1, 4_096).is_some());
     }

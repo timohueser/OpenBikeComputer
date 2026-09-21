@@ -1,9 +1,7 @@
-//! `config.rs` — parse the packer's `config.json`. Assigns style IDs 1-based in
-//! document order, so `serde_json`'s `preserve_order` feature is mandatory (a
-//! hash-ordered map would scramble the IDs). Exposes the ordered `tag_key → value →
-//! style` map for first-match styling, the style table, LOD tiers, marker color,
-//! chunk size, and the `routing` section (island-pruning threshold + the §8.6 bike
-//! profiles the serializer bakes into the nav graph).
+//! Parse the packer's `config.json`. Style IDs are assigned 1-based in document order, so
+//! `serde_json`'s `preserve_order` feature is mandatory: a hash-ordered map would scramble them.
+//! Exposes the ordered `tag_key -> value -> style` map for first-match styling, the style table, the
+//! LOD tiers, the marker colour, the chunk size, and the `routing` section.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -27,14 +25,12 @@ const MAX_LODS: usize = 16;
 const DEFAULT_CHUNK_SIZE: usize = 4096;
 const DEFAULT_MARKER_COLOR: u16 = 0xF800;
 
-/// Deterministically generated fallback schema served by the web builder when
-/// an `obc-pack` binary is unavailable. Production `obc-pack schema` output is
-/// generated directly from [`ConfigDocument`]; a stale-generation test requires
-/// this checked-in artifact to be semantically identical.
+/// Deterministically generated fallback schema, served by the web builder when an `obc-pack` binary
+/// is unavailable. A test requires it to stay semantically identical to the generated output.
 pub const CONFIG_SCHEMA_JSON: &str = include_str!("../schema/config.schema.json");
 
-/// Version of the `obc-pack schema` envelope itself; bump only on breaking
-/// changes to the envelope shape, not on ordinary schema field additions.
+/// Version of the `obc-pack schema` envelope itself; bump only on breaking changes to the envelope
+/// shape, not on ordinary schema field additions.
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 
 /// Generate the config JSON Schema from the typed serde input model, then add
@@ -265,7 +261,8 @@ struct ProfileDocument {
     #[serde(default)]
     #[schemars(with = "BTreeMap<String, MultiplierValue>")]
     surface: IndexMap<String, MultiplierValue>,
-    /// OBCM §8.6 `Climb Weight` (v12): flat metres charged per metre of ascent. Absent ⇒ `0`,
+    /// Flat metres charged per metre of ascent. Absent means `0`, climb-blind: a config that lists
+    /// profiles but says nothing about climbing gets climb-blind routing.
     /// climb-blind — a config that lists profiles but says nothing about climbing gets exactly
     /// v11's routing, which is the same "you did not ask for it" rule the packer's `--terrain`
     /// input follows.
@@ -339,12 +336,12 @@ fn default_profiles_document() -> Option<Vec<ProfileDocument>> {
     Some(serde_json::from_str(DEFAULT_PROFILES_JSON).expect("embedded default profiles are valid typed config"))
 }
 
-/// 100 m, the one ladder EL10 traces: at the finest tier the screen is ~290 m wide against a
-/// ~40 × 57 m posting, so a 50 m tier draws interpolation segments rather than terrain.
+/// 100 m: at the finest tier the screen is ~290 m wide against a ~40 x 57 m posting, so a 50 m tier
+/// would draw interpolation segments rather than terrain.
 const DEFAULT_CONTOUR_INTERVAL_M: u32 = 100;
 /// Every 5th contour (500 m at the default interval) is an index contour.
 const DEFAULT_CONTOUR_INDEX_EVERY: u32 = 5;
-/// The traced-geometry clamp in metres (#1094): see [`CONTOURS_DESCRIPTION`].
+/// The traced-geometry clamp in metres; see [`CONTOURS_DESCRIPTION`].
 const DEFAULT_CONTOUR_SIMPLIFY_M: f64 = 15.0;
 
 const fn default_contour_interval_document() -> Option<u32> {
@@ -564,17 +561,15 @@ pub struct FeatureStyle {
     pub weight: u8,
     pub priority: u8,
     pub min_lod: usize,
-    /// v10: solid or dashed stroke (style-record flag bit 2).
+    /// Solid, dashed or ticked stroke.
     pub line_style: LineStyle,
-    /// #1095: **fixed width** (flag bit 4) — `weight` is the on-screen stroke in device pixels and
-    /// the renderer's zoom→width ramp is bypassed for this style. For a *mark on the map* rather
-    /// than a thing with width on the ground; contours are the first shipped style that is one.
+    /// Fixed width: `weight` is the on-screen stroke in device pixels and the renderer's zoom ramp
+    /// is bypassed. For a mark on the map rather than a thing with width on the ground.
     pub fixed_width: bool,
-    /// #1095: **terrain layer** (flag bit 5) — this style belongs to the suppressible terrain group.
-    /// The packer writes the bit and the reader carries it; the consumer is the device's Settings
-    /// toggle (#1096). Nothing renders differently because of it today.
+    /// This style belongs to the suppressible terrain group. The packer writes the bit and the
+    /// reader carries it; the consumer is the device's Settings toggle.
     pub terrain_layer: bool,
-    /// v10: optional RGB565 secondary color (flag bit 3 + the trailing u16), parsed like `color`.
+    /// Optional RGB565 secondary colour, parsed like `color`.
     pub color2: Option<u16>,
 }
 
@@ -600,60 +595,53 @@ impl FeatureStyle {
 pub struct Lod {
     /// Meters-per-pixel upper bound; `None` ⇒ coarsest layer (`+inf`).
     pub max_mpp: Option<f64>,
-    /// Simplify tolerance in **meters**; `0.0` ⇒ no simplify. On a semantic tier this is the
-    /// grid's nominal meters-per-pixel scale, independent of the tier's display cutoff.
+    /// Simplify tolerance in metres; `0.0` means no simplify. On a semantic tier this is the grid's
+    /// nominal metres-per-pixel scale, independent of the tier's display cutoff.
     pub simplify_m: f64,
-    /// Simplify tolerance for linework in metres. This normally equals [`Lod::simplify_m`], but
-    /// far-zoom semantic tiers may raise it independently so invisible road bends do not compete
-    /// with the land-cover coverage for device scratch.
+    /// Simplify tolerance for linework in metres. Normally equal to [`Lod::simplify_m`], but a
+    /// far-zoom semantic tier may raise it so invisible road bends do not compete with the land-cover
+    /// coverage for device scratch.
     pub line_simplify_m: f64,
     /// Continue solid, uncased linework through junctions as edge-covering trails. This changes no
     /// segment, but removes the per-junction record overhead that dominates far-zoom scratch.
     pub merge_line_trails: bool,
-    /// Coarse-LOD minimum-area cull threshold in **square pixels**; `0.0` ⇒ off.
-    /// A **polygon** whose projected area is below this at the tier's finest
-    /// on-screen scale — the next-finer tier's `max_mpp` — is dropped from this
-    /// tier. Lines are never culled (fragmented ways ⇒ road holes). The finest
-    /// tier is never culled (no finer fallback), so its value is ignored. See
-    /// [`crate::geom::footprint_below`].
+    /// Coarse-LOD minimum-area cull threshold in square pixels; `0.0` is off. A polygon whose
+    /// projected area is below this at the tier's finest on-screen scale — the next-finer tier's
+    /// `max_mpp` — is dropped from this tier. Lines are never culled, and the finest tier is never
+    /// culled because it has no finer fallback. See [`crate::geom::footprint_below`].
     pub min_area_px: f64,
-    /// Simplify this tier's **plain fills** as one polygonal coverage instead of feature by
-    /// feature ([`crate::coverage`]), which also turns [`Lod::min_area_px`] from a drop into an
-    /// **elimination** (a face under it joins its longest neighbour rather than leaving a hole
-    /// in the tiling): every boundary two fills share is cut **once**, so
-    /// neighbouring classes stay glued at any `simplify_m` instead of drifting apart into
-    /// backdrop slivers. Only polygons whose style carries no `color2` take part; lines,
-    /// outlined polygons and every downstream stage are untouched. Default `false` ⇒ the tier
-    /// packs byte-identically to before.
+    /// Simplify this tier's plain fills as one polygonal coverage instead of feature by feature
+    /// ([`crate::coverage`]), which also turns [`Lod::min_area_px`] from a drop into an elimination:
+    /// a face under it joins its longest neighbour rather than leaving a hole in the tiling. Every
+    /// boundary two fills share is cut once, so neighbouring classes stay glued at any `simplify_m`.
+    /// Only polygons whose style carries no `color2` take part.
     pub coverage_simplify: bool,
-    /// Replace classified thematic fills with the fixed semantic-grid generalisation used by the
-    /// coarse-map prototype. The algorithm has intentionally fixed cartographic constants; this
-    /// flag selects it, it does not expose a second collection of simplification knobs.
+    /// Replace classified thematic fills with the fixed semantic-grid generalisation. The algorithm
+    /// has intentionally fixed cartographic constants; this flag selects it and exposes no second
+    /// set of simplification knobs.
     pub semantic_coverage: bool,
-    /// Post-stitch minimum length for a **line** in **kilometres**; `0.0` ⇒ off (the default, and
-    /// byte-identical to a pack that predates the knob).
+    /// Post-stitch minimum length for a line in kilometres; `0.0` is off.
     ///
-    /// Applied straight after [`crate::merge::merge_lines_with`], so it measures a *stitched*
-    /// record, not a raw OSM way — see [`crate::geom::line_below`] for why that distinction is the
-    /// whole safety argument. It exists for the far-zoom tiers, where a road class earns its place
-    /// by drawing a long-distance skeleton to orient on: there the junction stubs and roundabout
-    /// arms left over from stitching are sub-pixel, invisible, and each still costs a render span
-    /// and its vertices. Polygons are never touched.
+    /// Applied straight after [`crate::merge::merge_lines_with`], so it measures a stitched record
+    /// and not a raw OSM way — see [`crate::geom::line_below`] for why that distinction is the whole
+    /// safety argument. It exists for the far-zoom tiers, where the junction stubs and roundabout
+    /// arms left over from stitching are sub-pixel and each still costs a render span. Polygons are
+    /// never touched.
+    ///
     pub min_line_km: f64,
 }
 
-/// The parsed `contours` config section (EL10a, #1094): what [`crate::contour`] traces out of the
-/// OBCT terrain a run was given. Absent ⇒ [`Contours::default`], which is off.
+/// The parsed `contours` section: what [`crate::contour`] traces out of the OBCT terrain a run was
+/// given. Absent means [`Contours::default`], which is off.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Contours {
-    /// Trace at all. `false` ⇒ the tracer is never entered and the pack is byte-identical to one
-    /// built before contours existed.
+    /// Trace at all. `false` means the tracer is never entered.
     pub enabled: bool,
-    /// Vertical spacing between contours in **metres**, ≥ 1.
+    /// Vertical spacing between contours in metres, at least 1.
     pub interval_m: i32,
     /// Every Nth level is a [`ContourClass::Index`] contour instead of [`ContourClass::Major`], ≥ 1.
     pub index_every: u32,
-    /// The pre-ladder simplify clamp in **metres**; `0.0` ⇒ no clamp (see [`CONTOURS_DESCRIPTION`]).
+    /// The pre-ladder simplify clamp in metres; `0.0` is no clamp (see [`CONTOURS_DESCRIPTION`]).
     pub simplify_m: f64,
 }
 
@@ -689,14 +677,14 @@ impl ContourClass {
     }
 }
 
-/// The parsed `routing` config section (N2): the island-pruning threshold plus the §8.6 bike
-/// profiles baked into the nav graph. Absent ⇒ [`default_routing`].
+/// The parsed `routing` section: the island-pruning threshold plus the bike profiles baked into the
+/// nav graph. Absent means [`default_routing`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Routing {
-    /// Keep every connected graph component with ≥ this many edges (plus the largest, always). Wired
-    /// into [`crate::nav::build_graph_with`]. Default [`DEFAULT_MIN_COMPONENT_EDGES`] (50).
+    /// Keep every connected graph component with at least this many edges, plus the largest. Wired
+    /// into [`crate::nav::build_graph_with`].
     pub min_component_edges: usize,
-    /// 1..=8 routing profiles, quantized to the §8.6 wire form. Never empty.
+    /// 1..=8 routing profiles, quantized to the wire form. Never empty.
     pub profiles: Vec<NavProfile>,
 }
 
@@ -708,18 +696,14 @@ pub struct Config {
     pub lods: Vec<Lod>,
     pub marker_color: u16,
     pub chunk_size: usize,
-    /// Dissolve fill polygons that render pixel-identically (same `(z_index, color,
-    /// priority)`, no `color2`) into one union per LOD — a pure size/render-cost win
-    /// with no intended visual change ([`crate::merge`]). Default `false` ⇒ absent
-    /// flag packs byte-identically to before.
+    /// Dissolve fill polygons that render pixel-identically — same `(z_index, color, priority)`, no
+    /// `color2` — into one union per LOD ([`crate::merge`]).
     pub merge_fills: bool,
-    /// Stitch same-styled connected line fragments (an OSM way split into many
-    /// segments) into maximal polylines per LOD, reclaiming a span + a ring per join
-    /// ([`crate::merge`]). No intended visual change for solid lines; dash/casing
-    /// phase runs continuously across a former join. Default `false` ⇒ byte-identical.
+    /// Stitch same-styled connected line fragments into maximal polylines per LOD, reclaiming a span
+    /// and a ring per join ([`crate::merge`]). A dashed or cased line's pattern then runs
+    /// continuously across a former join.
     pub merge_lines: bool,
-    /// The `contours` section (EL10a): the ladder [`crate::contour`] traces out of `--terrain`.
-    /// Default off ⇒ absent block packs byte-identically to before.
+    /// The `contours` section: the ladder [`crate::contour`] traces out of `--terrain`.
     pub contours: Contours,
     /// The `routing` section (island pruning + bike profiles).
     pub routing: Routing,
@@ -747,9 +731,8 @@ impl Config {
     }
 
     fn from_document(document: ConfigDocument) -> Result<Config, String> {
-        // Number every (tag_key, value) pair 1-based in document order. Unknown
-        // object fields were ignored by serde; a configured `id` never enters
-        // the typed style model and therefore remains intentionally ignored.
+        // Number every (tag_key, value) pair 1-based in document order. A configured `id` never
+        // enters the typed style model and is therefore ignored.
         let mut features: Vec<(String, HashMap<String, FeatureStyle>)> = Vec::new();
         let mut next_id: u32 = 1;
         if let Some(feature_map) = document.features {
@@ -768,7 +751,7 @@ impl Config {
             }
         }
 
-        // --- lods (absent/empty ⇒ a single coarsest layer) ---
+        // lods: absent or empty means a single coarsest layer.
         let lods = match document.lods {
             Some(entries) if !entries.is_empty() => entries
                 .into_iter()
@@ -787,9 +770,8 @@ impl Config {
             }],
         };
 
-        // The reader parses the LOD table into a fixed `heapless::Vec<_, 16>` and the
-        // header count is a `u8`, so cap here rather than let `lod_count as u8` wrap
-        // or the reader silently drop layers.
+        // The reader parses the LOD table into a fixed `heapless::Vec<_, 16>` and the header count
+        // is a `u8`, so cap here rather than let `lod_count as u8` wrap or the reader drop layers.
         if lods.len() > MAX_LODS {
             return Err(format!("too many LODs: {} configured, the reader supports at most {MAX_LODS}", lods.len()));
         }
@@ -810,9 +792,9 @@ impl Config {
                 "config lods: an infinite semantic_coverage fallback needs at least one finite semantic tier".into()
             );
         }
-        // `min_line_km` only means anything on stitched records — without `merge_lines` it would
+        // `min_line_km` only means anything on stitched records: without `merge_lines` it would
         // measure raw OSM ways and punch the very holes `geom::footprint_below` refuses to. Reject
-        // the combination rather than silently ignoring the knob or silently shredding the roads.
+        // the combination rather than silently ignore the knob or shred the roads.
         if !merge_lines {
             if let Some(i) = lods.iter().position(|lod| lod.merge_line_trails) {
                 return Err(format!(
@@ -833,12 +815,10 @@ impl Config {
         Ok(Config { features, lods, marker_color, chunk_size, merge_fills, merge_lines, contours, routing })
     }
 
-    /// First matching `(tag_key, value)` in document order. Within a matched
-    /// `tag_key`, an exact value match wins; failing that, a `"*"` catch-all
-    /// entry (if the category defines one) styles every other value the key
-    /// carries. So `building: {"warehouse": …, "*": …}` gives warehouses their
-    /// own style and paints every other `building=*` with the catch-all — no
-    /// need to enumerate OSM's ~50 building values by hand.
+    /// First matching `(tag_key, value)` in document order. Within a matched `tag_key` an exact
+    /// value match wins; failing that a `"*"` catch-all entry, if the category defines one, styles
+    /// every other value the key carries. So `building: {"warehouse": …, "*": …}` gives warehouses
+    /// their own style and paints every other `building=*` with the catch-all.
     pub fn get_style(&self, tags: &HashMap<&str, &str>) -> Option<&FeatureStyle> {
         for (tag_key, by_value) in &self.features {
             if let Some(val) = tags.get(tag_key.as_str()) {
@@ -850,11 +830,11 @@ impl Config {
         None
     }
 
-    /// The style rule at `features.<tag_key>.<value>`, exactly — no `"*"` fallback.
+    /// The style rule at `features.<tag_key>.<value>`, exactly, with no `"*"` fallback.
     ///
-    /// This is the lookup the packer's **generated** features use (land, contours): they carry no
-    /// OSM tags, so [`get_style`](Self::get_style)'s first-match walk has nothing to match on, and a
-    /// catch-all written for some real OSM key must never end up styling them.
+    /// This is the lookup the packer's generated features use (land, contours): they carry no OSM
+    /// tags, so [`get_style`](Self::get_style) has nothing to match on, and a catch-all written for
+    /// a real OSM key must never end up styling them.
     pub fn feature_style(&self, tag_key: &str, value: &str) -> Option<&FeatureStyle> {
         self.features.iter().find(|(k, _)| k == tag_key).and_then(|(_, m)| m.get(value))
     }
@@ -871,9 +851,9 @@ impl Config {
 
     /// The `natural.land` style id when land is the actual renderer backdrop (lowest paint key).
     ///
-    /// In that layout land geometry is useful while the packer builds a complete semantic
-    /// coverage, but redundant in the serialized LODs: the renderer's clear already supplies it.
-    /// Custom schemas whose backdrop is sea keep the legacy explicit-land representation.
+    /// Land geometry is useful while the packer builds a complete semantic coverage, but redundant
+    /// in the serialized LODs, because the renderer's clear already supplies it. A schema whose
+    /// backdrop is sea keeps the explicit-land representation.
     pub fn implicit_land_style_id(&self) -> Option<u8> {
         let land = self.land_style()?;
         let backdrop = self
@@ -884,14 +864,14 @@ impl Config {
         (backdrop.id == land.id).then_some(land.id)
     }
 
-    /// The style for one traced contour class, if the config asks for it. `None` ⇒ that class is
-    /// not packed (and not even traced).
+    /// The style for one traced contour class, if the config asks for it. `None` means that class
+    /// is not packed, and not even traced.
     pub fn contour_style(&self, class: ContourClass) -> Option<&FeatureStyle> {
         self.feature_style("contour", class.as_str())
     }
 
-    /// The full Style Table for the serializer (order is irrelevant; the
-    /// serializer sorts by id).
+    /// The full Style Table for the serializer; order is irrelevant, since the serializer sorts by
+    /// id.
     pub fn styles(&self) -> Vec<Style> {
         self.features.iter().flat_map(|(_, m)| m.values().map(FeatureStyle::to_style)).collect()
     }
@@ -933,9 +913,8 @@ impl Config {
 }
 
 impl StyleDocument {
-    /// Normalize a typed style into the serializer-facing representation. Rust
-    /// integer widths own the wire-sized ranges; priority's narrower 1..=4
-    /// policy remains an explicit semantic check.
+    /// Normalize a typed style into the serializer-facing representation. Rust integer widths own
+    /// the wire-sized ranges; priority's narrower 1..=4 policy stays an explicit check.
     fn normalize(self, id: u8, tag_key: &str, tag_value: &str) -> Result<FeatureStyle, String> {
         let priority = self.priority.unwrap_or(3);
         if !(1..=4).contains(&priority) {
@@ -1018,12 +997,12 @@ impl ContoursDocument {
     }
 }
 
-// --- routing section (N2): island-pruning threshold + §8.6 bike profiles --------------------
+// --- routing section: island-pruning threshold and the bike profiles ---------------------------
 
-/// The four shipped bike profiles, embedded so `default_profiles` and the parser can't drift. The
-/// presets in `builder/presets/` carry the same numbers verbatim (each preset is a complete config).
-/// Multipliers are "prefer lower": each profile makes its favored way/surface classes ~1.0× and
-/// penalizes the rest; `default` covers unlisted classes; `"forbidden"` excludes a class.
+/// The four shipped bike profiles, embedded so `default_profiles` and the parser cannot drift. The
+/// presets in `builder/presets/` carry the same numbers verbatim. Multipliers are "prefer lower":
+/// each profile makes its favoured way and surface classes about 1.0x and penalizes the rest;
+/// `default` covers unlisted classes and `"forbidden"` excludes a class.
 const DEFAULT_PROFILES_JSON: &str = r#"[
   {
     "name": "Road",
@@ -1202,7 +1181,7 @@ pub fn default_routing() -> Routing {
     Routing { min_component_edges: DEFAULT_MIN_COMPONENT_EDGES, profiles: default_profiles() }
 }
 
-/// The four shipped bike profiles (Road / Gravel / MTB / Touring), quantized to §8.6's wire form.
+/// The four shipped bike profiles (Road / Gravel / MTB / Touring), quantized to the wire form.
 /// Parsed from [`DEFAULT_PROFILES_JSON`] through the same path as user config, so the shipped
 /// defaults and the parser can never disagree.
 pub fn default_profiles() -> Vec<NavProfile> {
@@ -1221,7 +1200,7 @@ impl RoutingDocument {
     }
 }
 
-/// Validate + quantize `routing.profiles`: 1..=[`NAV_MAX_PROFILES`] entries.
+/// Validate and quantize `routing.profiles`: 1..=[`NAV_MAX_PROFILES`] entries.
 fn normalize_profiles(profiles: Vec<ProfileDocument>) -> Result<Vec<NavProfile>, String> {
     if profiles.is_empty() {
         return Err("routing.profiles must list at least one profile".into());
@@ -1236,8 +1215,8 @@ fn normalize_profiles(profiles: Vec<ProfileDocument>) -> Result<Vec<NavProfile>,
 }
 
 impl ProfileDocument {
-    /// One profile object → the §8.6 wire form. Class maps remain dynamic but
-    /// typed; canonical-name validation and admissible quantization are semantic.
+    /// One profile object to the wire form. Class maps stay dynamic but typed; canonical-name
+    /// validation and admissible quantization are semantic checks.
     fn normalize(self, index: usize) -> Result<NavProfile, String> {
         let name = self.name;
         if name.len() > NAV_PROFILE_NAME_LEN {
@@ -1273,17 +1252,16 @@ impl ProfileDocument {
             highway.iter().chain(&surface).all(|&m| m == 0 || m >= 16),
             "every non-zero multiplier must be ≥ 16 (admissible)"
         );
-        // `climb_weight` needs no admissibility check: §8.6's climb term is additive and
-        // non-negative, so every `u8` — including 0 — leaves the great-circle heuristic admissible.
-        // `serde` has already rejected anything outside `0..=255`.
+        // `climb_weight` needs no admissibility check: the climb term is additive and non-negative,
+        // so every `u8` leaves the great-circle heuristic admissible.
         Ok(NavProfile { name, highway, surface, climb_weight: self.climb_weight.unwrap_or(0) })
     }
 }
 
-/// Quantize one profile multiplier to §8.6's `u8` 1/16 fixed-point. `"forbidden"` ⇒ `0`; a number
-/// ≥ 1.0 ⇒ `round(v × 16)` clamped to `16..=255` (≈ 1.0×..16×). A number **below 1.0 is rejected**
-/// — the admissibility invariant (every non-zero weight ≥ 16) is what keeps the great-circle A*
-/// heuristic admissible, so the ε-optimality bound survives profile weighting.
+/// Quantize one profile multiplier to the `u8` 1/16 fixed-point form. `"forbidden"` is `0`; a number
+/// at or above 1.0 is `round(v * 16)` clamped to `16..=255`. A number below 1.0 is rejected: the
+/// invariant that every non-zero weight is at least 16 is what keeps the great-circle A* heuristic
+/// admissible, so the ε-optimality bound survives profile weighting.
 fn quantize_multiplier_value(v: &MultiplierValue, profile: &str, kind: &str, class: &str) -> Result<u8, String> {
     match v {
         MultiplierValue::Forbidden => Ok(0),
@@ -1336,13 +1314,10 @@ mod tests {
             .expect("load corpus config")
     }
 
-    /// The shipped **schema** is a complete, CLI-usable packer config.
+    /// The shipped schema is a complete, CLI-usable packer config.
     ///
-    /// It is the one document in `builder/presets/` that has to be: the skins beside
-    /// it are presentation over already-baked bytes (`OBCC_Spec.md` §5) and carry
-    /// no ladder and no routing table on purpose, so "every file in the directory is
-    /// a bakeable config" stopped being true with #1036 and this checks the file that
-    /// still is.
+    /// It is the one document in `builder/presets/` that has to be: the skins beside it are
+    /// presentation over already-baked bytes and carry no ladder and no routing table on purpose.
     #[test]
     fn the_shipped_schema_is_a_complete_cli_config() {
         let path = format!("{}/../../builder/presets/schema.json", env!("CARGO_MANIFEST_DIR"));
@@ -1483,8 +1458,8 @@ mod tests {
     #[test]
     fn lods_marker_chunk_parsed() {
         let cfg = corpus_config();
-        // The default preset's 14-tier pyramid. Semantic coverage owns 20 m/px and above; the
-        // existing ordinary geometry remains in charge from 16 m/px down.
+        // The default preset's 14-tier pyramid. Semantic coverage owns 20 m/px and above; ordinary
+        // geometry remains in charge from 16 m/px down.
         assert_eq!(cfg.lods.len(), 14);
         assert_eq!(
             cfg.lods.iter().map(|l| l.max_mpp).collect::<Vec<_>>(),
@@ -1535,8 +1510,8 @@ mod tests {
     #[test]
     fn get_style_is_first_key_in_document_order() {
         let cfg = corpus_config();
-        // A way tagged both highway=primary and building=yes: `highway` comes
-        // first in the document, so primary (a line style) wins.
+        // A way tagged both highway=primary and building=yes: `highway` comes first in the
+        // document, so primary (a line style) wins.
         let mut tags = HashMap::new();
         tags.insert("highway", "primary");
         tags.insert("building", "yes");
@@ -1547,9 +1522,9 @@ mod tests {
         assert!(cfg.get_style(&other).is_none());
     }
 
-    /// A `"*"` value entry is a per-category catch-all: an exact value match still
-    /// wins, but any other value the key carries falls back to `*`. A key with no
-    /// `*` and no exact match stays unstyled (unchanged behaviour).
+    /// A `"*"` value entry is a per-category catch-all: an exact value match still wins, but any
+    /// other value the key carries falls back to `*`. A key with no `*` and no exact match stays
+    /// unstyled.
     #[test]
     fn wildcard_value_is_a_catch_all() {
         let text = r#"{"features":{"building":{
@@ -1611,8 +1586,8 @@ mod tests {
         assert!(Config::parse(&text).is_err(), "more LODs than the reader supports must error (#5)");
     }
 
-    /// Style IDs are a `u8` capped at 254 (id 0 unused, 0xFF is the chunk sentinel);
-    /// a config with >254 styles must error, not wrap the 255th id and collide.
+    /// Style IDs are a `u8` capped at 254 (id 0 unused, 0xFF is the chunk sentinel), so a config
+    /// with more than 254 styles must error rather than wrap the 255th id into a collision.
     #[test]
     fn too_many_styles_is_rejected() {
         let make = |n: usize| {
@@ -1627,8 +1602,8 @@ mod tests {
         assert!(Config::parse(&make(255)).is_err(), "a 255th style must error (config.rs ~78), not wrap past u8");
     }
 
-    // --- schema pinning: `obc-pack schema` derives structure/defaults from the
-    // typed parser model. The checked-in web fallback must never drift from it. ---
+    // --- schema pinning: `obc-pack schema` derives structure and defaults from the typed parser
+    // model, and the checked-in web fallback must never drift from it. ---
 
     fn embedded_schema() -> Value {
         config_schema()
@@ -1655,9 +1630,8 @@ mod tests {
         assert!(!cfg.merge_fills && !cfg.merge_lines);
     }
 
-    /// The per-tier `coverage_simplify` knob: absent and `null` are both off (so every config
-    /// written before the pass existed still packs byte-identically), `true` reaches the parsed
-    /// ladder, and the schema's advertised default is the parser's.
+    /// The per-tier `coverage_simplify` knob: absent and `null` are both off, `true` reaches the
+    /// parsed ladder, and the schema's advertised default is the parser's.
     #[test]
     fn lod_coverage_simplify_defaults_off_and_parses() {
         let ladder = |json: &str| Config::parse(json).expect("ladder parses").lods;
@@ -1699,16 +1673,16 @@ mod tests {
     fn schema_color_def_matches_parser() {
         let schema = embedded_schema();
         let color = &schema["$defs"]["color"]["oneOf"];
-        // Pin the hex-string pattern; `parse_color` accepts optional 0x/0X + 1..=4
-        // hex digits (5 digits overflow the u16 and error — consistent both sides).
+        // Pin the hex-string pattern; `parse_color` accepts an optional 0x prefix and 1..=4 hex
+        // digits (5 digits overflow the u16 and error, on both sides).
         assert_eq!(color[0]["pattern"].as_str(), Some("^(0[xX])?[0-9A-Fa-f]{1,4}$"));
         assert!(parse_color(&Value::String("0x12345".into())).is_err(), "5 hex digits must overflow u16");
         assert_eq!(color[1]["minimum"].as_u64(), Some(0));
         assert_eq!(color[1]["maximum"].as_u64(), Some(65535));
     }
 
-    /// `color2` is the optional secondary color: parsed exactly like `color` (hex string or int),
-    /// referencing the same schema `$def`; absent ⇒ `None`, over-range ⇒ error.
+    /// `color2` is parsed exactly like `color` and references the same schema `$def`; absent gives
+    /// `None` and over-range errors.
     #[test]
     fn schema_color2_parses_like_color() {
         let schema = embedded_schema();
@@ -1729,7 +1703,6 @@ mod tests {
         );
     }
 
-    /// `line_style` accepts only `"solid"` (default) / `"dashed"`.
     #[test]
     fn line_style_enum_is_typed() {
         assert_eq!(parse_style(1, &serde_json::json!({"color": "0x1"})).unwrap().line_style, LineStyle::Solid);
@@ -1744,9 +1717,9 @@ mod tests {
         assert!(parse_style(1, &serde_json::json!({"color": "0x1", "line_style": "dotted"})).is_err());
     }
 
-    /// #1095's two style-record flag bits are typed optional booleans that default **off**, are
-    /// declared in the schema (so the builder's editor offers them rather than lying), and land on
-    /// the wire as bits 4 and 5 of the style record's `Flags` byte. Bits 6-7 stay written `0`.
+    /// The two style-record flag bits are typed optional booleans that default off, are declared in
+    /// the schema so the builder's editor offers them, and land on the wire as bits 4 and 5 of the
+    /// style record's `Flags` byte.
     #[test]
     fn schema_style_flag_bits_match_parser_and_serializer() {
         let schema = embedded_schema();
@@ -1767,8 +1740,8 @@ mod tests {
         assert!(both.fixed_width && both.terrain_layer);
         assert!(parse_style(1, &serde_json::json!({"color": "0x1", "fixed_width": "yes"})).is_err());
 
-        // Serializer: bit 4 and bit 5 of the flags byte, nothing else disturbed (record 0's flags
-        // sit at offset 5 behind the one-byte count).
+        // Serializer: bit 4 and bit 5 of the flags byte, nothing else disturbed. Record 0's flags
+        // sit at offset 5, behind the one-byte count.
         let flags = |style: &FeatureStyle| crate::serialize::pack_style_dict(&[style.to_style()])[1 + 5];
         assert_eq!(flags(&plain) & 0x30, 0x00, "neither bit set by default");
         assert_eq!(flags(&both) & 0x30, 0x30, "both bits set");
@@ -1780,7 +1753,7 @@ mod tests {
     }
 
     /// The schema advertises the `"*"` catch-all in the `features` description, and the parser
-    /// actually honours it — so the web builder's editor can offer a catch-all row without lying.
+    /// honours it, so the web builder's editor can offer a catch-all row without lying.
     #[test]
     fn schema_documents_wildcard_catch_all() {
         let schema = embedded_schema();
@@ -1794,7 +1767,6 @@ mod tests {
         assert_eq!(cfg.get_style(&tags).map(|s| s.color), Some(0x0002));
     }
 
-    /// Merge switches are typed optional booleans; absent/null/false are off.
     #[test]
     fn merge_switches_are_typed_and_default_off() {
         let cfg = Config::parse(r#"{"merge_fills": true, "merge_lines": null}"#).unwrap();
@@ -1825,8 +1797,8 @@ mod tests {
         assert!(Config::parse(r#"{"merge_lines":true,"lods":[{"merge_line_trails":true}]}"#).is_ok());
     }
 
-    /// `min_line_km` is optional and off by default, so every config written before the knob
-    /// existed parses to a ladder that culls nothing.
+    /// `min_line_km` is optional and off by default, so a config that omits it parses to a ladder
+    /// that culls nothing.
     #[test]
     fn min_line_km_defaults_to_off() {
         let cfg = Config::parse(r#"{"merge_lines": true, "lods": [{"max_mpp": null}, {"max_mpp": 100}]}"#).unwrap();
@@ -1844,8 +1816,8 @@ mod tests {
         let neg = Config::parse(&with(r#"{"min_line_km": -1}"#)).err().expect("a negative length is refused");
         assert!(neg.contains("min_line_km"), "the message names the field: {neg}");
         assert!(Config::parse(&with(r#"{"min_line_km": "far"}"#)).is_err(), "typed: not a string");
-        // Without merge_lines the cull would measure raw OSM ways, so the pair is refused
-        // outright rather than quietly ignored (or quietly shredding every road).
+        // Without merge_lines the cull would measure raw OSM ways, so the pair is refused outright
+        // rather than quietly ignored.
         let unstitched =
             Config::parse(r#"{"lods": [{"min_line_km": 1.0}]}"#).err().expect("the knob needs merge_lines");
         assert!(unstitched.contains("merge_lines"), "the message points at the missing pass: {unstitched}");
@@ -1863,14 +1835,14 @@ mod tests {
         assert!(env["schema"]["$defs"]["style"].is_object(), "envelope embeds the schema");
     }
 
-    // --- contours section (EL10a, #1094) -------------------------------------------------------
+    // --- contours section ----------------------------------------------------------------------
 
     fn parse_contours(text: &str) -> Result<Contours, String> {
         Config::parse(text).map(|c| c.contours)
     }
 
-    /// An omitted (or null-valued) `contours` section is off, and carries the shipped ladder so
-    /// flipping `enabled` alone is a complete request.
+    /// An omitted or null `contours` section is off, and carries the shipped ladder, so flipping
+    /// `enabled` alone is a complete request.
     #[test]
     fn contours_default_to_off_with_the_shipped_ladder() {
         let cfg = Config::parse("{}").expect("empty config parses");
@@ -1897,8 +1869,8 @@ mod tests {
         assert!(parse_contours(r#"{"contours":{"interval":"100"}}"#).is_err(), "the interval is a number");
     }
 
-    /// The two classes are ordinary style rules under a synthetic tag key, looked up **exactly** —
-    /// a `"*"` catch-all written for a real OSM key must never end up styling terrain.
+    /// The two classes are ordinary style rules under a synthetic tag key, looked up exactly: a
+    /// `"*"` catch-all written for a real OSM key must never end up styling terrain.
     #[test]
     fn contour_classes_are_styled_independently() {
         let cfg = Config::parse(
@@ -1929,10 +1901,9 @@ mod tests {
     }
 
     /// Two strokes of the same width and the same stroke shape are told apart by colour alone, so a
-    /// one-step neighbour reads as the same line. Contours and lifts were exactly that pair: both
-    /// one pixel, both dashed, one step apart. Lifts are ticked now, which separates them by shape,
-    /// but the rule still binds each shape group. The warm road ladder is deliberately one step per
-    /// class; those are solid and of differing widths, so the solid group is not held to this.
+    /// one-step neighbour reads as the same line. The rule binds each shape group. The warm road
+    /// ladder is deliberately one step per class; those are solid and of differing widths, so the
+    /// solid group is not held to this.
     #[test]
     fn no_two_thin_dashed_lines_share_a_colour_neighbourhood() {
         let cfg = corpus_config();
@@ -1961,7 +1932,8 @@ mod tests {
         }
     }
 
-    /// Contours stay thin, readable over every fill they cross, distinct from trails, with index
+    /// Contours stay thin, readable over every fill they cross, and distinct from trails, with
+    /// index lines visible farther out.
     /// lines visible farther out.
     #[test]
     fn the_shipped_schema_carries_both_contour_classes() {
@@ -1970,9 +1942,9 @@ mod tests {
             let style = cfg.contour_style(class).unwrap_or_else(|| panic!("{class:?} must be styled"));
             assert_eq!(style.weight, 1, "every contour is authored weight 1");
             assert_eq!(style.color, 0x02AA);
-            // Being a *different* colour is not enough. The panel shows 64 colours, so a contour
-            // one step off a fill is drawn and still unreadable, which is what `0xAD4A` was over
-            // rock. Hold every background a contour crosses to a real luminance gap.
+            // Being a different colour is not enough. The panel shows 64 colours, so a contour one
+            // step off a fill is drawn and still unreadable. Hold every background a contour
+            // crosses to a real luminance gap.
             for name in ["bare_rock", "wood", "grassland", "land"] {
                 let background = cfg.feature_style("natural", name).unwrap().color;
                 let gap = luma(style.color) - luma(background);
@@ -1998,7 +1970,7 @@ mod tests {
     }
 
     /// The schema's `contours` default parses back to the code default, and its bounds are the
-    /// parser's — the editor must not offer a ladder the packer rejects.
+    /// parser's: the editor must not offer a ladder the packer rejects.
     #[test]
     fn schema_contours_default_matches_parser() {
         let schema = embedded_schema();
@@ -2017,9 +1989,8 @@ mod tests {
         assert_eq!(props["simplify"]["default"].as_f64(), Some(15.0));
     }
 
-    // --- routing section (N2) ---------------------------------------------------------------
+    // --- routing section ---------------------------------------------------------------------
 
-    /// An omitted `routing` section yields the four shipped profiles + the default threshold.
     #[test]
     fn routing_defaults_when_absent() {
         let cfg = Config::parse("{}").expect("empty config parses");
@@ -2036,7 +2007,6 @@ mod tests {
         assert_eq!(road.surface[3], 80, "gravel 5.0× = 80");
     }
 
-    /// The admissibility invariant holds on every shipped profile: no non-zero multiplier below 16.
     #[test]
     fn default_profiles_are_admissible() {
         for p in default_profiles() {
@@ -2048,7 +2018,6 @@ mod tests {
         }
     }
 
-    /// A custom profile quantizes correctly; unlisted classes take the per-profile `default`.
     #[test]
     fn routing_parses_and_quantizes_custom_profile() {
         let text = r#"{"routing":{"min_component_edges":12,"profiles":[
@@ -2068,7 +2037,6 @@ mod tests {
         assert_eq!(p.surface[4], 32, "dirt unlisted → default 2.0×");
     }
 
-    /// A multiplier below 1.0 is rejected and the message names the A* heuristic bound.
     #[test]
     fn routing_rejects_sub_unit_multiplier() {
         let text = r#"{"routing":{"profiles":[{"name":"Bad","highway":{"cycleway":0.5}}]}}"#;
@@ -2080,7 +2048,6 @@ mod tests {
         assert!(err.contains("admissible"), "the error must name the A* admissibility bound: {err}");
     }
 
-    /// Boundary + rejection cases: empty list, >8, and unknown class names.
     #[test]
     fn routing_rejects_malformed_profiles() {
         assert!(Config::parse(r#"{"routing":{"profiles":[]}}"#).is_err(), "empty profiles must error");
@@ -2095,8 +2062,9 @@ mod tests {
 
     // --- schema pinning for the routing section ---------------------------------------------
 
-    /// The schema's routing default parses back to `default_routing()` — pins every shipped profile's
-    /// quantized bytes AND the threshold, so the web builder's starting config matches the packer.
+    /// The schema's routing default parses back to `default_routing()`, pinning every shipped
+    /// profile's quantized bytes and the threshold, so the web builder's starting config matches
+    /// the packer.
     #[test]
     fn schema_routing_default_matches_parser() {
         let schema = embedded_schema();
@@ -2106,8 +2074,8 @@ mod tests {
         assert_eq!(schema["properties"]["routing"]["properties"]["min_component_edges"]["default"].as_u64(), Some(50));
     }
 
-    /// The schema's multiplier bound, profile caps, and class-name enums match the parser and the
-    /// canonical class tables — so the editor accepts exactly what `parse_profile` does.
+    /// The schema's multiplier bound, profile caps and class-name enums match the parser and the
+    /// canonical class tables, so the editor accepts exactly what `parse_profile` does.
     #[test]
     fn schema_routing_bounds_match_parser() {
         let schema = embedded_schema();
@@ -2137,18 +2105,17 @@ mod tests {
             .map(|v| v.as_str().unwrap())
             .collect();
         assert_eq!(sf_enum, SURFACE_CLASS_NAMES, "surface class enum must mirror the canonical table");
-        // v12 climb weight: a plain u8, bounds stated so the editor offers the same range the
-        // packer accepts, and absent ⇒ 0 (climb-blind).
+        // Climb weight: a plain u8, bounds stated so the editor offers the range the packer
+        // accepts, and absent means 0 (climb-blind).
         let climb = &schema["$defs"]["profile"]["properties"]["climb_weight"];
         assert_eq!(climb["minimum"].as_u64(), Some(0));
         assert_eq!(climb["maximum"].as_u64(), Some(u8::MAX as u64));
         assert_eq!(climb["default"].as_u64(), Some(0));
     }
 
-    /// The v12 §8.6 climb weight, end to end through the config: the four shipped profiles carry
-    /// the seeded values, an explicit one is taken verbatim, and an omitted one is climb-blind
-    /// rather than inherited — a config that says nothing about climbing must route exactly as it
-    /// did before terrain existed.
+    /// The climb weight end to end through the config: the four shipped profiles carry the seeded
+    /// values, an explicit one is taken verbatim, and an omitted one is climb-blind rather than
+    /// inherited.
     #[test]
     fn climb_weight_is_seeded_taken_verbatim_and_zero_when_unstated() {
         let shipped = default_profiles();
@@ -2161,8 +2128,8 @@ mod tests {
         assert_eq!(cfg.routing.profiles[0].climb_weight, 255, "the maximum weight is legal — the term is additive");
         assert_eq!(cfg.routing.profiles[1].climb_weight, 0, "unstated is climb-blind, not inherited");
 
-        // Unlike a multiplier there is no admissibility floor to fall below, so nothing here can be
-        // rejected for being too small; a value outside u8 is a *type* error from serde.
+        // Unlike a multiplier there is no admissibility floor, so nothing here is rejected for
+        // being too small; a value outside u8 is a type error from serde.
         assert!(
             Config::parse(r#"{"routing":{"profiles":[{"name":"X","climb_weight":256}]}}"#).is_err(),
             "256 does not fit the u8 wire field"

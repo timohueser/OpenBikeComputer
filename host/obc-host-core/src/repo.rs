@@ -1,13 +1,12 @@
 //! The narrow repository interfaces the shared typed executor ([`crate::HostLoop`]) drives — one
-//! trait per store family the app talks to, so the *sequencing* (delete → rescan → re-feed, the
-//! nav commit order, the track lifecycle) lives once in [`crate::dispatch`] and every host store —
-//! the simulator's folder-backed stores and the in-memory [`FlatRouteStore`](crate::FlatRouteStore)
-//! family — plugs in behind the same shape. Storage internals stay in the concrete stores; these
-//! traits carry no `std`-vs-`no_std` assumptions of their own.
+//! trait per store family the app talks to, so the sequencing (delete, rescan, re-feed; the nav
+//! commit order; the track lifecycle) lives once in [`crate::dispatch`] and every host store plugs
+//! in behind the same shape. Storage internals stay in the concrete stores; these traits carry no
+//! `std`-vs-`no_std` assumptions of their own.
 //!
-//! The board deliberately does **not** implement these (its FAT/`ObjectStore` path stays async and
-//! board-specific — #801 non-goal, #809 owns the board loop); the *command/event semantics* it
-//! shares are pinned by protocol tests instead.
+//! The board deliberately does not implement these, because its `ObjectStore` path stays async and
+//! board-specific and it owns its own loop; the command and event semantics it shares are pinned by
+//! protocol tests instead.
 
 use obc_app::catalog_state::CatalogError;
 use obc_app::recorder::{CheckpointStatus, RecorderError, RideClose, RideContinuation};
@@ -183,9 +182,9 @@ pub enum AppendStatus {
 /// [`RecorderEffect`](obc_app::recorder::RecorderEffect), plus the session edge that opens the
 /// object.
 ///
-/// There is no `reconcile`: the recorder lifecycle is Recorder's (#1398), and a store that
-/// reconstructed it from an action plus a session id would be deciding it a second time. There is
-/// no sink either: the app stages its own samples and this writes the ones it is handed (#1553).
+/// There is no `reconcile`: the recorder lifecycle is Recorder's, and a store that reconstructed it
+/// from an action plus a session id would be deciding it a second time. There is no sink either:
+/// the app stages its own samples and this writes the ones it is handed.
 pub trait TrackRepository {
     /// Open a ride object for `session`, to be saved under `name`. Return true only when that
     /// object is attached. False leaves the open owed; an uncertain publication may still exist
@@ -245,8 +244,9 @@ pub trait TripCatalog {
     }
 
     /// Delete only the trip object with id `id`. The cascade over member
-    /// routes is `CatalogMachine`'s ordering (#1491) and reaches this executor as its own removals,
-    /// so there is no member lookup here. `Ok(true)` = removed, `Ok(false)` = absent, `Err` = failure.
+    /// Delete only the trip object with id `id`. The cascade over member routes is
+    /// `CatalogMachine`'s ordering and reaches this executor as its own removals, so there is no
+    /// member lookup here. `Ok(true)` = removed, `Ok(false)` = absent, `Err` = failure.
     fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError> {
         let _ = id;
         Ok(false)

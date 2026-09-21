@@ -218,7 +218,7 @@ pub fn ride_v3() -> Vec<u8> {
     v
 }
 
-// --- OBCT terrain (OBCT_Spec.md, epic #1068 / EL1) -----------------------------------------
+// OBCT terrain (OBCT_Spec.md)
 
 /// The terrain fixture's posting and cell size as `log2(µdeg)`. The posting is the v1 value
 /// (`2^9`); the **cell is deliberately not** — a v1 `2^19` cell is 2 MiB of raster, and the whole
@@ -399,7 +399,7 @@ pub fn update_container_v1() -> Vec<u8> {
     v
 }
 
-/// A full **signed OBCU v2 update container** (`OBCU_Spec.md` §1, epic #773 / #997): the same
+/// A full signed OBCU v2 update container (`OBCU_Spec.md` §1): the same
 /// 64-byte header table as [`update_container_v1`] — *including* `header_version` still `1`, the
 /// flash-once-bootloader guarantee — with v1's reserved bytes `48..52` now carrying the
 /// signature-scheme marker (`sig_scheme` = 1 · `sig_len` = 64), followed by [`update_raw_image`]
@@ -487,7 +487,7 @@ pub fn version_read_noobcm(version: u16, store_epoch: u32) -> Vec<u8> {
     v
 }
 
-/// The **version-only** `protocolVersion` read (spec §1, card-resident epoch #776): a device with
+/// The version-only `protocolVersion` read (spec §1, card-resident epoch): a device with
 /// **no mounted store** has no epoch, so it serves just `version u16` — 2 bytes. The app decodes the
 /// short read as `storeEpoch = nil` and fail-closes the ack. Never a fabricated epoch (0 is legal).
 pub fn version_read_nostore(version: u16) -> Vec<u8> {
@@ -515,7 +515,7 @@ pub fn command_ack_rides(ids: &[u16]) -> Vec<u8> {
     v
 }
 
-/// The `setClock` command write (spec §4.4, cmd 5, epic #638 S2): `cmd u8 = 5 · utc u32 LE ·
+/// The `setClock` command write (spec §4.4, cmd 5): `cmd u8 = 5 · utc u32 LE ·
 /// offset_min i16 LE`. 7 bytes.
 pub fn command_set_clock(utc: u32, offset_min: i16) -> Vec<u8> {
     let mut v = vec![5u8];
@@ -705,7 +705,7 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // finished ride-v3 object; headerless sample arrays are not accepted as rides.
         ("track-log.obct", track_log()),
         ("track-export.gpx", track_export_gpx()),
-        // The OBCT terrain shard (`OBCT_Spec.md`, epic #1068): a 2 × 2 cell rectangle with a hole
+        // The OBCT terrain shard (`OBCT_Spec.md`): a 2 × 2 cell rectangle with a hole
         // and a NODATA sample, over a plane. Not a wire layout — a *storage* one, like
         // `track-log.obct` beside it — and it is here because three implementations will sample it
         // (the device, the `obc-dem` baker's cross-check, and eventually the browser), and the
@@ -723,10 +723,10 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         ("landmark-section-v16.bin", landmarks::section()),
         ("peak-section-v17.bin", peaks::section()),
         ("version-read.bin", version_read(2, 0xA1B2_C3D4, obc_formats::obcm::VERSION)),
-        // The pre-E1 (#911) read: version + epoch, no obcm byte — an older firmware talking to a
+        // The pre-E1 read: version + epoch, no obcm byte — an older firmware talking to a
         // newer host. Decodes with `obcmVersion` absent, never a fabricated 0.
         ("version-read-noobcm.bin", version_read_noobcm(2, 0xA1B2_C3D4)),
-        // The version-only protocolVersion read (spec §1, #776): a device with no mounted store
+        // The version-only protocolVersion read (spec §1): a device with no mounted store
         // serves just the 2-byte version — the app treats the absent epoch as a failed identity read.
         ("version-read-nostore.bin", version_read_nostore(2)),
         // op=1 upload, type=1 route, id 0xFFFF (new) — 12 bytes (no offset in v2).
@@ -748,11 +748,11 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         ("command-ack-rides.bin", command_ack_rides(&[3, 5, 9])),
         // Its answer: ok, detail = 3 newly-flagged rides.
         ("status-command-result-ack.bin", status_command_result(2, 0, 3)),
-        // The phone's clock stamp (cmd 5, epic #638 S2): 2026-07-09T12:00:00Z (unix 1783598400),
+        // The phone's clock stamp (cmd 5): 2026-07-09T12:00:00Z (unix 1783598400),
         // +02:00 (offset 120 min). 7 bytes.
         ("command-set-clock.bin", command_set_clock(1_783_598_400, 120)),
         ("update-container-v1.bin", update_container_v1()),
-        // The **signed** OBCU v2 container (spec §1, epic #773 / #997): the same header table and the
+        // The signed OBCU v2 container (spec §1): the same header table and the
         // same 128-byte image, plus the scheme marker in v1's reserved bytes and a 64-byte Ed25519
         // trailer under the committed test key. Kept alongside v1 rather than replacing it: v1 is
         // still what a fielded bootloader and the device's own ROLLBACK.BIN look like, and the pair

@@ -33,35 +33,25 @@ impl<D: BlockDevice> FlatStore<D> {
     }
 }
 
-/// An open object, as a reader sees it.
-///
-/// Construct with [`FlatStore::source`], finish with [`release`](Self::release) — or use
-/// [`FlatStore::with_source`] and let the scope do both. See the module docs for why `Drop` cannot.
+/// An open object, as a reader sees it. Construct with [`FlatStore::source`] and finish with
+/// [`release`](Self::release), or use [`FlatStore::with_source`] and let the scope do both.
 pub struct StoreSource<'a, D: BlockDevice> {
     store: &'a FlatStore<D>,
     /// `None` once [`release`](Self::release) has taken it. The `Option` is what lets `release`
-    /// consume the handle out of a type that also has a `Drop` impl; the branch it costs per read is
-    /// a predictable one against a multi-millisecond card read.
+    /// consume the handle out of a type that also has a `Drop` impl.
     handle: Option<Handle>,
-    /// The payload's length. Captured once — the handle serves one revision, whose length does not
+    /// The payload's length, captured once: the handle serves one revision, whose length does not
     /// move under it.
     len: u64,
 }
 
 impl<'a, D: BlockDevice> StoreSource<'a, D> {
-    /// Wrap an already-open `handle` of `store`'s.
+    /// Wrap an already-open `handle` of `store`'s. Prefer [`FlatStore::source`], which opens and
+    /// wraps in one step.
     ///
-    /// Prefer [`FlatStore::source`], which opens and wraps in one step. This exists for the caller
-    /// that already holds a handle — the board's mount path, which opens every shard before it has
-    /// anywhere to put the sources, and is exactly where an index slip would put the wrong handle
-    /// against the wrong store.
-    ///
-    /// `Err` gives the handle **back** when it does not resolve against `store` — because it belongs
-    /// to a different store, or because it has already been closed and its row reused. The handle is
-    /// returned rather than swallowed for the obvious reason: whoever owns it still owes it a
-    /// `close`, against whichever store it really came from. Silently treating it as a zero-length
-    /// object was the alternative, and it would have turned a mount-time index slip into a shard that
-    /// reads as empty forever.
+    /// `Err` gives the handle back when it does not resolve against `store`, because whoever owns it
+    /// still owes it a `close` against whichever store it really came from. Treating it as a
+    /// zero-length object would turn a mount-time index slip into a shard that reads as empty forever.
     pub fn over(store: &'a FlatStore<D>, handle: Handle) -> Result<Self, Handle> {
         match store.handle_len(&handle) {
             Some(payload_len) => Ok(StoreSource::with_len(store, handle, payload_len)),
@@ -69,8 +59,6 @@ impl<'a, D: BlockDevice> StoreSource<'a, D> {
         }
     }
 
-    /// The common tail of [`over`](Self::over) and [`FlatStore::source`]. It used to be where this
-    /// module's one saturation lived; with the seam at `u64` it is a move.
     fn with_len(store: &'a FlatStore<D>, handle: Handle, payload_len: u64) -> Self {
         StoreSource { store, handle: Some(handle), len: payload_len }
     }
@@ -80,23 +68,15 @@ impl<'a, D: BlockDevice> StoreSource<'a, D> {
         self.store.current_revision(self.id()).is_ok_and(|head| head == Some(self.revision()))
     }
 
-    /// Surrender the handle so the store can close it. **This is the only way out** — see the module
-    /// docs.
-    ///
-    /// ```ignore
-    /// let handle = source.release();
-    /// store.close(handle);
-    /// ```
+    /// Surrender the handle so the store can close it. This is the only way out.
     pub fn release(mut self) -> Handle {
         self.handle.take().expect("a StoreSource holds its handle until exactly one `release`")
     }
 
-    /// The object this source reads.
     pub fn id(&self) -> ObjectId {
         self.handle().id()
     }
 
-    /// The revision this source is pinned to.
     pub fn revision(&self) -> Revision {
         self.handle().revision()
     }
@@ -108,18 +88,15 @@ impl<'a, D: BlockDevice> StoreSource<'a, D> {
 
 impl<D: BlockDevice> Drop for StoreSource<'_, D> {
     fn drop(&mut self) {
-        // A panic is already unwinding through here — from a `body` passed to `with_source`, or from
-        // any failed assertion in a test holding a source. Asserting now would be a *second* panic
-        // during unwind, which aborts the process: the run dies with `SIGABRT` and takes the original
-        // failure's message with it. The leak is the lesser problem, and the panic that caused it is
-        // the one worth reading.
+        // A panic is already unwinding through here. Asserting now would be a second panic during
+        // unwind, which aborts the process and takes the original failure's message with it. The leak
+        // is the lesser problem.
         #[cfg(any(test, feature = "std"))]
         if std::thread::panicking() {
             return;
         }
         // Not a `panic!`: on the device this compiles out, and a hard fault is never the right answer
-        // to a leaked row (the cost is one row until the next mount). On the host it fails the test
-        // that leaked, which is where the mistake is cheap to fix.
+        // to a leaked row. On the host it fails the test that leaked.
         debug_assert!(
             self.handle.is_none(),
             "a StoreSource was dropped without `release`; its row and extents leak until the next mount",
@@ -129,10 +106,9 @@ impl<D: BlockDevice> Drop for StoreSource<'_, D> {
 
 impl<D: BlockDevice> ByteSource for StoreSource<'_, D> {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
-        // Range first, medium second — the same order, and for the same reason, as every other
-        // `ByteSource` in the tree: a caller asking past the end is a bad offset, and only a genuine
-        // media failure is `Io`. Catalog loaders distinguish them so a transient read preserves
-        // the last validated snapshot while a definitively short object can be omitted.
+        // Range first, medium second: a caller asking past the end is a bad offset, and only a
+        // genuine media failure is `Io`. Catalog loaders distinguish them so a transient read
+        // preserves the last validated snapshot while a definitively short object can be omitted.
         let end = offset.checked_add(buf.len() as u64).ok_or(Error::BadOffset)?;
         if end > self.len {
             return Err(Error::BadOffset);
@@ -141,10 +117,8 @@ impl<D: BlockDevice> ByteSource for StoreSource<'_, D> {
         let mut done = 0usize;
         while done < buf.len() {
             // The store returns short only at end of payload, and the range check above proved we are
-            // not near it — so a zero-length return is the store disagreeing with its own hold about
-            // the length, which is an I/O-class fault rather than a caller error. Loop anyway: the
-            // seam's contract is "bytes read", and depending on it returning everything in one turn
-            // would be depending on an implementation detail.
+            // not near it, so a zero-length return is an I/O-class fault. Loop anyway: the seam's
+            // contract is "bytes read".
             match self.store.read(handle, offset + done as u64, &mut buf[done..]) {
                 Ok(0) => return Err(Error::Io),
                 Ok(n) => done += n,
@@ -154,8 +128,6 @@ impl<D: BlockDevice> ByteSource for StoreSource<'_, D> {
         Ok(())
     }
 
-    /// The payload's length, exactly — nothing to saturate against now that the seam and the store
-    /// count bytes in the same width. See the module docs on addressing.
     fn len(&self) -> u64 {
         self.len
     }
@@ -163,33 +135,24 @@ impl<D: BlockDevice> ByteSource for StoreSource<'_, D> {
 
 impl<D: BlockDevice> FlatStore<D> {
     /// Open `id` and wrap it as a [`ByteSource`]. The caller owns the pairing: finish with
-    /// [`StoreSource::release`] and [`close`](FlatStore::close).
-    ///
-    /// `revision` of `None` takes the head, exactly as [`Store::open`] does.
+    /// [`StoreSource::release`] and [`close`](FlatStore::close). `revision` of `None` takes the head.
     pub fn source(&self, id: ObjectId, revision: Option<Revision>) -> Result<StoreSource<'_, D>, StoreError> {
         let handle = Store::open(self, id, revision)?;
-        // `open` just wrote the row, so it resolves. This tail exists to keep the function total —
-        // hence a typed error rather than an `expect`, which on the device would be a hard fault for
-        // something that cannot happen. It *does* drop the handle `over` hands back, which is the
-        // swallow this module refuses everywhere else; the `debug_assert` is what keeps that
-        // exception honest, by failing loudly on the host if the unreachable ever becomes reachable.
+        // `open` just wrote the row, so it resolves. This tail keeps the function total — a typed
+        // error rather than an `expect`, which on the device would be a hard fault for something that
+        // cannot happen. The `debug_assert` keeps the dropped handle honest.
         StoreSource::over(self, handle).map_err(|_returned| {
             debug_assert!(false, "the row `open` just wrote did not resolve; its handle is being dropped");
             StoreError::Invalid
         })
     }
 
-    /// Open `id`, run `body` against it, and close it.
+    /// Open `id`, run `body` against it, and close it. This is the shape for everything that is not a
+    /// session-long mount.
     ///
-    /// This is the shape for everything that is not a session-long mount: a menu reading a header, a
-    /// `STATUS` resolving an object, a test. See the module docs for the other shape.
-    ///
-    /// **It does not close on a panic.** `body` runs between the open and the close with no unwind
-    /// guard, so a panic inside it leaks the row until the next mount — and `StoreSource`'s own leak
-    /// detector deliberately stays quiet during unwind rather than aborting the process on top of the
-    /// original failure. That is the accepted trade: this firmware does not unwind (`panic = "abort"`
-    /// on the device), and a host that panics is a test that has already failed. There is no early
-    /// return between the open and the close either; the close is simply the next statement.
+    /// It does not close on a panic: `body` runs between the open and the close with no unwind guard,
+    /// so a panic inside it leaks the row until the next mount. The device does not unwind, and a host
+    /// that panics is a test that has already failed.
     pub fn with_source<R>(
         &self,
         id: ObjectId,
@@ -198,7 +161,7 @@ impl<D: BlockDevice> FlatStore<D> {
     ) -> Result<R, StoreError> {
         let handle = Store::open(self, id, revision)?;
         // Unreachable for the same reason as in `source`, and dropping the returned handle is the
-        // same acknowledged exception — see there.
+        // same acknowledged exception.
         let source = StoreSource::over(self, handle).map_err(|_returned| {
             debug_assert!(false, "the row `open` just wrote did not resolve; its handle is being dropped");
             StoreError::Invalid
@@ -317,8 +280,8 @@ mod tests {
             .expect("the route source opens");
     }
 
-    /// Past the end is a caller error, not a media one — including a window that *starts* inside and
-    /// straddles the end, which is the case a length check on `offset` alone would let through.
+    /// Past the end is a caller error, not a media one — including a window that starts inside and
+    /// straddles the end, which a length check on `offset` alone would let through.
     #[test]
     fn reads_past_the_end_are_refused_as_bad_offsets() {
         let (disk, ids) = fixture(1);
@@ -342,13 +305,9 @@ mod tests {
             .expect("the object opens");
     }
 
-    /// `with_source` must hand its row back. Proved by exhaustion rather than by inspection: walk more
-    /// *distinct* objects than the table has rows, one scope at a time. A scope that leaked its row
-    /// would run the table dry and fail partway.
-    ///
-    /// Distinct objects matter — repeating one would share a row by refcount and pass whether or not
-    /// the close happened. Sequential scopes matter for the same reason they always did, and it is
-    /// now the *only* reason: since the seam went `&self`, nesting them would compile.
+    /// `with_source` must hand its row back. Proved by exhaustion: walk more distinct objects than
+    /// the table has rows, one scope at a time. Distinct matters, because repeating one object would
+    /// share a row by refcount and pass whether or not the close happened.
     #[test]
     fn with_source_returns_its_row_to_the_table() {
         let objects = MAX_OPEN_OBJECTS + 4;
@@ -383,10 +342,8 @@ mod tests {
         store.with_source(ids[0], None, |source| assert_eq!(source.len(), LEN as u64)).expect("the local object opens");
     }
 
-    /// **What used to be the saturation test, inverted.** It pinned a source over a payload past
-    /// `u32::MAX` reporting an *addressable prefix*; since FS7.5-seam there is no prefix, because
-    /// there is no narrower address space to project onto. A real 4 GiB object is not constructible
-    /// in a test, so this still pins the arithmetic where it lives.
+    /// A real 4 GiB object is not constructible in a test, so this pins the arithmetic where it
+    /// lives: the reported length is the whole payload length, not an addressable prefix of it.
     #[test]
     fn a_payload_past_the_old_u32_ceiling_reports_its_whole_length() {
         let (disk, ids) = fixture(1);
@@ -397,8 +354,7 @@ mod tests {
         let huge = StoreSource::with_len(&store, handle, big);
         assert_eq!(huge.len(), big, "the length is the payload's, with nothing clamping it");
         // Inside the reported length but far past the bytes that exist: the range check passes and
-        // the store's short read is what refuses it. The window is one the old `u32` source could
-        // not even *name*, which is the point.
+        // the store's short read is what refuses it.
         let mut buf = [0u8; 4];
         assert_eq!(huge.read_at(big - 4, &mut buf).unwrap_err(), Error::Io, "past the payload is not silent");
         assert_eq!(
@@ -411,12 +367,6 @@ mod tests {
         store.close(handle);
     }
 
-    /// **The runtime refusal the ruling traded the compile-time one for.** Under the old `&mut` write
-    /// half this test could not be written: a live source held `&` and `close` wanted `&mut`, so the
-    /// borrow checker refused it. Now it compiles, so the hold table's refcount has to be the thing
-    /// that holds — and it is what §6.2's "extents come back when the last reader lets go" was always
-    /// resting on.
-    ///
     /// Two readers on one object, the second closed while the first is mid-session: the survivor must
     /// keep reading the same bytes, and the store must not have taken the row apart underneath it.
     #[test]
@@ -442,22 +392,15 @@ mod tests {
         let handle = live.release();
         store.close(handle);
         assert_eq!(store.free_extents(), free_before, "the entry still names them, so nothing moved");
-        // The row really did come back: reopening resolves, which a row still counted as held by a
-        // reader that no longer exists would also do — so this is checked by exhaustion instead, in
-        // `with_source_returns_its_row_to_the_table`. Here it is only that the object is still whole.
+        // The row really did come back. That a row still counted as held would also reopen, so this
+        // is checked by exhaustion in `with_source_returns_its_row_to_the_table` instead.
         store.with_source(ids[0], None, |source| assert_eq!(source.len(), LEN as u64)).expect("it opens again");
     }
 
-    /// **A later joiner may not shorten what an earlier reader is already serving.** The one real bug
-    /// the aliasing rework introduced, caught in review, and the sequence is only expressible *because*
-    /// of the rework: `source` → an amend that trims the entry → a second `open` on the same key. The
-    /// second open joins the row by refcount and used to overwrite its length with the trimmed one,
-    /// which handed the original source `Err(Io)` at offsets below the `len()` it had just reported —
-    /// a silent truncation, which is the one outcome `source`'s docs promise the runtime refusal never
-    /// degrades to.
-    ///
-    /// The read past the *new* end is the whole point: it is inside the first reader's revision, and
-    /// §2.1 says a handle keeps reading the revision it resolved.
+    /// A later joiner may not shorten what an earlier reader is already serving: `source`, then an
+    /// amend that trims the entry, then a second `open` on the same key. The read past the new end is
+    /// the point — it is inside the first reader's revision, and a handle keeps reading the revision
+    /// it resolved.
     #[test]
     fn a_second_open_cannot_shorten_a_reader_already_serving_the_row() {
         let (disk, ids) = fixture(1);
@@ -506,9 +449,8 @@ mod tests {
         store.close(handle);
     }
 
-    /// The other half of the same trade: a source and a writer coexisting at all. It is the board's
-    /// shape — a mounted shard read while an upload commits — and before the ruling it did not
-    /// compile, which is why it is worth a test of its own rather than a comment.
+    /// A source and a writer coexisting: the board's shape, a mounted shard read while an upload
+    /// commits.
     #[test]
     fn a_commit_runs_while_a_source_is_open_and_the_source_is_unmoved() {
         let (disk, ids) = fixture(1);
@@ -545,11 +487,9 @@ mod tests {
         store.close(handle);
     }
 
-    /// **A listing that outlives its catalog stops, and says so.** The other case the `&self` seam made
-    /// reachable: an `entries()` iterator can now be held across a commit, and two commits later the
-    /// copy it is walking has been rewritten underneath its cursor. Serving those bytes as if they
-    /// were the listing's own — with `entries_ok()` still `true` — would splice two catalogs together
-    /// and call the result complete.
+    /// A listing that outlives its catalog stops, and says so. Two commits later the copy it is
+    /// walking has been rewritten underneath its cursor, and serving those bytes with `entries_ok()`
+    /// still `true` would splice two catalogs together and call the result complete.
     #[test]
     fn a_listing_that_outlives_its_commit_stops_short_and_reports_it() {
         let (disk, ids) = fixture(3);
@@ -575,15 +515,9 @@ mod tests {
         assert!(store.entries_ok());
     }
 
-    /// **A full hold table is `Busy`, not `Invalid`.** The two shared a value until FS7.5-c2, and
-    /// the difference is the whole of a client's retry policy: `Invalid` is §3.5's `invalidRequest`
-    /// — *this request is wrong and will be wrong next time* — while every row being taken is a fact
-    /// about who else is reading right now.
-    ///
-    /// Exhaustion is reachable at all because the table is [`MAX_OPEN_OBJECTS`] rows, which FS7.5-c2
-    /// took from 16 to 6; the arm was unreachable in practice before, which is exactly why it went
-    /// six years without a test. `MAX_OPEN_OBJECTS + 1` **distinct** objects, because repeating one
-    /// would share a row by refcount and never fill the table.
+    /// A full hold table is `Busy`, not `Invalid`: `invalidRequest` means this request is wrong and
+    /// will be wrong next time, while every row being taken is a fact about who else is reading right
+    /// now. `MAX_OPEN_OBJECTS + 1` distinct objects, because repeating one would share a row.
     #[test]
     fn a_full_hold_table_is_refused_as_busy_rather_than_invalid() {
         let (disk, ids) = fixture(MAX_OPEN_OBJECTS + 1);

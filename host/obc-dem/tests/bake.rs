@@ -1,14 +1,10 @@
-//! What a bake produces, checked **through the shared reader** and against a closed-form oracle.
+//! What a bake produces, checked through the shared reader and against a closed-form oracle.
 //!
-//! Two rules shape every test here.
-//!
-//! 1. **Nothing in this file decodes an `.obcd`.** Baked bytes are read back with
-//!    [`obc_elevation::TerrainReader`], the one normative consumer. A private decoder would prove
-//!    that `obc-dem` agrees with `obc-dem`, which is not the claim.
-//! 2. **The expected values are computed from the surface, not from the code under test.** The
-//!    fixture is an affine plane, and `OBCT_Spec.md` §5.5 guarantees a bilinear sampler reproduces
-//!    an affine function exactly — so the oracle is integer arithmetic on the plane's definition,
-//!    independent of both the baker and the reader.
+//! Two rules shape every test here. Nothing in this file decodes an `.obcd`: baked bytes are read
+//! back with [`obc_elevation::TerrainReader`], the one normative consumer. And the expected values
+//! are computed from the surface, not from the code under test: the fixture is an affine plane, and
+//! a bilinear sampler reproduces an affine function exactly, so the oracle is integer arithmetic on
+//! the plane's definition.
 
 mod common;
 
@@ -26,9 +22,8 @@ use obc_elevation::{TerrainReader, TileCache, DEFAULT_TILE_SLOTS};
 use obc_formats::io::SliceSource;
 use obc_formats::obct::NODATA;
 
-/// The fixture pairing: the v1 posting with a **one-tile** cell, so a whole multi-cell rectangle is
-/// a few KB. `OBCT_Spec.md` §1.3 exists to permit exactly this — the posting is the thing that
-/// decides the *heights*, and it is the real one.
+/// The fixture pairing: the v1 posting with a one-tile cell, so a whole multi-cell rectangle is a
+/// few KB. The posting is the thing that decides the heights, and it is the real one.
 const POSTING_LOG2: u8 = 9;
 const CELL_LOG2: u8 = 13;
 /// Samples per cell edge at that pairing: 16, i.e. one tile.
@@ -38,8 +33,8 @@ const CELL_UDEG: i64 = 1 << CELL_LOG2;
 
 /// The plane's value at its base lattice point, metres.
 const H0: i64 = 500;
-/// Metres per posting north, and per posting east. Chosen so the plane's value at **every** lattice
-/// point is an exact integer, which is what makes §5.5's exactness usable as an oracle.
+/// Metres per posting north, and per posting east. Chosen so the plane's value at every lattice
+/// point is an exact integer, which is what makes the exactness guarantee usable as an oracle.
 const PER_POSTING_LAT: i64 = 1;
 const PER_POSTING_LON: i64 = 3;
 
@@ -54,7 +49,7 @@ fn base_sample_udeg() -> (i32, i32) {
     )
 }
 
-/// The plane, in metres, at a µdeg coordinate — the surface the synthetic source *is*.
+/// The plane, in metres, at a µdeg coordinate — the surface the synthetic source is.
 fn plane_metres(lat_udeg: f64, lon_udeg: f64) -> f64 {
     let (base_lat, base_lon) = base_sample_udeg();
     H0 as f64
@@ -62,8 +57,8 @@ fn plane_metres(lat_udeg: f64, lon_udeg: f64) -> f64 {
         + (lon_udeg - f64::from(base_lon)) * PER_POSTING_LON as f64 / 512.0
 }
 
-/// What the **reader** must answer at `(lat, lon)`: the plane, rounded half away from zero, in exact
-/// integer arithmetic. Derived from §5.2 and §5.5, not from either implementation.
+/// What the reader must answer at `(lat, lon)`: the plane, rounded half away from zero, in exact
+/// integer arithmetic. Derived from the format, not from either implementation.
 fn oracle(lat_udeg: i32, lon_udeg: i32) -> i16 {
     let (base_lat, base_lon) = base_sample_udeg();
     let a = i64::from(lat_udeg) - i64::from(base_lat);
@@ -73,9 +68,9 @@ fn oracle(lat_udeg: i32, lon_udeg: i32) -> i16 {
     h as i16
 }
 
-/// A source raster of the plane at a 1 arcsecond posting — GLO-30's own spacing, deliberately
-/// **not** a multiple of the target posting, so every baked sample is a genuine interpolation
-/// rather than a lucky coincidence with a source post.
+/// A source raster of the plane at a 1 arcsecond posting — GLO-30's own spacing, deliberately not a
+/// multiple of the target posting, so every baked sample is a genuine interpolation rather than a
+/// lucky coincidence with a source post.
 fn plane_source(raster_type: u16) -> SyntheticDem {
     let (base_lat, base_lon) = base_sample_udeg();
     let step = 1.0 / 3600.0;
@@ -122,8 +117,6 @@ fn sample(bytes: &[u8], lat_udeg: i32, lon_udeg: i32) -> Option<i16> {
     reader.sample(&mut cache, lat_udeg, lon_udeg)
 }
 
-// ===================================================================================================
-
 /// The headline round trip: bake a plane, read it back through `TerrainReader`, and check every
 /// sample against the closed-form oracle — on the lattice, off the lattice, and at a tile seam.
 #[test]
@@ -132,7 +125,7 @@ fn a_baked_plane_reads_back_as_that_plane() {
     let (base_lat, base_lon) = base_sample_udeg();
 
     // Every lattice point of the 3 × 3 rectangle: 48 × 48 samples. A query with both remainders
-    // zero collapses to the stored sample, so this checks the *stored raster* exactly.
+    // zero collapses to the stored sample, so this checks the stored raster exactly.
     for di in 0..3 * SPAN {
         for dj in 0..3 * SPAN {
             let lat = (i64::from(base_lat) + di * 512) as i32;
@@ -141,8 +134,8 @@ fn a_baked_plane_reads_back_as_that_plane() {
         }
     }
 
-    // Off-lattice queries, including ones that straddle a tile and a cell seam. §5.5 says an affine
-    // surface interpolates exactly, so the same oracle holds at arbitrary coordinates.
+    // Off-lattice queries, including ones that straddle a tile and a cell seam. An affine surface
+    // interpolates exactly, so the same oracle holds at arbitrary coordinates.
     for (dlat, dlon) in [
         (1i64, 1i64),
         (255, 255),
@@ -165,9 +158,9 @@ fn both_geotiff_raster_conventions_bake_the_same_surface() {
     assert_eq!(bake_plane_shard(PIXEL_IS_POINT), bake_plane_shard(PIXEL_IS_AREA));
 }
 
-/// **Determinism is a contract.** Two bakes of the same inputs are byte-identical, and the bytes
-/// are pinned: a change to the resample, the rounding rule, the layout or the iteration order has
-/// to arrive as a deliberate edit to this number.
+/// Determinism is a contract. Two bakes of the same inputs are byte-identical, and the bytes are
+/// pinned: a change to the resample, the rounding rule, the layout or the iteration order has to
+/// arrive as a deliberate edit to this number.
 #[test]
 fn the_same_inputs_bake_the_same_bytes_forever() {
     let first = bake_plane_shard(PIXEL_IS_POINT);
@@ -184,8 +177,8 @@ fn the_same_inputs_bake_the_same_bytes_forever() {
 }
 
 /// A cell is a pure function of the mosaic and its own index: the same square baked alone and baked
-/// inside a wide shard is the same 512 bytes. This is what makes a published cell (EL3) and an
-/// assembled shard (EL4) two views of one raster rather than two rasters.
+/// inside a wide shard is the same 512 bytes. This is what makes a published cell and an assembled
+/// shard two views of one raster rather than two rasters.
 #[test]
 fn a_cell_is_the_same_bytes_alone_as_inside_a_shard() {
     let scratch = Scratch::new("cell-vs-shard");
@@ -205,8 +198,6 @@ fn a_cell_is_the_same_bytes_alone_as_inside_a_shard() {
         assert_eq!(&shard[offset..offset + 512], &alone[..], "cell {ci}/{cj} differs between the two bakes");
     }
 }
-
-// === the reference archive ==========================================================================
 
 /// A reference archive over exactly the tiles a list of cells reads, halo included, filled from a
 /// surface in µdeg. `None` leaves a pixel absent, which is how a fixture stops coverage mid-cell.
@@ -231,7 +222,7 @@ fn reference_tiles(cells: &[(u32, u32)]) -> Vec<(u32, u32)> {
     ids.into_iter().collect()
 }
 
-/// A cone one posting wide on a **steep** planar slope — the fixture the lift rule is judged on. The
+/// A cone one posting wide on a steep planar slope — the fixture the lift rule is judged on. The
 /// slope is what the convexity gate has to leave alone: a coarse lattice under-samples a 40° face
 /// honestly, and an ungated rule inflates the whole mountain.
 struct Cone {
@@ -278,8 +269,8 @@ fn lift_at(map: &LiftMap, ci: u32, cj: u32, y: i64, x: i64) -> i16 {
 }
 
 /// A 120 m cone one posting wide, standing on the node the fixture's first two cells share — the
-/// eastern seam of cell `(0, 0)`, half way up it. Everywhere else the reference **is** the plane the
-/// source DEM is, so §9's rule finds nothing there and only the cells around the seam can move.
+/// eastern seam of cell `(0, 0)`, half way up it. Everywhere else the reference is the plane the
+/// source DEM is, so the rule finds nothing there and only the cells around the seam can move.
 fn seam_cone_archive(root: &Path) {
     let (base_lat, base_lon) = base_sample_udeg();
     let peak_lat = f64::from(base_lat) + 8.0 * 512.0;
@@ -292,13 +283,13 @@ fn seam_cone_archive(root: &Path) {
     });
 }
 
-/// A reference is composed **per cell**, so all three ways to bake a cell must still produce one
+/// A reference is composed per cell, so all three ways to bake a cell must still produce one
 /// raster: inside a wide shard, as a file of its own, and through `bake_cell` over a lift map the
 /// caller built itself. The cone stands on a seam, which is where the two cells have to agree about
 /// a node neither of them owns alone.
 ///
-/// It also pins the two size claims §9.2 makes: a reference costs no bytes, and a cell with
-/// coverage is the same length as one without.
+/// It also pins the two size claims: a reference costs no bytes, and a cell with coverage is the
+/// same length as one without.
 #[test]
 fn a_reference_composes_the_same_cell_bytes_in_all_three_bakes() {
     let scratch = Scratch::new("reference-composition");
@@ -391,8 +382,8 @@ fn a_tower_is_lifted_and_the_plane_it_stands_on_is_not() {
     assert_eq!(tally.max_at, node_udeg(ci, cj, 8, 8), "and it is reported at the tip");
     assert_eq!(tally.over_report, 0, "a 120 m tower is not worth an operator's attention");
 
-    // `apply` adds the lift, leaves a hole a hole, and leaves a coordinate the map does not
-    // describe alone.
+    // `apply` adds the lift, leaves a hole a hole, and leaves a coordinate the map does not describe
+    // alone.
     let (tip_lat, tip_lon) = node_udeg(ci, cj, 8, 8);
     let native = cone.native();
     let mut lifted = map.apply(cone.native());
@@ -403,19 +394,19 @@ fn a_tower_is_lifted_and_the_plane_it_stands_on_is_not() {
     assert_eq!(map.at(tip_lat + 256, tip_lon), 0, "half a posting off the lattice is not a node");
 }
 
-/// A reference that stands a uniform **8 m** above our surface lifts nothing, however steep and
-/// however convex the mountain under it — and this is the one thing measuring the gap against the
-/// *roof* of a pooled pixel's footprint buys.
+/// A reference that stands a uniform 8 m above our surface lifts nothing, however steep and however
+/// convex the mountain under it — and this is what measuring the gap against the roof of a pooled
+/// pixel's footprint buys.
 ///
 /// The native lattice is a pyramid of 40 m per posting, so the bilinear surface through it is the
-/// pyramid exactly (each interval is affine) and `node_max` is sharply convex at the apex: the gate
-/// this test isolates is the 10 m one. An archive pixel is the maximum of the source inside a
-/// 7.1 × 4.9 m square, so on that slope the pooled value sits about 3 m above the surface at the
-/// pixel's own centre. Measured from the centre the 8 m offset reads as an 11 m gap and the apex is
-/// lifted; measured from the roof it reads as the 8 m it is, and §9 refuses it.
+/// pyramid exactly and `node_max` is sharply convex at the apex: the gate this test isolates is the
+/// 10 m one. An archive pixel is the maximum of the source inside a 7.1 × 4.9 m square, so on that
+/// slope the pooled value sits about 3 m above the surface at the pixel's own centre. Measured from
+/// the centre the 8 m offset reads as an 11 m gap and the apex is lifted; measured from the roof it
+/// reads as the 8 m it is, and the rule refuses it.
 ///
-/// A DTM reading a metre or two above a surface model over bare rock is the ordinary case, not a
-/// contrived one, which is why this must not become a lift.
+/// A DTM reading a metre or two above a surface model over bare rock is the ordinary case, which is
+/// why this must not become a lift.
 #[test]
 fn a_reference_below_the_gate_lifts_nothing_however_steep_the_mountain() {
     let rect = cell_rect(fixture_bbox(), POSTING_LOG2, CELL_LOG2).unwrap();
@@ -438,7 +429,7 @@ fn a_reference_below_the_gate_lifts_nothing_however_steep_the_mountain() {
         "8 m is not 10 m, and the slope under it must not make up the difference"
     );
 
-    // The same mountain under a reference that *is* 12 m above it is a crest, so the test above is
+    // The same mountain under a reference that is 12 m above it is a crest, so the test above is
     // about the gate and not about a fixture that could never lift anything.
     let over = Scratch::new("over-the-gate");
     write_reference(over.path(), &[(ci, cj)], |lat, lon| Some(pyramid(lat, lon) + 12.0));
@@ -449,7 +440,7 @@ fn a_reference_below_the_gate_lifts_nothing_however_steep_the_mountain() {
     // The neighbour the dilation reaches is on the plain slope, and its own half-posting cell
     // reaches 20 m up the pyramid towards the apex. `node_max - native` would therefore raise it by
     // 32 m over a reference that is 12 m above the ground everywhere, which is how lifting to
-    // `node_max` inflated the ground around every summit.
+    // `node_max` inflates the ground around every summit.
     assert_eq!(lift_at(&map, ci, cj, 8, 9), 12, "a neighbour rises by the gap, not by the slope's own fall");
 }
 
@@ -550,13 +541,12 @@ fn fixture_tile() -> (u32, u32, ArchiveTile) {
     (ti, tj, tile)
 }
 
-/// **Every** property of the tile contract is refused **by name** when it is broken, because each
-/// one moves ground rather than losing it: a wrong size or band count reads the wrong pixels, a
-/// `uint16` raster reads a height of 33 000 m, a wrong nodata turns absence into −32 768 m of
-/// ground, `PixelIsPoint` slides the tile half a pixel, a wrong datum is a different place, and a
-/// tie point off the lattice slides every height in the tile. Half a pixel — 32 µdeg, 3.5 m — is
-/// the size of mistake a hand-cut tile makes, and it is 32 000 times the tolerance the contract
-/// states.
+/// Every property of the tile contract is refused by name when it is broken, because each one moves
+/// ground rather than losing it: a wrong size or band count reads the wrong pixels, a `uint16`
+/// raster reads a height of 33 000 m, a wrong nodata turns absence into −32 768 m of ground,
+/// `PixelIsPoint` slides the tile half a pixel, a wrong datum is a different place, and a tie point
+/// off the lattice slides every height in the tile. Half a pixel is 32 µdeg, or 3.5 m, which is
+/// 32 000 times the tolerance the contract states.
 #[test]
 fn a_tile_that_breaks_the_contract_is_refused_by_name() {
     let (ti, tj, tile) = fixture_tile();
@@ -611,9 +601,9 @@ fn a_tile_that_breaks_the_contract_is_refused_by_name() {
 /// tile turns out wrong: a different schema, step or tile size is a different archive, and a key
 /// that is not a tile id means the ids cannot be trusted at all.
 ///
-/// A tile with no digest and a source that cannot be credited are refused here too, and for the
-/// same reason: the bakery keys a cell's skip on the digest and publishes the credit, so an index
-/// that states neither would give a map no attribution and every bake a full one.
+/// A tile with no digest and a source that cannot be credited are refused here too: the bakery keys
+/// a cell's skip on the digest and publishes the credit, so an index that states neither would give
+/// a map no attribution and every bake a full one.
 #[test]
 fn an_index_that_is_not_this_contract_is_refused() {
     let ok =
@@ -682,7 +672,7 @@ fn an_index_without_contributors_falls_back_to_the_best_source_key() {
 
 /// A posting finer than the archive's own step leaves a node owning no archive pixel, so the rule
 /// has nothing to measure. It is refused, naming both steps, rather than quietly baking every cell
-/// without a lift — which is what it did before, attribution reminder and all.
+/// without a lift.
 #[test]
 fn a_posting_finer_than_the_archive_step_is_refused() {
     let (ti, tj, tile) = fixture_tile();
@@ -704,8 +694,8 @@ fn a_posting_finer_than_the_archive_step_is_refused() {
     assert!(LiftMap::bake(0, 0, 6, 19, native, &archive).is_ok());
 }
 
-/// Attribution follows what the bake **read**, not what the index promised: a mirror that is short
-/// of its box credits only the sources whose tiles it actually holds, and says how many it lacked.
+/// Attribution follows what the bake read, not what the index promised: a mirror that is short of
+/// its box credits only the sources whose tiles it actually holds, and says how many it lacked.
 #[test]
 fn a_short_mirror_credits_only_the_tiles_it_holds_and_counts_the_rest() {
     // A cell whose southern halo reaches into the tile below it, so its window reads two tiles: the
@@ -765,10 +755,9 @@ fn a_short_mirror_credits_only_the_tiles_it_holds_and_counts_the_rest() {
     assert_eq!(archive.credits().iter().map(|c| c.key.as_str()).collect::<Vec<_>>(), ["absent-source", "ch"]);
 }
 
-/// The seam rule from both sides: two adjacent cells baked **independently** hand the reader a
-/// continuous surface. The cells share no sample — ownership is half-open (§3.1) — so continuity is
-/// a claim about the cross-cell fetch of §5.3 step 2, and the oracle is the only thing that can
-/// judge it.
+/// The seam rule from both sides: two adjacent cells baked independently hand the reader a
+/// continuous surface. The cells share no sample, because ownership is half-open, so continuity is
+/// a claim about the cross-cell fetch, and the oracle is the only thing that can judge it.
 #[test]
 fn adjacent_cells_baked_independently_meet_without_a_step() {
     let bytes = bake_plane_shard(PIXEL_IS_POINT);
@@ -821,7 +810,7 @@ fn a_source_void_propagates_all_the_way_to_none() {
     let bytes = out.into_inner();
 
     // The nearest lattice point to the hole is voided — the stencil that produced it had a NaN
-    // corner, and §5.4's rule is the same on the write side as on the read side.
+    // corner, and the rule is the same on the write side as on the read side.
     let at = locate(hole_lat_udeg as i32, hole_lon_udeg as i32, POSTING_LOG2).unwrap();
     let (lat, lon) = (lattice_coord(at.i, POSTING_LOG2), lattice_coord(at.j, POSTING_LOG2));
     assert_eq!(sample(&bytes, lat, lon), None, "the lattice point over the hole must be silent");
@@ -859,9 +848,9 @@ fn a_declared_nodata_value_is_a_void_too() {
     assert!((clear - plane_metres(f64::from(hole_lat) + 10_000.0, f64::from(hole_lon) + 10_000.0)).abs() < 0.01);
 }
 
-/// A box that overhangs the source costs four directory bytes per uncovered cell, not a cell block —
-/// and the reader answers `None` there rather than a clamped neighbour, because §5.1 step 3 refuses
-/// to answer a query from a cell that is not in the file.
+/// A box that overhangs the source costs four directory bytes per uncovered cell, not a cell block,
+/// and the reader answers `None` there rather than a clamped neighbour, because it refuses to answer
+/// a query from a cell that is not in the file.
 #[test]
 fn cells_with_no_data_at_all_are_absent_rather_than_written() {
     let scratch = Scratch::new("overhang");
@@ -893,7 +882,7 @@ fn cells_with_no_data_at_all_are_absent_rather_than_written() {
 }
 
 /// `--out <dir>` publishes one 1 × 1 container per cell, named by its catalog id, and each is the
-/// same bytes the shard carries. A consumer never branches on which artifact it holds (§4.1).
+/// same bytes the shard carries. A consumer never branches on which artifact it holds.
 #[test]
 fn per_cell_files_are_one_by_one_containers_of_the_same_bytes() {
     let scratch = Scratch::new("cells");
@@ -923,8 +912,8 @@ fn per_cell_files_are_one_by_one_containers_of_the_same_bytes() {
 }
 
 /// The coverage-edge clamp, from the producer's side: a single published cell answers a query one
-/// microdegree past its last sample with that sample, rather than with an extrapolation or a `None`
-/// (§5.3 step 3). The baker has to have written the edge sample for that to be true.
+/// microdegree past its last sample with that sample, rather than with an extrapolation or a `None`.
+/// The baker has to have written the edge sample for that to be true.
 #[test]
 fn a_lone_cell_clamps_at_its_own_coverage_edge() {
     let scratch = Scratch::new("clamp");

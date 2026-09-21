@@ -1,40 +1,32 @@
-//! The device the tests talk to: the real protocol-v4 engine over the real flat store on a
+//! The device the tests talk to: the real protocol engine over the real flat store on a
 //! deterministic simulated card, assembled once and driven from two languages.
 //!
-//! There were three of these before this crate existed — the Rust harness's, the TypeScript
-//! `MockDevice`, and the builder's dev harness — and only the Rust one ran production code. This
-//! crate is the assembly all three now share: [`Device`] holds one [`Engine`] and one
-//! [`FlatStore`] and answers one bounded [`Reaction`] at a time, [`SimDevice`] adds the card the
-//! device owns (so a reboot and a media fault are real), and `wasm.rs` puts the same surface behind
-//! `wasm-bindgen` for Vitest and the browser.
+//! [`Device`] holds one [`Engine`] and one [`FlatStore`] and answers one bounded [`Reaction`] at a
+//! time, [`SimDevice`] adds the card the device owns, so a reboot and a media fault are real, and
+//! `wasm.rs` puts the same surface behind `wasm-bindgen` for Vitest and the browser. One assembly,
+//! shared by every harness that needs a device.
 //!
-//! ## What is here and what is not
+//! Here: the engine, the store, the card, the link ceilings, seeding straight through the store
+//! seam, and two named test hooks. Not here: record framing, packet slicing, backpressure and
+//! retries, which belong to the adapter on each side — a device that did them twice would be
+//! modelling its own transport.
 //!
-//! **Here**: the engine, the store, the card, the link ceilings, seeding straight through the store
-//! seam, and two named test hooks. **Not here**: record framing, packet slicing, backpressure and
-//! retries — those belong to the adapter on each side (`records.ts`/`pipe.ts` in the browser, the
-//! harness's own pump in Rust), and a device that did them twice would be modelling its own
-//! transport.
-//!
-//! **Every TypeScript suite runs on `Link::Usb`**, because that is the cable the browser has. The
-//! BLE halves of the rules that differ per link — §5.1's much smaller record ceilings, and the
+//! Every TypeScript suite runs on `Link::Usb`, because that is the cable the browser has. The BLE
+//! halves of the rules that differ per link — the much smaller record ceilings, and the
 //! whole-payload rehash a map skips only over USB — are covered by `obc-link`'s own suites.
 //!
-//! **No policy of its own.** [`OpenPolicy`] accepts every payload and refuses `ARM`, which is what a
-//! board without FS7 and FS9 runs. [`AllowArm`] is the one alternative, for the tests that need §4's
-//! success shape.
+//! No policy of its own: [`OpenPolicy`] accepts every payload and refuses `ARM`, and [`AllowArm`]
+//! is the one alternative.
 //!
-//! ## The two test hooks
-//!
-//! Both exist because one existing test each cannot be written without them, both are off by
-//! default, and neither changes what the engine answers:
+//! Two test hooks exist, both off by default, because one existing test each cannot be written
+//! without them and neither changes what the engine answers:
 //!
 //! - [`Device::trace_requests`] records `(opcode, request id)` per control record, for the
-//!   assertions about what a flow did *not* send and about request-id uniqueness.
+//!   assertions about what a flow did not send and about request-id uniqueness.
 //! - [`Device::stop_answering`] makes the device deaf, for the hung-device timeout test.
 //!
-//! Nothing else is added for a single test. A device that needs a third hook is a test that should
-//! be asking the engine a different question.
+//! A device that needs a third hook is a test that should be asking the engine a different
+//! question.
 
 use obc_crc::Crc32;
 use obc_link::flat::store::Policy;
@@ -94,12 +86,10 @@ pub const USB_RECORD_CEILING: usize = 8_208;
 /// times, which is the boundary worth exercising.
 const STAGE: usize = 1_024;
 
-/// A blank card of the given geometry.
 pub fn blank_card(blocks: u64, seed: u64) -> obc_storage::flat::sim::SparseDisk {
     obc_storage::flat::sim::SparseDisk::blank(blocks, seed)
 }
 
-/// A card formatted with [`STORE`].
 pub fn formatted_card(blocks: u64, seed: u64) -> obc_storage::flat::sim::SparseDisk {
     let disk = blank_card(blocks, seed);
     FlatStore::initialize(&disk, STORE).expect("the test card formats");
@@ -338,7 +328,6 @@ impl<D: BlockDevice> Device<D> {
 
     // --- what the card holds ---------------------------------------------------
 
-    /// The catalog commit sequence.
     pub fn commit_sequence(&self) -> u64 {
         self.store.sequence()
     }

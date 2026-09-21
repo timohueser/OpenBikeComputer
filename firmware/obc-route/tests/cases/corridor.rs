@@ -1,12 +1,10 @@
-//! The route-corridor query's OBCR half (epic #946, U2): `RouteReader` as an
-//! [`obc_reader::RoutePath`], driven end to end over a real converted `.obcr` and a real packed POI
-//! quadtree.
+//! The route-corridor query's OBCR half: `RouteReader` as an [`obc_reader::RoutePath`], driven end
+//! to end over a real converted `.obcr` and a real packed POI quadtree.
 //!
-//! `obc-reader` owns the query and its projection math (pinned in its own `poi_corridor.rs` against
-//! a hand-built path); what only this crate can pin is that the **seam** hands the query the right
-//! geometry — chunk order, seam-shared points, and above all the *same along-route axis* stored
-//! waypoints are placed on. A corridor POI and a `<wpt>` at the same coordinate must report the same
-//! distance, or the Up-ahead list would mix two rulers in one column.
+//! `obc-reader` owns the query and its projection math. What only this crate can pin is that the
+//! seam hands the query the right geometry: chunk order, seam-shared points, and above all the same
+//! along-route axis that stored waypoints are placed on. A corridor POI and a `<wpt>` at the same
+//! coordinate must report the same distance, or the Up-ahead list mixes two rulers in one column.
 
 use obc_formats::io::SliceSource;
 use obc_reader::{
@@ -17,7 +15,7 @@ use obcm_testkit::{build_poi_map, PoiSpec};
 
 use crate::common::convert;
 
-/// The map bbox the POI fixtures pack into, and the POI chunk size (the packer's §7.1 default).
+/// The map bbox the POI fixtures pack into, and the packer's default POI chunk size.
 const BBOX: (i32, i32, i32, i32) = (7_000_000, 47_000_000, 9_000_000, 49_000_000);
 const CS: usize = 512;
 
@@ -58,9 +56,8 @@ fn water(name: &str, lon: i32, lat: i32) -> PoiSpec {
     PoiSpec { lat, lon, subtype: 1, name: name.into(), payload: 0xFFFF }
 }
 
-/// The seam reports the resident chunk index: chunk count, non-decreasing starts, and the last
-/// chunk's start below the route total. (`chunk_start_m` past the end answers "the route end", the
-/// contract the query's chunk-extent arithmetic leans on.)
+/// The seam reports the resident chunk index. `chunk_start_m` past the end answers with the route
+/// end, the contract the query's chunk-extent arithmetic leans on.
 #[test]
 fn route_reader_exposes_its_chunk_index_as_a_path() {
     let obcr = convert("East", &gpx(""));
@@ -95,9 +92,8 @@ fn route_reader_exposes_its_chunk_index_as_a_path() {
     }
 }
 
-/// **The axis pin.** A `<wpt>` and a map POI at the identical coordinate must land at the same
-/// along-route distance: the corridor query projects onto the same ruler the converter placed the
-/// waypoint on, so U3 can sort the two into one route-ordered timeline.
+/// The axis pin: a `<wpt>` and a map POI at the identical coordinate must land at the same
+/// along-route distance, so the two can be sorted into one route-ordered timeline.
 #[test]
 fn a_corridor_poi_and_a_waypoint_at_the_same_spot_agree_on_distance() {
     // Sit both exactly on the 12th track point (7.8000 + 0.0020×11 = 7.8220° E).
@@ -124,9 +120,9 @@ fn a_corridor_poi_and_a_waypoint_at_the_same_spot_agree_on_distance() {
     assert_eq!(got[0].offset_m, 0, "a POI on the line has no lateral offset");
 }
 
-/// Over a real route the side of travel still reads the same way: north of an eastbound route is
-/// the rider's left (negative), south is the right (positive), and only what is inside the corridor
-/// and ahead of progress comes back.
+/// Over a real route the side of travel reads the same way: north of an eastbound route is the
+/// rider's left (negative) and south is the right. Only what is inside the corridor and ahead of
+/// progress comes back.
 #[test]
 fn sides_corridor_and_progress_hold_over_a_real_route() {
     let obcr = convert("East", &gpx(""));

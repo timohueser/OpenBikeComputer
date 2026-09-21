@@ -1,22 +1,19 @@
-//! **The §4.8 mutation suite** — what the verify pass refuses, proved by breaking a real map.
+//! The mutation suite: what the verify pass refuses, proved by breaking a real map.
 //!
-//! `OBCA_Spec.md` §4.8 is a *precondition of writing a set*: nothing self-made reaches a device
-//! unverified. That makes the pass's strength a load-bearing property rather than a nicety, and it
-//! is exactly the property a rewrite for memory can quietly destroy — a streamed check that no
-//! longer holds the thing it was comparing against still returns `Ok`, and every existing test still
-//! passes, because every existing fixture is *valid*.
+//! Verification is a precondition of writing a map, so the pass's strength is load-bearing — and it
+//! is exactly the property a rewrite for memory can quietly destroy: a streamed check that no
+//! longer holds the thing it was comparing against still returns `Ok`, and every existing test
+//! still passes, because every existing fixture is valid.
 //!
-//! So this suite does the opposite of the rest of the crate's tests: it packs one small, genuinely
-//! routable map with the **real packer**, asserts the pass accepts it, and then corrupts one field
-//! at a time in the written bytes and asserts the pass names what broke. Every refusal class
-//! #1116's C5 introduced or strengthened is here — an out-of-range node id, a hole in the numbering,
-//! two records under one id (in both flavours) — alongside the §4.8 fundamentals the pass has always
-//! owed: an adjacency entry that resolves nowhere, one whose deltas point somewhere else, an edge
-//! that does not decode, and the two directions of an edge disagreeing.
+//! So this suite packs one small, genuinely routable map with the real packer, asserts the pass
+//! accepts it, then corrupts one field at a time in the written bytes and asserts the pass names
+//! what broke: an out-of-range node id, a hole in the numbering, two records under one id in both
+//! flavours, an adjacency entry that resolves nowhere, one whose deltas point somewhere else, an
+//! edge that does not decode, and the two directions of an edge disagreeing.
 //!
-//! Each test runs at **two budgets**: the default, where the junction table is one band, and one so
+//! Each test runs at two budgets: the default, where the junction table is one band, and one so
 //! small the table is banded and the claims spill through the scratch seam in many runs. A refusal
-//! that only fires in one of the two shapes is the failure mode this file exists to catch (#1132).
+//! that only fires in one of the two shapes is the failure mode this file exists to catch.
 
 use obc_elevation::NullElevation;
 use obc_formats::obcm::{CHUNK_END, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN};
@@ -34,20 +31,18 @@ use obcm_assemble::grid::AlignedBox;
 use obcm_assemble::verify::verify_map;
 use obcm_assemble::{Error, MemoryScratch, MemorySource, VerifyReport, DEFAULT_MERGE_BUDGET};
 
-// --- the fixture ------------------------------------------------------------------------------
-
-/// The worked example's `2^19` square (`OBCA_Spec.md` §7), so the header bbox the packer writes is a
-/// box the engine's own [`AlignedBox`] can state.
+/// The worked example's `2^19` square, so the header bbox the packer writes is a box the engine's
+/// own [`AlignedBox`] can state.
 const BOX: AlignedBox = AlignedBox { min_lat: 47_185_920, min_lon: 7_340_032, span_log2: 19 };
 
-/// A small nav chunk, so the fixture's nine junctions genuinely span several §8.2 chunks and the
-/// walk's re-delivery (the thing the digest check exists for) actually happens.
+/// A small nav chunk, so the fixture's nine junctions genuinely span several chunks and the walk's
+/// re-delivery, which is what the digest check exists for, actually happens.
 const CHUNK_SIZE: usize = 512;
 
 /// The grid's spacing in µdeg — wide enough that the `int16` neighbour deltas are large and the
-/// junctions land in several §8.2 chunks, small enough to stay under the packer's own
-/// endpoint-delta bound (32 000 µdeg) so that no edge is split into synthetic degree-2 pieces and
-/// the fixture's graph is exactly the lattice it is written as.
+/// junctions land in several chunks, small enough to stay under the packer's own endpoint-delta
+/// bound so that no edge is split into synthetic degree-2 pieces and the fixture's graph is exactly
+/// the lattice it is written as.
 const STEP: i32 = 20_000;
 
 fn deg(udeg: i32) -> f64 {
@@ -78,8 +73,8 @@ fn ways() -> Vec<RoutableWay> {
     out
 }
 
-/// One styled polyline per row, so the map carries geometry as well as a graph — the offset table
-/// and the feature decode are §4.8 checks too, and a nav-only fixture would exercise neither.
+/// One styled polyline per row, so the map carries geometry as well as a graph: the offset table
+/// and the feature decode are verify checks too, and a nav-only fixture would exercise neither.
 fn features() -> Vec<(u8, Geom)> {
     (0..3)
         .map(|row| {
@@ -122,14 +117,12 @@ fn map() -> Vec<u8> {
     bytes
 }
 
-// --- the harness ------------------------------------------------------------------------------
-
-/// The two budget shapes every case is run at: the shipping default (one band, one sorted run) and a
-/// budget so small the junction table is banded and the claim sort genuinely merges runs.
+/// The two budget shapes every case is run at: the shipping default, one band and one sorted run,
+/// and a budget so small the junction table is banded and the claim sort genuinely merges runs.
 const BUDGETS: [usize; 2] = [DEFAULT_MERGE_BUDGET, 64];
 
-/// Verify at one budget, asserting the scratch area is empty afterwards **however it ends**. A
-/// refusal that leaves its spill behind would fill a host's disk one broken map at a time.
+/// Verify at one budget, asserting the scratch area is empty afterwards however it ends. A refusal
+/// that leaves its spill behind would fill a host's disk one broken map at a time.
 fn verify_at(bytes: &[u8], budget: usize) -> Result<VerifyReport, Error> {
     let scratch = MemoryScratch::new();
     let out = verify_map(&MemorySource(bytes.to_vec()), BOX, &scratch, budget);
@@ -153,11 +146,11 @@ fn refuses(what: &str, wants: &str, break_it: impl Fn(&mut Vec<u8>)) {
     }
 }
 
-/// Where the §8.2 node chunks begin, and how many there are.
+/// Where the node chunks begin, and how many there are.
 ///
-/// Through the directory's own `data_start`, which is `align_up(index_offset + node_count × 4, U)`
-/// since v14 — spelling it out as the bare sum here would land this suite a few bytes before the
-/// first chunk, find no record at all, and turn every mutation below into a silent no-op.
+/// Through the directory's own `data_start`, which is `align_up(index_offset + node_count × 4, U)`.
+/// Spelling that out as the bare sum here would land this suite a few bytes before the first chunk,
+/// find no record at all, and turn every mutation below into a silent no-op.
 fn node_chunks(bytes: &[u8]) -> (usize, usize, usize) {
     let src = MemorySource(bytes.to_vec());
     let tables = MapTables::parse(&src).expect("the fixture parses");
@@ -167,7 +160,7 @@ fn node_chunks(bytes: &[u8]) -> (usize, usize, usize) {
     (dir.data_start().expect("the fixture's nav directory resolves") as usize, dir.chunk_count, dir.chunk_size)
 }
 
-/// Absolute file offsets of every §8.3 record, in chunk order — the addresses a mutation names.
+/// Absolute file offsets of every junction record, in chunk order — the addresses a mutation names.
 fn node_records(bytes: &[u8]) -> Vec<usize> {
     let (base, chunks, size) = node_chunks(bytes);
     let mut out = Vec::new();
@@ -186,7 +179,7 @@ fn node_records(bytes: &[u8]) -> Vec<usize> {
     out
 }
 
-/// The `Node Id` field of the record at `off` (§8.3 byte 8).
+/// The `Node Id` field of the record at `off`.
 fn set_id(bytes: &mut [u8], off: usize, id: u32) {
     bytes[off + 8..off + 12].copy_from_slice(&id.to_le_bytes());
 }
@@ -200,12 +193,12 @@ fn neighbor(off: usize, k: usize) -> usize {
     off + NAV_NODE_FIXED_LEN + k * NAV_NEIGHBOR_LEN
 }
 
-/// A record that is the **last** in its chunk and has room for `degree` adjacency entries.
+/// A record that is the last in its chunk and has room for `degree` adjacency entries.
 ///
 /// `Degree` is a length field: bumping it on a record with a successor swallows that successor's
 /// bytes, and what the pass then reports is the hole in the numbering — a true refusal, but not the
 /// one under test. Growing the last record of a chunk instead eats only the `0xFF` sentinel and the
-/// padding behind it, so the degree cap is the only thing broken.
+/// padding behind it.
 fn last_record_with_room(bytes: &[u8], degree: usize) -> usize {
     let (base, chunks, size) = node_chunks(bytes);
     let records = node_records(bytes);
@@ -218,8 +211,6 @@ fn last_record_with_room(bytes: &[u8], degree: usize) -> usize {
     }
     panic!("the fixture has no chunk whose last record can grow to degree {degree}");
 }
-
-// --- the map the mutations start from -----------------------------------------------------------
 
 #[test]
 fn the_fixture_is_a_map_the_pass_accepts() {
@@ -247,11 +238,8 @@ fn the_report_does_not_depend_on_the_budget() {
     }
 }
 
-// --- the three refusals #1116 C5 introduced ------------------------------------------------------
-
-/// An id no dense numbering of this section could reach. Before C5 the pass hashed it and carried
-/// on; it must never be allowed to name an allocation, which is why it is refused ahead of every
-/// other check on the record.
+/// An id no dense numbering of this section could reach. It must never be allowed to name an
+/// allocation, which is why it is refused ahead of every other check on the record.
 #[test]
 fn an_id_past_the_sections_capacity_is_refused() {
     refuses("an out-of-range node id", "out of the section's range", |bytes| {
@@ -284,7 +272,7 @@ fn two_records_under_one_id_are_refused() {
     });
 }
 
-/// …and the digest's own case: same id, same coordinates, a *different* adjacency list. This is the
+/// …and the digest's own case: same id, same coordinates, a different adjacency list. This is the
 /// one the pass has to catch for the delivery-dedup to be sound — walk 2 processes a re-delivered
 /// record once, which is only legal because a repeat that differs is refused here.
 #[test]
@@ -300,10 +288,8 @@ fn one_id_with_two_adjacency_lists_is_refused() {
     });
 }
 
-// --- the §4.8 fundamentals -----------------------------------------------------------------------
-
-/// §4.8.4: every neighbour resolves. An adjacency entry pointing past the graph is what a
-/// mis-relocated index or a truncated section leaves behind.
+/// Every neighbour resolves. An adjacency entry pointing past the graph is what a mis-relocated
+/// index or a truncated section leaves behind.
 #[test]
 fn an_adjacency_entry_that_resolves_nowhere_is_refused() {
     refuses("a neighbour id past the graph", "resolves to no record", |bytes| {
@@ -312,9 +298,9 @@ fn an_adjacency_entry_that_resolves_nowhere_is_refused() {
     });
 }
 
-/// §8.3 stores a neighbour's coordinate as an `int16` delta off the record's own. The reconstruction
-/// must land on what that neighbour's record states — this is the check that catches a record moved
-/// without its adjacency being rewritten.
+/// A neighbour's coordinate is an `int16` delta off the record's own, and the reconstruction must
+/// land on what that neighbour's record states. This catches a record moved without its adjacency
+/// being rewritten.
 #[test]
 fn an_adjacency_delta_that_points_elsewhere_is_refused() {
     refuses("a neighbour delta off by 3 µdeg", "int16 delta reconstructs neighbour", |bytes| {
@@ -324,8 +310,8 @@ fn an_adjacency_delta_that_points_elsewhere_is_refused() {
     });
 }
 
-/// §4.8.4: every `Edge Id` decodes. An id past the edge pool is the graft's characteristic failure —
-/// a wrong chunk base — seen from the adjacency side.
+/// Every `Edge Id` decodes. An id past the edge pool is the graft's characteristic failure, a wrong
+/// chunk base, seen from the adjacency side.
 #[test]
 fn an_edge_id_that_does_not_decode_is_refused() {
     refuses("an edge id past the pool", "does not decode", |bytes| {
@@ -334,8 +320,8 @@ fn an_edge_id_that_does_not_decode_is_refused() {
     });
 }
 
-/// §8.3: the two directions of an edge must agree on `Cost M` and `Way Kind`. Only one side is
-/// touched, so the disagreement is between the two adjacency entries and not with the edge record.
+/// The two directions of an edge must agree on `Cost M` and `Way Kind`. Only one side is touched,
+/// so the disagreement is between the two adjacency entries and not with the edge record.
 #[test]
 fn two_directions_disagreeing_about_cost_is_refused() {
     refuses("one direction's cost bumped", "two different (cost, kind) pairs", |bytes| {
@@ -345,8 +331,8 @@ fn two_directions_disagreeing_about_cost_is_refused() {
     });
 }
 
-/// …and the same field on *both* sides, which agrees with itself and disagrees with the §8.4 record
-/// the edge id names. Written as a whole-section sweep because both entries of one edge have to move
+/// …and the same field on both sides, which agrees with itself and disagrees with the edge record
+/// the id names. Written as a whole-section sweep because both entries of one edge have to move
 /// together, and they live in different records.
 #[test]
 fn adjacency_that_disagrees_with_the_edge_record_is_refused() {
@@ -369,8 +355,8 @@ fn adjacency_that_disagrees_with_the_edge_record_is_refused() {
     });
 }
 
-/// §8.3's degree cap (24). A record claiming more neighbours than the format allows is refused
-/// before its adjacency is read as anything.
+/// The degree cap. A record claiming more neighbours than the format allows is refused before its
+/// adjacency is read as anything.
 #[test]
 fn a_degree_past_the_cap_is_refused() {
     refuses("a degree of 25", "exceed the §8.3 degree cap", |bytes| {
@@ -379,8 +365,8 @@ fn a_degree_past_the_cap_is_refused() {
     });
 }
 
-/// §4.8.2/§5.1: the offset table's own invariants, re-derived from the bytes rather than trusted.
-/// `offsets[0] != 0` is the cheapest expression of a mis-relocated chunk base — the table still
+/// The offset table's own invariants, re-derived from the bytes rather than trusted.
+/// `offsets[0] != 0` is the cheapest expression of a mis-relocated chunk base: the table still
 /// parses, still lies inside the file, and still says every chunk is somewhere else than it is.
 #[test]
 fn an_offset_table_that_does_not_start_at_zero_is_refused() {
@@ -396,8 +382,8 @@ fn an_offset_table_that_does_not_start_at_zero_is_refused() {
     });
 }
 
-/// §4.8.1: the shard's header bbox is its planned box. The engine writes the box it planned, so a
-/// header that says otherwise is a shard that was placed wrong.
+/// The map's header bbox is its planned box. The engine writes the box it planned, so a header that
+/// says otherwise is a map that was placed wrong.
 #[test]
 fn a_header_bbox_that_is_not_the_planned_box_is_refused() {
     let bytes = map();
@@ -408,16 +394,16 @@ fn a_header_bbox_that_is_not_the_planned_box_is_refused() {
     assert!(format!("{err:?}").contains("is not its planned box"), "{err:?}");
 }
 
-/// §1.1: the offset unit travels **in the file**, at byte 40, so a verifier that resolves a shard's
-/// offsets against its own compiled-in `SCALE` agrees with itself no matter what the header says.
+/// The offset unit travels in the file, at byte 40, so a verifier that resolves a map's offsets
+/// against its own compiled-in `SCALE` agrees with itself no matter what the header says.
 ///
-/// Flipping the scale byte alone re-points every scaled offset in the file — at scale 5 each one
-/// names twice the byte it did — so a pass that reads the header's unit finds the LOD regions
-/// somewhere else and refuses. One that ignores it sails straight through, which is what this pins.
+/// Flipping the scale byte alone re-points every scaled offset in the file, so a pass that reads
+/// the header's unit finds the LOD regions somewhere else and refuses. One that ignores it sails
+/// straight through, which is what this pins.
 ///
-/// The refusal is deliberately *not* a version error: §1.1 requires a scale a reader cannot resolve
-/// to be distinct from an old file, and a scale it *can* resolve but which does not describe these
-/// bytes is a corrupt map either way.
+/// The refusal is deliberately not a version error: a scale a reader cannot resolve must be
+/// distinct from an old file, and a scale it can resolve but which does not describe these bytes is
+/// a corrupt map either way.
 #[test]
 fn a_header_scale_that_is_not_the_writers_is_refused() {
     const HEADER_OFFSET_SCALE_OFF: usize = 40;
@@ -437,7 +423,7 @@ fn a_header_scale_that_is_not_the_writers_is_refused() {
             "scale {scale}: a resolvable-but-wrong unit is not a version problem — {err:?}"
         );
     }
-    // …and an out-of-range scale is refused by the parse itself (§1.1 caps it at 9).
+    // …and an out-of-range scale is refused by the parse itself.
     let mut past = bytes.clone();
     past[HEADER_OFFSET_SCALE_OFF] = 10;
     let scratch = MemoryScratch::new();

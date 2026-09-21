@@ -1,6 +1,9 @@
 # Offline landmark content
 
-Build the host command from the repository root:
+The compiler that turns a raw capture into the landmark and peak content a map carries. It uses
+local files only: no network, no simulator, no device.
+
+## Run it
 
 ```sh
 cargo build -p obc-bake --locked
@@ -11,77 +14,71 @@ target/debug/obc-bake landmarks \
   --out .artifacts/landmarks
 ```
 
-Use an empty output directory. The command uses local files only. The example package contains
-four review sites; it does not establish full Switzerland coverage. The output copies the source
-coverage declaration and reports omissions separately from usable content.
+**Use an empty output directory.** The `assistant-wiki` package is a four-site review sample, not
+Switzerland coverage. Acquiring a country capture is [CAPTURE.md](../../../../fixtures/sources/ride-assistant/CAPTURE.md).
 
-The input is the schema 1 source manifest used by `assistant-wiki`. Each raw response has a relative
-path, URL, byte count and SHA-256 digest. Entity responses are `entities/QID.json`; raw parent-class
-responses are in `classes/`. Article captures identify a language, title, revision, exact revision
-URL, query JSON path and rendered HTML path. Image captures identify a P18 or Wikipedia lead source,
-Commons metadata and original image path. The compiler verifies registered source bytes before it
-selects sites. It derives coordinates and types from raw entities, not the manifest's display data.
-Raw `wbgetentities` class responses can contain an explicit redirect. The compiler preserves
-the edge to the canonical class before it follows parent classes, so redirected category or
-exclusion roots retain their meaning.
+## Input
 
-The boundary is GeoJSON Polygon, MultiPolygon or a FeatureCollection of these geometries. Border
-points are included. Country claims do not select sites. `policy.json` owns category roots and
-exclusions. Claims use Wikidata best-rank semantics: preferred claims when present, otherwise normal
-claims; deprecated claims are excluded. Every usable article in the UI languages (en, de, fr, es) is retained. The shared mapping is
-`specs/content-languages.json`, checked against the device language order. Irish and Italian are
-not capture languages. The compiler takes no map-wide language argument.
+A schema 1 source manifest: each raw response has a relative path, URL, byte count and SHA-256.
+Entity responses are `entities/QID.json`, parent classes are in `classes/`, locale entities in
+`locales/`. The compiler verifies the registered bytes before it selects sites, and derives
+coordinates and types from the raw entities rather than the manifest's display data. A raw
+`wbgetentities` response can carry an explicit redirect; the compiler keeps the edge to the
+canonical class before it follows parents, so a redirected category or exclusion root keeps its
+meaning.
 
-`content.json` is an internal schema 2 manifest for map serialization. It contains:
+The boundary is a GeoJSON Polygon, MultiPolygon or FeatureCollection of those. Border points are
+included. **Country claims do not select sites**; `policy.json` owns the category roots and
+exclusions. Claims use Wikidata best-rank semantics: preferred when present, otherwise normal,
+never deprecated.
 
-- Input and policy SHA-256 digests. Input identity includes the source manifest and boundary bytes.
-  Policy identity includes the category file, extraction code, dependency lock, image recipe and
-  supported-language mapping and locale rules. A separate category-policy digest lets acquisition check its discovery roots.
-- Candidate QIDs before article selection. A source manifest with empty article/image lists can use
-  the same compiler to select which assets to acquire.
-- Counts for captured sites, candidates, usable text, photos and raw photo bytes. A null approach
-  count means that the OSM approach join has not run.
-- Records sorted by QID, with category 1–6, display coordinate, default language, fallback-source
-  QIDs, and every usable language variant. Each variant has its language, at most four text pages,
-  and its own article attribution. Colocated QIDs remain separate records.
-- Separate article and photo source, revision, license, exact original notices and readable Sources
-  pages. Each asset permits at most 8 KiB of attribution; the pair permits at most 256 pages.
-- Omissions with QID, asset and reason. A rejected photo leaves usable text available.
+Every usable article in the UI languages (en, de, fr, es) is retained. The shared mapping is
+`specs/content-languages.json`. Irish and Italian are not capture languages. The compiler takes no
+map-wide language argument.
 
-The capture also pins raw Wikidata entities under `locales/`. For a local fallback, the compiler
-follows the place's best-rank P131 administrative chain and reads P37 official-language claims at
-the nearest depth with usable text. It then checks P17 country entities and their P37 claims.
-Traversal is limited to eight levels and 64 administrative entities per place; country entities
-are captured separately. Cycles, missing claims, and unsupported local languages cannot reject
-an otherwise usable article. Ties and final fallbacks use the shared UI language order. The
-record's `fallback_sources` identifies the locale QIDs used; an empty list means the final UI-order
-fallback. The source manifest pins their bytes and URLs. This uses the place's captured location
-claims, not the map rectangle or source merge order. It does not claim finer local knowledge than
-those claims supply.
+## Output
 
-All variants share one photo. P18 images precede the union of usable article lead images, in
-normalized filename order. Selection does not depend on device language. Reject a photo if its
-credits cannot fit beside every retained article's credits; retain those articles. The internal
-article bundle uses relative offsets, so assembly can copy all languages without changing them.
+`content.json` is an internal schema 2 manifest for map serialization:
 
-CC BY and CC BY-SA photos require a nonempty captured Artist identity. A generic source credit
-such as "Own work" does not identify the creator. Missing or empty Artist metadata produces
-`photo_creator_missing`; the compiler does not infer an author from a filename or linked page.
-CC0 does not require this field. Supplied notices still pass the separate representation limits.
+| Part | What is in it |
+| --- | --- |
+| Identity | Input digests (source manifest, boundary) and policy digests (category file, extraction code, dependency lock, image recipe, language mapping, locale rules). A separate category-policy digest lets acquisition check its own discovery roots. |
+| Candidates | The QIDs before article selection, so the same compiler can choose which assets to acquire from a manifest with empty article and image lists. |
+| Counts | Captured sites, candidates, usable text, photos, raw photo bytes. A null approach count means the OSM approach join has not run. |
+| Records | Sorted by QID: category 1–6, display coordinate, default language, fallback-source QIDs, and every usable language variant with at most four text pages and its own attribution. Colocated QIDs stay separate records. |
+| Attribution | Article and photo source, revision, licence, the exact original notices and readable Sources pages. At most 8 KiB per asset, 256 pages per pair. |
+| Omissions | QID, asset and reason. A rejected photo leaves usable text available. |
 
-Each photo file contains exactly 51,840 row-major bytes: 216 columns by 240 rows, one RGB222 pixel
-per byte (`00RRGGBB`). The host applies orientation, Lanczos3 fit, white padding and the fixed 4×4
-ordered dither. The manifest records its path, size and digest. The map serializer owns compression,
-source-linked approaches, shared opening-hours references and the device format.
+### Local language fallback
 
-Verification uses the complete `obc-pack` and `obc-bake` package suites and scoped Clippy. Rebuild
-the captured package into two empty directories and compare every output byte. The compiler does
-not need network access, a simulator or a connected device.
+For a place's default language the compiler follows its best-rank P131 administrative chain and
+reads P37 official-language claims at the nearest depth that has usable text, then checks P17
+country entities and their P37 claims. Traversal stops at eight levels and 64 administrative
+entities per place. Cycles, missing claims and unsupported local languages cannot reject an
+otherwise usable article; ties and final fallbacks use the shared UI language order.
+`fallback_sources` names the locale QIDs used, and an empty list means the final UI-order
+fallback. This reads the place's captured location claims, not the map rectangle or the source
+merge order.
+
+### Photos
+
+All variants of a site share one photo. P18 images come before the union of usable article lead
+images, in normalized filename order; selection never depends on device language. **Reject a photo
+if its credits cannot fit beside every retained article's credits**, and keep those articles.
+
+CC BY and CC BY-SA photos need a nonempty captured Artist identity. A generic credit such as "Own
+work" does not identify the creator, and missing or empty Artist metadata gives
+`photo_creator_missing`: the compiler never infers an author from a filename or a linked page. CC0
+does not need the field.
+
+Each photo file is exactly 51,840 bytes, 216 columns by 240 rows, one RGB222 pixel per byte
+(`00RRGGBB`). The host applies orientation, a Lanczos3 fit, white padding and a fixed 4 × 4
+ordered dither. Compression, source-linked approaches, shared opening-hours references and the
+device format belong to the map serializer.
 
 ## Peak article catalogue
 
-The same capture program can take a regional OSM extract and produce a separate peak source
-collection. Build `obc-bake` first, then run:
+The same capture program takes a regional OSM extract and produces a separate peak collection:
 
 ```sh
 python3 tools/landmark_capture.py \
@@ -93,44 +90,27 @@ target/debug/obc-bake peaks \
 ```
 
 `peak-candidates --osm FILE --boundary GEOJSON --out FILE` is the offline discovery entry point.
-It uses the map's POI classifier and reads named summit nodes only. `summits.json` retains the
-original node IDs, coordinates and tags, plus the source PBF digest. The compiler verifies its
-pinned bytes and applies the exact boundary again. It never joins an article by name, coordinates,
-or a preferred landmark approach. The article entity can lack coordinates or describe a massif
-outside the boundary.
+It uses the map's POI classifier and reads named summit nodes only; `summits.json` keeps the
+original node IDs, coordinates and tags plus the source PBF digest.
 
-Acquisition resolves explicit `wikidata` and `wikipedia=language:title` tags. Captured API
-normalization and redirect edges establish the canonical identity. A direct Wikipedia link can
-resolve to a QID. Without a QID, explicit Wikipedia language links select the first available UI
-edition in UI order, and its page ID is the identity. That page supplies the supported language
-links. A truncated language-link response, failed resolution or conflicting pair of explicit tags
-produces an omission. There are no inferred links or generated translations.
+Acquisition resolves explicit `wikidata` and `wikipedia=language:title` tags and nothing else.
+Captured API normalization and redirect edges establish canonical identity. Without a QID, the
+explicit Wikipedia language links select the first available UI edition in UI order and its page
+ID is the identity. A truncated language-link response, a failed resolution or a conflicting pair
+of explicit tags is an omission. **There are no inferred links and no generated translations.**
 
-The peak compiler uses the same article, local fallback, photo and attribution code. Its internal
-`peaks.json` has schema 1 and collection `peaks`. Each record has an `id` and shared article fields;
-it has no landmark category. `associations` retains every usable OSM node-to-article link with the
-summit's original coordinates. Records are stored once per canonical identity; all associations
-and language variants share one photo. Counts distinguish named source nodes, linked candidates,
-usable article records and photos. Link omissions identify `osm-node-ID`; article and photo
-omissions identify the canonical article in the shared omission record's `qid` field.
+`peaks.json` is schema 1, collection `peaks`. Each record has an `id` and the shared article
+fields but no landmark category; `associations` keeps every usable OSM node-to-article link with
+the summit's original coordinates. Records are stored once per canonical identity, and all
+associations and language variants share one photo.
 
-Peak captures cannot enter the landmark compiler, and `peaks.json` cannot enter the landmark map
-serializer. The normal packer and cutter accept `--peaks PATH/peaks.json`; repeat this option for
-several compiled regional catalogues. They join only the full node identities of emitted summit
-POIs. A catalogue's association coordinates do not filter its article. Core cells keep every
-linked summit's complete article and shared photo; assembly deduplicates article identities while
-preserving all summit links. `obc-bake bake --peaks FILE` and the planet baker accept one global
-catalogue through the current bake seam. Their cache keys include the peak content fingerprint.
+**The two collections do not mix.** A peak capture cannot enter the landmark compiler, and
+`peaks.json` cannot enter the landmark map serializer. The packer and cutter take
+`--peaks PATH/peaks.json`, repeatable for several regional catalogues, and join only the full node
+identities of emitted summit POIs. `obc-bake bake --peaks FILE` and the planet baker take one
+global catalogue; their cache keys include the peak content fingerprint.
 
-The reader exposes the summit's existing SourceId and a separate generation-bound article lookup.
-Each content reference checks the article identity and payload type before it uses the shared
-multilingual text or photo reader. Peak View presentation is separate work. Regional artifact
-orchestration under [issue 1805](https://github.com/timohueser/OpenBikeComputer/issues/1805) is also
-still required for normal region-tree delivery. These commands extend the current shared capture
-and compile seam; they do not claim that orchestration exists.
-
-The bounded `peak-articles` fixture profile contains nine Swiss summit nodes, their captured
-sources and the compiled catalogue. Verify it with:
+## Verify
 
 ```sh
 tools/obc fixtures sync peak-articles
@@ -139,6 +119,9 @@ python3 fixtures/verify-peak-content.py
 
 The verifier rebuilds discovery from its small source PBF and compares two complete offline
 catalogue builds. It checks duplicate and direct-link associations, all UI languages, shared
-photos, and text/photo omissions. The hermetic package tests also cover redirected QIDs,
-Wikipedia redirects and normalization, a direct article without Wikidata, unusable text, and
-independence from article-entity coordinates.
+photos, and text and photo omissions.
+
+For the landmark compiler, rebuild the captured package into two empty directories and compare
+every output byte. The `obc-pack` and `obc-bake` package suites cover redirected QIDs, Wikipedia
+redirects and normalization, a direct article without Wikidata, unusable text, and independence
+from article-entity coordinates.

@@ -112,11 +112,9 @@ pub struct Builder {
     cutoff: [usize; RAYS],
     /// The first column of the sector [`finish_sector`](Self::finish_sector) last completed, and
     /// the skyline row of each of its columns. The drawn tones cannot answer this — a sunlit face
-    /// and the sky share tone 0 — and the photo regression test measures the drawn skyline.
-    ///
-    /// Host test builds only, and one sector wide rather than the whole circle: a `Builder` lives
-    /// in the device's panorama arena, which has about 1.5 KiB spare, and 960 rows of it would be
-    /// most of that spent on a test.
+    /// and the sky share tone 0 — and the photo regression test measures the drawn skyline. Host
+    /// test builds only, and one sector wide, because a `Builder` lives in the device's panorama
+    /// arena with about 1.5 KiB spare.
     #[cfg(any(test, feature = "external-fixtures"))]
     sector_skyline: (u16, [u8; SECTOR]),
     depth: [[u16; ROWS]; DRAW_RAYS],
@@ -235,11 +233,9 @@ impl Builder {
     }
 
     /// The sector [`step`](Self::step) finished last: its first panorama column, and the topmost
-    /// row terrain reached in each of its columns — [`ROWS`] where a column is all sky. Column
-    /// zero points north and each one is `360 / COLUMNS` degrees wide.
-    ///
-    /// It holds one sector only, and the next one to finish overwrites it. A caller that wants the
-    /// whole circle steps with a budget of one and reads this whenever
+    /// row terrain reached in each of its columns — [`ROWS`] where a column is all sky. Column zero
+    /// points north and each one is `360 / COLUMNS` degrees wide. It holds one sector only, so a
+    /// caller that wants the whole circle steps with a budget of one and reads this whenever
     /// [`finished_sectors`](Self::finished_sectors) changes.
     #[cfg(any(test, feature = "external-fixtures"))]
     pub fn last_sector_skyline(&self) -> (usize, [u8; SECTOR]) {
@@ -677,15 +673,12 @@ impl Builder {
 
     /// The ground under the rider is never above the rider.
     ///
-    /// A lattice node can stand on the summit the rider is standing on, above an eye that the
-    /// altimeter put below it, and the panorama came back blocked at 19 m by the rider's own
-    /// mountain. The four lattice nodes of the cell the rider stands in are therefore clamped to
-    /// the rider's own height. The clamp is on the nodes, not on the cell: every cell that uses one
-    /// of those nodes sees the same clamped value, so the surface stays continuous and no edge of
-    /// the own cell steps. Nothing inside the own cell is then above the eye, while a cell one
-    /// posting out keeps its own far corners, so the ridge beyond the rider is still real. The cell
-    /// stays foreground: it paints the ground below the eye and a summit 40 m away is still tested
-    /// against it. Where the eye already stands on the cell top this changes nothing.
+    /// A lattice node can stand on the summit the rider is standing on, above an eye the altimeter
+    /// put below it, which blocks the panorama with the rider's own mountain. The four lattice
+    /// nodes of the cell the rider stands in are therefore clamped to the rider's own height. The
+    /// clamp is on the nodes, not on the cell, so the surface stays continuous and no edge of the
+    /// own cell steps, while a cell one posting out keeps its own far corners and the ridge beyond
+    /// the rider is still real.
     fn clamp_own_nodes(&self, patch: Patch, y: i32, x: i32) -> Patch {
         if self.level != 1 {
             return patch;
@@ -1046,7 +1039,7 @@ mod tests {
     }
 
     /// The ground under the rider never occludes. A crest lifts the corners of the cell the rider
-    /// stands in, and an eye below one of those corners saw nothing but its own mountain. Clamped,
+    /// stands in, and an eye below one of those corners sees nothing but its own mountain. Clamped,
     /// that cell paints exactly like bare ground, wherever in the cell the rider stands. Two cells
     /// out the same tower is ordinary terrain and paints its skyline.
     #[test]

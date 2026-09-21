@@ -1,4 +1,4 @@
-//! Typed, in-memory behaviour traces for the DeviceCore conformance matrix (#1434).
+//! Typed, in-memory behaviour traces for the DeviceCore conformance matrix.
 //!
 //! This module deliberately knows nothing about the executor's dispatch policy. A trace harness
 //! supplies input application, one bounded pass, outcome delivery, and a normalized visible-state

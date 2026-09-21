@@ -17,20 +17,17 @@ use crate::Msg;
 
 use super::StatFieldsScreen;
 
-/// Row height — fits a main label + sub-caption with the stepper / chevron / cycle value on the
-/// right. The rows keep the Stats screen's family so the grid editor opens from a matching face.
+/// Row height. It fits a label and a sub-caption, with the value on the right.
 const ROW_H: i32 = 58;
-/// Row pitch (height + gap) — the window slots step by this.
+/// Row pitch: the height plus the gap.
 const PITCH: i32 = ROW_H + 6;
-/// Top of the first row slot.
 const TOP: i32 = LIST_TOP + 8;
-/// Rows the panel shows at once (the other rows scroll into view).
+/// Rows the panel shows at once. The other rows scroll into view.
 const VISIBLE: usize = 4;
 
-/// Inset of the shared value column from the panel's right edge — every row right-aligns its value
-/// here (T8 item 3).
+/// Inset of the shared value column from the right edge. Every row right-aligns its value here.
 const VAL_INSET: i32 = 12;
-/// Fixed gap between a press-to-cycle `◄` cue and the value to its right (never glued to the word).
+/// Gap between a press-to-cycle cue and the value to its right.
 const CUE_GAP: i32 = 6;
 
 const DATA_FIELDS: usize = 0;
@@ -39,12 +36,12 @@ const CLIMB: usize = 2;
 const WAYPOINTS: usize = 3;
 const ROWS: usize = 4;
 
-/// Step the page-cycle period by `n` steps (1 s each), clamped to the configured bounds.
+/// Step the page-cycle period by `n` seconds, clamped to the configured bounds.
 fn step_cycle(v: u16, n: i32) -> u16 {
     (v as i32 + n).clamp(STAT_CYCLE_MIN as i32, STAT_CYCLE_MAX as i32) as u16
 }
-/// The Ride screen. `selected` is the highlighted row; `editing_cycle` is set only while the
-/// page-cycle stepper is open (every other row either navigates or cycles a value in place).
+/// `editing_cycle` is set only while the page-cycle stepper is open. The other rows navigate, or
+/// cycle a value in place.
 #[derive(Debug, Default)]
 pub struct RideScreen {
     selected: usize,
@@ -67,26 +64,22 @@ impl RideScreen {
                 Transition::None
             }
             Gesture::Press => match self.selected {
-                // Data fields → the panel-grid editor (its own page).
                 DATA_FIELDS => Transition::Push(Screen::StatFields(StatFieldsScreen::new())),
-                // The cycle row's single field: press toggles the stepper open/closed.
                 PAGE_CYCLE => {
                     self.editing_cycle = !self.editing_cycle;
                     Transition::None
                 }
-                // Press cycles Off → Manual → Auto in place (a small choice, no edit sub-mode).
+                // A small choice cycles in place. There is no edit sub-mode.
                 CLIMB => {
                     cx.settings.climb_mode = cx.settings.climb_mode.cycled();
                     Transition::None
                 }
-                // Press cycles Off → Approach → Always in place, the twin of the Climb row.
                 WAYPOINTS => {
                     cx.settings.waypoint_mode = cx.settings.waypoint_mode.cycled();
                     Transition::None
                 }
                 _ => Transition::None,
             },
-            // Back steps out of an open field first, else climbs to the Settings list.
             Gesture::Back => super::back_out_of_field(self.editing_cycle, || self.editing_cycle = false),
             Gesture::Hold | Gesture::BackHold => Transition::None,
         }
@@ -97,9 +90,8 @@ impl RideScreen {
         let (w, h) = (rx.w, rx.h);
         title_frame(cv, w, h, rx.t(Msg::RideTitle), "");
 
-        // ONE value column (T8 item 3): every row's value right-aligns at this inset.
+        // One value column: every row right-aligns its value here.
         let val_r = w - ROW_X - VAL_INSET;
-        // The scrolling window: the cursor stays on screen, the window follows it.
         let first = window_start(self.selected, VISIBLE, ROWS);
 
         for slot in 0..VISIBLE {
@@ -149,8 +141,7 @@ impl RideScreen {
     }
 }
 
-/// A right-pointing chevron parked on the value column — the "enters a sub-screen" cue for the
-/// Data fields row.
+/// A chevron on the value column. It shows the row opens a sub-screen.
 fn chevron(cv: &mut impl Surface, val_r: i32, row: &embedded_graphics::primitives::Rectangle) {
     use crate::screen::palette::INK;
     let cx0 = val_r - 11;
@@ -158,10 +149,8 @@ fn chevron(cv: &mut impl Surface, val_r: i32, row: &embedded_graphics::primitive
     cv.triangle(Point::new(cx0, midy - 9), Point::new(cx0, midy + 9), Point::new(cx0 + 11, midy), INK);
 }
 
-/// Draw a press-to-cycle row's mode `value` at the right of its **sub-caption** line — Label tier,
-/// ink, right-aligned on the shared `val_r` column — with the ◄ "press to change" cue a fixed
-/// [`CUE_GAP`] before the value's left edge. The Climb and Waypoints rows share this so the two
-/// cycle rows can't drift apart; `cycle_row_value_clears_the_sub_caption` pins the clearance.
+/// Draw a press-to-cycle row's `value` at the right of its sub-caption line, with the cue a fixed
+/// [`CUE_GAP`] before the value. The Climb and Waypoints rows share this, so they cannot drift apart.
 fn draw_subline_cycle_value(
     cv: &mut impl Surface,
     row: &embedded_graphics::primitives::Rectangle,
@@ -190,8 +179,6 @@ mod tests {
         scr.handle(g, &mut cx)
     }
 
-    /// Data fields is the group's one page-opening row, and the cursor starts on it — the slot the
-    /// Bike type row held before it moved onto the route-plan sheet (#1515 D4d).
     #[test]
     fn data_fields_opens_its_page_from_the_first_row() {
         let mut s = Settings::default();
@@ -200,14 +187,13 @@ mod tests {
         assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::Push(Screen::StatFields(_))));
     }
 
-    /// Press opens the page-cycle stepper; a step edits the period live and clamps; press steps out.
     #[test]
     fn cycle_stepper_edits_live_and_clamps() {
         let mut s = Settings { stat_cycle_s: 5, ..Settings::default() };
         let mut scr = RideScreen::new();
-        run(&mut scr, &mut s, Gesture::Step(1)); // → Page cycle row
+        run(&mut scr, &mut s, Gesture::Step(1));
         assert_eq!(scr.selected, PAGE_CYCLE);
-        run(&mut scr, &mut s, Gesture::Press); // open stepper
+        run(&mut scr, &mut s, Gesture::Press);
         assert!(scr.editing_cycle);
         run(&mut scr, &mut s, Gesture::Step(2));
         assert_eq!(s.stat_cycle_s, 7);
@@ -219,13 +205,12 @@ mod tests {
         assert!(!scr.editing_cycle, "press steps back out");
     }
 
-    /// The Climb row cycles Off → Manual → Auto in place on each press (no edit sub-mode).
     #[test]
     fn climb_row_cycles_the_mode() {
         use crate::settings::ClimbMode;
         let mut s = Settings { climb_mode: ClimbMode::Auto, ..Settings::default() };
         let mut scr = RideScreen::new();
-        run(&mut scr, &mut s, Gesture::Step(2)); // → Climb row
+        run(&mut scr, &mut s, Gesture::Step(2));
         assert_eq!(scr.selected, CLIMB);
         for expect in [ClimbMode::Off, ClimbMode::Manual, ClimbMode::Auto] {
             assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::None));
@@ -233,26 +218,24 @@ mod tests {
         }
     }
 
-    /// The Waypoints row cycles Off → Approach → Always in place on each press.
     #[test]
     fn waypoint_row_cycles_the_mode() {
         use crate::settings::WaypointMode;
         let mut s = Settings { waypoint_mode: WaypointMode::Approach, ..Settings::default() };
         let mut scr = RideScreen::new();
-        run(&mut scr, &mut s, Gesture::Step(3)); // → Waypoints row
+        run(&mut scr, &mut s, Gesture::Step(3));
         assert_eq!(scr.selected, WAYPOINTS);
         for expect in [WaypointMode::Always, WaypointMode::Off, WaypointMode::Approach] {
             assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::None));
             assert_eq!(s.waypoint_mode, expect);
         }
     }
-    /// Back closes an open stepper before it pops — the staged escape.
     #[test]
     fn back_closes_stepper_first() {
         let mut s = Settings::default();
         let mut scr = RideScreen::new();
-        run(&mut scr, &mut s, Gesture::Step(1)); // → Page cycle
-        run(&mut scr, &mut s, Gesture::Press); // open the stepper
+        run(&mut scr, &mut s, Gesture::Step(1));
+        run(&mut scr, &mut s, Gesture::Press);
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::None));
         assert!(!scr.editing_cycle, "back closed the stepper, not the screen");
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::Pop), "back again exits");
@@ -275,8 +258,8 @@ mod tests {
         assert_eq!(scr.selected, 0, "and the cursor wraps over all five rows");
     }
 
-    /// Every press-to-cycle row's sub-caption line clears its ◄value group by a **measured**
-    /// ≥ 8 px in every language and mode value (owner review round 1). Mirrors the draw math.
+    /// The sub-caption must clear the cue and value by 8 px in every language. This mirrors the
+    /// draw math.
     #[test]
     fn cycle_row_value_clears_the_sub_caption() {
         use crate::i18n::t;

@@ -1,12 +1,9 @@
 //! The vocabulary both sides of the engine speak: three identities, the kind table, the entry
 //! flags, a display name, and the metadata half of a catalog entry.
 //!
-//! `FLAT_Store_Format.md` §3 and §5.3 are the sole authority for every value here and
-//! `FLAT_Store_Protocol.md` §2 and §3.3 carry the same numbers. These types are declared in this
-//! crate rather than imported from the store because the dependency runs the other way: `obc-link`
-//! is a foundation crate and the store is a platform adapter, so the engine names what it needs and
-//! the store binds it (see [`super::store`]). The two definitions are held equal by the binder's own
-//! pinning test, which is what makes "the same numbers" a fact rather than a hope.
+//! `FLAT_Store_Format.md` is the authority for every value here. The types are declared in this
+//! crate rather than imported from the store, because the dependency runs the other way (see
+//! [`super::store`]), and the binder's pinning test holds the two definitions equal.
 
 /// The card. A `StoreId` a client has not seen means the card was re-initialized and everything it
 /// cached is void.
@@ -19,10 +16,8 @@ pub struct StoreId(pub [u8; 16]);
 pub struct ObjectId(pub u64);
 
 impl ObjectId {
-    /// The reserved id that names no object.
     pub const NONE: ObjectId = ObjectId(0);
 
-    /// True for every id that names an object.
     pub fn is_some(self) -> bool {
         self.0 != 0
     }
@@ -37,16 +32,15 @@ impl Revision {
     /// The value `GET` and `STATUS` read as "whatever the head is".
     pub const HEAD: Revision = Revision(0);
 
-    /// The revision the commit that creates an object publishes.
     pub const FIRST: Revision = Revision(1);
 
-    /// The revision that supersedes this one, or `None` at the end of the space (§3).
+    /// The revision that supersedes this one, or `None` at the end of the space.
     pub fn next(self) -> Option<Revision> {
         self.0.checked_add(1).map(Revision)
     }
 }
 
-/// `FLAT_Store_Format.md` §3.1, carried unchanged by `FLAT_Store_Protocol.md`.
+/// The kind table of `FLAT_Store_Format.md`, carried unchanged on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum ObjectKind {
@@ -62,7 +56,7 @@ pub enum ObjectKind {
 }
 
 impl ObjectKind {
-    /// Decodes §3.1's `u16`. Kind `0` is never encoded and no other value is registered.
+    /// Kind `0` is never encoded and no other value is registered.
     pub fn decode(value: u16) -> Option<Self> {
         Some(match value {
             1 => ObjectKind::Route,
@@ -78,24 +72,21 @@ impl ObjectKind {
         })
     }
 
-    /// The `u16` §3.1 registers.
     pub fn value(self) -> u16 {
         self as u16
     }
 
-    /// True for the kinds the device produces and a client may never `PUT`
-    /// (`FLAT_Store_Protocol.md` §3.6).
+    /// True for the kinds the device produces and a client may never `PUT`.
     pub fn is_device_owned(self) -> bool {
         matches!(self, ObjectKind::Ride | ObjectKind::RollbackReserve | ObjectKind::Metadata)
     }
 }
 
-/// §5.3's entry flags. Bits `4..15` are zero.
+/// The entry flags. Bits `4..15` are zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct EntryFlags(u16);
 
 impl EntryFlags {
-    /// No flag.
     pub const NONE: EntryFlags = EntryFlags(0);
     /// The active ride.
     pub const RECORDING: EntryFlags = EntryFlags(1 << 0);
@@ -113,12 +104,11 @@ impl EntryFlags {
         self == Self::NONE || self == Self::ASSISTANT_ACCEPTED
     }
 
-    /// Decodes §5.3's `u16`, rejecting an undefined bit.
+    /// Rejects an undefined bit.
     pub fn decode(value: u16) -> Option<Self> {
         (value & !Self::DEFINED == 0).then_some(EntryFlags(value))
     }
 
-    /// The `u16` an entry carries.
     pub fn bits(self) -> u16 {
         self.0
     }
@@ -128,20 +118,18 @@ impl EntryFlags {
         self.0 & other.0 == other.0
     }
 
-    /// This flag word with `other` set.
     pub fn with(self, other: EntryFlags) -> Self {
         EntryFlags(self.0 | other.0)
     }
 
     /// True for the two flags that make an entry untouchable from the wire: the store did not write
-    /// a reserve's bytes, and a recording ride's length and CRC are stale until it ends (§3.5, §3.6,
-    /// §3.7).
+    /// a reserve's bytes, and a recording ride's length and CRC are stale until it ends.
     pub fn is_untouchable(self) -> bool {
         self.has(EntryFlags::RECORDING) || self.has(EntryFlags::RESERVED)
     }
 }
 
-/// Bytes a display name may occupy (§5.3).
+/// Bytes a display name may occupy.
 pub const NAME_CAPACITY: usize = 48;
 
 /// What a menu shows: UTF-8, at most 48 bytes, never normalised, trimmed or case-folded. An empty
@@ -185,19 +173,16 @@ impl DisplayName {
         &self.bytes
     }
 
-    /// The declared length byte.
     pub fn len(&self) -> usize {
         self.len as usize
     }
 
-    /// True for the empty name a ride carries until it is finalised.
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 }
 
-/// The metadata half of a catalog entry, and nothing else. It carries no extent, which is what
-/// keeps `FLAT_Store_Protocol.md` §2's first sentence true.
+/// The metadata half of a catalog entry. It carries no extent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EntryMeta {
     pub id: ObjectId,

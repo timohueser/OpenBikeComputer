@@ -17,25 +17,23 @@ use crate::screen::{palette, Ctx, Render, Transition};
 use crate::settings::{Settings, UTC_OFFSET_MAX, UTC_OFFSET_MIN, UTC_OFFSET_STEP};
 use crate::{t, Msg};
 
-/// One row of the Date & Time screen. Only [`Offset`](RowKind::Offset) is selectable; the two info
-/// rows are display-only and the cursor skips them.
+/// One row of the Date & Time screen. Only [`Offset`](RowKind::Offset) is selectable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RowKind {
-    /// Read-only GPS fix status (the UTC anchor).
+    /// Read-only GPS fix status, which is the UTC anchor.
     GpsFix,
-    /// Read-only local time = UTC + offset.
+    /// Read-only local time, which is UTC plus the offset.
     LocalTime,
-    /// `UTC offset` stepper (one field).
+    /// The UTC offset stepper.
     Offset,
 }
 
 impl RowKind {
-    /// Whether the cursor can land here — the info rows are display-only and skipped.
     fn selectable(self) -> bool {
         matches!(self, RowKind::Offset)
     }
 
-    /// Row height (px). The stepper row is a touch taller for the arrow clearance around its cell.
+    /// Row height in pixels. The stepper row is taller, for the arrows around its cell.
     fn height(self) -> i32 {
         match self {
             RowKind::Offset => 56,
@@ -44,16 +42,14 @@ impl RowKind {
     }
 }
 
-/// The fixed row set: the two read-only clock-source rows, then the UTC-offset stepper.
 const ROWS: [RowKind; 3] = [RowKind::GpsFix, RowKind::LocalTime, RowKind::Offset];
 
-/// Index of the first selectable row — where the cursor parks (the info rows are skipped).
 fn first_selectable() -> usize {
     ROWS.iter().position(|k| k.selectable()).expect("the row set always has a selectable row")
 }
 
-/// The Date & Time screen. `selected` indexes [`ROWS`] (always a selectable row); `editing` is the
-/// open field's index within it, or `None` for row-level focus.
+/// `selected` indexes [`ROWS`] and is always a selectable row. `editing` holds the open field
+/// index, or `None` for row-level focus.
 #[derive(Debug)]
 pub struct DateTimeScreen {
     selected: usize,
@@ -68,7 +64,6 @@ impl Default for DateTimeScreen {
 
 impl DateTimeScreen {
     pub fn new() -> Self {
-        // Park the cursor on the UTC-offset row — the only selectable one (the info rows are skipped).
         DateTimeScreen { selected: first_selectable(), editing: None }
     }
 
@@ -82,8 +77,6 @@ impl DateTimeScreen {
                 }
                 Transition::None
             }
-            // The offset stepper has one field: enter it, then press again to step out. The info
-            // rows are never selected, so a press on them can't happen — but stay put if it did.
             Gesture::Press => match kind {
                 RowKind::Offset => {
                     self.editing = match self.editing {
@@ -94,22 +87,18 @@ impl DateTimeScreen {
                 }
                 RowKind::GpsFix | RowKind::LocalTime => Transition::None,
             },
-            // Back steps out of an open field first, else exits to the Settings list (edits are
-            // already live, so this is the implicit save).
             Gesture::Back => super::back_out_of_field(self.editing.is_some(), || self.editing = None),
             Gesture::Hold | Gesture::BackHold => Transition::None,
         }
     }
 
-    /// Move the row cursor by `n` steps, skipping the non-selectable info rows. With a single
-    /// selectable row this keeps the cursor parked on it — kept general so adding a second stepper
-    /// later just works.
+    /// Move the row cursor by `n` steps and skip the read-only rows.
     fn move_selection(&mut self, n: i32) {
         let len = ROWS.len() as i32;
         let dir = n.signum();
         let mut i = self.selected as i32;
         for _ in 0..n.unsigned_abs() {
-            // Step at least one, then keep going until a selectable row (at most one lap).
+            // Step at least one row, then continue to the next selectable row, at most one lap.
             for _ in 0..len {
                 i = (i + dir).rem_euclid(len);
                 if ROWS[i as usize].selectable() {
@@ -137,7 +126,6 @@ impl DateTimeScreen {
 
             match kind {
                 RowKind::GpsFix => {
-                    // The UTC anchor GPS supplies — fixed, independent of the offset.
                     let mut v: heapless::String<24> = heapless::String::new();
                     if has_fix {
                         let _ = write!(v, "{}{:02}:{:02}", t(Msg::DatetimeUtc, lang), s.clock.hour, s.clock.minute);
@@ -147,8 +135,7 @@ impl DateTimeScreen {
                     info_row(cv, area, t(Msg::DatetimeGpsFix, lang), &v);
                 }
                 RowKind::LocalTime => {
-                    // The offset can carry across midnight, so take the whole local stamp (date and
-                    // time) from `local_clock`, not the raw UTC date beside an offset-shifted hour.
+                    // The offset can cross midnight, so take the date and the time from `local_clock`.
                     let local = s.local_clock();
                     let mut v: heapless::String<24> = heapless::String::new();
                     let _ = write!(
@@ -174,8 +161,7 @@ impl DateTimeScreen {
                     super::stepper_field(cv, cell, &utc_offset(s.utc_offset_min), editing == Some(0), Font::Label);
                 }
             }
-            // A hairline separator with a wider gap (so it clears a selected row's amber bar) groups
-            // the read-only clock source apart from the editable offset.
+            // The separator groups the read-only clock source apart from the editable offset.
             let sep = matches!(kind, RowKind::LocalTime);
             if sep {
                 cv.hline(20, y + rh + 7, w - 40, palette::RULE);
@@ -185,14 +171,14 @@ impl DateTimeScreen {
     }
 }
 
-/// Apply a stepper step to the UTC offset (live into [`Settings`], clamped to its range).
+/// Apply a stepper step to the UTC offset, clamped to its range.
 fn step_offset(s: &mut Settings, n: i32) {
     let v = s.utc_offset_min as i32 + n * UTC_OFFSET_STEP as i32;
     s.local_offset_known = true;
     s.utc_offset_min = v.clamp(UTC_OFFSET_MIN as i32, UTC_OFFSET_MAX as i32) as i16;
 }
 
-/// A read-only info row (no cursor): a muted caption stacked over its value, both left-aligned.
+/// A read-only row: a muted caption over its value.
 fn info_row(cv: &mut impl Surface, area: Rectangle, label: &str, value: &str) {
     let x = area.top_left.x + 10;
     cv.text(label, Point::new(x, area.top_left.y + 2), Font::Label, TextAlign::Left, palette::SUBTEXT);
@@ -206,7 +192,6 @@ mod tests {
     use crate::screen::test_ctx;
     use crate::{AppState, Mode, Settings};
 
-    /// Drive one gesture through the screen against a real `Settings`, returning the transition.
     fn run(scr: &mut DateTimeScreen, s: &mut Settings, g: Gesture) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut act = Activity::new(Mode::Idle);
@@ -214,8 +199,6 @@ mod tests {
         scr.handle(g, &mut cx)
     }
 
-    /// The cursor parks on the UTC-offset row (the only selectable one) and turning between rows
-    /// keeps it there — the two read-only info rows are never the cursor.
     #[test]
     fn cursor_parks_on_the_offset_row() {
         let mut s = Settings::default();
@@ -227,43 +210,37 @@ mod tests {
         assert_eq!(ROWS[scr.selected], RowKind::Offset, "still parked after several steps");
     }
 
-    /// Offset edit flow: press to open the single field, rotate to change it (live, `UTC_OFFSET_STEP`
-    /// per step), press again to step out.
     #[test]
     fn offset_field_edits_and_steps_out() {
         let mut s = Settings { utc_offset_min: 0, ..Settings::default() };
         let mut scr = DateTimeScreen::new();
-        run(&mut scr, &mut s, Gesture::Press); // open the offset field
+        run(&mut scr, &mut s, Gesture::Press);
         assert_eq!(scr.editing, Some(0));
-        run(&mut scr, &mut s, Gesture::Step(2)); // +2 steps
+        run(&mut scr, &mut s, Gesture::Step(2));
         assert_eq!(s.utc_offset_min, 2 * UTC_OFFSET_STEP, "rotating the open field edits it live");
-        run(&mut scr, &mut s, Gesture::Press); // step out (one field)
+        run(&mut scr, &mut s, Gesture::Press);
         assert_eq!(scr.editing, None);
     }
 
-    /// The offset stepper clamps at the range ends rather than wrapping.
     #[test]
     fn offset_clamps_at_the_range_ends() {
         let mut s = Settings { utc_offset_min: UTC_OFFSET_MAX - UTC_OFFSET_STEP, ..Settings::default() };
         let mut scr = DateTimeScreen::new();
         run(&mut scr, &mut s, Gesture::Press);
-        run(&mut scr, &mut s, Gesture::Step(5)); // past the top
+        run(&mut scr, &mut s, Gesture::Step(5));
         assert_eq!(s.utc_offset_min, UTC_OFFSET_MAX, "clamps at the maximum offset");
     }
 
-    /// Back steps out of an open field first (handled in place), then exits to the Settings list —
-    /// there's no Save button; back is the implicit save.
     #[test]
     fn back_steps_out_then_exits() {
         let mut s = Settings::default();
         let mut scr = DateTimeScreen::new();
-        run(&mut scr, &mut s, Gesture::Press); // open the offset field
+        run(&mut scr, &mut s, Gesture::Press);
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::None));
         assert_eq!(scr.editing, None, "back closed the field without leaving the screen");
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::Pop), "back again exits");
     }
 
-    /// The UTC offset shifts the local time in the Local time row, not the UTC anchor.
     #[test]
     fn offset_shifts_local_time_not_utc() {
         let mut s = Settings::default();
@@ -278,8 +255,6 @@ mod tests {
         assert_eq!((s.clock.hour, s.clock.minute), (12, 0), "the stored UTC anchor did not move");
     }
 
-    /// The Local time row's date rolls with the offset across midnight, not the raw UTC date beside
-    /// an offset-shifted hour.
     #[test]
     fn local_time_date_rolls_across_midnight() {
         let mut s = Settings::default();

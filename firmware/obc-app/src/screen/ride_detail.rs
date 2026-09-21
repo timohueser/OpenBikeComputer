@@ -1,34 +1,10 @@
-//! The Ride detail (epic #678 T2 / #680) — the recorded sibling of the
-//! [Route overview](super::route_overview), opened by *press* on a Rides-list row. Top to bottom:
-//! the `RIDE` title bar with the sync state in its right slot, the ride name, a `date · time`
-//! line, the **content-paired pager** (owner review round 3 — the media band flips WITH its
-//! stats): page A the recorded track's **shape preview** (the overview's aspect-fit sketch,
-//! start disc + end diamond) over DISTANCE + RIDE TIME, page B the recorded **elevation band**
-//! (the overview's composition — tan fill under an amber top stroke, max-elevation label at the
-//! band's top-right) over AVG + CLIMBED — all stats from the
-//! [`RideSummary`](crate::ride::RideSummary), no new figures — and the guarded **Delete ride**
-//! row at the bottom.
+//! The detail page of one recorded ride. A pager flips the media band together with its stats:
+//! the track shape over DISTANCE + RIDE TIME, then the elevation band over AVG + CLIMBED. A
+//! guarded Delete ride row sits at the bottom, hidden while a ride is being recorded.
 //!
-//! The band's profile **and** the track shape come from the host: entering the screen sets
-//! [`Activity::viewed_ride`](crate::Activity::viewed_ride) (the Rides screen's press does), the
-//! host drains [`App::ride_track_request`](crate::App::ride_track_request), streams
-//! the Ride object into the app's resident ride-profile + ride-preview buffers
-//! (the keyed ride-track answer), and Back/delete clears `viewed_ride`
-//! so both invalidate on exit — filled on entry, one buffer each, never rebuilt per frame.
-//!
-//! **Delete** is the ride_control-pattern guarded row: the completed hold *is* the confirmation
-//! (its fill the live feedback), the host removes the catalog object, and the screen pops back to
-//! the refreshed Rides list. While a ride is being recorded the row is
-//! **hidden** (owner review round 1 — no greyed face): a live session owns a `RECORDING` object and
-//! it is hidden from the servable catalog, so deleting is neither meaningful nor legal then, and
-//! the `delete_enabled` guard keeps a hold a no-op regardless.
-//!
-//! Fit note (reworked in owner review round 2 — "very busy"): the four ledger rows don't fit
-//! beside a readable band, so they auto-flip as the Route overview's **two-row pager** (5 s fixed
-//! dwell, no page dots — the flip is the affordance) and the reclaimed vertical space goes back
-//! into the media band (34 → 82 px, near the overview's 90 px reference look). Round 3 paired the
-//! band with the stats: the track shape belongs to the distance/time page, the elevation band to
-//! the climb page. The ledger *text* is untouched (the locked shrink order).
+//! The shape and the profile come from the host: entry sets `Activity::viewed_ride`, the host
+//! fills the resident ride-preview and ride-profile buffers, and Back or delete clears the key,
+//! so both buffers invalidate on exit.
 
 use core::fmt::Write;
 
@@ -50,79 +26,61 @@ use crate::Msg;
 
 use super::{palette, Ctx, Render, Transition};
 
-/// The content-paired media band (track shape / elevation): the Route overview's composition,
-/// regrown near its reference height by the pager rework (owner review round 2 — see the module
-/// doc). Both pages draw in this same slot, so nothing jumps on the flip.
+/// The media band slot. Both pages draw in it, so nothing moves on the flip.
 const BAND_TOP: i32 = 96;
 const BAND_BOT: i32 = 178;
 const SIDE_MARGIN: i32 = 12;
 
-/// The stat half of the pager: two caption/value rows per page between the band and the delete row, at the
-/// overview's row pitch (the compressed 33 px pitch retired with the four-row ledger).
+/// The two stat rows of a page, between the band and the delete row.
 const ROWS_TOP: i32 = 186;
 const ROW_PITCH: i32 = 42;
 
-/// The guarded Delete-ride row at the bottom — the overview's button band footprint.
+/// The height of the guarded Delete-ride row.
 const ROW_H: i32 = 34;
 
-/// The Ride detail. State is which catalog ride it shows plus the stat pager's flip state; the
-/// delete row is the one selectable action, so there is no cursor.
 #[derive(Debug, Default)]
 pub struct RideDetailScreen {
     ride: usize,
-    /// The content-paired pager: page one is the track shape + DISTANCE + RIDE TIME, page two the
-    /// elevation band + AVG + CLIMBED.
     pager: ContentPager,
 }
 
 impl RideDetailScreen {
-    /// Open catalog ride `ride`'s detail. The caller (the Rides list's press) sets
-    /// [`Activity::viewed_ride`](crate::Activity::viewed_ride) alongside, keying the host's
-    /// track-profile fill.
+    /// The caller must also set `Activity::viewed_ride`, which keys the host's track fill.
     pub fn new(ride: usize) -> Self {
         RideDetailScreen { ride, pager: ContentPager::default() }
     }
 
-    /// Content-paired pager tick: flip the two pages on the shared dwell — the same rhythm the
-    /// Route overview reads on.
     pub fn tick_timers(&mut self, now_ms: u32) -> ScreenTick {
         self.pager.tick(now_ms)
     }
 
-    /// Re-point the shown ride after a live catalog rescan. A vanished subject becomes an
-    /// out-of-range index — the missing-ride path `draw`/`handle` already have (the empty state;
-    /// a hold does nothing).
+    /// Re-point the shown ride after a catalog rescan. A ride that vanished becomes an
+    /// out-of-range index, which `draw` and `handle` show as the empty state.
     pub(crate) fn remap_rides(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
         self.ride = remap(self.ride).unwrap_or(usize::MAX);
     }
 
-    /// Whether the Delete-ride row is **live**: the ride exists and no tracking session is
-    /// running (the old footer's "no delete while recording" rule — every delete stays legal).
+    /// The row is live only when the ride exists and no session records.
     fn delete_enabled(&self, recording: bool, len: usize) -> bool {
         len > 0 && self.ride < len && !recording
     }
 
-    /// True while the delete row would fill for the current state — so
-    /// [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) repaints a charging hold here.
+    /// True while the delete row fills for a hold, which makes the app repaint the charging hold.
     pub(crate) fn selection_is_guarded(&self, recording: bool, rides_len: usize) -> bool {
         self.delete_enabled(recording, rides_len)
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            // A completed hold over the live Delete row requests the ride's deletion — the guarded
-            // hold is the confirmation (no popup), the row's fill its live feedback. Records the
-            // delete by index; the host resolves it to the durable object id, removes the flat
-            // catalog object, and the rescan re-feeds the catalog — while this pops back to
-            // the Rides list (its remap keeps the highlight sane). A hold while recording (greyed
-            // row) does nothing.
+            // The completed hold is the confirmation. The host resolves the index to the
+            // catalog object and removes it; the list refreshes on its rescan.
             Gesture::Hold if self.delete_enabled(cx.recorder.recording(), cx.rides.len()) => {
                 cx.activity.request_ride_delete(self.ride.min(cx.rides.len() - 1));
-                cx.activity.viewed_ride = None; // leaving the page: the profile buffer invalidates
+                cx.activity.viewed_ride = None;
                 Transition::Pop
             }
             Gesture::Back => {
-                cx.activity.viewed_ride = None; // invalidate the resident ride profile on exit
+                cx.activity.viewed_ride = None;
                 Transition::Pop
             }
             _ => Transition::None,
@@ -133,51 +91,39 @@ impl RideDetailScreen {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
         let Some(ride) = rx.rides.get(self.ride).map(|entry| &entry.summary) else {
-            // The shown ride vanished in a rescan (deleted from the phone mid-view): the Rides
-            // list's own empty-state copy, Back returns to the refreshed list.
             title_frame(cv, w, h, rx.t(Msg::RideStartTitle), "");
             empty_state(cv, w, h, rx.t(Msg::RidesNoRides), rx.t(Msg::RidesNoRidesSub));
             return;
         };
         let units = rx.settings.units;
 
-        // Title bar: `RIDE` + the sync state in the right slot (Label, bar text colour).
         let sync = if ride.synced { rx.t(Msg::RideDetailSynced) } else { rx.t(Msg::RidesNotSynced) };
         title_frame(cv, w, h, rx.t(Msg::RideStartTitle), sync);
 
-        // Ride name (Body, left inset, two-dot truncation at full card width).
         let chars = ((w - 28) / Font::Body.char_width() as i32) as usize;
         let name_row = rect(14, LIST_TOP + 2, w - 28, Font::Body.line_height() as i32);
         let name = rx.marquee.fit(&ride.name, chars, Some(name_row));
         cv.text(&name, Point::new(14, LIST_TOP + 2), Font::Body, TextAlign::Left, INK);
 
-        // Date + start time on one olive Label line, e.g. `2025-07-02 · 14:12` — the list rows'
-        // date helper plus the wall clock's `HH:MM` shape, no new formats.
         let d = crate::settings::DateTime::from_unix(ride.start_time);
         let mut when: heapless::String<20> = heapless::String::new();
         let _ = write!(when, "{} · {:02}:{:02}", date_iso(ride.start_time), d.hour, d.minute);
         cv.text(&when, Point::new(14, LIST_TOP + 28), Font::Label, TextAlign::Left, SUBTEXT);
 
-        // The content-paired media band (owner review round 3): page A the recorded track's
-        // shape preview (the overview's sketch — start disc, end diamond), page B its elevation
-        // band (the overview's composition, tan fill under an amber top stroke) — both from the
-        // host-filled residents, both in the same slot so nothing jumps on the flip.
         let chart_x = SIDE_MARGIN;
         let chart_w = w - 2 * SIDE_MARGIN;
         let page_b = self.pager.on_second_page();
         if !page_b {
-            // Page A: an empty slice (the frame or two before the host's fill lands) just leaves
-            // the slot blank, like the shape preview always has.
+            // An empty preview leaves the slot blank until the host fill lands.
             super::route_overview::draw_route_preview(cv, w, BAND_TOP, BAND_BOT, rx.ride_preview);
         } else if let Some(profile) = rx.ride_profile {
-            // Page B: the shared elevation band, with its max-elevation label in the top-right
-            // corner — this band is short enough that a label over the apex would hit the stroke.
+            // The label goes in the corner: the band is too short for a label over the apex.
             let band = ElevationBand::whole_route(profile, rect(chart_x, BAND_TOP, chart_w, BAND_BOT - BAND_TOP + 1));
             band.fill(cv, PARCHMENT_SHADE);
             band.stroke(cv, AMBER);
             band.peak_label(cv, units, PeakLabel::TopRight);
         } else {
-            // Track still streaming in: keep the band's footprint so the page doesn't jump.
+            // The track still streams in. Keep the band footprint so the page does not jump.
             cv.text(
                 rx.t(Msg::RouteOverviewLoadingProfile),
                 Point::new(w / 2, (BAND_TOP + BAND_BOT) / 2 - 9),
@@ -186,11 +132,9 @@ impl RideDetailScreen {
                 SUBTEXT,
             );
         }
-        cv.hline(chart_x, BAND_BOT + 1, chart_w, RULE); // baseline marks the band slot on both pages
+        cv.hline(chart_x, BAND_BOT + 1, chart_w, RULE);
 
-        // The stat half of the pager — everything from the RideSummary, no new stats. AVG is the
-        // Statistics AVG tile's quotient (moving distance over moving time, here the stored
-        // totals) and its caption (`AVG ` + the unit label); `--` before any moving time.
+        // AVG is the stored distance over the stored moving time, and `--` before any moving time.
         let mut dist: heapless::String<8> = heapless::String::new();
         let _ = write!(dist, "{:.1}", units.dist(ride.distance_m as f32 / 1000.0));
         let dist_unit = if units.is_imperial() { "mi" } else { "km" };
@@ -211,11 +155,6 @@ impl RideDetailScreen {
         let mut climb: heapless::String<8> = heapless::String::new();
         let _ = write!(climb, "{}", (units.elev(ride.climb_m as f32) + 0.5) as u32);
 
-        // Two rows per page, auto-flipped every 5 s with the media band above (owner review
-        // rounds 2 + 3: the Route overview's pager mechanics — the flip itself is the affordance,
-        // no page dots), with the overview's hairline rule between a page's two rows. The stats
-        // pair with their media: DISTANCE + RIDE TIME belong to the track shape, AVG + CLIMBED to
-        // the elevation band.
         let entries: [(&str, &str, &str, Option<bool>); 4] = [
             (rx.t(Msg::RideControlDistance), &dist, dist_unit, None),
             (rx.t(Msg::RideControlRideTime), &time, "", None),
@@ -232,10 +171,6 @@ impl RideDetailScreen {
             }
         }
 
-        // The guarded Delete-ride row at the bottom (the ride_control pattern): its shaded base
-        // fills warning-red with the live hold. While a ride is being recorded the row is simply
-        // **not drawn** — no dim trash, no `Recording` cue (owner review round 1: the state can't
-        // act, so it doesn't show) — and the `delete_enabled` guard keeps a hold a no-op regardless.
         if self.delete_enabled(rx.recording, rx.rides.len()) {
             let row_y = h - 10 - ROW_H;
             let geo = GuardedRowsGeometry::panel(w, row_y, ROW_H, 0);
@@ -282,8 +217,6 @@ mod tests {
         scr.handle(g, &mut cx)
     }
 
-    /// A completed hold over the live Delete row records the delete, invalidates the profile key,
-    /// and pops back to the Rides list.
     #[test]
     fn hold_deletes_and_returns_to_the_list() {
         let mut rec = crate::RecorderMachine::new();
@@ -297,14 +230,12 @@ mod tests {
         assert_eq!(act.viewed_ride, None, "leaving the page invalidates the profile buffer");
     }
 
-    /// The row is disabled — a hold does nothing — while a ride is being recorded; ending the
-    /// session re-arms it.
     #[test]
     fn hold_is_a_no_op_while_recording() {
         let mut rec = crate::RecorderMachine::new();
         let rides = [summary("A")];
         let mut act = Activity::new(Mode::Riding);
-        rec.test_open(); // now tracking
+        rec.test_open();
         act.viewed_ride = Some(0);
         let mut scr = RideDetailScreen::new(0);
         assert!(!scr.selection_is_guarded(rec.recording(), rides.len()), "the row is hidden while recording");
@@ -317,7 +248,6 @@ mod tests {
         assert!(scr.selection_is_guarded(rec.recording(), rides.len()), "ending the ride re-arms the row");
     }
 
-    /// Back pops and clears `viewed_ride`, so the resident ride profile invalidates on exit.
     #[test]
     fn back_pops_and_invalidates_the_profile_key() {
         let mut rec = crate::RecorderMachine::new();
@@ -330,9 +260,6 @@ mod tests {
         assert_eq!(act.viewed_ride, None);
     }
 
-    /// The page the pager selects is the page the content is paired with: the shape/DISTANCE page
-    /// first, the elevation/CLIMBED page after a dwell. The flip timing itself is the shared
-    /// pager's (`vocab::pager`); what this pins is that this screen delegates it and reads it back.
     #[test]
     fn the_pager_drives_this_screen_s_paired_pages() {
         use super::super::vocab::pager::PAGE_FLIP_MS;
@@ -343,7 +270,6 @@ mod tests {
         assert!(scr.pager.on_second_page(), "now on the AVG + CLIMBED page");
     }
 
-    /// A vanished subject (out-of-range after a rescan) offers no delete.
     #[test]
     fn vanished_ride_has_no_delete() {
         let mut rec = crate::RecorderMachine::new();

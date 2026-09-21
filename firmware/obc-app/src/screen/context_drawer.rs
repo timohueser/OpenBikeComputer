@@ -1,44 +1,20 @@
-//! The **contextual drawer** (#1515 D3/D4): the bottom sheet the Down+Back chord opens on a screen
-//! that declares secondary actions, and the declarative model those screens declare them with.
+//! The contextual drawer: the bottom sheet the Down+Back chord opens on a screen that declares
+//! secondary actions, and the declarative model those screens declare them with.
 //!
-//! ## Data, not behaviour
+//! A screen does not implement a drawer. It names one: a `&'static` [`ContextMenu`] returned from
+//! [`Screen::context`](super::Screen::context). Everything else lives here — the cursor, which rows
+//! are inert, what a press resolves to, how the sheet is drawn and how it animates. A screen that
+//! declares nothing gets no drawer, and the chord does nothing on it.
 //!
-//! A screen does not implement a drawer. It names one — a `&'static` [`ContextMenu`], returned from
-//! [`Screen::context`](super::Screen::context) in the same partial-match idiom as
-//! the Assistant runtime. Everything else lives here: the cursor,
-//! which rows are inert, what a press resolves to, how the sheet is drawn and how it animates. A
-//! screen that declares nothing gets no drawer, and the chord does nothing on it.
-//!
-//! That is what keeps the grammar one grammar. The compass ride menu this replaced was a *screen*,
-//! so every station it offered was a line of navigation code on a page nothing else shared; here the
-//! four ride actions are four rows of a table and the sheet that draws them is the same sheet every
-//! later context gets.
-//!
-//! ## A row is a door, a value, an act or a switch
-//!
-//! Four shapes, and the sheet has no fifth.
-//!
-//! A **door** replaces the sheet with what it opens — a screen, or (D4c) a shorter sheet.
-//!
-//! A **value** binds to a [`ContextValue`] and slides the sheet to a nested editor: Up/Down stages,
-//! Select commits, Back discards, and the choice already committed stays marked while the rider
-//! browses. The editor is generic — a binding says *where the value lives*, how many choices it has
-//! and what each is called, and the drawer does the rest. That is what makes "the drawer is the only
-//! home for a contextual setting" affordable: a context joins by naming a table, not by growing a
-//! page.
-//!
-//! A binding's choices need not be a fixed list: [`ContextValue::BikeProfile`] (#1515 D4d) counts
-//! and names the **loaded map's** §8.6 routing profiles, so how many choices it has and whether its
-//! row is live at all are read off [`ContextFacts`] like everything else a row draws.
-//!
-//! An **act** tells a domain something and leaves the sheet. It has to leave: a sheet's own frame
-//! shadows every base fact (see [`ContextDrawerScreen::key`]), so a cue raised from an open sheet
-//! could not be seen until it closed anyway.
-//!
-//! A **switch** ([`ContextToggle`]) flips a `bool` in place and keeps the sheet up. It is the one
-//! shape whose effect is *also* hidden behind the frozen base and that still stays — because the row
-//! draws its own state, so the control is legible while the sheet is up, and the rider sets a whole
-//! group of them for one repaint of the screen underneath.
+//! A row is a door, a value, an act or a switch, and the sheet has no fifth shape. A door replaces
+//! the sheet with what it opens: a screen, or a shorter sheet. A value binds to a [`ContextValue`]
+//! and slides the sheet to a nested editor, where Up/Down stages, Select commits and Back discards;
+//! a binding's choices can be map data rather than a fixed list. An act tells a domain something
+//! and leaves the sheet — it has to leave, because a sheet's own frame shadows every base fact (see
+//! [`ContextDrawerScreen::key`]), so a cue raised from an open sheet could not be seen until it
+//! closed. A switch ([`ContextToggle`]) flips a `bool` in place and keeps the sheet up, because the
+//! row draws its own state, so the control stays legible and the rider sets a whole group of them
+//! for one repaint of the screen underneath.
 
 use embedded_graphics::prelude::Point;
 use obc_reader::{PoiCategory, PoiCategorySet};
@@ -56,24 +32,14 @@ use crate::{AppState, Msg, Settings};
 use super::vocab::{rows, sheet};
 use super::{palette, Ctx, DetourScreen, Render, RouteMenuScreen, Screen, ScreenTick, Transition};
 
-/// How long the sheet takes to slide up from the bottom edge on open (ms).
-///
-/// **The one knob this sheet's open feel hangs on** (#1559), and deliberately its own rather than
-/// the quick drawer's: the two sheets are tuned on glass one at a time. 220 ms landed in about four
-/// visible steps and read as lag rather than as motion; this is the owner's "start at about twice
-/// that", a default to iterate on, not a measurement.
+/// How long the sheet takes to slide up from the bottom edge on open (ms). Deliberately its own
+/// constant rather than the quick drawer's: the two sheets are tuned on glass one at a time.
 const OPEN_MS: u32 = 440;
 /// How long a nested editor takes to slide in, and the sheet to grow into its height (ms).
 const SLIDE_MS: u32 = 180;
 /// How long one step of the open costs the panel, and therefore the cadence the sheet asks to be
-/// woken at (ms).
-///
-/// Measured on the LS021B7DD02, release build (#1559 bench rounds 1 and 2): **8.4 ms** of
-/// whole-frame row hash per present plus **0.137 ms per pushed row**, and about **12 ms** to draw
-/// the sheet. This is the taller of the two sheets — a four-row table is 200 px against the quick
-/// drawer's 104 px root — so its deepest step costs 8.4 + 27.4 + 12 ≈ 48 ms. That is the step; the
-/// 16 ms token it replaces asked for three steps in the time one takes. [`OPEN_MS`] divided by this
-/// is 9 steps, which is why the two sheets keep their own numbers rather than sharing one.
+/// woken at (ms). This is the taller of the two sheets, so its deepest step costs more than the
+/// quick drawer's and the two keep their own numbers.
 const STEP_MS: u32 = 48;
 
 /// One row's height, and the padding above the first row / below the last.
@@ -81,71 +47,60 @@ const ROW_H: i32 = 44;
 const SHEET_PAD: i32 = 12;
 
 /// The nested value editor's sheet height: one title line, the staged choice, and the notch strip
-/// whose tick marks the committed one. Fixed, because every binding draws the same three things —
-/// and tall enough that the tick sits *inside* the sheet rather than on its bottom lip.
+/// whose tick marks the committed one. Fixed, because every binding draws the same three things,
+/// and tall enough that the tick sits inside the sheet rather than on its bottom lip.
 const EDITOR_H: i32 = 148;
 
-/// The tallest a sheet may grow before it stops being a sheet: 244 px of the 320 px panel, leaving
-/// 76 px of the screen underneath. #1515 asks a drawer to stay attached to its edge and use only the
-/// height its content needs, and to prefer a bounded scrolling sheet over quietly becoming a page.
+/// The tallest a sheet may grow before it stops being a sheet: 244 px of the 320 px panel. A drawer
+/// stays attached to its edge, uses only the height its content needs, and scrolls within a bounded
+/// sheet rather than becoming a page.
 const MAX_SHEET_H: i32 = 244;
 
 /// At most five rows are visible; longer category menus scroll within the sheet.
 const VISIBLE_ROWS: usize = ((MAX_SHEET_H - SHEET_PAD * 2) / ROW_H) as usize;
 const MAX_ROWS: usize = 8;
 
-// ---- The declarative model ------------------------------------------------------------------
-
-/// What a context row reads about the **base under the sheet**: whether it may be pressed, and what
+/// What a context row reads about the base under the sheet: whether it may be pressed, and what
 /// the value it binds to currently is.
 ///
 /// Gathered once by [`App::render_key`](crate::App) and once per press, from [`Ctx`] and
-/// [`Render`] alike — so the row the rider sees, the row a press resolves and the row the render
-/// key reports can never read three different worlds. This is the one definition of a row's inputs;
-/// D3 threaded three loose arguments and the Detour row's fourth condition went missing between two
-/// of them.
+/// [`Render`] alike, so the row the rider sees, the row a press resolves and the row the render key
+/// reports cannot read three different worlds.
 pub(crate) struct ContextFacts<'a> {
     pub state: &'a AppState,
     pub navigation: &'a RouteState,
     pub settings: &'a Settings,
-    /// Whether a ride is open — the level [`RecorderMachine`](crate::RecorderMachine) reports, not
-    /// a copy of it.
+    /// Whether a ride is open, at the level [`RecorderMachine`](crate::RecorderMachine) reports.
     pub recording: bool,
 
-    /// The loaded map's routing-profile names — how many choices the bike-type binding has, and
-    /// therefore whether its row is live at all. Read, never written.
+    /// The loaded map's routing-profile names: how many choices the bike-type binding has, and
+    /// therefore whether its row is live at all.
     pub nav_profiles: &'a crate::NavProfiles,
 }
 
-/// A typed value a context row edits in place of opening a screen. The binding owns **where the
-/// value lives**, how many choices it has and what each one is called; the drawer owns the page,
-/// the staging, the commit and the drawing.
+/// A typed value a context row edits in place of opening a screen. The binding owns where the
+/// value lives, how many choices it has and what each one is called; the drawer owns the page, the
+/// staging, the commit and the drawing.
 ///
 /// Choices are addressed by ordinal, which is also what the render key carries — so "the staged
 /// value" is one `u8` for every binding there will ever be.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ContextValue {
-    /// The Up-ahead timeline's **category filter**: Everything, then the six §7.4 categories.
-    ///
-    /// Rider selection state, so it lives in [`AppState`] rather than
-    /// in [`Settings`]: the list opens on Everything every time (epic #946, U3 — predictable beats
-    /// sticky), and a value that is reset on entry is not a preference. It sits in the app plane
-    /// rather than on [`WhatsNextScreen`](super::WhatsNextScreen) because the sheet that edits it is *above* that screen on
-    /// the stack, so it belongs to neither of the two and to the pair.
+    /// The Up-ahead timeline's category filter: Everything, then the six categories. Rider
+    /// selection state, so it lives in [`AppState`] rather than in [`Settings`]: the list opens on
+    /// Everything every time, and a value that is reset on entry is not a preference. It sits in
+    /// the app plane because the sheet that edits it is above the screen that reads it.
     UpAheadFilter,
-    /// Which sources feed the Up-ahead timeline — [`Settings::up_ahead_source`], the persisted
-    /// preference whose second home in central Ride settings this slice deletes. The commit writes
-    /// the field; [`App`](crate::App)'s one `==` diff over `Settings` is what arms the save, exactly
-    /// as it does for a settings screen's edit.
+    /// Which sources feed the Up-ahead timeline. The commit writes
+    /// [`Settings::up_ahead_source`](crate::Settings), and [`App`](crate::App)'s one `==` diff over
+    /// `Settings` arms the save.
     UpAheadSource,
     FindResults,
 
-    /// The routing profile the on-device planner weights edges by —
-    /// [`Settings::bike_profile_idx`](crate::Settings), whose whole settings *screen* this slice
-    /// deletes (#1515 D4d). The **first binding whose choices are map data**: they are the loaded
-    /// map's §8.6 profile names ([`NavProfiles`](crate::NavProfiles)), so a custom web-builder
-    /// profile appears without a hardcoded list — and a map that offers no choice makes the row
-    /// inert rather than a control that walks a ring of one.
+    /// The routing profile the on-device planner weights edges by. Its choices are the loaded map's
+    /// own profile names ([`NavProfiles`](crate::NavProfiles)), so a custom web-builder profile
+    /// appears without a hardcoded list, and a map that offers no choice makes the row inert rather
+    /// than a control that walks a ring of one.
     BikeProfile,
 }
 
@@ -159,20 +114,15 @@ impl ContextValue {
             ContextValue::UpAheadSource => UpAheadSource::COUNT as u8,
             ContextValue::FindResults => crate::settings::FindResults::COUNT as u8,
 
-            // At most `NAV_MAX_PROFILES` (8), which is also the notch strip's own ceiling.
+            // At most `NAV_MAX_PROFILES`, which is also the notch strip's own ceiling.
             ContextValue::BikeProfile => f.nav_profiles.len() as u8,
         }
     }
 
-    /// Whether the row that binds this may be pressed. Stated as a predicate rather than left
-    /// implicit so the one-predicate rule has something to hold: the row is live exactly when the
-    /// binding accepts.
-    ///
-    /// Three of the four always accept — a filter is as meaningful over an empty list as over a
-    /// full one (it is how the rider finds out the list is empty *of that kind*), and a source
-    /// scope or a refresh cadence is a preference no ride state can invalidate. The bike profile
-    /// needs a map that offers a choice: this is the deleted Bike-type screen's own `count > 1`
-    /// guard, which it expressed as a silent no-op on an empty-state page.
+    /// Whether the row that binds this may be pressed: the row is live exactly when the binding
+    /// accepts. A filter is as meaningful over an empty list as over a full one, and a source scope
+    /// is a preference no ride state can invalidate, so only the bike profile ever refuses — it
+    /// needs a map that offers more than one profile.
     fn accepts(self, f: &ContextFacts) -> bool {
         match self {
             ContextValue::UpAheadFilter | ContextValue::UpAheadSource | ContextValue::FindResults => true,
@@ -188,9 +138,8 @@ impl ContextValue {
             ContextValue::UpAheadSource => f.settings.up_ahead_source as u8,
             ContextValue::FindResults => f.settings.find_results as u8,
 
-            // The **effective** index, not the stored one: a stale index against a smaller map
-            // opens on profile 0 and marks profile 0, which is the profile the router will actually
-            // use (routing-v2 N3). The #538 truthful-label rule.
+            // The effective index, not the stored one: a stale index against a smaller map opens
+            // on profile 0 and marks profile 0, which is the profile the router will use.
             ContextValue::BikeProfile => f.nav_profiles.effective(f.settings.bike_profile_idx),
         }
     }
@@ -204,15 +153,15 @@ impl ContextValue {
                 cx.settings.up_ahead_source = UpAheadSource::ALL[(ordinal as usize).min(UpAheadSource::COUNT - 1)]
             }
 
-            // The ordinal came from the editor's ring, which is `count` long, so it is already an
-            // index the loaded map has.
+            // The ordinal came from the editor's ring, which is `count` long, so the loaded map
+            // already has it.
             ContextValue::BikeProfile => cx.settings.bike_profile_idx = ordinal,
         }
     }
 
-    /// What `ordinal` is called, in the rider's language — or, for the bike profile, in the map's
+    /// What `ordinal` is called, in the rider's language, or, for the bike profile, in the map's
     /// own words. The borrow is `rx`'s because those names live in
-    /// [`NavProfiles`](crate::NavProfiles) rather than in `.rodata`; every catalog arm coerces.
+    /// [`NavProfiles`](crate::NavProfiles) rather than in `.rodata`.
     fn choice_label<'a>(self, ordinal: u8, rx: &'a Render) -> &'a str {
         match self {
             ContextValue::UpAheadFilter => match choice_category(ordinal) {
@@ -223,9 +172,8 @@ impl ContextValue {
                 UpAheadSource::ALL[(ordinal as usize).min(UpAheadSource::COUNT - 1)].name(rx.settings.language)
             }
 
-            // The deleted screen's own name resolution. `write_label`'s generic `Profile N`
-            // fallback is deliberately not used: it exists for an empty table, and an empty table
-            // makes this row inert, so it has no reachable case in the sheet.
+            // The generic `Profile N` fallback is deliberately not used: it exists for an empty
+            // table, and an empty table makes this row inert, so it has no reachable case here.
             ContextValue::BikeProfile => rx.nav_profiles.name(ordinal).unwrap_or(""),
             ContextValue::FindResults => crate::settings::FindResults::from_byte(ordinal).name(),
         }
@@ -242,20 +190,16 @@ impl ContextValue {
     }
 }
 
-/// A `bool` a context row flips **in place** — the switch shape. The binding owns *where the bit
-/// lives*; the drawer owns the row, the slider it draws and what a press does.
-///
-/// These preferences are device-only. The settings diff schedules persistence after a flip.
+/// A `bool` a context row flips in place. The binding owns where the bit lives; the drawer owns the
+/// row, the slider it draws and what a press does.
 #[allow(clippy::enum_variant_names)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ContextToggle {
-    /// [`Settings::map_clock`] — the map's `HH:MM` pill.
+    /// The map's `HH:MM` pill.
     MapClock,
-    /// [`Settings::map_scale_bar`] — the map's bottom-left scale bar.
+    /// The map's bottom-left scale bar.
     MapScaleBar,
-    /// [`Settings::map_contours`] — the map's terrain layer. **Provisional** (elevation EL10c,
-    /// #1096): it exists so #1097's ride review can A/B contours on the same ride, and it goes with
-    /// that review's verdict — the row migrated here, it was not retired.
+    /// The map's terrain layer.
     MapContours,
     FindHideClosed,
     MapPeaks,
@@ -280,9 +224,9 @@ impl ContextToggle {
         }
     }
 
-    /// Flip it. [`App`](crate::App)'s one `==` diff over [`Settings`] is what turns the write into a
-    /// save, exactly as it does for a settings screen's edit — and a later flip supersedes an
-    /// in-flight older revision, so three of them cannot queue three competing writes.
+    /// Flip it. [`App`](crate::App)'s one `==` diff over [`Settings`] turns the write into a save,
+    /// and a later flip supersedes an in-flight older revision, so three of them cannot queue three
+    /// competing writes.
     fn flip(self, cx: &mut Ctx) {
         match self {
             ContextToggle::MapPeaks => cx.settings.map_peaks = !cx.settings.map_peaks,
@@ -320,9 +264,9 @@ fn filter_choice(filter: PoiCategorySet) -> u8 {
     PoiCategory::ALL.iter().position(|c| filter == PoiCategorySet::only(*c)).map_or(0, |i| i as u8 + 1)
 }
 
-/// What pressing a context row does — a **destination or a binding**, not a closure. The drawer
+/// What pressing a context row does: a destination or a binding, not a closure. The drawer
 /// resolves it against the live [`Ctx`] at press time, which is what lets the table be `&'static`
-/// and lets one table serve four screens whose activity state differs.
+/// and lets one table serve several screens whose activity state differs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ContextAction {
     LandmarkSources,
@@ -330,34 +274,32 @@ pub enum ContextAction {
     ResumeJourney,
     /// The merged waypoint + corridor-POI timeline, anchored on live progress at entry.
     Assistant,
-    /// The rejoin chooser (#882). Inert without a route, a nav graph and an on-route rider.
+    /// The rejoin chooser. Inert without a route, a nav graph and an on-route rider.
     Detour,
-    /// The POIs browser's category list.
-    /// The stored-route / trip menu.
+    /// The stored-route and trip menu.
     Routes,
     /// A value the sheet edits on a nested page instead of a screen it opens.
     Edit(ContextValue),
 
-    /// **The map's display modifiers** (#1515 D4c) — a door onto [`MAP_DISPLAY`], which is a sheet
-    /// rather than a screen. The only row that replaces a sheet with a sheet, and the shape the map
-    /// forced: a nested *sliding* page over a map costs a map render per frame of the slide, while
-    /// a swap costs exactly one. See [`ContextDrawerScreen::swapped_in`].
+    /// A door onto [`MAP_DISPLAY`], which is a sheet rather than a screen. The only row that
+    /// replaces a sheet with a sheet, and the shape the map forced: a nested sliding page over a
+    /// map costs a map render per frame of the slide, while a swap costs exactly one.
     MapDisplay,
     MapIcons,
     MapPoiCategories,
-    /// A `bool` the row flips **in place**: the sheet stays up, the row's own slider is the
-    /// feedback, and the screen underneath is redrawn once, when the sheet closes — so setting all
-    /// three map modifiers costs one map render, not three.
+    /// A `bool` the row flips in place: the sheet stays up, the row's own slider is the feedback,
+    /// and the screen underneath is redrawn once, when the sheet closes, so setting every map
+    /// modifier costs one map render.
     Toggle(ContextToggle),
 }
 
 impl ContextAction {
     /// Whether the row can be pressed right now. An unavailable row draws recessed and does
-    /// nothing — the drawer's dim means *inert*, unlike the compass dial's, which dimmed stations
-    /// a press still opened.
-    /// **The row and its destination read one predicate.** For Detour that is
+    /// nothing.
+    ///
+    /// The row and its destination read one predicate. For Detour that is
     /// [`detour::reachable`](super::detour::reachable), which the chooser's own availability check
-    /// is built from — so a row can never be an enabled door onto an inert screen. For a value row
+    /// is built from, so a row can never be an enabled door onto an inert screen. For a value row
     /// it is [`ContextValue::accepts`], the same answer the commit obeys.
     fn available(self, f: &ContextFacts) -> bool {
         match self {
@@ -366,15 +308,13 @@ impl ContextAction {
             // The timeline opens on its own empty state without a route, which is informative
             // rather than dead, so it is always live.
             ContextAction::Assistant | ContextAction::Routes => true,
-            // #882: a detour needs a recorded ride to re-route, a route to leave, a graph to route
-            // on, and a rider on the route (the corridor anchors on live progress, which off-route
-            // freezes).
+            // A detour needs a recorded ride to re-route, a route to leave, a graph to route on,
+            // and a rider on the route, because the corridor anchors on live progress.
             ContextAction::Detour => super::detour::reachable(f.navigation, f.recording, f.state.has_nav_graph),
             ContextAction::Edit(v) => v.accepts(f),
 
             // A display modifier is a preference no ride state can invalidate, and the door onto
-            // them is as live as they are. Stated rather than left implicit, so the one-predicate
-            // rule has something to hold here too.
+            // them is as live as they are.
             ContextAction::MapDisplay
             | ContextAction::MapIcons
             | ContextAction::MapPoiCategories
@@ -435,9 +375,7 @@ pub struct ContextMenu {
     pub rows: &'static [ContextRow],
 }
 
-/// The **ride context**: the secondary actions the four riding views share (Map, Statistics,
-/// Climb, Ride control). It is the compass ride menu's row inventory minus its *Main menu* station,
-/// which the global Back-hold escape now serves from everywhere instead of from one screen.
+/// The ride context: the secondary actions the four riding views share.
 pub static RIDE: ContextMenu = ContextMenu {
     rows: &[
         ContextRow { label: Msg::AssistantTitle, action: ContextAction::Assistant },
@@ -446,10 +384,9 @@ pub static RIDE: ContextMenu = ContextMenu {
     ],
 };
 
-/// The **map context** (#1515 D4c): the ride's four secondary actions, in the order every riding
-/// view offers them, plus the one row only the Map has a referent for — its display modifiers.
-/// Rows 0-3 are [`RIDE`]'s, unchanged and pinned equal by test, so a rider who squeezes on the Map
-/// and a rider who squeezes on Statistics reach the same actions by the same steps.
+/// The map context: the ride's secondary actions, in the order every riding view offers them, plus
+/// the one row only the Map has a referent for. Its first rows are [`RIDE`]'s, pinned equal by
+/// test, so a rider reaches the same actions by the same steps from either screen.
 pub static MAP: ContextMenu = ContextMenu {
     rows: &[
         ContextRow { label: Msg::AssistantTitle, action: ContextAction::Assistant },
@@ -459,9 +396,6 @@ pub static MAP: ContextMenu = ContextMenu {
     ],
 };
 
-/// The **map display sheet** (#1515 D4c): the three switches that change nothing but what the Map
-/// draws. The only home any of them has — before this they were three rows two levels inside the
-/// central Settings tree, on a page the rider could only reach by leaving the map.
 pub static FIND_PLACE: ContextMenu = ContextMenu {
     rows: &[
         ContextRow { label: Msg::FindContextHideClosed, action: ContextAction::Toggle(ContextToggle::FindHideClosed) },
@@ -469,6 +403,8 @@ pub static FIND_PLACE: ContextMenu = ContextMenu {
     ],
 };
 
+/// The map display sheet: the switches that change nothing but what the Map draws, and the only
+/// home any of them has.
 pub static MAP_DISPLAY: ContextMenu = ContextMenu {
     rows: &[
         ContextRow { label: Msg::MapContextClock, action: ContextAction::Toggle(ContextToggle::MapClock) },
@@ -526,10 +462,8 @@ pub(crate) static ASSISTANT_RESUME: ContextMenu =
 pub static ASSISTANT_VISIT: ContextMenu =
     ContextMenu { rows: &[ContextRow { label: Msg::AssistantCurrentVisit, action: ContextAction::CurrentVisit }] };
 
-/// The **Up-ahead context** (#1515 D4a): the two controls that scope the timeline, and the only
-/// home either of them has. *Filter* is the category picker the list's Select-hold used to open —
-/// a hold is a local action on a focused object, never the generic way into a menu — and *Sources*
-/// is the scope the Ride settings screen used to cycle.
+/// The Up-ahead context: the two controls that scope the timeline, and the only home either of
+/// them has.
 pub static UP_AHEAD: ContextMenu = ContextMenu {
     rows: &[
         ContextRow { label: Msg::RideContextFilter, action: ContextAction::Edit(ContextValue::UpAheadFilter) },
@@ -537,18 +471,15 @@ pub static UP_AHEAD: ContextMenu = ContextMenu {
     ],
 };
 
-/// The **route-plan context** (#1515 D4d): the profile the on-device planner will weight edges by,
-/// offered on the card that is about to ask for a plan — and the only home it has. One row, because
-/// there is one thing to say: `NavPlanner::new` takes the profile and nothing else, so a second
-/// "route options" row would be a label bound to nothing.
+/// The route-plan context: the profile the on-device planner will weight edges by, offered on the
+/// card that is about to ask for a plan. One row, because `NavPlanner::new` takes the profile and
+/// nothing else, so a second "route options" row would be a label bound to nothing.
 pub static ROUTE_PLAN: ContextMenu = ContextMenu {
     rows: &[ContextRow { label: Msg::RouteContextBikeType, action: ContextAction::Edit(ContextValue::BikeProfile) }],
 };
 
-// ---- The generic drawer ------------------------------------------------------------------------
-
 /// The sheet's two pages. The value being edited is the selected row's, so the page needs no
-/// payload — which is also why the render key's `page` byte says everything about where the rider is.
+/// payload, which is why the render key's `page` byte says everything about where the rider is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Page {
     Root,
@@ -569,16 +500,14 @@ impl Page {
 /// The contextual drawer's whole state: when it opened, the table it was opened over, the cursor,
 /// the page, and the ordinal the editor has staged but not committed.
 pub struct ContextDrawerScreen {
-    /// When the open slide started — the clock of the **first frame that could draw the sheet**,
-    /// and `None` until one has.
+    /// When the open slide started: the clock of the first frame that could draw the sheet, and
+    /// `None` until one has.
     ///
-    /// The sheet is not handed a clock when it is built, and that is the fix for #1569. A chord is
-    /// resolved *above* the pass, before the pass sets its `now_ms`, so a sheet stamped at
-    /// construction carries the clock of the pass **before** the squeeze. On a host whose frames
-    /// gap — the board's Map sleeps until something happens — that is seconds old, the first frame
-    /// computes an elapsed far past [`OPEN_MS`], and the sheet is drawn already landed: the open
-    /// cuts. Starting the clock on the first tick makes the open begin where it can first be seen,
-    /// on every host and with no host having to say anything.
+    /// A chord is resolved above the pass, before the pass sets its `now_ms`, so a sheet stamped at
+    /// construction would carry the clock of the pass before the squeeze. On a host whose frames
+    /// gap that is seconds old, the first frame computes an elapsed far past [`OPEN_MS`], and the
+    /// sheet is drawn already landed. Starting the clock on the first tick makes the open begin
+    /// where it can first be seen.
     opened_ms: Option<u32>,
     menu: &'static ContextMenu,
     /// When the page transition in flight started, or `None` when none is.
@@ -589,14 +518,10 @@ pub struct ContextDrawerScreen {
     /// every reader falls back to the committed value, which is what makes Back-discards free.
     staged: u8,
     /// How much of the sheet the last reported tick put on the panel, in device pixels; `-1` before
-    /// the first one.
-    ///
-    /// It is what makes the open **motion** rather than a cut (#1559). A step that would redraw the
-    /// sheet where it already stands is not reported at all — the bench measured whole renders
-    /// pushing zero rows — and the frame the sheet lands on is reported exactly when it moves the
-    /// sheet, which is what the old `landed` edge was approximating.
+    /// the first one. It is what makes the open motion rather than a cut: a step that would redraw
+    /// the sheet where it already stands is not reported at all.
     shown_h: i16,
-    /// The draw of the screen below that this sheet **owes** — see [`needs_base`](Self::needs_base).
+    /// The draw of the screen below that this sheet owes — see [`needs_base`](Self::needs_base).
     needs_base: bool,
 }
 
@@ -617,15 +542,13 @@ impl ContextDrawerScreen {
         }
     }
 
-    /// A drawer over `menu` that is **already landed** — the sheet a row of another sheet swapped in
-    /// (#1515 D4c). A sheet that is on the panel does not make an entrance, and re-running a 440 ms
-    /// open to change tables would read as a stutter, so the open's clock is stamped as spent: the
-    /// frame the press produced draws the new table at full height.
+    /// A drawer over `menu` that is already landed: the sheet a row of another sheet swapped in. A
+    /// sheet that is on the panel does not make an entrance, and re-running the open to change
+    /// tables would read as a stutter, so the open's clock is stamped as spent.
     ///
-    /// The sheet owes the screen below one draw from here: the incoming sheet is shorter than the
-    /// one it replaced, so it gives back a band still holding the old sheet's ink. The debt is
-    /// armed here rather than left to the first tick, which would be one frame late — the same
-    /// reason [`slide_to`](Self::slide_to) arms it eagerly — and it stands until a frame pays it.
+    /// The sheet owes the screen below one draw from here, because the incoming sheet is shorter
+    /// than the one it replaced and gives back a band still holding the old sheet's ink. The debt
+    /// is armed here rather than at the first tick, which would be one frame late.
     pub fn swapped_in(menu: &'static ContextMenu, now_ms: u32) -> Self {
         ContextDrawerScreen {
             opened_ms: Some(now_ms.wrapping_sub(OPEN_MS)),
@@ -635,14 +558,12 @@ impl ContextDrawerScreen {
     }
 
     /// The exact facts this drawer draws, for the pass's render key: the page, the selected row,
-    /// the staged and committed values of the row's binding, and which rows are live. The identity
-    /// of the sheet itself is the stack shape, which the key already carries.
+    /// the staged and committed values of the row's binding, and which rows are live. The sheet's
+    /// own identity is the stack shape, which the key already carries.
     ///
-    /// Availability and the committed value are derived from the *base* — the open ride, the route,
-    /// the graph, the settings row — and are therefore the only things under an open sheet that may
-    /// still move a pixel, exactly as the quick drawer's committed brightness is. They are the cue,
-    /// not the values behind them, so a rider drifting off route re-draws the sheet once and a
-    /// moving map still costs nothing.
+    /// Availability and the committed value are derived from the base, so they are the only things
+    /// under an open sheet that may still move a pixel. They are the cue, not the values behind
+    /// them, so a rider drifting off route re-draws the sheet once and a moving map costs nothing.
     pub(crate) fn key(&self, f: &ContextFacts) -> (u8, u8, u8, u8, u8) {
         let mut live = 0u8;
         for (i, row) in self.menu.rows.iter().enumerate().take(MAX_ROWS) {
@@ -650,8 +571,8 @@ impl ContextDrawerScreen {
                 live |= 1 << i;
             }
         }
-        // A value row reports its committed ordinal; a switch row reports its bit. Both are "what
-        // the selected row is set to", which is the only per-row state either shape draws.
+        // Both answers are "what the selected row is set to", the only per-row state either shape
+        // draws.
         let committed = match self.menu.rows.get(self.selected as usize).map(|r| r.action) {
             Some(ContextAction::Edit(v)) => v.committed(f),
             Some(ContextAction::Toggle(t)) => t.read(f) as u8,
@@ -670,8 +591,7 @@ impl ContextDrawerScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         // A page transition owns the input while it runs: acting on a half-drawn page would let a
-        // fast double-press land on a row the rider cannot see yet. Asked, never retired — see
-        // [`slide_running`](Self::slide_running).
+        // fast double-press land on a row the rider cannot see yet.
         if self.slide_running(cx.now_ms) {
             return Transition::None;
         }
@@ -681,15 +601,13 @@ impl ContextDrawerScreen {
         }
     }
 
-    /// Whether a page slide is still in flight at `now_ms` — the input gate's question, asked
-    /// without answering the tick's (#1515 D5).
+    /// Whether a page slide is still in flight at `now_ms`: the input gate's question, asked
+    /// without answering the tick's.
     ///
     /// Retiring a slide is [`settle`](Self::settle)'s edge, and that edge is what
     /// [`tick_timers`](Self::tick_timers) reads to arm the base draw the settling frame owes. Input
-    /// runs first in a pass, so a gesture landing at or after the slide's end used to retire the
-    /// slide silently and leave the tick nothing to read: the sheet kept its two pages' ink in the
-    /// margin either side of it, or — with no render key moved — asked for no repaint at all and
-    /// stayed half-slid. The gate is a pure read, so the gesture is accepted exactly as before.
+    /// runs first in a pass, so this gate must stay a pure read: a gesture that retired the slide
+    /// would leave the tick nothing to read, and the two pages would stay half-slid.
     fn slide_running(&self, now_ms: u32) -> bool {
         self.slide_ms.is_some_and(|s| now_ms.wrapping_sub(s) < SLIDE_MS)
     }
@@ -710,7 +628,7 @@ impl ContextDrawerScreen {
                 let (available, committed) =
                     (row.action.available(&facts), self.value().map_or(0, |v| v.committed(&facts)));
                 if !available {
-                    return Transition::None; // an inert row does nothing at all
+                    return Transition::None;
                 }
                 match row.action.open(cx) {
                     Some(t) => t,
@@ -729,8 +647,7 @@ impl ContextDrawerScreen {
                 Transition::Replace(Screen::ContextDrawer(Self::swapped_in(&MAP_DISPLAY, cx.now_ms)))
             }
             Gesture::Back => Transition::Pop,
-            // Select-hold stays local and object-scoped; a context row has no held action.
-            // Back-hold never arrives — `App` resolves the global escape above screen dispatch.
+            // A context row has no held action, and Back-hold is resolved above screen dispatch.
             Gesture::Hold | Gesture::BackHold => Transition::None,
         }
     }
@@ -743,10 +660,8 @@ impl ContextDrawerScreen {
             return Transition::None;
         };
         match g {
-            // A **ring**, not an axis: these are named alternatives in no particular order, so the
-            // cursor wraps exactly as every other named picker in the app does. (The quick drawer's
-            // brightness clamps instead — a value axis has ends, and holding Up must not wrap the
-            // panel from brightest to dimmest.)
+            // A ring, not an axis: these are named alternatives, so the cursor wraps. The quick
+            // drawer's brightness clamps instead, because a value axis has ends.
             Gesture::Step(n) => {
                 let count = value.count(&cx.context_facts()) as usize;
                 self.staged = super::vocab::list::step_selection(self.staged as usize, n, count) as u8;
@@ -757,39 +672,36 @@ impl ContextDrawerScreen {
                 self.slide_to(Page::Root, cx.now_ms);
                 Transition::None
             }
-            // Discard: the staged ordinal is simply abandoned, so the row's value reverts to the
-            // committed one on the very next frame.
+            // Discard: the staged ordinal is abandoned, so the row's value reverts to the
+            // committed one on the next frame.
             Gesture::Back => {
                 self.slide_to(Page::Root, cx.now_ms);
                 Transition::None
             }
-            // Back-hold is the global escape, resolved above screen dispatch; it never arrives.
             Gesture::Hold | Gesture::BackHold => Transition::None,
         }
     }
 
     /// The sheet's animation: the open slide, then any page slide, at the panel's step cadence.
     pub fn tick_timers(&mut self, now_ms: u32) -> ScreenTick {
-        // This frame is the open's origin if no frame has been one yet (#1569).
+        // This frame is the open's origin if no frame has been one yet.
         let opened_ms = *self.opened_ms.get_or_insert(now_ms);
         let settled = self.settle(now_ms);
         let sheet_h = self.sheet_height(now_ms);
         let visible = self.visible_height(now_ms, sheet_h);
-        // The open is over when the sheet has **arrived**, not when its clock runs out: the
-        // ease-out's last few per cent move no pixel, and the steps they would ask for are whole
-        // renders that push nothing.
+        // The open is over when the sheet has arrived, not when its clock runs out: the ease-out's
+        // last few per cent move no pixel, and the steps they would ask for push nothing.
         let opening =
             if sheet_h > 0 && visible >= sheet_h { 0 } else { OPEN_MS.saturating_sub(now_ms.wrapping_sub(opened_ms)) };
         let sliding = self.slide_ms.map_or(0, |s| SLIDE_MS.saturating_sub(now_ms.wrapping_sub(s)));
         let moved = visible != self.shown_h as i32;
-        // The base draw this sheet owes is a **debt**, so this adds to it and never clears it: a
-        // pass may tick and then draw no frame at all, and only a frame that drew the base ends the
-        // obligation ([`needs_base`](Self::needs_base)).
+        // The base draw is a debt, so this adds to it and never clears it: a pass may tick and
+        // then draw no frame at all, and only a frame that drew the base ends the obligation.
         self.needs_base |= sliding > 0 || settled;
         self.shown_h = visible as i16;
-        // The wake is the time to the **next step boundary**, not a whole step from wherever this
-        // poll happened to land: the sheet advances on those boundaries, so asking for a full step
-        // off one carries the offset to the end and finishes the open a step late.
+        // The wake is the time to the next step boundary, not a whole step from wherever this poll
+        // landed: asking for a full step off a boundary carries the offset to the end and finishes
+        // the open a step late.
         let to_step = STEP_MS - now_ms.wrapping_sub(opened_ms) % STEP_MS;
         match [opening, sliding].into_iter().filter(|r| *r > 0).min() {
             // A page slide moves its two pages across a sheet that may not change height at all, so
@@ -798,28 +710,23 @@ impl ContextDrawerScreen {
                 ScreenTick { changed: sliding > 0 || moved, next_wake_ms: Some(to_step.min(remaining)), region: None }
             }
             // The frame a slide ends on still differs from the one before it; the frame the open
-            // ends on differs only if it moved the sheet, and reporting one that did not is a whole
-            // render spent on nothing.
+            // ends on differs only if it moved the sheet.
             None if settled || moved => ScreenTick { changed: true, next_wake_ms: None, region: None },
             None => ScreenTick::idle(),
         }
     }
 
-    /// Whether this sheet still **owes** the screen below a draw (#1559, #1515 D5).
+    /// Whether this sheet still owes the screen below a draw.
     ///
-    /// A sheet owes one from the moment it stops purely covering the base. Two things do that. A
-    /// **page slide**: its two pages travel through the inset margin either side of the sheet,
-    /// where the base shows, so every frame of one — including the frame it settles on, which is
-    /// the last that can leave ink there — needs the base under it, and a slide between pages of
-    /// different heights also *shrinks* the sheet, whose given-back rows the same draw puts back.
-    /// And a **swapped-in** sheet ([`swapped_in`](Self::swapped_in)), which is shorter than the one
-    /// it replaced and gives a band back at once.
+    /// A sheet owes one from the moment it stops purely covering the base. Two things do that: a
+    /// page slide, whose two pages travel through the inset margin either side of the sheet and
+    /// which shrinks the sheet when the pages differ in height, and a swapped-in sheet
+    /// ([`swapped_in`](Self::swapped_in)), which is shorter than the one it replaced.
     ///
-    /// It is a **debt, not a flag**: nothing but
-    /// [`clear_base_debt`](Self::clear_base_debt) — called by the frame that actually drew the base
-    /// — ends it. A tick that decided it per frame could have the obligation stolen from under it
-    /// by a pass that ticked and drew nothing, or by input running first and retiring the slide
-    /// before the tick could see the edge.
+    /// It is a debt, not a flag: nothing but [`clear_base_debt`](Self::clear_base_debt) ends it. A
+    /// tick that decided it per frame could have the obligation stolen by a pass that ticked and
+    /// drew nothing, or by input running first and retiring the slide before the tick saw the
+    /// edge.
     pub(crate) fn needs_base(&self) -> bool {
         self.needs_base
     }
@@ -830,7 +737,7 @@ impl ContextDrawerScreen {
         self.needs_base = false;
     }
 
-    /// Take on the debt from outside: this sheet **replaces the other drawer**, whose rows are still
+    /// Take on the debt from outside: this sheet replaces the other drawer, whose rows are still
     /// on the panel, so its first frame has to draw the base to take them off.
     pub(crate) fn owe_base(&mut self) {
         self.needs_base = true;
@@ -842,14 +749,12 @@ impl ContextDrawerScreen {
         self.slide_ms = Some(now_ms);
         self.page = to;
         // From this frame on the two pages travel outside the sheet's own footprint, so the base
-        // has to be under them — armed here rather than at the next tick, which would be one frame
-        // late.
+        // has to be under them. Armed here, because the next tick would be one frame late.
         self.needs_base = true;
     }
 
-    /// Retire a finished slide. Returns whether this call is the one that retired it. In
-    /// production only the **tick** calls this: the edge it returns is what arms the settling
-    /// frame's base draw (see [`slide_running`](Self::slide_running)).
+    /// Retire a finished slide, and report whether this call retired it. In production only the
+    /// tick calls this: the edge it returns arms the settling frame's base draw.
     fn settle(&mut self, now_ms: u32) -> bool {
         let done = self.slide_ms.is_some_and(|s| now_ms.wrapping_sub(s) >= SLIDE_MS);
         if done {
@@ -889,7 +794,7 @@ impl ContextDrawerScreen {
         }
     }
 
-    /// The page a slide is coming *from* — the other one, since the sheet has exactly two.
+    /// The page a slide is coming from, since the sheet has exactly two.
     fn other_page(&self) -> Page {
         match self.page {
             Page::Root => Page::Editor,
@@ -906,22 +811,21 @@ impl ContextDrawerScreen {
         (from + (to - from) * t + 0.5) as i32
     }
 
-    /// How much of the sheet has arrived from the bottom edge, on the open animation's ease-out —
+    /// How much of the sheet has arrived from the bottom edge, on the open animation's ease-out,
     /// advanced in whole [`STEP_MS`] steps.
     ///
-    /// The quantising is the pacing (#1559). A device wakes on more than its own timers, and a
-    /// sheet that answered the raw clock would give a busy host a hundred one-pixel steps of a
-    /// 104 px sheet, each one a whole frame the panel cannot finish. Reading the step boundary
-    /// instead means the sheet moves exactly as often as it asked to be woken, and a wake between
-    /// two steps draws the frame that is already there — which the tick then does not ask for.
+    /// The quantising is the pacing. A device wakes on more than its own timers, and a sheet that
+    /// answered the raw clock would give a busy host many one-pixel steps, each one a whole frame
+    /// the panel cannot finish. Reading the step boundary instead means the sheet moves exactly as
+    /// often as it asked to be woken.
     fn visible_height(&self, now_ms: u32, sheet_h: i32) -> i32 {
         // Before the first tick the open has not started, so a host that draws a sheet it has not
         // ticked draws no sheet — which is the frame the open begins from anyway.
         let Some(opened_ms) = self.opened_ms else { return 0 };
         let elapsed = now_ms.wrapping_sub(opened_ms);
-        // The frame the sheet opens on is its **first step**, not a frame that draws nothing: the
-        // chord costs the host a repaint whatever this returns, and #1559's rule is that no frame
-        // of the open is spent on nothing. So a step boundary is counted from one step in.
+        // The frame the sheet opens on is its first step, not a frame that draws nothing: the
+        // chord costs the host a repaint whatever this returns. So the boundary is counted from one
+        // step in.
         let stepped = (elapsed / STEP_MS + 1) * STEP_MS;
         (sheet_h as f32 * sheet::arrived(stepped, 0, OPEN_MS) + 0.5) as i32
     }
@@ -936,18 +840,14 @@ impl ContextDrawerScreen {
     /// The row table: a label, and — on every live row — the chevron that says pressing it goes
     /// somewhere. A value row's chevron leads to its editor rather than to a screen.
     ///
-    /// **A switch row draws its state instead of a chevron**, because it goes nowhere and because
-    /// its state is the whole feedback it gets: the screen under the sheet is frozen, so the slider
-    /// moving is the only thing a flip can change until the sheet closes. It is the settings tree's
-    /// own 50 × 28 slider, from the shared row vocabulary, so the control the rider learned in one
-    /// place looks the same in the other.
+    /// A switch row draws its state instead of a chevron, because it goes nowhere and because the
+    /// screen under the sheet is frozen, so the slider moving is the only feedback a flip gets
+    /// until the sheet closes. It is the settings tree's own slider, from the shared row
+    /// vocabulary.
     ///
-    /// **The row does not state its value, and that is measured rather than chosen.** A label plus
-    /// the longest choice is 284 px of `Body` glyphs on a 212 px row (`de`'s *Campingplatz*, `es`'s
-    /// *Alojamiento*), so a one-line row cannot carry both, and a two-line row does not fit the
-    /// 44 px pitch the ride sheet already ships. The editor one press away is where the value is
-    /// spelled out and where the committed one is marked — the same division the quick drawer's
-    /// brightness control makes. A taller value row is a question for D5's geometry pass.
+    /// The row does not state its value, and that is measured rather than chosen: a label plus the
+    /// longest choice does not fit one row, and a two-line row does not fit the row pitch. The
+    /// editor one press away is where the value is spelled out and the committed one is marked.
     fn draw_root(&self, cv: &mut impl Surface, rx: &Render, top: i32, x: i32) {
         let facts = rx.context_facts();
         let first = (self.selected as usize).saturating_sub(VISIBLE_ROWS - 1);
@@ -1078,21 +978,18 @@ mod tests {
         activity: Activity,
         navigator: crate::navigator::NavigatorMachine,
         settings: Settings,
-        /// The ride the rider is on, so a row press can be held to leaving it alone (#1554 moved
-        /// the session out of `Activity` and into this machine).
         recorder: RecorderMachine,
 
-        /// The loaded map's §8.6 profile names — the bike-type binding's whole choice list, and
-        /// the predicate its row is live by. Four by default, the fixture maps' own set.
+        /// The loaded map's profile names: the bike-type binding's choice list, and the predicate
+        /// its row is live by. Four by default, the fixture maps' own set.
         nav_profiles: crate::NavProfiles,
         now_ms: u32,
     }
 
     impl World {
-        /// A routed, nav-graph, on-route **recorded** ride — every row of the ride context live.
-        /// All four conditions matter: the Detour row reads the same predicate its chooser does
-        /// ([`detour::reachable`](super::super::detour::reachable)), and that one names the open
-        /// ride too.
+        /// A routed, nav-graph, on-route recorded ride: every row of the ride context live. All
+        /// four conditions matter, because the Detour row reads the same predicate its chooser
+        /// does, and that one names the open ride too.
         fn riding() -> Self {
             let mut state = AppState::new(0, 0, 1.0);
             state.has_nav_graph = true;
@@ -1155,8 +1052,7 @@ mod tests {
         ContextDrawerScreen::opening(&MAP)
     }
 
-    /// The ride context is the compass menu's inventory minus its Main-menu station, and each row
-    /// **replaces** the sheet so Back from the destination lands on the base.
+    /// Each row replaces the sheet, so Back from the destination lands on the base.
     #[test]
     fn every_ride_row_replaces_the_sheet_with_its_destination() {
         let mut w = World::riding();
@@ -1172,7 +1068,6 @@ mod tests {
         assert!(matches!(w.press(&mut d, Gesture::Press), Transition::Replace(Screen::RouteMenu(_))));
     }
 
-    /// The cursor wraps both ways over the declared rows, and Back closes the sheet.
     #[test]
     fn the_cursor_wraps_and_back_closes_the_sheet() {
         let mut w = World::riding();
@@ -1192,8 +1087,8 @@ mod tests {
         assert!(matches!(w.press(&mut d, Gesture::Back), Transition::Pop));
     }
 
-    /// An inert row is inert: pressing Detour without a route, without a graph, or off route does
-    /// nothing at all — and the key says so, so the sheet redraws when the answer changes.
+    /// Pressing Detour without a route, without a graph, or off route does nothing at all, and the
+    /// key says so, so the sheet redraws when the answer changes.
     #[test]
     fn an_unavailable_row_is_inert_and_shows_in_the_key() {
         let live_bit = 1 << 1; // the Detour row
@@ -1207,9 +1102,8 @@ mod tests {
             (|w: &mut World| w.navigator.set_active_route(None)) as fn(&mut World),
             |w: &mut World| w.state.has_nav_graph = false,
             |w: &mut World| w.navigator.route_state_mut().off_route = true,
-            // The fourth condition, and the one the row used to be missing: a *browse* map with a
-            // route loaded and a graph under it still has nothing to re-route, because there is no
-            // ride. Without this the row was an enabled door onto a chooser that opens inert.
+            // The fourth condition: a browse map with a route loaded and a graph under it still
+            // has nothing to re-route, because there is no ride.
             |w: &mut World| w.recorder.test_close(),
         ] {
             let mut w = World::riding();
@@ -1221,17 +1115,13 @@ mod tests {
         }
     }
 
-    /// **A row is never an enabled door onto an inert screen.** The browse Map is the case that
-    /// makes it checkable: a route is loaded and the map has a nav graph, so three of the Detour
-    /// row's four conditions hold — but nothing is being recorded, and a detour re-routes *a ride*.
-    ///
-    /// The row and the chooser read the **same** predicate, so this is proved by identity rather
-    /// than by two assertions that happen to agree: `detour::reachable` is what
-    /// `DetourScreen::available` is built from.
+    /// A row is never an enabled door onto an inert screen. The browse Map makes it checkable:
+    /// three of the Detour row's four conditions hold, but nothing is being recorded. The row and
+    /// the chooser read the same predicate, so this is proved by identity.
     #[test]
     fn a_route_without_a_ride_leaves_the_detour_row_inert() {
         let mut w = World::riding();
-        w.recorder.test_close(); // …a browse map: the route and the graph stay
+        w.recorder.test_close(); // a browse map: the route and the graph stay
         assert!(
             w.navigator.route_state().active_route.is_some()
                 && w.state.has_nav_graph
@@ -1243,8 +1133,6 @@ mod tests {
         assert_eq!(d.key(&w.facts()).4 & (1 << 1), 0, "the row draws recessed");
         assert!(matches!(w.press(&mut d, Gesture::Press), Transition::None), "…and a press does nothing");
 
-        // The predicate the row read is the one the chooser reads: identical inputs, identical
-        // answer, so the row cannot become an enabled door onto a screen that opens inert.
         assert!(!super::super::detour::reachable(
             w.navigator.route_state(),
             w.recorder.recording(),
@@ -1261,7 +1149,6 @@ mod tests {
         );
     }
 
-    /// Opening the Assistant leaves recording, progress, and source preferences unchanged.
     #[test]
     fn assistant_preserves_the_session_and_selection_scope() {
         let mut w = World::riding();
@@ -1280,14 +1167,12 @@ mod tests {
         assert_eq!(w.recorder.test_take_intent(), None);
     }
 
-    /// **Every declared table is a sheet, not a page**, and fits the key's availability mask. The
-    /// D4 slices each add a table here; this is where one that outgrew the sheet is caught.
+    /// Every declared table is a sheet, not a page, and fits the key's availability mask.
     #[test]
     fn pinned_by_the_row_tables() {
         // The derivation itself, so a geometry change is read here rather than asserted twice.
         assert_eq!(VISIBLE_ROWS, 5, "24 px of padding plus 44 px rows inside a {MAX_SHEET_H} px sheet");
 
-        // Every table the tree declares; each D4 slice added its own to this list.
         let declared: &[&ContextMenu] =
             &[&RIDE, &MAP, &MAP_DISPLAY, &MAP_ICONS, &MAP_POI_CATEGORIES, &UP_AHEAD, &ROUTE_PLAN, &FIND_PLACE];
         for menu in declared {
@@ -1300,7 +1185,6 @@ mod tests {
         }
     }
 
-    /// The sheet arrives monotonically from the bottom and lands exactly on its content height.
     #[test]
     fn the_sheet_slides_up_monotonically_and_lands_exactly() {
         let mut d = ContextDrawerScreen::opening(&RIDE);
@@ -1313,10 +1197,8 @@ mod tests {
         assert!(frames.windows(2).all(|p| p[0] < p[1]), "monotonic: {frames:?}");
     }
 
-    // ---- D4a: the nested value editor ----------------------------------------------------------
-
     /// The whole editor contract in one pass: a value row slides to its editor on the committed
-    /// choice, Up/Down stages without committing, **Select commits and returns**, and the committed
+    /// choice, Up/Down stages without committing, Select commits and returns, and the committed
     /// choice is what the row then reads.
     #[test]
     fn a_value_row_stages_on_up_down_and_commits_on_select() {
@@ -1341,8 +1223,8 @@ mod tests {
         assert_eq!(d.staged, 1, "the editor opens on the committed choice, every time");
     }
 
-    /// **Back discards.** The staged choice is abandoned, the value underneath is untouched, and
-    /// the editor closes — so nothing has to be remembered in order to be undone.
+    /// Back discards: the staged choice is abandoned and the value underneath is untouched, so
+    /// nothing has to be remembered in order to be undone.
     #[test]
     fn back_out_of_the_editor_discards_the_staged_choice() {
         let mut w = World::riding();
@@ -1358,9 +1240,8 @@ mod tests {
         assert!(matches!(w.press(&mut d, Gesture::Back), Transition::Pop));
     }
 
-    /// The **committed choice stays marked** while the rider browses alternatives — the render key
-    /// carries the staged and the committed value as two separate facts, which is what lets the
-    /// editor draw both.
+    /// The render key carries the staged and the committed value as two separate facts, which is
+    /// what lets the editor keep the committed choice marked while the rider browses.
     #[test]
     fn the_committed_choice_stays_marked_while_browsing() {
         let mut w = World::riding();
@@ -1375,9 +1256,8 @@ mod tests {
         assert_eq!(committed, 1, "…and, separately, what the device is set to");
     }
 
-    /// The **Sources** row is the migrated Ride-settings row: its commit writes
-    /// `Settings::up_ahead_source`, which is the field the App's `==` diff turns into a save. The
-    /// row draws the value it wrote, so the sheet alone answers "what is this set to".
+    /// The Sources row commits `Settings::up_ahead_source`, the field the App's `==` diff turns
+    /// into a save, and then draws the value it wrote.
     #[test]
     fn the_sources_row_commits_the_persisted_settings_field() {
         let mut w = World::riding();
@@ -1397,8 +1277,8 @@ mod tests {
         );
     }
 
-    /// The editor is a **ring of named alternatives**: it wraps at both ends over exactly the
-    /// choices the binding declares, and every ordinal round-trips to a value and back.
+    /// The editor is a ring of named alternatives: it wraps at both ends over exactly the choices
+    /// the binding declares, and every ordinal round-trips to a value and back.
     #[test]
     fn the_editor_wraps_over_exactly_the_declared_choices() {
         let mut w = World::riding();
@@ -1418,18 +1298,15 @@ mod tests {
         assert_eq!(choice_filter(0), PoiCategorySet::ALL, "ordinal 0 is Everything");
     }
 
-    /// **The one-predicate rule for value rows.** A binding that always accepts must give a row
-    /// that is always live: a browse map with no route, no graph and no ride still lets the rider
-    /// see and change what the timeline is scoped to. And a binding that *refuses* must give a row
-    /// that is recessed — [`ContextValue::BikeProfile`] is the first that ever answers `false`, so
-    /// this is where the rule is checked in both directions rather than in one.
+    /// The one-predicate rule for value rows, checked in both directions: a binding that always
+    /// accepts gives a row that is always live, and a binding that refuses gives a recessed row.
     #[test]
     fn a_value_row_is_live_exactly_where_its_binding_accepts() {
         let mut w = World::riding();
         w.navigator.set_active_route(None);
         w.state.has_nav_graph = false;
         w.recorder.test_close();
-        w.nav_profiles = crate::NavProfiles::EMPTY; // …and no map, so the bike binding refuses
+        w.nav_profiles = crate::NavProfiles::EMPTY; // no map, so the bike binding refuses
         let d = up_ahead_drawer();
         let facts = w.facts();
 
@@ -1446,16 +1323,14 @@ mod tests {
             "…and the one binding that refuses leaves its row out of the live mask"
         );
 
-        // And a press really does open the editor there, rather than drawing live and doing nothing.
+        // And a press really opens the editor, rather than drawing live and doing nothing.
         let mut d = up_ahead_drawer();
         w.press(&mut d, Gesture::Press);
         assert_eq!(d.page, Page::Editor);
     }
 
-    /// **The open is paced by the two constants and nothing else** (#1559): the sheet asks to be
-    /// woken every [`STEP_MS`], it takes about [`OPEN_MS`] to arrive, and every step it reports
-    /// moves it. The twin of the quick drawer's test, on this sheet's own pair of numbers — which
-    /// is the point of the numbers being per sheet.
+    /// The open is paced by the two constants and nothing else: the sheet asks to be woken every
+    /// [`STEP_MS`], it takes about [`OPEN_MS`] to arrive, and every step it reports moves it.
     #[test]
     fn the_open_takes_open_ms_in_steps_of_step_ms_and_every_step_moves_the_sheet() {
         let mut d = drawer();
@@ -1484,9 +1359,8 @@ mod tests {
         assert!(!d.needs_base(), "…and asks for nothing under it either");
     }
 
-    /// The wake asks for the **next step boundary**, not a whole step from wherever the poll landed
-    /// — otherwise a device that wakes off-boundary carries the offset to the end and finishes the
-    /// open a step late. The mutant is `STEP_MS.min(remaining)`.
+    /// The wake asks for the next step boundary, not a whole step from wherever the poll landed:
+    /// otherwise a device that wakes off-boundary finishes the open a step late.
     #[test]
     fn the_wake_lands_on_the_next_step_boundary() {
         let mut d = drawer();
@@ -1495,7 +1369,6 @@ mod tests {
         assert_eq!(d.tick_timers(STEP_MS * 2).next_wake_ms, Some(STEP_MS), "on a boundary, ask for a whole step");
     }
 
-    /// A page transition owns the input while it runs: a gesture landing mid-slide changes nothing.
     #[test]
     fn a_gesture_during_a_slide_is_ignored() {
         let mut w = World::riding();
@@ -1518,7 +1391,7 @@ mod tests {
     }
 
     /// The sheet grows into the editor and shrinks back, monotonically, landing exactly on each
-    /// page's own height — the adaptive-height rule #1515 asks for.
+    /// page's own height.
     #[test]
     fn the_sheet_grows_into_the_editor_and_back() {
         let root_h = Page::Root.height(&UP_AHEAD);
@@ -1543,34 +1416,22 @@ mod tests {
     /// right-hand control on a 240 px panel in every language, and every editor choice fits the
     /// editor's own line.
     ///
-    /// **There are two row budgets, not one** (#1515 D4c). A door or a value row clears the 18 px
-    /// chevron and has 172 px; a **switch** row clears the 50 px slider and its margin and has 136.
-    /// That is where the map sheet's copy is decided — the settings rows these three switches came
-    /// from had a second line to split `Courbes de niveau` / `Curvas de nivel` across, and a sheet
-    /// row does not. If a column overruns, the copy shortens; the slider and the row do not.
+    /// There are two row budgets, not one. A door or a value row clears the chevron; a switch row
+    /// clears the wider slider and its margin. If a column overruns, the copy shortens; the slider
+    /// and the row do not. Both are measured in the font the code actually draws, which is
+    /// [`Font::Body`] for a row label and for an editor choice alike.
     ///
-    /// **Both are measured in the font the code actually draws.** `draw_root` writes a row label in
-    /// [`Font::Body`] and `draw_editor` writes a choice in [`Font::Body`] too — an earlier version
-    /// of this test measured the choice in `Font::Label` and believed 36 px of clearance where the
-    /// panel has 12 (`de` "Campingplatz" is 168 px in Body, 144 in Label).
-    ///
-    /// It also **pins the measurement the row design rests on** — that a label plus its longest
-    /// choice does not fit one row — so a future geometry pass sees the number rather than the
-    /// conclusion.
-    ///
-    /// **[`ContextValue::BikeProfile`]'s choices are not catalog copy** (#1515 D4d): they are the
-    /// loaded map's §8.6 names, so the check on them is the format's own cap rather than four
-    /// columns of a string. That cap turns out to be exactly the widest catalog choice, which is
-    /// why the two numbers below do not move for it.
+    /// It also pins the measurement the row design rests on — that a label plus its longest choice
+    /// does not fit one row — so a future geometry pass sees the number rather than the conclusion.
+    /// [`ContextValue::BikeProfile`]'s choices are map data rather than catalog copy, so the check
+    /// on them is the format's own name cap.
     #[test]
     fn every_label_and_choice_fits_the_sheet_in_every_language() {
         use obc_formats::obcm::NAV_PROFILE_NAME_LEN;
         const W: i32 = 240;
         const MIN_CLEAR: i32 = 8;
-        // The draw's own geometry: the row area is the shared settings row (`rows::row_rect`),
-        // inset `ROW_X` from both screen edges so the cursor sits centred in the sheet; the label
-        // starts 14 px inside it, the chevron takes the last 18 and the slider the last 54 (50 px
-        // wide, 4 px margin).
+        // The draw's own geometry: the row area is inset `ROW_X` from both screen edges, the label
+        // starts 14 px inside it, the chevron takes the last 18 px and the slider the last 54.
         let area_w = W - 2 * rows::ROW_X;
         let door_room = area_w - 14 - 18 - MIN_CLEAR;
         let switch_room = area_w - 14 - 54 - MIN_CLEAR;
@@ -1610,19 +1471,15 @@ mod tests {
                 }
             }
         }
-        // The bike binding's worst case is the §8.6 name field filled: 12 monospace `Body`
-        // characters. It fits the same line the catalog choices do — and it is *exactly* the widest
-        // of them, so the `worst_choice` pin below does not move for it. The `worst_row` figure
-        // below is catalog-only (the loop skips map-data choices): the bike row's own label+name
-        // worst is 340 px, and it is governed by this editor-line check, not by the row figure.
-        // If it ever exceeds `choice_room`, either a font tier or the format's name cap changed,
-        // and that is a finding rather than a re-pin.
+        // The bike binding's worst case is the name field filled: 12 monospace `Body` characters.
+        // It is exactly as wide as the widest catalog choice, so the `worst_choice` pin does not
+        // move for it. If it ever exceeds `choice_room`, either a font tier or the format's name
+        // cap changed, and that is a finding rather than a re-pin.
         let widest_profile_name = NAV_PROFILE_NAME_LEN as i32 * Font::Body.char_width() as i32;
         assert_eq!(widest_profile_name, 168, "12 §8.6 name bytes in Body, pinned");
         assert!(widest_profile_name <= choice_room, "a full-length profile name overruns the editor line");
 
-        // The widest choice on the editor line, and how little room is left over it. This is the
-        // on-glass question the PR names, so the number is here rather than in prose.
+        // The widest choice on the editor line, and how little room is left over it.
         assert_eq!(worst_choice, 168, "de \"Campingplatz\" / \"Fahrradladen\" in Body, pinned");
         assert_eq!(choice_room - worst_choice, 12, "…with 12 px to spare on the 240 px panel");
 
@@ -1635,7 +1492,7 @@ mod tests {
     }
 
     /// The catalog lookup [`ContextValue::choice_label`] makes, without a `Render` to hang it off.
-    /// [`ContextValue::BikeProfile`] has none — its choices are map data — so it is not a case here.
+    /// [`ContextValue::BikeProfile`] has none, because its choices are map data.
     fn choice_text(v: ContextValue, ordinal: u8, lang: Language) -> &'static str {
         match v {
             ContextValue::UpAheadFilter => match choice_category(ordinal) {
@@ -1649,15 +1506,9 @@ mod tests {
         }
     }
 
-    // ---- D4c: the map context --------------------------------------------------------------
-
-    /// **A switch row flips in place and keeps the sheet.** Each of the three flips its own field
-    /// both ways, returns [`Transition::None`], leaves the page on the root and the other two fields
-    /// alone — and the key follows the selected row's bit through `committed`, which is the one byte
-    /// that makes a flip visible to the frame's identity.
-    ///
-    /// The mutants: a row that pops or replaces (the rider would set one switch per squeeze), and a
-    /// `key` that reports 0 for a switch row (the slider would not move until the sheet closed).
+    /// A switch row flips in place and keeps the sheet: each one flips its own field both ways,
+    /// leaves the page on the root and the other fields alone, and the key follows the selected
+    /// row's bit through `committed`, which is what makes a flip visible to the frame's identity.
     #[test]
     fn a_toggle_row_flips_in_place_and_keeps_the_sheet() {
         for (i, toggle) in
@@ -1674,7 +1525,7 @@ mod tests {
             assert!(!t.read(&w.facts()), "on -> off");
             assert_eq!(d.key(&w.facts()).3, 0, "…and the key carries the selected row's new state");
 
-            // The other two are untouched: a flip is one bit, not a sheet-wide act.
+            // The others are untouched: a flip is one bit, not a sheet-wide act.
             let others = MAP_DISPLAY.rows.iter().enumerate().filter(|(j, _)| *j != i);
             for (_, row) in others {
                 let ContextAction::Toggle(other) = row.action else { continue };
@@ -1687,16 +1538,13 @@ mod tests {
         }
     }
 
-    /// **The Map display row swaps one sheet for another**, and the swap is free of an entrance:
-    /// the shorter sheet is landed on the frame the press produced, that frame owes the screen
-    /// below one draw (it uncovers a band the taller sheet held), and Back leaves the sheet family
-    /// altogether rather than climbing to the table it came from.
+    /// The Map display row swaps one sheet for another with no entrance: the shorter sheet is
+    /// landed on the frame the press produced, and that frame owes the screen below one draw
+    /// because it uncovers a band the taller sheet held.
     ///
-    /// **What ends the obligation is the draw, not the next tick** (#1515 D5). Ticking again does
-    /// not put the band back, so the debt survives every tick until
-    /// [`clear_base_debt`](ContextDrawerScreen::clear_base_debt) — which is what the frame that
-    /// drew the base calls — and no tick after that re-arms it: the swap still costs exactly one
-    /// map draw.
+    /// What ends the obligation is the draw, not the next tick. The debt survives every tick until
+    /// [`clear_base_debt`](ContextDrawerScreen::clear_base_debt), and no tick after that re-arms
+    /// it, so the swap costs exactly one map draw.
     #[test]
     fn the_display_row_swaps_the_sheet_and_back_lands_on_the_map() {
         let mut w = World::riding();
@@ -1722,31 +1570,24 @@ mod tests {
         assert!(matches!(w.press(&mut swapped, Gesture::Back), Transition::Pop), "Back closes onto the Map");
     }
 
-    /// **A gesture landing as the slide lands does not take the base draw with it** (#1515 D5).
+    /// A gesture landing as the slide lands does not take the base draw with it. Input runs before
+    /// the tick in one pass, so a gesture that retired the slide itself would leave the tick no
+    /// edge to read.
     ///
-    /// Input runs before the tick in one pass, so a gesture at or after `slide start + SLIDE_MS` —
-    /// well inside an ordinary double-tap — used to retire the slide itself, through the `settle`
-    /// call `handle` opened with. The tick then found no edge and *assigned* `needs_base = false`.
-    ///
-    /// This drives the sharper of the two faces. The sheet is D4d's one-row `ROUTE_PLAN`, where
-    /// `step_selection(0, n, 1) == 0`, so the stealing gesture moves no render key at all: the tick
-    /// went on to return [`ScreenTick::idle`] and the two pages stayed **half-slid** until something
-    /// else asked for a frame. The other face — a moved key, a repainted sheet, and the outgoing
-    /// page's ink left in the 4 px margin either side — is the same lost `settled` edge.
-    ///
-    /// Every frame of the slide is modelled as it really runs: it draws the base, so it discharges
-    /// the debt, and the next tick has to arm it again. The mutant is `self.settle(cx.now_ms)` back
-    /// at the top of `handle`: both halves below fail.
+    /// The sheet is the one-row `ROUTE_PLAN`, where the stealing gesture moves no render key at
+    /// all, so a lost edge shows as two pages left half-slid. Every frame of the slide is modelled
+    /// as it really runs: it draws the base, so it discharges the debt, and the next tick has to
+    /// arm it again.
     #[test]
     fn a_press_as_the_slide_lands_does_not_spend_the_base_draw_it_owes() {
         let mut w = World::riding();
         let mut d = route_plan_drawer();
         d.tick_timers(w.now_ms.saturating_sub(OPEN_MS)); // the open's origin, so the sheet is landed
-        w.press(&mut d, Gesture::Press); // → the bike-type editor; `press` steps the clock past it
+        w.press(&mut d, Gesture::Press); // the bike-type editor; `press` steps the clock past it
         assert_eq!(d.page, Page::Editor);
 
-        // Back out: the sheet shrinks 148 -> 68, so this slide gives rows back as well as travelling
-        // through the margin.
+        // Back out: the sheet shrinks, so this slide gives rows back as well as travelling through
+        // the margin.
         let start = w.now_ms;
         d.handle(
             Gesture::Back,
@@ -1799,10 +1640,9 @@ mod tests {
         assert!(!swapped.needs_base(), "…and a settled sheet does not ask a second time");
     }
 
-    /// The map's table is the ride's four actions **plus** one door, and the Map is the only screen
-    /// that declares it. Pinned here as well as in `harness/screens.rs` because this is where the
-    /// two tables live: rows 0-3 must stay label-for-label and action-for-action identical, or a
-    /// rider's muscle memory differs between the Map and Statistics.
+    /// The map's table is the ride's actions plus one door. The shared rows must stay
+    /// label-for-label and action-for-action identical, or a rider's muscle memory differs between
+    /// the Map and Statistics.
     #[test]
     fn the_map_table_is_the_ride_table_plus_one_door() {
         assert_eq!(MAP.rows.len(), RIDE.rows.len() + 1);
@@ -1816,20 +1656,13 @@ mod tests {
         assert_eq!(last.action, ContextAction::MapDisplay, "the fifth row is the door onto the display sheet");
     }
 
-    // ---- D4d: the route-plan context ------------------------------------------------------------
-
     fn route_plan_drawer() -> ContextDrawerScreen {
         ContextDrawerScreen::opening(&ROUTE_PLAN)
     }
 
-    /// **The bike-type row is live exactly where the loaded map offers a choice.** This is the
-    /// deleted Bike-type screen's own `count > 1` guard, restated as the binding's predicate: with
-    /// no map (a fresh boot, or a router-less `ble` image) and with a single-profile map the row is
-    /// out of the `enabled` mask and a press does nothing at all; from two profiles up it is live
-    /// and a press opens the editor.
-    ///
-    /// The mutant is an `accepts` that returns `true`: the row would draw live on a device with no
-    /// map and a press would open an editor over a ring of nothing.
+    /// The bike-type row is live exactly where the loaded map offers a choice: with no map and
+    /// with a single-profile map the row is out of the live mask and a press does nothing at all;
+    /// from two profiles up it is live and a press opens the editor.
     #[test]
     fn the_bike_type_row_is_live_exactly_where_a_map_offers_a_choice() {
         for names in [&[][..], &["Road"][..]] {
@@ -1841,7 +1674,7 @@ mod tests {
             assert_eq!(d.page, Page::Root, "not even a page slide");
         }
 
-        let mut w = World::riding(); // the fixture maps' four §8.6 profiles
+        let mut w = World::riding(); // the fixture maps' four profiles
         let mut d = route_plan_drawer();
         assert_eq!(d.key(&w.facts()).4, 1, "two or more profiles: the row is live");
         w.press(&mut d, Gesture::Press);
@@ -1849,15 +1682,11 @@ mod tests {
         assert_eq!(ContextValue::BikeProfile.count(&w.facts()), 4, "the ring is the map's own name list");
     }
 
-    /// **The editor opens on the *effective* profile and commits an index.** A stale stored index
-    /// against a smaller map opens on profile 0 and marks profile 0 — the profile the router will
-    /// actually route under (routing-v2 N3, the #538 truthful-label rule) — rather than on a
-    /// profile the map does not have. Staging writes nothing, Select writes
-    /// `Settings::bike_profile_idx`, Back out of a re-opened editor discards, and the key reports
-    /// the staged and the committed ordinal apart.
-    ///
-    /// The mutant is a `committed` that returns the stored index: the first assertion below would
-    /// open the editor on ordinal 7 of a four-profile ring.
+    /// The editor opens on the effective profile and commits an index. A stale stored index
+    /// against a smaller map opens on profile 0 and marks profile 0, the profile the router will
+    /// route under, rather than on a profile the map does not have. Staging writes nothing, Select
+    /// writes `Settings::bike_profile_idx`, Back out of a re-opened editor discards, and the key
+    /// reports the staged and the committed ordinal apart.
     #[test]
     fn the_bike_type_editor_opens_on_the_effective_profile_and_commits_an_index() {
         let mut w = World::riding();

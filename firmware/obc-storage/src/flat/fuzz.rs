@@ -1,15 +1,9 @@
 //! Decoder fuzzing: no input panics, and a mutation that survives the CRC still has to satisfy the
 //! structural rules.
 //!
-//! Two halves, because they prove different things. Raw byte flips prove **totality** — every input is
-//! either a typed record or a typed refusal, and nothing indexes past an unchecked length. Re-stamped
-//! mutations, where the CRC and the gate are rebuilt over the mutated bytes, prove the structural
-//! rules exist at all: a CRC catches corruption and says nothing about whether a decoder enforces a
-//! header rule.
-//!
-//! The re-stamped half is held to a floor **per rule** rather than to one aggregate count, because
-//! "reached a structural rule" is satisfiable by one trivial rule firing every round — which is
-//! exactly the shape of coverage that looks like evidence and is not.
+//! The re-stamped half — where the CRC and the gate are rebuilt over the mutated bytes — is held to a
+//! floor per rule rather than to one aggregate count, because one trivial rule firing every round
+//! satisfies an aggregate.
 
 use std::vec::Vec;
 
@@ -125,8 +119,7 @@ fn no_byte_flip_of_any_record_panics_or_is_accepted_as_itself() {
 }
 
 /// The structural half: the entry's own CRC is the catalog body's, so a mutated entry reaches
-/// [`Entry::decode`] and the array rules regardless — which makes the entry the one record where a
-/// flip is *always* re-stamped. Each case names the rule it must trip.
+/// [`Entry::decode`] and the array rules regardless. Each case names the rule it must trip.
 #[test]
 fn field_mutations_reach_the_entrys_structural_rules() {
     let cases: [(usize, &[u8], Reason); 8] = [
@@ -148,10 +141,9 @@ fn field_mutations_reach_the_entrys_structural_rules() {
     }
 }
 
-/// The seam's own totality: hostile *arguments* on a sound card. Decoder fuzzing covers hostile bytes,
-/// and the arithmetic in `commit` — a cursor one past the greatest id, a sequence one past the
-/// high-water mark — is reachable only from here. Nothing panics, every refusal is typed, and whatever
-/// the card ends up holding, a remount reproduces the store's resident state exactly.
+/// The seam's own totality: hostile arguments on a sound card. The arithmetic in `commit` — a cursor
+/// one past the greatest id, a sequence one past the high-water mark — is reachable only from here.
+/// Whatever the card ends up holding, a remount reproduces the store's resident state exactly.
 #[test]
 fn the_seam_never_panics_on_hostile_arguments() {
     let total_blocks = super::layout::EXTENT_AREA + super::layout::Geometry::DEFAULT.extent_blocks() * EXTENTS as u64;
@@ -222,9 +214,8 @@ fn the_seam_never_panics_on_hostile_arguments() {
     );
 }
 
-/// The same for the entry array's cross-entry rules, driven through a whole mounted card: a body whose
-/// entries break a §5.3 rule is a structurally invalid copy, and a card with only that copy mounts
-/// read-only rather than serving it.
+/// The same for the cross-entry rules, driven through a whole mounted card: a card whose only
+/// structurally valid copy is none mounts read-only rather than serving one.
 #[test]
 fn a_structurally_invalid_entry_array_is_never_served() {
     let base = sample_entry();
@@ -321,8 +312,7 @@ fn random_cards_never_mount_writable() {
     assert!(modes.iter().all(|mode| *mode == super::store::Mode::Unformatted), "{modes:?}");
 }
 
-/// And the other direction: a real card whose *superblock* survives but whose catalog is random is
-/// read-only, not writable — the case where the store has an identity and nothing to serve.
+/// The other direction: a store with an identity and nothing to serve.
 #[test]
 fn a_valid_superblock_over_a_random_catalog_is_read_only() {
     let mut rng = Rng(0x1234_5678_9ABC_DEF0);

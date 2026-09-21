@@ -1,15 +1,12 @@
-//! `poi.rs` — OSM point-of-interest extraction: classify nodes and closed ways
-//! against the fixed category/subtype table, normalize names for the device font,
-//! and collapse OSM double-mapping (issue #422, epic #115).
+//! OSM point-of-interest extraction: classify nodes and closed ways against the fixed
+//! category/subtype table, normalize names for the device font, and collapse OSM double-mapping.
 //!
-//! The table below is **canonical and append-only**: ids are stable from day one,
-//! will be mirrored in firmware, and pinned normatively in `OBCM_Spec.md` by the
-//! format sub-issue (#423). Subtype `0` is reserved; `0xFF` is reserved as the
-//! end-of-chunk sentinel (mirrors the style-id sentinel). First match in table
-//! order wins, the same convention as the config's style map.
+//! The table below is canonical and append-only: ids are stable, mirrored in firmware, and pinned
+//! normatively in `OBCM_Spec.md`. Subtype `0` is reserved, and `0xFF` is the end-of-chunk sentinel.
+//! First match in table order wins, the same convention as the config's style map.
 //!
-//! This stage is deliberately config-free (locked decision on #115): the tag
-//! mapping is hardcoded, so packing the same extract always yields the same POIs.
+//! This stage is deliberately config-free: the tag mapping is hardcoded, so packing the same extract
+//! always yields the same POIs.
 
 use std::collections::HashMap;
 
@@ -24,13 +21,10 @@ const SETTLEMENT_POPULATION_MAX: u16 = SETTLEMENT_POPULATION_UNKNOWN - 1;
 
 use crate::hours::Schedule;
 
-/// One row of the canonical table: the OSM `key=value` classification and the
-/// subtype id it maps to. The subtype's **category** and **fallback label** are
-/// *not* stored here — they live once in `obc-formats` (the firmware source of truth beneath
-/// `OBCM_Spec.md` §7.4), and this row derives them via
-/// [`PoiKind::category`] / [`PoiKind::label`], so the category/label mapping is never
-/// maintained in two places. Only the OSM tag classification (which the device never
-/// needs) stays packer-side.
+/// One row of the canonical table: the OSM `key=value` classification and the subtype id it maps to.
+/// The subtype's category and fallback label live once in `obc-formats`, and this row derives them
+/// via [`PoiKind::category`] and [`PoiKind::label`], so that mapping is never maintained twice. Only
+/// the OSM tag classification, which the device never needs, stays packer-side.
 pub struct PoiKind {
     pub subtype: u8,
     pub key: &'static str,
@@ -38,15 +32,14 @@ pub struct PoiKind {
 }
 
 impl PoiKind {
-    /// The category id (spec §7.4) this subtype belongs to, derived from `obc-formats`' canonical
+    /// The category id this subtype belongs to, derived from `obc-formats`' canonical table. Every
+    /// `POI_TABLE` subtype is valid there, so the unwrap never trips.
     /// table. Every `POI_TABLE` subtype is valid there, so the unwrap never trips (the pinning test
-    /// guarantees it for every row).
     pub fn category(&self) -> u8 {
         poi_directory_category_of(self.subtype).expect("POI_TABLE subtype has a directory category")
     }
 
-    /// The device fallback label for this subtype, from `obc-formats`' canonical table (shown when
-    /// OSM has no usable name). Valid for every `POI_TABLE` subtype (see the pinning test).
+    /// The device fallback label for this subtype, shown when OSM has no usable name.
     pub fn label(&self) -> &'static str {
         poi_label_of(self.subtype).expect("POI_TABLE subtype is in obc-formats' canonical table")
     }
@@ -56,10 +49,9 @@ const fn kind(subtype: u8, key: &'static str, value: &'static str) -> PoiKind {
     PoiKind { subtype, key, value }
 }
 
-/// The canonical OSM-tag → subtype classification (normative subtype ids —
-/// append-only, never renumber). The subtype→category/label half of the table lives
-/// in `obc-formats` (spec §7.4); this half is the OSM tag mapping the
-/// packer owns. First match in table order wins (see [`classify`]).
+/// The canonical OSM-tag to subtype classification. Subtype ids are normative and append-only:
+/// never renumber. The subtype to category and label half lives in `obc-formats`. First match in
+/// table order wins (see [`classify`]).
 pub const POI_TABLE: [PoiKind; 24] = [
     kind(1, "amenity", "drinking_water"),
     kind(2, "natural", "spring"),
@@ -119,9 +111,8 @@ pub struct Poi {
     pub name: Option<String>,
     /// Nodes mark entrances; way-centroids are derived. Drives dedup priority.
     pub from_node: bool,
-    /// Parsed weekly schedule from the OSM `opening_hours` tag, or `None` when the
-    /// POI has no (parseable) hours. In-memory only in P1 (#440) — P2 pools these
-    /// and stores a `hours_ref` on the POI record.
+    /// Parsed weekly schedule from the OSM `opening_hours` tag, or `None` when the POI has none
+    /// that parses. The serializer pools these and stores a `hours_ref` on the record.
     pub hours: Option<Schedule>,
     /// Summit height in metres, from OSM `ele` or the shared DEM when the tag is absent.
     pub elevation_m: Option<i16>,
@@ -182,12 +173,10 @@ pub struct Classification<'a> {
     pub population: Option<u32>,
 }
 
-/// Classify a tag set against [`POI_TABLE`] — first match in **table order**
-/// wins — and pull the normalized `name` plus the **raw** `opening_hours` value
-/// alongside. One pass over the tags, no allocation on the (overwhelmingly common)
-/// no-match path. The `opening_hours` string is returned unparsed (a borrowed
-/// slice) so the fast path stays alloc-free; the caller parses it into a
-/// [`Schedule`] via [`crate::hours::parse`] only on a match.
+/// Classify a tag set against [`POI_TABLE`] — first match in table order wins — and pull the
+/// normalized `name` plus the raw `opening_hours` value alongside. One pass over the tags, with no
+/// allocation on the overwhelmingly common no-match path. The `opening_hours` string comes back
+/// unparsed, as a borrowed slice, so the fast path stays alloc-free.
 pub fn classify<'a, I>(tags: I) -> Option<Classification<'a>>
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
@@ -261,7 +250,7 @@ where
     })
 }
 
-/// The §7 record payload of a settlement: the population in hundreds of people, saturating, or
+/// The record payload of a settlement: the population in hundreds of people, saturating, or
 /// [`SETTLEMENT_POPULATION_UNKNOWN`] when the source gave no usable value. The clamp happens before
 /// the cast, so a nonsense tag lands on the maximum instead of wrapping.
 pub fn settlement_payload(population: Option<u32>) -> u16 {
@@ -352,11 +341,10 @@ pub fn ring_centroid(coords: &[(f64, f64)]) -> (f64, f64) {
     (sx / n, sy / n)
 }
 
-/// Fold one non-ASCII char to its ASCII spelling. German umlauts get their
-/// proper digraphs (ä→ae, ß→ss — the taste call from #422, tested); the rest of
-/// Latin-1 Supplement + Latin Extended-A strips to the base letter. Anything
-/// else (CJK, Cyrillic, Greek, emoji) is unmappable ⇒ `None`, and the caller
-/// turns it into a word break rather than gluing neighbors together.
+/// Fold one non-ASCII char to its ASCII spelling. German umlauts get their proper digraphs (ä to ae,
+/// ß to ss); the rest of Latin-1 Supplement and Latin Extended-A strips to the base letter. Anything
+/// else — CJK, Cyrillic, Greek, emoji — is unmappable and answers `None`, and the caller turns it
+/// into a word break rather than gluing neighbours together.
 fn fold_char(c: char) -> Option<&'static str> {
     Some(match c {
         'Ä' => "Ae",
@@ -416,14 +404,13 @@ fn fold_char(c: char) -> Option<&'static str> {
     })
 }
 
-/// Normalize an OSM `name` for the OBCM record's fixed-width, printable-ASCII
-/// `Name` field (`0x20..=0x7E`, one byte per char): ASCII-fold, replace anything
-/// unmappable with a word break, collapse whitespace, trim, cap at **24 bytes**
-/// (the v7 record's widened `Name` field). Empty after all that ⇒ `None` (device
-/// shows the subtype label). Note this fold is a *format* constraint, not a font
-/// one — the device font renders Latin-1/Latin Extended-A for phone-supplied
-/// route & ride names (see `obc-render/src/font_data.rs`); only these fixed-width
-/// packed POI names fold.
+/// Normalize an OSM `name` for the record's fixed-width, printable-ASCII `Name` field, one byte per
+/// char: ASCII-fold, replace anything unmappable with a word break, collapse whitespace, trim, and
+/// cap at 24 bytes. Empty after all that gives `None`, and the device shows the subtype label.
+///
+/// The fold is a format constraint, not a font one: the device font renders Latin-1 and Latin
+/// Extended-A for phone-supplied route and ride names, and only these fixed-width packed POI names
+/// fold.
 pub fn normalize_name(raw: &str) -> Option<String> {
     let mut out = String::with_capacity(raw.len().min(28));
     let mut pending_space = false;
@@ -557,15 +544,14 @@ pub fn dump_hours(pois: &[Poi]) {
 mod tests {
     use super::*;
 
-    /// Pin the packer's OSM-tag classification — subtype ids are normative and
-    /// append-only, so any edit to an existing row must fail a test, not slip through
-    /// review. The category/label half of each row lives in `obc-formats`' canonical
-    /// table; this test also asserts every subtype maps back to the **expected**
-    /// category + label there, so the two crates can't drift.
+    /// Pin the packer's OSM-tag classification: subtype ids are normative and append-only, so any
+    /// edit to an existing row must fail a test rather than slip through review. This also asserts
+    /// that every subtype maps back to the expected category and label in `obc-formats`, so the two
+    /// crates cannot drift.
     #[test]
     fn table_is_pinned() {
-        // (subtype, key, value, expected category id, expected fallback label). The category + label
-        // columns are what `obc-formats` must return for this subtype — the cross-crate guard.
+        // (subtype, key, value, expected category id, expected fallback label). The last two columns
+        // are what `obc-formats` must return for this subtype.
         let expect: [(u8, &str, &str, u8, &str); 24] = [
             (1, "amenity", "drinking_water", 1, "Drinking water"),
             (2, "natural", "spring", 1, "Spring"),
@@ -670,8 +656,8 @@ mod tests {
         // Winding order must not matter.
         let sq_cw = [(0.0, 0.0), (0.0, 2.0), (2.0, 2.0), (2.0, 0.0), (0.0, 0.0)];
         assert_eq!(ring_centroid(&sq_cw), (1.0, 1.0));
-        // Degenerate: collinear ring has zero area ⇒ vertex mean (closing
-        // vertex excluded, so the mean is not biased toward it).
+        // Degenerate: a collinear ring has zero area, so the vertex mean, with the closing vertex
+        // excluded so the mean is not biased toward it.
         let line = [(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (0.0, 0.0)];
         let (cx, cy) = ring_centroid(&line);
         assert!((cx - 1.0).abs() < 1e-12 && cy == 0.0);

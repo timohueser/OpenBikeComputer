@@ -1,111 +1,69 @@
-//! The **map-referenced altimeter** (elevation epic #1068, EL8): the barometer's short-term
-//! dynamics pinned to the map's absolute frame.
+//! The map-referenced altimeter: the barometer's short-term dynamics pinned to the map's absolute
+//! frame.
 //!
-//! ## Why fusion, not replacement
+//! The two sources are opposites, and each is the other's calibration. The barometer resolves single
+//! metres of climbing at the fix rate but has no absolute frame, because its sea-level reference is
+//! hard-coded while the air pressure drifts by metres per hour. The terrain raster at the GPS fix is
+//! absolute orthometric metres but static, and its ~57 m posting lies about bridges, cuttings and
+//! tunnels.
 //!
-//! The two sources this device already has are exact opposites, and each is the other's
-//! calibration:
+//! So take the difference at every fix that resolves a terrain sample, `residual = map − baro`, and
+//! low-pass it. That residual is the barometer's unknown offset, and it moves only as fast as the
+//! air pressure does. Add it back and the reading is absolute: `fused = baro + offset`.
 //!
-//! | | absolute? | short-term | fails on |
-//! | :-- | :-- | :-- | :-- |
-//! | BMP581 (`obc-sensors/bmp581.rs`) | **no** — hard-coded sea-level `P0`, so the value is offset by whatever the air pressure is doing | resolves single metres of real climbing, at the fix rate | air pressure drift (metres per hour), and any absolute reading at all |
-//! | OBCT terrain at the GPS fix | **yes** — orthometric metres, unaffected by air pressure | none: it is a static raster | ~57 m posting quantisation, bridges, cuttings, tunnels, cliff-edge postings |
-//!
-//! So: take the **difference** of the two at every fix that resolves a terrain sample —
-//! `residual = map − baro` — and low-pass it. That residual *is* the barometer's unknown offset,
-//! and it moves only as fast as the air pressure does. Add it back and the tile finally reads a
-//! trustworthy absolute height: `fused = baro + offset`. The barometer keeps supplying every
-//! short-term metre; the map only ever moves the frame those metres are measured in.
-//!
-//! ## Ride recording is deliberately NOT fused
-//!
-//! [`Activity::track_ele`](crate::activity::Activity::track_ele) (the logged `TrackPoint`
-//! elevation) and the climb accumulator keep reading **raw dead-banded barometric** deltas, exactly
-//! as before this module existed. That is not an oversight:
-//!
-//! - Climb is a sum of *differences*, and the offset cancels in a difference. Fusing would change
-//!   nothing about it except to inject the estimator's own settling transient as fake climbing.
-//! - The recorded track is the rider's own measurement. Folding the map into it would double-count:
-//!   a ride ridden on terrain the map already describes would come back carrying the map's numbers
-//!   dressed as the barometer's, and the two would no longer be independent when compared.
-//!
-//! The one thing this module changes is what the **Current Elevation tile** (#222) shows — a
-//! read-out, not a record.
-//!
-//! ## No fake precision
-//!
-//! Until the estimator has [`SETTLE_SAMPLES`] accepted residuals — and forever on a map with no
-//! terrain beside it, where no residual ever arrives — [`fused_m`](AltitudeFusion::fused_m) answers
-//! `None` and the tile falls back to exactly today's baro-relative reading and presentation.
-//!
-// ---------------------------------------------------------------------------------------------
-// Tuning knobs — the whole estimator policy in five consts, `climb.rs`-style: plain module consts,
-// one device policy, easy to retune from a sim replay. Every one of them is expressed **per
-// accepted residual**, i.e. per GPS fix that resolved a terrain sample (the app samples terrain at
-// the fix cadence, never per frame — see `App::sample_terrain`).
-// ---------------------------------------------------------------------------------------------
+//! Ride recording is not fused. Climb is a sum of differences, so the offset cancels and fusing
+//! would only inject the estimator's settling transient as fake climbing; and the recorded track is
+//! the rider's own measurement, which must stay independent of the map it is compared against. Only
+//! the Current Elevation tile reads the fused value, and it falls back to the raw barometric reading
+//! until the estimator has [`SETTLE_SAMPLES`] accepted residuals — which on a map with no terrain
+//! beside it never happens.
 
-/// The steady-state EMA weight of one residual, i.e. `α` in `offset += α·(residual − offset)`.
+// Every tuning const below is expressed per accepted residual, which is per GPS fix that resolved a
+// terrain sample.
+
+/// The steady-state EMA weight of one residual: `α` in `offset += α·(residual − offset)`.
 ///
-/// `1/300` ⇒ a time constant of ~300 fixes ≈ **5 minutes** at the default 1 Hz
-/// [`fix_interval_s`](crate::settings::Settings::fix_interval_s). Chosen against the two error
-/// budgets it sits between:
-///
-/// - **Above** the map's noise: a single bilinear terrain sample is only good to a handful of
-///   metres (57 m posting, and the fix itself wanders), so a *lot* of averaging is wanted. 300
-///   samples cuts that noise by ~17×.
-/// - **Below** the pressure-drift rate: a sea-level pressure change of ~1 hPa/h causes
-///   ≈ 8 m/h of apparent altitude. A 5-minute lag against 8 m/h is ~0.7 m — under the tile's own
-///   1 m rounding, so tracking is effectively free.
-///
-/// A rider who configured a slower fix interval stretches τ proportionally (10 s fixes ⇒ ~50 min);
-/// the lag against air pressure grows to ~7 m, still small, and the warm-up below is unaffected.
+/// `1/300` is a time constant of about 300 fixes, or 5 minutes at 1 Hz. It sits between two error
+/// budgets: a single bilinear terrain sample is only good to a handful of metres, so a lot of
+/// averaging is wanted; and a ~1 hPa/h pressure change moves apparent altitude by about 8 m/h,
+/// against which a 5-minute lag is ~0.7 m, under the tile's own 1 m rounding. A slower fix interval
+/// stretches the time constant proportionally.
 pub const OFFSET_ALPHA: f32 = 1.0 / 300.0;
 
-/// Accepted residuals before the estimator is **settled** — before this the tile shows the raw
+/// Accepted residuals before the estimator is settled. Before that the tile shows the raw
 /// barometric reading, after it the fused one.
 ///
-/// 20 fixes ≈ 20 s of riding under open sky. The first residual already *seeds* the offset (so the
-/// frame is roughly right immediately), and the warm-up rule below makes those first 20 a plain
-/// running mean; 20 samples is where the mean's own spread drops below the tile's 1 m rounding for
-/// a typical few-metre per-sample error. Waiting longer would only leave the rider staring at the
-/// old, wrong number for no gain.
+/// 20 fixes is about 20 s of riding under open sky. The first residual already seeds the offset and
+/// the warm-up rule makes the first 20 a plain running mean, whose own spread drops below the tile's
+/// 1 m rounding at about 20 samples.
 pub const SETTLE_SAMPLES: u32 = 20;
 
 /// How far (m) a residual may sit from the current offset and still be averaged in. Beyond this it
-/// is **gated** — recorded, but never blended.
+/// is gated: recorded, but never blended.
 ///
-/// 40 m is comfortably above everything that is *noise* (posting quantisation on a steep face, fix
-/// wander, baro sample scatter) and comfortably below everything that is *geometry*: a bridge over
-/// a gorge, a cutting, and above all a tunnel, where the map faithfully reports the mountain
-/// hundreds of metres over your head. Those excursions are real facts about the raster and wrong
-/// facts about the rider, so the filter must follow the trend and ignore them — during a tunnel
-/// the barometer carries the elevation alone, which is precisely the right answer.
+/// 40 m is above everything that is noise — posting quantisation on a steep face, fix wander, baro
+/// scatter — and below everything that is geometry: a bridge over a gorge, a cutting, and above all
+/// a tunnel, where the map reports the mountain overhead. In a tunnel the barometer carries the
+/// elevation alone, which is the right answer.
 pub const OUTLIER_GATE_M: f32 = 40.0;
 
-/// Consecutive **mutually consistent** gated residuals before the estimator concludes the reference
+/// Consecutive mutually consistent gated residuals before the estimator concludes the reference
 /// genuinely moved and re-seeds on them.
 ///
-/// The escape hatch against a permanently stuck filter: if the offset is wrong for any reason the
-/// gate cannot distinguish from geometry — the device was carried up in a lift, the barometer
-/// re-anchored, a long tunnel spat the rider out somewhere the old frame no longer fits — every
-/// residual becomes an outlier and without this the filter would never recover.
-///
-/// 60 fixes ≈ 1 minute. Combined with [`RESEED_SPREAD_M`] this is deliberately hard to trip by
-/// accident: passing *under* terrain produces gated residuals that scatter as the ground overhead
-/// rises and falls, which resets the run. If a flat-topped tunnel does fool it, the failure
-/// self-heals — on daylight the true residual is itself a consistent run, and the estimator
-/// re-seeds back within another minute.
+/// It is the escape hatch against a permanently stuck filter: if the offset is wrong for a reason
+/// the gate cannot tell from geometry — a lift ride, a barometer re-anchor — every residual becomes
+/// an outlier and the filter would never recover. 60 fixes is about a minute, and with
+/// [`RESEED_SPREAD_M`] it is hard to trip by accident: passing under terrain produces residuals that
+/// scatter as the ground overhead rises and falls, which resets the run.
 pub const RESEED_RUN: u16 = 60;
 
 /// How tightly a run of gated residuals must agree (m) to count as "the reference moved" rather
-/// than "we are traversing varied terrain we are not standing on". 12 m is a few times the
-/// per-sample noise and far below the tens-to-hundreds of metres that terrain overhead sweeps
-/// through over a minute of riding.
+/// than "we are crossing varied terrain we are not standing on". 12 m is a few times the per-sample
+/// noise and far below what terrain overhead sweeps through over a minute of riding.
 pub const RESEED_SPREAD_M: f32 = 12.0;
 
-/// What [`AltitudeFusion::observe`] did with one residual — the estimator's whole decision surface,
-/// returned so tests (and the RTT hook) can see it rather than infer it.
+/// What [`AltitudeFusion::observe`] did with one residual, returned so tests and the RTT hook can
+/// see the decision rather than infer it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Observed {
     /// The offset was (re)established from this residual alone: the very first one, or a re-seed
@@ -119,20 +77,19 @@ pub enum Observed {
 
 /// The offset estimator: one slow EMA over `map − baro`, an outlier gate, and the re-seed escape.
 ///
-/// Lives on [`Activity`](crate::activity::Activity) beside the raw barometric reading it corrects,
-/// and — unlike every accumulator around it — **survives a ride reset**: it is a calibration of the
-/// atmosphere, not a tally of the ride, and starting a new ride does not change the air pressure.
+/// Unlike the accumulators around it, it survives a ride reset: it calibrates the atmosphere, not
+/// the ride, and starting a new ride does not change the air pressure.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AltitudeFusion {
     /// The current estimate of `map − baro` (m). `None` until the first residual seeds it.
     offset_m: Option<f32>,
-    /// Residuals folded into the offset since the last seed — the EMA's warm-up weight (see
-    /// [`OFFSET_ALPHA`]). Reset to 1 by a seed, so a re-seed starts averaging afresh instead of
-    /// dragging the old frame along at `α = 1/300`.
+    /// Residuals folded into the offset since the last seed — the EMA's warm-up weight. A seed
+    /// resets it to 1, so a re-seed starts averaging afresh instead of dragging the old frame
+    /// along.
     weight: u32,
-    /// Residuals accepted (or seeded) **since boot** — the settle counter. Never reset: a re-seed
-    /// replaces the absolute frame with fresher map truth, it does not take the frame away, so the
-    /// tile must not flick back to the raw reading for 20 s every time one happens.
+    /// Residuals accepted or seeded since boot — the settle counter. Never reset: a re-seed
+    /// replaces the absolute frame rather than taking it away, so the tile must not flick back to
+    /// the raw reading each time one happens.
     accepted: u32,
     /// Residuals gated since boot — diagnostics only (the RTT line, the sim readout).
     gated: u32,
@@ -140,11 +97,10 @@ pub struct AltitudeFusion {
     /// means no run is open.
     run_offset_m: f32,
     run_len: u16,
-    /// Re-seeds since boot — diagnostics. A healthy ride has zero or one (the initial seed is not
-    /// counted here).
+    /// Re-seeds since boot — diagnostics. The initial seed is not counted here.
     reseeds: u16,
     /// The terrain height (m) of the most recent accepted sample — what the offset is referenced
-    /// to, surfaced for the RTT/sim readout so a suspicious offset can be traced to its sample.
+    /// to, so a suspicious offset can be traced to its sample.
     map_ref_m: Option<f32>,
 }
 
@@ -164,9 +120,7 @@ impl AltitudeFusion {
     }
 
     /// Feed one paired observation: the terrain height at the GPS fix and the barometric reading
-    /// from the same tick. Non-finite inputs (a baro driver hiccup) are dropped without touching
-    /// any state — the same rule
-    /// [`record_altitude`](crate::activity::Activity::record_altitude) applies.
+    /// from the same tick. Non-finite inputs are dropped without touching any state.
     pub fn observe(&mut self, map_m: f32, baro_rel_m: f32) -> Observed {
         if !map_m.is_finite() || !baro_rel_m.is_finite() {
             return Observed::Gated;
@@ -177,10 +131,9 @@ impl AltitudeFusion {
             return Observed::Seeded;
         };
         if (residual - offset).abs() <= OUTLIER_GATE_M {
-            // Inside the gate: end any open outlier run and blend. The warm-up `1/weight` makes the
-            // first `1/OFFSET_ALPHA` residuals a plain running mean — optimal early convergence —
-            // and hands over to the fixed α smoothly the moment the running mean is the slower of
-            // the two.
+            // Inside the gate: end any open outlier run and blend. The warm-up `1/weight` makes
+            // the first `1/OFFSET_ALPHA` residuals a plain running mean, and hands over to the fixed
+            // α the moment the running mean is the slower of the two.
             self.run_len = 0;
             self.weight = self.weight.saturating_add(1);
             self.accepted = self.accepted.saturating_add(1);
@@ -190,7 +143,7 @@ impl AltitudeFusion {
             return Observed::Accepted;
         }
         // Outside the gate. Extend the open run if this residual agrees with it, else start a new
-        // one — a scattering sequence (terrain sweeping overhead in a tunnel) can never accumulate.
+        // one, so a scattering sequence can never accumulate.
         self.gated = self.gated.saturating_add(1);
         if self.run_len > 0 && (residual - self.run_offset_m).abs() <= RESEED_SPREAD_M {
             self.run_len += 1;
@@ -217,43 +170,42 @@ impl AltitudeFusion {
         self.map_ref_m = Some(map_m);
     }
 
-    /// Whether the estimator has enough accepted residuals ([`SETTLE_SAMPLES`]) for its answer to
-    /// be shown. Latching: once settled it stays settled for the boot, so riding out of terrain
-    /// coverage freezes the offset rather than withdrawing the absolute frame.
+    /// Whether the estimator has enough accepted residuals for its answer to be shown. It latches:
+    /// riding out of terrain coverage freezes the offset rather than withdrawing the frame.
     pub fn settled(&self) -> bool {
         self.accepted >= SETTLE_SAMPLES
     }
 
-    /// The current offset estimate `map − baro` (m), or `None` before the first residual. Available
-    /// before [`settled`](Self::settled) — the caller decides whether an unsettled offset is worth
-    /// anything (the tile says no).
+    /// The current offset estimate `map − baro` (m), or `None` before the first residual. It is
+    /// available before [`settled`](Self::settled); the caller decides whether that is worth
+    /// anything.
     pub fn offset_m(&self) -> Option<f32> {
         self.offset_m
     }
 
-    /// The fused **absolute** elevation (m) for a barometric reading, or `None` while unsettled /
-    /// on a terrain-less map. This is the whole point of the module.
+    /// The fused absolute elevation (m) for a barometric reading, or `None` while unsettled or on
+    /// a terrain-less map.
     pub fn fused_m(&self, baro_rel_m: f32) -> Option<f32> {
         let offset = self.offset_m?;
         self.settled().then_some(baro_rel_m + offset)
     }
 
-    /// Residuals accepted since boot — the settle counter (RTT / sim readout).
+    /// Residuals accepted since boot — the settle counter.
     pub fn accepted(&self) -> u32 {
         self.accepted
     }
 
-    /// Residuals gated since boot (RTT / sim readout).
+    /// Residuals gated since boot.
     pub fn gated(&self) -> u32 {
         self.gated
     }
 
-    /// Re-seeds since boot, excluding the initial seed (RTT / sim readout).
+    /// Re-seeds since boot, excluding the initial seed.
     pub fn reseeds(&self) -> u16 {
         self.reseeds
     }
 
-    /// The terrain height (m) the offset is currently referenced to (RTT / sim readout).
+    /// The terrain height (m) the offset is currently referenced to.
     pub fn map_reference_m(&self) -> Option<f32> {
         self.map_ref_m
     }
@@ -263,16 +215,14 @@ impl AltitudeFusion {
 mod tests {
     use super::*;
 
-    /// Drive `n` fixes at a constant true elevation with the barometer offset by `baro_bias`
-    /// (i.e. the barometer reads `true + baro_bias`, so the residual is `−baro_bias`).
+    /// Drive `n` fixes at a constant true elevation with the barometer reading
+    /// `true + baro_bias`, so the residual is `−baro_bias`.
     fn run_flat(f: &mut AltitudeFusion, n: u32, true_m: f32, baro_bias: f32) {
         for _ in 0..n {
             f.observe(true_m, true_m + baro_bias);
         }
     }
 
-    /// The headline: a barometer reading 60 m too high is corrected to the map's frame, and the
-    /// fused answer is the *true* elevation, not the map's quantised sample.
     #[test]
     fn the_offset_converges_to_the_barometers_bias() {
         let mut f = AltitudeFusion::new();
@@ -285,8 +235,8 @@ mod tests {
         assert!((fused - 1800.0).abs() < 0.5, "fused ≈ 1800 m, got {fused}");
     }
 
-    /// The warm-up rule is a running mean, so a noisy map converges in a handful of samples rather
-    /// than the 300 the steady-state α alone would need.
+    /// A noisy map converges in a handful of samples rather than the 300 the steady-state α alone
+    /// would need.
     #[test]
     fn the_warm_up_averages_rather_than_crawling() {
         let mut f = AltitudeFusion::new();
@@ -300,8 +250,6 @@ mod tests {
         assert!(f.settled(), "20 samples is exactly the settle threshold");
     }
 
-    /// Before `SETTLE_SAMPLES` there is no fused answer at all — the tile keeps today's raw reading
-    /// rather than showing a half-converged number.
     #[test]
     fn an_unsettled_estimator_answers_none() {
         let mut f = AltitudeFusion::new();
@@ -314,8 +262,6 @@ mod tests {
         assert!(f.fused_m(310.0).is_some());
     }
 
-    /// A map with no terrain beside it feeds nothing, so nothing settles and nothing is claimed —
-    /// the `NullElevation` behaviour end of the seam, at this layer.
     #[test]
     fn with_no_terrain_samples_nothing_is_claimed() {
         let f = AltitudeFusion::new();
@@ -325,8 +271,6 @@ mod tests {
         assert_eq!(f.accepted(), 0);
     }
 
-    /// The gate: a bridge over a gorge (the map reports the river 80 m below) must not drag the
-    /// offset down, and the ride continues on the pre-bridge frame.
     #[test]
     fn a_single_large_excursion_is_gated_not_averaged() {
         let mut f = AltitudeFusion::new();
@@ -342,8 +286,8 @@ mod tests {
         assert_eq!(f.reseeds(), 0, "five is nowhere near the re-seed run");
     }
 
-    /// A tunnel: gated residuals that **scatter** as the mountain overhead rises and falls never
-    /// accumulate a run, so a long tunnel cannot re-seed the filter onto the ridge above it.
+    /// Gated residuals that scatter as the mountain overhead rises and falls never accumulate a
+    /// run, so a long tunnel cannot re-seed the filter onto the ridge above it.
     #[test]
     fn scattered_outliers_never_reach_the_re_seed_run() {
         let mut f = AltitudeFusion::new();
@@ -358,8 +302,8 @@ mod tests {
         assert!((f.offset_m().unwrap()).abs() < 0.5, "the offset rode the tunnel out unchanged");
     }
 
-    /// …but a reference that genuinely moved — a consistent run of outliers — re-seeds, so the
-    /// filter can never wedge permanently outside its own gate.
+    /// A reference that genuinely moved re-seeds, so the filter can never wedge permanently
+    /// outside its own gate.
     #[test]
     fn a_consistent_outlier_run_re_seeds_the_offset() {
         let mut f = AltitudeFusion::new();
@@ -384,8 +328,7 @@ mod tests {
         assert!((f.fused_m(950.0).unwrap() - 800.0).abs() < 1.0);
     }
 
-    /// A run broken by one disagreeing residual restarts — the run counter is *consecutive and
-    /// consistent*, not a tally.
+    /// The run counter is consecutive and consistent, not a tally.
     #[test]
     fn an_inconsistent_sample_restarts_the_run() {
         let mut f = AltitudeFusion::new();
@@ -403,8 +346,6 @@ mod tests {
         assert_eq!(f.reseeds(), 1, "…and re-seeds on the next one");
     }
 
-    /// Pressure drift is exactly what the filter is *supposed* to follow: a barometer walking away
-    /// at a realistic 8 m/h is tracked with sub-metre lag.
     #[test]
     fn slow_pressure_drift_is_tracked_not_gated() {
         let mut f = AltitudeFusion::new();
@@ -419,8 +360,6 @@ mod tests {
         assert!((fused - 1000.0).abs() < 1.5, "the fused elevation stayed on the map, got {fused}");
     }
 
-    /// A non-finite reading (a baro driver hiccup) is dropped whole — it must not poison the offset
-    /// the way an infinity would poison a running sum.
     #[test]
     fn non_finite_readings_are_dropped() {
         let mut f = AltitudeFusion::new();

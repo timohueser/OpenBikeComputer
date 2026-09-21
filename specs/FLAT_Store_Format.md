@@ -1,9 +1,8 @@
 # Flat store on-card format
 
-- Status: **normative** for the flat card store (Device Object System v3, epic #1256)
+- Status: **normative** for the flat card store
 - Format version: 1
 - Seam and wire contract: [`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md)
-- Replaces: every earlier on-card layout, catalog, staging, promotion and sidecar mechanism
 
 This document is the byte contract for the raw SD card. There is no partition table and no
 filesystem: the card is five fixed regions and an array of equal extents, and every address the
@@ -40,10 +39,6 @@ format constant of **16,384 bytes**, and every region boundary and record stride
 of it, measured from physical LBA 0. A write may corrupt blocks inside the page it is programming
 and does not corrupt blocks lying in another page.
 
-That assumption is **taken, not yet measured**. If it later fails, the remedy is region spacing and
-copy counts inside this document and inside the store — nothing above the seam of
-[`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §2 changes.
-
 A **multi-block write command** is not a unit of atomicity either, and nothing below may assume it is.
 A cut inside one leaves an arbitrary **subset** of its blocks on the card: the card is free to have
 committed any of them already and to lose the rest with the power, and the block it was mid-programming
@@ -78,11 +73,10 @@ the extent area is everything after it.
 | `4096 .. ` | — | rest of card | extent area, extents of the recorded size (§6) |
 
 Every one of those boundaries is a multiple of 16,384 bytes, so no two regions share a program page
-and the reserved tail places the extent area on a **2 MiB** boundary. What that boundary has to be a
-multiple of is the 16,384-byte **program page**, and that is what makes §6's address arithmetic exact
-and §6.1's page-alignment property hold at every size §8 can pick. It is not a claim that an extent
-begins on a multiple of its own size: at 8 MiB extents, extent 0 still begins at absolute 2 MiB, and
-nothing in this format needs otherwise.
+and the reserved tail places the extent area on a **2 MiB** boundary. That is what makes §6's
+address arithmetic exact and §6.1's page-alignment property hold at every size §8 can pick. An
+extent does not begin on a multiple of its own size: at 8 MiB extents, extent 0 still begins at
+absolute 2 MiB.
 
 **Block 0 is deliberately not an MBR.** Its bytes `510..511` are zero (§4 puts the superblock CRC at
 `504..508` for exactly this reason), so a host that inspects the card sees an unformatted device
@@ -142,17 +136,13 @@ never read.
 | 504 | 4 | CRC-32 over bytes `0..504` |
 | 508 | 4 | zero |
 
-The block count and the byte after it are the card's **geometry**, and they are why this record
-exists at all. Everything else about the layout is a constant of format version 1 — the regions of §2,
-the sizes of §5 and §7 — and a card whose layout differs is a different version, which the version
-field already names. The extent size is the exception: §6's index is a `u16`, so a fixed 1 MiB would
-cap a card at 64 GiB, and §8 scales the size to the card instead. It is written once, by
-initialization, and read by every mount; nothing derives it a second time.
+The block count and the extent size are the card's **geometry**. Everything else about the layout is
+a constant of format version 1. The extent size is written once, by initialization, and read by every
+mount; nothing derives it a second time.
 
-Recording it as a **logarithm** is what makes "a power of two" a property of the encoding rather than
-a rule: no byte in this field names a size that is not one. Two rules are left, and a superblock that
-breaks either is not a superblock — the same face a failed CRC gets, and the right one, since a card
-whose geometry is unreadable has no addresses at all:
+The size is recorded as a **logarithm**, so no byte in this field names a size that is not a power of
+two. Two rules are left, and a superblock that breaks either is not a superblock — the same face a
+failed CRC gets:
 
 - the recorded value is outside `20..=31` — below the 1 MiB minimum, or above the 2 GiB ceiling that
   makes `65,536 × E` the 128 TiB no SD standard exceeds;
@@ -279,10 +269,9 @@ The ranges MUST cover at least `ceil(payload length / E)` extents, where `E` is 
 extent size (§4, §6). They may cover more only while
 the `RECORDING` or `RESERVED` flag is set; every other entry is trimmed to its payload at the commit
 that publishes it, so the tail of the last extent is the only slack an ordinary object carries. A
-**zero-length object is therefore unrepresentable** without one of those flags, and deliberately so:
-`range count` is at least `1` and every live range holds at least one extent, so an entry that owns
-extents while needing none would be the very slack this rule forbids — an object with no bytes is a
-`Remove`, not a `Put`.
+**zero-length object is therefore unrepresentable** without one of those flags: `range count` is at
+least `1` and every live range holds at least one extent. An object with no bytes is a `Remove`, not
+a `Put`.
 
 Flags:
 
@@ -304,8 +293,7 @@ finalised.
 
 **Ordering and uniqueness.** Entries are sorted ascending by `(ObjectId, Revision)` and the pair is
 unique. A lookup is therefore a binary search over the live prefix — at most nine block reads — and
-the byte image of the catalog is a function of the store's state, which is what lets the FS3
-reference model compare bytes rather than sets.
+the byte image of the catalog is a function of the store's state.
 
 For one `ObjectId` the array holds either one entry, or exactly two of which precisely one carries
 `RETAINED`. The entry without `RETAINED` is the **head** and has the greater `Revision`, so the
@@ -396,24 +384,14 @@ written body can accidentally satisfy in the prefix the count selects. Invalidat
 "body not yet certified" the only intermediate state.
 
 The cost is `ceil(n/4) + 3` block **writes** and three synchronizations, and — because the mechanism
-rewrites the whole live prefix — two passes over the array's `ceil(n/4)` blocks to produce them: one to
-check everything the batch would write against §5.3 before the card is touched, one to write it.
+rewrites the whole live prefix — two passes over the array's `ceil(n/4)` blocks to produce them: one
+to check everything the batch would write against §5.3 before the card is touched, one to write it.
 
-The block count is normative; the time it takes is not, and a block count says nothing about it —
-the card charges per command, not per block. Part of a commit is not I/O at all: entry decode,
-§5.3's pass, entry encode and the body CRC fold are the MCU's and scale with the entry count.
-
-A store is therefore free to issue these blocks in as few multi-block commands as it likes, and should:
-nothing in this section is a statement about command granularity. What it does fix is the blocks, their
-addresses, their contents, and their order relative to the three synchronizations — a cut inside a wide
-command is still a cut, and the isolation assumption of §1 is per program page whatever command was
-programming it. The device's store batches to 4 KiB windows, which puts a commit at a few hundred
-entries near **80 ms** and at 1,024 near **250 ms** — projections from the figures above, not fresh
-measurements, and in both the M33's share is now the larger half.
-
-The budget assumes commits are rare — publication events, not a running log. If a future feature needs
-to commit more than about once per second, the whole-catalog copy is the thing to re-examine, not the
-thing to work around.
+The block count is normative; the time it takes is not. A store may issue these blocks in as few
+multi-block commands as it likes. What this section fixes is the blocks, their addresses, their
+contents, and their order relative to the three synchronizations — a cut inside a wide command is
+still a cut, and the isolation assumption of §1 is per program page whatever command was programming
+it.
 
 ### 5.6 Mount
 
@@ -441,11 +419,8 @@ Those five steps are the whole of mount. There is **no journal replay** — the 
 commit; **no garbage collection** — an extent is free exactly when no entry names it; and **no
 recovery scan** — nothing on the card can be committed that the winning gate does not already
 describe. On a card with no ride in progress a mount reads at most 3 blocks plus the live catalog
-prefix — 261 blocks at 1,025 entries, the whole boot cost.
-
-As in §5.5, the block count is the normative part and the time is not. A mount is CPU-bound rather
-than I/O-bound: decoding the entries, checking §5.3, claiming their extents and folding the body CRC
-scale with the entry count and no schedule reaches them.
+prefix — 261 blocks at 1,025 entries, the whole boot cost. As in §5.5, the block count is the
+normative part and the time is not.
 
 One thing that reads like mount is deliberately outside it: reconciling an update that armed before
 the last reboot, which may remove an orphaned rollback reserve
@@ -524,13 +499,10 @@ guarantees it for every card initialization accepts, and §4's decoder refuses a
 violates it rather than capping, because the capped tail would be space the superblock claims and no
 index reaches.
 
-**What is fixed is the index, and what scales is the grain.** 65,536 extents is an 8 KiB resident free
-bitmap whatever the card holds, on a part that has little RAM, and that is the figure this rule exists
-to keep constant. The cost is granularity: on a card above 64 GiB an object wastes up to `E - 1` bytes
-in the tail of its last extent, and there is **no sub-extent allocator** — an object is a whole number
-of extents or it is nothing. That is the smaller of the two prices, and the one that was not being
-paid before is the larger: a fixed 1 MiB put a hard 64 GiB ceiling on the card, which the bench card
-already sat at 95% of and a 128 GB card is simply past.
+**What is fixed is the index, and what scales is the grain.** 65,536 extents is an 8 KiB resident
+free bitmap whatever the card holds. The cost is granularity: on a card above 64 GiB an object wastes
+up to `E - 1` bytes in the tail of its last extent, and there is **no sub-extent allocator** — an
+object is a whole number of extents or it is nothing.
 
 ### 6.1 Addressing
 
@@ -543,9 +515,8 @@ lba   = 4096 + (E / 512) * f_i + (o - s_i) / 512
 inner = (o - s_i) % 512
 ```
 
-That is the whole read path: at most eight comparisons and two divisions by constants, no indirection
-block, no chain walk, no cache. It is what `fat_extents.rs` was built to fake on top of a filesystem
-(#500), and it is why that file goes away in FS6.
+That is the whole read path: at most eight comparisons and two divisions by constants, no
+indirection block, no chain walk, no cache.
 
 The extent area starts on a 2 MiB boundary and `E` is a power of two of at least 1 MiB, so every
 extent begins on a program page and every `s_i` is a multiple of one. Therefore **any payload offset
@@ -561,8 +532,7 @@ extent index means what the card's superblock says it means, and nothing in the 
 Allocation is first-fit over the free bitmap, in ascending extent order, and the result is at most 8
 ranges. An allocation that cannot be expressed in 8 ranges is **refused** — the caller sees a
 refusal, never a partial object and never a rewritten card. Fragmentation's worst case is therefore a
-refused allocation, never corruption. There is no object mover in format version 1; when a real card
-refuses a real allocation, that is when one gets designed.
+refused allocation, never corruption. There is no object mover in format version 1.
 
 An allocation is RAM state until the commit that names its extents in an entry. It is released by an
 explicit cancel, by the store's drop, and by mount — which rebuilds the bitmap from the catalog and
@@ -583,10 +553,8 @@ unreadable.
 
 ## 7. Ride journal
 
-A ride grows for hours. Committing it every ten seconds would violate the commit-rate budget of §5.5
-outright, and not committing it at all would risk hours of track. The journal is the one mechanism
-that resolves that, and it is the only place in this format where bytes become durable without a
-commit.
+A ride grows for hours. The journal is the only place in this format where bytes become durable
+without a commit.
 
 The region holds 16 **16 KiB tail slots** followed by 16 page-isolated headers. Each slot is a full
 snapshot of the ride bytes after the flushed payload prefix; the recorder does not keep that snapshot
@@ -704,9 +672,8 @@ the proof and payload bytes are then unreachable. A reboot follows the same repa
 headers.
 
 An ordinary checkpoint therefore performs at most one bounded 16 KiB source read and one 16 KiB slot
-write, plus its header gate; rollover performs the fixed proof/logical pair and one payload-page copy.
-The extra media read replaces a 16 KiB recorder allocation and does not change the on-card format,
-the loss cap, or finish I/O.
+write, plus its header gate; rollover performs the fixed proof/logical pair and one payload-page
+copy.
 
 The binding limit on the tail is the slot's 16,384-byte page, not the `u32` field that measures it.
 Step 2 leaves at most 16,383 bytes behind, so every possible page remainder fits; there is no header
@@ -719,10 +686,9 @@ final length and payload CRC, and trims the ranges to `ceil(length / E)` extents
 rest of the reserve. The 16 slot headers are then zeroed. A cut during that zeroing is harmless: no
 entry carries `RECORDING`, so §5.6 never reads them.
 
-Finish I/O is independent of ride length. The simulator census for both one flushed page and one
-thousand flushed pages is 27 read commands / 55 blocks, 29 write commands / 30 blocks and 5
-synchronizations: it validates and copies only the selected 16 KiB tail slot, commits one catalog,
-then clears the fixed header ring. No finish-time conversion or prefix scan is permitted.
+Finish I/O is independent of ride length: the store validates and copies only the selected 16 KiB
+tail slot, commits one catalog, then clears the fixed header ring. No finish-time conversion or
+prefix scan is permitted.
 
 ### 7.3 Recovery
 
@@ -860,24 +826,7 @@ defines it, not here.
 | Retained previous revisions per object | 1 |
 | Commits per second, design budget | ~1 |
 
-## 10. What is not here
-
-Each of these was in the format this one replaces, and each is absent for one reason.
-
-- **No journal replay.** The catalog copy *is* the commit; there is no separate log to apply.
-- **No garbage collection.** An extent is free exactly when no entry names it, so freeing is what a
-  commit already did.
-- **No recovery scan.** Nothing durable exists outside what the winning gate describes; there is
-  nothing to look for.
-- **No per-record gates.** Only the catalog spans more than one program page, so only the catalog
-  needs one.
-- **No `GenerationId`.** Uncommitted bytes are anonymous; committed bytes are named by an entry.
-- **No `OperationId` and no durable result record.** The catalog is the result: a client that lost
-  the link reconciles against it ([`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §3.4).
-- **No partition table and no filesystem.** The card is not user-accessible and no host reads it.
-- **No migration.** An old card is re-initialized.
-
-### Route upload age
+## 10. Route upload age
 
 Catalog entry bytes `36..40` store the route added time as a little-endian `u32`.
 A fresh route publication records the trusted device UTC time. An unknown clock records zero.

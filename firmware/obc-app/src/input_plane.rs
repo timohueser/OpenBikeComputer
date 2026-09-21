@@ -1,19 +1,15 @@
 //! [`InputPlane`] — the input + overlay half of the two-plane device architecture.
 //!
-//! The **map plane** ([`App`]) owns the screen stack, camera, sensors and the expensive base-map
-//! render. This **input plane** owns everything that must stay responsive *while a map frame is
-//! rendering*: the shared [`Gestures`] recogniser, the long-press [`HoldHints`] overlay, the live
-//! hold-progress, and the Layer-2 overlay render. The two couple only by a one-way flow of
-//! recognised [`Gesture`]s and [`Chord`]s — no shared lock the long map render can hold against
-//! input.
+//! The map plane ([`App`]) owns the screen stack, camera, sensors and the expensive base-map
+//! render. This plane owns everything that must stay responsive while a map frame is rendering: the
+//! shared [`Gestures`] recogniser, the long-press [`HoldHints`] overlay, the live hold-progress and
+//! the overlay render. The two couple only by a one-way flow of recognised [`Gesture`]s and
+//! [`Chord`]s, so no lock the long map render holds can block input.
 //!
-//! On the firmware this plane runs on a **high-priority interrupt executor** that preempts the
-//! CPU-bound map render every few milliseconds: it samples the buttons, recognises gestures (into a
-//! channel the map plane drains), and animates the hold bulge on its own overlay layer — so
-//! press-to-feedback latency stays bounded regardless of map-frame length. On the single-loop hosts
-//! (the simulator, the web demos) the same plane runs inline via
-//! [`App::handle_input`](crate::App::handle_input). Either way the logic is *this one struct*, so
-//! host and device behave identically.
+//! On the firmware this plane runs on a high-priority interrupt executor that preempts the map
+//! render every few milliseconds, so press-to-feedback latency stays bounded whatever a frame
+//! costs. On the single-loop hosts it runs inline through
+//! [`App::handle_input`](crate::App::handle_input). Either way the logic is this one struct.
 //!
 //! [`App`]: crate::App
 
@@ -23,35 +19,27 @@ use crate::hold_hint::HoldHints;
 use crate::input::{Chord, Gesture, Gestures, DEFAULT_HOLD_MS};
 use obc_ports::{InputClock, InputSource};
 
-/// The high-priority input + overlay plane: gesture recognition, the long-press hint
-/// overlay, and the live hold-progress readout.
+/// The high-priority input + overlay plane: gesture recognition, the long-press hint overlay, and
+/// the live hold-progress readout.
 ///
-/// Feed it raw input each frame with [`recognize`](InputPlane::recognize) (it emits
-/// [`Gesture`]s and advances the bulge), repaint the bulge with
-/// [`render_overlay`](InputPlane::render_overlay) whenever the bulge has (or just had) live
-/// content, and read the confirm-ring progress / last gesture for a host readout. The plane holds
-/// **no** repaint mirror of its own: the trailing-clear rule is one half of the pass's
-/// `OverlayKey`, and a host that drives its own plane derives the same edge from the row span it
-/// already tracks. It touches **nothing** the map
+/// Feed it raw input each frame with [`recognize`](InputPlane::recognize) and repaint the bulge
+/// with [`render_overlay`](InputPlane::render_overlay). The plane holds no repaint mirror of its
+/// own: the trailing-clear rule is one half of the pass's `OverlayKey`. It touches nothing the map
 /// plane owns, so it is safe to run preemptively against a long map render.
 pub struct InputPlane {
-    /// The shared recognizer (raw events + clock → the five gestures and the device-wide chords).
     gestures: Gestures,
-    /// The global long-press hint overlay (the charge-in-place bulge at the Select / Back / Up
-    /// edges), drawn above every screen on the dedicated overlay layer.
+    /// The long-press hint overlay, drawn above every screen on the dedicated overlay layer.
     hold_hints: HoldHints,
     /// In-flight Select / Back hold-progress (0.0–1.0) for the confirm ring.
     enc_progress: f32,
     back_progress: f32,
-    /// The most recently recognized gesture, for the host's input readout.
     last_gesture: Option<Gesture>,
-    /// Millis at the last [`recognize`](InputPlane::recognize) — the overlay's own clock
-    /// (the input/wall clock), distinct from the map plane's [`App`](crate::App) clock.
+    /// Millis at the last [`recognize`](InputPlane::recognize): the overlay's own clock, which is
+    /// distinct from the map plane's.
     now_ms: u32,
 }
 
 impl InputPlane {
-    /// A fresh plane with the [`DEFAULT_HOLD_MS`] long-press threshold and nothing charging.
     pub fn new() -> Self {
         InputPlane {
             gestures: Gestures::new(DEFAULT_HOLD_MS),
@@ -63,20 +51,16 @@ impl InputPlane {
         }
     }
 
-    /// Drain this frame's raw input + advance hold timing at `clock`, invoking `on_gesture` for
-    /// each recognised gesture **in order**, then fold the frame's hold-progress into the bulge.
+    /// Drain this frame's raw input and advance hold timing at `clock`, invoking `on_gesture` for
+    /// each recognised gesture in order, then fold the frame's hold-progress into the bulge.
+    /// Recognition depends only on the raw events and the clock, never on app state, so the caller
+    /// may apply each gesture inline or buffer them.
     ///
-    /// Recognition depends only on the raw events + the clock — never on app state — so the caller
-    /// may apply each gesture inline or buffer them into a channel; both are identical.
+    /// Call it once per frame even with no pending events: that is how a held button's long-press
+    /// fires at its threshold, how a deferred first step arrives, and how the bulge animates.
     ///
-    /// Call once per frame even with no pending events: that is how a held button's long-press
-    /// fires at its threshold, how a deferred first step arrives at the end of the chord window,
-    /// and how the bulge animates while charging.
-    ///
-    /// Returns any device-wide [`Chord`] this frame's events completed. A chord is **not** a
-    /// gesture: it never reaches a screen, and neither do the presses it swallowed — so it comes
-    /// back beside the callback rather than through it, and the caller resolves it above the
-    /// screen stack.
+    /// Returns any device-wide [`Chord`] this frame's events completed. A chord is not a gesture:
+    /// it never reaches a screen, so it comes back beside the callback rather than through it.
     pub fn recognize(
         &mut self,
         clock: InputClock,
@@ -119,10 +103,9 @@ impl InputPlane {
         chord
     }
 
-    /// Render **only the overlay plane** — the transient hold bulge / confirm ring — over whatever
-    /// is already in `target`, at the plane's own clock. Paints *only* its own pixels and never
-    /// clears the rest, so it is valid over an unchanged map (the compositing contract on
-    /// [`App::render_overlay`](crate::App::render_overlay)).
+    /// Render only the overlay plane, the transient hold bulge, over whatever is already in
+    /// `target`. It paints only its own pixels and never clears the rest, so it is valid over an
+    /// unchanged map.
     pub fn render_overlay<D, F>(&self, target: &mut D, w: f32, h: f32, color_fn: F)
     where
         D: DrawTarget,
@@ -131,26 +114,21 @@ impl InputPlane {
         self.hold_hints.draw(target, &color_fn, w as i32, h as i32, self.now_ms);
     }
 
-    /// Whether the overlay has live content right now — a bulge charging, popping, or
-    /// retracting. `false` exactly when [`render_overlay`](InputPlane::render_overlay) would
-    /// paint nothing, so the overlay layer can stay idle.
+    /// Whether the overlay has live content right now. `false` exactly when
+    /// [`render_overlay`](InputPlane::render_overlay) would paint nothing.
     pub fn overlay_active(&self) -> bool {
         self.hold_hints.active(self.now_ms)
     }
 
-    /// The bounding rows `[y0, y0 + rows)` of the live hold bulge — the dirty region a
-    /// partial-overlay host re-presents, so it can re-push only the active bulge's rows. `Some`
-    /// exactly when [`overlay_active`](InputPlane::overlay_active) is `true`. `w`/`h` size the frame
-    /// the bulge is anchored in.
+    /// The bounding rows `[y0, y0 + rows)` of the live hold bulge: the dirty region a
+    /// partial-overlay host re-presents. `Some` exactly when
+    /// [`overlay_active`](InputPlane::overlay_active) is `true`. `w` and `h` size the frame.
     pub fn overlay_rows(&self, w: i32, h: i32) -> Option<(u16, u16)> {
         self.hold_hints.active_rows(self.now_ms, w, h)
     }
 
-    /// Cancel any in-flight hold (see [`Gestures::cancel_holds`]). The map plane rings this after
-    /// a gesture **transitioned the screen stack** ([`App::take_hold_cancel`](crate::App::take_hold_cancel)),
-    /// so a long-press that was charging over the old top can't complete onto the new one. The
-    /// bulge retracts on the next [`recognize`](InputPlane::recognize) — a cancelled hold's
-    /// progress reads 0.
+    /// Cancel any in-flight hold. The map plane rings this after a gesture transitioned the screen
+    /// stack, so a long-press charging over the old top cannot complete onto the new one.
     pub fn cancel_holds(&mut self) {
         self.gestures.cancel_holds();
     }
@@ -165,17 +143,14 @@ impl InputPlane {
         self.gestures.chord_remaining_ms(now_ms)
     }
 
-    /// The most recently recognized gesture (host input readout), if any.
     pub fn last_gesture(&self) -> Option<Gesture> {
         self.last_gesture
     }
 
-    /// In-flight Select hold-progress (0.0–1.0) for the confirm-ring readout.
     pub fn select_hold_progress(&self) -> f32 {
         self.enc_progress
     }
 
-    /// In-flight Back hold-progress (0.0–1.0).
     pub fn back_hold_progress(&self) -> f32 {
         self.back_progress
     }

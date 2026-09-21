@@ -1,14 +1,12 @@
-//! Recorded-track format: the fixed-record ride log + its GPX export (`no_std`).
+//! Recorded-track format: the fixed-record ride log and its GPX export.
 //!
-//! While riding, the device appends one [`TrackPoint`](obc_ports::TrackPoint) per accepted GPS fix
-//! as a fixed 20-byte record. Finalize appends the ride-v3 footer; it does not convert or rewrite
-//! the samples. [`track_to_gpx`] accepts only a finished ride-v3 object and excludes the footer
-//! from its streamed point walk; the retired headerless/partial-log path is not a compatibility
-//! input.
+//! While riding, the device appends one [`TrackPoint`](obc_ports::TrackPoint) per accepted GPS
+//! fix as a fixed 20-byte record. Finalize appends the ride footer and does not rewrite the
+//! samples. [`track_to_gpx`] accepts only a finished ride object and excludes the footer from its
+//! point walk.
 //!
-//! This is deliberately *not* the [`OBCR`](crate) route format: a route is decimated for
-//! compact drawing, whereas a recorded track wants full GPS fidelity. The log keeps every
-//! accepted point verbatim; only the on-screen breadcrumb (host-side, in RAM) is decimated.
+//! This is not the route format. A route is decimated for compact drawing, but a recorded track
+//! keeps every accepted point verbatim. Only the on-screen breadcrumb is decimated.
 
 use core::fmt::Write;
 
@@ -16,20 +14,18 @@ use heapless::String;
 use obc_formats::io::{ByteSink, ByteSource, Error};
 use obc_formats::track::{decode_record, RECORD_LEN as TRACK_RECORD_LEN};
 
-/// Records read per [`ByteSource`] call, amortizing storage reads during a requested GPX export.
+/// Records read per [`ByteSource`] call, to amortize storage reads during a GPX export.
 const BLOCK_RECORDS: usize = 64;
 
-/// Convert a finished ride-v3 object into GPX 1.1.
+/// Convert a finished ride object into GPX 1.1 in one streaming pass.
 ///
-/// One streaming pass: a fresh `<trkseg>` opens on each
-/// [`segment_start`](obc_ports::TrackPoint::segment_start)
-/// (and on the first point), so pauses/gaps become honest segment breaks. `<time>` is
-/// intentionally omitted until the device has a real clock.
+/// A fresh `<trkseg>` opens on each [`segment_start`](obc_ports::TrackPoint::segment_start) and
+/// on the first point, so a pause becomes an honest segment break. `<time>` is omitted until the
+/// device has a real clock.
 pub fn track_to_gpx(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) -> Result<(), Error> {
-    // Widest point line = `<trkpt>` + negative lat/lon + `<ele>-32768</ele>` + the full sensor
-    // extensions block (`gpxtpx:TrackPointExtension` hr+cad, a bare `<power>`) ≈ 224 chars. Sized
-    // to 320 so that line — and a future `<time>` element — can never truncate (a clipped GPX line
-    // is silent corruption).
+    // The widest point line, with negative coordinates and the full sensor extensions block, is
+    // about 224 chars. The margin here keeps a clipped line, which is silent corruption, out of
+    // reach.
     let mut line: String<320> = String::new();
 
     put(sink, b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")?;
@@ -69,9 +65,8 @@ pub fn track_to_gpx(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) -
             let _ = line.push_str("\" lon=\"");
             write_deg(&mut line, p.lon);
             let _ = write!(line, "\"><ele>{}</ele>", p.ele);
-            // Sensor extensions (epic #707): `gpxtpx:hr`/`gpxtpx:cad` inside a TrackPointExtension
-            // wrapper, plus a bare `<power>` (the de-facto Strava form). Each element is omitted
-            // when its field is absent; the whole `<extensions>` block when all three are.
+            // `gpxtpx:hr` and `gpxtpx:cad` go inside a TrackPointExtension wrapper, and power in
+            // a bare `<power>`, which is the de-facto Strava form.
             if p.hr.is_some() || p.cadence.is_some() || p.power.is_some() {
                 let _ = line.push_str("<extensions>");
                 if p.hr.is_some() || p.cadence.is_some() {
@@ -111,8 +106,8 @@ fn put(sink: &mut dyn ByteSink, b: &[u8]) -> Result<(), Error> {
     sink.write(b)
 }
 
-/// Write a microdegree coordinate as a fixed 6-decimal degree string (exact integer math,
-/// no float formatting / rounding drift): e.g. `-7654321` → `-7.654321`.
+/// Write a microdegree coordinate as a fixed 6-decimal degree string, for example `-7654321` as
+/// `-7.654321`. The integer math avoids float rounding drift.
 fn write_deg<const N: usize>(s: &mut String<N>, ud: i32) {
     if ud < 0 {
         let _ = s.push('-');

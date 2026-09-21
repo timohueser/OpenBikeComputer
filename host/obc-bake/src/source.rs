@@ -1,31 +1,25 @@
 //! Where an extract comes from, and how a cached one is known to still be current.
 //!
-//! The bakery downloads whole-country `.osm.pbf` extracts — Germany alone is
-//! 4.8 GB — so "download or reuse the cached PBF" is not a detail: re-fetching one
-//! costs more wall clock than packing several small regions. Two separate questions
-//! live here, and keeping them separate is the whole design:
+//! The bakery downloads whole-country `.osm.pbf` extracts — Germany alone is 4.8 GB — so
+//! re-fetching one costs more wall clock than packing several small regions. Two separate
+//! questions live here, and keeping them separate is the whole design:
 //!
-//! - **Is the cached file still the current extract?** Answered with HTTP
-//!   validators (`Last-Modified` + `Content-Length`) recorded beside the file. This
-//!   is a *cache-freshness* decision and may use metadata, because being wrong only
-//!   costs a re-download.
-//! - **Did the input change since the last bake?** Answered with the file's SHA-256,
-//!   in the cell bakery. That is the *idempotency key* and it is never a timestamp:
-//!   a mirror that rewrites `Last-Modified` without changing a byte must not
-//!   trigger a twenty-hour re-bake, and a file mutated in place must not be missed.
+//! - Is the cached file still the current extract? Answered with HTTP validators, `Last-Modified`
+//!   and `Content-Length`, recorded beside the file. Being wrong only costs a re-download, so
+//!   metadata is enough.
+//! - Did the input change since the last bake? Answered with the file's SHA-256, in the cell
+//!   bakery. That is the idempotency key and it is never a timestamp: a mirror that rewrites
+//!   `Last-Modified` without changing a byte must not trigger a twenty-hour re-bake, and a file
+//!   mutated in place must not be missed.
 //!
-//! [`Extract::snapshot`] sits deliberately on the *far* side of that line. It is a
-//! fact about the data that the manifest publishes (`source_snapshot`), so it must
-//! not go stale — but it is derived from `Last-Modified`, so letting it force a
-//! re-pack would reintroduce exactly the timestamp sensitivity the paragraph above
-//! rules out. The bakery therefore keeps it out of the pack key and compares it
-//! separately: a re-dated but byte-identical extract rewrites the sidecar and
-//! re-packs nothing.
+//! [`Extract::snapshot`] sits deliberately on the far side of that line. It is a fact about the
+//! data that the manifest publishes, so it must not go stale, but it is derived from
+//! `Last-Modified`, so letting it force a re-pack would reintroduce the timestamp sensitivity
+//! above. The bakery keeps it out of the pack key and compares it separately.
 //!
-//! [`ExtractSource`] is a trait for one reason beyond tidiness: the tests must not
-//! touch the network. [`LocalExtracts`] resolves the same regions against a
-//! directory (or a `file://` URL), so every test in this crate runs offline against
-//! the tiny fixtures already in the repo.
+//! [`ExtractSource`] is a trait because the tests must not touch the network. [`LocalExtracts`]
+//! resolves the same regions against a directory or a `file://` URL, so every test in this crate
+//! runs offline against the tiny fixtures already in the repo.
 
 use std::path::{Path, PathBuf};
 
@@ -38,12 +32,12 @@ use crate::regions::Region;
 pub struct Extract {
     /// Where the `.osm.pbf` is, ready to hand to the packer.
     pub path: PathBuf,
-    /// `YYYY-MM-DD` of the extract itself — the manifest's `source_snapshot`, and a
-    /// fact about the *data*, never about when we happened to fetch it.
+    /// `YYYY-MM-DD` of the extract itself — the manifest's `source_snapshot`, and a fact about the
+    /// data, never about when it was fetched.
     pub snapshot: String,
     /// Size in bytes.
     pub bytes: u64,
-    /// Whether this run had to download it (a summary line, not a decision input).
+    /// Whether this run had to download it: a summary line, not a decision input.
     pub downloaded: bool,
 }
 
@@ -55,16 +49,14 @@ pub trait ExtractSource: Sync {
     fn fetch(&self, region: &Region, progress: &Progress) -> Result<Extract, String>;
     /// The region's Osmosis polygon (`<id>.poly`), as text.
     ///
-    /// This is the extract's own statement of what ground it covers, and the cell
-    /// bake needs it for two decisions a bbox cannot make: which cells a region
-    /// selects, and whether a baked cell is canonical or `partial`
-    /// ([`crate::coverage`]). It is also the file the catalog's drawable region
-    /// outline is reduced from (`OBCC_Spec.md` §7), so both readings come from
-    /// one download.
+    /// This is the extract's own statement of what ground it covers, and the cell bake needs it for
+    /// two decisions a bbox cannot make: which cells a region selects, and whether a baked cell is
+    /// canonical or `partial`. It is also the file the catalog's drawable region outline is reduced
+    /// from, so both readings come from one download.
     ///
-    /// Tiny (tens of KB) and unversioned by Geofabrik, so it is fetched fresh rather
-    /// than validator-cached — but written into the same cache directory, which is
-    /// what lets an offline re-bake work.
+    /// Tens of kilobytes and unversioned by Geofabrik, so it is fetched fresh rather than
+    /// validator-cached, but written into the same cache directory, which is what lets an offline
+    /// re-bake work.
     fn fetch_poly(&self, region: &Region, progress: &Progress) -> Result<String, String>;
 }
 
@@ -74,8 +66,8 @@ pub struct GeofabrikExtracts {
     cache_dir: PathBuf,
 }
 
-/// What we recorded about a cached download, used only to decide whether to fetch
-/// it again. Never an input to the bake key — see the module note.
+/// What was recorded about a cached download, used only to decide whether to fetch it again. Never
+/// an input to the bake key.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct CachedMeta {
     url: String,
@@ -107,9 +99,9 @@ impl ExtractSource for GeofabrikExtracts {
         let head = head(&url)?;
         let meta_path = self.meta_path(region);
 
-        // Reuse only when the file is there *and* both validators still match what
-        // was recorded for it. A missing meta file means "hashed by someone else" —
-        // re-download rather than publish a snapshot date we cannot substantiate.
+        // Reuse only when the file is there and both validators still match what was recorded for
+        // it. A missing meta file means the file was hashed by someone else, so re-download rather
+        // than publish a snapshot date that cannot be substantiated.
         if dest.is_file() {
             if let Ok(text) = std::fs::read_to_string(&meta_path) {
                 if let Ok(meta) = serde_json::from_str::<CachedMeta>(&text) {
@@ -151,8 +143,8 @@ impl ExtractSource for GeofabrikExtracts {
                 std::fs::write(&cached, &text).map_err(|e| format!("{}: {e}", cached.display()))?;
                 Ok(text)
             }
-            // A cached copy is a better answer than a failed bake: the polygon
-            // changes about as often as a country's borders do.
+            // A cached copy is a better answer than a failed bake: the polygon changes about as
+            // often as a country's borders do.
             Err(e) => match std::fs::read_to_string(&cached) {
                 Ok(text) => {
                     progress.warn(format!("{}: {e} — using the cached {}", region.id, cached.display()));
@@ -167,14 +159,13 @@ impl ExtractSource for GeofabrikExtracts {
 /// Extracts already on disk: a directory of `.osm.pbf` files, or a `file://` URL.
 ///
 /// Two layouts are accepted, because two callers want different ones: the nested
-/// `europe/germany/bayern-latest.osm.pbf` mirror layout (what a rsync'd Geofabrik
-/// tree looks like), and a flat directory of `<id-with-underscores>-latest.osm.pbf`
-/// — the bakery's own download cache, so a workstation can re-bake from it with the
-/// network unplugged.
+/// `europe/germany/bayern-latest.osm.pbf` mirror layout, which is what an rsync'd Geofabrik tree
+/// looks like, and a flat directory of `<id-with-underscores>-latest.osm.pbf`, which is the
+/// bakery's own download cache, so a workstation can re-bake from it with the network unplugged.
 pub struct LocalExtracts {
     root: PathBuf,
-    /// Overrides the mtime-derived snapshot date. Tests pin it so a manifest built
-    /// from a checked-in fixture is reproducible.
+    /// Overrides the mtime-derived snapshot date. Tests pin it so a manifest built from a
+    /// checked-in fixture is reproducible.
     snapshot_override: Option<String>,
 }
 
@@ -266,10 +257,9 @@ pub(crate) struct Head {
 
 /// One `HEAD` for the validators and the extract's date.
 ///
-/// The snapshot date comes from `Last-Modified` rather than from the redirect
-/// target's `…-260728.osm.pbf` filename: `-latest` for some regions redirects to a
-/// mirror that keeps no date in the name, and a `source_snapshot` guessed wrong is
-/// worse than a failed bake — the manifest is trusted.
+/// The snapshot date comes from `Last-Modified` rather than from the redirect target's filename:
+/// `-latest` for some regions redirects to a mirror that keeps no date in the name, and a
+/// `source_snapshot` guessed wrong is worse than a failed bake, because the manifest is trusted.
 pub(crate) fn head(url: &str) -> Result<Head, String> {
     let resp = ureq::head(url).call().map_err(|e| format!("HEAD {url}: {e}"))?;
     let get = |name: &str| resp.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned);

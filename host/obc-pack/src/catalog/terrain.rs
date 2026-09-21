@@ -23,9 +23,9 @@ pub(super) const TERRAIN_SIDECAR_EXT: &str = ".obcd.json";
 
 /// The tree's terrain declaration: `terrain.json` beside `schema.json`.
 ///
-/// A separate document from `schema.json` on purpose. The two describe stores on
-/// **separate revision tracks** (§13.2), and a single document would be a single thing
-/// to edit — the first way for an OBCM bump to look like it touched terrain.
+/// A separate document from `schema.json` on purpose: the two describe stores on separate revision
+/// tracks, and a single document would be a single thing to edit, which is the first way for an OBCM
+/// bump to look like it touched terrain.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct TerrainDoc {
@@ -36,26 +36,25 @@ pub(super) struct TerrainDoc {
     /// The terrain store's own revision. Nothing here is `schema_revision`.
     pub(super) revision: u32,
     /// The source licence's required credit, verbatim. The bakery stamps
-    /// `obc_elevation::COPERNICUS_ATTRIBUTION` here; this crate never hard-codes it, because
-    /// a generic producer publishing another dataset owes a different notice.
+    /// `obc_elevation::COPERNICUS_ATTRIBUTION` here; this crate never hard-codes it, because a
+    /// generic producer publishing another dataset owes a different notice.
     pub(super) attribution: String,
-    /// Every reference model the bake's archive can credit. The published block names the
-    /// ones a cell actually used, which the sidecars say — an archive holds sources whose
-    /// tiles no published cell read, and a map does not owe those a notice.
+    /// Every reference model the bake's archive can credit. The published block names the ones a
+    /// cell actually used, since an archive holds sources whose tiles no published cell read.
     #[serde(default)]
     pub(super) references: Vec<ReferenceEntry>,
 }
 
-/// The facts a terrain cell's bytes cannot state. `dataset_version` is per cell as well
-/// as in the root block for the same reason a cell's `schema_revision` is: it is what
-/// lets the generator *refuse* a tree that mixes two bakes rather than publish one.
+/// The facts a terrain cell's bytes cannot state. `dataset_version` is per cell as well as in the
+/// root block for the same reason a cell's `schema_revision` is: it lets the generator refuse a tree
+/// that mixes two bakes rather than publish one.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TerrainCellSidecar {
     terrain_revision: u32,
     dataset_version: String,
     built_at: String,
-    /// Keys of the reference models this cell's crest lifts are derived from (§13.1).
+    /// Keys of the reference models this cell's crest lifts are derived from.
     #[serde(default)]
     reference_sources: Vec<String>,
 }
@@ -125,8 +124,8 @@ pub(super) fn read_terrain(tree: &Path, base_url: &str) -> Result<Option<Terrain
         return Err(format!("{}: `revision` starts at 1 — a terrain store has no revision zero", at()));
     }
     // A reference entry is three licence obligations and a key. Checked here, where the file can be
-    // named, rather than left to a consumer: a blank credit reads as authoritative and shows a
-    // rider nothing, and a generic producer's hand-written `terrain.json` is the likely source.
+    // named, rather than left to a consumer: a blank credit reads as authoritative and shows a rider
+    // nothing.
     for reference in &doc.references {
         validate_id(&reference.key).map_err(|e| format!("{}: reference key {e}", at()))?;
         for (field, value) in
@@ -142,9 +141,8 @@ pub(super) fn read_terrain(tree: &Path, base_url: &str) -> Result<Option<Terrain
             }
         }
     }
-    // One call validates both ranges *and* the pairing: a cell smaller than one tile,
-    // or one whose block would outrun the directory's `uint32` offsets, is not a
-    // terrain store OBCT can express.
+    // One call validates both ranges and the pairing: a cell smaller than one tile, or one whose
+    // block would outrun the directory's `uint32` offsets, is not a terrain store OBCT can express.
     obct::cell_samples_log2(doc.posting_log2, doc.cell_log2).ok_or_else(|| {
         format!(
             "{}: posting 2^{} µdeg with cell 2^{} µdeg is not a pairing OBCT permits (OBCT_Spec.md §1.3)",
@@ -178,9 +176,10 @@ pub(super) fn read_terrain(tree: &Path, base_url: &str) -> Result<Option<Terrain
     }
     cells.sort_by(|a, b| a.id.cmp(&b.id));
 
-    // §13.5's obligation is per source a cell actually read, so the published list is the sidecars'
-    // keys resolved against what the tree can credit. A key `terrain.json` cannot resolve is a
-    // refusal rather than an omission: the map would ship derived national elevation with no notice.
+    // The credit obligation is per source a cell actually read, so the published list is the
+    // sidecars' keys resolved against what the tree can credit. A key `terrain.json` cannot resolve
+    // is a refusal rather than an omission: the map would ship derived national elevation with no
+    // notice.
     let references: Vec<ReferenceEntry> = used
         .iter()
         .map(|key| {
@@ -196,8 +195,8 @@ pub(super) fn read_terrain(tree: &Path, base_url: &str) -> Result<Option<Terrain
         })
         .collect::<Result<_, String>>()?;
 
-    // The same rule §8 states for a band: a square is an artifact or it is empty, never
-    // both. A catalog that said both would leave a consumer to pick one.
+    // The same rule a band states: a square is an artifact or it is empty, never both. A catalog
+    // that said both would leave a consumer to pick one.
     let index = build_terrain_index(&[], &known_empty)?;
     for cell in &cells {
         if matches!(index.get(&cell.id)?, Some(IndexedTerrain::KnownEmpty)) {
@@ -270,8 +269,8 @@ fn read_terrain_row(
         sink.used.extend(sidecar.reference_sources.iter().cloned());
         sidecars.retain(|s| s != &j_text);
 
-        // §13.2's lockstep, per cell. Two of the four keys are in the bytes and checked
-        // below; these two cannot be, so they are recorded and compared here.
+        // The lockstep, per cell. Two of the four keys are in the bytes and checked below; these two
+        // cannot be, so they are recorded and compared here.
         if sidecar.terrain_revision != doc.revision {
             return Err(format!(
                 "{}: terrain cell was baked at terrain revision {} but `{TERRAIN_DOC}` is revision {}. Terrain is \
@@ -292,9 +291,9 @@ fn read_terrain_row(
             ));
         }
 
-        // The OBCT analogue of "a cell's header bbox is exactly its square": the
-        // container states its own rectangle, and a 1 × 1 rectangle at (i, j) is the
-        // only thing a cell named `<log2>/<i>/<j>` may be.
+        // The OBCT analogue of "a cell's header bbox is exactly its square": the container states
+        // its own rectangle, and a 1 x 1 rectangle at (i, j) is the only thing a cell named
+        // `<log2>/<i>/<j>` may be.
         let header = read_obct_header(&path)?;
         if (header.posting_log2, header.cell_log2) != (doc.posting_log2, doc.cell_log2) {
             return Err(format!(

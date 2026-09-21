@@ -4,10 +4,8 @@ use embedded_graphics::prelude::Point;
 use obc_reader::PoiCategory;
 use obc_render::{rect, Surface};
 
-/// The catalog key for a category's name (epic #602 + #946). [`PoiCategory::name`] is the
-/// format crate's English label — fine for a spec dump, wrong on glass — so every screen that
-/// *shows* a category (this menu, the POI list's title, the Up-ahead picker) resolves it here, and
-/// the three can't drift into three spellings.
+/// The catalog key for the name of a category. `PoiCategory::name` is the English label of the
+/// format crate, so every screen that shows a category resolves it here instead.
 pub(crate) fn category_msg(cat: PoiCategory) -> Msg {
     match cat {
         PoiCategory::Water => Msg::PoiCatWater,
@@ -20,11 +18,9 @@ pub(crate) fn category_msg(cat: PoiCategory) -> Msg {
     }
 }
 
-/// Dispatch a category's pixel icon, centred at `c`. `bg` is the surface behind it, for punched-out
-/// details (the same authoring path as the main Menu's [`draw_icon`](super::menu)). Every glyph is
-/// hand-drawn from `Surface` primitives at a fixed ~20 px box, sized for one list row — which is
-/// also a Body line's height, so the [POI detail](super::PoiDetailScreen)'s name row and the
-/// create-route confirm's glyph slot reuse these exact fns unscaled (#685).
+/// Draw the icon of a category, centred at `c`. `bg` is the surface behind it, for punched
+/// details. Each glyph fills a fixed 20 px box, which is the height of one list row and of a Body
+/// line, so the other screens use these functions unscaled.
 pub(super) fn draw_category_icon(cv: &mut impl Surface, cat: PoiCategory, c: Point, color: u16, bg: u16) {
     match cat {
         PoiCategory::Water => icon_water(cv, c, color, bg),
@@ -42,19 +38,15 @@ fn icon_water(cv: &mut impl Surface, c: Point, color: u16, bg: u16) {
     let base = Point::new(c.x, c.y + 3);
     cv.disc(base, 7, color);
     cv.triangle(Point::new(c.x - 6, c.y + 1), Point::new(c.x + 6, c.y + 1), Point::new(c.x, c.y - 9), color);
-    // Highlight glint, upper-left of the drop.
     cv.disc(Point::new(c.x - 2, c.y + 1), 2, bg);
 }
 
-/// A tent: two roof slopes to a ridge peak, with a punched door notch drawn in the fill colour as a
-/// solid triangle over the parchment ground line.
+/// A tent: two roof slopes to a ridge peak, over a ground line.
 fn icon_campsite(cv: &mut impl Surface, c: Point, color: u16) {
     let base_y = c.y + 8;
     let peak = Point::new(c.x, c.y - 9);
-    // Left and right roof panels meeting at the peak.
     cv.triangle(peak, Point::new(c.x - 11, base_y), Point::new(c.x - 1, base_y), color);
     cv.triangle(peak, Point::new(c.x + 11, base_y), Point::new(c.x + 1, base_y), color);
-    // Ground line.
     cv.line(Point::new(c.x - 12, base_y), Point::new(c.x + 12, base_y), color);
 }
 
@@ -62,22 +54,19 @@ fn icon_campsite(cv: &mut impl Surface, c: Point, color: u16) {
 fn icon_accommodation(cv: &mut impl Surface, c: Point, color: u16, _bg: u16) {
     let (l, r) = (c.x - 11, c.x + 11);
     let top = c.y - 2;
-    // Headboard (left), pillow bump, mattress top bar.
     cv.vline(l, c.y - 8, 12, 2, color);
     cv.fill(rect(l, top, r - l, 4), color);
     cv.disc(Point::new(l + 6, top - 1), 3, color);
-    // Two legs.
     cv.vline(l, c.y + 2, 6, 2, color);
     cv.vline(r - 1, c.y + 2, 6, 2, color);
 }
 
 /// A shopping basket: a trapezoid body with a punched interior and a small handle arc — resupply.
 fn icon_resupply(cv: &mut impl Surface, c: Point, color: u16, bg: u16) {
-    // Handle arc: two short strokes rising from the rim.
     cv.line(Point::new(c.x - 5, c.y - 5), Point::new(c.x - 3, c.y - 10), color);
     cv.line(Point::new(c.x + 5, c.y - 5), Point::new(c.x + 3, c.y - 10), color);
     cv.line(Point::new(c.x - 3, c.y - 10), Point::new(c.x + 3, c.y - 10), color);
-    // Basket body: a filled trapezoid (wide rim, narrow base), then punched hollow.
+    // The body is a filled trapezoid with the hollow punched out of it.
     cv.triangle(Point::new(c.x - 11, c.y - 4), Point::new(c.x + 11, c.y - 4), Point::new(c.x - 7, c.y + 9), color);
     cv.triangle(Point::new(c.x + 11, c.y - 4), Point::new(c.x + 7, c.y + 9), Point::new(c.x - 7, c.y + 9), color);
     cv.triangle(Point::new(c.x - 8, c.y - 1), Point::new(c.x + 8, c.y - 1), Point::new(c.x - 5, c.y + 6), bg);
@@ -87,15 +76,13 @@ fn icon_resupply(cv: &mut impl Surface, c: Point, color: u16, bg: u16) {
 /// A medical cross in a rounded tile — pharmacy. The plus is punched out of a filled square.
 fn icon_pharmacy(cv: &mut impl Surface, c: Point, color: u16, bg: u16) {
     cv.round(rect(c.x - 10, c.y - 10, 20, 20), 4, color);
-    // Punched cross: a vertical and a horizontal bar in the background colour.
     cv.fill(rect(c.x - 2, c.y - 7, 5, 15), bg);
     cv.fill(rect(c.x - 7, c.y - 2, 15, 5), bg);
 }
 
-/// A bicycle: two spoked wheels and a proper diamond frame with a saddle + handlebar — the bike-shop
-/// glyph (echoes the project's bike-computer identity).
+/// A bicycle: two wheels and a diamond frame with a saddle and a handlebar.
 fn icon_bike(cv: &mut impl Surface, c: Point, color: u16, bg: u16) {
-    // Wheels as rims: a filled disc with the hub punched out, plus a small hub dot.
+    // Each wheel is a disc with the rim punched out, plus a hub dot.
     let rear = Point::new(c.x - 8, c.y + 6);
     let front = Point::new(c.x + 8, c.y + 6);
     for wheel in [rear, front] {
@@ -103,7 +90,6 @@ fn icon_bike(cv: &mut impl Surface, c: Point, color: u16, bg: u16) {
         cv.disc(wheel, 3, bg);
         cv.disc(wheel, 1, color);
     }
-    // Diamond frame: bottom bracket low-centre, saddle up-and-back, head tube up-and-front.
     let bb = Point::new(c.x - 1, c.y + 6);
     let saddle = Point::new(c.x - 5, c.y - 5);
     let head = Point::new(c.x + 5, c.y - 4);
@@ -113,7 +99,6 @@ fn icon_bike(cv: &mut impl Surface, c: Point, color: u16, bg: u16) {
     cv.line(head, bb, color); // down tube
     cv.line(head, front, color); // head tube + fork
     cv.line(rear, saddle, color); // seat stay
-                                  // Saddle bar + handlebar stub.
     cv.line(Point::new(saddle.x - 3, saddle.y), Point::new(saddle.x + 2, saddle.y), color);
     cv.line(Point::new(head.x - 1, head.y - 2), Point::new(head.x + 4, head.y - 3), color);
 }

@@ -6,8 +6,7 @@ use obc_route::{gpx_to_obcr, RouteIndex, RoutePoint, RouteReader};
 
 use crate::common::{convert, decode, VecSink};
 
-/// A straight, gently rolling eastward track. The four points are collinear, so the
-/// geometry decimates to its two endpoints — but the stats come from every raw point.
+/// A straight, gently rolling eastward track. The stats come from every raw point.
 const STRAIGHT: &str = r#"<?xml version="1.0"?>
 <gpx><trk><trkseg>
   <trkpt lat="48.0000" lon="7.8000"><ele>200.0</ele></trkpt>
@@ -35,7 +34,6 @@ fn straight_track_stats_and_decimation() {
     assert_eq!(r.min_ele_m, 200);
     assert_eq!(r.max_ele_m, 225);
 
-    // Collinear → decimated to the two endpoints, one chunk.
     assert_eq!(r.point_count, 4);
     assert_eq!(r.chunks().len(), 1);
     let pts = decode(&r, 0);
@@ -64,7 +62,6 @@ fn corner_is_preserved() {
     let ridx = RouteIndex::read(&src).unwrap();
     let r = RouteReader::new(&ridx, &src);
 
-    // The corner vertex is kept: all three points survive decimation.
     assert_eq!(r.point_count, 3);
     let pts = decode(&r, 0);
     assert_eq!(pts.len(), 3);
@@ -81,10 +78,8 @@ fn empty_gpx_is_an_error() {
     assert_eq!(gpx_to_obcr(&src, "x", &mut sink), Err(Error::Empty));
 }
 
-/// Build GPX text from `(lat_deg, lon_deg, ele_m?)` track points; `None` omits `<ele>`
-/// entirely (a planner export with no elevation). The `const &str` fixtures above can't
-/// express either an omitted `<ele>` or computed coordinates, which the decimation /
-/// elevation tests below need.
+/// Build GPX text from `(lat_deg, lon_deg, ele_m?)` track points; `None` omits `<ele>` entirely,
+/// which the `const &str` fixtures above cannot express.
 fn gpx(pts: &[(f64, f64, Option<f64>)]) -> String {
     let mut s = String::from("<?xml version=\"1.0\"?><gpx><trk><trkseg>");
     for &(lat, lon, ele) in pts {
@@ -97,8 +92,6 @@ fn gpx(pts: &[(f64, f64, Option<f64>)]) -> String {
     s
 }
 
-/// A vertex just inside `EPSILON_M` (1 m) is dropped: the middle point bulges 0.8 m off the
-/// A→C chord, so the decimator must drop it, leaving the two endpoints.
 #[test]
 fn vertex_just_inside_epsilon_is_decimated() {
     let dlat = 0.8 / 111_320.0; // ~0.8 m north — inside EPSILON_M = 1.0 m
@@ -121,8 +114,6 @@ fn vertex_just_inside_epsilon_is_decimated() {
     );
 }
 
-/// A vertex just outside `EPSILON_M` (1.5 m off the chord) is kept, preserving the bend — the
-/// other side of the `perp > EPSILON_M` decision.
 #[test]
 fn vertex_just_outside_epsilon_is_kept() {
     let dlat = 1.5 / 111_320.0; // ~1.5 m north — outside EPSILON_M = 1.0 m
@@ -143,9 +134,8 @@ fn vertex_just_outside_epsilon_is_kept() {
     );
 }
 
-/// A long collinear run keeps an intermediate vertex (`MAX_SPAN_M`=1200), which also bounds the
-/// stored `(Δlon, Δlat)` to `int16`. Three collinear points 0.03° apart (~2234 m/segment) would,
-/// if the middle were dropped, leave a segment whose Δ overflows `int16`; the span rule keeps it.
+/// `MAX_SPAN_M` (1200) also bounds the stored `(Δlon, Δlat)` to `int16`: dropping the middle of
+/// three collinear points 0.03° apart (~2234 m per segment) would overflow it.
 #[test]
 fn long_collinear_run_keeps_an_intermediate_vertex() {
     let bytes = convert(
@@ -156,10 +146,9 @@ fn long_collinear_run_keeps_an_intermediate_vertex() {
     let ridx = RouteIndex::read(&src).unwrap();
     let r = RouteReader::new(&ridx, &src);
 
-    // The middle point survives despite being collinear — kept by the MAX_SPAN_M rule.
     assert_eq!(r.point_count, 3, "the span rule must keep the middle of a ~4.5 km collinear run");
     let pts = decode(&r, 0);
-    // Decoded geometry round-trips exactly — no int16 wrap.
+    // Decoded geometry round-trips exactly, with no int16 wrap.
     assert_eq!(
         pts,
         vec![
@@ -170,10 +159,9 @@ fn long_collinear_run_keeps_an_intermediate_vertex() {
     );
 }
 
-/// A single oversized segment with no intermediate raw candidate is split so the stored Δ never
-/// wraps. `MAX_SPAN_M` only force-keeps a *pending* candidate; a 2-point GPX has none, so a
-/// 0.04° (40_000 µdeg) lon step would wrap `int16`. The converter densifies the span itself into
-/// ≤`MAX_SEGMENT_UDEG` (30_000) pieces, so the geometry round-trips exactly.
+/// A single oversized segment with no intermediate raw candidate is split, so the stored Δ never
+/// wraps. `MAX_SPAN_M` only force-keeps a pending candidate and a 2-point GPX has none, so the
+/// converter densifies the span itself into `MAX_SEGMENT_UDEG` (30 000) pieces.
 #[test]
 fn single_oversized_segment_is_densified() {
     let bytes = convert("Densified", &gpx(&[(48.0, 7.80, Some(100.0)), (48.0, 7.84, Some(100.0))]));
@@ -187,13 +175,11 @@ fn single_oversized_segment_is_densified() {
     assert_eq!(pts[0].lon, 7_800_000, "the anchor is stored absolutely and is correct");
     assert_eq!(pts[1].lon, 7_820_000, "the interpolated midpoint sits halfway along the span");
     assert_eq!(pts[2].lon, 7_840_000, "the endpoint round-trips exactly — no int16 wrap");
-    // The interpolated vertices stay on the flat, equator-parallel line.
     assert!(pts.iter().all(|p| p.lat == 48_000_000 && p.ele == 100), "interpolated vertices stay on the line");
 }
 
 /// A span far past one `MAX_SEGMENT_UDEG` piece splits into several, interpolating both axes and
-/// elevation. A 0.09° (90_000 µdeg) diagonal needs 4 pieces (three synthetic vertices); every
-/// consecutive Δ stays inside `int16`, the endpoints round-trip, and elevation carries linearly.
+/// elevation. A 0.09° diagonal needs 4 pieces, so three synthetic vertices.
 #[test]
 fn oversized_diagonal_span_splits_into_several() {
     let bytes = convert("Diagonal", &gpx(&[(48.0, 7.80, Some(100.0)), (48.09, 7.89, Some(200.0))]));
@@ -220,8 +206,8 @@ fn oversized_diagonal_span_splits_into_several() {
     }
 }
 
-/// A point missing `<ele>` carries the last known height. Points 1–2 climb 200→250 m and point 3
-/// omits `<ele>`: it must inherit 250 m (not reset to 0), so geometry and ascent stay sane.
+/// A point missing `<ele>` stays unknown rather than reading 0 m, and it adds nothing to the
+/// min/max or to the ascent.
 #[test]
 fn missing_elevation_stays_unknown() {
     let dlat = 5.0 / 111_320.0; // zigzag north so all three vertices survive decimation
@@ -240,9 +226,8 @@ fn missing_elevation_stays_unknown() {
     assert_eq!(pts[2].elevation(), None);
 }
 
-/// A route with no `<ele>` anywhere (bare planner GPX): `min_ele > max_ele` after the sweep, so
-/// the converter falls back to a 0..0 range. Distance/geometry still come from the positions;
-/// only elevation is flat zero.
+/// A route with no `<ele>` anywhere: the converter falls back to a 0..0 range. Distance and
+/// geometry still come from the positions.
 #[test]
 fn no_elevation_anywhere_yields_zero_range() {
     let bytes = convert("No Ele", &gpx(&[(48.0, 7.80, None), (48.005, 7.80, None), (48.01, 7.80, None)]));
