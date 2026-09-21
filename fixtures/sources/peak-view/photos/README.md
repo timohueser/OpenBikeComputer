@@ -3,7 +3,8 @@
 Seven photographs of the Engelberg mountains, the skyline read off each one, and the terrain
 shard the Peak View regression test draws. This is the only ground truth Peak View has.
 
-`firmware/obc-app/tests/peak_view_photos.rs` is the only consumer.
+`firmware/obc-app/tests/peak_view_photos.rs` is the only consumer. This file is the tracked copy
+of the README the package carries.
 
 ## Contents
 
