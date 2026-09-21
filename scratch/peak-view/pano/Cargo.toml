@@ -1,0 +1,17 @@
+# Not a workspace member: these binaries reach into `firmware/` and `host/` at once and exist only
+# to answer questions about the panorama, so keeping them out of the workspace keeps the real
+# build honest. Build with `cargo build --release` inside this directory.
+[package]
+name = "pano"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+obc-app = { path = "../../../firmware/obc-app" }
+obc-formats = { path = "../../../firmware/obc-formats" }
+obc-elevation = { path = "../../../firmware/obc-elevation" }
+obc-dem = { path = "../../../host/obc-dem" }
+
+[profile.release]
+debug = false

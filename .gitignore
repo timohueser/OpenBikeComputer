@@ -110,3 +110,7 @@ builder/app/public/data/
 # firmware/, host/ and apps/), so the build dir is here rather than under firmware/.
 target/
 fixtures/build/
+
+# Scratch Peak View binaries (see scratch/peak-view/README.md — temporary)
+scratch/peak-view/pano/target/
+scratch/peak-view/pano/Cargo.lock
