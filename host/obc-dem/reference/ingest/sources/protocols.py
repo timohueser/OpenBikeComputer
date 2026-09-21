@@ -133,7 +133,15 @@ class TiledService(Source):
         return paths
 
     def request(self, box) -> bytes:
-        raise NotImplementedError
+        """One raster, asked for as the protocol states it and as the portal lets it be.
+
+        A portal behind an account reads its key out of the query, so the credential is
+        appended here rather than inside every protocol's `url`: the request a keyed WCS
+        sends is the request the keyless one sends, plus one parameter.
+        """
+
+        credential = self.credential.query() if self.credential else ""
+        return raster_bytes(self.url(box) + credential, f"{self.key} {box}")
 
     def url(self, box) -> str:
         raise NotImplementedError
@@ -154,9 +162,6 @@ class ArcGisSource(TiledService):
             "interpolation": "RSP_BilinearInterpolation", "f": "image",
         })
         return f"{self.service}?{query}"
-
-    def request(self, box) -> bytes:
-        return raster_bytes(self.url(box), f"{self.key} {box}")
 
 
 class Wcs20Source(TiledService):
@@ -191,26 +196,27 @@ class Wcs20Source(TiledService):
             query += f"&scalesize={ax}({px}),{ay}({py})"
         return query + "&format=image/tiff"
 
-    def request(self, box) -> bytes:
-        return raster_bytes(self.url(box), f"{self.key} {box}")
-
 
 class Wcs10Source(TiledService):
-    """WCS 1.0.0 `GetCoverage`, which states the grid as a bbox plus a width and height."""
+    """WCS 1.0.0 `GetCoverage`, which states the grid as a bbox plus a width and height.
 
-    def __init__(self, *args, url, coverage, epsg, **kw):
+    `image_format` is the format name the coverage's own capabilities offer, because 1.0.0
+    names a format with the server's word for it rather than a media type: Kartverket
+    answers to `GeoTIFF` and Denmark's MapServer to `GTiff`.
+    """
+
+    def __init__(self, *args, url, coverage, epsg, image_format="GeoTIFF", **kw):
         super().__init__(*args, **kw)
         self.service, self.coverage, self.epsg = url, coverage, epsg
+        self.image_format = image_format
 
     def url(self, box) -> str:
         (lo_x, lo_y, hi_x, hi_y), _ = projected_box(box, self.epsg)
         px, py = output_size(box, self.resolution_m, f"{self.key} {box}", self.epsg)
         return (f"{self.service}?service=WCS&version=1.0.0&request=GetCoverage"
                 f"&coverage={self.coverage}&crs=EPSG:{self.epsg}"
-                f"&bbox={lo_x},{lo_y},{hi_x},{hi_y}&width={px}&height={py}&format=GeoTIFF")
-
-    def request(self, box) -> bytes:
-        return raster_bytes(self.url(box), f"{self.key} {box}")
+                f"&bbox={lo_x},{lo_y},{hi_x},{hi_y}&width={px}&height={py}"
+                f"&format={self.image_format}")
 
 
 class Wcs11Source(TiledService):
@@ -239,6 +245,3 @@ class Wcs11Source(TiledService):
                 f"&gridcs=urn:ogc:def:cs:OGC:0.0:Grid2dSquareCS"
                 f"&gridtype=urn:ogc:def:method:WCS:1.1:2dSimpleGrid"
                 f"&gridorigin={lo_x},{hi_y}&gridoffsets={step},-{step}")
-
-    def request(self, box) -> bytes:
-        return raster_bytes(self.url(box), f"{self.key} {box}")

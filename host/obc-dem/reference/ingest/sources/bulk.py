@@ -9,7 +9,7 @@ the same state or the same project downloads nothing.
 from pathlib import Path
 
 from ..lattice import Refuse
-from .base import RASTER_SUFFIXES, Source, http_download, unpack
+from .base import READABLE, Source, http_download, placed, unpack
 
 
 class BulkSource(Source):
@@ -33,15 +33,17 @@ class BulkSource(Source):
         workdir.mkdir(parents=True, exist_ok=True)
         rasters, absent = [], 0
         for i, (name, url) in enumerate(wanted, 1):
-            path = http_download(url, workdir / name, optional=self.skip_missing)
+            path = http_download(url, workdir / name, optional=self.skip_missing,
+                                 headers=self.headers())
             if path is None:
                 absent += 1
                 continue
             print(f"  fetch [{i}/{len(wanted)}] {name}")
             if path.suffix.lower() == ".zip":
-                rasters.extend(unpack(path, workdir / f"{path.stem}.d"))
-            elif path.suffix.lower() in RASTER_SUFFIXES:
-                rasters.append(path)
+                rasters.extend(placed(raster, self)
+                               for raster in unpack(path, workdir / f"{path.stem}.d", READABLE))
+            elif path.suffix.lower() in READABLE:
+                rasters.append(placed(path, self))
             else:
                 raise Refuse(f"{path}: the registry expected a raster or a zip, not {path.suffix}")
         if absent:
