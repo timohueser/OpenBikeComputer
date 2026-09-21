@@ -5,24 +5,19 @@ import OBCTransport
 
 @MainActor @Observable
 public final class MainScreenModel {
-    /// The Planned | Tracked segmented split.
     public enum Tab: Int, Sendable {
         case planned = 0
         case tracked = 1
     }
 
-    /// First-read lifecycle for the lists — S2 skeletons / S3 read error.
     public enum LoadState: Equatable, Sendable {
         case loading
         case loaded
         case failed
     }
 
-    /// #303 — a connected device whose reported `protocol_version` doesn't match
-    /// `OBCProtocol.version`. Feeds the incompatibility banner and disables sync;
-    /// the app must never decode an incompatible object (`OBCProtocol.md` →
-    /// *Versioning*). `found > expected` means the device is ahead (update the
-    /// app); `found < expected` means it's behind (update the OBC).
+    /// A connected device whose reported protocol version differs from `OBCProtocol.version`.
+    /// The app must not decode objects from such a device, so sync stays disabled.
     public struct ProtocolMismatch: Equatable, Sendable {
         public var expected: UInt16
         public var found: UInt16
@@ -30,53 +25,38 @@ public final class MainScreenModel {
 
     // MARK: Observable state
 
-    /// Device name for the top bar + banner copy ("Trailhead").
     public private(set) var deviceName = "Your OBC"
     public private(set) var connection: ConnectionState = .connecting
-    /// Battery percent, `nil` until the stream's first value.
     public private(set) var battery: Int?
     public private(set) var loadState: LoadState = .loading
     public private(set) var routes: [RouteSummary] = []
-    /// Each planned route's proven device-copy state — drives the C1 badge
-    /// (check = up to date, refresh = on device but out of date). Observable
-    /// (unlike the `plannedRecords` mirror) so the badge moves the instant an
-    /// upload commits or a rename/re-import changes the content.
+    /// Each planned route's proven device-copy state, behind the list badge. Observable, so
+    /// the badge moves the instant an upload commits or a re-import changes the content.
     public private(set) var onDevice: [RouteID: OnDeviceState] = [:]
-    /// Every saved trip, newest first (TR6) — the top-level trip cards and the
-    /// backing for the trip page. Read from the library (dangling stages already
-    /// pruned) and refreshed on every trip edit.
+    /// Every saved trip, newest first.
     public private(set) var trips: [TripRecord] = []
-    /// The interleaved Planned tab (TR6): trip cards + **loose** route cards (a
-    /// filed route lives only inside its trip), newest first. Derived from
-    /// `plannedRecords` + `trips`; `routes` stays the flat list of *all* planned
-    /// summaries (filed included) so a stage still resolves to a detail.
+    /// The Planned tab rows: trip cards and loose route cards, newest first. A route filed in
+    /// a trip shows only inside that trip; `routes` keeps every planned summary.
     public private(set) var plannedItems: [PlannedItem] = []
     public private(set) var rides: [RideSummary] = []
-    /// Recently Deleted (#292): trashed rides, most recently trashed first —
-    /// the trash screen's rows and the Tracked tab's entry-row count.
+    /// Trashed rides, most recently trashed first.
     public private(set) var trashedRides: [RideSummary] = []
     public var tab: Tab = .planned
     public var searchText = ""
-    /// #303: non-nil once a connected device reports an incompatible
-    /// `protocol_version` — drives the incompatibility banner and disables sync.
     public private(set) var protocolMismatch: ProtocolMismatch?
-    /// The current device serial and full StoreId. Missing identity keeps
-    /// reconciliation disabled while local browsing continues.
+    /// The connected device's serial and StoreId. Nil keeps reconciliation disabled while
+    /// local browsing continues.
     public private(set) var connectedScope: LibraryScope?
-    /// Whether the identity read has settled this session (with an answer *or*
-    /// a failed read) — the other half of the `canSync` gate, so an id-keyed
-    /// write can never run ahead of the #303 verdict. See `runIdentityCheck`.
+    /// True once the identity read settles, with an answer or with a failed read. The other
+    /// half of the `canSync` gate, so an id-keyed write never runs ahead of the verdict.
     @ObservationIgnored private var identityChecked = false
 
-    /// The ride-sync state machine (B7/#358) — exposed whole so the view reads
-    /// `sync.syncState`, `sync.syncProgress`, … without duplicated mirrors.
     public let sync: RideSyncCoordinator
 
     // MARK: Derived
 
-    /// The S4 rule: out of range / disconnected degrades to a banner over
-    /// browsable content — never an error, never a blocker. While a dropped
-    /// sync waits for Resume, the H10 banner tells the link story instead.
+    /// A dropped link degrades to a banner over browsable content, never an error. While an
+    /// interrupted sync waits for Resume, that banner tells the link story instead.
     public var showsDisconnectedBanner: Bool {
         (connection == .outOfRange || connection == .disconnected) && sync.syncInterruption == nil
     }
@@ -85,8 +65,6 @@ public final class MainScreenModel {
         filtered(routes, by: \.name)
     }
 
-    /// The Planned tab rows after search (TR6) — trips and loose routes filtered
-    /// by name together, so a query narrows the mixed list as one.
     public var filteredPlannedItems: [PlannedItem] {
         filtered(plannedItems, by: \.name)
     }
@@ -99,76 +77,43 @@ public final class MainScreenModel {
 
     private let transport: any DeviceLink & DeviceBattery & DeviceObjects & DeviceClock
     private let library: any LibraryStore
-    /// Desired-name reconcile (#361), run once per established connection —
-    /// the logic lives in `DeviceNameReconciler`; this model only owns the
-    /// "connection established" trigger. `nil` (tests/previews) skips it.
+    /// Runs once per established connection. Nil in tests and previews skips it.
     private let nameReconciler: DeviceNameReconciler?
-    /// Mirror of `library.deletedRideIDs()` — device rides deleted on the
-    /// phone; the merge hides them so a sync/reload can't resurrect them.
+    /// Device rides deleted on the phone. The merge hides them so a sync cannot restore them.
     @ObservationIgnored private var deletedRideIDs: Set<RideID> = []
-    /// Mirror of `library.trashedRideIDs()` — rides in Recently Deleted (#292),
-    /// with when each was trashed (orders the trash, drives the retention purge).
+    /// Rides in Recently Deleted, with the time each was trashed.
     @ObservationIgnored private var trashedRideIDs: [RideID: Date] = [:]
-    /// Mirror of the store's planned routes, keyed for the detail/rename paths.
     @ObservationIgnored private var plannedRecords: [RouteID: PlannedRouteRecord] = [:]
-    /// Mirror of the store's synced-ride **summaries** — tracklogs stay on disk
-    /// and load one-ride-at-a-time through `rideGeometry(for:)` (#360); pinning
-    /// a season of decoded points here is exactly what that issue removed.
+    /// Ride summaries only. Tracklogs stay on disk and load one ride at a time through
+    /// `rideGeometry(for:)`.
     @ObservationIgnored private var rideSummaries: [RideID: RideSummary] = [:]
     @ObservationIgnored private var started = false
     @ObservationIgnored private var streamTasks: [Task<Void, Never>] = []
     @ObservationIgnored private var loadTask: Task<Void, Never>?
-    /// A reload requested while `loadTask` is already reading the catalogs.
-    /// Store-change bursts set this bit instead of cancelling the live CoC
-    /// download; the running task consumes it with one more reconcile pass.
+    /// Set when a reload is requested while `loadTask` is already reading. Bursts coalesce
+    /// here instead of cancelling a live transfer.
     @ObservationIgnored private var reloadRequested = false
-    /// The last route catalog a reload read — kept so `runIdentityCheck` can
-    /// re-run the badge reconcile once the scope settles (#769): on launch the
-    /// catalog read usually lands *before* the identity verdict, and clearing
-    /// links under an unknown scope would be a reconcile write the fail-closed
-    /// rule forbids.
+    /// The last route catalog a reload read. On launch the catalog usually arrives before the
+    /// identity verdict, so the reconcile re-runs once the scope settles.
     @ObservationIgnored private var lastRouteCatalog: [RouteCatalogEntry]?
-    /// The connected device's per-object content CRCs from its protocol-v4 route catalog.
-    /// `crc32` (spec §7.4), keyed by device object id. The **proof half** of the
-    /// identity-verified badge (#770): a link is only a checkmark when this map
-    /// holds a non-zero CRC for its object that equals the record's committed
-    /// fingerprint. Rebuilt wholesale from every `listRoutes()` read; a
-    /// just-committed upload pokes the one object it landed under (the transfer
-    /// verified that CRC) so a fresh badge lights before the next catalog read.
-    /// `0` (or an absent key) = unknown → proves nothing.
+    /// Per-object content CRCs from the device route catalog. A link is a checkmark only when
+    /// this holds a non-zero CRC for its object equal to the record's committed fingerprint.
+    /// Zero, or an absent key, proves nothing.
     @ObservationIgnored private var deviceRouteCRCs: [DeviceObjectID: UInt32] = [:]
-    /// The last trip catalog a reload read — the trip sibling of
-    /// `lastRouteCatalog`, kept so the identity settle can re-run the trip
-    /// reconcile once the scope is decidable, and so the whole-trip precheck can
-    /// count device trip slots.
+    /// The last trip catalog a reload read, the trip sibling of `lastRouteCatalog`.
     @ObservationIgnored private var lastTripCatalog: [TripCatalogEntry]?
-    /// The connected device's per-trip content CRCs from protocol-v4 catalog metadata.
-    /// (spec §7.4), keyed by device trip id. The proof half of the trip badge
-    /// (TR8, the route-CRC idiom, #770): a trip link is a checkmark only when this
-    /// holds a non-zero CRC for its object equal to the record's committed
-    /// fingerprint. Rebuilt wholesale from every `listTrips()` read; a
-    /// just-committed trip upload pokes the one object it landed under.
+    /// Per-trip content CRCs from the device trip catalog, the trip half of `deviceRouteCRCs`.
     @ObservationIgnored private var deviceTripCRCs: [DeviceObjectID: UInt32] = [:]
-    /// The #459 in-flight ledger the whole-trip upload sheet claims a token from
-    /// (the same one the single-route sheet + ride sync use) — `nil` in tests /
-    /// previews that don't exercise the lifecycle.
+    /// The in-flight transfer ledger. Nil in tests and previews.
     @ObservationIgnored private let transferActivity: TransferActivity?
-    /// The in-flight identity read (`runIdentityCheck`) for the current
-    /// connection — what the coordinator's `identitySettled` seam awaits.
-    /// Replaced (never cancelled) on a reconnect: a superseded read settles the
-    /// same session-stable verdict on its own.
+    /// The in-flight identity read for the current connection. A reconnect replaces it and
+    /// never cancels it: a superseded read settles the same session-stable verdict.
     @ObservationIgnored private var identityTask: Task<Void, Never>?
 
-    /// How long a trashed ride survives before the start-up sweep removes it
-    /// for good — the trash screen's copy quotes this.
     public static let trashRetentionDays = 30
 
-    /// The trash retention clock — injectable so tests can age the trash
-    /// without waiting a month.
     private let now: () -> Date
 
-    /// The default `library` keeps persistence out of previews and tests that
-    /// don't care; the composition root always passes its chosen store.
     public init(
         transport: any DeviceLink & DeviceBattery & DeviceObjects & DeviceClock,
         library: any LibraryStore = InMemoryLibraryStore(),
@@ -186,23 +131,16 @@ public final class MainScreenModel {
             transport: transport, library: library, timing: syncTiming,
             activity: transferActivity
         )
-        // The coordinator's seams back into this model — weak, so the closures
-        // the model's own coordinator holds can never pin the model.
-        // Wait for a compatible identity and full store scope before syncing.
+        // Weak captures: the coordinator's closures must never pin the model.
         sync.canSync = { [weak self] in
             guard let self else { return false }
             return identityChecked && protocolMismatch == nil && connectedScope != nil
         }
         sync.identitySettled = { [weak self] in await self?.identityTask?.value }
         sync.onRideCatalogRead = { [weak self] in self?.loadState = .loaded }
-        // A landed ride is already persisted (the coordinator's job) — mirror
-        // it into the session's list so newly synced rides surface at once,
-        // not only after the next reload.
+        // The coordinator already persisted the ride; mirror the summary so it shows at once.
         sync.onRideLanded = { [weak self] ride in
             guard let self else { return }
-            // Only the summary is kept — the ride (points included) is already
-            // persisted by the coordinator; the detail reads points back through
-            // the store when it opens.
             rideSummaries[ride.id] = ride.summary
             rides = trackedList()
         }
@@ -210,14 +148,12 @@ public final class MainScreenModel {
 
     // MARK: Lifecycle
 
-    /// Subscribe the live streams and load the library (call once, from the
-    /// host's `.task`).
+    /// Subscribe the live streams and load the library. Call once.
     public func start() {
         guard !started else { return }
         started = true
 
-        // Library first (B1S): the lists are browsable before the device read
-        // lands — or ever succeeds (offline relaunch, H4 pre-pairing import).
+        // Library first: the lists are browsable before a device read lands, or without one.
         let planned = library.plannedRoutes()
         plannedRecords = Dictionary(uniqueKeysWithValues: planned.map { ($0.id, $0) })
         refreshOnDeviceStates()
@@ -231,9 +167,7 @@ public final class MainScreenModel {
         rides = trackedList()
         trashedRides = trashedList()
 
-        // Open-ended stream loops are `[weak self]` + per-iteration `guard let
-        // self` (the SettingsModel/RouteDetailModel convention) — the streams
-        // never finish, so a strong capture would pin the model for the session.
+        // The streams never finish, so a strong capture would pin the model for the session.
         streamTasks.append(Task { [weak self, transport] in
             var previous: ConnectionState?
             for await state in transport.state {
@@ -241,11 +175,8 @@ public final class MainScreenModel {
                 connection = state
                 // A regained link (never the stream's replayed first value):
                 // re-read the lists — the reconnect is what makes the badges
-                // and ride list trustworthy again — and run the desired-name
-                // reconcile (#361), the once-per-connect self-heal for a
-                // rename whose config write never landed. Fire-and-forget:
-                // the reconciler captures only its own transport + bond
-                // store, never this model.
+                // A regained link, never the stream's replayed first value: re-read the lists
+                // and run the desired-name reconcile for a config write that never landed.
                 if state == .connected, let was = previous, was != .connected {
                     reload()
                     // Re-read identity because firmware or the mounted store can change.
@@ -268,20 +199,14 @@ public final class MainScreenModel {
         streamTasks.append(Task { [weak self, transport] in
             for await change in transport.catalogChanges {
                 guard let self else { return }
-                // The device's store moved under an open app — an on-device
-                // route delete (epic #447 P6) or an upload committed from
-                // elsewhere. Re-read + reconcile so the "on device" badge
-                // clears (and a re-upload is offered) without a reconnect.
-                // Rides move only through Sync, so only route/trip movements
-                // trigger the reload (a device-side route or trip delete, TR3's
-                // long-press cascade). A burst coalesces behind the in-flight
-                // read; an opened CoC exchange is never cancelled halfway.
+                // The device store moved under an open app. Re-read so the "on device" badge
+                // is true again without a reconnect. Rides move only through Sync, so only
+                // route and trip movements trigger a reload.
                 if change.kind == .route || change.kind == .trip { reload() }
             }
         })
-        // Protocol v4 has no store-change notification. Local/mock invalidations are the immediate
-        // path above; audit the tiny route/trip catalogs occasionally on BLE so an external change
-        // cannot leave an "on device" checkmark stale until the next app launch or reconnect.
+        // Protocol v4 has no store-change notification, so audit the small route and trip
+        // catalogs on a timer. Without it an external change leaves a stale "on device" badge.
         streamTasks.append(Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
@@ -290,21 +215,15 @@ public final class MainScreenModel {
             }
         })
         reload()
-        // Identity after the first library read: a fault armed for "the first
-        // read" (the S3 scenario) must hit the lists, not this fetch. The same
-        // read carries the protocol-version check (#303) — surfaced here, on
-        // connect, where `deviceInfo()` is consumed.
+        // Identity after the first library read, so a fault armed for the first read hits the
+        // lists and not this fetch. The same read carries the protocol-version check.
         let firstLoad = loadTask
         identityTask = Task { [weak self] in
             await firstLoad?.value
             await self?.runIdentityCheck()
         }
-        // Desired-name reconcile for the *launch* connection (#361) — the
-        // reconnect edge above never fires for the stream's replayed first
-        // value. After the first load for the same reason as the identity
-        // read: a fault armed for "the first read" (S3) must hit the lists,
-        // not this config read. Launched disconnected, the pass skips
-        // silently and the reconnect edge owns every later connect.
+        // The reconnect edge never fires for the stream's replayed first value, so the launch
+        // connection reconciles here. Launched disconnected, the pass skips silently.
         if let nameReconciler {
             streamTasks.append(Task {
                 await firstLoad?.value
@@ -314,20 +233,17 @@ public final class MainScreenModel {
     }
 
     deinit {
-        // The sync coordinator cancels its own tasks in its deinit — this
-        // model owns (and cancels) only what it runs itself.
+        // The sync coordinator cancels its own tasks.
         streamTasks.forEach { $0.cancel() }
         loadTask?.cancel()
         identityTask?.cancel()
     }
 
-    /// (Re)read both lists — also the S3 "Retry" action. Cached content stays
-    /// up while the fresh read runs; only an *empty* library shows skeletons.
+    /// Re-read both lists, and the read-error retry. Cached content stays up while the fresh
+    /// read runs; only an empty library shows skeletons.
     public func reload() {
-        // An incompatible device (#303): don't decode its objects — keep the
-        // library-first content up and let the banner explain. The first load
-        // (before the version is read) may still run; every reload after the
-        // mismatch is known is gated here.
+        // Never decode an incompatible device's objects. The library-first content stays up
+        // and the banner explains.
         guard protocolMismatch == nil else {
             reloadRequested = false
             loadState = .loaded
@@ -343,30 +259,21 @@ public final class MainScreenModel {
         }
     }
 
-    /// Drain coalesced catalog requests serially. This method is main-actor
-    /// isolated, so clearing the dirty bit and retiring `loadTask` cannot race a
-    /// `storeChanged` callback that asks for another pass.
+    /// Drain coalesced catalog requests serially. Main-actor isolation stops the dirty bit and
+    /// the `loadTask` retirement from racing a store-change callback.
     private func runReloadLoop() async {
         while reloadRequested, !Task.isCancelled {
             reloadRequested = false
             do {
-                // Only the route catalog is read here: Planned reconciles its
-                // on-device badges against it, and Tracked is library-first
-                // (#296) so its rows come from the local library — the device's
-                // rides are pulled only by Sync, never on a plain (re)load.
+                // Only the route catalog: Tracked is library-first, so its rows come from the
+                // local library and device rides are pulled by Sync alone.
                 let deviceRoutes = try await transport.listRoutes()
                 guard !Task.isCancelled else { break }
                 lastRouteCatalog = deviceRoutes
                 reconcileOnDevice(with: deviceRoutes)
-                // The trip catalog rides the same reload (TR8): reconcile each
-                // trip's device link/badge against the trip catalog. Best-effort, but
-                // fail-CLOSED: a failed read skips the reconcile entirely (stale
-                // links beat nuked ones) — treating a transient `listTrips`
-                // failure as "zero trips" dropped every trip link, and the next
-                // "Upload trip" then minted a duplicate device trip instead of
-                // replacing in place. A device predating trips rejects the read
-                // (`notFound`), lands here too, and has no trip links to keep —
-                // the old-firmware posture is unchanged.
+                // Fail closed: a failed trip read skips the reconcile, because treating it as
+                // "zero trips" drops every trip link, and the next upload then mints a
+                // duplicate device trip instead of replacing in place.
                 if let deviceTrips = try? await transport.listTrips() {
                     guard !Task.isCancelled else { break }
                     lastTripCatalog = deviceTrips
@@ -399,16 +306,13 @@ public final class MainScreenModel {
                 protocolMismatch = ProtocolMismatch(expected: expected, found: found)
             } else {
                 protocolMismatch = nil
-                // `libraryScope` is nil on a missing StoreId or empty serial —
-                // the fail-closed input, never defaulted.
+                // `libraryScope` is nil on a missing StoreId or empty serial. Never defaulted.
                 connectedScope = info.libraryScope
             }
         }
         identityChecked = true
         if connectedScope != nil {
-            // Route + trip links could not be reconciled while the scope was
-            // unknown (reload may have run first) — true them up against the
-            // cached catalogs now that their validity is decidable.
+            // The reload may have run before the scope was known; true the links up now.
             if let catalog = lastRouteCatalog {
                 reconcileOnDevice(with: catalog)
                 routes = plannedList()
@@ -423,23 +327,14 @@ public final class MainScreenModel {
     private func stampDeviceClock() async {
         guard let outcome = try? await transport.setClock(WallClockSample()) else { return }
     }
-    /// True-up every record's `deviceLink` against the device's live catalog
-    /// (device object ids **and** content CRCs — #770), then adopt-by-content.
-    /// Absence, or a catalog CRC that disagrees with what we committed, drops
-    /// the link (a copy deleted out from under us, era aliasing that survived
-    /// scoping, or an on-device replacement by another phone); an *unlinked*
-    /// catalog entry whose CRC matches a record's current encoding re-links it.
+    /// True up every record's `deviceLink` against the device catalog, then adopt by content.
+    /// Absence, or a catalog CRC that disagrees with what we committed, drops the link; an
+    /// unlinked entry whose CRC matches a record's current encoding re-links it.
     ///
-    /// Scope-gated both ways (#769): with the identity **unknown** no link is
-    /// written at all (fail-closed — a catalog can't be attributed to a scope
-    /// that hasn't been proven), and with it known only links that **match the
-    /// connected scope** are eligible to clear — device B's catalog says
-    /// nothing about the copies device A legitimately holds (the v1
-    /// link-clearing bug this issue retires). The catalog CRCs are cached either
-    /// way so a later identity settle can prove the badge against them.
+    /// Fail closed on scope: an unknown identity writes no link at all, and a known one clears
+    /// only links that match the connected scope.
     private func reconcileOnDevice(with deviceRoutes: [RouteCatalogEntry]) {
-        // The proof half of the badge (#770) — refreshed wholesale from device
-        // truth on every read, replacing any optimistic post-upload pokes.
+        // Refreshed wholesale from the device, replacing any optimistic post-upload poke.
         deviceRouteCRCs = Dictionary(
             deviceRoutes.map { ($0.id, $0.crc32) }, uniquingKeysWith: { first, _ in first })
         guard let scope = connectedScope else {
@@ -447,11 +342,9 @@ public final class MainScreenModel {
             return
         }
         let listed = Set(deviceRoutes.map(\.id))
-        // 1) Drop links the catalog *disproves*. Absent object → gone. Present
-        //    object whose non-zero CRC differs from our committed fingerprint →
-        //    it holds different content than we think (aliasing / foreign
-        //    replacement) — never a checkmark on presence. A `crc32 = 0`
-        //    (unknown) entry proves nothing, so the link is kept conservatively.
+        // 1) Drop links the catalog disproves: an absent object, or a present one whose
+        //    non-zero CRC differs from our fingerprint. A `crc32 = 0` entry proves nothing,
+        //    so that link is kept.
         for (id, var record) in plannedRecords {
             guard let link = record.deviceLink, link.matches(scope) else { continue }
             let present = listed.contains(link.objectID)
@@ -464,46 +357,30 @@ public final class MainScreenModel {
             plannedRecords[id] = record
             library.savePlannedRoute(record)
         }
-        // 2) Adopt-by-content — heal identical unlinked copies (app reinstall,
-        //    device switch-back) without a re-upload.
+        // 2) Adopt by content: heal identical unlinked copies without a re-upload.
         adoptByContent(scope: scope, catalog: deviceRoutes)
         refreshOnDeviceStates()
     }
 
-    /// Adopt-by-content (#770): an **unlinked** catalog entry whose non-zero
-    /// `crc32` matches a record re-links to it, and a subsequent upload replaces
-    /// that object by id instead of creating a duplicate. Heals the app-reinstall
-    /// (link lost, device kept) and device-switch-back cases silently.
+    /// Re-link an unlinked record to a catalog entry that holds the same content, so the next
+    /// upload replaces that object instead of minting a duplicate. Heals an app reinstall or a
+    /// device switch-back silently.
     ///
-    /// **The ObjectId is identity; the payload CRC is a content fingerprint,
-    /// never an identity.** A fingerprint is how an unlinked record *finds* the
-    /// object it belongs to, and it must survive the one edit that moves the bytes
-    /// without changing the route: a rename. The name lives inside the OBCR
-    /// payload, so a record renamed while unlinked no longer matches its own
-    /// device copy under its current encoding — but the catalog carries that
-    /// copy's name, so splicing it back in reconstructs the stored bytes exactly,
-    /// with no download. The adopted record therefore pins the **entry's** CRC:
-    /// that is what the device holds, so the badge reads "on the device, out of
-    /// date" and the next send is a same-id replace carrying the new name.
+    /// The ObjectId is identity; the payload CRC is only a content fingerprint. A rename moves
+    /// the bytes without changing the route, so the catalog entry's name is spliced back in to
+    /// reconstruct the stored bytes. The adopted record pins the entry's CRC, so the badge
+    /// reads "out of date" and the next send is a same-id replace that carries the new name.
     ///
-    /// Ambiguity is resolved first-come, each side claimed at most once: two
-    /// catalog entries with the same CRC → the first (device order) is adopted,
-    /// the rest left; two records with the same current CRC → the first (stable
-    /// id order) adopts the entry, the rest stay unlinked. A later delete on
-    /// either side reconciles normally.
+    /// Ambiguity resolves first-come, each side claimed at most once.
     private func adoptByContent(scope: LibraryScope, catalog: [RouteCatalogEntry]) {
         // Object ids already spoken for by a valid link — never adopt over them.
         var claimed = Set(plannedRecords.values.compactMap { record -> DeviceObjectID? in
             guard let link = record.deviceLink, link.matches(scope) else { return nil }
             return link.objectID
         })
-        // Adoptable = listed entries with a known (non-zero) CRC not already
-        // claimed. Device order is preserved, so the "adopt the first" tie-break
-        // falls out of the scan below.
         let adoptable = catalog.filter { $0.crc32 != 0 && !claimed.contains($0.id) }
         guard !adoptable.isEmpty else { return }
-        // Records with no *valid* link, in a deterministic (stable id) order so
-        // an adoption is reproducible run to run.
+        // Deterministic order, so an adoption is reproducible run to run.
         let candidates = plannedRecords.values
             .filter { record in
                 guard let link = record.deviceLink else { return true }
@@ -517,8 +394,7 @@ public final class MainScreenModel {
             guard let entry = adoptable.first(where: { entry in
                 guard !claimed.contains(entry.id) else { return false }
                 if entry.crc32 == currentCRC { return true }
-                // The rename case: same route, the device's copy still under the
-                // name the catalog reports.
+                // The rename case: the device's copy is still under the catalog's name.
                 guard entry.name != record.summary.name else { return false }
                 return entry.crc32 == CRC32.checksum(RouteObjectCodec.renamed(payload, to: entry.name))
             }) else { continue }
@@ -531,11 +407,8 @@ public final class MainScreenModel {
         }
     }
 
-    /// The CRC the connected device is **proven** to currently hold for this
-    /// record, or `nil` when unproven (#770). Proof = a link valid for the
-    /// connected scope + a non-zero catalog CRC for that object that equals the
-    /// record's committed fingerprint. An unknown catalog CRC (`0`), a missing
-    /// fingerprint, or a mismatch all read as unproven — no badge.
+    /// The CRC the connected device is proven to hold for this record, or nil when unproven:
+    /// a scoped link, a non-zero catalog CRC, and equality with the committed fingerprint.
     private func provenCommittedCRC(for record: PlannedRouteRecord) -> UInt32? {
         guard let scope = connectedScope, let link = record.deviceLink,
             link.matches(scope), let uploaded = record.uploadedCRC32,
@@ -545,11 +418,6 @@ public final class MainScreenModel {
         return uploaded
     }
 
-    /// Recompute every record's proven device-copy state — called whenever a
-    /// record's content or its device link moves (load, reconcile, upload,
-    /// rename, re-import, delete). The payload encode behind the CRC only runs
-    /// for records the device is *proven* to hold (an unproven record short-
-    /// circuits to `.notOnDevice` before the encode).
     private func refreshOnDeviceStates() {
         onDevice = plannedRecords.mapValues { record in
             OnDeviceState.determine(
@@ -559,64 +427,45 @@ public final class MainScreenModel {
         }
     }
 
-    /// The Planned rows: the library's records, newest first.
     private func plannedList() -> [RouteSummary] {
         plannedRecords.values.sorted { $0.addedAt > $1.addedAt }.map(\.summary)
     }
 
-    // MARK: Trips (route grouping, TR6)
+    // MARK: Trips
 
-    /// Re-read trips from the library (dangling stages pruned there) and rebuild
-    /// the interleaved Planned list — the one call every trip/route edit ends on.
-    /// Internal (not private) so `@testable` tests can re-sync the model's trips
-    /// after mutating the library directly.
+    /// Re-read trips and rebuild the interleaved Planned list. Every trip or route edit ends
+    /// on this call.
     func reloadTrips() {
         trips = library.trips()
         rebuildPlannedItems()
     }
 
-    /// Recompute the interleaved Planned tab from the current records + trips.
     private func rebuildPlannedItems() {
         plannedItems = PlannedItem.partition(records: Array(plannedRecords.values), trips: trips)
     }
 
-    /// The trip behind `id`, or `nil` if it dissolved / never existed.
     public func trip(_ id: TripID) -> TripRecord? { trips.first { $0.id == id } }
 
-    /// The existing trips as picker rows (TR7) — the one projection the shared
-    /// `TripPickerSheet` reads for the import row and the route menus. Newest
-    /// first, matching the top-level list order.
     public var tripPickerItems: [TripPickerItem] {
         trips.map { TripPickerItem(id: $0.id, name: $0.name, stageCount: $0.stageIDs.count) }
     }
 
-    /// The trip a route is currently filed in, or `nil` when it's loose (TR7) —
-    /// drives the route menu's Add-vs-Move/Remove split and the picker's
-    /// current-trip checkmark.
     public func tripContaining(_ routeID: RouteID) -> TripID? {
         trips.first { $0.stageIDs.contains(routeID) }?.id
     }
 
-    /// A trip's member routes as list summaries, **in ride order** — the trip
-    /// page's rows. Skips any stage whose record is gone (already pruned on read;
-    /// belt-and-suspenders here).
+    /// A trip's member routes as list summaries, in ride order.
     public func tripStages(_ id: TripID) -> [RouteSummary] {
         guard let trip = trip(id) else { return [] }
         return trip.stageIDs.compactMap { plannedRecords[$0]?.summary }
     }
 
-    /// A trip's summed stats (distance/climb + stage count) — the single
-    /// definition, `TripStats.summing` over the resolved member summaries.
     public func tripStats(_ id: TripID) -> TripStats {
         TripStats.summing(tripStages(id))
     }
 
-    /// The trip-level device-copy state behind the card badge (TR6/TR8): the trip
-    /// is "up to date" only when the **trip object itself** is proven current
-    /// *and* every stage is up to date. The trip object's own proof (TR8) is a
-    /// valid scoped link plus a non-zero trip-catalog CRC that equals the
-    /// committed fingerprint — the same route-CRC idiom. A trip the phone never
-    /// pushed (no link) reads `.notOnDevice`.
+    /// The trip badge: up to date only when the trip object itself is proven current and every
+    /// stage is up to date. A trip the phone never pushed reads `.notOnDevice`.
     public func tripOnDeviceState(_ id: TripID) -> OnDeviceState {
         guard let trip = trip(id), !trip.stageIDs.isEmpty else { return .notOnDevice }
         let tripSelf = OnDeviceState.determine(
@@ -627,25 +476,18 @@ public final class MainScreenModel {
         return Self.composeTripState(tripSelf: tripSelf, stageStates: stageStates)
     }
 
-    /// The device stage ids a trip object upload would carry — each stage's
-    /// **committed** device object id (a valid scoped link), in ride order,
-    /// dropping any stage not currently on the device. This is the compaction the
-    /// stages-first-trip-last upload relies on; the one definition the encode, the
-    /// fingerprint, and the plan all read.
+    /// Each stage's committed device object id, in ride order, dropping any stage the device
+    /// does not hold. The one definition the encode, the fingerprint and the plan all read.
     private func currentTripDeviceStageIDs(for trip: TripRecord) -> [DeviceObjectID] {
         trip.stageIDs.compactMap { plannedDeviceObjectID(for: $0) }
     }
 
-    /// The CRC-32 of the trip object an upload of this trip would send now — its
-    /// name + resolved stage ids. The trip-level `OnDeviceState` fingerprint.
+    /// The CRC of the trip object an upload would send now: its name plus resolved stage ids.
     private func currentTripPayloadCRC(for trip: TripRecord) -> UInt32 {
         TripObjectCodec.payloadCRC(name: trip.name, deviceStageIDs: currentTripDeviceStageIDs(for: trip))
     }
 
-    /// The CRC the connected device is **proven** to currently hold for this trip
-    /// (TR8), or `nil` when unproven — a valid scoped link, a non-zero catalog
-    /// CRC for that object, and equality with the committed fingerprint. Mirrors
-    /// `provenCommittedCRC(for:)` for routes exactly.
+    /// The trip twin of `provenCommittedCRC(for:)`.
     private func provenTripCommittedCRC(for trip: TripRecord) -> UInt32? {
         guard let scope = connectedScope, let link = trip.deviceLink, link.matches(scope),
             let uploaded = trip.uploadedCRC32,
@@ -655,18 +497,10 @@ public final class MainScreenModel {
         return uploaded
     }
 
-    /// True-up every trip's `deviceLink` against the device's live trip catalog.
-    /// (TR8) — the trip sibling of `reconcileOnDevice`, drop pass **and** adopt
-    /// pass. A device-side trip delete (absent object) or a foreign replacement
-    /// (a present object whose non-zero CRC disagrees with what we committed)
-    /// drops the link; a local edit (rename, reorder) never does — it leaves the
-    /// committed CRC intact and reads as outdated through `currentTripPayloadCRC`.
-    /// Then an *unlinked* catalog entry whose CRC matches a trip's current
-    /// encoding re-links it — the trip twin of `adoptByContent` (#770), and the
-    /// heal for the lost-ack fresh upload (the trip object landed, the commit ack
-    /// didn't): without it the retry planned a fresh trip and minted a same-name
-    /// twin folder on the device. Scope-gated both ways (#769): unknown scope
-    /// writes nothing, known scope clears only links that match it.
+    /// True up every trip's `deviceLink` against the device trip catalog: drop pass, then adopt
+    /// pass. A local edit (rename, reorder) never drops a link; it leaves the committed CRC
+    /// intact and reads as outdated. Adoption also heals a lost commit ack, where the trip
+    /// object landed but the ack did not, which otherwise mints a same-name twin folder.
     private func reconcileTripsOnDevice(with catalog: [TripCatalogEntry]) {
         deviceTripCRCs = Dictionary(
             catalog.map { ($0.id, $0.crc32) }, uniquingKeysWith: { first, _ in first })
@@ -686,18 +520,9 @@ public final class MainScreenModel {
         adoptTripsByContent(scope: scope, catalog: catalog)
     }
 
-    /// Adopt-by-content for trips — `adoptByContent`'s trip twin, with the same
-    /// tie-breaks (each side claimed at most once, deterministic order). The
-    /// fingerprint is the trip's *current* encoding (`currentTripPayloadCRC`:
-    /// name + committed device stage ids), so this runs after the **route**
-    /// reconcile has trued the stage links up — both call sites order it so.
-    ///
-    /// The trip name lives inside the trip object, so it carries `adoptByContent`'s
-    /// rename rule too: a trip renamed while unlinked no longer matches its own
-    /// device copy under its current encoding, and the catalog's name is what
-    /// reconstructs the stored bytes. A trip object is its name plus its stage ids,
-    /// so re-encoding under the entry's name *is* the reconstruction — no header
-    /// splice, unlike a route's geometry-bearing payload.
+    /// `adoptByContent`'s trip twin, with the same tie-breaks. The fingerprint is the trip's
+    /// current encoding, so both call sites run this after the route reconcile has trued the
+    /// stage links up.
     private func adoptTripsByContent(scope: LibraryScope, catalog: [TripCatalogEntry]) {
         var claimed = Set(library.trips().compactMap { trip -> DeviceObjectID? in
             guard let link = trip.deviceLink, link.matches(scope) else { return nil }
@@ -717,28 +542,24 @@ public final class MainScreenModel {
             guard let entry = adoptable.first(where: { entry in
                 guard !claimed.contains(entry.id) else { return false }
                 if entry.crc32 == currentCRC { return true }
-                // The rename case: same stages, the device's copy still under the
-                // name the catalog reports.
+                // The rename case: the device's copy is still under the catalog's name.
                 guard entry.name != trip.name else { return false }
                 return entry.crc32
                     == TripObjectCodec.payloadCRC(name: entry.name, deviceStageIDs: stageIDs)
             }) else { continue }
             trip.deviceLink = DeviceRouteLink(scope: scope, objectID: entry.id)
-            // The entry's CRC, not the record's: that is what the device holds, so the
-            // trip reads "on the device, out of date" and the next send replaces by id.
+            // The entry's CRC is what the device holds, so the trip reads as out of date and
+            // the next send replaces by id.
             trip.uploadedCRC32 = entry.crc32
             library.saveTrip(trip)
             claimed.insert(entry.id)
         }
     }
 
-    // MARK: Whole-trip upload (TR8)
+    // MARK: Whole-trip upload
 
-    /// Build the whole-trip upload plan (TR8) — partition the stages into skip /
-    /// replace / fresh and do the precheck math (`TripUploadPlanner`). `nil` when
-    /// the trip has dissolved. The device counts come from the last reconcile's
-    /// catalogs; the trip-object action replaces its existing device copy when a
-    /// valid scoped link points at a still-present trip-catalog entry, else fresh.
+    /// Partition the stages into skip, replace and fresh, and do the precheck math. Nil when
+    /// the trip has dissolved.
     public func planTripUpload(_ id: TripID) -> TripUploadPlan? {
         guard let trip = trip(id) else { return nil }
         let stageInputs = trip.stageIDs.map { routeID in
@@ -748,13 +569,10 @@ public final class MainScreenModel {
                 committedObjectID: plannedDeviceObjectID(for: routeID)
             )
         }
-        // A valid scoped link IS the replace target — exactly `plannedDeviceObjectID`'s
-        // rule for route stages, no catalog-contains check. The reconcile owns dropping
-        // links for trips the device no longer lists (every successful catalog read);
-        // re-checking a *cached* catalog here demoted a valid link to a fresh upload
-        // whenever the cache was stale (e.g. the post-commit `listTrips` failed) — and a
-        // fresh upload of an already-stored trip mints a silent duplicate. A replace of
-        // a genuinely vanished trip fails loudly (`notFound`) instead — the safe side.
+        // A valid scoped link is the replace target. Do not re-check the cached catalog: a
+        // stale cache demotes a valid link to a fresh upload, and a fresh upload of an
+        // already-stored trip mints a silent duplicate. A replace of a vanished trip fails
+        // loudly instead, which is the safe side.
         let tripObjectID: DeviceObjectID? = {
             guard let link = trip.deviceLink, let scope = connectedScope, link.matches(scope)
             else { return nil }
@@ -768,16 +586,9 @@ public final class MainScreenModel {
         )
     }
 
-    /// Re-read both device catalogs and reconcile (adoption included) **before**
-    /// planning a whole-trip upload — the retry-after-a-failure path. A plan cut
-    /// from catalogs cached before the failure can't see what actually landed:
-    /// a stage (or the trip object) that committed but whose ack was lost would
-    /// re-plan as *fresh* and mint a device twin. The fresh read lets the
-    /// reconcile adopt those orphans by content first, so the retry plans skips
-    /// and replaces instead. Either read failing falls back to the cached
-    /// catalogs (the device-side fresh-upload dedup, spec §4.2, still backstops
-    /// convergence); order matters — routes before trips, the adoption rule's
-    /// dependency.
+    /// Re-read both catalogs and reconcile before planning: the retry-after-failure path. A
+    /// stage, or the trip object, that committed but whose ack was lost would otherwise re-plan
+    /// as fresh and mint a device twin. Routes before trips; the adoption rule needs that order.
     public func prepareTripUpload(
         _ id: TripID, timing: TripUploadModel.Timing = TripUploadModel.Timing()
     ) async -> TripUploadModel? {
@@ -796,12 +607,9 @@ public final class MainScreenModel {
         return makeTripUploadModel(id, timing: timing)
     }
 
-    /// The whole-trip upload sheet's driver (TR8), or `nil` when the trip
-    /// dissolved. Turns the plan into the queue: a step per stage (skip / upload)
-    /// in ride order, then the trip object **last** — unless everything's already
-    /// current (all stages up to date *and* the trip object proven), in which case
-    /// the queue is pure skips and nothing is sent. Each step commits its object's
-    /// link the instant it lands, via `markRouteUploaded` / `markTripUploaded`.
+    /// Turn the plan into a queue: a step per stage in ride order, then the trip object last.
+    /// Nothing is sent when every stage and the trip object are already current. Each step
+    /// commits its own link the instant it lands. Nil when the trip dissolved.
     public func makeTripUploadModel(
         _ id: TripID, timing: TripUploadModel.Timing = TripUploadModel.Timing()
     ) -> TripUploadModel? {
@@ -830,8 +638,6 @@ public final class MainScreenModel {
                 ))
             }
         }
-        // The trip object, last — skipped only when every stage is current *and*
-        // the trip object itself is proven up to date (nothing to push).
         let tripProven = provenTripCommittedCRC(for: trip)
         let tripObjectUpToDate = tripProven != nil && tripProven == currentTripPayloadCRC(for: trip)
         if !(plan.allStagesSkip && tripObjectUpToDate) {
@@ -855,8 +661,6 @@ public final class MainScreenModel {
         )
     }
 
-    /// The `RouteBlob` a stage upload sends — the same OBCR v2 payload a single
-    /// route upload builds (`RouteObjectCodec`), under the given replace target.
     private func makeStageBlob(_ routeID: RouteID, target: DeviceObjectID?) -> RouteBlob? {
         guard let record = plannedRecords[routeID] else { return nil }
         let payload = RouteObjectCodec.encode(
@@ -867,10 +671,8 @@ public final class MainScreenModel {
             payload: payload, targetObjectID: target)
     }
 
-    /// The `TripBlob` the trip object upload sends — encoded from the trip's name
-    /// + its **currently resolvable** device stage ids (built at execution time,
-    /// after the stages committed), under the given replace target. `nil` when no
-    /// stage resolves to a device copy (nothing to reference).
+    /// Built at execution time, after the stages committed, so it carries their fresh device
+    /// ids. Nil when no stage resolves to a device copy: there is nothing to reference.
     private func makeTripBlob(_ tripID: TripID, target: DeviceObjectID?) -> TripBlob? {
         guard let trip = trip(tripID) else { return nil }
         let deviceStageIDs = currentTripDeviceStageIDs(for: trip)
@@ -880,8 +682,7 @@ public final class MainScreenModel {
             name: trip.name, deviceStageIDs: deviceStageIDs, payload: payload, targetObjectID: target)
     }
 
-    /// Compose the trip badge from the trip object's own state and its stages'
-    /// (TR6). Pure + `static` so the rule is unit-testable without a device.
+    /// Pure and static, so the rule is testable without a device.
     static func composeTripState(
         tripSelf: OnDeviceState, stageStates: [OnDeviceState]
     ) -> OnDeviceState {
@@ -890,8 +691,7 @@ public final class MainScreenModel {
         return .outdated
     }
 
-    /// Rename a trip (H12 idiom) — phone-local, persisted; the new name rides the
-    /// next trip upload (TR8). A no-op name is the caller's guard.
+    /// Rename a trip. Phone-local; the new name rides the next trip upload.
     public func renameTrip(_ id: TripID, to name: String) {
         guard var trip = trip(id) else { return }
         trip.name = name
@@ -899,8 +699,8 @@ public final class MainScreenModel {
         reloadTrips()
     }
 
-    /// Reorder a trip's stages (drag) — ride order is the trip's source of truth,
-    /// so this is the whole edit; a reorder out-dates the device copy (TR8).
+    /// Reorder a trip's stages. Ride order is the trip's source of truth, and a reorder
+    /// out-dates the device copy.
     public func reorderTripStages(_ id: TripID, from source: IndexSet, to destination: Int) {
         guard var trip = trip(id) else { return }
         trip.stageIDs.move(fromOffsets: source, toOffset: destination)
@@ -908,9 +708,8 @@ public final class MainScreenModel {
         reloadTrips()
     }
 
-    /// Remove one stage from a trip — the route returns to the top level (its
-    /// record is untouched). Removing the **last** stage dissolves the trip;
-    /// returns `true` in that case so the caller can pop the page.
+    /// Remove one stage; the route returns to the top level. Removing the last stage dissolves
+    /// the trip and returns `true`, so the caller can pop the page.
     @discardableResult
     public func removeStage(_ routeID: RouteID, from tripID: TripID) -> Bool {
         guard var trip = trip(tripID) else { return false }
@@ -925,26 +724,22 @@ public final class MainScreenModel {
         return false
     }
 
-    /// **Ungroup** a trip (the Delete dialog's non-destructive branch): drop the
-    /// trip metadata; every member route stays in the library and returns to the
-    /// top level. Routes are untouched — the store's `deleteTrip` contract.
+    /// Drop the trip metadata. Every member route stays in the library and returns to the top
+    /// level.
     public func ungroupTrip(_ id: TripID) {
         library.deleteTrip(id)
         reloadTrips()
     }
 
-    /// **Delete trip & routes** (the Delete dialog's destructive branch): the
-    /// cascade the initiating UI composes (the protocol-level trip delete is
-    /// non-cascading) — while connected, delete each member route's device copy
-    /// **and** the trip object, then the phone library. Offline, only the phone
-    /// copies go; the device copies surface as orphans at the next reconcile,
-    /// exactly like a deleted route today (H1).
+    /// Delete each member route's device copy and the trip object while connected, then the
+    /// phone library. Offline, only the phone copies go and the device copies surface as
+    /// orphans at the next reconcile.
     public func deleteTripAndRoutes(_ id: TripID) {
         guard let trip = trip(id) else { return }
         let stages = trip.stageIDs
         // Device-side cascade (composed here — the protocol trip delete is
-        // non-cascading): scope-gated per-route deletes + the trip delete,
-        // best-effort. A failed command leaves an orphan reconcile heals.
+        // The protocol trip delete does not cascade, so compose it here. Best-effort: a failed
+        // command leaves an orphan the reconcile heals.
         if let scope = connectedScope {
             let routeObjectIDs: [DeviceObjectID] = stages.compactMap { stage in
                 guard let link = plannedRecords[stage]?.deviceLink, link.matches(scope) else { return nil }
@@ -971,15 +766,11 @@ public final class MainScreenModel {
         reloadTrips()
     }
 
-    // MARK: Create & file (TR7)
+    // MARK: Create & file
 
-    /// **Group** the selected routes into a new trip (the multi-select retrofit
-    /// path). Selection order is *not* stage order — stages default to the
-    /// routes **as listed in the Planned list** (newest `addedAt` first, the same
-    /// order the loose cards show), and reordering stays the trip page's job. The
-    /// new trip takes the slot of its newest member so its card appears in place.
-    /// Ids with no live record are dropped; an empty result creates nothing (no
-    /// empty trips). Returns the new trip's id.
+    /// Group the selected routes into a new trip. Stages take Planned-list order, not selection
+    /// order, and reordering stays the trip page's job. The new trip takes the slot of its
+    /// newest member. Ids with no live record are dropped; an empty result creates nothing.
     @discardableResult
     public func groupIntoTrip(_ routeIDs: [RouteID], name: String) -> TripID? {
         let ordered = routeIDs
@@ -991,7 +782,6 @@ public final class MainScreenModel {
             id: TripID(UUID().uuidString.lowercased()),
             name: trimmed.isEmpty ? "New trip" : trimmed,
             stageIDs: ordered.map(\.id),
-            // In place: sit where the newest grouped route sat.
             addedAt: ordered.map(\.addedAt).max() ?? now()
         )
         library.saveTrip(trip)  // ≤ 1-trip invariant enforced in the store
@@ -999,20 +789,16 @@ public final class MainScreenModel {
         return trip.id
     }
 
-    /// File a route per a picker `TripSelection` (TR7) — the one call the import
-    /// row and the route menus' Add/Move both end on. `.existing` appends the
-    /// route as the trip's **last stage** (the store's invariant strips it from
-    /// any other trip, so a move is an implicit remove); `.new` starts a trip
-    /// with it as the first stage, in that route's list slot; `.none` files
-    /// nothing (the import row's opt-out). Phone-local, offline-safe — library
-    /// writes only (device adoption is TR8's).
+    /// File a route per a picker selection. `.existing` appends it as the trip's last stage;
+    /// the store strips it from any other trip, so a move is an implicit remove. `.new` starts
+    /// a trip in that route's list slot. Phone-local: library writes only.
     public func fileRoute(_ routeID: RouteID, into selection: TripSelection) {
         switch selection {
         case .none:
             break
         case .existing(let tripID):
             guard var trip = trip(tripID), !trip.stageIDs.contains(routeID) else { return }
-            trip.stageIDs.append(routeID)  // last stage
+            trip.stageIDs.append(routeID)
             library.saveTrip(trip)
             reloadTrips()
         case .new(let name):
@@ -1029,37 +815,27 @@ public final class MainScreenModel {
         }
     }
 
-    /// Remove a route from whatever trip holds it (the route menu's "Remove from
-    /// trip") — the route returns to the top level, its record untouched;
-    /// emptying the trip dissolves it. A no-op on a loose route.
     public func removeRouteFromTrip(_ routeID: RouteID) {
         guard let tripID = tripContaining(routeID) else { return }
         _ = removeStage(routeID, from: tripID)
     }
 
-    // MARK: Delete (H11 → H1, post-confirm)
+    // MARK: Delete
 
-    /// Remove a planned route from the phone (list + library). **Never** from
-    /// the device — H1's promise is "If it's already on the device, it stays
-    /// there", mirroring the ride rule in reverse (each side keeps its own
-    /// copies; the record and its badge die with the library entry).
+    /// Remove a planned route from the phone. Never from the device: a copy already there
+    /// stays, mirroring the ride rule in reverse.
     public func deleteRoute(_ id: RouteID) {
         routes.removeAll { $0.id == id }
         plannedRecords[id] = nil
         onDevice[id] = nil
-        // Also prunes the id from any trip that held it, dissolving a trip left
-        // with no stages (the store's contract) — re-read so the list reflects it.
+        // The store also prunes the id from any trip, and dissolves a trip left with no stages.
         library.deletePlannedRoute(id)
         reloadTrips()
     }
 
-    /// Move a tracked ride to Recently Deleted (#292) — recoverable, and
-    /// **never** touching the device: the SD-card copy stays. The stored files
-    /// stay too (that's what makes Recover instant); only the Tracked list
-    /// hides the ride. The id stays marked synced so the next sync doesn't
-    /// re-download it while — or after — it sits in the trash; the coordinator
-    /// re-reads `syncedRideIDs()` at the start of every sync, so
-    /// `markRideSynced` here is the whole hand-off.
+    /// Move a tracked ride to Recently Deleted. The device copy stays, and so do the stored
+    /// files, which is what makes Recover instant. The id stays marked synced, so the next sync
+    /// does not download it again.
     public func deleteRide(_ id: RideID) {
         rides.removeAll { $0.id == id }
         let date = now()
@@ -1069,8 +845,6 @@ public final class MainScreenModel {
         trashedRides = trashedList()
     }
 
-    /// Put a trashed ride back in Tracked — just clearing the trash mark; the
-    /// stored summary and tracklog never moved.
     public func recoverRide(_ id: RideID) {
         trashedRideIDs[id] = nil
         library.unmarkRideTrashed(id)
@@ -1078,10 +852,9 @@ public final class MainScreenModel {
         trashedRides = trashedList()
     }
 
-    /// Permanently delete a trashed ride: the stored files go, and the durable
-    /// tombstone takes over — the id stays marked synced (the next sync doesn't
-    /// re-download it) and is marked deleted (the merge doesn't re-list the
-    /// device's copy). What `deleteRide` did before the trash existed (#292).
+    /// Delete a trashed ride's files. The durable tombstone takes over: the id stays marked
+    /// synced, so a sync does not re-download it, and marked deleted, so the merge does not
+    /// re-list the device's copy.
     public func deleteRideForever(_ id: RideID) {
         trashedRideIDs[id] = nil
         library.unmarkRideTrashed(id)
@@ -1092,8 +865,6 @@ public final class MainScreenModel {
         trashedRides = trashedList()
     }
 
-    /// The start-up retention sweep: anything trashed more than
-    /// `trashRetentionDays` ago is removed for good.
     private func purgeExpiredTrash() {
         let cutoff = now().addingTimeInterval(-TimeInterval(Self.trashRetentionDays) * 86_400)
         for (id, date) in trashedRideIDs where date < cutoff {
@@ -1101,11 +872,10 @@ public final class MainScreenModel {
         }
     }
 
-    // MARK: Rename (H12) + import landing (E1) — phone-side library edits
+    // MARK: Rename and import landing
 
-    /// Rename a planned route in the list. Phone-local by design (H12:
-    /// "renames locally, propagates to device on next upload") — no transport
-    /// op, but a library-saved route persists the new name.
+    /// Rename a planned route. Phone-local; the name reaches the device on the next upload, so
+    /// a rename out-dates the device copy until then.
     public func renameRoute(_ id: RouteID, to name: String) {
         guard let index = routes.firstIndex(where: { $0.id == id }) else { return }
         routes[index].name = name
@@ -1113,15 +883,13 @@ public final class MainScreenModel {
             record.summary.name = name
             plannedRecords[id] = record
             library.savePlannedRoute(record)
-            // The name rides in the upload payload: a rename out-dates the
-            // device copy until the next push updates it.
             refreshOnDeviceStates()
             rebuildPlannedItems()
         }
     }
 
-    /// Rename a tracked ride in the list — same phone-local rule as routes.
-    /// A summary-only write (#360): the tracklog on disk is untouched.
+    /// Rename a tracked ride, with the same phone-local rule. A summary-only write: the
+    /// tracklog on disk is untouched.
     public func renameRide(_ id: RideID, to name: String) {
         guard let index = rides.firstIndex(where: { $0.id == id }) else { return }
         rides[index].name = name
@@ -1132,15 +900,12 @@ public final class MainScreenModel {
         }
     }
 
-    /// Land a just-imported route at the top of Planned (E1 "Save to Planned")
-    /// — and in the library, so it survives a relaunch and uploads later (H4).
-    /// The full record (canonical geometry + source file) stays app-side; the
-    /// device never had this route, so `routeDetail` can't answer for it.
+    /// Land a just-imported route at the top of Planned and in the library, so it survives a
+    /// relaunch and can upload later.
     public func addImportedRoute(_ record: PlannedRouteRecord) {
         plannedRecords[record.id] = record
         library.savePlannedRoute(record)
-        // A re-import that replaces an existing route keeps its `deviceObjectID`
-        // (and thus its badge); a fresh import isn't on the device yet.
+        // A re-import that replaces an existing route keeps its device link, and its badge.
         refreshOnDeviceStates()
         routes.removeAll { $0.id == record.id }
         routes.insert(record.summary, at: 0)
@@ -1148,15 +913,9 @@ public final class MainScreenModel {
         tab = .planned
     }
 
-    /// Reverse a planned route (#503): land an **end-to-end flipped copy** at the
-    /// top of Planned, leaving the original untouched (a second route, not an
-    /// in-place edit — the rider keeps both directions). The reversed geometry
-    /// runs through the same `RouteStats` / OBCR encode path as any route, so its
-    /// ascent/descent swap and re-derived cumulative stats fall out for free; the
-    /// waypoints keep their coordinates with `Distance Along` flipped and re-sorted
-    /// (`ImportedRoute.reversed()`). The copy is a fresh library route — new id, no
-    /// device link, uploads like any other. Returns the new route's id (`nil` if
-    /// the source route has vanished).
+    /// Land an end-to-end flipped copy at the top of Planned and leave the original alone, so
+    /// the rider keeps both directions. The copy is a fresh library route: new id, no device
+    /// link, uploads like any other. Returns nil when the source route has gone.
     @discardableResult
     public func reverseRoute(_ id: RouteID) -> RouteID? {
         guard let original = plannedRecords[id] else { return nil }
@@ -1171,13 +930,10 @@ public final class MainScreenModel {
             elevationGainMeters: stats.elevationGainMeters,
             estimatedDuration: stats.estimatedDuration,
             pointCount: reversedRoute.points.count,
-            // Same wire lineage as the original — it still encodes to OBCR the
-            // same way; the direction, not the format, changed.
             source: original.summary.source,
             trackPreview: TrackPreview.normalizing(reversedRoute.points.map(\.coordinate))
         )
-        // The source file rides along as provenance (the original bytes, flipped
-        // only in the canonical `route`); nothing re-parses it to rebuild geometry.
+        // The source file is provenance only; nothing re-parses it to rebuild the geometry.
         let record = PlannedRouteRecord(
             summary: summary,
             route: reversedRoute,
@@ -1189,20 +945,17 @@ public final class MainScreenModel {
         return newID
     }
 
-    /// A saved planned route whose name matches `name` (case-insensitively) — the
-    /// import edge asks so it can offer "replace" instead of a duplicate.
+    /// A saved planned route whose name matches case-insensitively, so the import edge can
+    /// offer a replace instead of a duplicate.
     public func plannedRoute(named name: String) -> PlannedRouteRecord? {
         plannedRecords.values.plannedRoute(named: name)
     }
 
-    /// Whether the device holds a copy of this planned route (drives the C1 badge).
     public func isUploaded(_ id: RouteID) -> Bool { onDeviceState(id) != .notOnDevice }
 
-    /// The proven device-copy state behind the C1 badge.
     public func onDeviceState(_ id: RouteID) -> OnDeviceState { onDevice[id] ?? .notOnDevice }
 
-    /// The kept detail for a library-saved route, with the summary refreshed
-    /// from the live list (renames must show).
+    /// The kept detail, with the summary refreshed from the live list so a rename shows.
     public func importedDetail(for id: RouteID) -> RouteDetail? {
         guard let record = plannedRecords[id] else { return nil }
         var detail = record.detail()
@@ -1210,32 +963,23 @@ public final class MainScreenModel {
         return detail
     }
 
-    /// The canonical parsed geometry a library-saved route re-encodes to OBCR for
-    /// upload (B12). `nil` for a device-listed route the phone never imported —
-    /// that copy already lives on the device.
+    /// The canonical parsed geometry a library-saved route re-encodes for upload. Nil for a
+    /// device-listed route the phone never imported.
     public func plannedGeometry(for id: RouteID) -> ImportedRoute? {
         plannedRecords[id]?.route
     }
 
-    /// A synced ride's full tracklog (#294 follow-up) — the interactive map
-    /// draws this, never the downsampled `trackPreview`. Loaded from the store
-    /// on demand (#360): called once per detail push, so a synchronous one-file
-    /// read is fine — only the list rows must never pay for tracklogs. `nil`
-    /// when the ride hasn't landed (shouldn't happen for a row the detail
-    /// screen can open) or carries no points (a pre-sync-codec ride); the
-    /// detail degrades to the preview's coordinates either way, not a missing map.
+    /// A synced ride's full tracklog, read from the store on demand: the interactive map draws
+    /// this, never the downsampled `trackPreview`. Nil when the ride carries no points, and the
+    /// detail then degrades to the preview's coordinates.
     public func rideGeometry(for id: RideID) -> [Coordinate]? {
         let points = library.ridePoints(id)?.map(\.coordinate)
         return (points?.isEmpty ?? true) ? nil : points
     }
 
-    /// The device object id this planned route is stored under **on the
-    /// connected device, in its current era** — threaded into a re-upload so
-    /// it replaces that object instead of duplicating. Gated by the validity
-    /// predicate (#769): a link minted on another device or in a previous
-    /// era answers `nil`, so replace-by-id can never overwrite an object the
-    /// link doesn't actually point at (the v1 wrong-route-overwrite bug); the
-    /// upload then creates a fresh copy — the safe direction.
+    /// The object id this planned route is stored under on the connected device, threaded into
+    /// a re-upload so it replaces that object. A link minted on another device or in a previous
+    /// era answers nil, so a replace can never overwrite an object the link does not point at.
     public func plannedDeviceObjectID(for id: RouteID) -> DeviceObjectID? {
         guard let link = plannedRecords[id]?.deviceLink, let scope = connectedScope,
             link.matches(scope)
@@ -1243,40 +987,30 @@ public final class MainScreenModel {
         return link.objectID
     }
 
-    /// The CRC the connected device is **proven** to hold for this route (#770)
-    /// — threaded into the detail so its button reads "up to date" only on the
-    /// same proof the list badge uses (a scoped link + a matching non-zero
-    /// catalog CRC), never on link presence alone. `nil` when unproven → the
-    /// detail offers Upload, not a disabled "up to date".
+    /// The CRC the connected device is proven to hold, so the detail button reads "up to date"
+    /// on the same proof the list badge uses, never on link presence alone.
     public func plannedProvenCommittedCRC(for id: RouteID) -> UInt32? {
         guard let record = plannedRecords[id] else { return nil }
         return provenCommittedCRC(for: record)
     }
-    /// H3 write-through from Settings (B8) — the top bar shows the new device
-    /// name at once; Settings owns the config write and the bond record.
+    /// Show a new device name in the top bar at once. Settings owns the config write and the
+    /// bond record.
     public func deviceRenamed(to name: String) {
         deviceName = name
     }
 
-    /// A B5 upload committed — record the `{serial, StoreId, id}` link it landed
-    /// under (#769) so the C1 badge lights and a later re-upload replaces that
-    /// object *on that device in that era*. Idempotent; a new link (re-upload
-    /// after a device-side change) overwrites the old. The scope comes from
-    /// the connection's settled identity; in the vanishing window where an
-    /// upload commits before/without it, no link is recorded — the safe
-    /// direction (no badge, the next push or V6's adoption re-links) — because
-    /// a scope-less link is exactly the v1 aliasing this change retires.
+    /// Record the scope-qualified link an upload landed under, so the badge lights and a later
+    /// re-upload replaces that object on that device. With no settled scope no link is recorded:
+    /// the safe direction, because a scope-less link aliases across devices.
     public func markRouteUploaded(
         _ id: RouteID, objectID: DeviceObjectID, crc32: UInt32
     ) {
         markRouteUploaded(id, objectID: objectID, crc32: crc32, adopt: true)
     }
 
-    /// The commit itself, with the adoption rule made optional: a **single**
-    /// route upload adopts (pushes its trip object if the trip is on device); a
-    /// stage committed **inside** a whole-trip upload does not — that queue pushes
-    /// the trip object once, at the end, so a per-stage adoption would be a
-    /// redundant (and racing) trip push.
+    /// A single route upload adopts: it pushes its trip object when the trip is on the device.
+    /// A stage committed inside a whole-trip upload does not, because that queue pushes the trip
+    /// object once at the end.
     func markRouteUploaded(
         _ id: RouteID, objectID: DeviceObjectID, crc32: UInt32, adopt: Bool
     ) {
@@ -1284,10 +1018,8 @@ public final class MainScreenModel {
         if let scope = connectedScope {
             record.deviceLink = DeviceRouteLink(scope: scope, objectID: objectID)
             record.uploadedCRC32 = crc32
-            // The transfer verified this whole-object CRC for this object, so
-            // record it as device truth (#770): the badge proves immediately,
-            // before the next `listRoutes()` catches up. A later catalog read
-            // overwrites this with what the device actually reports.
+            // The transfer verified this CRC for this object, so record it as device truth: the
+            // badge proves before the next catalog read overwrites it.
             deviceRouteCRCs[objectID] = crc32
 
         } else {
@@ -1297,25 +1029,21 @@ public final class MainScreenModel {
         plannedRecords[id] = record
         library.savePlannedRoute(record)
         refreshOnDeviceStates()
-        // Adoption rule (TR8, locked in the epic): a single route that belongs to
-        // an app trip already on the device files into the folder — push the
-        // updated trip object. Otherwise the route lands standalone. Runs after
-        // the route's own commit so the trip object carries the fresh stage id.
+        // Adoption rule: a single route that belongs to a trip already on the device files into
+        // the folder, so push the updated trip object. Runs after the route's own commit, so the
+        // trip object carries the fresh stage id.
         if adopt { maybeAdoptRouteIntoDeviceTrip(id) }
     }
 
-    /// A whole-trip upload committed the trip object under `objectID` (TR8) —
-    /// record the `{serial, StoreId, id}` link + fingerprint so the trip badge
-    /// lights and a later push replaces that object in place. Idempotent; the
-    /// route-upload rule in reverse (no scope, or no committed id → no link, the
-    /// safe direction: the next push or reconcile re-links).
+    /// Record the link and fingerprint a trip-object upload landed under, so the trip badge
+    /// lights and a later push replaces that object in place. No scope or no id means no link,
+    /// the safe direction.
     public func markTripUploaded(_ id: TripID, objectID: DeviceObjectID?, crc32: UInt32) {
         guard var trip = trip(id) else { return }
         if let scope = connectedScope, let objectID {
             trip.deviceLink = DeviceRouteLink(scope: scope, objectID: objectID)
             trip.uploadedCRC32 = crc32
-            // The transfer verified this whole-object CRC — record it as device
-            // truth so the badge proves before the next `listTrips()` catches up.
+            // The transfer verified this CRC, so the badge proves before the next `listTrips()`.
             deviceTripCRCs[objectID] = crc32
         } else {
             trip.deviceLink = nil
@@ -1325,27 +1053,23 @@ public final class MainScreenModel {
         reloadTrips()
     }
 
-    /// The adoption rule's trip-object push (TR8): iff the route's trip already
-    /// exists on the device (a valid scoped link confirmed by the last reconcile),
-    /// push the updated trip object so the newly-committed route files into the
-    /// folder. Best-effort — a failed push leaves the trip page reading outdated,
-    /// which the Upload-trip button (or the next reconnect reconcile) heals.
+    /// Push the updated trip object when the route's trip is already on the device, so the
+    /// newly-committed route files into the folder. Best-effort: a failed push leaves the trip
+    /// page reading outdated, which the Upload-trip button or the next reconcile heals.
     private func maybeAdoptRouteIntoDeviceTrip(_ routeID: RouteID) {
         guard let scope = connectedScope,
             let tripID = tripContaining(routeID),
             let trip = trip(tripID),
             let link = trip.deviceLink, link.matches(scope),
-            // Confirmed on the device: a non-zero CRC for the trip object (poked
-            // by the last commit or a `listTrips()` reconcile) — the same proof
-            // the badge uses, so an in-session upload counts without re-reading.
+            // Confirmed on the device: a non-zero CRC for the trip object, the same proof the
+            // badge uses, so an in-session upload counts without re-reading.
             (deviceTripCRCs[link.objectID] ?? 0) != 0
         else { return }
         pushTripObject(tripID, replacing: link.objectID)
     }
 
-    /// Encode + upload one trip object (replace-by-id), committing the link on
-    /// success — the metadata-only push shared by the adoption rule and a
-    /// fully-current "Upload trip". Fire-and-forget; reconcile is the backstop.
+    /// Encode and upload one trip object, replacing by id, and commit the link on success.
+    /// Fire-and-forget; the reconcile is the backstop.
     private func pushTripObject(_ tripID: TripID, replacing objectID: DeviceObjectID?) {
         guard let trip = trip(tripID) else { return }
         let deviceStageIDs = currentTripDeviceStageIDs(for: trip)
@@ -1364,22 +1088,16 @@ public final class MainScreenModel {
 
     // MARK: Helpers
 
-    /// The Tracked list: exactly the rides the phone has **synced** (its
-    /// library), newest first — library-first, like Planned (#289/#296). A ride
-    /// on the device but not yet downloaded is deliberately *not* here: it has
-    /// only summary stats, no tracklog or preview, and a half-empty card is
-    /// worse than none (the device's `listRides()` drives Sync, never the rows).
-    /// Permanently deleted rides are already gone from `rideSummaries`; the
-    /// tombstone filter is belt-and-suspenders. Trashed rides *are* still in
-    /// `rideSummaries` (their files stay for Recover) — the trash filter is
-    /// what hides them here.
+    /// The Tracked rows: exactly the rides the phone has synced, newest first. A ride on the
+    /// device but not downloaded is deliberately absent, because it has only summary stats and a
+    /// half-empty card is worse than none. Trashed rides stay in `rideSummaries` for Recover, so
+    /// the trash filter is what hides them here.
     private func trackedList() -> [RideSummary] {
         rideSummaries.values
             .filter { !deletedRideIDs.contains($0.id) && trashedRideIDs[$0.id] == nil }
             .sorted { $0.date > $1.date }
     }
 
-    /// The Recently Deleted rows: trashed rides, most recently trashed first.
     private func trashedList() -> [RideSummary] {
         trashedRideIDs
             .sorted { $0.value > $1.value }
