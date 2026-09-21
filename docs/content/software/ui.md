@@ -14,9 +14,24 @@ The screen drawings below are schematics. They explain behavior. They are not pi
 ## Screen model
 
 Each screen is one variant of a `Screen` enum and owns its state by value. One table declares every
-variant with its capabilities, and generates the enum, the dispatch, and the capability data.
-Capabilities are the cross-cutting facts: base content or overlay, timers, holds, map reader, and
-what a repaint depends on.
+variant with its capabilities, and generates the enum, the dispatch, and the capability data. A
+capability is a cross-cutting fact the row states once, so nothing else matches on the variant:
+
+| Capability | What it decides |
+| --- | --- |
+| `kind` | `Riding`, `Nav`, `Overlay` or `Settings`. The overlay and settings behaviors hang off it. |
+| `base` | `Map`, `LiveRiding` or `Chrome`. It gates map reads, live-data repaint, and the Bluetooth indicator. |
+| `reader` | When the screen needs the streamed map at draw: never, always, or for articles, a photo, or POI data. |
+| `render_key` | Which set of facts a repaint of this screen depends on. |
+| `timed` | The screen has timed content, so its tick can ask for a repaint. |
+| `hold_fill` | The screen draws a live fill while a guarded hold charges. |
+| `recess` | A drawer draws this screen again one shade down, instead of leaving it standing. |
+| `idle_exempt` | The idle-return timeout must never take this screen away. |
+| `ride_view` | A deliberate ride view: the idle timeout leaves it while a ride is tracked. |
+| `browse_exempt` | A deliberate browse view: the idle timeout does not return it to Home when no ride is tracked. |
+| `blocks_chords` | While it is on top, the device-wide drawer chords are refused. |
+| `blocks_escape` | While it is on top, the global Back-hold escape does not leave it. |
+| `remap` | Which catalog the screen's held indices are re-pointed against after a store rescan. |
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -60,7 +75,7 @@ what a repaint depends on.
   </g>
 
   <text class="d-tag" x="324" y="240">dispatched by match — static, zero-alloc</text>
-  <text class="d-sub" x="324" y="258" style="font-size:12px">add a screen = 1 module + 1 row in the screens! table</text>
+  <text class="d-sub" x="324" y="258" style="font-size:12px">one row per screen, with its capabilities</text>
 </svg>
 </div>
 <div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
@@ -103,7 +118,19 @@ A screen handles one gesture, returns a transition, and draws the current frame.
 </figure>
 
 Input receives a mutable context; drawing receives a read-only one. A screen therefore cannot change
-state while it draws.
+state while it draws. `Canvas` implements `Surface` and `RenderFrame` derefs to `Render`, so the
+host's generics stop at the dispatch:
+
+```rust
+fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition
+
+// The `screens!` dispatch, generic over the host's draw target and its map scene.
+fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
+where D: DrawTarget, F: Fn(u16) -> D::Color, S: MapScene
+
+// What a screen module writes. The generic form stays with the map-scene draws and their callers.
+fn draw(&self, cv: &mut impl Surface, rx: &mut Render)
+```
 
 ## Navigation
 
@@ -145,7 +172,8 @@ The screen stack holds at most ten screens, and Home is always the first.
 </svg>
 </div>
 <div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
-<figcaption>The top screen returns a transition. The UI runtime applies it to the stack.</figcaption>
+<figcaption>A screen returns a transition, and <code>screen::apply</code> runs it. Cards land on
+the stack without it.</figcaption>
 </figure>
 
 | Transition | Stack operation |
@@ -1050,8 +1078,21 @@ one.
 
 ## Visual vocabulary
 
-Screens compose shared primitives for titles, lists, rows, bands, tiles, text, and status, and each
-shared mechanism has one owner.
+Each shared mechanism has one owner, one module per concept under `screen/vocab/`:
+
+| Module | What it owns |
+| --- | --- |
+| `chrome` | The framed page header, the card glyphs, the Recalculating banner, and the shared text and stroke helpers. |
+| `list` | The scrolling list: the wrapping cursor, the window math, the row cursor, the separators, and the scrollbar. |
+| `rows` | The settings row and its cursor, the value picker, the stat-ledger row, and the guarded action rows. |
+| `card` | Selection, input, and drawing for the action rows of full-screen cards. |
+| `tiles` | The rounded stat panes of the riding grid and the Fields editor, and the waypoint panel. |
+| `band` | The elevation band: the filled silhouette, the connected top stroke, and the peak label. |
+| `fmt` | One formatter per printed quantity and output style. |
+| `marquee` | The one long name a frame scrolls, by whole characters. |
+| `pager` | The two-page auto-flip the detail compositions share. |
+| `sheet` | The drawer sheets' shared motion and marks. |
+| `spinner` | The compass needle a working screen waits behind. |
 
 A name that does not fit its field is cut with two dots. One name per frame scrolls instead: the
 highlighted list row, a detail title, the selected peak in Peak View. Every font is monospace, so a
@@ -1092,15 +1133,31 @@ scrolls once when the name changes and then rests, so nothing moves while the ri
 Palette constants are written once and converted to the panel's 64 colors by the framebuffer, so a
 screen never picks a device color by hand.
 
+## Adding a screen
+
+One module and one row declare a screen. The row alone does not put it on the glass:
+
+| Step | Where |
+| --- | --- |
+| The state type, `handle`, and `draw`. | a new module under [`screen/`](src:firmware/obc-app/src/screen) |
+| The module declaration, the variant, and its capabilities. | [`screen/mod.rs`](src:firmware/obc-app/src/screen/mod.rs): its `mod` line and the `screens!` table |
+| Every string it prints, in four languages. | the catalogs under [`i18n/`](src:firmware/obc-app/i18n) |
+| The way in: a menu row, a drawer row, a settings row, a companion card, or the module that owns the work the screen reports. | with that entry point, which usually sits outside `screen/` |
+| A sweep frame, whose `expect` names the variant it must reach. | [`ui-frames.toml`](src:firmware/ui-frames.toml) |
+
+The acceptance test is the copy-fit gate over every reachable screen and language.
+
 ## Source map
 
-- Screen table, capabilities, contexts, and transitions: [`screen/mod.rs`](src:firmware/obc-app/src/screen/mod.rs)
-- Gesture recognition: [`input.rs`](src:firmware/obc-app/src/input.rs), [`input_plane.rs`](src:firmware/obc-app/src/input_plane.rs)
-- Repaint state: [`dirty.rs`](src:firmware/obc-app/src/dirty.rs), [`render_key.rs`](src:firmware/obc-app/src/render_key.rs), [`ui_runtime.rs`](src:firmware/obc-app/src/ui_runtime.rs)
-- Shared screen primitives: [`screen/vocab/`](src:firmware/obc-app/src/screen/vocab)
-- Settings and translations: [`settings.rs`](src:firmware/obc-app/src/settings.rs), [`i18n/`](src:firmware/obc-app/i18n)
-- Find a place and visits: [`find_place.rs`](src:firmware/obc-app/src/find_place.rs), [`visit.rs`](src:firmware/obc-route/src/visit.rs)
-- POI and Up-ahead views: [`poi_list.rs`](src:firmware/obc-app/src/screen/poi_list.rs), [`whats_next.rs`](src:firmware/obc-app/src/screen/whats_next.rs)
+| Subject | Source |
+| --- | --- |
+| Screen table, capabilities, contexts, and transitions | [`screen/mod.rs`](src:firmware/obc-app/src/screen/mod.rs) |
+| Gesture recognition | [`input.rs`](src:firmware/obc-app/src/input.rs), [`input_plane.rs`](src:firmware/obc-app/src/input_plane.rs) |
+| Repaint state | [`dirty.rs`](src:firmware/obc-app/src/dirty.rs), [`render_key.rs`](src:firmware/obc-app/src/render_key.rs), [`ui_runtime.rs`](src:firmware/obc-app/src/ui_runtime.rs) |
+| Shared screen primitives | [`screen/vocab/`](src:firmware/obc-app/src/screen/vocab) |
+| Settings and translations | [`settings.rs`](src:firmware/obc-app/src/settings.rs), [`i18n/`](src:firmware/obc-app/i18n) |
+| Find a place and visits | [`find_place.rs`](src:firmware/obc-app/src/find_place.rs), [`visit.rs`](src:firmware/obc-route/src/visit.rs) |
+| POI and Up-ahead views | [`poi_list.rs`](src:firmware/obc-app/src/screen/poi_list.rs), [`whats_next.rs`](src:firmware/obc-app/src/screen/whats_next.rs) |
 
 See [system architecture](../architecture/) for the host loop and [rendering pipeline](../rendering/)
 for pixel generation.
