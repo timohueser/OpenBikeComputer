@@ -8,6 +8,13 @@ mod photo;
 mod policy;
 pub mod text;
 
+/// The shared UI language set, verbatim. It decides which articles are fetched and which places
+/// are eligible at all, so a stage that caches captures has to key on it.
+pub use locale::LANGUAGE_BYTES;
+/// The curated category policy, verbatim. Capture discovers from the same bytes the compiler
+/// selects with, so the two cannot drift apart.
+pub use policy::BYTES as POLICY_BYTES;
+
 use assets::{article, Article};
 use geos::{Geom as _, Geometry};
 use serde::{Deserialize, Serialize};

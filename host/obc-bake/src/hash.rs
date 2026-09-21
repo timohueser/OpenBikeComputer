@@ -40,6 +40,13 @@ pub fn text(s: &str) -> String {
     hex(&hasher.finalize())
 }
 
+/// Hash of a byte string — used for the compiled-in documents a stage keys on.
+pub fn bytes(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hex(&hasher.finalize())
+}
+
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
     let mut s = String::with_capacity(bytes.len() * 2);
