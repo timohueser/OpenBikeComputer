@@ -1,10 +1,8 @@
 # OBCU File Format Specification (v2)
 
-OBCU (OpenBikeComputer Update) is the byte format of a **field firmware update** —
-the SD-staged DFU foundation (epic #615), signed since **v2** (epic #773, issue
-#997). It has three parts, all defined here and all implemented by the shared
-`no_std` crate `firmware/obc-dfu` (host-tested to the same bar as the settings codec,
-and linked by the `obc-boot` bootloader, `firmware/obc-boot`):
+OBCU (OpenBikeComputer Update) is the byte format of a **field firmware update**. It has three
+parts, all defined here and all implemented by the shared `no_std` crate `firmware/obc-dfu`, which
+the `obc-boot` bootloader links:
 
 1. **The update-image container** (§1) — the `UPDATE.BIN` file on the SD card: a
    fixed **64-byte header**, the raw application image, and (v2) a **signature
@@ -12,43 +10,13 @@ and linked by the `obc-boot` bootloader, `firmware/obc-boot`):
 2. **The boot-state page** (§2) — the CRC-framed blob in a dedicated **4 KB RRAM
    page**, the sole handoff channel between the app (the *armer*) and the bootloader
    (the *installer*).
-3. **The storage-blob stage carve** (§3, epic #1158) — the CRC-framed **20 KB RRAM
+3. **The storage-blob stage carve** (§3) — the CRC-framed **20 KB RRAM
    carve** through which the armer hands the bootloader the sEMMC soft-peripheral
    image it boots the card with.
 
-It shares the conventions of the [`OBCM`](OBCM_Spec.md) map and
-[`OBCR`](OBCR_Spec.md) route formats so the reader/writer code feels identical:
-**little-endian** integers throughout, an explicit magic + version + CRC frame, and
-**no runtime discovery** (every field is at a fixed or self-describing offset).
-
-## Design principles
-
-1. **Verify before erase.** Nothing writes the app slot until a CRC has passed over
-   the complete staged image (epic #615 safety invariant 1). Both a bad container
-   header (§1) and a bad staged-image CRC (referenced from §2) reject the update at
-   zero cost.
-2. **Torn writes decode to a safe state.** The boot-state page (§2) is CRC-framed
-   like the settings blob: **anything that doesn't cleanly decode is `Idle`** — a
-   blank page, a half-written line, or a bit-flip the CRC catches all mean "no
-   pending update, jump to the app", never a garbage install (invariant 4).
-3. **The bootloader has no FAT.** Extents in the boot-state page are **absolute
-   512-byte SD block runs**, pre-resolved by the app-side armer, so the installer
-   reads raw blocks with no filesystem in the 32 KB bootloader budget. Since the
-   storage pivot (#1158) the same budget argument gives the bootloader its card
-   *transport*: the sEMMC image arrives pre-staged through §3 rather than compiled in.
-4. **CRC-32 is the corruption check; the signature is the trust check.** v1 shipped
-   with the CRC alone (physical card access is already root on an open device) and
-   reserved header space for "a future signature-scheme marker if internet-sourced OTA
-   ever lands". v2 spends it: an image is **Ed25519-signed over a domain-separated
-   message** (§1.3) and the app-side armer verifies it **before arming** (§1.4). The
-   two checks answer different questions and both remain: the CRC catches a torn
-   download and says "damaged"; the signature catches a forged one and says "not
-   ours". Nothing about the CRC's role, polynomial, or coverage changed.
-5. **A fielded bootloader must keep installing new images.** `obc-boot` is 32 KB,
-   flashed once by probe, and never updated by DFU — so the v2 container is designed
-   so that a bootloader compiled before v2 existed parses and installs it unchanged
-   (§1.2). This is why the signature lives in the reserved region and a trailer rather
-   than in a bumped header layout, and why the bootloader does not verify signatures.
+It shares the conventions of the [`OBCM`](OBCM_Spec.md) map and [`OBCR`](OBCR_Spec.md) route
+formats: **little-endian** integers throughout, an explicit magic, version and CRC frame, and **no
+runtime discovery** — every field is at a fixed or self-describing offset.
 
 All multi-byte integers are **little-endian**. The integrity check everywhere is
 **CRC-32/IEEE** (reflected polynomial `0xEDB88320`, init/xor-out `0xFFFFFFFF`, check
@@ -112,14 +80,13 @@ over the resolved extents).
 `FW Version` is read back with trailing NULs trimmed; an over-long version string is
 truncated to 32 bytes on a UTF-8 char boundary at wrap time (never mid-codepoint).
 
-`Image Len` must not exceed **`MAX_IMAGE_LEN` = 1,480,000** bytes — the L15 DK app
-slot (`0x8000 … 0x17B000`) minus a small margin. `obc-mkimage wrap` refuses a larger
-image. (The LM20's larger slot is a future mechanical bump.) The **whole container**
-is `64 + Image Len + Sig Len` bytes; the BLE/USB `fwImage` transfer (protocol §7.6)
-announces that container size, so its announce-time reject gates at the **container**
-ceiling `MAX_CONTAINER_LEN` = `MAX_IMAGE_LEN + 64 + 64` = 1,480,128 — a raw image at
-the cap must not be refused for its own framing. Bytes past
-`64 + Image Len + Sig Len` in the delivered file are ignored (FAT cluster slack, §2.3).
+`Image Len` must not exceed **`MAX_IMAGE_LEN` = 1,480,000** bytes — the app slot minus a small
+margin. `obc-mkimage wrap` refuses a larger image. The **whole container** is
+`64 + Image Len + Sig Len` bytes, so a transfer that gates on a length gates at the **container**
+ceiling `MAX_CONTAINER_LEN` = `MAX_IMAGE_LEN + 64 + 64` = 1,480,128: a raw image at the cap must not
+be refused for its own framing. A container is delivered as a `PUT` of kind `7`
+([`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §3.6, §4). Bytes past
+`64 + Image Len + Sig Len` in the delivered file are ignored (§2.3).
 
 ### 1.2 Header Version stays 1 — the flash-once bootloader guarantee (normative)
 
@@ -155,13 +122,6 @@ because the app writes the same 64 bytes into the boot-state page that sit on th
 and nothing the bootloader flashes moved. Consequently **the bootloader needs no change
 to install v2 images, and MUST NOT be required to verify signatures.**
 
-Pinned by `obc-dfu`'s `tests/signature.rs`
-(`a_fielded_v1_decoder_accepts_a_v2_header_with_identical_fields`, which reimplements
-the v1 decoder straight from the table above rather than calling the current code, plus
-`the_install_engine_flashes_a_v2_container_unchanged` and
-`the_install_engine_treats_v1_and_v2_identically`) and cross-implementation by the
-`update-container-v1.bin` / `update-container-v2.bin` fixture pair in `specs/vectors/`.
-
 ### 1.3 The signature (normative)
 
 `Sig Scheme` = `1` means **Ed25519** (RFC 8032, the standard SHA-512 / Curve25519
@@ -179,21 +139,9 @@ signed_message =
    || image[0 .. Image Len]      the raw application image, unmodified
 ```
 
-Total length `47 + Image Len`. Every part is load-bearing:
-
-- The **context string** makes an OBCU signature useless anywhere else. A key that also
-  signs in some other protocol can never produce a cross-valid signature, because no
-  other message format begins with these eleven bytes. The NUL terminates the context
-  unambiguously, so no `FW Version` value can extend or spoof it.
-- **`FW Version`** stops **re-labelling**: without it, a genuinely signed v1.4.0 image
-  could be re-announced as v9.9.9 — or as an *older* version, to walk a device backwards
-  into a known-bad build — with the signature still checking out.
-- **`Image Len`** stops a length lie: the announced length is what the installer reads
-  and flashes, so it must be covered.
-- `Image CRC-32` is deliberately **not** covered — it is a pure function of the image
-  bytes, which *are* covered, so signing it would add nothing. `Sig Scheme` is not
-  covered either: any rewritten scheme value only moves the container into a bucket the
-  armer rejects outright (§1.4).
+Total length `47 + Image Len`. `Image CRC-32` and `Sig Scheme` are **not** covered: the CRC is a
+pure function of image bytes that are covered, and a rewritten scheme value only moves the container
+into a bucket the armer rejects (§1.4).
 
 Signing MUST be **deterministic**: no per-signature randomness beyond RFC 8032's own
 seed-derived nonce. That makes a release artifact byte-reproducible and lets a signed
@@ -223,16 +171,13 @@ it determines which message the rider sees:
 6. CRC-32 over the image body matches `Image CRC-32` → else *bad CRC*.
 7. Ed25519 verification over §1.3's message succeeds → else *bad signature*.
 
-Steps 6 and 7 run over a **single streaming pass** of the image: the same bytes feed
-the CRC and the signature hash, so verification adds no second read of the card and no
-image-sized buffer. Corruption (6) is reported **before** trust (7) on purpose — a torn
-copy is the likelier failure and "the file is damaged, copy it again" is the actionable
-message, whereas telling a rider to re-copy an intact but forged image would be a lie.
+Steps 6 and 7 run over a **single streaming pass** of the image: the same bytes feed the CRC and
+the signature hash, so verification adds no second read of the card and no image-sized buffer.
+Corruption (6) is reported **before** trust (7).
 
-The bootloader performs **no signature check** (§1.2). Its guarantee is unchanged and
-independent: verify-before-erase by CRC over the raw extents, and always leave a
-bootable image. Signature verification is an *authorization* gate on arming, not a
-second integrity gate on flashing.
+The bootloader performs **no signature check** (§1.2). Its guarantee is verify-before-erase by CRC
+over the raw extents, and always leave a bootable image. Signature verification is an
+*authorization* gate on arming, not a second integrity gate on flashing.
 
 ---
 
@@ -259,40 +204,23 @@ including the CRC; the CRC covers bytes `0 .. blob_len − 4` (the padding inclu
 | 8 | Blob Len | 4 | `uint32` | Total encoded length, incl. CRC; a multiple of 16 |
 | 12 | Generation | 4 | `uint32` | Bumped on every arm; `0` for Idle |
 
-`Generation` is a diagnostic breadcrumb, **not** a replay guard. It is bumped on every
-arm, carried for `Armed`/`Trial` (read back by `BootState::generation()`), and recorded
-inside the `Idle` payload's **Last Outcome** record (§2.2). Its one live consumer is the
-app's boot-outcome reconcile, which matches the recorded generation against the arm
-marker it left behind to tie an outcome to *its* arm (§2.2). Nothing compares generations
-to *reject* a page: the single-page overwrite-in-place channel has no live stale-replay
-vector, and `Idle` pins the header field to `0`, so the counter is not monotonic across a
-cycle (`Idle 0 → Armed 1 → Idle 0`). A torn, blank, or stale page is caught by the CRC
-frame and decodes to `Idle` (invariant 4 in §Design principles) regardless of generation.
+`Generation` is a diagnostic breadcrumb, **not** a replay guard. It is bumped on every arm, carried
+for `Armed` and `Trial`, and recorded inside the `Idle` payload's **Last Outcome** record (§2.2).
+Its one consumer is the app's boot-outcome reconcile, which matches the recorded generation against
+the arm marker it left behind. Nothing compares generations to *reject* a page, and `Idle` pins the
+header field to `0`, so the counter is not monotonic across a cycle (`Idle 0 → Armed 1 → Idle 0`).
+A torn, blank or stale page is caught by the CRC frame and decodes to `Idle` regardless of
+generation.
 
-**Format Version history.** `0x0001` was the original layout. `0x0002` (DR2 #730)
-appended the **Last Outcome** record to the Idle payload so the bootloader's terminal
-writes carry *what happened* — a rollback vs. a pre-erase reject are otherwise
-indistinguishable when the running and staged images share a version string
-(a same-version re-stage), which made every such failure misreport as a success.
-
-**Version compatibility (normative).** Readers **MUST accept both** `0x0001` and
-`0x0002`; writers **MUST emit** `0x0002`. The `Armed` and `Trial` payload layouts are
-byte-identical across the two versions; a `0x0001` `Idle` body simply ends after the
-installed option (§2.2) and decodes with no Last Outcome — the decoder gates this on
-the version field and MUST NOT parse the zero padding after a v1 payload as an
-outcome record. Read-compatibility is load-bearing, not a courtesy: the bootloader is
-flashed once by probe and is **not** updated by DFU, so an already-fielded bootloader
-keeps writing `0x0001` pages after the app updates. The skew matrix:
-
-| Bootloader | App | Behavior |
-| :-- | :-- | :-- |
-| v1 | v1 | The original protocol, unchanged |
-| v1 | v2 | **Works, including the trial confirm**: the app reads the bootloader's freshly-written v1 `Trial` (byte-identical) and confirms it, so the update that crosses this bump installs and sticks. The v1 `Idle` the bootloader writes on a failure carries no outcome record, so the verdict card for that boot falls back to the conservative failure verdict |
-| v2 | v1 | Symmetric by the same rule (both sides read v1 and v2); only occurs transiently on a dev bench (a reflashed bootloader under an old app) |
-| v1 bootloader reading a v2 page | — | The one degraded case: the new app arms a **subsequent** update, the old bootloader cannot decode the v2 `Armed`, falls back to `Idle`, and jumps — the install never starts and the app's verdict honestly reports the not-started failure card. Recoverable (reflash the bootloader), never a revert loop |
-
-The practical consequence: the app update that carries this bump installs and sticks
-on an old bootloader; only *further* DFU updates require the bootloader reflash.
+**Version compatibility (normative).** Readers **MUST accept both** `0x0001` and `0x0002`; writers
+**MUST emit** `0x0002`. The `Armed` and `Trial` payload layouts are byte-identical across the two
+versions; a `0x0001` `Idle` body ends after the installed option (§2.2) and decodes with no Last
+Outcome — the decoder gates this on the version field and MUST NOT parse the zero padding after a v1
+payload as an outcome record. The bootloader is flashed once by probe and is **not** updated by DFU,
+so a fielded bootloader keeps writing `0x0001` pages after the app updates. Both sides therefore
+read both versions. The one degraded pair is a `0x0001` bootloader reading a `0x0002` `Armed` page:
+it cannot decode it, falls back to `Idle` and jumps, so the install never starts and the app reports
+a not-started failure. It is recoverable by reflashing the bootloader and is never a revert loop.
 
 ### 2.2 Payload by State Tag
 
@@ -316,7 +244,7 @@ because its snapshot was unreadable); `RolledBack` = an unconfirmed trial was re
 to its snapshot; `StageRejected` = the staged image failed verification before the app
 slot was erased; `ArmAbandoned` = the bootloader gave up on an `Armed` card it could not
 read within a bounded retry budget and, **because nothing had been erased yet**, cleared
-the arm and booted the intact old app (DR3 #731 — see §2.4). `Outcome Generation` lets the app's
+the arm and booted the intact old app (§2.4). `Outcome Generation` lets the app's
 boot-outcome reconcile bind the outcome to the arm marker it left before the install
 reboot. `Has Outcome = 0` is a plain steady-state `Idle`, a fresh device, or an `Idle`
 written by a `0x0001` writer (whose body ends after the installed option — see the
@@ -364,26 +292,24 @@ Each **Extent** is 8 bytes:
 | +0 | Start Block | 4 | `uint32` | First **absolute** 512-byte SD block of the run |
 | +4 | Blocks | 4 | `uint32` | Number of 512-byte blocks in the run |
 
-**`MAX_EXTENTS` = 96.** A ~900 KB image over 16 KB FAT clusters resolves to ≈56
-extents; 96 leaves headroom for a moderately fragmented card. The armer errors out
-past this (suggesting a re-copy to defragment) rather than truncating the chain, and
-the decoder rejects an Extent Count above `MAX_EXTENTS`.
+**`MAX_EXTENTS` = 96.** The armer errors out past this rather than truncating the chain, and the
+decoder rejects an Extent Count above `MAX_EXTENTS`.
 
 `Len` and `Image CRC-32` deliberately duplicate the embedded header's `Image Len`
 and `Image CRC-32` (so the installer reads them without re-decoding the header) and
 **MUST match** them; decoders MUST reject a `StagedRef` where either pair disagrees
 (a diverging record was never built from one coherent image).
 
-**What the extents cover.** The chain locates the **whole staged file**: the armer
-resolves `UPDATE.BIN` as-is, so the chain's byte stream begins with the file's own
-64-byte OBCU header (§1.1) followed by the raw image; everything past `64 + Len` — the
-v2 signature trailer (§1.3) and then FAT cluster slack — is ignored by the installer.
+**What the extents cover.** The chain locates the **whole staged file**: the armer resolves the
+container as-is, so the chain's byte stream begins with the file's own 64-byte OBCU header (§1.1)
+followed by the raw image. Everything past `64 + Len` — the v2 signature trailer (§1.3) and any
+trailing slack — is ignored by the installer.
 `Len` / `Image CRC-32` remain **raw-image** values: the installer's verify pass reads
 the leading 64 bytes only to check they decode to exactly the `Header` recorded above,
 then CRCs the next `Len` bytes — and its flash pass writes those same `Len` bytes (the
 container header is skipped, never flashed; the trailer is never even read) to the app
-slot. This is normative for both the armer (S4) and the bootloader; the skip arithmetic
-lives once, in `obc-dfu`'s install engine, and is unchanged by v2.
+slot. This is normative for both the armer and the bootloader; the skip arithmetic lives once, in
+`obc-dfu`'s install engine.
 
 **The rollback snapshot is unsigned.** `ROLLBACK.BIN` — the armer's copy of the running
 image, written from the app slot before an install — is a **v1/unsigned** container
@@ -423,41 +349,34 @@ exactly why it means "roll back". Load-bearing corollary: after writing `Trial` 
 install path must **jump into the new image, never reset** — a reset would re-enter
 the bootloader with the fresh `Trial` and roll the image back before it ever ran. A
 hardware watchdog guarantees a wedged trial boot becomes the next boot: the
-bootloader starts the dog itself — with the app's exact config; the shared 24 s
-period is `obc_dfu::WDT_TIMEOUT_TICKS` — immediately before the trial jump, so the
-guarantee holds even on a cold power-on where no watchdog was running yet. On the
-warm-reset arm path the app's already-running dog is instead adopted and fed
-through the install, so a slow install is never cut down mid-flash; a plain `Idle`
-boot never touches the watchdog (DR1, #729).
+bootloader starts the dog itself — with the app's exact config; the shared 24 s period is
+`obc_dfu::WDT_TIMEOUT_TICKS` — immediately before the trial jump, so the guarantee holds even on a
+cold power-on where no watchdog was running yet. On the warm-reset arm path the app's
+already-running dog is instead adopted and fed through the install, so a slow install is never cut
+down mid-flash. A plain `Idle` boot never touches the watchdog.
 
-**Unreadable-card handling (DR3, #731).** A card the bootloader cannot read is retried
+**Unreadable-card handling.** A card the bootloader cannot read is retried
 with a growing backoff, but *how long* depends on whether the app slot has been touched —
 the same verify-before-erase line that governs everything else. **Before** the engine's
 flash pass begins (a bring-up failure, or an SD error during the verify pass of an
 `Armed` install) the old app is still intact, so after a bounded budget of pre-erase
 failures (~a minute) the bootloader **abandons** the arm: it writes `Idle` — carrying the
 outgoing image's header forward exactly as a rejected stage does — with an `ArmAbandoned`
-Last Outcome, and boots the intact old app. **Once the flash pass has begun** (the slot may
-be half-written) and for a `Rollback` (whose trial image is the only bootable thing), an SD
-error instead retries **forever** (the "reinsert the card and power-cycle" worst case) — a
-touched slot is never abandoned. The retry *count* is a bootloader policy; the "abandon
-writes `Idle` + `ArmAbandoned`, pre-erase only" rule is host-tested in `obc-dfu`
-(`engine::abandon_arm`). This refines epic #615's invariant 5 ("card absent ⇒ retry every
-boot"): that still holds for the erase-unsafe cases, but a pre-erase `Armed` arm no longer
-strands a device that holds perfectly good firmware.
+Last Outcome, and boots the intact old app. **Once the flash pass has begun** (the slot may be
+half-written) and for a `Rollback` (whose
+trial image is the only bootable thing), an SD error instead retries **forever** — a touched slot is
+never abandoned. The retry *count* is a bootloader policy; "abandon writes `Idle` and
+`ArmAbandoned`, pre-erase only" is the rule.
 
 ---
 
 ## 3. Storage-blob stage carve
 
-Since the storage pivot (epic #1158) the microSD card is only reachable through Nordic's
-**sEMMC soft peripheral** — a position-independent RISC-V image the FLPR coprocessor
-executes. The app embeds that image in its own flash; the 32 KB bootloader cannot
-(image + driver + engine overflow its carve), and it must not read it out of the app
-slot, because the install engine rewrites the slot **while still streaming the staged
-image from the card** — a power cut mid-flash could then destroy the only reachable
-copy of the thing needed to finish the install. The armer therefore **stages the blob
-into a dedicated RRAM carve** the bootloader reads instead.
+The microSD card is only reachable through Nordic's **sEMMC soft peripheral** — a
+position-independent RISC-V image the FLPR coprocessor executes. The app embeds that image in its
+own flash. The 32 KB bootloader cannot, and it must not read it out of the app slot, because the
+install engine rewrites the slot while still streaming the staged image from the card. The armer
+therefore **stages the blob into a dedicated RRAM carve** the bootloader reads instead.
 
 ### 3.1 Layout
 
@@ -473,11 +392,8 @@ moves — the app base, BOOT_STATE and SETTINGS keep their addresses:
 0x001F_C000  SETTINGS page       4 KB
 ```
 
-The addresses live only in the linker scripts (`__semmc_stage_base`, the
-`__boot_state_base` convention): the board crate's `build.rs` emits the `SEMMC_STAGE`
-region and sizes it from the shared constant; `obc-boot`'s static `memory.x` mirrors it.
-The carve length matches the RAM carve the image executes in (`SEMMC_CARVE_BYTES`), so a
-grown future blob never forces a second layout change.
+The addresses live only in the linker scripts (`__semmc_stage_base`, `__boot_state_base`). The
+carve length matches the RAM carve the image executes in (`SEMMC_CARVE_BYTES`).
 
 ### 3.2 Contents
 
@@ -514,47 +430,21 @@ Before executing a staged image on the FLPR, the bootloader validates — in ord
 (`blobstage::sp_geometry`): soft-peripheral magic, metadata header version 2, comm id
 REGIF, not self-booting, the **sEMMC** `softperiph_id` (`0xE33C` — a different soft
 peripheral must never be booted as an SD host), the internal footprint consistency
-checks, and that the declared image fits the execution carve. The *platform* half of the
-id word is deliberately **not** pinned: the bootloader is flashed once, and a future
-blob revision for a newer platform of the same peripheral must remain usable. The VRI
-offset is taken from the validated metadata, never hard-coded.
+checks, and that the declared image fits the execution carve. The *platform* half of the id word is **not** pinned, so a future blob revision for a newer
+platform of the same peripheral stays usable. The VRI offset is taken from the validated metadata,
+never hard-coded.
 
-An `Armed` decision whose carve fails validation is **abandoned** like an unreadable
-card past its retry budget (§2.4's DR3 path — the slot is untouched); a `Rollback`
-decision whose carve fails validation parks (SOS) rather than guessing — unreachable
-from the §3.3 ordering short of RRAM decay or SWD interference, and a power cycle
-retries.
+An `Armed` decision whose carve fails validation is **abandoned** like an unreadable card past its
+retry budget (§2.4; the slot is untouched). A `Rollback` decision whose carve fails validation parks
+(SOS) rather than guessing, and a power cycle retries.
 
 ---
 
 ## Reference implementation
 
-`firmware/obc-dfu` (`no_std`, `core`-only apart from the Ed25519 verifier): `image.rs`
-(`ImageHeader`, `MAX_IMAGE_LEN`, `MAX_CONTAINER_LEN`, the vector-table SP check),
-`state.rs` (`BootState`, `StagedRef`, `Extent`, `MAX_EXTENTS`, `decide`, the
-16-byte-line-aligned page codec), `crc32.rs` (the canonical DFU-side CRC-32/IEEE),
-`engine.rs` (the bootloader's install engine — the verify → flash → readback →
-state-transition sequencing over a small `InstallIo` trait, host-tested with mock IO in
-`tests/engine.rs`, including the §2.3 header-skip arithmetic), `blobstage.rs` (§3: the
-stage frame codec and the soft-peripheral metadata validation, host-tested in
-`tests/blobstage.rs` including against the vendored image), `sig.rs` (§1.3: the
-`signing_prefix` message layout — the single definition both the host signer and the
-device verifier go through — the embedded `RELEASE_PUBKEY`, and a **streaming**
-`Verifier` so §1.4's steps 6–7 share one pass), and `armer.rs` (§1.4's ordered
-acceptance matrix; the trusted key is a **parameter**, never a build flag, so the tests
-exercise the shipping path with a test key).
-
-The Ed25519 implementation is [`ed25519-compact`](https://crates.io/crates/ed25519-compact)
-with `default-features = false, features = ["opt_size"]`: `core`-only, no transitive
-dependencies, and the only lean choice that offers *incremental* verification. `obc-boot`
-links `obc-dfu` but never calls into `sig`, so the crate is dropped entirely from the
-32 KB bootloader image (zero `ed25519_compact` symbols in its ELF).
-
-The host tool `host/obc-mkimage` generates keys, produces and signs §1 containers, and
-verifies them (`keygen` / `wrap [--sign-seed]` / `sign` / `inspect`); `inspect` exits
-non-zero on any failure, which is what makes it the release pipeline's gate.
-Format-contract tests build blobs by hand and round-trip every variant
-(`obc-dfu/tests/boot_state.rs`, `obc-dfu/tests/signature.rs` — the §1.2 compatibility
-proof and §1.4's reject matrix — `obc-dfu/tests/vectors.rs` for the shared fixture pair,
-the unit tests in `image.rs` and `sig.rs`, and `obc-mkimage/tests/cli.rs`); see
-`firmware/README.md` for the `objcopy → wrap → sign` pipeline.
+`firmware/obc-dfu` (`no_std`) implements every part of this document: the container header, the
+boot-state page codec and `decide`, the install engine, the stage-carve codec and metadata
+validation, the signing message and the streaming Ed25519 verifier, and the armer's acceptance
+matrix. `obc-boot` links it but never calls the signature half, so no verifier symbol reaches the
+32 KB bootloader image. The host tool `host/obc-mkimage` generates keys and produces, signs and
+inspects §1 containers; `inspect` exits non-zero on any failure.
