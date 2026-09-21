@@ -111,29 +111,16 @@ def validate_rules(rules: dict[str, object]) -> dict[str, str]:
             raise DependencyError(f"duplicate forbidden dependency pair `{source} -> {target}`")
         forbidden_pairs.add(pair)
 
-    exception_edges: set[Edge] = set()
-    for item in rules.get("exceptions", ()):
-        edge = Edge(item["from"], item["to"])
-        if edge in exception_edges:
-            raise DependencyError(f"duplicate dependency exception `{edge.source} -> {edge.target}`")
-        exception_edges.add(edge)
-        for package in (edge.source, edge.target):
-            if package not in groups:
-                raise DependencyError(f"dependency exception references unclassified package `{package}`")
     return groups
 
 
 def check_edges(edges: set[Edge], rules: dict[str, object], packages: set[str] | None = None) -> list[str]:
     groups = validate_rules(rules)
-    exceptions = {
-        Edge(item["from"], item["to"]): item for item in rules.get("exceptions", ())
-    }
     forbidden = {
         (item["from_group"], item["to_group"]): item["reason"]
         for item in rules.get("forbidden", ())
     }
     violations: list[str] = []
-    excepted: list[str] = []
 
     if packages is not None:
         unclassified = sorted(packages - groups.keys())
@@ -149,29 +136,11 @@ def check_edges(edges: set[Edge], rules: dict[str, object], packages: set[str] |
         reason = forbidden.get(pair)
         if reason is None:
             continue
-        exception = exceptions.get(edge)
-        if exception is not None:
-            excepted.append(f"{edge.source} -> {edge.target} ({exception['issue']})")
-            continue
         violations.append(
             f"forbidden dependency edge `{edge.source} -> {edge.target}` "
             f"({pair[0]} -> {pair[1]}): {reason}"
         )
 
-    for edge, exception in sorted(exceptions.items()):
-        if edge not in edges:
-            violations.append(
-                f"stale dependency exception `{edge.source} -> {edge.target}` ({exception['issue']}): "
-                "the edge is gone; remove the exception to tighten the allowlist"
-            )
-        elif (groups.get(edge.source), groups.get(edge.target)) not in forbidden:
-            violations.append(
-                f"invalid dependency exception `{edge.source} -> {edge.target}`: no forbidden group rule matches it"
-            )
-    if excepted:
-        print("temporary dependency exceptions:")
-        for line in excepted:
-            print(f"  {line}")
     return violations
 
 
