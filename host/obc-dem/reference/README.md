@@ -59,16 +59,18 @@ conversion code is in the tool yet, because no adapter needs one yet.
 
 `vertical_datum` is in `sources/<key>.json` and in `index.json`'s `sources`.
 
-### One addition to the index
+### Two additions to the index
 
-`index.json` carries one map more than the contract above shows: **`sha256`**, the digest of each
-tile's pixels, under the same tile ids as `tiles`.
+`index.json` carries two maps more than the contract above shows, under the same tile ids as
+`tiles`: **`sha256`**, the digest of each tile's pixels, and **`contributors`**, every source that
+holds a pixel in the tile, best priority first.
 
 ```json
 { "schema": 1, "step_log2": 6, "tile_log2": 16,
   "sources": { "ch": { "product": "…", "attribution": "…", "licence": "…",
                        "vertical_datum": "LN02/LHN95", "fetched": "2026-09-21" } },
   "tiles": { "3410/2882": "ch" },
+  "contributors": { "3410/2882": ["ch", "es"] },
   "sha256": { "3410/2882": "9f86d0818…" } }
 ```
 
@@ -81,10 +83,15 @@ shape the contract states, so a reader that wants the source key only reads one 
 source — its country, its step in metres and the tiles it wrote pixels into — stay in its manifest
 at `sources/<key>.json`, which is what `index` rebuilds the index from.
 
-`tiles` names a tile's **best-priority contributor**. A tile can hold pixels from more than one
-source, because coverage stops at borders: `tiles` answers "who is the best source in this tile",
-the manifests answer "which tiles did this source write", and `sources` lists every source that
-contributed a pixel anywhere, so every attribution travels with the map.
+`tiles` names a tile's **best-priority contributor**, which is `contributors[tile][0]`. A tile can
+hold pixels from more than one source, because coverage stops at borders, so a consumer that needs
+the attribution of everything in a cell reads `contributors`, and one that needs the best source
+reads `tiles`. `sources` lists every source that holds a pixel anywhere in the archive, which is
+what a published map has to name.
+
+A source loses its place in `contributors` when a better source has overwritten every pixel it
+wrote in that tile. The check is over the tile as a whole, not per pixel, so a source keeps its
+place while any earlier pixel survives, whoever wrote it.
 
 ## The tool
 
@@ -147,10 +154,12 @@ corner of a tile must not take the rest of the tile away from the source that do
   has them, and the other sources' pixels stay in its gaps.
 - Otherwise: the pixels already there stay, and this source fills the gaps only.
 
-A pixel does not record which source wrote it, so the comparison is against the tile's best
-contributor. One case loses by that: a best-ranking source that ingests two overlapping boxes into
-a tile a worse source also reached takes the later value there instead of the maximum. A source key
-that is not in the list ranks last, so it cannot displace a listed one.
+A pixel does not record which source wrote it, so the comparison is against the tile's contributors
+as a set. One case loses by that: a source that has already been in a tile a worse source also
+reached falls into the third rule, so where its own two boxes overlap the **earlier** value stays
+instead of the maximum. A per-pixel owner plane beside each tile is the exact fix; it would also
+double the archive. A source key that is not in the list ranks last, so it cannot displace a listed
+one.
 
 ### What a source may look like
 

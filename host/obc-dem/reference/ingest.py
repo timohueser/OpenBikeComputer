@@ -406,9 +406,10 @@ def merge_tiles(existing, incoming, held: set[str], key: str):
     - Otherwise: the pixels already there stay, and this source fills the gaps only.
 
     A pixel does not record which source wrote it, so the comparison is against the tile's
-    best contributor. The one case that loses is a source that ranks best and ingests two
-    overlapping boxes into a tile a worse source also reached: those two boxes then take
-    the later value instead of the maximum.
+    contributors as a set. One case loses by that: a source that has already been in a tile
+    a worse source also reached falls into the third rule, so where its two boxes overlap
+    the **earlier** value stays instead of the maximum. A per-pixel owner plane beside each
+    tile would make all of this exact; it would also double the archive.
     """
 
     if not held - {key}:
@@ -436,8 +437,17 @@ def ingest_raster(path: Path, source: Source, root: Path, held: dict[str, set[st
         out = tile_path(root, ti, tj)
         contributors = held.setdefault(tile_id(ti, tj), set())
         if out.exists():
+            if not contributors:
+                raise Refuse(
+                    f"{out} is in the archive but no source manifest holds it, so a run was cut "
+                    "short; delete the tile, or ingest the source that wrote it again"
+                )
             with open_raster(out) as src:
-                tile = merge_tiles(src.read(1), tile, contributors, source.key)
+                existing = src.read(1)
+            merged = merge_tiles(existing, tile, contributors, source.key)
+            if not np.any((merged == existing) & (existing != NODATA)):
+                contributors.clear()  # nothing the older sources wrote is left in this tile
+            tile = merged
         write_tile(out, ti, tj, tile)
         contributors.add(source.key)
         touched.append(tile_id(ti, tj))
@@ -482,6 +492,17 @@ def write_manifest(root: Path, manifest: dict) -> None:
     path.write_text(json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+def source_facts(manifests: dict[str, dict], key: str) -> dict:
+    """The four contract fields plus the datum, or a refusal naming the manifest."""
+
+    manifest = manifests[key]
+    missing = [name for name in ("product", "attribution", "licence", "vertical_datum", "fetched")
+               if not manifest.get(name)]
+    if missing:
+        raise Refuse(f"sources/{key}.json has no {', '.join(missing)}; ingest `{key}` again to write it")
+    return {name: manifest[name] for name in ("product", "attribution", "licence", "vertical_datum", "fetched")}
+
+
 def contributors(manifests: dict[str, dict]) -> dict[str, set[str]]:
     """Tile id to every source key that has written pixels into it."""
 
@@ -516,30 +537,26 @@ def rebuild_index(root: Path) -> dict:
     if not manifests:
         raise Refuse(f"{root}: no source manifests, so there is nothing to index")
     held = contributors(manifests)
-    tiles, digests = {}, {}
+    tiles, digests, credits = {}, {}, {}
     for tile in sorted(held):
         ti, tj = (int(part) for part in tile.split("/"))
         path = tile_path(root, ti, tj)
         if not path.is_file():
             raise Refuse(f"a source manifest names tile {tile}, which is not in the archive")
-        tiles[tile] = best_contributor(held[tile])
+        credits[tile] = sorted(held[tile], key=priority_rank)
+        tiles[tile] = credits[tile][0]
         digests[tile] = tile_digest(path)
     index = {
         "schema": 1,
         "step_log2": 6,
         "tile_log2": 16,
         "sources": {
-            key: {
-                "product": manifests[key]["product"],
-                "attribution": manifests[key]["attribution"],
-                "licence": manifests[key]["licence"],
-                "vertical_datum": manifests[key]["vertical_datum"],
-                "fetched": manifests[key]["fetched"],
-            }
+            key: source_facts(manifests, key)
             for key in sorted(manifests)
             if any(key in keys for keys in held.values())
         },
         "tiles": tiles,
+        "contributors": credits,
         "sha256": digests,
     }
     (root / "index.json").write_text(
@@ -642,12 +659,16 @@ def merge_index(published: dict | None, local: dict) -> dict:
         raise Refuse("the index on R2 is not this contract, so publish refuses to merge with it")
     tiles = dict(sorted({**published.get("tiles", {}), **local.get("tiles", {})}.items()))
     digests = dict(sorted({**published.get("sha256", {}), **local.get("sha256", {})}.items()))
+    credits = dict(sorted({**published.get("contributors", {}), **local.get("contributors", {})}.items()))
     sources = {**published.get("sources", {}), **local.get("sources", {})}
-    held = set(tiles.values())
+    # Every source that holds a pixel anywhere, not only the best one per tile: a secondary
+    # source's attribution has to survive the next publish of its neighbour.
+    held = {key for keys in credits.values() for key in keys} | set(tiles.values())
     return {
         **local,
         "sources": {key: sources[key] for key in sorted(sources) if key in held},
         "tiles": tiles,
+        "contributors": credits,
         "sha256": digests,
     }
 
@@ -710,6 +731,12 @@ def command_ingest(args) -> int:
         "fetched": datetime.now(timezone.utc).date().isoformat(),
         "tiles": mine,
     })
+    for key, manifest in manifests.items():
+        if key == source.key:
+            continue
+        kept = [tile for tile in manifest.get("tiles", []) if key in held.get(tile, set())]
+        if kept != manifest.get("tiles", []):
+            write_manifest(root, {**manifest, "tiles": kept})
     index = rebuild_index(root)
     total = sum(tile_path(root, *(int(p) for p in tile.split("/"))).stat().st_size for tile in index["tiles"])
     print(f"{root}: {len(index['tiles'])} tile(s), {total} bytes, {len(touched)} written this run")
@@ -734,8 +761,14 @@ def command_check(args) -> int:
     for tile, key in sorted(index.get("tiles", {}).items()):
         ti, tj = (int(part) for part in tile.split("/"))
         path = tile_path(root, ti, tj)
+        credits = index.get("contributors", {}).get(tile, [])
         if key not in index.get("sources", {}):
             problems.append(f"{tile}: source `{key}` is not in the index's sources")
+        if not credits or credits[0] != key:
+            problems.append(f"{tile}: contributors {credits} do not start with the tile's source `{key}`")
+        for other in credits:
+            if other not in index.get("sources", {}):
+                problems.append(f"{tile}: contributor `{other}` is not in the index's sources")
         if not path.is_file():
             problems.append(f"{tile}: the index names it, but {path} is missing")
             continue
