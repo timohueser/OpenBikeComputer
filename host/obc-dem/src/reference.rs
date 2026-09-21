@@ -17,9 +17,17 @@
 //!   file by name otherwise. A tile that survives that check needs no geometry reasoning downstream
 //!   — a pixel centre is one integer expression.
 //!
-//! `index.json` says which tiles the archive has and who contributed to each of them. A mirror of
-//! one box carries the whole index and only its own tiles, so a tile the index names and the disk
-//! does not hold is **absent**, not an error; a tile that is on disk but broken is an error.
+//! `index.json` says which tiles the archive has, who contributed to each of them, the digest of
+//! each one's pixels and what every source must be credited as. A mirror of one box carries the
+//! whole index and only its own tiles, so a tile the index names and the disk does not hold is
+//! **absent**, not an error; a tile that is on disk but broken is an error.
+//!
+//! The digests and the credits are what a *bakery* needs on top of a bake. The terrain bakery keys
+//! its per-cell skip decision on the digests of the tiles one cell reads
+//! ([`held_digests`](ReferenceArchive::held_digests)), so an archive update re-bakes the cells whose
+//! window holds a changed tile and nothing else; and it carries every source's credit into the
+//! published catalog ([`credits`](ReferenceArchive::credits)), because a map derived from a source
+//! owes that source its attribution.
 //!
 //! Nothing here is mutated after [`ReferenceArchive::open`], so an archive is `Sync` and a bakery
 //! may read one from several threads. A lookup reports what it found and the caller keeps the
@@ -218,12 +226,36 @@ fn expect_lattice<R: std::io::Read + std::io::Seek>(
     Ok(())
 }
 
+/// What a published map owes one reference source: `index.json`'s `sources` entry.
+///
+/// A bakery copies these into the catalog verbatim, because a map derived from a source carries
+/// that source's licence obligation and a consumer must read the wording from the document rather
+/// than hard-code it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceCredit {
+    /// The source key, as `tiles` and `contributors` name it — `"ch"`.
+    pub key: String,
+    pub product: String,
+    pub attribution: String,
+    pub licence: String,
+}
+
+/// What the index says about one tile: who is in it, and what its pixels hash to.
+struct IndexedTile {
+    /// Every source with a surviving pixel in the tile, best first — `index.json`'s
+    /// `contributors`, which is what attribution reads.
+    sources: Vec<String>,
+    /// The index's digest of the tile's **pixels**. Opaque here: a bakery keys its skip on it.
+    sha256: String,
+}
+
 /// An archive root, or a mirror of one: its `index.json` read, its tiles left on disk.
 pub struct ReferenceArchive {
     root: PathBuf,
-    /// Every source with a surviving pixel in a tile, best first — `index.json`'s `contributors`,
-    /// which is what attribution reads.
-    contributors: BTreeMap<(u32, u32), Vec<String>>,
+    /// Every tile the index names.
+    tiles: BTreeMap<(u32, u32), IndexedTile>,
+    /// Every source the index declares, sorted by key.
+    credits: Vec<SourceCredit>,
 }
 
 /// What an archive holds for one tile id.
@@ -268,26 +300,72 @@ impl ReferenceArchive {
         // best-priority one. An index written before `contributors` existed has just the one, and a
         // one-source tile is the common case anyway.
         let listed = index.get("contributors").and_then(serde_json::Value::as_object);
+        let digests = index.get("sha256").and_then(serde_json::Value::as_object);
+        let credits = read_credits(&index, &name)?;
 
-        let mut contributors = BTreeMap::new();
+        let mut held = BTreeMap::new();
         for (id, best) in tiles {
             let key = tile_id(id).ok_or_else(|| format!("{}: `{id}` is not a tile id", name()))?;
-            let sources = match listed.and_then(|map| map.get(id)).and_then(serde_json::Value::as_array) {
+            let sources: Vec<String> = match listed.and_then(|map| map.get(id)).and_then(serde_json::Value::as_array) {
                 Some(array) => array.iter().filter_map(|v| v.as_str()).map(str::to_string).collect(),
                 None => best.as_str().map(str::to_string).into_iter().collect(),
             };
-            contributors.insert(key, sources);
+            if let Some(unknown) = sources.iter().find(|source| !credits.iter().any(|c| &c.key == *source)) {
+                return Err(format!(
+                    "{}: tile `{id}` credits source `{unknown}`, which `sources` does not declare — a map derived \
+                     from it could not be attributed",
+                    name()
+                ));
+            }
+            // The digest is what a bakery's per-cell skip decision is keyed on, so an index without
+            // one is refused here rather than silently making every terrain bake a full one.
+            let sha256 = digests
+                .and_then(|map| map.get(id))
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| format!("{}: tile `{id}` has no `sha256` — a bakery keys its skip on it", name()))?;
+            if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_digit() || b.is_ascii_lowercase() && b <= b'f')
+            {
+                return Err(format!("{}: tile `{id}`'s sha256 `{sha256}` is not 64 lowercase hex digits", name()));
+            }
+            held.insert(key, IndexedTile { sources, sha256: sha256.to_string() });
         }
-        Ok(ReferenceArchive { root: root.to_path_buf(), contributors })
+        Ok(ReferenceArchive { root: root.to_path_buf(), tiles: held, credits })
     }
 
     /// Tiles the index names.
     pub fn len(&self) -> usize {
-        self.contributors.len()
+        self.tiles.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.contributors.is_empty()
+        self.tiles.is_empty()
+    }
+
+    /// Every source this archive declares, sorted by key — the credits a map derived from it owes.
+    pub fn credits(&self) -> &[SourceCredit] {
+        &self.credits
+    }
+
+    /// The pixel digests the index states for the tiles of `window` this root **holds**, in the
+    /// window's own tile order.
+    ///
+    /// This is what a bakery keys one cell's skip decision on, so it names the tiles the bake will
+    /// read and nothing else: a tile the index promises and this mirror lacks contributes no digest,
+    /// because it will contribute no pixel either, and one that arrives later therefore changes the
+    /// key and re-bakes the cell. Held is decided by the tile being a file rather than by decoding
+    /// it — a skip decision must not cost a hundred tile decodes.
+    pub fn held_digests(&self, window: Window) -> Vec<(u32, u32, &str)> {
+        window
+            .tiles()
+            .filter_map(|(ti, tj)| {
+                let tile = self.tiles.get(&(ti, tj))?;
+                self.tile_path(ti, tj).is_file().then_some((ti, tj, tile.sha256.as_str()))
+            })
+            .collect()
+    }
+
+    fn tile_path(&self, ti: u32, tj: u32) -> PathBuf {
+        self.root.join(format!("{TILE_LOG2}/{ti:04}/{tj:04}.tif"))
     }
 
     /// Look tile `(ti, tj)` up, decoding it if this archive holds it.
@@ -297,15 +375,49 @@ impl ReferenceArchive {
     /// tiles of its box alone. A tile that *is* on disk and does not hold the contract **is** an
     /// error naming the file.
     pub fn tile(&self, ti: u32, tj: u32) -> Result<TileLookup<'_>, String> {
-        let Some(sources) = self.contributors.get(&(ti, tj)) else {
+        let Some(tile) = self.tiles.get(&(ti, tj)) else {
             return Ok(TileLookup::Unknown);
         };
-        let path = self.root.join(format!("{TILE_LOG2}/{ti:04}/{tj:04}.tif"));
+        let path = self.tile_path(ti, tj);
         if !path.is_file() {
             return Ok(TileLookup::Absent);
         }
-        Ok(TileLookup::Held { tile: ReferenceTile::open(&path, ti, tj)?, sources })
+        Ok(TileLookup::Held { tile: ReferenceTile::open(&path, ti, tj)?, sources: &tile.sources })
     }
+}
+
+/// `index.json`'s `sources` block as the credits a map owes, sorted by key.
+///
+/// Every field is required and non-empty. A source that cannot state its product, its credit and
+/// its licence must not be published beside a map derived from it, and the archive is the only place
+/// that knows the wording — so the refusal belongs here, where it can name the index.
+fn read_credits(index: &serde_json::Value, name: &impl Fn() -> String) -> Result<Vec<SourceCredit>, String> {
+    let sources = index
+        .get("sources")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| format!("{}: no `sources` map", name()))?;
+    sources
+        .iter()
+        .map(|(key, entry)| {
+            let field = |field: &str| -> Result<String, String> {
+                entry
+                    .get(field)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        format!("{}: source `{key}` has no `{field}` — a map derived from it owes it", name())
+                    })
+            };
+            Ok(SourceCredit {
+                key: key.clone(),
+                product: field("product")?,
+                attribution: field("attribution")?,
+                licence: field("licence")?,
+            })
+        })
+        .collect()
 }
 
 /// `"<ti>/<tj>"` as a tile id, or `None` when it names no square of the world box.
