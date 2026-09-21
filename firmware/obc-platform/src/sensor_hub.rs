@@ -1,48 +1,37 @@
-//! The **instance-owned sensor hub** — the board-agnostic embassy-sync bridge between a board's
-//! high-priority sensor task, its BLE central manager / debug-uart injection, and the app's `poll`.
+//! The instance-owned sensor hub: the board-agnostic embassy-sync bridge between a board's
+//! high-priority sensor task, its BLE central manager or debug-uart injection, and the app's
+//! `poll`.
 //!
-//! This is the successor to the former module-global `sensor_link` + `sensor_values` mailboxes
-//! (issue #808): one [`SensorHub`] owns every semantic stream as a field, is constructed once in
-//! static storage at board composition, and is split into typed producer/consumer/control handles
-//! that each borrow it. Nothing here is a process-global singleton, so a host test constructs as
-//! many independent hubs as it likes without shared state (see the tests at the bottom).
+//! One [`SensorHub`] owns every semantic stream as a field, is constructed once in static storage
+//! at board composition, and is split into typed producer, consumer and control handles that each
+//! borrow it. Nothing here is a process-global singleton, so a host test builds as many
+//! independent hubs as it likes.
 //!
-//! ## The streams (one [`Signal`] mailbox each)
+//! The streams, one [`Signal`] mailbox each:
 //!
-//! - **GPS fix**, **barometric altitude**, **temperature** — published *coherently* by the sensor
-//!   task on each valid fix (the baro is read on the fix), so altitude/temperature share the fix's
-//!   instant. Fresh-fix mailbox: `try_take` yields once, so a source's `poll` returns `Some` only
-//!   on the tick a sample arrived and `None` between — zero I²C at the frame rate, no teleport on a
-//!   stale fix.
-//! - **GPS time** — published on any NAV-PVT whose time the receiver resolved, **independent of the
-//!   position fix**, so the clock can set during acquisition (before a 3D lock).
-//! - **Heading** — the electronic-compass heading, on its own cadence while the rider is stopped;
-//!   independent of the GPS course.
-//! - **HR / power / cadence** — the raw-value BLE sensors (epic #707). **Two producers, one
-//!   mailbox each:** the board's BLE central manager (SE6) *and* the `debug-uart` injection path
-//!   (SE8) both publish through the same [`SampleInjector`] — **last-writer-wins**, exactly what a
-//!   bench wants when a real strap and an injected line coexist. The app can't tell them apart.
-//! - **Rate / GPS-power** — control latches the *ride loop* sets ([`SensorControl`]) and the sensor
-//!   task awaits ([`SensorTaskLink`]); only the newest value matters.
-//! - **Event** — one payload-less "a datapoint arrived" wake, pulsed by **every** publish above.
-//!   The event-driven ride loop selects on [`SensorConsumer::wait_event`] so **one** await covers
-//!   the whole set — the fix plus the independently-published heading, GPS time, and BLE samples —
-//!   then drains whichever per-stream mailboxes have data via the normal `poll` path. Waiting here
-//!   never *steals* a value: it is a separate signal, so `FIX` et al. stay for the source polls.
-//! - **Presence** — the boot I²C probe result, published once by the sensor task, drained once by
-//!   the ride loop → an on-glass warning for any absent module (issue #504).
+//! - GPS fix, barometric altitude and temperature, published coherently by the sensor task on
+//!   each valid fix, so altitude and temperature share the fix's instant. Fresh-fix mailbox:
+//!   `try_take` yields once, so a source's `poll` returns `Some` only on the tick a sample
+//!   arrived. That is no I²C at the frame rate and no teleport on a stale fix.
+//! - GPS time, published on any NAV-PVT whose time the receiver resolved, independent of the
+//!   position fix, so the clock can set during acquisition.
+//! - Heading, on its own cadence while the rider is stopped, independent of the GPS course.
+//! - Heart rate, power and cadence. Two producers, one mailbox each: the board's BLE central
+//!   manager and the `debug-uart` injection path both publish through the same
+//!   [`SampleInjector`], last-writer-wins, and the app cannot tell them apart.
+//! - Rate and GPS power, control latches the ride loop sets and the sensor task awaits.
+//! - Event, one payload-less "a datapoint arrived" wake pulsed by every publish above, so the
+//!   ride loop needs one await for the whole set. It is a separate signal, so waiting on it never
+//!   steals a value from the source polls.
+//! - Presence, the boot I²C probe result, published once and drained once into an on-glass
+//!   warning for any absent module.
 //!
-//! ## Ownership (who holds which handle — all wired in board composition)
+//! The handles, all wired in board composition: [`SensorTaskLink`] goes to the I²C sensor task,
+//! [`SampleInjector`] to the BLE central manager and the debug-uart RX task, and
+//! [`SensorConsumer`] and [`SensorControl`] to the ride loop.
 //!
-//! | Handle | Held by | Does |
-//! |---|---|---|
-//! | [`SensorTaskLink`] | the I²C sensor task (`sensors::sensor_task`) | publishes fix/alt/temp/time/heading/presence; awaits rate/power |
-//! | [`SampleInjector`] | the BLE central manager **and** the debug-uart RX task | publishes HR/power/cadence (last-writer-wins) |
-//! | [`SensorConsumer`] | the ride loop (`run_app`) | the `*Source` drains + presence drain + the one event wake |
-//! | [`SensorControl`] | the ride loop (`run_app`) | sets the GPS rate + power latches |
-//!
-//! The pure decode this bridges lives in the always-compiled `obc_sensors` / `obc-ble` crates; only
-//! this embassy-sync plumbing pulls `embassy-sync`, so it is gated behind the `sensor-link` feature.
+//! The pure decode this bridges lives in the always-compiled `obc_sensors` and `obc-ble` crates;
+//! only this embassy-sync plumbing pulls `embassy-sync`, so it is gated behind `sensor-link`.
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
@@ -51,14 +40,13 @@ use obc_ports::{
     PowerSource, TemperatureSource,
 };
 
-/// The one raw-mutex `Signal` type every stream in the hub uses. `CriticalSectionRawMutex` because
-/// producers (the sensor task, the BLE manager, the debug RX task) and the consumer (the ride loop)
-/// run on different executors / priorities on the board.
+/// The one raw-mutex `Signal` type every stream in the hub uses. `CriticalSectionRawMutex`,
+/// because the producers and the consumer run on different executors and priorities on the board.
 type Sig<T> = Signal<CriticalSectionRawMutex, T>;
 
-/// Which sensors answered during startup — the sensor task's results, carried to the app
-/// so a missing module surfaces as a dismissable warning rather than only an RTT line. A missing
-/// GPS is distinct from "no fix yet" (the receiver is there, just no sky): this is the *module*.
+/// Which sensors answered during startup, carried to the app so a missing module surfaces as a
+/// dismissable warning rather than only an RTT line. A missing GPS module is a different thing
+/// from "no fix yet".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SensorPresence {
     /// The SAM-M10Q GPS answered its probe.
@@ -76,11 +64,10 @@ pub struct SensorPresence {
 pub enum GpsPower {
     /// Full-power fixes for recording or an on-demand position request.
     Active,
-    /// Riding with `power_saver` on — the M10's low-power tracking mode (lower power, same rate, at
-    /// the cost of some fix latency).
+    /// Riding with `power_saver` on: the M10's low-power tracking, at the cost of some fix
+    /// latency.
     LowPower,
-    /// No position demand — stop GNSS processing and park host polling. Resume on the next
-    /// [`Active`](GpsPower::Active) / [`LowPower`](GpsPower::LowPower) request.
+    /// No position demand: stop GNSS processing and park host polling.
     Sleep,
 }
 
@@ -113,12 +100,10 @@ impl SensorDemand {
 }
 
 /// The fix mailbox's stored form: [`Fix`] with its two `Option<f32>`s flattened to raw bits plus
-/// presence flags, so every field is niche-free (`i32`/`u32`/`u8`). This keeps the hub's
-/// `Signal::new()` state all-zero: `Option<f32>`'s tag byte is a niche the signal's internal
-/// `State::None` would otherwise be encoded into as a **non-zero** value, and a single non-zero
-/// initializer byte moves a board's entire `static` hub from `.bss` to `.data` (measured in #808:
-/// +136 B of `.data` plus knock-on section padding on both profiles). Private to the hub — the API
-/// speaks [`Fix`] on both ends.
+/// presence flags, so every field is niche-free. That keeps the hub's `Signal::new()` state
+/// all-zero: `Option<f32>`'s tag byte is a niche the signal's `State::None` would be encoded into
+/// as a non-zero value, and one non-zero initializer byte moves a board's whole static hub from
+/// `.bss` to `.data`. Private to the hub; the API speaks [`Fix`] on both ends.
 #[derive(Clone, Copy)]
 struct FixStore {
     lat: i32,
@@ -158,40 +143,36 @@ impl FixStore {
     }
 }
 
-/// The instance-owned sensor hand-off: every cross-task sensor stream as a field, so the board owns
-/// exactly one and hands out typed handles. Construct it once in static storage
-/// (`static HUB: SensorHub = SensorHub::new();`) and derive handles with the `*` accessors; a host
-/// test constructs it as a plain local (`let hub = SensorHub::new();`) — no shared global state.
+/// The instance-owned sensor hand-off: every cross-task sensor stream as a field, so the board
+/// owns exactly one and hands out typed handles. Construct it once in static storage and derive
+/// handles with the `*` accessors; a host test constructs it as a plain local.
 pub struct SensorHub {
-    /// Latest GPS fix (valid NAV-PVT), fresh-fix — drained by [`GpsLocation`]. Stored as the
-    /// niche-free [`FixStore`], not [`Fix`] — see there for why this keeps the whole hub zero-init.
+    /// Latest GPS fix, fresh-fix. Stored as the niche-free [`FixStore`], which is what keeps the
+    /// whole hub zero-initialized.
     fix: Sig<FixStore>,
-    /// Latest barometric altitude (metres), coherent with [`SensorHub::fix`] — drained by [`BaroAltimeter`].
+    /// Latest barometric altitude in metres, coherent with [`SensorHub::fix`].
     alt: Sig<f32>,
-    /// Latest ambient temperature (°C) from the BMP581's per-fix reading — drained by [`SensorTemp`].
+    /// Latest ambient temperature in °C, from the BMP581's per-fix reading.
     temp: Sig<f32>,
-    /// Latest GPS UTC time, published on any resolved-time NAV-PVT **independent of the position
-    /// fix** so the clock can set during acquisition — drained by [`GpsClock`].
+    /// Latest GPS UTC time, published on any resolved-time NAV-PVT independent of the position
+    /// fix, so the clock can set during acquisition.
     gps_time: Sig<GpsTime>,
-    /// Latest electronic-compass heading (degrees CW from north), independent of the GPS course —
-    /// drained by [`MagCompass`].
+    /// Latest compass heading in degrees clockwise from north, independent of the GPS course.
     heading: Sig<f32>,
-    /// Latest heart rate (bpm), fresh-mailbox last-writer-wins — drained by [`SensorHr`].
+    /// Latest heart rate in bpm, last-writer-wins.
     hr: Sig<u16>,
-    /// Latest power (watts, non-negative — a signed meter reading is clamped at 0 by the producer) —
-    /// drained by [`SensorPower`].
+    /// Latest power in watts; the producer clamps a signed meter reading at 0.
     power: Sig<u16>,
-    /// Latest cadence (rpm) — a coasting rider publishes a fresh `0` (feet still), distinct from no
-    /// sample at all — drained by [`SensorCadence`].
+    /// Latest cadence in rpm. A coasting rider publishes a fresh `0`, which is distinct from no
+    /// sample at all.
     cadence: Sig<u8>,
     /// Desired GPS fix interval (seconds) — a latch the ride loop sets and the sensor task awaits.
     rate: Sig<u16>,
     /// Desired GPS power state — a latch the ride loop sets and the sensor task awaits.
     sensor_demand: Sig<SensorDemand>,
-    /// A single "a datapoint arrived" wake, pulsed by every publish. The event-driven ride loop
-    /// selects on it so one await covers the whole set, then drains the typed mailboxes via `poll`.
-    /// Payload-less — purely the "wake the render" edge — and separate from the value mailboxes, so
-    /// waiting here never steals a fix from [`GpsLocation::poll`].
+    /// A single "a datapoint arrived" wake, pulsed by every publish, so one await covers the
+    /// whole set. It is payload-less and separate from the value mailboxes, so waiting here never
+    /// steals a fix from [`GpsLocation::poll`].
     event: Sig<()>,
     /// Which sensors answered the boot I²C probe — published once, drained once (fresh-mailbox).
     presence: Sig<SensorPresence>,
@@ -228,8 +209,8 @@ impl SensorHub {
         SensorTaskLink(self)
     }
 
-    /// The HR/power/cadence injector — held by both the BLE central manager and the debug-uart RX
-    /// task (last-writer-wins into one mailbox each).
+    /// The heart-rate, power and cadence injector, held by both the BLE central manager and the
+    /// debug-uart RX task.
     pub fn injector(&self) -> SampleInjector<'_> {
         SampleInjector(self)
     }
@@ -245,191 +226,163 @@ impl SensorHub {
         SensorControl(self)
     }
 
-    /// Publish one datapoint into its mailbox **and** pulse the shared event. Every producer path
-    /// funnels through here, so the "a publish always wakes the ride loop" invariant is stated once
-    /// rather than re-spelled in each of the nine dispatches (where one missing pulse would strand
-    /// a sample in its mailbox until some other sensor happened to fire).
+    /// Publish one datapoint into its mailbox and pulse the shared event. Every producer path
+    /// funnels through here, so "a publish always wakes the ride loop" is stated once rather than
+    /// re-spelled in each dispatch, where a missing pulse would strand a sample in its mailbox.
     fn publish<T: Send>(&self, mailbox: &Sig<T>, v: T) {
         mailbox.signal(v);
         self.event.signal(());
     }
 }
 
-// ============================ Producer: the I²C sensor task ============================
 
-/// The board's high-priority I²C sensor task's handle into the hub. It **publishes** each coherent
-/// datapoint (each publish pulses the shared event so the ride loop wakes) and **awaits** the ride
-/// loop's rate/power control latches. `Copy` — a bare `&SensorHub`.
+/// The board's high-priority I²C sensor task's handle into the hub: it publishes each coherent
+/// datapoint, pulsing the shared event, and awaits the ride loop's rate and power latches.
 #[derive(Clone, Copy)]
 pub struct SensorTaskLink<'a>(&'a SensorHub);
 
 impl SensorTaskLink<'_> {
-    /// Publish a fresh GPS [`Fix`] (on a valid NAV-PVT) and pulse the event so the loop wakes.
     pub fn dispatch_fix(&self, f: Fix) {
         self.0.publish(&self.0.fix, FixStore::pack(f));
     }
 
-    /// Publish a fresh barometric altitude in metres (coherent with the fix).
     pub fn dispatch_alt(&self, m: f32) {
         self.0.publish(&self.0.alt, m);
     }
 
-    /// Publish a fresh ambient temperature in °C (from the same BMP581 read).
     pub fn dispatch_temp(&self, c: f32) {
         self.0.publish(&self.0.temp, c);
     }
 
-    /// Publish a fresh GPS UTC time (on a NAV-PVT with resolved time — independent of a position fix).
     pub fn dispatch_time(&self, t: GpsTime) {
         self.0.publish(&self.0.gps_time, t);
     }
 
-    /// Publish a fresh compass heading in degrees CW from north (from the magnetometer read with each fix).
     pub fn dispatch_heading(&self, deg: f32) {
         self.0.publish(&self.0.heading, deg);
     }
 
-    /// Publish the startup result once, after GPS responds or its acquisition deadline passes. Pulses the
-    /// event so the ride loop wakes and drains it via [`SensorConsumer::take_presence`].
+    /// Publish the startup probe result once, after GPS responds or its acquisition deadline
+    /// passes. The pulse wakes the ride loop to drain it.
     pub fn dispatch_presence(&self, p: SensorPresence) {
         self.0.publish(&self.0.presence, p);
     }
 
-    /// Await the next requested fix interval (seconds) — the task selects on this to apply a rate
-    /// change without sharing the I²C bus with the ride loop.
+    /// Await the next requested fix interval in seconds, so the task applies a rate change
+    /// without sharing the I²C bus with the ride loop.
     pub async fn wait_rate(&self) -> u16 {
         self.0.rate.wait().await
     }
 
-    /// Await the next requested GPS power state — the task selects on this to sleep when a ride ends
-    /// and wake (warm) when one starts.
+    /// Await the next requested GPS power state, so the task sleeps when a ride ends and wakes
+    /// warm when one starts.
     pub async fn wait_power(&self) -> SensorDemand {
         self.0.sensor_demand.wait().await
     }
 }
 
-// ============================ Producer: BLE / debug HR-power-cadence ============================
 
-/// The HR/power/cadence injector — the seam the issue calls out for *explicit* ownership of BLE- and
-/// debug-injected samples. Both the board's BLE central manager (SE6) and the `debug-uart` injection
-/// path (SE8) hold one over the same hub, so the app's `Sensors` wiring is identical whichever is
-/// feeding — **last-writer-wins**. Each dispatch pulses the shared event. `Copy`.
+/// The heart-rate, power and cadence injector. Both the board's BLE central manager and the
+/// `debug-uart` injection path hold one over the same hub, so the app's `Sensors` wiring is
+/// identical whichever is feeding: last-writer-wins. Each dispatch pulses the shared event.
 #[derive(Clone, Copy)]
 pub struct SampleInjector<'a>(&'a SensorHub);
 
 impl SampleInjector<'_> {
-    /// Publish a fresh heart-rate sample (bpm) and pulse the shared event so the loop wakes.
     pub fn dispatch_hr(&self, bpm: u16) {
         self.0.publish(&self.0.hr, bpm);
     }
 
-    /// Publish a fresh power sample (watts). Non-negative — a signed meter reading is clamped at 0
-    /// by the producer.
+    /// Publish a fresh power sample in watts; a signed meter reading is clamped at 0 by the
+    /// producer.
     pub fn dispatch_power(&self, watts: u16) {
         self.0.publish(&self.0.power, watts);
     }
 
-    /// Publish a fresh cadence sample (rpm). A coasting rider publishes a fresh `0` (feet still),
-    /// distinct from no sample at all (the mailbox staying empty).
+    /// Publish a fresh cadence sample in rpm. A coasting rider publishes a fresh `0`, which is
+    /// not the same as an empty mailbox.
     pub fn dispatch_cadence(&self, rpm: u8) {
         self.0.publish(&self.0.cadence, rpm);
     }
 }
 
-// ============================ Control: the ride loop ============================
 
-/// The ride loop's control handle: the GPS rate + power *latches* the sensor task awaits. Only the
-/// newest value of each matters (a latch, not a queue). `Copy`.
+/// The ride loop's control handle: the GPS rate and power latches the sensor task awaits. Only
+/// the newest value of each matters.
 #[derive(Clone, Copy)]
 pub struct SensorControl<'a>(&'a SensorHub);
 
 impl SensorControl<'_> {
-    /// Request a new GPS fix interval (seconds); the sensor task reconfigures the M10 on the next
-    /// [`SensorTaskLink::wait_rate`].
+    /// Request a new GPS fix interval in seconds.
     pub fn set_rate(&self, secs: u16) {
         self.0.rate.signal(secs);
     }
 
-    /// Update receiver power and independent compass demand on the next [`SensorTaskLink::wait_power`].
+    /// Update receiver power and the independent compass demand.
     pub fn set_power(&self, p: SensorDemand) {
         self.0.sensor_demand.signal(p);
     }
 }
 
-// ============================ Consumer: the app poll ============================
 
-/// The ride loop's consumer handle: hands out the app-facing `*Source` drains, drains the boot
-/// presence once, and exposes the single event wake the event-driven loop selects on. The `*Source`
-/// accessors return handles bound to the hub's lifetime (not this handle's borrow), so the sources
-/// the `Sensors` set holds outlive the transient consumer. `Copy`.
+/// The ride loop's consumer handle: the app-facing `*Source` drains, the boot presence drain, and
+/// the single event wake the loop selects on. The `*Source` accessors return handles bound to the
+/// hub's lifetime, so the sources the `Sensors` set holds outlive this transient handle.
 #[derive(Clone, Copy)]
 pub struct SensorConsumer<'a>(&'a SensorHub);
 
 impl<'a> SensorConsumer<'a> {
-    /// The user's location from the real GPS. Hand `&mut` to `Sensors::loc`.
     pub fn location(&self) -> GpsLocation<'a> {
         GpsLocation(&self.0.fix)
     }
 
-    /// The barometric altimeter from the real BMP581. Hand `&mut` to `Sensors::altimeter`.
     pub fn altimeter(&self) -> BaroAltimeter<'a> {
         BaroAltimeter(&self.0.alt)
     }
 
-    /// Ambient temperature from the BMP581. Hand `&mut` to `Sensors::temperature`.
     pub fn temperature(&self) -> SensorTemp<'a> {
         SensorTemp(&self.0.temp)
     }
 
-    /// The GPS UTC clock from the real receiver. Hand `&mut` to `Sensors::clock`.
     pub fn clock(&self) -> GpsClock<'a> {
         GpsClock(&self.0.gps_time)
     }
 
-    /// The electronic compass from the real magnetometer. Hand `&mut` to `Sensors::compass`.
     pub fn compass(&self) -> MagCompass<'a> {
         MagCompass(&self.0.heading)
     }
 
-    /// The rider's heart rate (BLE / injected). Hand `&mut` to `Sensors::hr`.
     pub fn hr(&self) -> SensorHr<'a> {
         SensorHr(&self.0.hr)
     }
 
-    /// The rider's power (BLE / injected). Hand `&mut` to `Sensors::power`.
     pub fn power(&self) -> SensorPower<'a> {
         SensorPower(&self.0.power)
     }
 
-    /// The rider's cadence (BLE / injected). Hand `&mut` to `Sensors::cadence`.
     pub fn cadence(&self) -> SensorCadence<'a> {
         SensorCadence(&self.0.cadence)
     }
 
-    /// Drain the startup result — `Some` exactly once, on the pass after the task publishes it,
-    /// then `None`. The ride loop maps any absent sensor to a warning flag (issue #504).
+    /// Drain the startup probe result: `Some` exactly once, on the pass after the task publishes
+    /// it, then `None`. The ride loop maps any absent sensor to a warning flag.
     pub fn take_presence(&self) -> Option<SensorPresence> {
         self.0.presence.try_take()
     }
 
-    /// Await the next *any-sensor* datapoint — the single wake the event-driven loop selects on.
-    /// Completes on any publish, so one await covers the whole set; the loop then drains the typed
-    /// mailboxes via `poll`. Consuming a value mailbox here would steal it from the source polls, so
-    /// this is a separate payload-less signal.
+    /// Await the next datapoint from any sensor: the single wake the event-driven loop selects
+    /// on. It completes on any publish, and the loop then drains the typed mailboxes. It is a
+    /// separate payload-less signal, so it never steals a value from the source polls.
     pub async fn wait_event(&self) {
         self.0.event.wait().await
     }
 }
 
-// ============================ The app-facing `*Source` drains ============================
-//
-// Each holds a borrow of its one mailbox and drains it on the fresh-mailbox contract (`try_take`
-// yields a value once) — so `poll` returns `Some` only on the tick a new sample arrived and `None`
-// between, the cadence a real ~1 Hz receiver / strap follows. The app's staleness gate then renders
-// a dropped stream as `--`. Generic names (`SensorHr`, not `BleHr`) because both the radio manager
-// and the debug-uart injection feed the same mailbox.
+// Each drain holds a borrow of its one mailbox and drains it on the fresh-mailbox contract, so
+// `poll` returns `Some` only on the tick a new sample arrived and the app's staleness gate can
+// render a dropped stream as `--`. The names are generic because both the radio manager and the
+// debug-uart injection feed the same mailbox.
 
-/// The user's location. See [`SensorConsumer::location`].
 pub struct GpsLocation<'a>(&'a Sig<FixStore>);
 impl LocationSource for GpsLocation<'_> {
     fn poll(&mut self) -> Option<Fix> {
@@ -437,11 +390,10 @@ impl LocationSource for GpsLocation<'_> {
     }
 }
 
-/// Declare one drain: a newtype over its mailbox whose `poll` is the fresh-mailbox `try_take`. The
-/// bodies are the *same* body seven times over — spelling them out invites one of them to quietly
-/// grow a peek or a clone and break the drain-once contract the app's staleness gate rests on. The
-/// GPS fix is the one source that isn't identical (it unpacks its store), so it stays hand-written
-/// above.
+/// Declare one drain: a newtype over its mailbox whose `poll` is the fresh-mailbox `try_take`.
+/// The bodies are the same body seven times over, and spelling them out invites one of them to
+/// grow a peek and break the drain-once contract the app's staleness gate rests on. The GPS fix
+/// unpacks its store, so it stays hand-written above.
 macro_rules! impl_mailbox_source {
     ($(#[$doc:meta])* $name:ident, $store:ty, $port:ident, $out:ty) => {
         $(#[$doc])*
@@ -455,31 +407,24 @@ macro_rules! impl_mailbox_source {
 }
 
 impl_mailbox_source!(
-    /// The barometric altimeter. See [`SensorConsumer::altimeter`].
     BaroAltimeter, f32, AltimeterSource, f32
 );
 impl_mailbox_source!(
-    /// Ambient temperature. See [`SensorConsumer::temperature`].
     SensorTemp, f32, TemperatureSource, f32
 );
 impl_mailbox_source!(
-    /// The GPS UTC clock. See [`SensorConsumer::clock`].
     GpsClock, GpsTime, ClockSource, GpsTime
 );
 impl_mailbox_source!(
-    /// The electronic compass. See [`SensorConsumer::compass`].
     MagCompass, f32, CompassSource, f32
 );
 impl_mailbox_source!(
-    /// The rider's heart rate. See [`SensorConsumer::hr`].
     SensorHr, u16, HeartRateSource, u16
 );
 impl_mailbox_source!(
-    /// The rider's power. See [`SensorConsumer::power`].
     SensorPower, u16, PowerSource, u16
 );
 impl_mailbox_source!(
-    /// The rider's cadence. See [`SensorConsumer::cadence`].
     SensorCadence, u8, CadenceSource, u8
 );
 
@@ -487,8 +432,8 @@ impl_mailbox_source!(
 mod tests {
     use super::*;
 
-    // Multiple independent hubs in one test, no shared global state — the acceptance criterion the
-    // old module-global mailboxes could not meet. A dispatch on one hub is invisible to the other.
+    // Multiple independent hubs in one test, with no shared global state. A dispatch on one hub
+    // is invisible to the other.
     #[test]
     fn hubs_are_independent_instances() {
         let a = SensorHub::new();
@@ -548,9 +493,8 @@ mod tests {
         assert!(consumer.clock().poll().is_none(), "the time mailbox was already drained, undisturbed by heading");
     }
 
-    // A publish must leave the shared event signalled so the ride loop's single `wait_event` wakes,
-    // yet draining a value mailbox must NOT consume that wake — they are separate signals. A busy
-    // poll of the `wait_event` future proves it is ready after a dispatch and that the value survives.
+    // A publish must leave the shared event signalled so the ride loop's single `wait_event`
+    // wakes, yet draining a value mailbox must not consume that wake: they are separate signals.
     #[test]
     fn any_publish_signals_the_event_without_stealing_values() {
         use core::future::Future;
