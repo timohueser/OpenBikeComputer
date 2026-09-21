@@ -1,20 +1,19 @@
-//! The host side of on-device route planning (#499): the resumable planner held across frames,
+//! The host side of on-device route planning: the resumable planner held across frames,
 //! plus the shared commit/answer tail both hosts run when it finishes.
 
 use crate::trace::{DataKey, FeederCall, FeederKind, TraceSink};
 use crate::VecSink;
 
-/// An in-flight route plan (#499): the resumable planner plus its caller-owned buffers and the
-/// in-memory sink. [`HostLoop`](crate::HostLoop) owns it under both host cadences: a live host runs
+/// An in-flight route plan: the resumable planner plus its caller-owned buffers and the in-memory
+/// sink. [`HostLoop`](crate::HostLoop) owns it under both host cadences: a live host runs
 /// [`HostLoop::execute`](crate::HostLoop::execute) once per frame so the UI stays interactive,
-/// while a scripted/headless host loops the same call until the plan reaches a terminal result.
+/// while a scripted or headless host loops the same call until the plan reaches a terminal result.
 ///
-/// The A* table is the capped sim/LM20 size (`NAV_MAX_NODES` = 1536 ⇒ ~39 KB — the final
-/// device's 40 kB nav budget, deliberately emulated so sim range = final-device range) and is
-/// **heap-allocated zeroed**: an all-zero `NavScratch` is bit-identical to `new()` (its
-/// `.bss`-placement contract; the first planner step resets it anyway), and `Box::new` would
-/// first build the table on the stack — a silent trap on the wasm build's stack. The
-/// ~9 KB planner (it owns the OBCR emitter across steps) is boxed for the same reason.
+/// The A* table is the capped device size (`NAV_MAX_NODES` = 1536, about 39 KB) so the simulator's
+/// range is the final device's, and it is heap-allocated zeroed: an all-zero `NavScratch` is
+/// bit-identical to `new()`, and `Box::new` would first build the table on the stack, which is a
+/// silent trap on the wasm build. The 9 KB planner, which owns the OBCR emitter across steps, is
+/// boxed for the same reason.
 pub struct NavPlan {
     planner: Box<obc_route::NavPlanner>,
     scratch: Box<obc_route::nav::NavScratch>,
@@ -28,8 +27,8 @@ impl NavPlan {
     pub fn start(req: &obc_app::NavRequest, profile_idx: u8) -> Self {
         NavPlan {
             planner: Box::new(obc_route::NavPlanner::new(req.from, req.to, req.name(), profile_idx)),
-            // A zeroed heap allocation with no giant stack temp — obc-route owns the "all-zero *is*
-            // `new()`" invariant (see `NavScratch::new_boxed`); the host just asks for one.
+            // A zeroed heap allocation with no giant stack temp — obc-route owns the "all-zero is
+            // `new()`" invariant; the host just asks for one.
             scratch: obc_route::nav::NavScratch::new_boxed(),
             tiles: obc_reader::NavTileCache::new(),
             sink: VecSink::default(),
@@ -52,12 +51,11 @@ impl NavPlan {
         self.planner.set_attribution_map(map);
     }
 
-    /// Run **one bounded planner step** (the frame loop's per-frame unit). `Running` = keep going
-    /// next frame; a terminal outcome is handed to [`finish_nav_plan`].
+    /// Run one bounded planner step, which is the frame loop's per-frame unit. `Running` means keep
+    /// going next frame; a terminal outcome is handed to [`finish_nav_plan`].
     ///
-    /// `elev` is the mounted map's terrain (EL7, epic #1068) — the emit phase fills each point's
-    /// height from it. A host with no terrain hands in
-    /// [`NullElevation`](obc_route::NullElevation) and the plan is exactly what it was before.
+    /// `elev` is the mounted map's terrain — the emit phase fills each point's height from it. A
+    /// host with no terrain hands in [`NullElevation`](obc_route::NullElevation).
     pub fn step(&mut self, reader: &obc_reader::Reader, elev: &mut dyn obc_route::ElevationSource) -> obc_route::Step {
         self.planner.step(reader, &mut self.scratch, &mut self.tiles, elev, &mut self.sink)
     }
@@ -73,9 +71,9 @@ impl NavPlan {
     }
 }
 
-/// An in-flight **detour** plan (#882): the same resumable-planner shape as [`NavPlan`], but the
-/// planner carries the corridor blacklist and the plan's frozen request context (the
-/// prefix/corridor anchor and rejoin distance) rides along to the splice.
+/// An in-flight detour plan: the same resumable-planner shape as [`NavPlan`], but the planner
+/// carries the corridor blacklist and the plan's frozen request context — the prefix and corridor
+/// anchor and the rejoin distance — rides along to the splice.
 pub struct DetourPlan {
     planner: Box<obc_route::NavPlanner>,
     scratch: Box<obc_route::nav::NavScratch>,
@@ -109,21 +107,20 @@ impl DetourPlan {
         })
     }
 
-    /// Run one bounded planner step (the frame loop's per-frame unit). `elev` fills the detour's
-    /// own elevation exactly as it does a route plan's (EL7) — a spliced detour must not punch a
-    /// flat span through the profile of the route it joins.
+    /// Run one bounded planner step. `elev` fills the detour's own elevation exactly as it does a
+    /// route plan's: a spliced detour must not punch a flat span through the profile of the route it
+    /// joins.
     pub fn step(&mut self, reader: &obc_reader::Reader, elev: &mut dyn obc_route::ElevationSource) -> obc_route::Step {
         self.planner.step(reader, &mut self.scratch, &mut self.tiles, elev, &mut self.sink)
     }
 }
 
-/// A planned, **uncommitted** detour: the detour-only OBCR bytes plus the frozen splice context,
-/// held host-side between `DetourPlanned` and the rider's `CommitDetour`/`CancelDetour`.
+/// A planned, uncommitted detour: the detour-only OBCR bytes plus the frozen splice context, held
+/// host-side between `DetourPlanned` and the rider's `CommitDetour` or `CancelDetour`.
 ///
-/// The bytes and `rejoin_m` are already **trimmed to first tail contact** (#882) when the plan's
-/// approach rode the route's own tail — see [`finish_detour_plan`]; so the splice context here is
-/// exactly what commits, and `rejoin_m >= the chooser's target_m` (the chosen distance is a rejoin
-/// *minimum*).
+/// The bytes and `rejoin_m` are already trimmed to first tail contact when the plan's approach rode
+/// the route's own tail, so the splice context here is exactly what commits, and `rejoin_m` is at
+/// least the chooser's `target_m`, because the chosen distance is a rejoin minimum.
 pub struct DetourReady {
     bytes: Vec<u8>,
     detour_len_m: u32,
@@ -136,17 +133,17 @@ pub struct DetourReady {
     has_elevation: bool,
 }
 
-/// The detour plan finished (#882): the preview figures the typed
+/// The detour plan finished: the preview figures the typed
 /// [`NavigatorOutcome::DetourFinished`](obc_app::navigator::NavigatorOutcome) carries
-/// (`cost = detour length − skipped span length`, signed), the decimated detour polyline
-/// ([`App::set_detour_preview`](obc_app::App)), and the [`DetourReady`] the executor holds until the
-/// rider commits or cancels. A failure reports the typed error and holds nothing.
+/// (`cost = detour length − skipped span length`, signed), the decimated detour polyline, and the
+/// [`DetourReady`] the executor holds until the rider commits or cancels. A failure reports the
+/// typed error and holds nothing.
 ///
 /// `orig` is the resident original route: when present, a successful plan is trimmed to its first
-/// sustained contact with the route tail past `target_m`
-/// ([`trim_detour_to_tail`](obc_route::trim_detour_to_tail)), so the preview polyline and cost line
-/// already describe the shortened detour and the splice rejoins at that farther point. `None` (or a
-/// trim that doesn't bite) keeps the untrimmed bytes, the planner length, and the chosen `target_m`.
+/// sustained contact with the route tail past `target_m`, so the preview polyline and cost line
+/// already describe the shortened detour and the splice rejoins at that farther point. `None`, or a
+/// trim that does not bite, keeps the untrimmed bytes, the planner length and the chosen
+/// `target_m`.
 pub fn plan_detour_preview(
     app: &mut obc_app::App,
     outcome: Result<obc_route::RouteStats, obc_route::NavError>,
@@ -164,9 +161,9 @@ pub fn plan_detour_preview(
             let mut detour_ascent_m = stats.total_ascent_m;
 
             // Advance the rejoin to the detour's first sustained contact with the route tail: A*
-            // legally rides the future route's own road to the goal (the tail past `target_m` is not
-            // blacklisted), and the splice would append a tail that immediately retraces it. The
-            // trim re-emits `detour[0..=contact]` into a fresh buffer; on any miss we keep today's.
+            // legally rides the future route's own road to the goal, because the tail past
+            // `target_m` is not blacklisted, and the splice would append a tail that immediately
+            // retraces it. The trim re-emits `detour[0..=contact]` into a fresh buffer.
             let trimmed = orig.and_then(|orig| {
                 let src = obc_formats::io::SliceSource(&bytes);
                 let didx = obc_route::RouteIndex::read(&src).ok()?;
@@ -191,10 +188,9 @@ pub fn plan_detour_preview(
             // Cost = detour length − skipped span (`rejoin_m − progress_m`); the trim lengthens the
             // skipped span and shortens the detour, so both terms improve the figure honestly.
             //
-            // The climb side of the preview is the leg's *own* ascent (EL7-sampled, dead-banded);
-            // the replaced span's ascent is read app-side off the resident route profile, which is
-            // where `Profile::ascent_between_m` already lives. `None` when the terrain never
-            // answered — the explicit bit, so a genuinely flat detour still shows `+0`.
+            // The climb side of the preview is the leg's own ascent, sampled and dead-banded; the
+            // replaced span's ascent is read app-side off the resident route profile. `None` when
+            // the terrain never answered, so a genuinely flat detour still shows `+0`.
             let preview = obc_app::DetourPreview {
                 cost_delta_m: (detour_len_m as i64 - (rejoin_m as i64 - plan.progress_m as i64)) as i32,
                 total_distance_m: detour_len_m,
@@ -229,14 +225,14 @@ pub fn plan_detour_preview(
     }
 }
 
-/// Commit a planned detour (#882): stream-splice `original[0..anchor] + detour + original[rejoin..]`
-/// into a derived OBCR, write it to the reserved computed-route slot, rescan + re-feed, and report
-/// the spliced identity — what the executor turns into
+/// Commit a planned detour: stream-splice `original[0..anchor] + detour + original[rejoin..]` into
+/// a derived OBCR, write it to the reserved computed-route slot, rescan, re-feed, and report the
+/// spliced identity, which the executor turns into
 /// [`NavigatorOutcome::DetourCommitted`](obc_app::navigator::NavigatorOutcome). On any failure the
 /// store is untouched and the app keeps its route.
 ///
-/// `#[inline(never)]`: the splice runs one-shot here with its ~9 kB emitter frame — keep it out of
-/// the executor's frame (the same one-large-frame-at-a-time rule as the plan phases).
+/// `#[inline(never)]`: the splice runs one-shot here with its 9 kB emitter frame, and one large
+/// frame at a time is the rule.
 #[inline(never)]
 pub fn commit_detour(
     app: &mut obc_app::App,
@@ -280,15 +276,15 @@ pub fn commit_detour(
     result
 }
 
-/// Commit a finished plan — the shared tail of the live hosts' stepped path and `obc-sim`'s
-/// headless one-shot: on success write the reserved nav route, rescan + re-feed the id-carrying
-/// catalog, and report the committed identity, which the executor turns into
+/// Commit a finished plan — the shared tail of the live hosts' stepped path and the headless
+/// one-shot: on success write the reserved nav route, rescan, re-feed the id-carrying catalog, and
+/// report the committed identity, which the executor turns into
 /// [`NavigatorOutcome::PlanFinished`](obc_app::navigator::NavigatorOutcome). Drives the store
-/// through [`RouteRepository`](crate::RouteRepository), so the exact write→rescan→invalidate order
-/// lives in one place for every host.
+/// through [`RouteRepository`](crate::RouteRepository), so the exact write, rescan and invalidate
+/// order lives in one place for every host.
 ///
-/// The computed overview's shape preview (#685 §4) is not decimated here: it is answered from the
-/// next plan's `derived_needs` key, against the identity this commit reports.
+/// The computed overview's shape preview is not decimated here: it is answered from the next plan's
+/// `derived_needs` key, against the identity this commit reports.
 pub fn commit_nav_plan(
     app: &mut obc_app::App,
     store: &mut dyn crate::RouteRepository,
@@ -305,7 +301,7 @@ pub fn commit_nav_plan(
         // A re-route rewrites the nav bytes under an unchanged catalog index — force the
         // change-gated active-route read to re-open them.
         store.invalidate_active();
-        // (eprintln! is a silent no-op on wasm32-unknown-unknown, so this stays unconditional.)
+        // `eprintln!` is a silent no-op on wasm32-unknown-unknown, so this stays unconditional.
         eprintln!(
             "nav route: ok len={} m | graph {} hit / {} read, index {} hit / {} read, {} source reads total",
             stats.total_distance_m,

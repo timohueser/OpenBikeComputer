@@ -1,13 +1,12 @@
-//! Host-side device-input emulation — the four on-housing buttons (Up / Down / Select / Back)
-//! and the keyboard, turned into raw [`InputEvent`]s for the app.
+//! Host-side device-input emulation — the four on-housing buttons (Up, Down, Select, Back) and the
+//! keyboard, turned into raw [`InputEvent`]s for the app.
 //!
-//! A host pushes raw events here each frame. [`DeviceInput`] implements
-//! [`InputSource`], so it drops straight into [`obc_app::App::handle_input`] and its
-//! *shared* gesture recognizer — the exact path the firmware uses with real GPIO. All four
-//! controls arrive here as held state and leave as edges, so a held arrow key auto-repeats through
-//! the recognizer's own cadence rather than the host's. It also owns the millis clock, and it fills
-//! in the one thing a host has that the device doesn't: a mouse wheel, folded into a directly
-//! injected [`InputEvent::Step`].
+//! A host pushes raw events here each frame. [`DeviceInput`] implements [`InputSource`], so it
+//! drops straight into [`obc_app::App::handle_input`] and its shared gesture recognizer, which is
+//! the path the firmware uses with real GPIO. All four controls arrive here as held state and leave
+//! as edges, so a held arrow key auto-repeats through the recognizer's own cadence rather than the
+//! host's. It also owns the millis clock, and it folds a mouse wheel, which the device has no
+//! equivalent of, into a directly injected [`InputEvent::Step`].
 
 use std::collections::VecDeque;
 
