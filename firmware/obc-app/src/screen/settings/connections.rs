@@ -1,7 +1,5 @@
-//! The Connections settings menu — the device's two radios in one drawer: **Phone** (the BLE
-//! pairing screen, [`BluetoothScreen`]) and **Sensors** (the HR / power / cadence scan,
-//! [`SensorsScreen`]). A thin nav list whose rows open those existing pages unchanged — no controls
-//! of its own, so it's pure navigation like the top-level Settings list.
+//! The Connections menu: a nav list for the phone link ([`BluetoothScreen`]) and the sensors
+//! ([`SensorsScreen`]). It has no controls of its own.
 
 use obc_render::Surface;
 
@@ -10,10 +8,8 @@ use crate::screen::vocab::list;
 use crate::screen::{BluetoothScreen, Ctx, Render, Screen, SensorsScreen, Transition};
 use crate::Msg;
 
-/// The two rows: Phone (BLE pairing) then Sensors (BLE sensors).
 const N_ITEMS: usize = 2;
 
-/// The Connections menu. State is the highlighted row.
 #[derive(Debug, Default)]
 pub struct ConnectionsScreen {
     selected: usize,
@@ -31,7 +27,7 @@ impl ConnectionsScreen {
                 0 => Transition::Push(Screen::Bluetooth(BluetoothScreen::new())),
                 _ => Transition::Push(Screen::Sensors(SensorsScreen::new())),
             },
-            Gesture::Back => Transition::Pop, // climb back to the Settings list
+            Gesture::Back => Transition::Pop,
             Gesture::Hold | Gesture::BackHold => Transition::None,
         }
     }
@@ -57,12 +53,11 @@ mod tests {
         scr.handle(g, &mut cx)
     }
 
-    /// Phone opens the Bluetooth screen; Sensors opens the Sensors screen; Back climbs out.
     #[test]
     fn rows_open_their_pages() {
         let mut scr = ConnectionsScreen::new();
         assert!(matches!(run(&mut scr, Gesture::Press), Transition::Push(Screen::Bluetooth(_))));
-        run(&mut scr, Gesture::Step(1)); // → Sensors
+        run(&mut scr, Gesture::Step(1));
         assert_eq!(scr.selected, 1);
         assert!(matches!(run(&mut scr, Gesture::Press), Transition::Push(Screen::Sensors(_))));
         assert!(matches!(run(&mut scr, Gesture::Back), Transition::Pop));

@@ -1,5 +1,5 @@
-//! The shared **row** vocabulary — the settings row rectangle and cursor, the value picker, the
-//! stat-ledger row, and the guarded-action option rows the confirm cards and panels draw.
+//! The shared row vocabulary: the settings row rectangle and cursor, the value picker, the
+//! stat-ledger row, and the guarded-action option rows.
 
 use embedded_graphics::{prelude::Point, primitives::Rectangle};
 use obc_render::{
@@ -13,30 +13,25 @@ use crate::screen::palette;
 /// Left inset of every settings row (clears the framed outline).
 pub(crate) const ROW_X: i32 = 14;
 
-/// The full-width settings-row rectangle at `y` of height `h`.
 pub(crate) fn row_rect(y: i32, w: i32, h: i32) -> Rectangle {
     rect(ROW_X, y, w - 2 * ROW_X, h)
 }
 
-/// Paint a row's amber row-focus cursor. A no-op while editing (the field's `▲▼` box is the cursor
-/// then) or when unselected, so the two focus levels never both light up.
+/// Paint a row's amber focus cursor. A no-op while editing, because the field's `▲▼` box is the
+/// cursor then.
 pub(crate) fn row_cursor(cv: &mut impl Surface, area: Rectangle, selected: bool, editing: bool) {
     if selected && !editing {
         cv.round(area, 6, palette::AMBER);
     }
 }
 
-/// One centred value row flanked by ◄ ► triangles — the "rotate to switch" picker row shared by the
-/// single-row settings screens ([`Units`](crate::screen::UnitsScreen),
-/// [`Language`](crate::screen::LanguageScreen)). Always drawn as the cursor (these screens have one
-/// row, always focused). Returns the row rectangle so a caller can lay out further content beneath
-/// it (Units' consequence-preview rows). `y` is the row's top; the row is a fixed 50 px tall.
+/// One centred value row flanked by ◄ ► triangles, always drawn as the cursor. `y` is the row's
+/// top and the row is 50 px tall. Returns the row rectangle, for content laid out below it.
 pub(crate) fn value_row_with_arrows(cv: &mut impl Surface, y: i32, w: i32, text: &str) -> Rectangle {
     let area = row_rect(y, w, 50);
     row_cursor(cv, area, true, false);
     let midy = area.top_left.y + area.size.height as i32 / 2;
     cv.text_vcentered(text, w / 2, (area.top_left.y, 50), Font::Body, TextAlign::Center, palette::INK);
-    // ◄ and ► as filled triangles, inset from the row edges.
     let ax = area.top_left.x + 18;
     cv.triangle(Point::new(ax, midy - 9), Point::new(ax, midy + 9), Point::new(ax - 11, midy), palette::INK);
     let bx = area.top_left.x + area.size.width as i32 - 18;
@@ -44,28 +39,22 @@ pub(crate) fn value_row_with_arrows(cv: &mut impl Surface, y: i32, w: i32, text:
     area
 }
 
-/// Draw a slider toggle at the right of `area` — a white knob sliding left (off) / right (on), the
-/// track dark for off and green for on. The knob position and track colour carry the state.
-///
-/// Shared vocabulary since #1515 D4c, when the map's three display switches moved onto the map's own
-/// contextual sheet: a switch is a switch, so the settings screens' rows and the drawer's rows draw
-/// the same 50 × 28 control from one definition.
+/// Draw a slider toggle at the right of `area`: a white knob sliding left (off) or right (on), on
+/// a track that is dark for off and green for on.
 pub(crate) fn toggle_slider(cv: &mut impl Surface, area: Rectangle, on: bool) {
     let (tw, th) = (50, 28);
     let tx = area.top_left.x + area.size.width as i32 - tw - 4;
     let ty = area.top_left.y + (area.size.height as i32 - th) / 2;
     cv.round(rect(tx, ty, tw, th), 6, if on { palette::ON } else { palette::INK });
-    // Knob at the on/off end, with an even margin.
     let m = 4;
     let k = th - 2 * m;
     let kx = if on { tx + tw - m - k } else { tx + m };
     cv.round(rect(kx, ty + m, k, k), 4, palette::PARCHMENT);
 }
 
-/// One stat-ledger row — olive caption on the left, the Display value right-aligned with a small
-/// unit suffix (baselines shared), and an optional climb/descent triangle just left of the value
-/// (`Some(true)` = up). All text sits on the parchment — no pane; that look is reserved for the
-/// riding grid's live tiles. Shared by the Route overview and the Paused page.
+/// One stat-ledger row: caption on the left, the value right-aligned with a small unit suffix, and
+/// an optional climb/descent triangle left of the value (`Some(true)` = up). The text sits on the
+/// parchment with no pane, because that look is reserved for the riding grid's live tiles.
 pub(crate) fn ledger_row(
     cv: &mut impl Surface,
     w: i32,
@@ -76,7 +65,7 @@ pub(crate) fn ledger_row(
     arrow: Option<bool>,
 ) {
     use palette::*;
-    // Display cap is 26 from `y + 6`, Label cap 18 from `y + 14` — both bottom out at `y + 32`.
+    // The Display and Label caps both bottom out at `y + 32`, so the baselines agree.
     cv.text(caption, Point::new(16, y + 14), Font::Label, TextAlign::Left, SUBTEXT);
     cv.text(unit, Point::new(w - 16, y + 14), Font::Label, TextAlign::Right, SUBTEXT);
     let unit_w = unit.chars().count() as i32 * Font::Label.char_width() as i32;
@@ -90,17 +79,15 @@ pub(crate) fn ledger_row(
     }
 }
 
-/// One option in a guarded-action menu (Ride control, Route swap): a static label and a
-/// `guard` flag marking the irreversible options that need a hold-to-confirm instead of a
-/// plain press.
+/// One option in a guarded-action menu. `guard` marks an irreversible option, which needs a hold
+/// instead of a press.
 pub(crate) struct MenuItem {
     pub label: &'static str,
     pub guard: bool,
 }
 
-/// Draw a selected option row's background for the guarded-action menus: a plain `AMBER` fill for
-/// an instant option, or — when `guard` is set — a `PARCHMENT_SHADE` base that fills in `fill`
-/// tracking `hold_progress` (0.0–1.0). The caller draws the label. A no-op for an unselected row.
+/// Draw a selected option row's background: a plain amber fill, or, when `guard` is set, a shaded
+/// base that fills in `fill` to track `hold_progress` (0.0–1.0). The caller draws the label.
 pub(crate) fn confirm_row(
     cv: &mut impl Surface,
     row: Rectangle,
@@ -124,16 +111,12 @@ pub(crate) fn confirm_row(
     }
 }
 
-/// Layout of a guarded-action menu's option rows — the per-screen geometry
-/// [`draw_guarded_rows`] lays [`MenuItem`]s out with. The label offsets are from the row's
-/// top-left, hand-tuned per screen (the two panels frame their rows differently).
+/// The per-screen geometry [`draw_guarded_rows`] lays [`MenuItem`]s out with.
 pub(crate) struct GuardedRowsGeometry {
-    /// Left edge and width of every row.
     pub x: i32,
     pub w: i32,
     /// Top of the first row.
     pub top: i32,
-    /// Row height and the vertical gap between rows.
     pub row_h: i32,
     pub gap: i32,
     /// The label anchor, relative to the row's top-left.
@@ -142,25 +125,20 @@ pub(crate) struct GuardedRowsGeometry {
 }
 
 impl GuardedRowsGeometry {
-    /// The **card** family — the option rows of a full-bleed confirm card (Route received /
-    /// updated, Trip received, Route swap, Trip delete, Nav route): a 12 px side inset, 46 px rows
-    /// 8 apart, the label 16 in and 11 down. Only where the block starts differs between them.
+    /// The rows of a full-bleed confirm card. Only `top` differs between the cards.
     pub(crate) fn card(w: i32, top: i32) -> Self {
         GuardedRowsGeometry { x: 12, w: w - 24, top, row_h: 46, gap: 8, label_dx: 16, label_dy: 11 }
     }
 
-    /// The **panel** family — action rows inside a framed panel (Pause menu, Route overview, Ride
-    /// detail): the wider 14 px inset the frame wants, and a tighter label at 12 in / 5 down. Row
-    /// height and gap stay the caller's, since each panel sizes its block to the space it has.
+    /// The action rows inside a framed panel. The row height and the gap stay the caller's,
+    /// because each panel sizes its block to the space it has.
     pub(crate) fn panel(w: i32, top: i32, row_h: i32, gap: i32) -> Self {
         GuardedRowsGeometry { x: 14, w: w - 28, top, row_h, gap, label_dx: 12, label_dy: 5 }
     }
 }
 
-/// Draw a guarded-action menu's option rows (Ride control, Route swap): each [`MenuItem`] gets its
-/// [`confirm_row`] background — the amber cursor, or the hold-progress fill in `fill` on a guarded
-/// row — and its Body label. The caller draws its chrome (the PAUSED panel / the full-frame prompt)
-/// and keeps its `handle` semantics.
+/// Draw a guarded-action menu's option rows: each [`MenuItem`] gets its [`confirm_row`] background
+/// and its label. The caller draws the chrome around them.
 pub(crate) fn draw_guarded_rows(
     cv: &mut impl Surface,
     items: &[MenuItem],

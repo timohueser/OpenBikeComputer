@@ -1,17 +1,14 @@
-//! The **marquee** — the one long name a frame scrolls instead of cutting with `..`.
+//! The one long name a frame scrolls, instead of cutting it with `..`. Every device font is
+//! monospace, so the name scrolls by whole characters: the draw shows
+//! `name[offset..offset + max_chars]`.
 //!
-//! Every device font is monospace, so a name that overflows its field scrolls by whole characters:
-//! the draw shows `name[offset..offset + max_chars]` and nothing new is rendered. The frame owns
-//! the request and the runtime owns the clock: a screen's `draw` calls
-//! [`MarqueeFrame::fit`] on the one name it wants scrolled (the highlighted row, the title) and
-//! [`fit`] on every other; after the draw the runtime adopts what was asked
-//! ([`Marquee::adopt`]) and steps it on the pass clock ([`Marquee::tick`]), reporting the text
-//! row as the repaint region. The last request of a frame wins, so an overlay's name scrolls over
-//! the base's, and a frame that asks for nothing stops the marquee.
+//! The frame owns the request and the runtime owns the clock. A screen's `draw` calls
+//! [`MarqueeFrame::fit`] on the one name it wants scrolled and [`fit`] on every other; after the
+//! draw the runtime adopts the request ([`Marquee::adopt`]) and steps it ([`Marquee::tick`]). The
+//! last request of a frame wins, and a frame that asks for nothing stops the marquee.
 //!
 //! Cadence: rest [`HEAD_REST_MS`] at the head, one character every [`STEP_MS`] until the tail is
-//! visible, rest [`TAIL_REST_MS`], return to the head. A name that fits never scrolls, and a fresh
-//! name restarts at the head. The snapshot sweep renders one frame, so it always sees the head.
+//! visible, rest [`TAIL_REST_MS`], return to the head.
 
 use core::cell::Cell;
 
@@ -19,19 +16,15 @@ use embedded_graphics::primitives::Rectangle;
 
 use crate::screen::ScreenTick;
 
-/// Rest at the head before the first step.
 pub(crate) const HEAD_REST_MS: u32 = 1_000;
-/// One character per step.
 pub(crate) const STEP_MS: u32 = 250;
-/// Rest with the tail visible before returning to the head.
 pub(crate) const TAIL_REST_MS: u32 = 1_500;
 
-/// One fitted name. The widest field on the panel is 18 characters; a name that fits whole is
-/// copied verbatim.
+/// One fitted name. The widest field on the panel is 18 characters.
 pub(crate) type Fitted = heapless::String<64>;
 
-/// Fit `name` into `max_chars`: verbatim when it fits, else the leading characters plus `..`
-/// (never with a dangling space before the dots — `Fontaine du ..` would read as a word).
+/// Fit `name` into `max_chars`: verbatim when it fits, else the leading characters plus `..`. A
+/// space before the dots is dropped, because `Fontaine du ..` reads as a word.
 pub(crate) fn fit(name: &str, max_chars: usize) -> Fitted {
     if name.chars().count() <= max_chars {
         return window(name, 0, max_chars);
@@ -55,7 +48,7 @@ fn window(name: &str, offset: usize, max_chars: usize) -> Fitted {
     out
 }
 
-/// FNV-1a over the name and its field width: the identity a scroll phase belongs to.
+/// The identity a scroll phase belongs to: FNV-1a over the name and its field width.
 fn key_of(name: &str, max_chars: usize) -> u32 {
     let mut h: u32 = 0x811c_9dc5;
     for b in name.bytes().chain((max_chars as u16).to_le_bytes()) {
@@ -64,8 +57,7 @@ fn key_of(name: &str, max_chars: usize) -> u32 {
     h
 }
 
-/// What a draw asked to scroll: which name (by key), how far it can go, where it is drawn, and
-/// whether it loops or scrolls once and then rests on the head.
+/// What a draw asked to scroll.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Request {
     key: u32,
@@ -75,8 +67,8 @@ pub(crate) struct Request {
     once: bool,
 }
 
-/// The frame's view of the marquee: the offset the runtime has scrolled to (and the name it
-/// belongs to), plus the slot a draw fills with this frame's request.
+/// The frame's view of the marquee: the offset the runtime has scrolled to, the name it belongs
+/// to, and the slot a draw fills with this frame's request.
 #[derive(Debug)]
 pub(crate) struct MarqueeFrame {
     key: u32,
@@ -85,9 +77,8 @@ pub(crate) struct MarqueeFrame {
 }
 
 impl MarqueeFrame {
-    /// Fit `name` into `max_chars`, scrolling it inside `scroll` when it overflows — the one name
-    /// of the frame that moves; `None` is the plain `..` cut. The region is the text row the
-    /// repaint clips to, in panel pixels.
+    /// Fit `name` into `max_chars` and scroll it inside `scroll` when it overflows. `None` is the
+    /// plain `..` cut. `scroll` is the text row the repaint clips to, in panel pixels.
     pub(crate) fn fit(&self, name: &str, max_chars: usize, scroll: Option<Rectangle>) -> Fitted {
         match scroll {
             Some(region) => self.scrolled(name, max_chars, region, false),
@@ -95,8 +86,8 @@ impl MarqueeFrame {
         }
     }
 
-    /// Like [`fit`](Self::fit), but a name scrolls **once** after it changes and then rests on
-    /// the head — the riding view's waypoint tile, which must not move perpetually.
+    /// Like [`fit`](Self::fit), but the name scrolls once after it changes and then rests on the
+    /// head.
     pub(crate) fn fit_once(&self, name: &str, max_chars: usize, region: Rectangle) -> Fitted {
         self.scrolled(name, max_chars, region, true)
     }
@@ -113,32 +104,28 @@ impl MarqueeFrame {
         window(name, usize::from(offset), max_chars)
     }
 
-    /// What the frame's draw asked for, read by the runtime after the draw.
     pub(crate) fn request(&self) -> Option<Request> {
         self.request.get()
     }
 }
 
-/// The runtime's marquee: adopts each frame's request after its draw and steps the offset on the
-/// pass clock. One per runtime, since a frame scrolls one name.
+/// The runtime's marquee. One per runtime, because a frame scrolls one name.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct Marquee {
     /// The adopted request and the millis it started at the head.
     shown: Option<(Request, u32)>,
-    /// The offset the last tick scrolled to — what the next frame draws.
     offset: u16,
 }
 
 impl Marquee {
-    /// The view the next frame draws with.
     pub(crate) fn frame(&self) -> MarqueeFrame {
         let key = self.shown.map_or(0, |(req, _)| req.key);
         MarqueeFrame { key, offset: self.offset, request: Cell::new(None) }
     }
 
-    /// Adopt what the frame asked for. The same name keeps its phase (its geometry refreshed); a
-    /// fresh name restarts at the head and returns the millis until its first step, for the
-    /// render to arm — the pass's wake was planned before the draw. No request stops the marquee.
+    /// Adopt what the frame asked for. The same name keeps its phase. A fresh name restarts at the
+    /// head and returns the millis until its first step, for the render to arm, because the pass's
+    /// wake was planned before the draw. No request stops the marquee.
     pub(crate) fn adopt(&mut self, request: Option<Request>, now_ms: u32) -> Option<u32> {
         match (request, self.shown) {
             (Some(req), Some((cur, start))) if req.key == cur.key => {
@@ -158,9 +145,8 @@ impl Marquee {
         }
     }
 
-    /// Step the offset to where the clock says it is: `changed` when it moved, the region being
-    /// the text row the request named, and the wake being the next step (or none once a
-    /// scroll-once name is back at the head).
+    /// Step the offset to where the clock says it is. The wake is the next step, or none once a
+    /// scroll-once name is back at the head.
     pub(crate) fn tick(&mut self, now_ms: u32) -> ScreenTick {
         let Some((req, start)) = self.shown else {
             return ScreenTick::idle();
@@ -199,7 +185,6 @@ mod tests {
         Rectangle::new(embedded_graphics::prelude::Point::new(0, 100), embedded_graphics::prelude::Size::new(240, 28));
     const CYCLE: u32 = HEAD_REST_MS + 8 * STEP_MS + TAIL_REST_MS;
 
-    /// Draw one frame asking to scroll `name`, then let the runtime adopt it at `now_ms`.
     fn frame(m: &mut Marquee, now_ms: u32, name: &str, once: bool) -> Fitted {
         let f = m.frame();
         let shown = if once { f.fit_once(name, 15, ROW) } else { f.fit(name, 15, Some(ROW)) };
@@ -207,7 +192,6 @@ mod tests {
         shown
     }
 
-    /// What the frame at `now_ms` shows: the tick, then the draw of the same name.
     fn shown_at(m: &mut Marquee, now_ms: u32) -> (ScreenTick, Fitted) {
         let tick = m.tick(now_ms);
         (tick, frame(m, now_ms, NAME, false))

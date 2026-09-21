@@ -1,19 +1,12 @@
-//! The Settings tree, in the field-map style of the rest of the UI. This module owns the list
-//! screen ([`SettingsScreen`]) and the settings-only drawing kit (the slider toggle, the stepper
-//! field, the row label, the guarded Forget footer); the individual screens live one file each.
-//! The row rectangle, the row cursor and the value picker are shared vocabulary
-//! ([`vocab::rows`](crate::screen::vocab::rows)).
+//! The Settings tree. This module owns the list screen ([`SettingsScreen`]) and the drawing kit the
+//! settings screens share. Each settings screen has its own file.
 //!
-//! The two-level Select model:
-//! - **Rotate** moves the amber row cursor; while a field is open it changes that field's value.
-//! - **Press** flips a toggle, or enters a value row's stepper (a `▲▼` box marks the live field);
-//!   pressing again steps field→field and off the end steps back out.
-//! - **Back** steps out of an open field, else climbs one screen up.
-//! - **Long-press** is reserved for the one guarded action, the factory [`reset`].
+//! The Select model has two levels: rotate moves the row cursor, or changes the value of an open
+//! field. Press flips a toggle or opens a field. Back steps out of an open field, or climbs one
+//! screen up. A long press is only for a guarded action, such as the factory [`reset`].
 //!
-//! Editing is live: a stepper writes straight into the shared [`Settings`](crate::Settings) — no
-//! save button, so `back` just exits. [`App::apply_gesture`](crate::App::apply_gesture) notices the
-//! change and flags the host to persist it.
+//! Editing is live: a stepper writes into the shared [`Settings`](crate::Settings), and
+//! [`App::apply_gesture`](crate::App::apply_gesture) flags the host to persist the change.
 
 use embedded_graphics::{prelude::Point, primitives::Rectangle};
 use obc_render::{
@@ -31,9 +24,7 @@ use super::{palette, Ctx, Render, Screen, Transition};
 
 mod about;
 mod add_field;
-/// The route-less ride-start card's hero bike (T6, #684) — the only place these sprites are drawn
-/// since #1515 D4d moved the bike-type choice onto the route-plan sheet, whose editor is a names
-/// list.
+/// The bike sprites for the ride-start card that has no route.
 pub(crate) mod bike_icons;
 mod bluetooth;
 mod connections;
@@ -67,8 +58,7 @@ pub use units::UnitsScreen;
 
 const N_ITEMS: usize = 5;
 
-/// The Settings list — a nav menu whose rows open the individual settings screens. State is the
-/// highlighted row.
+/// The Settings list. Its rows open the individual settings screens.
 #[derive(Debug, Default)]
 pub struct SettingsScreen {
     selected: usize,
@@ -89,14 +79,13 @@ impl SettingsScreen {
                 3 => Transition::Push(Screen::Power(PowerScreen::new())),
                 _ => Transition::Push(Screen::System(SystemScreen::new())),
             },
-            Gesture::Back => Transition::Pop, // climb back to the main Menu
+            Gesture::Back => Transition::Pop,
             Gesture::Hold | Gesture::BackHold => Transition::None,
         }
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
-        // Built per-frame from the catalog (the old `const ITEMS` couldn't stay const once the labels
-        // are language-dependent); the order matches the `handle` press arms above.
+        // The order must match the press arms in `handle`.
         let items: [&str; N_ITEMS] = [
             rx.t(Msg::SettingsRide),
             rx.t(Msg::SettingsDisplay),
@@ -108,16 +97,11 @@ impl SettingsScreen {
     }
 }
 
-// The shared kit — the reusable parts behind every settings screen.
-
-/// The Forget row's height + bottom anchor — the Route overview Delete row's geometry family
-/// (38 px tall, the standard 10 px above the card bottom), so the button faces all match.
+/// The Forget row height. It matches the Route overview Delete row, so the buttons look the same.
 pub(super) const FORGET_H: i32 = 38;
 
-/// **Back** on a settings page that has an editable field: an open field takes the press — `close`
-/// runs and the page stays put — otherwise Back climbs to the Settings list. That's the two levels
-/// of "inside" (row cursor, open field) unwinding one press at a time, identically on Display,
-/// Power, Ride and Date & time.
+/// Back on a page with an editable field. An open field takes the press and `close` runs.
+/// If no field is open, Back climbs to the Settings list.
 pub(super) fn back_out_of_field(open: bool, close: impl FnOnce()) -> Transition {
     if open {
         close();
@@ -127,12 +111,9 @@ pub(super) fn back_out_of_field(open: bool, close: impl FnOnce()) -> Transition 
     }
 }
 
-/// The bottom-anchored guarded **Forget** row shared by Bluetooth and Sensors — the Pause-menu
-/// guarded-row treatment (owner review round 3: the round-2 focus outline is retired everywhere):
-/// a plain left-aligned Body label while unselected, the shaded base + warning-red hold fill only
-/// while the cursor is on it, exactly the `ride_control` family's selected-guarded face at the
-/// delete rows' bottom anchor. Both pages draw it only while there *is* something to forget (the
-/// round-1 only-when-possible grammar), so the caller owns that condition.
+/// The bottom-anchored guarded Forget row that Bluetooth and Sensors share. It fills warning-red
+/// with the hold while the cursor is on it. The caller draws it only when there is something to
+/// forget.
 pub(super) fn forget_footer(cv: &mut impl Surface, w: i32, h: i32, label: &str, selected: bool, hold: f32) {
     let fy = h - 10 - FORGET_H;
     let row = row_rect(fy, w, FORGET_H);
@@ -156,8 +137,8 @@ pub(super) fn row_label(cv: &mut impl Surface, area: Rectangle, label: &str, sub
     }
 }
 
-/// Draw a stepper field cell holding `text`. Inactive: just the text, no background. Active (the
-/// live field): an amber fill plus up/down triangles. `cell` must leave ~10 px clearance for the arrows.
+/// Draw a stepper field cell holding `text`. An active cell gets an amber fill and arrows, so
+/// `cell` must leave about 10 px of clearance for them.
 pub(super) fn stepper_field(cv: &mut impl Surface, cell: Rectangle, text: &str, active: bool, font: Font) {
     let cx = cell.top_left.x + cell.size.width as i32 / 2;
     if active {
@@ -170,8 +151,7 @@ pub(super) fn stepper_field(cv: &mut impl Surface, cell: Rectangle, text: &str, 
     cv.text_vcentered(text, cx, (cell.top_left.y, cell.size.height as i32), font, TextAlign::Center, palette::INK);
 }
 
-/// Draw a span badge at the right of a row: one small square for a one-column field, two for a
-/// full-width one — the "how big is this tile" cue shared by the Stat Fields list and Add Field picker.
+/// Draw a span badge at the right of a row: one square for a one-column field, two for a full-width one.
 pub(super) fn span_badge(cv: &mut impl Surface, area: Rectangle, span: u8, color: u16) {
     let cell = 11;
     let gap = 3;
