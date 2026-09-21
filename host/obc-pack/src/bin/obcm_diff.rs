@@ -1,26 +1,21 @@
-//! `obcm_diff` — compare two `.obcm` files. Parses both with the same `obc-reader`
-//! the device uses and reports:
-//!   1. structural diffs — version, bbox, marker, style table, per-LOD
-//!      node/chunk counts, chunk size, max_mpp;
-//!   2. feature-multiset diffs per LOD — decodes every chunk and compares the
-//!      multiset of `(style_id, kind, vertices)`, since chunk/feature ordering is
-//!      allowed to differ.
+//! Compare two `.obcm` files. Parses both with the same `obc-reader` the device uses and reports
+//! structural diffs — version, bbox, marker, style table, per-LOD node and chunk counts, chunk size,
+//! max_mpp — and per-LOD feature-multiset diffs, decoding every chunk and comparing the multiset of
+//! `(style_id, kind, vertices)`, since chunk and feature ordering is allowed to differ.
 //!
-//! Exits non-zero on any difference. `a` is the reference, `b` the candidate:
-//! "only in A" means missing from B, "only in B" means extra in B.
+//! Exits non-zero on any difference. `a` is the reference and `b` the candidate: "only in A" means
+//! missing from B, "only in B" means extra in B.
 //!
-//! `--dump` takes **one** file and writes a canonical, sorted text listing of its
-//! *content* to stdout — the diffable form of the same comparison, for the case two
-//! maps cannot both be parsed by one binary: a **format migration**. Build the tool
-//! before and after the bump, dump the same extract with each, and `diff` the two
-//! listings; equal listings say the migration moved bytes and not content.
-//! Deliberately excluded from the listing, because a version bump is expected to
-//! change them: the version byte, the file length, and every *addressing* field
-//! (chunk ids, chunk byte offsets, feature offsets within a chunk, section offsets).
-//! Tree shape is content here — node/chunk counts are listed, since a change in how
-//! chunks are laid out must not move a leaf.
+//! `--dump` takes one file and writes a canonical, sorted text listing of its content to stdout: the
+//! diffable form of the same comparison, for when two maps cannot both be parsed by one binary,
+//! which is what a format migration looks like. Build the tool before and after the bump, dump the
+//! same extract with each, and `diff` the listings; equal listings say the migration moved bytes and
+//! not content. The version byte, the file length and every addressing field are left out, because a
+//! version bump is expected to change them. Tree shape is content here, so node and chunk counts are
+//! listed: a change in how chunks are laid out must not move a leaf.
 //!
 //! Usage: `obcm_diff <a.obcm> <b.obcm> [--max-examples N]`
+//!        `obcm_diff <map.obcm> --dump`
 //!        `obcm_diff <map.obcm> --dump`
 
 use std::collections::{HashMap, HashSet};
@@ -35,11 +30,9 @@ use obc_reader::{
 /// Canonical, hashable identity of a decoded feature (geometry in microdegrees).
 type FeatureKey = (u8, bool, Vec<(i32, i32)>, Vec<Vec<(i32, i32)>>);
 
-/// Canonical form of a closed ring, invariant to start vertex + winding: strip the
-/// closing duplicate, then take the lexicographically-smallest sequence over all
-/// rotations of the ring and its reversal. Used by `--canonical-polys` so equal
-/// polygons with different ring start/direction compare equal. Lines are never
-/// canonicalized (vertex order is meaningful).
+/// Canonical form of a closed ring, invariant to start vertex and winding: strip the closing
+/// duplicate, then take the lexicographically smallest sequence over all rotations of the ring and
+/// its reversal. Lines are never canonicalized, because vertex order is meaningful.
 fn canon_ring(ring: &[(i32, i32)]) -> Vec<(i32, i32)> {
     let mut pts = ring.to_vec();
     if pts.len() >= 2 && pts.first() == pts.last() {
@@ -155,9 +148,9 @@ fn dump(r: &Reader, path: &str) {
         println!("lod {i} features={total} distinct={}", lines.len());
     }
 
-    // POI section. There is no whole-section enumeration in the reader's API (the device only ever
-    // asks for nearest-N), so this lists the directory shape plus the nearest-16 of every category
-    // to the map's centre — a deterministic content probe over the records, not a full dump.
+    // POI section. The reader has no whole-section enumeration (the device only ever asks for
+    // nearest-N), so this lists the directory shape plus the nearest-16 of every category to the
+    // map's centre: a deterministic content probe over the records, not a full dump.
     let dir = r.poi_directory();
     println!("poi chunk_size={} hours_pool_count={}", dir.chunk_size, dir.hours_pool_count);
     for e in dir.entries.iter() {
@@ -185,7 +178,7 @@ fn dump(r: &Reader, path: &str) {
     }
 
     // Nav graph: the directory shape, the profile table, and every junction record. Bin-packed
-    // chunks can hand the same record to several leaves (spec §8.3), so dedup by node id.
+    // chunks can hand the same record to several leaves, so dedup by node id.
     let nav = r.nav_directory();
     println!("nav nodes={} chunks={} edge_chunks={}", nav.node_count, nav.chunk_count, nav.edge_chunk_count);
     for p in r.nav_profiles() {
@@ -249,11 +242,9 @@ fn dump(r: &Reader, path: &str) {
     println!("nav edges={}", edge_lines.len());
 }
 
-/// One direction of the per-LOD multiset difference: every key whose count in
-/// `src` exceeds its count in `other` (the excess present only in `src`). Prints up
-/// to `max_examples` of them with `symbol`/`label` (e.g. `-`/`only-in-A`) and
-/// returns `(total_excess, poly_excess, line_excess)` — split by the key's
-/// poly-vs-line bit (`k.1`).
+/// One direction of the per-LOD multiset difference: every key whose count in `src` exceeds its
+/// count in `other`. Prints up to `max_examples` of them with `symbol` and `label`, and returns
+/// `(total_excess, poly_excess, line_excess)`.
 fn directional_diff(
     src: &HashMap<FeatureKey, usize>,
     other: &HashMap<FeatureKey, usize>,
@@ -294,8 +285,8 @@ fn main() -> ExitCode {
             "--max-examples" => {
                 max_examples = it.next().and_then(|s| s.parse().ok()).unwrap_or(5);
             }
-            // Compare polygons up to ring rotation + winding. Lines still compare
-            // exactly. Strict (byte-order) mode is the default.
+            // Compare polygons up to ring rotation and winding. Lines still compare exactly, and
+            // strict byte-order mode is the default.
             "--canonical-polys" => canonical = true,
             // One file in, a canonical content listing out (see the module docs).
             "--dump" => dump_only = true,
@@ -396,10 +387,9 @@ fn main() -> ExitCode {
         check!(x.chunk_size == y.chunk_size, "lod[{i}].chunk_size a={} b={}", x.chunk_size, y.chunk_size);
     }
 
-    // Structural diffs are the hard failures; multiset diffs are reported with a
-    // line/polygon breakdown so a caller can accept a polygon-only residual (e.g.
-    // ring-winding under --canonical-polys is reconciled, leaving only GEOS
-    // simplify skew) while still requiring lines to be exact.
+    // Structural diffs are the hard failures; multiset diffs are reported with a line and polygon
+    // breakdown so a caller can accept a polygon-only residual while still requiring lines to be
+    // exact.
     let structural_ok = ok;
     let mut line_diffs = 0usize;
     let mut poly_diffs = 0usize;
@@ -426,9 +416,8 @@ fn main() -> ExitCode {
         }
     }
 
-    // Machine-readable summary for run_stage3.sh. `lod_poly_diffs` lets the gate
-    // assert that no-simplify LODs match exactly (any diff there is a real bug,
-    // not GEOS-version simplify skew).
+    // Machine-readable summary for the release gate. `lod_poly_diffs` lets it assert that
+    // no-simplify LODs match exactly, where any diff is a real bug rather than simplify skew.
     let lod_list: Vec<String> = lod_poly_diffs.iter().map(|v| v.to_string()).collect();
     println!(
         "SUMMARY structural_ok={} line_diffs={} poly_diffs={} lodpolys={}",

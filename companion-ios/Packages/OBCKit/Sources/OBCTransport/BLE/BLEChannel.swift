@@ -27,9 +27,9 @@ public struct BLEChannel: Sendable {
         try await channel.write(record)
     }
 
-    /// Reassembles one protocol-v4 stream record from CoreBluetooth's byte-stream presentation of
-    /// the CoC. The wire still carries exactly one record per SDU; this loop only handles partial
-    /// `InputStream` reads.
+    /// Reassembles one protocol-v4 stream record from CoreBluetooth's byte-stream presentation
+    /// of the CoC. The wire still carries exactly one record per SDU; this loop only handles
+    /// partial `InputStream` reads.
     public func receiveRecord() async throws -> Data {
         let header = try await readExactly(FlatStoreV4.streamHeaderLength)
         let b = header.startIndex
@@ -56,8 +56,8 @@ public struct BLEChannel: Sendable {
         return out
     }
 
-    /// Tear the underlying channel down (idempotent) — unblocks a peer parked on
-    /// backpressure and, on the real path, makes the device discard its partial.
+    /// Tear the underlying channel down. It unblocks a peer parked on backpressure and, on the
+    /// real path, makes the device discard its partial.
     public func close() async {
         await channel.close()
     }

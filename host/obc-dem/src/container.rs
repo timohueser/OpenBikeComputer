@@ -1,23 +1,22 @@
-//! Writing the OBCT container (`OBCT_Spec.md` §4): a 32-byte header, a row-major `uint32` offset
-//! directory over the cell rectangle, then the present cells' blocks.
+//! Writing the OBCT container: a 32-byte header, a row-major `uint32` offset directory over the
+//! cell rectangle, then the present cells' blocks.
 //!
-//! There is **one** layout for every OBCT container in the tree, because there is one format: a
-//! terrain *cell* is a shard whose rectangle is 1 × 1 (spec §4.1, principle 5), and since OBCM v14
-//! an assembled shard is also a region spliced into a map's tail (`OBCM_Spec.md` §1.3). Two code
-//! paths that each decided the layout would be the first place the three could drift.
+//! There is one layout for every OBCT container in the tree, because there is one format: a terrain
+//! cell is a shard whose rectangle is 1 × 1, and an assembled shard is also a region spliced into a
+//! map's tail. Two code paths that each decided the layout would be the first place the three could
+//! drift.
 //!
 //! So the layout lives in [`validate`], [`header_bytes`] and [`container_prefix`], and the two
-//! *emitters* are thin over it:
+//! emitters are thin over it:
 //!
 //! * [`ShardWriter`] streams a container whose presence it discovers as it goes — the baker's
 //!   position, since a cell turns out to be all-`NODATA` only once it has been sampled — and
 //!   patches its directory at the end, which needs a seek.
-//! * [`container_prefix`] serves a caller that knows every present square up front and cannot
-//!   seek, because it is splicing the container into a file it is streaming. It returns the
-//!   finished header and directory; the caller writes the present blocks in slot order behind it.
+//! * [`container_prefix`] serves a caller that knows every present square up front and cannot seek,
+//!   because it is splicing the container into a file it is streaming. It returns the finished
+//!   header and directory; the caller writes the present blocks in slot order behind it.
 //!
-//! `the_streamed_prefix_is_what_the_shard_writer_patches` compares the two byte-for-byte, which is
-//! what makes "one layout" a fact rather than a claim.
+//! `the_streamed_prefix_is_what_the_shard_writer_patches` compares the two byte-for-byte.
 //!
 //! Every byte fact — the magic, the field offsets, the absent sentinel, the block length — comes
 //! from [`obc_formats::obct`]. Nothing in this file transcribes the header table.
@@ -58,8 +57,8 @@ impl CellRect {
 /// patching the directory at the end.
 ///
 /// Streaming rather than assembling in memory because a single v1 cell block is 2 MiB and a
-/// continental shard is thousands of them. The writer holds one directory (`4 · rows · cols` bytes —
-/// ~2 KB for a DACH-shaped rectangle) and whatever the caller hands it, never the raster.
+/// continental shard is thousands of them. The writer holds one directory, a couple of kilobytes
+/// for a DACH-shaped rectangle, and whatever the caller hands it, never the raster.
 pub struct ShardWriter<W: Write + Seek> {
     out: W,
     block_len: u32,
@@ -68,7 +67,7 @@ pub struct ShardWriter<W: Write + Seek> {
     /// Directory entries in slot order; `DIR_ABSENT` until a block is written for that cell.
     directory: Vec<u32>,
     /// Next slot to be offered a block. Cells arrive in directory order, so the file ends up as a
-    /// directory followed by the raster in reading order (spec §4.4's SHOULD).
+    /// directory followed by the raster in reading order.
     next_slot: usize,
     /// Absolute offset the next block will start at.
     cursor: u32,
@@ -78,8 +77,8 @@ pub struct ShardWriter<W: Write + Seek> {
 }
 
 /// Everything about a container that is decided before a byte is written: the pairing is one OBCT
-/// permits, the rectangle is on the world grid, and the directory leaves room for a block behind it.
-/// Returns the block length at that pairing.
+/// permits, the rectangle is on the world grid, and the directory leaves room for a block behind
+/// it. Returns the block length at that pairing.
 ///
 /// Shared by both emitters below, so "is this container writable at all" is one answer rather than
 /// two that agree today.
@@ -95,11 +94,11 @@ fn validate(posting_log2: u8, cell_log2: u8, rect: CellRect) -> Result<u32, Stri
     if rect.min_i as u64 + rect.rows as u64 > axis || rect.min_j as u64 + rect.cols as u64 > axis {
         return Err(format!("cell rectangle {rect:?} runs off the world grid at 2^{cell_log2} µdeg"));
     }
-    // A `uint32` addresses the whole file, so the directory alone has to fit one — and it has to
-    // fit with room for at least one block behind it. The *blocks* are checked as they arrive
-    // (see [`ShardWriter::push`]) rather than against the rectangle's worst case: a wide rectangle
-    // that is mostly absent is a perfectly ordinary shard, and refusing it here because a
-    // hypothetically full one would overflow would reject files that are entirely writable.
+    // A `uint32` addresses the whole file, so the directory alone has to fit one, with room for at
+    // least one block behind it. The blocks are checked as they arrive rather than against the
+    // rectangle's worst case: a wide rectangle that is mostly absent is an ordinary shard, and
+    // refusing it here because a hypothetically full one would overflow would reject files that are
+    // entirely writable.
     let dir_end = HEADER_LEN as u64 + rect.slots() * DIR_ENTRY_LEN as u64;
     if dir_end + block_len as u64 > u32::MAX as u64 {
         return Err(format!(
@@ -110,7 +109,7 @@ fn validate(posting_log2: u8, cell_log2: u8, rect: CellRect) -> Result<u32, Stri
     Ok(block_len)
 }
 
-/// The 32-byte OBCT header (`OBCT_Spec.md` §4.2). The one transcription of that table in the tree.
+/// The 32-byte OBCT header. The one transcription of that table in the tree.
 fn header_bytes(posting_log2: u8, cell_log2: u8, rect: CellRect, surface: bool) -> [u8; HEADER_LEN] {
     let mut header = [0u8; HEADER_LEN];
     header[HDR_MAGIC..HDR_MAGIC + 4].copy_from_slice(&MAGIC);
@@ -122,27 +121,25 @@ fn header_bytes(posting_log2: u8, cell_log2: u8, rect: CellRect, surface: bool) 
     header[HDR_CELL_MIN_J..HDR_CELL_MIN_J + 4].copy_from_slice(&rect.min_j.to_le_bytes());
     header[HDR_CELL_ROWS..HDR_CELL_ROWS + 2].copy_from_slice(&rect.rows.to_le_bytes());
     header[HDR_CELL_COLS..HDR_CELL_COLS + 2].copy_from_slice(&rect.cols.to_le_bytes());
-    // The directory follows the header immediately, which is what a v1 producer MUST write —
-    // the field is explicit anyway so a reader follows it rather than the assumption.
+    // The directory follows the header immediately, which is what a v1 producer writes; the field
+    // is explicit anyway, so a reader follows it rather than the assumption.
     header[HDR_DIRECTORY_OFFSET..HDR_DIRECTORY_OFFSET + 4].copy_from_slice(&(HEADER_LEN as u32).to_le_bytes());
     // 24..32 stay zero: reserved, and a reader refuses the file if they are not.
     header
 }
 
-/// The container's fixed prefix — header and **final** offset directory — for a rectangle whose
+/// The container's fixed prefix — header and final offset directory — for a rectangle whose
 /// presence is known before any byte is written. `present[k]` is whether slot `k` carries a block,
 /// in the rectangle's own row-major order.
 ///
-/// [`ShardWriter`] discovers presence while it bakes (a cell turns out to be all-`NODATA` only once
-/// it has been sampled) and therefore patches its directory at the end, which needs a seek. An
-/// **assembler** is in the opposite position: it holds every downloaded cell before it starts, and
-/// it splices the container into the tail of an OBCM file it is *streaming* (`OBCM_Spec.md` §1.3),
-/// where there is no seek to be had. So the same container has to be emitable both ways.
+/// [`ShardWriter`] discovers presence while it bakes and therefore patches its directory at the
+/// end, which needs a seek. An assembler is in the opposite position: it holds every downloaded
+/// cell before it starts, and it splices the container into the tail of an OBCM file it is
+/// streaming, where there is no seek to be had.
 ///
 /// This is the half that could drift, and it is therefore the half that is shared: a caller writes
 /// this prefix and then the present blocks in slot order, and gets the bytes `ShardWriter` would
-/// have left behind. `the_streamed_prefix_is_what_the_shard_writer_patches` pins that byte-for-byte
-/// rather than leaving it as a claim.
+/// have left behind.
 pub fn container_prefix(posting_log2: u8, cell_log2: u8, rect: CellRect, present: &[bool]) -> Result<Vec<u8>, String> {
     container_prefix_with_surface(posting_log2, cell_log2, rect, present, false)
 }
@@ -180,7 +177,7 @@ pub fn container_prefix_with_surface(
             continue;
         }
         // The same bound `push` applies per block, applied to the whole plan at once: every present
-        // block's *end* has to be addressable by the `uint32` the directory is made of.
+        // block's end has to be addressable by the `uint32` the directory is made of.
         if cursor + block_len as u64 > u32::MAX as u64 {
             return Err(format!(
                 "this shard has grown past the uint32 offsets the directory is made of — {} present cells is too many at 2^{cell_log2} µdeg",
@@ -290,8 +287,8 @@ impl<W: Write + Seek> ShardWriter<W> {
     }
 
     /// Offer the next cell in directory order. `None` writes nothing and leaves the slot at the
-    /// absent sentinel — which is how a cell with no data at all is published (spec §4.3), and the
-    /// reason a bbox that overhangs coverage costs 4 bytes per uncovered cell rather than 2 MiB.
+    /// absent sentinel, which is how a cell with no data at all is published, and the reason a bbox
+    /// that overhangs coverage costs 4 bytes per uncovered cell rather than 2 MiB.
     pub fn push(&mut self, block: Option<&[u8]>) -> Result<(), String> {
         let slot = self.next_slot;
         if slot >= self.directory.len() {
@@ -308,7 +305,7 @@ impl<W: Write + Seek> ShardWriter<W> {
             let at = level.bound_offset(0, 0, level.samples_log2).expect("native cell root") as usize;
             self.cell_maxima[slot] = i16::from_le_bytes([block[at], block[at + 1]]);
         }
-        // The directory is made of `uint32` offsets, so this block's *end* has to be addressable —
+        // The directory is made of `uint32` offsets, so this block's end has to be addressable —
         // checked here, where the actual file length is known, rather than pessimistically at open.
         if self.cursor as u64 + self.block_len as u64 > u32::MAX as u64 {
             return Err(format!(
@@ -356,8 +353,8 @@ mod tests {
         vec![fill; len as usize]
     }
 
-    /// The smallest legal pairing (a cell exactly one tile wide) written as a 1 × 1 container: the
-    /// published-cell shape, byte for byte against the spec's §4.1 layout.
+    /// The smallest legal pairing, a cell exactly one tile wide, written as a 1 × 1 container: the
+    /// published-cell shape, byte for byte.
     #[test]
     fn a_one_by_one_container_is_header_directory_block() {
         let rect = CellRect { min_i: 7, min_j: 9, rows: 1, cols: 1 };
@@ -379,14 +376,14 @@ mod tests {
         assert!(bytes[36..].iter().all(|&b| b == 0xAB));
     }
 
-    /// **The two emitters are one layout.** [`container_prefix`] claims to return exactly what
+    /// The two emitters are one layout. [`container_prefix`] claims to return exactly what
     /// [`ShardWriter::finish`] would have patched in; this is that claim, checked byte-for-byte over
     /// a rectangle with present and absent slots in both orders, so a directory that started at the
     /// wrong cursor or skipped an absent slot's four bytes cannot pass.
     ///
-    /// It is the whole guarantee behind the streamed splice of `OBCM_Spec.md` §1.3: the assembler
-    /// writes this prefix into the middle of a map it cannot seek back into, and a container that
-    /// disagreed with the baker's by one entry would be a raster read at the wrong offsets.
+    /// It is the guarantee behind the streamed splice: the assembler writes this prefix into the
+    /// middle of a map it cannot seek back into, and a container that disagreed with the baker's by
+    /// one entry would be a raster read at the wrong offsets.
     #[test]
     fn the_streamed_prefix_is_what_the_shard_writer_patches() {
         let rect = CellRect { min_i: 3, min_j: 5, rows: 2, cols: 3 };
@@ -409,12 +406,12 @@ mod tests {
             assert_eq!(streamed, patched, "presence {present:?}");
         }
         // The prefix is the whole of what a seek would have fixed up, so it is exactly the header
-        // and the directory — never a byte of raster.
+        // and the directory, never a byte of raster.
         let prefix = container_prefix(9, 13, rect, &[false; 6]).unwrap();
         assert_eq!(prefix.len(), HEADER_LEN + 6 * DIR_ENTRY_LEN);
         // A presence plan that does not describe this rectangle is a caller bug, not a shorter file.
         assert!(container_prefix(9, 13, rect, &[false; 5]).is_err(), "one entry per slot");
-        // The pairing and rectangle refusals are the writer's own, reached through the same `validate`.
+        // The pairing and rectangle refusals are the writer's own, through the same `validate`.
         assert!(container_prefix(9, 12, rect, &[false; 6]).is_err(), "not a pairing OBCT permits");
     }
 
@@ -452,7 +449,7 @@ mod tests {
         assert!(streamed[index.offset as usize + index.bytes as usize..index.end() as usize].iter().all(|&b| b == 0));
     }
 
-    /// An absent cell costs its four directory bytes and nothing else, and the blocks that *are*
+    /// An absent cell costs its four directory bytes and nothing else, and the blocks that are
     /// present stay contiguous behind the directory.
     #[test]
     fn an_absent_cell_is_a_zero_slot_and_no_bytes() {
@@ -492,11 +489,11 @@ mod tests {
         assert!(ShardWriter::new(Cursor::new(Vec::new()), 9, 13, CellRect { min_i: last, min_j: 0, rows: 1, cols: 1 })
             .is_err());
         // A wide-but-sparse rectangle is fine. 64 × 64 v1 cells would be 8 GiB if every one were
-        // present, but a shard is not obliged to carry them — refusing it here would reject files
-        // that write perfectly well, so the uint32 bound is enforced per block as they arrive.
+        // present, but a shard is not obliged to carry them, so the uint32 bound is enforced per
+        // block as they arrive.
         let wide = CellRect { min_i: 0, min_j: 0, rows: 64, cols: 64 };
         assert!(ShardWriter::new(Cursor::new(Vec::new()), 9, 19, wide).is_ok());
-        // A directory so wide that no block could follow it inside a uint32 *is* refused, though.
+        // A directory so wide that no block could follow it inside a uint32 is refused, though.
         let vast = CellRect { min_i: 0, min_j: 0, rows: u16::MAX, cols: u16::MAX };
         assert!(ShardWriter::new(Cursor::new(Vec::new()), 9, 19, vast).is_err());
     }

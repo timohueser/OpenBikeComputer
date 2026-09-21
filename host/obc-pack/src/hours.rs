@@ -1,42 +1,27 @@
-//! `hours.rs` — parse OSM `opening_hours` into a compact normalized weekly
-//! schedule at pack time (issue #440, epic #439). The `opening_hours` grammar
-//! never touches the MCU: the device does a trivial weekday lookup on the baked
-//! blob (P3+).
+//! Parse OSM `opening_hours` into a compact normalized weekly schedule at pack time. The
+//! `opening_hours` grammar never touches the MCU: the device does a trivial weekday lookup on the
+//! baked blob.
 //!
-//! This is a **pragmatic subset parser**, deliberately dependency-free and fully
-//! deterministic (a maintained crate would drag a grammar + its own time model
-//! into the packer for patterns the real data — Monaco/Freiburg town shops —
-//! never exercises). It covers: weekday ranges/lists (`Mo-Fr`, `Mo,We,Fr`),
-//! `HH:MM-HH:MM` intervals, comma-separated intervals (split lunch), `;`-separated
-//! rules (both day-scoped and time-only), `24/7`, `off`/`closed`, bare intervals
-//! that apply to every day, and overnight wrap. Anything it can't model it
-//! **drops and flags** (see [`Schedule`] flags) rather than guessing.
+//! This is a pragmatic subset parser, deliberately dependency-free and fully deterministic. It
+//! covers weekday ranges and lists (`Mo-Fr`, `Mo,We,Fr`), `HH:MM-HH:MM` intervals, comma-separated
+//! intervals, `;`-separated rules (day-scoped or time-only), `24/7`, `off` and `closed`, bare
+//! intervals that apply to every day, and overnight wrap. Anything it cannot model it drops and
+//! flags (see [`Schedule`]) rather than guessing.
 //!
-//! ## Locked encoding (epic #439 planning, 2026-07-05 — do not re-litigate)
-//! - **Resolution 15 min.** A time-of-day is quarter-hours from midnight,
-//!   `0..=96` (`u8`; `96` = 24:00).
-//! - **Per weekday: up to 2 open intervals**, each `(open_q, close_q)`. Unused
-//!   slot = `(0, 0)`. **Closed day** = both slots `(0, 0)`. **24 h** = slot 0
-//!   `(0, 96)`, slot 1 `(0, 0)`. **Overnight** (`close_q <= open_q`, both nonzero)
-//!   wraps past midnight — stored as-is, never split across days.
-//! - **Schedule blob = 29 bytes:** `flags u8` + `7 days × 2 slots × (open_q u8,
-//!   close_q u8)`. Day order **Mon..Sun** (index 0 = Monday). `flags` bit 0 =
-//!   seasonal, bit 1 = truncated/dropped-rules; other bits reserved 0.
+//! The encoding: a time of day is quarter-hours from midnight, `0..=96`, where `96` is 24:00. Each
+//! weekday holds up to two open intervals. An unused slot is `(0, 0)`, so a closed day is both slots
+//! `(0, 0)`, 24 hours is slot 0 `(0, 96)`, and an overnight interval (`close_q <= open_q`, both
+//! nonzero) is stored as it is and never split across days. The blob is 29 bytes: `flags u8` then
+//! 7 days x 2 slots x `(open_q u8, close_q u8)`, Monday first.
 //!
-//! ## Representative week + rounding (documented choices)
-//! - **Representative week:** a rule carrying a month/date/season selector (e.g.
-//!   `Apr-Oct: Mo-Su 09:00-18:00`) is evaluated **as if in-season** — the
-//!   in-season intervals are baked and the **seasonal** flag is set. The device
-//!   ignores the flag in v1 (baked for a future season-aware pass, epic #439).
-//! - **Rounding:** each `HH:MM` is rounded to the nearest quarter-hour with
-//!   **round-half-to-even** (banker's rounding), the same house convention as the
-//!   packer's coordinate rounding. Pinned in [`tests::rounding_half_to_even`].
+//! A rule carrying a month, date or season selector is evaluated as if in season: the in-season
+//! intervals are baked and the seasonal flag is set. Each `HH:MM` is rounded to the nearest
+//! quarter-hour with round-half-to-even, the same convention as the packer's coordinate rounding.
 
 use std::collections::HashMap;
 
-// The normative hours-blob dimensions/flags are owned by `obc-formats`; imported under the
-// packer-local names this encoder reads (`BLOB_LEN` is also read by `serialize.rs`'s width assert,
-// hence `pub(crate)`). Not exported from the crate.
+// The normative hours-blob dimensions and flags are owned by `obc-formats`. `BLOB_LEN` is
+// `pub(crate)` because `serialize.rs` asserts its own width against it.
 pub(crate) use obc_formats::obcm::{
     POI_HOURS_BLOB_LEN as BLOB_LEN, POI_HOURS_DAYS as DAYS, POI_HOURS_FLAG_SEASONAL as FLAG_SEASONAL,
     POI_HOURS_FLAG_TRUNCATED as FLAG_TRUNCATED, POI_HOURS_SLOTS_PER_DAY as SLOTS_PER_DAY,
@@ -50,9 +35,8 @@ pub struct Interval {
     pub close_q: u8,
 }
 
-/// A normalized weekly schedule: seven days × up to two intervals, plus the
-/// seasonal/truncated flags. This is the structured form the packer keeps in
-/// memory; [`Schedule::encode`] renders the 29-byte blob P2 will pool + store.
+/// A normalized weekly schedule: seven days, up to two intervals each, plus the seasonal and
+/// truncated flags. [`Schedule::encode`] renders the 29-byte blob.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Schedule {
     /// `days[0]` = Monday .. `days[6]` = Sunday; each up to two intervals.
@@ -87,10 +71,9 @@ impl Schedule {
     }
 }
 
-/// Parse a raw OSM `opening_hours` value into a [`Schedule`], or `None` when the
-/// string is **fully** unparseable (nothing recognized) — the POI then has no
-/// hours (`hours_ref` will be none in P2). A partially-parseable string returns
-/// `Some` with the [`FLAG_TRUNCATED`] flag set for whatever was dropped.
+/// Parse a raw OSM `opening_hours` value into a [`Schedule`], or `None` when the string is fully
+/// unparseable, in which case the POI has no hours. A partially-parseable string returns `Some`
+/// with [`FLAG_TRUNCATED`] set for whatever was dropped.
 pub fn parse(raw: &str) -> Option<Schedule> {
     let raw = raw.trim();
     if raw.is_empty() {
@@ -138,10 +121,8 @@ enum RuleOutcome {
 
 /// Apply one `;`-delimited rule to the schedule in place.
 fn apply_rule(rule: &str, sched: &mut Schedule) -> RuleOutcome {
-    // A month/date/season selector prefixes the rule (`Apr-Oct: Mo-Su 09:00-18:00`)
-    // or stands as a bare month/date token. Bake a representative (in-season) week:
-    // strip the selector, evaluate the rest, and flag seasonal. If the whole rule
-    // is just a season selector with nothing after it, there's nothing to bake.
+    // A month, date or season selector prefixes the rule or stands as a bare token. Bake a
+    // representative in-season week: strip the selector, evaluate the rest, and flag seasonal.
     let rule = match strip_season_selector(rule) {
         SeasonStrip::None => rule,
         SeasonStrip::Stripped(rest) => {
@@ -161,9 +142,8 @@ fn apply_rule(rule: &str, sched: &mut Schedule) -> RuleOutcome {
     let sel = selector.trim();
     let body = body.trim();
 
-    // Public-/school-holiday and unsupported named selectors: `PH off` is a real
-    // closed signal we could honor, but we have no PH slot in the weekly blob, so
-    // any PH/SH rule is dropped (and flagged). Same for sunrise/sunset/week/easter.
+    // Public- and school-holiday selectors, and unsupported named ones: `PH off` is a real closed
+    // signal, but the weekly blob has no PH slot, so any such rule is dropped and flagged.
     if sel.eq_ignore_ascii_case("PH") || sel.eq_ignore_ascii_case("SH") {
         return RuleOutcome::Dropped;
     }
@@ -259,16 +239,12 @@ enum SeasonStrip<'a> {
 /// (in-season) week and flag seasonal.
 const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-/// If a rule carries a month/date/season selector, strip it and return the rest
-/// (the in-season body to bake). The common form is `<selector>: <body>` — e.g.
-/// `Apr-Oct: Mo-Su 09:00-18:00`. We only strip the `:`-delimited prefix so the
-/// weekday+interval body is evaluated cleanly; a bare month token with no colon
-/// (`Dec 25 off`) is treated as seasonal with the month word removed.
+/// If a rule carries a month, date or season selector, strip it and return the in-season body to
+/// bake. The common form is `<selector>: <body>`; a bare month token with no colon is treated as
+/// seasonal with nothing stripped.
 fn strip_season_selector(rule: &str) -> SeasonStrip<'_> {
-    // `<selector>: <body>` form: colon separates a date/season selector from the
-    // weekly rule. Only treat the prefix as a season selector when it actually
-    // mentions a month (so we don't mis-split, though `:` in opening_hours is only
-    // ever a date-range separator here).
+    // `<selector>: <body>` form. Only treat the prefix as a season selector when it mentions a
+    // month, so a `HH:MM` time is never mis-split.
     if let Some((prefix, rest)) = rule.split_once(':') {
         // Guard against `HH:MM` false positives: a time has digits either side of
         // the colon. A season prefix contains a month word.
@@ -276,14 +252,9 @@ fn strip_season_selector(rule: &str) -> SeasonStrip<'_> {
             return SeasonStrip::Stripped(rest);
         }
     }
-    // Bare month token anywhere with no colon selector (rare): flag seasonal but
-    // there's no clean in-season body to extract, so treat the whole thing as the
-    // body with the month stripped is unreliable — just signal seasonal + no strip
-    // and let the rule parse/drop normally.
+    // A bare month token with no colon selector is rare: flag seasonal, but there is no clean
+    // in-season body to extract, so keep the rule unchanged and let `apply_rule` handle it.
     if MONTHS.iter().any(|m| rule.split(|c: char| !c.is_ascii_alphanumeric()).any(|tok| tok == *m)) {
-        // Return the rule unchanged as the body but mark it seasonal via a strip
-        // of an empty prefix. We can't cleanly remove a bare month, so keep the
-        // rule and let apply_rule flag seasonal.
         return SeasonStrip::Stripped(rule);
     }
     SeasonStrip::None
@@ -297,7 +268,6 @@ fn split_selector(rule: &str) -> (&str, &str) {
     // Walk to the first space-delimited token that looks like a time/keyword.
     let mut i = 0;
     while i < bytes.len() {
-        // Skip leading spaces.
         while i < bytes.len() && bytes[i] == b' ' {
             i += 1;
         }
@@ -395,17 +365,15 @@ fn parse_time_q(s: &str) -> Option<u8> {
     if h > 23 {
         return None;
     }
-    // Minutes-from-midnight → quarter-hours, round-half-to-even (banker's), the
-    // house rounding convention. 15 min per quarter; a boundary exactly on 7.5 min
-    // rounds to the even quarter.
+    // Minutes from midnight to quarter-hours, round-half-to-even: 15 minutes per quarter, and a
+    // boundary exactly on 7.5 minutes rounds to the even quarter.
     let minutes = h * 60 + m;
     let q = round_half_even(minutes as f64 / 15.0);
     // 00:00..23:59 rounds into 0..=96 (23:52+ rounds up to 96 = 24:00).
     Some(q.min(96) as u8)
 }
 
-/// Round-half-to-even (banker's rounding), matching the packer's coordinate
-/// rounding convention.
+/// Round-half-to-even, matching the packer's coordinate rounding convention.
 fn round_half_even(x: f64) -> u32 {
     let floor = x.floor();
     let diff = x - floor;
@@ -425,17 +393,12 @@ fn round_half_even(x: f64) -> u32 {
     rounded as u32
 }
 
-/// Build the dedup pool P2 consumes: collapse identical 29-byte blobs to one
-/// unique entry, and return a per-POI index aligned to the input slice.
+/// Build the dedup pool: collapse identical 29-byte blobs to one unique entry and return a per-POI
+/// index aligned to the input slice.
 ///
-/// Returns `(pool, refs)` where `pool` is the unique-blob list (a POI's blob `i`
-/// is `pool[refs[k] as usize]` when `refs[k]` is `Some(i)`), and `refs[k]` is the
-/// pool index for input POI `k`, or `None` when that POI has no parseable hours.
-/// O(n) via a `HashMap` keyed on the 29 blob bytes.
-///
-/// The `hours` accessor lets the caller pass any POI-like slice (P2 passes the
-/// real `&[Poi]`); here it's generic so the pool builder stays decoupled from the
-/// `Poi` struct's other fields.
+/// Returns `(pool, refs)`, where a POI's blob is `pool[refs[k]]` when `refs[k]` is `Some`, and `None`
+/// when that POI has no parseable hours. The `hours` accessor keeps the pool builder decoupled from
+/// the `Poi` struct's other fields.
 pub fn build_hours_pool<T>(
     items: &[T],
     hours: impl Fn(&T) -> Option<&Schedule>,
@@ -667,9 +630,7 @@ mod tests {
         assert_eq!(parse_time_q("08:07"), Some(32));
         // 08:08 = 488 min = 32.533.. → rounds up to 33 (08:15).
         assert_eq!(parse_time_q("08:08"), Some(33));
-        // Exactly halfway: 00:07:30 isn't representable in HH:MM, but a quarter
-        // boundary at an odd/even quarter exercises the tie rule. 7.5 min = 0.5
-        // quarters → ties to even (0). 22.5 min = 1.5 quarters → ties to even (2).
+        // Exactly halfway: 7.5 min = 0.5 quarters ties to even (0), 22.5 min = 1.5 ties to even (2).
         assert_eq!(round_half_even(0.5), 0, "0.5 ties to even 0");
         assert_eq!(round_half_even(1.5), 2, "1.5 ties to even 2");
         assert_eq!(round_half_even(2.5), 2, "2.5 ties to even 2");

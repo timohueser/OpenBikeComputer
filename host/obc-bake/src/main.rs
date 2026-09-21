@@ -8,13 +8,9 @@
 //! obc-bake check-obcm-version [--catalog-url URL]
 //! ```
 //!
-//! `bake` and `publish` are separate commands on purpose: a bake is hours and may
-//! be resumed, re-run, or done on a different machine from the one holding the
-//! credentials. The tree in between is the interface, and it is exactly the tree
-//! `obc-pack catalog` walks.
-//!
-//! A bake resolves curated regions to grid cells, writes the catalog root and
-//! digest-pinned satellites, and leaves publishing as a separate resumable step.
+//! `bake` and `publish` are separate commands on purpose: a bake is hours and may be resumed,
+//! re-run, or done on a different machine from the one holding the credentials. The tree in between
+//! is the interface, and it is exactly the tree `obc-pack catalog` walks.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -223,10 +219,9 @@ fn run_bake(args: &[String]) -> Result<(), String> {
         let presets_dir = PathBuf::from(flags.get("presets-dir").unwrap_or("builder/presets"));
         return run_planet_bake(&flags, out, all_regions, &presets_dir);
     }
-    // Region ids are positional (`obc-bake bake … europe/germany europe/switzerland`),
-    // which also reads as "these regions
-    // are baked *together*" — and for cells that is not cosmetic, because co-baked
-    // neighbours are what complete each other's border cells.
+    // Region ids are positional, which also reads as "these regions are baked together" — and for
+    // cells that is not cosmetic, because co-baked neighbours are what complete each other's border
+    // cells.
     let wanted = positional;
     let regions: Vec<_> = if wanted.is_empty() {
         all_regions
@@ -245,9 +240,9 @@ fn run_bake(args: &[String]) -> Result<(), String> {
 
 /// Bake selected curated regions into the shared cell catalog.
 ///
-/// The schema is one packer config plus a revision and a band table; skins restyle it
-/// without changing a style id. The run ends by generating the catalog because a cell
-/// tree without its root and satellites is not something a consumer can read.
+/// The schema is one packer config plus a revision and a band table; skins restyle it without
+/// changing a style id. The run ends by generating the catalog because a cell tree without its root
+/// and satellites is not something a consumer can read.
 fn run_cell_bake(
     flags: &Flags,
     out: PathBuf,
@@ -255,13 +250,12 @@ fn run_cell_bake(
     presets_dir: &Path,
 ) -> Result<(), String> {
     let schema = obc_bake::presets::load_schema(presets_dir)?;
-    // Keep the small canonical renderer input locked to the schema before a
-    // potentially hours-long bake starts.
+    // Keep the small canonical renderer input locked to the schema before a potentially hours-long
+    // bake starts.
     obc_bake::previews::check_source(&schema.config)?;
     let skin_ids = flags.all("skin");
-    // Default: every skin in the directory. A hosted catalog's whole point is that the
-    // skins are free — publishing a subset by accident is the mistake worth avoiding,
-    // not publishing one too many.
+    // Default: every skin in the directory. A hosted catalog's whole point is that the skins are
+    // free, so publishing a subset by accident is the mistake worth avoiding.
     let loaded = obc_bake::presets::load_skins(presets_dir, (!skin_ids.is_empty()).then_some(&skin_ids))?;
     let skins: Vec<&obc_bake::presets::StyleDoc> = loaded.iter().collect();
 
@@ -278,12 +272,11 @@ fn run_cell_bake(
     let source_spec = flags.get("source").unwrap_or(obc_bake::source::GeofabrikExtracts::DEFAULT_BASE_URL);
     let source = obc_bake::source::from_spec(source_spec, &cache);
 
-    // The terrain stage runs FIRST, and automatically: contours are traced and the nav graph's
+    // The terrain stage runs first, and automatically: contours are traced and the nav graph's
     // per-edge ascents integrated from whatever terrain is in the tree, so a bake without it
-    // quietly produces a flatter map — the failure mode is silence, which is why opting *out*
-    // is the explicit flag. Incremental like everything else: a tree whose terrain band is
-    // current pays one skip-pass over the cells. The tree's own terrain.json keeps the lattice
-    // and revision identity across runs; only a virgin tree takes the defaults.
+    // quietly produces a flatter map — the failure mode is silence, which is why opting out is the
+    // explicit flag. Incremental like everything else: a tree whose terrain band is current pays
+    // one skip-pass over the cells.
     if !flags.has("no-terrain") {
         let doc_path = out.join(obc_bake::terrain::TERRAIN_DOC);
         let doc = if doc_path.is_file() {
@@ -396,9 +389,8 @@ fn run_planet_bake(
     };
     let cache = flags.get("cache").map(PathBuf::from).unwrap_or_else(default_cache_dir);
     let progress = obc_pack::progress::Progress::stdout();
-    // Fail before an 80+ GB transfer when the required source-sharding tool is
-    // unavailable. Tests inject the runner at the library boundary; the CLI uses
-    // the real executable (or OBC_OSMIUM for a deliberate alternate path).
+    // Fail before an 80+ GB transfer when the required source-sharding tool is unavailable. Tests
+    // inject the runner at the library boundary; the CLI uses the real executable.
     let runner = obc_bake::planet::OsmiumRunner::default();
     runner.check()?;
     let updater = obc_bake::planet::PyOsmiumUpdater::default();
@@ -603,24 +595,24 @@ fn run_terrain(args: &[String]) -> Result<(), String> {
     .run(&obc_pack::progress::Progress::stdout())?;
     print!("{}", summary.render());
 
-    // The catalog generator reads the tree's `schema.json` — the *cell* store's document, which a
-    // tree that has only ever been terrained does not have. Regenerating is right when the cells are
-    // already there (the terrain band has to reach the catalog) and a hard error at the very end of
-    // the whole bake when they are not, so it is gated on the file rather than attempted blind.
+    // The catalog generator reads the tree's `schema.json`, the cell store's document, which a tree
+    // that has only ever been terrained does not have. Regenerating is right when the cells are
+    // already there and a hard error at the very end of the whole bake when they are not, so it is
+    // gated on the file rather than attempted blind.
     let finished = if out.join("schema.json").exists() {
         finish_tree(&flags, &out)
     } else {
         println!("\nno `schema.json` in {} yet — bake the cells to generate the catalog", out.display());
         Ok(())
     };
-    // Unconditional, and before the `?`: the credit is a licence obligation of the data that was just
-    // written, so it cannot be something only a fully successful catalog pass gets to print.
+    // Unconditional, and before the `?`: the credit is a licence obligation of the data that was
+    // just written, so it cannot be something only a fully successful catalog pass gets to print.
     println!("\n{}", obc_elevation::COPERNICUS_ATTRIBUTION);
     finished
 }
 
-/// The catalog is generated even after a partial run: it is what `verify` reads,
-/// and a store that cannot be inspected is worse than one that visibly has holes.
+/// The catalog is generated even after a partial run: it is what `verify` reads, and a store that
+/// cannot be inspected is worse than one that visibly has holes.
 fn finish_tree(flags: &Flags, out: &Path) -> Result<(), String> {
     let base_url = flags
         .get("base-url")
@@ -696,9 +688,8 @@ fn run_publish(args: &[String]) -> Result<(), String> {
 
     let generated_at = flags.get("generated-at").map_or_else(obc_pack::catalog::now_timestamp, str::to_string);
     println!("publishing {tree} → {}{}", store.describe(), if dry_run { " (dry run)" } else { "" });
-    // R2 publishes are long enough that silence looks like a hang. Keep local
-    // directory publishes quiet unless explicitly requested, but always report
-    // progress for the real operator path.
+    // R2 publishes are long enough that silence looks like a hang. Local directory publishes stay
+    // quiet unless explicitly requested.
     let publish_opts = PublishOptions { dry_run, verbose: flags.has("verbose") || target == "r2" };
     let opts = CatalogOptions::new(&base_url, generated_at);
     let report = obc_bake::publish::publish(Path::new(tree), store.as_ref(), &opts, publish_opts)?;
@@ -729,8 +720,8 @@ fn run_guard(args: &[String]) -> Result<(), String> {
     }
 }
 
-/// Same cache root the packer and the builder use (`OBCM_CACHE_DIR`), so a
-/// developer's already-downloaded extracts are reused.
+/// Same cache root the packer and the builder use, so a developer's already-downloaded extracts are
+/// reused.
 fn default_cache_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("OBCM_CACHE_DIR") {
         return PathBuf::from(dir).join("geofabrik");

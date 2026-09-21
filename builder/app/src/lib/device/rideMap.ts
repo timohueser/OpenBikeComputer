@@ -1,22 +1,19 @@
 /**
- * The logbook map's clustering (#894 ride-library redesign): pure math, no Leaflet.
+ * The logbook map's clustering: pure math, no Leaflet.
  *
- * Zoomed out, the all-rides map does not draw twenty overlapping squiggles the size of ants — it
- * draws forest circles with counts, one per area, and a click zooms into that area. Zoomed in past
- * {@link CLUSTER_BELOW_ZOOM}, the circles dissolve into the actual tracks. The two never show at
- * once; the component reads {@link clustersAt} and draws exactly one of the two layers.
+ * Zoomed out, the all-rides map draws forest circles with counts, one per area, and a click zooms
+ * into that area. Zoomed in past {@link CLUSTER_BELOW_ZOOM}, the circles dissolve into the actual
+ * tracks. The two never show at once.
  *
  * The grouping is a **grid cluster in projected pixel space**: each ride is reduced to one
- * representative point (the track's midpoint — a ride is a line, and its middle is a better "where
- * was this" than its start, which for loops is the rider's front door), projected to Web-Mercator
- * pixels at the current zoom, and binned into ~{@link DEFAULT_CELL_PX}-pixel cells. Occupied cells
- * that touch (8-neighborhood) merge into one cluster, so a group of rides straddling a cell edge
- * reads as one badge rather than two badges two pixels apart. Because the projection scales with
- * zoom, the same rides separate into more clusters as the map zooms in — the grid *is* the
- * threshold behavior, and the cutover to real tracks is just the last step of it.
+ * representative point — the track's midpoint, a better "where was this" than its start, which for
+ * loops is the rider's front door — projected to Web-Mercator pixels at the current zoom, and binned
+ * into ~{@link DEFAULT_CELL_PX}-pixel cells. Occupied cells that touch merge into one cluster, so a
+ * group of rides straddling a cell edge reads as one badge. Because the projection scales with zoom,
+ * the same rides separate into more clusters as the map zooms in.
  *
- * Everything here is a pure function over `[lat, lon]` arrays so vitest can pin the behavior
- * (membership, counts, merging, the threshold) without a DOM or a tile server.
+ * Everything here is a pure function over `[lat, lon]` arrays, so the behaviour can be pinned
+ * without a DOM or a tile server.
  */
 
 /** One ride as the map needs it: its key (for hover/click identity) and its preview track. */
@@ -42,7 +39,7 @@ export interface RideCluster {
 /** Below this Leaflet zoom the map shows clusters; at or above it, the tracks themselves. */
 export const CLUSTER_BELOW_ZOOM = 10;
 
-/** ~60 px cells: two badges can get no closer than a badge's own diameter. */
+/** A chosen ~60 px cell: two badges can get no closer than a badge's own diameter. */
 export const DEFAULT_CELL_PX = 60;
 
 /** Whether `zoom` is in cluster territory. The component's one branch. */
@@ -140,10 +137,10 @@ export function clusterRides(
 }
 
 /**
- * Known limit: a track crossing the antimeridian (lon jumping ±180) makes its cluster's bounds
- * span most of the world, so a badge click zooms way out instead of in. Left as-is deliberately —
- * unwrapping longitudes is real complexity for a case a bikepacking track effectively never hits,
- * and the failure is a wrong zoom, not a wrong ack or a lost ride.
+ * Known limit: a track crossing the antimeridian makes its cluster's bounds span most of the world,
+ * so a badge click zooms way out instead of in. Left as-is deliberately — unwrapping longitudes is
+ * real complexity for a case a bikepacking track effectively never hits, and the failure is a wrong
+ * zoom, not a lost ride.
  */
 function toCluster(members: ReadonlyArray<{ ride: RideTrack; rep: readonly [number, number] }>): RideCluster {
     let south = Infinity;

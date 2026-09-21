@@ -2,16 +2,8 @@ import SwiftUI
 import OBCDomain
 import OBCTransport
 
-/// The route-detail screen (B4) in the finalized **profile layout**: track hero
-/// (waypoints pinned as numbered markers) → title (pencil = H12) → inline stat
-/// strip → Waypoints dropdown (W1, folds out in place) → elevation profile →
-/// actions **inline in the scroll** (design rule: no floating/sticky button).
-/// One view, three dressings — E2 planned, E3 tracked, E1 import landing
-/// (framed by `ImportLandingView`).
-///
-/// What the actions *open* stays seams the composition root wires: upload →
-/// the B5 sheet, delete → pop after `MainScreenModel.deleteRoute`, save →
-/// `addImportedRoute`.
+/// The detail screen for a route or ride. One view, three dressings:
+/// planned, tracked, and imported.
 public struct RouteDetailView: View {
     @Bindable private var model: RouteDetailModel
     private let deviceName: String
@@ -22,9 +14,7 @@ public struct RouteDetailView: View {
     private let onSaveToPlanned: (() -> Void)?
     private let noDevicePaired: Bool
     private let onPair: (() -> Void)?
-    /// An optional row shown above the imported-dressing actions (E1) — the TR7
-    /// "Add to trip" row the import landing injects; `nil` on E2/E3 and when no
-    /// trip filing is offered.
+    /// An optional row shown above the actions in the imported dressing.
     private let importAccessory: AnyView?
 
     @State private var renameShown = false
@@ -134,18 +124,11 @@ public struct RouteDetailView: View {
         .task { model.start() }
     }
 
-    // MARK: Pieces
-
-    /// Whether the hero can open the full interactive map: real geometry **and**
-    /// a network path (offline keeps the grid, no tap — never a blank map). #294.
+    /// Offline keeps the grid and no tap: a map with no network path is blank.
     private var canExpandMap: Bool {
         isOnline && !model.mapCoordinates.isEmpty
     }
 
-    /// The track hero — a basemap when online, the grid otherwise, with the
-    /// route's waypoints pinned as numbered markers either way. When a map is
-    /// available, tapping anywhere on it opens the full-screen `TrackMapView`
-    /// (no separate expand affordance — the whole hero is the tap target).
     @ViewBuilder
     private var hero: some View {
         let preview = MapTrackPreviewView(
@@ -161,8 +144,7 @@ public struct RouteDetailView: View {
         if canExpandMap {
             Button { mapShown = true } label: {
                 preview
-                    // The map ignores hits (the tap is ours), so make the whole
-                    // hero the button's tap target.
+                    // The map ignores hits, so the whole hero is the tap target.
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -182,7 +164,6 @@ public struct RouteDetailView: View {
         )
     }
 
-    /// The E1 provenance line above the hero — mono uppercase in coral.
     private func importedBanner(_ line: String) -> some View {
         HStack(spacing: 7) {
             Image(systemName: "square.and.arrow.up")
@@ -234,8 +215,7 @@ public struct RouteDetailView: View {
         .padding(.bottom, 12)
     }
 
-    /// E3's connected-services sync block — shipped coming-soon; the per-ride
-    /// Upload affordance is the designed seam (no-op until services land).
+    /// Connected services. The affordance is inert until the services land.
     private var servicesBlock: some View {
         OBCConnectedServicesBlock(services: [
             OBCServiceStatus(
@@ -257,8 +237,7 @@ public struct RouteDetailView: View {
             case .planned:
                 uploadButton
                 if let onReverse {
-                    // #503 — a whole-route flip lands a reversed copy alongside
-                    // the original; the rider keeps both directions.
+                    // Reverse lands a copy; the original direction stays.
                     Button("Reverse", action: onReverse)
                         .buttonStyle(.obcGhost)
                         .accessibilityIdentifier("detail.reverse")
@@ -266,8 +245,8 @@ public struct RouteDetailView: View {
                 Button("Delete route") { deleteConfirmShown = true }
                     .buttonStyle(.obcDestructive)
                     .accessibilityIdentifier("detail.delete")
-                    // Anchored to the button itself — hung off the scroll root
-                    // the H1 dialog pops up mid-screen over the title.
+                    // Anchored to the button: on the scroll root the dialog pops
+                    // up mid-screen.
                     .obcDestructiveConfirm(
                         "Delete \"\(model.name)\"?",
                         isPresented: $deleteConfirmShown,
@@ -276,9 +255,8 @@ public struct RouteDetailView: View {
                         onConfirm: { onDelete?() }
                     )
             case .imported where noDevicePaired:
-                // H4 — a share can arrive before pairing: the route still
-                // saves; upload waits until a device exists. A trip is app-local,
-                // so the Add-to-trip row works with no device just the same.
+                // A share can arrive before pairing: the route saves now and
+                // uploads later. Trips are app-local, so Add-to-trip still works.
                 importAccessory
                 OBCInlineBanner(
                     systemImage: "antenna.radiowaves.left.and.right.slash",
@@ -304,8 +282,7 @@ public struct RouteDetailView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.top, 2)
             case .tracked:
-                // The services block above carries the per-ride upload; delete
-                // matches the planned dressing (one-tap, so it confirms via H1).
+                // The services block above carries the per-ride upload.
                 Button("Delete ride") { deleteConfirmShown = true }
                     .buttonStyle(.obcDestructive)
                     .accessibilityIdentifier("detail.delete")
@@ -321,10 +298,6 @@ public struct RouteDetailView: View {
         .padding(.top, 20)
     }
 
-    /// Upload ↔ Update ↔ up-to-date, off the proven device-copy state: a fresh
-    /// route uploads, a changed one (rename, re-import) **updates the copy in
-    /// place**, and a byte-identical one has nothing to push — the button says
-    /// so and stays disabled. Link-bound either way (S4: dims with the link).
     private var uploadButton: some View {
         let state = model.deviceCopyState
         return Button {
@@ -349,19 +322,14 @@ public struct RouteDetailView: View {
         return "Waypoints"
     }
 
-    // No message under the rename title — what a rename does is obvious. The
-    // name still propagates everywhere (device on next upload, syncs, services).
     private var renameTitle: String {
         if case .tracked = model.dressing { return "Rename ride" }
         return "Rename route"
     }
 }
 
-/// E1 — the import landing: the same detail body framed by **Cancel / Save**
-/// chrome. Presented full-screen by the composition root when a route file
-/// decodes (Files pick, share sheet, or the `-OBCImportSample` hook). With no
-/// device paired it wears the H4 framing instead — the no-device banner plus
-/// **Save to Planned** / **Pair a device** in place of Upload.
+/// The import landing: the detail body framed by Cancel and Save chrome.
+/// Shown full-screen when a route file decodes.
 public struct ImportLandingView: View {
     private let model: RouteDetailModel
     private let deviceName: String
@@ -370,8 +338,6 @@ public struct ImportLandingView: View {
     private let onCancel: () -> Void
     private let noDevicePaired: Bool
     private let onPair: () -> Void
-    /// The TR7 "Add to trip" row, injected above the E1 actions (`nil` = no
-    /// trip filing offered).
     private let importAccessory: AnyView?
 
     public init(
@@ -425,8 +391,7 @@ public struct ImportLandingView: View {
 
 #if DEBUG
 #Preview("E2 · planned") {
-    // Preview-only placeholder data (OBCUI can't import OBCMock — see the app
-    // target's RootView previews for the transport-driven screens).
+    // OBCUI cannot import OBCMock, so previews use placeholder data.
     NavigationStack {
         RouteDetailView(
             model: RouteDetailModel(
@@ -463,7 +428,6 @@ public struct ImportLandingView: View {
     }
 }
 
-/// Inert transport for `#Preview` construction only.
 private struct PreviewNoopTransport: DeviceLink, DeviceObjects {
     var state: AsyncStream<ConnectionState> { AsyncStream { $0.finish() } }
     func connect() async throws {}

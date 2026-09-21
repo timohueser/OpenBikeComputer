@@ -2,41 +2,35 @@ import SwiftUI
 import OBCDomain
 import OBCTransport
 
-/// The **trip page** (TR6) — behind a trip card in the routes list. Header:
-/// the trip name + summed stats and the primary **Upload trip** action (wired in
-/// TR8; disabled here). Below: the member routes as the **same** route cards as
-/// everywhere, in stage order, each tinted with its palette color; a tap opens
-/// the ordinary `RouteDetailView`. The overflow menu carries Rename, Reorder
-/// stages (drag), Remove from trip (per stage), and Delete trip… (Ungroup vs
-/// Delete trip & routes).
+/// The trip page, behind a trip card in the routes list. The header carries the trip name, the
+/// summed stats and the Upload trip action; below it the member routes appear as the same route
+/// cards as everywhere, in stage order, each tinted with its palette colour. The overflow menu
+/// carries Rename, Reorder stages, Remove from trip and Delete trip.
 ///
-/// Driven straight off `MainScreenModel` (the `RecentlyDeletedView` idiom): the
-/// model owns the trip edits and the library; this view binds them. It pops
-/// itself (`onClose`) the moment the trip dissolves or is deleted.
+/// Driven straight off `MainScreenModel`: the model owns the trip edits and the library, and this
+/// view binds them. It pops itself the moment the trip dissolves or is deleted.
 public struct TripDetailView: View {
     @Bindable private var model: MainScreenModel
     private let tripID: TripID
     private let onSelectRoute: (RouteSummary) -> Void
     private let onClose: () -> Void
 
-    /// Reorder mode (drag handles) — a plain flag mapped to `\.editMode` on iOS
-    /// (that environment key is unavailable on the macOS host the package's
-    /// `swift test` also builds for).
+    /// Reorder mode: a plain flag mapped to `\.editMode` on iOS, because that environment key is
+    /// unavailable on the macOS host the package's `swift test` also builds for.
     @State private var isReordering = false
     @State private var renameShown = false
     @State private var renameDraft = ""
     @State private var deleteDialogShown = false
-    /// The whole-trip upload sheet's driver (TR8), created once at the Upload tap
-    /// (a model built inline in the `.sheet` closure would rebuild every body
-    /// pass, restarting the queue).
+    /// The whole-trip upload sheet's driver, created once at the Upload tap. A model built inline
+    /// in the `.sheet` closure would rebuild on every body pass and restart the queue.
     @State private var tripUploadModel: TripUploadModel?
-    /// Upload tapped, catalog re-read in flight (`prepareTripUpload`) — debounces
-    /// the button until the sheet's driver exists.
+    /// Upload tapped with the catalog re-read in flight: it debounces the button until the sheet's
+    /// driver exists.
     @State private var isPreparingUpload = false
-    /// A pending "remove the last stage" — dissolving the trip needs an inline
-    /// confirm (the trip is created with ≥ 1 route; emptying it removes it).
+    /// A pending "remove the last stage": dissolving the trip needs an inline confirm, because a
+    /// trip is created with at least one route and emptying it removes it.
     @State private var dissolveConfirmStage: RouteID?
-    /// The full-screen interactive trip map (the route detail's hero idiom).
+    /// The full-screen interactive trip map.
     @State private var mapShown = false
 
     @Environment(\.obcIsOnline) private var isOnline
@@ -81,21 +75,18 @@ public struct TripDetailView: View {
                         Label("Remove", systemImage: "minus.circle")
                     }
                 }
-                // Clip BOTH long-press lift previews — the context menu's and the
-                // reorder drag's — to the card's own rounded shape, exactly as the
-                // main screen's route rows do; without this the system snapshots
-                // the whole rectangular row and the card floats on a stark white
-                // slab. (iOS-only kind; macOS is the test host.)
+                // Clip both long-press lift previews, the context menu's and the reorder drag's,
+                // to the card's own rounded shape, exactly as the main screen's route rows do.
+                // Without this the system snapshots the whole rectangular row and the card floats
+                // on a stark white slab. iOS-only kind; macOS is the test host.
                 #if os(iOS)
                 .contentShape(
                     [.contextMenuPreview, .dragPreview],
                     RoundedRectangle(cornerRadius: OBCTheme.radiusCard)
                 )
                 #endif
-                // The same long-press affordance as the main screen's cards: a
-                // rounded lift with a small menu (the reorder drag still starts
-                // from the lift by moving, and the overflow's explicit reorder
-                // mode is untouched).
+                // The same long-press affordance as the main screen's cards: a rounded lift with
+                // a small menu. The reorder drag still starts from the lift by moving.
                 .contextMenu {
                     Button {
                         onSelectRoute(stage)
@@ -164,8 +155,7 @@ public struct TripDetailView: View {
         } message: { _ in
             Text("The route goes back to your top-level list and the trip is dissolved.")
         }
-        // The trip vanished under us (last stage removed, deleted, or every
-        // member route deleted elsewhere) — leave the page.
+        // The trip vanished under us, so leave the page.
         .onChange(of: model.trips) { _, _ in
             if model.trip(tripID) == nil { onClose() }
         }
@@ -181,8 +171,8 @@ public struct TripDetailView: View {
 
     // MARK: Header
 
-    /// The stages as colored preview tracks — the hero map's and the full-screen
-    /// map's shared input (palette color by stage index, the stage rows' rule).
+    /// The stages as coloured preview tracks: the shared input of the hero map and the full-screen
+    /// map, with the palette colour by stage index.
     private var previewStages: [MultiTrackPreviewView.Stage] {
         stages.enumerated().map { index, summary in
             MultiTrackPreviewView.Stage(
@@ -192,15 +182,15 @@ public struct TripDetailView: View {
         }
     }
 
-    /// The hero can expand to the interactive map when there's real geometry
-    /// and a network path — the route detail's #294 rule, verbatim.
+    /// The hero can expand to the interactive map when there is real geometry and a network path,
+    /// the route detail's rule verbatim.
     private var canExpandMap: Bool {
         isOnline && previewStages.contains { !$0.coordinates.isEmpty }
     }
 
-    /// The whole-trip hero map: every stage in its palette color, above the
-    /// stat strip. Tapping it (online, with geometry) opens the full-screen
-    /// interactive map — the same affordance as the route detail's hero.
+    /// The whole-trip hero map: every stage in its palette colour, above the stat strip. Tapping
+    /// it, online and with geometry, opens the full-screen interactive map, the same affordance as
+    /// the route detail's hero.
     @ViewBuilder
     private var heroMap: some View {
         let preview = MultiTrackPreviewView(stages: previewStages)
@@ -208,8 +198,8 @@ public struct TripDetailView: View {
 
         if canExpandMap {
             Button { mapShown = true } label: {
-                // The preview ignores hits (the tap is ours) — make the whole
-                // hero the tap target.
+                // The preview ignores hits, because the tap is ours, so make the whole hero the
+                // tap target.
                 preview.contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -221,12 +211,10 @@ public struct TripDetailView: View {
     }
 
     private var tripMapCover: some View {
-        // The interactive map draws each stage's FULL tracklog (the #294
-        // follow-up rule: never the downsampled preview when zooming is on
-        // offer), falling back to the preview's coordinates for a record whose
-        // geometry didn't survive. The summaries ride along so a tap on a
-        // segment raises its callout; Open route closes the cover and pushes
-        // the stage's ordinary detail page.
+        // The interactive map draws each stage's full tracklog, never the downsampled preview when
+        // zooming is on offer, falling back to the preview's coordinates for a record whose
+        // geometry did not survive. The summaries ride along so a tap on a segment raises its
+        // callout, and Open route closes the cover and pushes the stage's ordinary detail page.
         TrackMapView(
             stages: stages.enumerated().map { index, summary in
                 MultiTrackPreviewView.Stage(
@@ -261,12 +249,10 @@ public struct TripDetailView: View {
             ])
             .accessibilityIdentifier("trip.stats")
 
-            // Primary action (TR8): one tap pushes the whole trip. Link-bound —
-            // dims when disconnected; disabled when the trip is already fully up
-            // to date on the device (nothing to send). The tap re-reads the
-            // device catalogs first (`prepareTripUpload`) so a retry after a
-            // failed upload plans against what actually landed — never a
-            // duplicate-minting plan cut from a pre-failure cache.
+            // The primary action: one tap pushes the whole trip. Link-bound, so it dims when
+            // disconnected, and disabled when the trip is already fully up to date. The tap
+            // re-reads the device catalogs first, so a retry after a failed upload plans against
+            // what actually landed and never mints a duplicate from a pre-failure cache.
             Button {
                 guard !isPreparingUpload else { return }
                 isPreparingUpload = true
@@ -283,8 +269,7 @@ public struct TripDetailView: View {
         }
     }
 
-    /// Upload is offered while connected and the trip isn't already fully current
-    /// on the device (an outdated / not-on-device trip has something to push).
+    /// Upload is offered while connected and the trip is not already fully current on the device.
     private var canUploadTrip: Bool {
         model.connection == .connected && model.tripOnDeviceState(tripID) != .upToDate
     }
@@ -329,18 +314,17 @@ public struct TripDetailView: View {
     }
 
     private func deleteStages(at offsets: IndexSet) {
-        // Resolve offsets to ids BEFORE mutating: `stages` is computed off the
-        // live model, so after the first removal the remaining offsets would
-        // point at shifted rows. Each id then goes through the same last-stage
-        // guard as the swipe action.
+        // Resolve offsets to ids before mutating: `stages` is computed off the live model, so
+        // after the first removal the remaining offsets would point at shifted rows. Each id then
+        // goes through the same last-stage guard as the swipe action.
         let ids = offsets.compactMap { $0 < stages.count ? stages[$0].id : nil }
         for id in ids {
             attemptRemove(id)
         }
     }
 
-    /// Remove a stage — directly when the trip keeps at least one, or via the
-    /// inline dissolve confirm when it's the last.
+    /// Remove a stage: directly when the trip keeps at least one, or through the inline dissolve
+    /// confirm when it is the last.
     private func attemptRemove(_ routeID: RouteID) {
         if (trip?.stageIDs.count ?? 0) <= 1 {
             dissolveConfirmStage = routeID
@@ -358,6 +342,6 @@ public struct TripDetailView: View {
 }
 
 extension String {
-    /// The string wrapped in typographic double quotes — the dialog-title idiom.
+    /// The string wrapped in typographic double quotes, the dialog-title idiom.
     fileprivate var quoted: String { "\u{201C}\(self)\u{201D}" }
 }

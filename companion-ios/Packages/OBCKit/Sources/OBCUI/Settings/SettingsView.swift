@@ -2,21 +2,16 @@ import SwiftUI
 import OBCDomain
 import OBCTransport
 
-/// The Settings screen (B8, design G): grouped iOS lists — Device management
-/// up top, a firmware/OTA section present but **marked coming soon**, the
-/// clearly-future connected-services seam (disabled), and About. Nothing here
-/// implies a cloud or account (epic non-negotiable; the About footer says so
-/// in as many words).
+/// The Settings screen: device management, a firmware section, the connected-services
+/// seam, and About. Nothing here implies a cloud or an account.
 public struct SettingsView: View {
     @Bindable private var model: SettingsModel
-    /// Push the firmware-update screen (S7). Wired by the composition root to the
-    /// navigation path; `nil` keeps the Firmware row a coming-soon placeholder
-    /// (previews / any wiring that doesn't host the update screen).
+    /// Push the firmware-update screen. `nil` keeps the Firmware row a coming-soon
+    /// placeholder (previews, and any wiring that does not host the update screen).
     private let onOpenFirmwareUpdate: (() -> Void)?
 
-    /// Debug-only: the hidden second entry into the mock dev panel (B1P's
-    /// deferral) — five taps on the App version row. `nil` in Release wiring,
-    /// where the gesture goes nowhere.
+    /// Debug-only: five taps on the App version row open the mock dev panel. `nil` in
+    /// Release wiring, where the gesture goes nowhere.
     private let onOpenDevPanel: (() -> Void)?
 
     @State private var renameShown = false
@@ -57,7 +52,6 @@ public struct SettingsView: View {
         #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
         #endif
-        // H3 — shared text-field alert (same component as the H12 route rename).
         .obcRenameAlert(
             "Rename device",
             isPresented: $renameShown,
@@ -65,8 +59,8 @@ public struct SettingsView: View {
             message: "Shown across the app and on the device.",
             onSave: { _ = model.rename(to: renameDraft) }
         )
-        // The rename's config write failed (#361): say so once, plainly — the
-        // reconcile pass pushes the name on the next connect, no action needed.
+        // The rename's config write failed: say so once. The reconcile pass pushes the
+        // name on the next connect, so no action is needed.
         .obcToast(
             isPresented: $model.renameWriteFailed,
             systemImage: "exclamationmark.triangle",
@@ -77,7 +71,7 @@ public struct SettingsView: View {
         .task { model.start() }
     }
 
-    // MARK: Device (G + H2/H3)
+    // MARK: Device
 
     private var deviceGroup: some View {
         OBCGroupedSection(
@@ -104,8 +98,8 @@ public struct SettingsView: View {
                 showsDivider: false,
                 action: { forgetShown = true }
             )
-            // H2 hangs off the row, not the scroll root — confirmationDialog
-            // anchors to the attached view on iOS 26.
+            // Hangs off the row, not the scroll root: confirmationDialog anchors to
+            // the attached view on iOS 26.
             .obcDestructiveConfirm(
                 "Forget \(model.deviceName)?",
                 isPresented: $forgetShown,
@@ -116,7 +110,6 @@ public struct SettingsView: View {
         }
     }
 
-    /// The identity row: name over the live status line, firmware trailing.
     private var deviceRow: some View {
         HStack(spacing: 12) {
             OBCIconTile(systemImage: "flipphone", color: OBCTheme.forest)
@@ -142,7 +135,7 @@ public struct SettingsView: View {
             OBCTheme.screenLine.frame(height: 1).padding(.leading, 56)
         }
     }
-    // MARK: Firmware (coming soon)
+    // MARK: Firmware
 
     private var firmwareGroup: some View {
         OBCGroupedSection("Firmware", footer: firmwareFooter) {
@@ -162,7 +155,7 @@ public struct SettingsView: View {
                     comingSoon: true
                 )
             }
-            // #773 U5 — the one switch behind the launch sheet and the background check.
+            // The one switch behind the launch sheet and the background check.
             OBCListRow(
                 icon: "arrow.clockwise",
                 iconColor: OBCTheme.water,
@@ -189,9 +182,6 @@ public struct SettingsView: View {
         }
     }
 
-    /// The footer carries #773's privacy footnote verbatim in spirit: the check is a plain
-    /// anonymous request for a public file, and nothing about the device is sent. It is a
-    /// requirement of the epic, not a reassurance we invented, so it lives where the switch is.
     private var firmwareFooter: String {
         guard onOpenFirmwareUpdate != nil else {
             return "OTA updates will arrive in a later release. For now, flash from the desktop tool."
@@ -201,7 +191,7 @@ public struct SettingsView: View {
             + "and nothing about your device or your rides is sent."
     }
 
-    // MARK: Connected services (the B7 seam, disabled)
+    // MARK: Connected services
 
     private var servicesGroup: some View {
         OBCGroupedSection(
@@ -229,7 +219,6 @@ public struct SettingsView: View {
                 disabled: true,
                 showsDivider: false
             ) {
-                // The future B7 seam: present but non-functional by design.
                 Toggle("Auto-sync on import", isOn: .constant(false))
                     .labelsHidden()
                     .disabled(true)
@@ -259,7 +248,6 @@ public struct SettingsView: View {
                 label: "App version",
                 value: Self.appVersion,
                 showsDivider: false,
-                // The hidden dev-panel entry (Debug wiring only): five taps.
                 action: onOpenDevPanel == nil ? nil : {
                     versionTaps += 1
                     if versionTaps >= 5 {
@@ -271,8 +259,7 @@ public struct SettingsView: View {
         }
     }
 
-    /// "1.0 (build 12)" from the app bundle — the package previews show the
-    /// preview host's numbers, which is fine.
+    /// "1.0 (build 12)" from the app bundle.
     private static var appVersion: String {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
             as? String ?? "1.0"
@@ -283,8 +270,7 @@ public struct SettingsView: View {
 
 #if DEBUG
 #Preview("Settings (G)") {
-    // Preview-only placeholder wiring (OBCUI can't import OBCMock — see the
-    // app target's RootView previews for the transport-driven screens).
+    // OBCUI cannot import OBCMock, so previews use placeholder wiring.
     NavigationStack {
         SettingsView(model: SettingsModel(
             transport: PreviewSettingsTransport(),
@@ -293,8 +279,6 @@ public struct SettingsView: View {
     }
 }
 
-/// Inert transport for `#Preview` construction only — serves the design's
-/// identity (Trailhead · 82% · v0.4.2) and nothing else.
 private struct PreviewSettingsTransport: DeviceLink, DeviceBattery, DeviceConfiguration, DeviceBonding {
     var state: AsyncStream<ConnectionState> {
         AsyncStream { $0.yield(.connected); $0.finish() }

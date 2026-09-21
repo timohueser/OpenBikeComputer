@@ -9,9 +9,8 @@ import OBCTransport
 @MainActor @Suite struct LibraryScopingE2ETests {
     // MARK: The stub device
 
-    /// A device with a mutable identity (serial, storeID) and ride store; its
-    /// `listRides()` mints ids scoped to the identity the *last `deviceInfo()`
-    /// read* returned — the same order-of-truth as the real transport.
+    /// A device with a mutable identity and ride store. Its `listRides()` mints ids scoped to
+    /// the identity the last `deviceInfo()` read returned, like the real transport.
     final class ScopedStubDevice: DeviceLink, DeviceBattery, DeviceObjects, DeviceClock,
         @unchecked Sendable {
         private let stateMulticast = AsyncMulticast<ConnectionState>(.connected)
@@ -68,7 +67,7 @@ import OBCTransport
         }
         func deleteRoute(_ id: DeviceObjectID) async throws {}
         func rideDetail(_ id: RideID) async throws -> RideDetail { throw DeviceError.readFailed }
-        /// Scoped minting, like `BLETransport.listRides()` (#769).
+        /// Scoped minting, like `BLETransport.listRides()`.
         func listRides() async throws -> RideCatalog {
             let (rides, scope) = lock.withLock {
                 (_rides, _storeID.map { LibraryScope(serial: _serial, storeID: $0) })
@@ -258,7 +257,6 @@ import OBCTransport
         #expect(library.rideSummaries().isEmpty, "nothing synced under an unknown era")
         #expect(model.connectedScope == nil)
 
-        // The next connection reads identity and sync works.
         device.setFailIdentityRead(false)
         device.setIdentity(storeID: store1)
         device.bounce()
@@ -307,8 +305,8 @@ import OBCTransport
 }
 
 extension Ride {
-    /// The same ride under the id the wire request used — what a real device
-    /// does when it serves an object (ids live outside the payload).
+    /// The same ride under the id the wire request used: ids live outside the payload, so this is
+    /// what a real device does when it serves an object.
     fileprivate func ride(withID id: RideID) -> Ride {
         Ride(summary: RideSummary(
             id: id, name: summary.name, date: summary.date,

@@ -3,11 +3,9 @@ import Testing
 import OBCDomain
 @testable import OBCTransport
 
-/// TR5 library persistence: trips round-trip through both conformers, the
-/// **≤ 1-trip-per-route invariant** holds on every `saveTrip`, reads drop
-/// dangling stages, `deleteTrip` ungroups (routes untouched), a planned-route
-/// delete prunes trips, and a pre-trips library loads with zero trips.
-/// Every case runs against **both** the in-memory and the file-backed store.
+/// Trip persistence: trips round-trip through both conformers, a route stays in at most one trip
+/// on every `saveTrip`, reads drop dangling stages, `deleteTrip` ungroups without touching the
+/// routes, and deleting a planned route prunes it. Every case runs against both store kinds.
 struct TripLibraryStoreTests {
     enum StoreKind: CaseIterable { case inMemory, file }
 
@@ -27,8 +25,8 @@ struct TripLibraryStoreTests {
         TripRecord(id: TripID(id), name: name ?? id, stageIDs: stages.map(RouteID.init), addedAt: addedAt)
     }
 
-    /// A minimal planned record so a stage id resolves (read pruning keeps only
-    /// stages whose route record exists).
+    /// A minimal planned record so a stage id resolves: reads keep only stages whose route
+    /// record exists.
     private func plannedRoute(_ id: String) -> PlannedRouteRecord {
         PlannedRouteRecord(
             summary: RouteSummary(id: RouteID(id), name: id, distanceMeters: 1_000, elevationGainMeters: 100),
@@ -71,7 +69,7 @@ struct TripLibraryStoreTests {
         let store = makeStore(kind)
         ["r1", "r2", "r3"].forEach { store.savePlannedRoute(plannedRoute($0)) }
         store.saveTrip(trip("A", ["r1", "r2"]))
-        // B claims r2 → it must leave A (a route lives in ≤ 1 trip).
+        // B claims r2, so it must leave A: a route lives in at most one trip.
         store.saveTrip(trip("B", ["r2", "r3"]))
 
         let byID = Dictionary(uniqueKeysWithValues: store.trips().map { ($0.id, $0.stageIDs) })
@@ -109,7 +107,6 @@ struct TripLibraryStoreTests {
         store.saveTrip(trip("A", ["r1", "r2"]))
         store.deleteTrip(TripID("A"))
         #expect(store.trips().isEmpty)
-        // The routes survive as top-level records.
         #expect(Set(store.plannedRoutes().map(\.id)) == [RouteID("r1"), RouteID("r2")])
     }
 
@@ -146,7 +143,7 @@ struct TripLibraryStoreTests {
             ["r1", "r2"].forEach { store.savePlannedRoute(plannedRoute($0)) }
             store.saveTrip(t)
         }
-        // A fresh instance = an app relaunch — the scoped link survives whole.
+        // A fresh instance is an app relaunch; the scoped link survives whole.
         let reopened = FileLibraryStore(directory: dir)
         let got = reopened.trips()
         #expect(got.count == 1)
@@ -165,10 +162,8 @@ struct TripLibraryStoreTests {
 
     @Test
     func aPartialOnDiskLinkDecodesAsNoLink() throws {
-        // #769's all-or-nothing rule, same as PlannedRouteFile: a trip file
-        // carrying a bare object id (no serial/epoch) must load with **no**
-        // device link at all — a flat link can never light a badge or drive a
-        // replace-by-id against the wrong device or era.
+        // All or nothing: a trip file carrying a bare object id must load with no device link at
+        // all, so it can never light a badge or drive a replace-by-id against the wrong device.
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("obc-trip-flat-\(UUID().uuidString)", isDirectory: true)
         let store = FileLibraryStore(directory: dir)
@@ -190,8 +185,8 @@ struct TripLibraryStoreTests {
     }
 }
 
-/// TR5 domain helpers: the one derived-stats implementation and the trip-level
-/// `OnDeviceState` reuse.
+/// Trip domain helpers: the one derived-stats implementation and the trip-level `OnDeviceState`
+/// reuse.
 struct TripDomainTests {
     private func summary(_ id: String, distance: Double, ascent: Double) -> RouteSummary {
         RouteSummary(id: RouteID(id), name: id, distanceMeters: distance, elevationGainMeters: ascent)
@@ -216,9 +211,8 @@ struct TripDomainTests {
     @Test
     func onDeviceStateReusesTheRouteRule() {
         let trip = TripRecord(id: TripID("t"), name: "T", stageIDs: [RouteID("a")])
-        // No proven CRC → not on device (never a badge without proof).
+        // No proven CRC means not on device: never a badge without proof.
         #expect(trip.onDeviceState(provenCommittedCRC: nil, currentCRC: { 0x1 }) == .notOnDevice)
-        // Matching CRC → up to date; a differing one → outdated.
         #expect(trip.onDeviceState(provenCommittedCRC: 0xABCD, currentCRC: { 0xABCD }) == .upToDate)
         #expect(trip.onDeviceState(provenCommittedCRC: 0xABCD, currentCRC: { 0x1 }) == .outdated)
     }

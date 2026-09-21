@@ -2,11 +2,10 @@ import SwiftUI
 import OBCDomain
 import OBCTransport
 
-/// The launch gate (B2): renders whatever `LaunchFlowModel` says — the A
-/// connecting state, the D1–D5 pairing flow, H7/H8 — and hands over to `main`
-/// once the flow lands. Own the model at the composition root:
-///
-///     LaunchFlowView(model: launchModel) { MainView(…) }
+/// The launch gate: renders whatever `LaunchFlowModel` says, from the connecting
+/// state through the pairing flow, and hands over to `main` once the flow lands.
+/// Own the model at the composition root and pass the main screen as the trailing
+/// closure.
 public struct LaunchFlowView<Main: View>: View {
     private let model: LaunchFlowModel
     private let main: Main
@@ -18,7 +17,7 @@ public struct LaunchFlowView<Main: View>: View {
 
     public var body: some View {
         ZStack {
-            // ZStack + transition (rather than a bare switch) so phase changes
+            // ZStack and a transition, rather than a bare switch, so phase changes
             // cross-fade instead of hard-cutting.
             screen
                 .id(phaseKey)
@@ -66,8 +65,8 @@ public struct LaunchFlowView<Main: View>: View {
         }
     }
 
-    /// A stable per-screen key: `.scanning`'s row appearing must animate
-    /// *inside* the screen, not re-create it.
+    /// A stable per-screen key: the scanning row appearing must animate inside the
+    /// screen, not re-create it.
     private var phaseKey: String {
         switch model.phase {
         case .idle: "idle"

@@ -1,11 +1,9 @@
 import Foundation
 import OBCDomain
 
-/// GPX 1.0/1.1 → `ImportedRoute`. Reads what a route needs and nothing
-/// more: `<trkpt>` (or `<rtept>`) geometry with `<ele>`, file-level `<wpt>`
-/// waypoints (name, note, and the `<sym>`/`<type>` symbol that gives them a
-/// category), the route name, and the `creator` attribute for the E1 banner.
-/// Time data is ignored — a planned route has none.
+/// GPX 1.0 and 1.1 to `ImportedRoute`. Reads `<trkpt>` (or `<rtept>`) geometry with
+/// `<ele>`, file-level `<wpt>` waypoints with their `<sym>`/`<type>` symbol, the route
+/// name, and the `creator` attribute. Time data is ignored: a planned route has none.
 public struct GPXRouteDecoder: RouteFileDecoder {
     public var fileExtensions: Set<String> { ["gpx"] }
 
@@ -19,10 +17,9 @@ public struct GPXRouteDecoder: RouteFileDecoder {
             let line = parser.parserError.map { " (\($0.localizedDescription))" } ?? ""
             throw FormatError.malformed(reason: "not valid XML\(line)")
         }
-        // A present-but-invalid coordinate (non-finite or out of WGS-84 range)
-        // is a hard reject, not a silent skip: it would poison distance math
-        // (NaN) and the waypoint sort (#304). Checked before the empty guard so
-        // a file whose only points are bad throws the precise reason.
+        // A present but invalid coordinate is a hard reject, not a silent skip: it
+        // would poison the distance math and the waypoint sort with NaN. Checked
+        // before the empty guard so a file of only bad points throws the real reason.
         guard !collector.malformed else {
             throw FormatError.malformed(reason: "coordinate is not finite or out of range")
         }
@@ -46,8 +43,8 @@ final class GPXCollector: NSObject, XMLParserDelegate {
     private(set) var routeName: String?
     private(set) var points: [RoutePoint] = []
     private(set) var rawWaypoints: [RawWaypoint] = []
-    /// Set when a `<trkpt>`/`<rtept>`/`<wpt>` carried a parseable but invalid
-    /// coordinate — the decoder rejects the whole file (#304).
+    /// Set when a point carried a parseable but invalid coordinate; the decoder then
+    /// rejects the whole file.
     private(set) var malformed = false
 
     // Walk state.
@@ -95,22 +92,19 @@ final class GPXCollector: NSObject, XMLParserDelegate {
         path.removeLast()
         switch element {
         case "ele":
-            // A non-finite <ele> ("inf"/"nan") is dropped to nil (no elevation),
-            // not stored — it would poison ascent math (#304).
+            // A non-finite <ele> is dropped to nil; it would poison ascent math.
             pendingElevation = Double(value).flatMap { $0.isFinite ? $0 : nil }
         case "name":
             switch path.last {
             case "wpt": pendingWaypointName = value
-            // First name wins per scope; metadata's beats a later trk's only
-            // when metadata comes first (it does — schema order).
+            // The first name wins per scope; metadata comes before trk in schema order.
             case "metadata", "trk", "rte": if routeName == nil, !value.isEmpty { routeName = value }
             default: break
             }
         case "desc" where path.last == "wpt":
             pendingWaypointNote = value.isEmpty ? nil : value
-        // The waypoint's icon: Garmin (and the planners that copy it) write
-        // `<sym>`, RideWithGPS/Komoot `<type>`. Both are kept; `WaypointSymbol`
-        // decides which wins and what it means.
+        // The waypoint's icon: Garmin writes `<sym>`, RideWithGPS and Komoot `<type>`.
+        // Both are kept; `WaypointSymbol` decides which wins and what it means.
         case "sym" where path.last == "wpt":
             pendingWaypointSym = value
         case "type" where path.last == "wpt":
@@ -142,9 +136,9 @@ final class GPXCollector: NSObject, XMLParserDelegate {
         if points.isEmpty { points = routePointFallback }
     }
 
-    /// A `lat`/`lon` absent (or unparseable) → `nil`, skipping the point as
-    /// before. Present but invalid (non-finite / out of range, e.g. `lat="inf"`
-    /// or `lat="999"`) → flags `malformed`, which rejects the whole file (#304).
+    /// An absent or unparseable `lat`/`lon` gives `nil` and the point is skipped.
+    /// Present but invalid (`lat="inf"`, `lat="999"`) flags `malformed`, which rejects
+    /// the whole file.
     private func coordinate(from attributes: [String: String]) -> Coordinate? {
         guard
             let lat = attributes["lat"].flatMap(Double.init),

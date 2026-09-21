@@ -1,15 +1,13 @@
 import SwiftUI
 import OBCTransport
 
-/// The launch sheet (#773 U5): what a rider sees when a firmware update they haven't been offered
-/// is published and they open the app.
+/// The launch sheet: what a rider sees when a published firmware update they have not
+/// been offered is waiting and they open the app.
 ///
-/// It says the three things worth knowing — which version, how big, what changed — and offers two
-/// answers. **View** pushes the S7 screen, which is where the actual work (download, verify, send,
-/// confirm on the glass) already lives; nothing is downloaded from here. **Not now** is a real
-/// answer, not a snooze: this version won't be raised again, and a newer one will.
-///
-/// Deliberately spare. It interrupts an app launch, so it earns its place by being short.
+/// It says which version, how big and what changed, and offers two answers. View
+/// pushes the firmware-update screen, where the download, verify and send already
+/// live; nothing is downloaded from here. Not now is a real answer, not a snooze:
+/// this version is not raised again, and a newer one is.
 public struct UpdateAvailableSheet: View {
     private let update: UpdateSurfaceModel.PendingUpdate
     private let onView: () -> Void
@@ -75,10 +73,10 @@ public struct UpdateAvailableSheet: View {
         .accessibilityIdentifier("firmware.updateSheet")
     }
 
-    /// "v1.4.0" — the same versioned readout the S7 screen uses.
+    /// The same versioned readout the firmware-update screen uses.
     private var versionLine: String { UpdateNoticeCopy.versioned(update.release.version) }
 
-    /// "854 KB" — the container's size, so the rider knows what the download costs before tapping
+    /// The container's size, so the rider knows what the download costs before tapping
     /// into a screen that offers to make it.
     private var sizeLine: String {
         ByteCountFormatter.string(fromByteCount: Int64(update.release.bytes), countStyle: .file)

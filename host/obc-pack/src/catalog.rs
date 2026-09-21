@@ -1,34 +1,25 @@
-//! The **cell catalog**: a cell store, one schema, a
-//! set of skins, and named regions that are *selections* rather than artifacts.
-//! [`OBCC_Spec.md`](../../../../specs/OBCC_Spec.md) is normative and this module
-//! is its only sanctioned producer; the grid, band, and cell semantics it publishes
+//! The cell catalog: a cell store, one schema, a set of skins, and named regions that are
+//! selections rather than artifacts. [`OBCC_Spec.md`](../../../../specs/OBCC_Spec.md) is normative
+//! and this module is its only sanctioned producer; the grid, band and cell semantics it publishes
 //! are [`OBCA_Spec.md`](../../../../specs/OBCA_Spec.md).
 //!
-//! The important producer-side guarantees are:
+//! Cells are the artifacts. A cell's coverage is exactly its grid square, so a cell entry carries no
+//! bbox: the id determines the square to the microdegree, and this generator verifies that the
+//! artifact's own header bbox equals it. A stored copy could only agree, redundantly, or disagree.
 //!
-//! - **Cells are the artifacts.** A cell's coverage is *exactly* its grid square, so
-//!   a cell entry carries no bbox: the id determines the square to the microdegree
-//!   and this generator **verifies the artifact's own header bbox equals it**
-//!   (§8). A stored copy could only agree (redundant) or disagree (a lie).
-//! - **The document is a root plus digest-pinned satellites.** DACH is thousands of
-//!   cells and a planet store is far more, so the cell lists move out of the root —
-//!   but each satellite is pinned by `bytes` + `sha256` from the root, preserving
-//!   the all-or-nothing guarantee per document (§9).
-//! - **A region stores its cell set and carries a drawable boundary.** Deriving the
-//!   set from the outline would let a simplification error silently drop a fine cell
-//!   — a hole in street detail — so the outline is presentation only (§6, §7).
-//! - **Skins cannot lag cells.** A skin is stamped onto ~2 KB at assembly time, so
-//!   changing one invalidates no cell (§5).
+//! The document is a root plus digest-pinned satellites. A planet store is far too many cells to
+//! list in the root, so the cell lists move out of it, and each satellite is pinned by `bytes` and
+//! `sha256` from the root, which preserves the all-or-nothing guarantee per document.
 //!
-//! Cell paths are keyed by **band**
-//! (`cells/<band>/<i>/<j>.<sha256>.obcm`, `cells/<band>/index.<sha256>.json`)
-//! rather than by
-//! `<log2(S)>`. The recommended band table gives `fine` and `network` the same `2^18` cell
-//! size ([`OBCA_Spec.md` §1.5](../../../../specs/OBCA_Spec.md)), so a `<log2>`-keyed
-//! path is not a function of (band, cell) and the two bands' indices and artifacts
-//! would collide. Every published `url` is explicit in the manifest, and the band's
-//! `cell_log2` is published beside it, so nothing a consumer does depends on the
-//! spelling of the path (§2).
+//! A region stores its cell set and carries a drawable boundary. Deriving the set from the outline
+//! would let a simplification error silently drop a fine cell, so the outline is presentation only.
+//! A skin is stamped onto about 2 KB at assembly time, so changing one invalidates no cell.
+//!
+//! Cell paths are keyed by band rather than by `log2(S)`, because the recommended band table gives
+//! `fine` and `network` the same `2^18` cell size, so a `<log2>`-keyed path is not a function of
+//! (band, cell) and the two bands' indices and artifacts would collide. Every published `url` is
+//! explicit in the manifest and the band's `cell_log2` is published beside it, so nothing a consumer
+//! does depends on the spelling of a path.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -45,8 +36,7 @@ use obc_formats::obcm::{HEADER_LEN, MAGIC};
 
 pub mod boundary;
 
-/// This module's envelope version. A consumer MUST reject a `schema_version` it
-/// does not implement (`OBCC_Spec.md` §1).
+/// This module's envelope version. A consumer MUST reject a `schema_version` it does not implement.
 pub const CATALOG_SCHEMA_VERSION: u32 = 3;
 pub const DEFAULT_MANIFEST_NAME: &str = "catalog.json";
 
@@ -76,11 +66,11 @@ use terrain::{build_terrain_index, read_terrain};
 /// Generator inputs that cannot be derived from the tree.
 #[derive(Debug, Clone)]
 pub struct CatalogOptions {
-    /// Where the tree gets published; every `url` is this plus the object's
-    /// digest-addressed publish path. Local bake-tree paths remain stable.
+    /// Where the tree gets published: every `url` is this plus the object's digest-addressed publish
+    /// path. Local bake-tree paths stay stable.
     pub base_url: String,
-    /// The root's `generated_at`, RFC 3339 UTC. Passed in so the generator is a pure
-    /// function of (tree, options).
+    /// The root's `generated_at`, RFC 3339 UTC. Passed in so the generator is a pure function of
+    /// (tree, options).
     pub generated_at: String,
 }
 
@@ -90,8 +80,8 @@ impl CatalogOptions {
     }
 }
 
-/// A satellite document: its stable local path, immutable published path, and exact
-/// bytes — the bytes the root's digest pins.
+/// A satellite document: its stable local path, immutable published path, and exact bytes — the
+/// bytes the root's digest pins.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Satellite {
     /// Stable path used inside the local bake tree.
@@ -111,9 +101,9 @@ impl Satellite {
     }
 }
 
-/// A digest-pinned file already present at a stable path in the local bake tree.
-/// The publisher uploads it under `published_rel_path`, so replacing a catalog
-/// root never invalidates a root that a consumer fetched a moment earlier.
+/// A digest-pinned file already present at a stable path in the local bake tree. The publisher
+/// uploads it under `published_rel_path`, so replacing a catalog root never invalidates a root a
+/// consumer fetched a moment earlier.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PinnedArtifact {
     pub rel_path: String,
@@ -122,9 +112,9 @@ pub struct PinnedArtifact {
     pub sha256: String,
 }
 
-/// A generated catalog: the root, the satellites it pins, and non-fatal
-/// observations. Warnings are returned rather than printed so the bakery decides
-/// whether a coverage gap is a log line or a failed job.
+/// A generated catalog: the root, the satellites it pins, and non-fatal observations. Warnings are
+/// returned rather than printed, so the bakery decides whether a coverage gap is a log line or a
+/// failed job.
 #[derive(Debug, Clone)]
 pub struct GeneratedCatalog {
     pub root: Catalog,
@@ -138,12 +128,11 @@ const SKINS_DIR: &str = "skins";
 const PREVIEWS_DIR: &str = "previews";
 const SCHEMA_DOC: &str = "schema.json";
 const CELL_INDEX_NAME: &str = "index.json";
-/// The reserved directory under `cells/` that holds the terrain artifact class, and
-/// therefore a band id no schema may use (§13.1).
+/// The reserved directory under `cells/` that holds the terrain artifact class, and therefore a band
+/// id no schema may use.
 pub const TERRAIN_DIR: &str = "terrain";
-/// Local bakery state for cells whose semantic payload is empty. The leading dot
-/// keeps it out of publication; its validated ranges are copied into the pinned
-/// band satellite instead.
+/// Local bakery state for cells whose semantic payload is empty. The leading dot keeps it out of
+/// publication; its validated ranges are copied into the pinned band satellite instead.
 const KNOWN_EMPTY_STATE_NAME: &str = ".known-empty.json";
 
 /// Walk a bake tree and build the root plus its satellites.
@@ -156,8 +145,8 @@ const KNOWN_EMPTY_STATE_NAME: &str = ".known-empty.json";
 ///   cells/<band>/<i>/<j>.obcm.json     its sidecar (schema revision, build time, sources, partial)
 ///   regions/<a>/…/region.json          the curated selection: display name + its cell ids per band
 ///   regions/<a>/…/boundary.poly        that region's Geofabrik .poly, simplified into the outline
-///   cells/<band>/index.json            generated (§8)
-///   regions/<a>/…/cells.json           generated (§6)
+///   cells/<band>/index.json            generated
+///   regions/<a>/…/cells.json           generated
 ///   catalog.json                       generated root
 /// ```
 ///
@@ -170,12 +159,12 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
     let schema = read_schema_doc(&tree.join(SCHEMA_DOC))?;
     let mut warnings = Vec::new();
 
-    // Cells first: the schema's `obcm_version` is read out of their headers, so there
-    // is no schema entry to publish until every cell has agreed.
+    // Cells first: the schema's `obcm_version` is read out of their headers, so there is no schema
+    // entry to publish until every cell has agreed.
     let cells = read_cells(tree, &schema, &base_url)?;
     let obcm_version = cells.obcm_version;
-    // The other artifact class, read on its own terms: nothing above is an input to it
-    // and nothing in it is an input to the above (§13.2).
+    // The other artifact class, read on its own terms: nothing above is an input to it and nothing
+    // in it is an input to the above.
     let terrain = read_terrain(tree, &base_url)?;
 
     let (skins, mut pinned_artifacts) =
@@ -220,12 +209,11 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
         satellites.push(satellite);
         by_band.insert(band.id.as_str(), build_band_index(entries, known_empty)?);
     }
-    // §3: sorted by `cell_log2` descending — coarse first. Two bands may share a
-    // size (`fine` and `network` are both 2^18), so the band id breaks the tie
-    // and the order stays total.
+    // Sorted by `cell_log2` descending, coarse first. Two bands may share a size, so the band id
+    // breaks the tie and the order stays total.
     cell_index.sort_by(|a, b| (b.cell_log2, &a.band).cmp(&(a.cell_log2, &b.band)));
 
-    // The terrain block and its one pinned index — the §8 machinery, reused whole.
+    // The terrain block and its one pinned index, the same machinery reused whole.
     let mut terrain_index = None;
     let terrain_entry = match &terrain {
         None => None,
@@ -266,9 +254,9 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
         }
     };
 
-    // §13.4, the one coupling — reported, never silently reconciled. The bake guard
-    // turns this into a refusal to publish; the generator still produces the document
-    // so an operator can see exactly what drifted.
+    // The one coupling between the two revision tracks: reported, never silently reconciled. The
+    // bake guard turns this into a refusal to publish, while the generator still produces the
+    // document so an operator can see what drifted.
     match (&terrain_entry, cells.terrain_revision) {
         (Some(t), Some(baked)) if baked != t.terrain_revision => warnings.push(format!(
             "the network band was baked against terrain revision {baked}, but this catalog publishes terrain \
@@ -332,13 +320,13 @@ pub fn root_json(root: &Catalog) -> String {
     text
 }
 
-/// The store's stable-keyed `LICENSE.txt` name (§2, §11).
+/// The store's stable-keyed `LICENSE.txt` name.
 pub const LICENSE_NAME: &str = "LICENSE.txt";
 
-/// §3.1's human-readable twin: the provenance and licence statement published at the
-/// store root beside `catalog.json`. Derived from the root's `source` block — and from
-/// the terrain block's §13.5 attribution when one is published — so the machine-readable
-/// declaration and the text a person reads can never disagree.
+/// The human-readable twin of the source declaration: the provenance and licence statement
+/// published at the store root beside `catalog.json`. Derived from the root's `source` block, and
+/// from the terrain block's attribution when one is published, so the machine-readable declaration
+/// and the text a person reads can never disagree.
 pub fn license_txt(root: &Catalog) -> String {
     let source = root.source.as_ref().expect("a generated root always carries a source block (§3.1)");
     let mut text = format!(
@@ -359,8 +347,8 @@ pub fn license_txt(root: &Catalog) -> String {
             "\nThe terrain artifacts (*.obcd) are a separate artifact class,\n{attribution}.\n",
             attribution = terrain.attribution,
         ));
-        // §13.5 covers every listed reference exactly as it covers the dataset's own credit: a
-        // crest baked from a national model carries that model's notice too.
+        // The obligation covers every listed reference exactly as it covers the dataset's own
+        // credit: a crest baked from a national model carries that model's notice too.
         for reference in terrain.references.iter().flatten() {
             text.push_str(&format!(
                 "Summit heights in them come from {product}: {attribution}\n({licence}).\n",
@@ -402,13 +390,12 @@ fn content_addressed_rel_path(rel_path: &str, sha256: &str) -> String {
     }
 }
 
-/// Write the whole catalog into the tree: **satellites first, root last**.
+/// Write the whole catalog into the tree: satellites first, root last.
 ///
-/// That order is §9's digest pinning made operational — the root is the document
-/// that claims a satellite exists with a given digest, so it must not become visible
-/// until every satellite it names is on disk with those exact bytes. Each file is
-/// written temp-then-`rename`, so no reader
-/// ever sees a half-written document.
+/// That order is the digest pinning made operational. The root is the document that claims a
+/// satellite exists with a given digest, so it must not become visible until every satellite it
+/// names is on disk with those exact bytes. Each file is written temp-then-rename, so no reader ever
+/// sees a half-written document.
 pub fn write_all_atomic(tree: &Path, generated: &GeneratedCatalog) -> Result<(), String> {
     for satellite in &generated.satellites {
         let path = tree.join(satellite.rel_path.replace('/', std::path::MAIN_SEPARATOR_STR));
@@ -417,17 +404,14 @@ pub fn write_all_atomic(tree: &Path, generated: &GeneratedCatalog) -> Result<(),
         }
         write_atomic_bytes(&path, &satellite.body)?;
     }
-    // §3.1's human-readable twin, at its stable key beside the root.
+    // The human-readable licence twin, at its stable key beside the root.
     write_atomic_bytes(&tree.join(LICENSE_NAME), &license_txt(&generated.root))?;
     write_atomic_bytes(&tree.join(DEFAULT_MANIFEST_NAME), &root_json(&generated.root))
 }
 
-// --- schema/skin compatibility façade -----------------------------------------------------
-
-/// A config's canonical `feature_type → style id` assignment.
+/// A config's canonical `feature_type -> style id` assignment.
 ///
-/// Public because producers must use the same 1-based document order the cell
-/// feature headers carry. The private schema owner supplies the implementation.
+/// Public because producers must use the same 1-based document order the cell feature headers carry.
 pub fn feature_type_ids(config: &Config) -> BTreeMap<String, u8> {
     schema::feature_type_ids(config)
 }
@@ -444,12 +428,9 @@ pub fn check_skin_document(json: &str, at: &str) -> Result<(), String> {
     schema::check_skin_document(json, at)
 }
 
-// --- shared producer mechanics -----------------------------------------------------------
-
 struct ObcmHeader {
     version: u8,
-    /// The header's own bbox, in [`UBox`] order (`min_lon, min_lat, max_lon, max_lat`) so it
-    /// compares directly against [`CellId::square`].
+    /// The header's own bbox, in [`UBox`] order, so it compares directly against [`CellId::square`].
     bbox: UBox,
 }
 

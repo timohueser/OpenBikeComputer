@@ -2,9 +2,7 @@
  * An in-memory cable: two record channels and the EP0 read beside them.
  *
  * This is the **transport** half of the simulated link, and only that. What speaks protocol v4 on
- * the far end of it is the real engine over a real card (`flat-device.ts`); what is here is the pair
- * of byte pipes between them, plus §5.2.1's vendor read, which is a constant rather than a
- * conversation.
+ * the far end is the real engine over a real card (`flat-device.ts`).
  *
  * Two transport properties are modelled on purpose, because a fake that smoothed either one away
  * would hide a bug that only appears on a rider's desk:
@@ -12,7 +10,7 @@
  * - **Backpressure**, as a byte high-water mark: a writer that has filled the channel waits for the
  *   reader to drain it.
  * - **Segmentation**: every write is re-sliced to `packetSize`, on both channels, so a record spans
- *   packets exactly as §5.2 says it may.
+ *   packets exactly as the binding says it may.
  *
  * Timing, stalls and enumeration are not here: those belong to the WebUSB pipe and its own suite.
  */
@@ -20,27 +18,23 @@
 import { PipeError, throwIfAborted, type BytePipe, type DeviceLink } from "./pipe";
 import { encodeDeviceInfo, type DeviceInfo } from "./records";
 
-/** The §5.2.1 strings a link answers with unless a test names others. */
+/** The identity strings a link answers with unless a test names others. */
 const DEFAULT_DEVICE_INFO: DeviceInfo = {
     firmwareRevision: "0.4.0+abc1234",
     hardwareRevision: "obc-lm20-r1",
     serialNumber: "0011223344556677",
 };
 
-// --- the pipe ----------------------------------------------------------------
-
 /**
  * One direction of the loopback.
  *
- * **Backpressure** is a byte high-water mark: a writer that has filled the channel waits for the
- * reader to drain it. Real backpressure comes from the device NAKing an endpoint it hasn't drained,
- * and a client that queued writes without ever retiring them would outrun any real device. Faking it
- * here is what makes that bug fail in CI.
+ * **Backpressure** is a byte high-water mark. Real backpressure comes from the device NAKing an
+ * endpoint it has not drained, and a client that queued writes without ever retiring them would
+ * outrun any real device. Faking it here is what makes that bug fail in CI.
  *
- * **Segmentation**: every write is re-sliced to `packetSize`, on *both* channels. Under §5.2 a
- * record may span packets on either pair, so a channel that kept writes whole would be modelling a
- * transport property USB does not have — and would hide precisely the reassembly bug the v1
- * envelope's one-frame-per-transfer rule used to make impossible.
+ * **Segmentation**: every write is re-sliced to `packetSize`, on *both* channels. A record may span
+ * packets on either pair, so a channel that kept writes whole would be modelling a transport
+ * property USB does not have.
  */
 class Channel {
     private readonly chunks: Uint8Array[] = [];
@@ -174,13 +168,13 @@ class LoopbackPipe implements BytePipe {
     /**
      * Return this end to a known state — and **only the end this side owns**.
      *
-     * `inbound` is what has been delivered *to* this side and nobody read; dropping it is what a
-     * host does when it walks away from a transfer, and it is genuine.
+     * `inbound` is what has been delivered *to* this side and nobody read; dropping it is what a host
+     * does when it walks away from a transfer.
      *
      * `outbound` is emphatically **not** cleared. On the host side it models bytes already handed to
-     * the transport — submitted `transferOut`s — and `reset()` there is `clearHalt`, which cancels no
-     * transfer and un-queues no byte. Clearing it here would make every stray-byte scenario
-     * self-healing in tests and self-healing nowhere else.
+     * the transport, and `reset()` there is `clearHalt`, which cancels no transfer and un-queues no
+     * byte. Clearing it here would make every stray-byte scenario self-healing in tests and
+     * self-healing nowhere else.
      */
     async reset(): Promise<void> {
         this.inbound.clear();
@@ -212,8 +206,8 @@ export interface LoopbackLink {
 /**
  * Two record channels and the EP0 read beside them.
  *
- * `vendorIn` is on the **host** link only, because that is the direction §5.2.1 defines: the host
- * asks and the device answers. The device end has no such method and needs none.
+ * `vendorIn` is on the **host** link only, because that is the direction the request is defined in:
+ * the host asks and the device answers. The device end has no such method and needs none.
  */
 export function loopbackLink(options: LoopbackOptions & { deviceInfo?: DeviceInfo } = {}): LoopbackLink {
     const { packetSize = 512, streamHighWaterMark = 64 * 1024 } = options;
@@ -227,8 +221,8 @@ export function loopbackLink(options: LoopbackOptions & { deviceInfo?: DeviceInf
         control: new LoopbackPipe(deviceToHostControl, hostToDeviceControl),
         stream: new LoopbackPipe(deviceToHostStream, hostToDeviceStream),
         async vendorIn(request: number, _value: number, length: number) {
-            // Modelled to the letter of §5.2.1, short transfer included: a host that assumed it got
-            // `length` bytes back would work here and fail on glass.
+            // Modelled to the letter, short transfer included: a host that assumed it got `length`
+            // bytes back would work here and fail on glass.
             if (request !== 0x20) throw new PipeError("device-error", `the device stalled vendor request ${request}.`);
             return encodeDeviceInfo(info).subarray(0, length);
         },

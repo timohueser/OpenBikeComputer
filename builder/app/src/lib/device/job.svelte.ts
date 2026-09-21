@@ -2,15 +2,14 @@
  * One device write, followed on screen: phase, bytes, throughput, an honest estimate, and a Cancel
  * that actually reaches the transport.
  *
- * All three of C4's flows run through this, because the interesting behaviour is identical in all
- * three and only one of them is short. A map is hundreds of megabytes, and no stage of the pipeline
- * that carries it is fast enough to make that instant, so a large map is *minutes* rather than "USB
- * is fast". A progress bar that only counts percent invites the rider to think
- * something is stuck at 12%; a rate and a remaining time say what is actually happening.
+ * All three flows run through this, because the interesting behaviour is identical in all three and
+ * only one of them is short. A large map is *minutes*, and a progress bar that only counts percent
+ * invites the rider to think something is stuck at 12%; a rate and a remaining time say what is
+ * actually happening.
  *
  * The rate is measured over a short trailing window rather than since the start, because the two
- * phases of a transfer can run at different speeds. An average over the whole job can therefore
- * spend the first minute predicting a finish that never arrives.
+ * phases of a transfer can run at different speeds. An average over the whole job can spend the
+ * first minute predicting a finish that never arrives.
  */
 
 import type { JobContext, JobPhase } from "./progress";
@@ -24,10 +23,9 @@ const RATE_WINDOW_MS = 4_000;
 /**
  * A single job slot.
  *
- * One per surface (map, route, firmware), so the three can be described independently — but the
- * protocol client allows exactly one transfer at a time, and a second one is answered `busy` by the
- * device rather than interleaved. That is the client's rule to enforce (§4.1) and this class does
- * not duplicate it; what it does guarantee is that *this* slot never runs two tasks at once.
+ * One per surface (map, route, firmware), so the three can be described independently. The protocol
+ * client allows exactly one transfer at a time and enforces that itself; what this class guarantees
+ * is that *this* slot never runs two tasks at once.
  */
 export class DeviceJob {
     /** What this slot writes, for chrome that reports a transfer it does not own — one word,
@@ -42,9 +40,9 @@ export class DeviceJob {
     done = $state(0);
     total = $state(0);
     error = $state<string | null>(null);
-    /** The failure's stable code where it had one — `DeviceError.code`,
-     *  `ConvertError.code`. The message is for the rider; this is for the caller, which has to
-     *  tell "the cable came out" from "the card is full" without reading English. */
+    /** The failure's stable code where it had one. The message is for the rider; this is for the
+     *  caller, which has to tell "the cable came out" from "the card is full" without reading
+     *  English. */
     errorCode = $state<string | null>(null);
     /** A sentence for the successful case — what was written, and what it means. */
     result = $state<string | null>(null);
@@ -74,9 +72,9 @@ export class DeviceJob {
     /**
      * Run `task`, holding this slot until it settles.
      *
-     * Returns the task's value, or `null` if it failed or was cancelled — a caller that only wants
-     * to render the outcome reads {@link error} and never has to catch. A cancel is not an error:
-     * the job returns to `idle` with nothing said, because the rider already knows what they did.
+     * Returns the task's value, or `null` if it failed or was cancelled — a caller that only wants to
+     * render the outcome reads {@link error} and never has to catch. A cancel is not an error: the
+     * job returns to `idle` with nothing said, because the rider already knows what they did.
      */
     async run<T>(task: (ctx: JobContext) => Promise<T>, describe: (value: T) => string): Promise<T | null> {
         if (this.controller) return null;

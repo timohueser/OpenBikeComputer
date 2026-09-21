@@ -1,42 +1,29 @@
-//! What ground a source extract actually covers, and which grid cells that ground
-//! touches — the geometry half of the cell bake.
+//! What ground a source extract actually covers, and which grid cells that ground touches — the
+//! geometry half of the cell bake.
 //!
-//! Two questions decide almost everything about a scoped cell bake, and both are
-//! answered here rather than guessed:
+//! Two questions decide almost everything about a scoped cell bake:
 //!
-//! - **Which cells does a named region select?** Per band, exactly those whose
-//!   square intersects the region's coverage polygon
-//!   ([`OBCA_Spec.md` §1.2](../../../specs/OBCA_Spec.md)). Not its bounding box: a
-//!   box around Germany reaches into four other countries, and every cell out there
-//!   would be baked, published, and empty.
-//! - **Is a baked cell canonical or `partial`?** A cell is canonical iff its whole
-//!   square lies inside the coverage of the sources it was baked from (§3.7). Again
-//!   polygon, not box — the box test would call a cell on the Czech border canonical
-//!   because Germany's bbox contains it, which is precisely the lie D3 exists to
-//!   prevent.
+//! - Which cells does a named region select? Per band, exactly those whose square intersects the
+//!   region's coverage polygon. Not its bounding box: a box around Germany reaches into four other
+//!   countries, and every cell out there would be baked, published, and empty.
+//! - Is a baked cell canonical or `partial`? A cell is canonical exactly when its whole square lies
+//!   inside the coverage of the sources it was baked from. Again polygon, not box: the box test
+//!   would call a cell on the Czech border canonical because Germany's bbox contains it.
 //!
-//! The coverage geometry is the region's Geofabrik `.poly`, read at **full
-//! resolution** through [`obc_pack::catalog::boundary::poly_rings`]. The catalog's
-//! drawable outline comes from the same file simplified hard, and `OBCC_Spec.md`
-//! §7 forbids *that* one from deciding a cell set — a simplification error must
-//! not be able to drop an edge cell. Same source file, two readings, and only the
-//! unsimplified one is load-bearing.
+//! The coverage geometry is the region's Geofabrik `.poly`, read at full resolution through
+//! [`obc_pack::catalog::boundary::poly_rings`]. The catalog's drawable outline comes from the same
+//! file simplified hard, and that one may not decide a cell set: a simplification error must not be
+//! able to drop an edge cell.
 //!
-//! # Why the coverage test is conservative in one direction only
+//! A Geofabrik extract carries a complete-ways overhang past its polygon of one to three
+//! kilometres, so the ground it really covers is slightly larger than the polygon says. Testing
+//! against the polygon alone therefore marks a handful of border cells `partial` that a generous
+//! test would call canonical. That is the safe error: `partial` under-claims coverage and the
+//! builder warns, where the opposite would publish a cell with a missing sliver as canonical.
 //!
-//! A Geofabrik extract carries a **complete-ways overhang** past its polygon (~1–3
-//! km, measured in the epic's S0 spike), so the ground it really covers is slightly
-//! larger than the polygon says. Testing against the polygon alone therefore marks a
-//! handful of border cells `partial` that a generous test would call canonical. That
-//! is the safe error: `partial` under-claims coverage and the builder warns; the
-//! opposite would publish a cell with a missing sliver as canonical.
-//!
-//! # Determinism
-//!
-//! Every predicate here is integer arithmetic on microdegrees — ray casting, segment
-//! crossings, cell walks — so two runs agree exactly. The one float step is the GEOS
-//! union of several sources' polygons ([`Coverage::union`]), which runs on sorted
-//! input and is rounded to microdegrees before any decision is taken.
+//! Every predicate here is integer arithmetic on microdegrees, so two runs agree exactly. The one
+//! float step is the GEOS union of several sources' polygons ([`Coverage::union`]), which runs on
+//! sorted input and is rounded to microdegrees before any decision is taken.
 
 use std::collections::BTreeSet;
 
@@ -50,11 +37,11 @@ type URing = Vec<(i64, i64)>;
 /// The ground one or more source extracts cover.
 #[derive(Clone, Debug)]
 pub struct Coverage {
-    /// Degrees, `(lon, lat)` — the packer's own order, kept so [`Coverage::union`]
-    /// can hand them straight to GEOS.
+    /// Degrees, `(lon, lat)` — the packer's own order, kept so [`Coverage::union`] can hand them
+    /// straight to GEOS.
     polys: Vec<Geom>,
-    /// The same rings in integer microdegrees, `(lat, lon)`, closed. Every decision
-    /// below is taken on these.
+    /// The same rings in integer microdegrees, `(lat, lon)`, closed. Every decision below is taken
+    /// on these.
     rings: Vec<URing>,
     bbox: UBox,
 }
@@ -62,9 +49,8 @@ pub struct Coverage {
 impl Coverage {
     /// Read an Osmosis/Geofabrik `.poly` at full resolution.
     ///
-    /// The rings are assembled with the packer's even-odd multipolygon rule — the
-    /// same one it uses for OSM relations — so a `.poly` whose `!` hole markers
-    /// disagree with its own nesting still yields the shape it draws as.
+    /// The rings are assembled with the packer's even-odd multipolygon rule, so a `.poly` whose `!`
+    /// hole markers disagree with its own nesting still yields the shape it draws as.
     pub fn parse_poly(text: &str) -> Result<Self, String> {
         let members = poly_rings(text)?;
         let polys = assemble_multipolygon(&members);
@@ -76,11 +62,10 @@ impl Coverage {
 
     /// The combined coverage of several sources.
     ///
-    /// A **true** union (`geom::union_all`), not a concatenation: two extracts
-    /// overlap along their shared border, and an even-odd reading of overlapping
-    /// rings would count the overlap as a *hole* — i.e. would report the one strip
-    /// of ground co-baking exists to complete as uncovered. Returns `None` if GEOS
-    /// cannot union them, which the caller must treat as "nothing is canonical".
+    /// A true union, not a concatenation: two extracts overlap along their shared border, and an
+    /// even-odd reading of overlapping rings would count the overlap as a hole — reporting the one
+    /// strip of ground co-baking exists to complete as uncovered. Returns `None` if GEOS cannot
+    /// union them, which the caller must treat as "nothing is canonical".
     pub fn union(parts: &[&Coverage]) -> Option<Self> {
         let polys: Vec<&Geom> = parts.iter().flat_map(|c| c.polys.iter()).collect();
         match polys.len() {
@@ -109,20 +94,17 @@ impl Coverage {
 
     /// The coverage's bounding box, µdeg, in [`UBox`] order `(min_lon, min_lat, max_lon, max_lat)`.
     ///
-    /// A box is *not* a coverage ([`Coverage::contains`] is the real test — see this module's own
-    /// note on why Germany's box is not Germany); it is the right input only where a box is what is
-    /// being asked for, e.g. which DEM tiles a curated coverage touches.
+    /// A box is not a coverage; [`Coverage::contains`] is the real test. This is the right input
+    /// only where a box is what is being asked for, such as which DEM tiles a coverage touches.
     pub fn bbox(&self) -> UBox {
         self.bbox
     }
 
     /// The ground this coverage encloses, km².
     ///
-    /// The denominator of every density figure the bakery reports, so it is the
-    /// **spherical** polygon area rather than a shoelace scaled by one cosine:
-    /// Switzerland spans two degrees of latitude and a single-cosine approximation is
-    /// already 4 % out over that, which is the same order as the per-cell overhead
-    /// `OBCA_Spec.md` §1.5 asks a producer to budget for. Holes subtract.
+    /// The denominator of every density figure the bakery reports, so it is the spherical polygon
+    /// area rather than a shoelace scaled by one cosine: Switzerland spans two degrees of latitude
+    /// and a single-cosine approximation is already 4 % out over that. Holes subtract.
     pub fn area_km2(&self) -> f64 {
         fn area_of(geom: &Geom) -> f64 {
             match geom {
@@ -136,20 +118,20 @@ impl Coverage {
         self.polys.iter().map(area_of).sum::<f64>().max(0.0)
     }
 
-    /// Whether `(lat, lon)` is inside the coverage — even-odd ray casting, exact in
-    /// `i128`, no float and no epsilon.
+    /// Whether `(lat, lon)` is inside the coverage — even-odd ray casting, exact in `i128`, no
+    /// float and no epsilon.
     pub fn contains(&self, lat: i64, lon: i64) -> bool {
         let mut inside = false;
         for ring in &self.rings {
             for edge in ring.windows(2) {
                 let (a, b) = (edge[0], edge[1]);
-                // A half-open latitude straddle, so a vertex exactly at `lat` is
-                // counted by exactly one of its two edges.
+                // A half-open latitude straddle, so a vertex exactly at `lat` is counted by exactly
+                // one of its two edges.
                 if (a.0 > lat) == (b.0 > lat) {
                     continue;
                 }
-                // The ray runs east, so the crossing counts when its longitude is
-                // strictly greater than `lon`. Compare without dividing:
+                // The ray runs east, so the crossing counts when its longitude is strictly greater
+                // than `lon`. Compare without dividing:
                 //   lon < a.lon + (lat − a.lat)·(b.lon − a.lon) / (b.lat − a.lat)
                 let dlat = i128::from(b.0 - a.0);
                 let lhs = i128::from(lon - a.1) * dlat;
@@ -163,13 +145,11 @@ impl Coverage {
         inside
     }
 
-    /// Every cell of size `2^log2` whose square the coverage's **boundary** passes
-    /// through, ascending.
+    /// Every cell of size `2^log2` whose square the coverage's boundary passes through, ascending.
     ///
-    /// This is the edge set of the coverage, and it does double duty: a cell in it is
-    /// partly in and partly out (so it is selected, and it is not canonical from this
-    /// source alone), and a cell *not* in it is wholly one or the other, which one
-    /// decided by a single point test.
+    /// This is the edge set of the coverage, and it does double duty: a cell in it is partly in and
+    /// partly out, so it is selected and it is not canonical from this source alone, and a cell not
+    /// in it is wholly one or the other, which one decided by a single point test.
     pub fn boundary_cells(&self, log2: u32) -> BTreeSet<CellId> {
         let mut out = BTreeSet::new();
         for ring in &self.rings {
@@ -180,12 +160,11 @@ impl Coverage {
         out
     }
 
-    /// Every cell of size `2^log2` whose square intersects the coverage
-    /// (`OBCA_Spec.md` §1.2's coverage rule), ascending.
+    /// Every cell of size `2^log2` whose square intersects the coverage, ascending.
     ///
-    /// Exactly the boundary cells plus the cells whose square is wholly inside — and
-    /// "wholly inside" needs only a centre test, because a cell the boundary misses
-    /// cannot be partly in and partly out.
+    /// Exactly the boundary cells plus the cells whose square is wholly inside — and "wholly
+    /// inside" needs only a centre test, because a cell the boundary misses cannot be partly in and
+    /// partly out.
     pub fn cells(&self, log2: u32) -> BTreeSet<CellId> {
         let mut out = self.boundary_cells(log2);
         let s = 1i64 << log2;
@@ -206,11 +185,10 @@ impl Coverage {
         out
     }
 
-    /// Whether the coverage contains a cell's **whole** square — the canonical /
-    /// `partial` decision of `OBCA_Spec.md` §3.7.
+    /// Whether the coverage contains a cell's whole square — the canonical / `partial` decision.
     ///
-    /// `boundary` is [`Coverage::boundary_cells`] for the cell's size, passed in
-    /// because a bake asks this of thousands of cells and the edge set is one walk.
+    /// `boundary` is [`Coverage::boundary_cells`] for the cell's size, passed in because a bake
+    /// asks this of thousands of cells and the edge set is one walk.
     pub fn covers(&self, cell: CellId, boundary: &BTreeSet<CellId>) -> bool {
         if boundary.contains(&cell) {
             return false;
@@ -223,8 +201,8 @@ impl Coverage {
 
 /// Flatten a polygon's exterior and interiors into closed microdegree rings.
 ///
-/// A hole is a ring like any other here: even-odd ray casting counts it, so the
-/// inside of a hole comes out *outside* the coverage, which is what a hole means.
+/// A hole is a ring like any other here: even-odd ray casting counts it, so the inside of a hole
+/// comes out outside the coverage, which is what a hole means.
 fn collect_rings(geom: &Geom, out: &mut Vec<URing>) {
     match geom {
         Geom::Polygon { exterior, interiors } => {
@@ -244,8 +222,8 @@ fn collect_rings(geom: &Geom, out: &mut Vec<URing>) {
     }
 }
 
-/// `(lon, lat)` degrees → a closed `(lat, lon)` microdegree ring, with the duplicate
-/// points rounding creates removed. `None` if what survives has no inside.
+/// `(lon, lat)` degrees → a closed `(lat, lon)` microdegree ring, with the duplicate points
+/// rounding creates removed. `None` if what survives has no inside.
 fn to_udeg_ring(points: &[(f64, f64)]) -> Option<URing> {
     let udeg = |v: f64| (v * 1e6).round() as i64;
     let mut ring: URing = points.iter().map(|&(lon, lat)| (udeg(lat), udeg(lon))).collect();
@@ -258,14 +236,12 @@ fn to_udeg_ring(points: &[(f64, f64)]) -> Option<URing> {
     (ring.len() >= 4).then_some(ring)
 }
 
-/// Every cell of size `2^log2` the segment `a`–`b` (µdeg `(lat, lon)`) passes
-/// through.
+/// Every cell of size `2^log2` the segment `a`–`b` (µdeg `(lat, lon)`) passes through.
 ///
-/// The segment is split at every grid line it crosses — the same exact `i128`
-/// interpolation the cutter mints boundary junctions with — and each piece is
-/// attributed by its midpoint, which is interior to that piece and therefore in
-/// exactly one cell. The endpoints' own cells are added too, so a segment that only
-/// grazes a corner is still counted.
+/// The segment is split at every grid line it crosses — the same exact `i128` interpolation the
+/// cutter mints boundary junctions with — and each piece is attributed by its midpoint, which is
+/// interior to that piece and therefore in exactly one cell. The endpoints' own cells are added
+/// too, so a segment that only grazes a corner is still counted.
 fn segment_cells(a: (i64, i64), b: (i64, i64), log2: u32, out: &mut BTreeSet<CellId>) {
     let push = |out: &mut BTreeSet<CellId>, lat: i64, lon: i64| {
         let c = CellId::containing(log2, lat, lon);
@@ -290,8 +266,8 @@ fn segment_cells(a: (i64, i64), b: (i64, i64), log2: u32, out: &mut BTreeSet<Cel
     if cuts.is_empty() {
         return;
     }
-    // Order along the segment. A straight segment is monotone on both axes, so the
-    // axis it travels furthest on is a total order for the points on it.
+    // Order along the segment. A straight segment is monotone on both axes, so the axis it travels
+    // furthest on is a total order for the points on it.
     let (dlat, dlon) = (b.0 - a.0, b.1 - a.1);
     let key = |p: &(i64, i64)| if dlat.abs() >= dlon.abs() { dlat.signum() * p.0 } else { dlon.signum() * p.1 };
     cuts.sort_by_key(key);
@@ -302,16 +278,16 @@ fn segment_cells(a: (i64, i64), b: (i64, i64), log2: u32, out: &mut BTreeSet<Cel
     chain.extend(cuts);
     chain.push(b);
     for w in chain.windows(2) {
-        // Midpoints of the halves as well as of the whole piece: a piece can be one
-        // µdeg long, where the single midpoint rounds onto an endpoint.
+        // Midpoints of the halves as well as of the whole piece: a piece can be one µdeg long,
+        // where the single midpoint rounds onto an endpoint.
         push(out, (w[0].0 + w[1].0).div_euclid(2), (w[0].1 + w[1].1).div_euclid(2));
     }
 }
 
 /// The signed spherical area of one closed ring of `(lon, lat)` degrees, km².
 ///
-/// `A = R²/2 · Σ (λ₁ − λ₀)·(sin φ₀ + sin φ₁)` — the standard spherical-excess form,
-/// exact on a sphere for a ring of great-circle-ish edges at these scales.
+/// `A = R²/2 · Σ (λ₁ − λ₀)·(sin φ₀ + sin φ₁)` — the spherical-excess form, exact on a sphere for a
+/// ring of great-circle-ish edges at these scales.
 fn ring_area_km2(points: &[(f64, f64)]) -> f64 {
     /// Mean Earth radius, km (IUGG R₁).
     const R: f64 = 6371.0088;
@@ -343,8 +319,8 @@ mod tests {
     const LOG2: u32 = 18;
     const S: i64 = 1 << LOG2;
 
-    /// A cell's square in degrees, so a test can build a `.poly` that lines up with
-    /// the grid exactly.
+    /// A cell's square in degrees, so a test can build a `.poly` that lines up with the grid
+    /// exactly.
     fn square_deg(cell: CellId) -> (f64, f64, f64, f64) {
         let (min_lon, min_lat, max_lon, max_lat) = cell.square();
         (min_lon as f64 / 1e6, min_lat as f64 / 1e6, max_lon as f64 / 1e6, max_lat as f64 / 1e6)
@@ -367,8 +343,8 @@ mod tests {
 
     #[test]
     fn a_polygon_larger_than_a_cell_fills_its_interior() {
-        // Three by three cells, so the middle one is interior — reachable only by the
-        // centre test, since no ring segment passes through it.
+        // Three by three cells, so the middle one is interior — reachable only by the centre test,
+        // since no ring segment passes through it.
         let base = CellId::parse("18/1204/1052").unwrap();
         let (w, s, _, _) = square_deg(base);
         let side = S as f64 / 1e6;
@@ -413,8 +389,8 @@ mod tests {
         assert!(cov.cells(LOG2).contains(&middle));
     }
 
-    /// The co-baked border case, which is the whole point of `union`: neither half
-    /// covers the straddled cell, and together they do.
+    /// The co-baked border case, which is the point of `union`: neither half covers the straddled
+    /// cell, and together they do.
     #[test]
     fn two_abutting_sources_together_cover_the_cell_they_straddle() {
         let cell = CellId::parse("18/1204/1052").unwrap();
@@ -429,8 +405,8 @@ mod tests {
         assert!(both.covers(cell, &both.boundary_cells(LOG2)), "co-baked, the cell is canonical");
     }
 
-    /// The bug a concatenation instead of a union would have: two *overlapping*
-    /// sources must not read as a hole where they overlap.
+    /// The bug a concatenation instead of a union would have: two overlapping sources must not read
+    /// as a hole where they overlap.
     #[test]
     fn overlapping_sources_do_not_cancel_each_other_out() {
         let cell = CellId::parse("18/1204/1052").unwrap();
@@ -446,9 +422,9 @@ mod tests {
     fn a_segment_crossing_several_lines_is_walked_cell_by_cell() {
         let base = CellId::parse("18/1204/1052").unwrap();
         let (min_lon, min_lat, _, _) = base.square();
-        // An exact 45° diagonal passes through cell *corners*, so it touches only the
-        // three cells on the diagonal — the neighbours meet it at a single point, and
-        // the half-open square gives that point to exactly one of them.
+        // An exact 45° diagonal passes through cell corners, so it touches only the three cells on
+        // the diagonal — the neighbours meet it at a single point, and the half-open square gives
+        // that point to exactly one of them.
         let mut out = BTreeSet::new();
         let ends = ((min_lat + 10, min_lon + 10), (min_lat + 2 * S + 10, min_lon + 2 * S + 10));
         segment_cells(ends.0, ends.1, LOG2, &mut out);
@@ -467,9 +443,9 @@ mod tests {
         assert_eq!(out, reversed);
     }
 
-    /// The density denominator. A one-degree square at 47°N is ≈ 111.3 km tall and
-    /// ≈ 76 km wide, so ≈ 8 460 km²; the union of two of them is twice that, and the
-    /// *overlap* of two overlapping ones is counted once.
+    /// The density denominator. A one-degree square at 47°N is ≈ 111.3 km tall and ≈ 76 km wide, so
+    /// ≈ 8 460 km²; the union of two of them is twice that, and the overlap of two overlapping ones
+    /// is counted once.
     #[test]
     fn covered_ground_is_a_spherical_area() {
         let one = Coverage::parse_poly(&box_poly(7.0, 47.0, 8.0, 48.0)).unwrap();

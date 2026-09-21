@@ -1,8 +1,8 @@
 import XCTest
 import OBCDomain
 
-/// `TrackPreview.normalizing` — the projection shared by the mock fixtures and the
-/// real decode that feeds the `GPSTrackPreview` (B11).
+/// `TrackPreview.normalizing`: the projection shared by the mock fixtures and the real decode
+/// that feeds the track preview.
 final class GeoTests: XCTestCase {
     func testEmptyTrackIsEmptyPreview() {
         let preview = TrackPreview.normalizing([])
@@ -56,7 +56,7 @@ final class GeoTests: XCTestCase {
         }
     }
 
-    // MARK: Coordinates carrier (#294 — the MapKit basemap path)
+    // MARK: Coordinates carrier (the MapKit basemap path)
 
     func testRetainsSourceCoordinatesAlignedWithPoints() {
         let coords = [
@@ -83,7 +83,7 @@ final class GeoTests: XCTestCase {
         XCTAssertEqual(TrackPreview.normalizing(one).coordinates, one)
     }
 
-    // MARK: normalizingShared — the trip card's multi-stage preview (TR6)
+    // MARK: normalizingShared, the trip card's multi-stage preview
 
     func testNormalizingSharedPutsAllStagesInOneUnitSquare() {
         // Two disjoint tracks: A in the north-west, B in the south-east.
@@ -92,8 +92,8 @@ final class GeoTests: XCTestCase {
         let shared = TrackPreview.normalizingShared([a, b])
 
         XCTAssertEqual(shared.count, 2)
-        // One shared bbox: every point is within the unit square, and across BOTH
-        // stages the extremes touch 0 and 1 (north/top, south/bottom; west/east).
+        // One shared bbox: every point is inside the unit square, and across both stages the
+        // extremes touch 0 and 1.
         let allPoints = shared.flatMap(\.points)
         let xs = allPoints.map(\.x)
         let ys = allPoints.map(\.y)
@@ -101,7 +101,6 @@ final class GeoTests: XCTestCase {
         XCTAssertEqual(xs.max() ?? .nan, 1, accuracy: 1e-9)
         XCTAssertEqual(ys.min() ?? .nan, 0, accuracy: 1e-9)  // northmost (stage A) at top
         XCTAssertEqual(ys.max() ?? .nan, 1, accuracy: 1e-9)  // southmost (stage B) at bottom
-        // A single shared aspect ratio.
         XCTAssertEqual(shared[0].aspectRatio, shared[1].aspectRatio)
         // Coordinates ride through per stage for the basemap path.
         XCTAssertEqual(shared[0].coordinates, a)

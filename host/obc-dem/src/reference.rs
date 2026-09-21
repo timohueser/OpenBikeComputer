@@ -3,36 +3,33 @@
 //!
 //! A country-sized reference does not fit in memory, so the archive is addressed rather than
 //! loaded. Its lattice is the OBCT lattice at `2^6` µdeg (≈ 7.1 × 4.9 m at 47 °N) and its tiles are
-//! `2^16` µdeg squares of 1024 × 1024 pixels, so **a tile id is arithmetic on a coordinate** and a
-//! bake asks for the hundred tiles one cell's rule reads and nothing else.
+//! `2^16` µdeg squares of 1024 × 1024 pixels, so a tile id is arithmetic on a coordinate and a bake
+//! asks for the hundred tiles one cell's rule reads and nothing else.
 //!
-//! Two properties of the format are what make a 7 m archive usable as the §9 reference:
+//! Two properties of the format make a 7 m archive usable as the reference:
 //!
-//! * **A pixel is a maximum, not a sample.** Ingest keeps the largest source height whose pixel
-//!   centre falls inside the pixel's square, so a rock tower one source pixel wide survives the
-//!   pooling. `−32768` means no source pixel reached the square, and the contract permits no other
-//!   nodata.
-//! * **The transform is the lattice, exactly.** There is no reprojection and no resampling here:
-//!   [`ReferenceTile`] holds every tile to the transform its id implies, to `1e-9`°, and refuses the
-//!   file by name otherwise. A tile that survives that check needs no geometry reasoning downstream
-//!   — a pixel centre is one integer expression.
+//! * A pixel is a maximum, not a sample. Ingest keeps the largest source height whose pixel centre
+//!   falls inside the pixel's square, so a rock tower one source pixel wide survives the pooling.
+//!   `−32768` means no source pixel reached the square, and the contract permits no other nodata.
+//! * The transform is the lattice, exactly. There is no reprojection and no resampling here:
+//!   [`ReferenceTile`] holds every tile to the transform its id implies, to `1e-9`°, and refuses
+//!   the file by name otherwise.
 //!
 //! `index.json` says which tiles the archive has, who contributed to each of them, the digest of
 //! each one's pixels and what every source must be credited as. A mirror of one box carries the
 //! whole index and only its own tiles, so a tile the index names and the disk does not hold is
-//! **absent**, not an error; a tile that is on disk but broken is an error.
+//! absent, not an error; a tile that is on disk but broken is an error.
 //!
-//! The digests and the credits are what a *bakery* needs on top of a bake. The terrain bakery keys
+//! The digests and the credits are what a bakery needs on top of a bake. The terrain bakery keys
 //! its per-cell skip decision on the digests of the tiles one cell reads
-//! ([`held_digests`](ReferenceArchive::held_digests)), so an archive update re-bakes the cells whose
-//! window holds a changed tile and nothing else; and it carries every source's credit into the
-//! published catalog ([`credits`](ReferenceArchive::credits)), because a map derived from a source
-//! owes that source its attribution.
+//! ([`held_digests`](ReferenceArchive::held_digests)), so an archive update re-bakes the cells
+//! whose window holds a changed tile and nothing else; and it carries every source's credit into
+//! the published catalog ([`credits`](ReferenceArchive::credits)).
 //!
 //! Nothing here is mutated after [`ReferenceArchive::open`], so an archive is `Sync` and a bakery
 //! may read one from several threads. A lookup reports what it found and the caller keeps the
-//! tally — which is also the only way attribution can be honest, since only a tile that was
-//! actually decoded contributed to a container.
+//! tally, which is also the only way attribution can be honest, since only a tile that was actually
+//! decoded contributed to a container.
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -97,7 +94,7 @@ fn tile_span(lo: i64, hi: i64) -> std::ops::Range<u32> {
     first as u32..(last + 1).max(first) as u32
 }
 
-/// One archive tile, decoded: 1024 × 1024 whole metres with `r` counting **north**.
+/// One archive tile, decoded: 1024 × 1024 whole metres with `r` counting north.
 ///
 /// The GeoTIFF stores rows north-up; the flip happens here, once, exactly as `DemTile` does it, so
 /// no index downstream of this module has to decide which way is north.
@@ -120,7 +117,7 @@ impl ReferenceTile {
         (ORIGIN + i64::from(self.ti) * TILE_UDEG, ORIGIN + i64::from(self.tj) * TILE_UDEG)
     }
 
-    /// Every pixel of this tile that has a height and whose **centre** lies in `window`, as
+    /// Every pixel of this tile that has a height and whose centre lies in `window`, as
     /// `(lat, lon, metres)` in µdeg, row-major with `r` counting north.
     pub fn centres_in(&self, window: Window, mut visit: impl FnMut(i64, i64, i16)) {
         let (lat0, lon0) = self.origin_udeg();
@@ -142,8 +139,8 @@ impl ReferenceTile {
     fn open(path: &Path, ti: u32, tj: u32) -> Result<ReferenceTile, String> {
         let name = || path.display().to_string();
         let file = File::open(path).map_err(|e| format!("{}: {e}", name()))?;
-        // The `tiff` crate's default limits allow a 256 MiB decoding buffer; a tile is
-        // 1024 × 1024 × 2 B = 2 MiB, so the archive never approaches them.
+        // The `tiff` crate's default limits allow a 256 MiB decoding buffer; a tile is 2 MiB, so the
+        // archive never approaches them.
         let mut dec =
             Decoder::new(BufReader::new(file)).map_err(|e| format!("{}: not a readable TIFF ({e})", name()))?;
 
@@ -195,9 +192,9 @@ fn ceil_div(a: i64, b: i64) -> i64 {
 /// Hold a tile's georeferencing to the lattice its id implies, and refuse the file by name.
 ///
 /// [`read_north_up`] has already refused anything that is not a north-up WGS 84 grid. What is left
-/// is what an archive tile adds to that: the grid must be *this* tile's square of the lattice, and
-/// a pixel must be an **area**. Each of those moves ground rather than losing it — a wrong scale
-/// stretches the tile, a wrong tie point slides it, `PixelIsPoint` shifts it half a pixel.
+/// is what an archive tile adds: the grid must be this tile's square of the lattice, and a pixel
+/// must be an area. Each of those moves ground rather than losing it — a wrong scale stretches the
+/// tile, a wrong tie point slides it, `PixelIsPoint` shifts it half a pixel.
 fn expect_lattice<R: std::io::Read + std::io::Seek>(
     dec: &mut Decoder<R>,
     ti: u32,
@@ -208,8 +205,8 @@ fn expect_lattice<R: std::io::Read + std::io::Seek>(
     if north_up.raster_type != RasterType::Area {
         return Err(format!("{}: GTRasterTypeGeoKey is point — an archive pixel is an area (1)", name()));
     }
-    // A `PixelIsArea` tie point names the raster's north-west **corner**, which for tile (ti, tj) is
-    // the lattice line the id puts it on.
+    // A `PixelIsArea` tie point names the raster's north-west corner, which for tile (ti, tj) is the
+    // lattice line the id puts it on.
     let step = STEP as f64 / 1e6;
     let want_lat = (ORIGIN + (i64::from(ti) + 1) * TILE_UDEG) as f64 / 1e6;
     let want_lon = (ORIGIN + i64::from(tj) * TILE_UDEG) as f64 / 1e6;
@@ -242,10 +239,10 @@ pub struct SourceCredit {
 
 /// What the index says about one tile: who is in it, and what its pixels hash to.
 struct IndexedTile {
-    /// Every source with a surviving pixel in the tile, best first — `index.json`'s
-    /// `contributors`, which is what attribution reads.
+    /// Every source with a surviving pixel in the tile, best first — `index.json`'s `contributors`,
+    /// which is what attribution reads.
     sources: Vec<String>,
-    /// The index's digest of the tile's **pixels**. Opaque here: a bakery keys its skip on it.
+    /// The index's digest of the tile's pixels. Opaque here: a bakery keys its skip on it.
     sha256: String,
 }
 
@@ -346,8 +343,8 @@ impl ReferenceArchive {
         &self.credits
     }
 
-    /// The pixel digests the index states for the tiles of `window` this root **holds**, in the
-    /// window's own tile order.
+    /// The pixel digests the index states for the tiles of `window` this root holds, in the window's
+    /// own tile order.
     ///
     /// This is what a bakery keys one cell's skip decision on, so it names the tiles the bake will
     /// read and nothing else: a tile the index promises and this mirror lacks contributes no digest,
@@ -371,9 +368,8 @@ impl ReferenceArchive {
     /// Look tile `(ti, tj)` up, decoding it if this archive holds it.
     ///
     /// A tile the index names but the disk does not hold is [`TileLookup::Absent`], not an error:
-    /// that is what a mirror of one box looks like, since `mirror` copies the whole index and the
-    /// tiles of its box alone. A tile that *is* on disk and does not hold the contract **is** an
-    /// error naming the file.
+    /// that is what a mirror of one box looks like. A tile that is on disk and does not hold the
+    /// contract is an error naming the file.
     pub fn tile(&self, ti: u32, tj: u32) -> Result<TileLookup<'_>, String> {
         let Some(tile) = self.tiles.get(&(ti, tj)) else {
             return Ok(TileLookup::Unknown);
@@ -393,8 +389,8 @@ impl ReferenceArchive {
 /// catalog would differ by which order an ingest happened to write.
 ///
 /// Every field is required and non-empty. A source that cannot state its product, its credit and
-/// its licence must not be published beside a map derived from it, and the archive is the only place
-/// that knows the wording — so the refusal belongs here, where it can name the index.
+/// its licence must not be published beside a map derived from it, and the archive is the only
+/// place that knows the wording.
 fn read_credits(index: &serde_json::Value, name: &impl Fn() -> String) -> Result<Vec<SourceCredit>, String> {
     let sources = index
         .get("sources")

@@ -50,8 +50,8 @@ fn styles() -> Vec<Style> {
             fixed_width: false,
             terrain_layer: false,
         },
-        // Priority 4 (flags 3, the top of the clamped range). Dashed + a secondary color exercises
-        // the v10 flag bits (2 and 3) and the trailing color2 u16 through the whole pack→read path.
+        // Priority 4 (flags 3, the top of the clamped range). Dashed plus a secondary color
+        // exercises flag bits 2 and 3 and the trailing color2 u16 through the whole pack-read path.
         Style {
             id: 5,
             z_index: 3,
@@ -75,8 +75,8 @@ fn styles() -> Vec<Style> {
             fixed_width: false,
             terrain_layer: false,
         },
-        // The E3 contour shape (#1095): dashed, hairline, and carrying both new flag bits — bit 4
-        // (fixed width) and bit 5 (terrain layer) — through the whole pack → read path.
+        // A contour shape: dashed, hairline, and carrying both flag bits — bit 4 (fixed width) and
+        // bit 5 (terrain layer) — through the whole pack to read path.
         Style {
             id: 20,
             z_index: 8,
@@ -237,8 +237,8 @@ fn styles_round_trip() {
     assert_eq!(s12.flags.line_style(), SceneLineStyle::Solid);
     assert_eq!(s12.color2, None);
 
-    // #1095's two bits survive the same round trip, and stay clear on the styles that don't set
-    // them — a bit that is always on is not a bit.
+    // The two flag bits survive the same round trip, and stay clear on the styles that do not set
+    // them: a bit that is always on is not a bit.
     let s20 = r.style(20).expect("style 20");
     assert_eq!((s20.z_index, s20.color, s20.weight, s20.priority), (8, 0xAD55, 1, 4));
     assert!(
@@ -249,7 +249,6 @@ fn styles_round_trip() {
         assert!(!s.flags.fixed_width() && !s.flags.terrain_layer(), "style {} sets neither new bit", s.id);
     }
 
-    // Unused ids are absent.
     assert!(r.style(2).is_none());
 
     // Backdrop is the lowest z_index (id 1), independent of style id ordering.
@@ -326,7 +325,6 @@ fn query_finds_the_leaf() {
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].1, r.bbox);
 
-    // A view fully outside the bbox hits nothing.
     let outside = BBox { min_lon: 9_000_000, min_lat: 9_000_000, max_lon: 9_001_000, max_lat: 9_001_000 };
     assert!(query_all(&r, 0, &outside).is_empty());
 }
@@ -419,11 +417,10 @@ fn assert_rectilinear_ring(ring: &[(i32, i32)]) {
     }
 }
 
-/// The PR #1299 wedge reproducer through every downstream geometry stage. The semantic vectorizer
-/// emits this shape as rectilinear coverage, then the production path unprojects it to degrees,
-/// clips it to the requested/canonical bbox, subdivides it, packs it, and decodes it. Before the
-/// hole-anchor fix, `pack_feature` densified the exterior-anchor -> hole jump into the hole itself;
-/// this test saw a diagonal bridge and a triangular false clearing with either chunk size.
+/// The wedge reproducer through every downstream geometry stage. The semantic vectorizer emits this
+/// shape as rectilinear coverage, then the production path unprojects it to degrees, clips it to the
+/// canonical bbox, subdivides it, packs it and decodes it. Densifying the exterior-anchor to hole
+/// jump turns the hole into a diagonal bridge and a triangular false clearing, at any chunk size.
 #[test]
 fn distant_hole_stays_local_through_clip_subdivide_pack_and_decode() {
     use obc_pack::geom::{clip_to_box, Geom};

@@ -66,9 +66,8 @@ impl Geom {
         }
     }
 
-    /// Whether every non-empty part is linework. Clip results may wrap lines in `Multi`, so callers
-    /// selecting a line-only operation must look through that container rather than match `Line`
-    /// only.
+    /// Whether every non-empty part is linework. Clip results may wrap lines in `Multi`, so a
+    /// caller selecting a line-only operation must look through that container.
     pub fn is_lineal(&self) -> bool {
         match self {
             Geom::Line(_) => true,
@@ -103,9 +102,8 @@ fn px_per_deg(lat: f64, mpp: f64) -> (f64, f64) {
     (M_PER_DEG * cos_lat / mpp, M_PER_DEG / mpp)
 }
 
-/// Absolute area of a closed ring in degrees², via the shoelace formula. The
-/// ring may or may not repeat its first vertex (the index wrap closes it);
-/// fewer than three vertices enclose no area.
+/// Absolute area of a closed ring in degrees², via the shoelace formula. The ring may or may not
+/// repeat its first vertex; fewer than three vertices enclose no area.
 fn ring_area_deg2(ring: &[(f64, f64)]) -> f64 {
     if ring.len() < 3 {
         return 0.0;
@@ -119,28 +117,10 @@ fn ring_area_deg2(ring: &[(f64, f64)]) -> f64 {
     (a * 0.5).abs()
 }
 
-/// Minimum-area cull for a coarse LOD: `true` when a **polygon** feature's
-/// projected area (exterior minus holes) is below `min_area_px` square pixels at
-/// `mpp` meters-per-pixel, so it should be dropped from this tier.
-///
-/// **Lines are never culled here.** OSM ways are fragmented — one road is stored
-/// as many short segments — so an extent test on each segment drops a road's
-/// shortest links and leaves it patched with holes. There is no per-segment size
-/// that means anything *before* the ways are stitched back together. Once
-/// [`crate::merge::merge_lines_with`] has stitched a class into connected
-/// polylines a record's length does mean something, and a tier may then drop the
-/// short leftovers by their own measure — see [`line_below`], which is the only
-/// place a line is ever culled.
-/// A `Multi` culls only if *every* non-empty part is a cullable polygon.
-///
-/// Degrees convert to meters with [`M_PER_DEG`] and the `cos(lat)` longitude
-/// foreshortening at the feature's mid-latitude. `min_area_px <= 0`, a
-/// non-positive `mpp`, and empty/line geometry never cull.
-/// A geometry's projected area in **square pixels** at `mpp` — the quantity
-/// [`footprint_below`] compares against a threshold, exposed for the callers that need the
-/// number rather than the verdict (the coverage pass ranks faces by it). Lines and empties
-/// have no area; a `Multi` sums its parts. Same mid-latitude foreshortening basis, so a face
-/// and a whole feature are measured on the same scale.
+/// A geometry's projected area in square pixels at `mpp` — what [`footprint_below`] compares
+/// against a threshold, exposed for the callers that need the number rather than the verdict. Lines
+/// and empties have no area; a `Multi` sums its parts. Mid-latitude foreshortening, so a face and a
+/// whole feature are measured on the same scale.
 pub fn footprint_area_px(g: &Geom, mpp: f64) -> f64 {
     if mpp <= 0.0 || g.is_empty() {
         return 0.0;
@@ -160,6 +140,15 @@ pub fn footprint_area_px(g: &Geom, mpp: f64) -> f64 {
     }
 }
 
+/// Minimum-area cull for a coarse LOD: `true` when a polygon feature's projected area (exterior
+/// minus holes) is below `min_area_px` square pixels at `mpp`, so this tier should drop it.
+///
+/// Lines are never culled here. OSM ways are fragmented — one road is many short segments — so an
+/// extent test on each drops a road's shortest links and leaves it patched with holes. Once
+/// [`crate::merge::merge_lines_with`] has stitched a class into connected polylines a length does
+/// mean something; see [`line_below`], the only place a line is ever culled. A `Multi` culls only if
+/// every non-empty part is a cullable polygon, and a non-positive `min_area_px` or `mpp` never
+/// culls.
 pub fn footprint_below(g: &Geom, mpp: f64, min_area_px: f64) -> bool {
     if min_area_px <= 0.0 || mpp <= 0.0 || g.is_empty() {
         return false;
@@ -189,12 +178,10 @@ pub fn footprint_below(g: &Geom, mpp: f64, min_area_px: f64) -> bool {
     }
 }
 
-/// A line geometry's length in **kilometres**. Polygons and empties have no length (`0.0`); a
-/// `Multi` sums its parts, so one feature's several strands measure as the one road they are.
-///
-/// Degrees convert with [`M_PER_DEG`] and the `cos(lat)` longitude foreshortening at each
-/// *segment's* mid-latitude — the same basis as [`footprint_area_px`], taken per segment rather
-/// than per feature because a line may run far enough north-south for one factor to be wrong.
+/// A line geometry's length in kilometres. Polygons and empties have no length; a `Multi` sums its
+/// parts, so one feature's several strands measure as the one road they are. The `cos(lat)`
+/// foreshortening is taken per segment, because a line may run far enough north-south for one
+/// factor to be wrong.
 pub fn line_length_km(g: &Geom) -> f64 {
     match g {
         Geom::Empty | Geom::Polygon { .. } => 0.0,
@@ -213,19 +200,13 @@ pub fn line_length_km(g: &Geom) -> f64 {
     }
 }
 
-/// Post-stitch length cull for a coarse LOD: `true` when a **line** feature is shorter than
-/// `min_km`, so this tier should drop it.
+/// Post-stitch length cull for a coarse LOD: `true` when a line feature is shorter than `min_km`.
 ///
-/// The counterpart to [`footprint_below`], and subject to the same caveat from the other side:
-/// this is only meaningful **after** [`crate::merge::merge_lines_with`] has stitched a class's
-/// fragments into connected polylines. Run on raw OSM ways it would do exactly the damage that
-/// function's docs warn about. Run on stitched records it drops the short *leftovers* — the
-/// junction stubs and roundabout arms that no through-line could absorb — and keeps the
-/// long-distance skeleton, which is the whole reason a road class is on a far-zoom tier.
-///
-/// Never culls a polygon, so a `Multi` carrying any polygon part is safe by construction:
-/// `min_km <= 0` (the default ⇒ off), empties and anything with a polygon in it all return
-/// `false`.
+/// Only meaningful after [`crate::merge::merge_lines_with`] has stitched a class's fragments into
+/// connected polylines; run on raw OSM ways it would punch holes in roads. Run on stitched records
+/// it drops the short leftovers — junction stubs, roundabout arms — and keeps the long-distance
+/// skeleton. A polygon is never culled, so a `Multi` carrying one is safe by construction, and
+/// `min_km <= 0` is off.
 pub fn line_below(g: &Geom, min_km: f64) -> bool {
     if min_km <= 0.0 || g.is_empty() {
         return false;
@@ -240,16 +221,12 @@ pub fn line_below(g: &Geom, min_km: f64) -> bool {
     line_only(g) && line_length_km(g) < min_km
 }
 
-/// Drop interior rings (holes) whose projected area is below `min_area_px` square pixels at `mpp`,
-/// returning the count removed. A hole smaller than a pixel is invisible — the fill paints straight
-/// over it — so dropping it is a pixel-exact no-op that frees **a ring plus its vertices** in the
-/// render's frame scratch (and shaves bytes on disk). The exterior is never touched, and a polygon
-/// is never emptied (a kept polygon keeps its outline); lines and empties pass through. Same
-/// disabled/degenerate guards and mid-latitude foreshortening basis as [`footprint_below`], so a
-/// hole and a standalone polygon of equal area cull at the same scale. `Multi` recurses per part.
-///
-/// Paired with [`footprint_below`]: the cull drops whole sub-pixel polygons, this trims sub-pixel
-/// holes out of the ones that survive (e.g. a big farmland face pocked with tiny unmapped islands).
+/// Drop interior rings whose projected area is below `min_area_px` square pixels at `mpp`, returning
+/// the count removed. A hole smaller than a pixel is invisible — the fill paints straight over it —
+/// so dropping it is a pixel-exact no-op that frees a ring plus its vertices in the render's frame
+/// scratch. The exterior is never touched and a polygon is never emptied. Same guards and
+/// mid-latitude basis as [`footprint_below`], so a hole and a standalone polygon of equal area cull
+/// at the same scale.
 pub fn strip_small_holes(g: &mut Geom, mpp: f64, min_area_px: f64) -> usize {
     if min_area_px <= 0.0 || mpp <= 0.0 {
         return 0;
@@ -261,8 +238,8 @@ pub fn strip_small_holes(g: &mut Geom, mpp: f64, min_area_px: f64) -> usize {
             if interiors.is_empty() {
                 return 0;
             }
-            // Foreshorten at the exterior's mid-latitude — holes live inside it, so its bounds set
-            // the scale (matching `footprint_below`'s whole-geometry `bounds()` mid-lat).
+            // Foreshorten at the exterior's mid-latitude: holes live inside it, so its bounds set
+            // the scale.
             let (mut miny, mut maxy) = (f64::INFINITY, f64::NEG_INFINITY);
             for &(_, y) in exterior.iter() {
                 miny = miny.min(y);
@@ -276,13 +253,11 @@ pub fn strip_small_holes(g: &mut Geom, mpp: f64, min_area_px: f64) -> usize {
     }
 }
 
-/// Drop a polygon's smallest holes until it fits `max_rings` rings (exterior +
-/// holes) total, returning the count removed. The reader decodes a feature's rings
-/// into a fixed `heapless` buffer and discards the whole feature past its capacity
-/// ([`obc_reader::MAX_FEAT_RINGS`]) — so shipping the largest `max_rings - 1` holes
-/// keeps the feature (and its most visible clearings) instead of losing all of it.
-/// Kept holes stay in their original order, so emission is deterministic. Lines and
-/// within-cap polygons pass through untouched; `Multi` recurses per part.
+/// Drop a polygon's smallest holes until it fits `max_rings` rings (exterior plus holes), returning
+/// the count removed. The reader decodes a feature's rings into a fixed `heapless` buffer and
+/// discards the whole feature past [`obc_reader::MAX_FEAT_RINGS`], so shipping the largest holes
+/// keeps the feature and its most visible clearings instead of losing all of it. Kept holes stay in
+/// their original order, so emission is deterministic.
 pub fn trim_excess_holes(g: &mut Geom, max_rings: usize) -> usize {
     let cap = max_rings.saturating_sub(1);
     match g {
@@ -292,8 +267,8 @@ pub fn trim_excess_holes(g: &mut Geom, max_rings: usize) -> usize {
             if interiors.len() <= cap {
                 return 0;
             }
-            // Rank holes by area, largest first (stable, so equal areas keep input
-            // order), and keep the top `cap` at their original positions.
+            // Rank holes by area, largest first (stable, so equal areas keep input order), and
+            // keep the top `cap` at their original positions.
             let mut order: Vec<usize> = (0..interiors.len()).collect();
             order.sort_by(|&a, &b| ring_area_deg2(&interiors[b]).total_cmp(&ring_area_deg2(&interiors[a])));
             let mut keep = vec![false; interiors.len()];
@@ -352,21 +327,16 @@ pub(crate) fn hole_anchors_encodable(g: &Geom) -> bool {
         .is_some_and(|(_, distance)| distance <= crate::serialize::MAX_HOLE_ANCHOR_DELTA)
 }
 
-/// Upper bound on the bytes `pack_feature` will emit for this geometry, for
-/// quadtree chunk-size accounting: `12 + pts*4` plus the hole bookkeeping bytes,
-/// where `pts` counts the **densified ring-edge** vertices using the same µdeg rounding and
-/// `MAX_SEGMENT` walk as the serializer. Budgeting raw vertices instead would under-count features with
-/// long segments (clipped land rectangles, coarse-LOD lines), and a leaf whose
-/// real bytes overflow the chunk gets features silently dropped at pack time.
-/// Always ≥ the packed size: deltas are budgeted at the 16-bit worst case, and
-/// the exterior's anchor vertex is counted although it packs into the header.
+/// Upper bound on the bytes `pack_feature` will emit for this geometry, for quadtree chunk-size
+/// accounting: `12 + pts * 4` plus the hole bookkeeping, where `pts` counts the densified ring-edge
+/// vertices using the serializer's own µdeg rounding and `MAX_SEGMENT` walk. Budgeting raw vertices
+/// would under-count features with long segments, and a leaf whose real bytes overflow the chunk
+/// gets features silently dropped at pack time.
 ///
-/// The leading `12` is now a deliberate **overestimate**: v11 writes a 7-byte compact header for
-/// the common feature (§5), and the budget must stay ≥ the feature's real bytes *plus its share of
-/// the chunk's one sentinel byte*. The 4-byte anchor-vertex overcount already covers that +1 per
-/// feature on its own, so the wide-header figure is kept as headroom rather than tightened. Under
-/// v10's padded chunks an overestimate wasted file bytes; with tight chunks it costs nothing but a
-/// marginally earlier leaf split.
+/// Always at least the packed size: deltas are budgeted at the 16-bit worst case, and the exterior's
+/// anchor vertex is counted although it packs into the header. The leading `12` is a deliberate
+/// overestimate, since the common feature gets a 7-byte compact header, and that slack also covers
+/// each feature's share of the chunk's one sentinel byte.
 pub fn packed_size_budget(g: &Geom) -> usize {
     const NO_HOLES: &[Vec<(f64, f64)>] = &[];
     let (exterior, interiors) = match g {
@@ -382,8 +352,7 @@ pub fn packed_size_budget(g: &Geom) -> usize {
         return 0;
     }
     // Count every cyclic edge for polygons. `pack_feature` rotates hole rings and leaves the final
-    // closing edge implicit, so counting the full cycle is a conservative upper bound independent
-    // of which vertex becomes first. A repeated GEOS closure merely contributes one zero edge.
+    // closing edge implicit, so the full cycle is a conservative bound whichever vertex is first.
     let ring_pts = |pts: &[(i64, i64)], closed: bool| -> usize {
         if pts.is_empty() {
             return 0;
@@ -407,8 +376,6 @@ pub fn packed_size_budget(g: &Geom) -> usize {
     12 + pts * 4 + hole_overhead
 }
 
-// --- GEOS bridge -----------------------------------------------------------
-
 pub(crate) fn ring_to_coordseq(coords: &[(f64, f64)]) -> CoordSeq {
     let buf: Vec<[f64; 2]> = coords.iter().map(|&(x, y)| [x, y]).collect();
     CoordSeq::new_from_vec(&buf).expect("coordseq")
@@ -430,8 +397,8 @@ fn to_geos(g: &Geom) -> Geometry {
     }
 }
 
-/// Read a LineString/LinearRing's coordinate sequence into owned `(x, y)` pairs.
-/// Works on the borrowed `ConstGeometry` that ring accessors return.
+/// Read a LineString or LinearRing's coordinate sequence into owned `(x, y)` pairs. Works on the
+/// borrowed `ConstGeometry` that ring accessors return.
 fn read_coords<G: geos::Geom>(g: &G) -> Vec<(f64, f64)> {
     let cs = g.get_coord_seq().expect("coord seq");
     let n = cs.size().expect("size");
@@ -461,27 +428,25 @@ pub(crate) fn from_geos<G: Geom_>(g: &G) -> Geom {
             let parts = (0..n).map(|i| from_geos(&g.get_geometry_n(i).expect("geom n"))).collect();
             Geom::Multi(parts)
         }
-        // Points (incl. inside a GeometryCollection) carry no renderable line/area
-        // — dropped.
+        // Points carry no renderable line or area, so they are dropped.
         _ => Geom::Empty,
     }
 }
 
-/// Lets `from_geos` accept both owned `Geometry` and the borrowed `ConstGeometry`
-/// that ring/sub-geometry accessors return.
+/// Lets `from_geos` accept both owned `Geometry` and the borrowed `ConstGeometry` that ring and
+/// sub-geometry accessors return.
 pub(crate) trait Geom_: geos::Geom {}
 impl Geom_ for Geometry {}
 impl Geom_ for geos::ConstGeometry<'_> {}
 
-/// Public entry to the generic `from_geos`, for reading an owned GEOS result back
-/// into a [`Geom`].
+/// Public entry to the generic `from_geos`, for reading an owned GEOS result back into a [`Geom`].
 pub(crate) fn geom_from_geos(g: &Geometry) -> Geom {
     from_geos(g)
 }
 
-/// GEOS `TopologyPreservingSimplifier`, not plain Douglas–Peucker, so a simplified
-/// ring can't self-intersect. `tol` is in degrees (`simplify_m / M_PER_DEG`).
-/// Empty/failed → [`Geom::Empty`] (the quadtree drops it).
+/// GEOS `TopologyPreservingSimplifier`, not plain Douglas-Peucker, so a simplified ring cannot
+/// self-intersect. `tol` is in degrees. Empty or failed gives [`Geom::Empty`], which the quadtree
+/// drops.
 pub fn topology_preserve_simplify(geom: &Geom, tol: f64) -> Geom {
     match to_geos(geom).topology_preserve_simplify(tol) {
         Ok(s) => from_geos(&s),
@@ -489,9 +454,8 @@ pub fn topology_preserve_simplify(geom: &Geom, tol: f64) -> Geom {
     }
 }
 
-/// Whether a ring assembles into a **valid** polygon (GEOS `is_valid`). Matches
-/// osmium's assembler: a self-intersecting ring, a degenerate ring, or any
-/// construction error is rejected → skip.
+/// Whether a ring assembles into a valid polygon. Matches osmium's assembler: a self-intersecting
+/// ring, a degenerate ring, or any construction error is rejected.
 pub fn polygon_is_valid(exterior: &[(f64, f64)], interiors: &[Vec<(f64, f64)>]) -> bool {
     // A linear ring needs ≥4 positions (≥3 distinct + closing); fewer make GEOS error.
     if exterior.len() < 4 {
@@ -513,8 +477,7 @@ pub fn polygon_is_valid(exterior: &[(f64, f64)], interiors: &[Vec<(f64, f64)>]) 
     }
 }
 
-/// Collect every [`Geom::Polygon`] out of a (possibly `Multi`/nested) geometry,
-/// dropping anything non-polygonal.
+/// Collect every [`Geom::Polygon`] out of a possibly nested geometry, dropping anything else.
 pub(crate) fn collect_polygons(g: Geom, out: &mut Vec<Geom>) {
     match g {
         p @ Geom::Polygon { .. } => out.push(p),
@@ -527,19 +490,16 @@ pub(crate) fn collect_polygons(g: Geom, out: &mut Vec<Geom>) {
     }
 }
 
-/// Assemble a multipolygon/boundary relation's member ways into polygons-with-holes.
+/// Assemble a multipolygon or boundary relation's member ways into polygons-with-holes.
 ///
-/// `members` is each member way's resolved coordinate list. GEOS `build_area`,
-/// fed the members as a `MultiLineString`, stitches fragments sharing endpoint
-/// nodes into closed rings and applies the even-odd nesting rule (odd-depth ring =
-/// hole of the outer containing it; member roles are not trusted). Returns one
-/// [`Geom::Polygon`] per outer with its nested holes, each gated on
-/// [`polygon_is_valid`]. Un-assemblable/invalid geometry returns empty (osmium
-/// drops broken relations too).
+/// `members` is each member way's resolved coordinate list. GEOS `build_area`, fed them as a
+/// `MultiLineString`, stitches fragments sharing endpoint nodes into closed rings and applies the
+/// even-odd nesting rule, so member roles are not trusted. Each result is gated on
+/// [`polygon_is_valid`]; un-assemblable or invalid geometry returns empty, as osmium also drops
+/// broken relations.
 ///
-/// Two-tier: `build_area` on the raw linework, and if that yields nothing, retry
-/// after noding — splitting members that cross or self-touch mid-segment so
-/// polygonize can find the faces. Only messy relations pay the extra cost.
+/// Two-tier: `build_area` on the raw linework, then a retry after noding — splitting members that
+/// cross or self-touch mid-segment — so only messy relations pay the extra cost.
 pub fn assemble_multipolygon(members: &[Vec<(f64, f64)>]) -> Vec<Geom> {
     let polys = build_area_from_members(members, false);
     if !polys.is_empty() {
@@ -577,19 +537,17 @@ fn build_area_from_members(members: &[Vec<(f64, f64)>], node_first: bool) -> Vec
     polys
 }
 
-/// A clip box as a GEOS polygon, ccw ring order
-/// `(maxx,miny),(maxx,maxy),(minx,maxy),(minx,miny)`, closed. Shared by
-/// [`clip_to_box`] and [`crate::land`] so both build the identical ring.
+/// A clip box as a GEOS polygon, ccw and closed. Shared by [`clip_to_box`] and [`crate::land`], so
+/// both build the identical ring.
 pub(crate) fn box_polygon((minx, miny, maxx, maxy): (f64, f64, f64, f64)) -> Result<Geometry, geos::Error> {
     let ring = [(maxx, miny), (maxx, maxy), (minx, maxy), (minx, miny), (maxx, miny)];
     let lr = Geometry::create_linear_ring(ring_to_coordseq(&ring))?;
     Geometry::create_polygon(lr, vec![])
 }
 
-/// Fallible [`Geom::Polygon`] → GEOS polygon: unlike [`to_geos`] (which `expect`s),
-/// any ring that won't assemble into a valid `LinearRing`/`Polygon` yields `None`.
-/// A non-polygon geometry is also `None`. Used by [`union_polygons`], where a GEOS
-/// failure must fall back to passthrough, never panic the pack.
+/// Fallible [`Geom::Polygon`] to GEOS polygon: unlike [`to_geos`], any ring that will not assemble
+/// yields `None`, as does a non-polygon geometry. Used where a GEOS failure must fall back to
+/// passthrough and never panic the pack.
 pub(crate) fn try_polygon_to_geos(g: &Geom) -> Option<Geometry> {
     let Geom::Polygon { exterior, interiors } = g else {
         return None;
@@ -609,34 +567,21 @@ pub(crate) fn try_polygon_to_geos(g: &Geom) -> Option<Geometry> {
     Geometry::create_polygon(ext, holes).ok()
 }
 
-/// Dissolve a set of fill **polygons** into their union.
+/// Dissolve a set of fill polygons into their union.
 ///
-/// Rather than one global `unary_union` over the whole set, the polygons are first
-/// split into **vertex-sharing connected components** (see [`vertex_components`])
-/// and each component unioned independently, in parallel; a component of one
-/// polygon — the common case, since most fills have no same-class neighbour —
-/// passes straight through with **no GEOS round-trip at all**. This is far cheaper
-/// than the global union: the isolated majority skip the overlay machinery
-/// entirely, and the surviving clusters (adjacent parcels, tiled landuse) are small
-/// and union in parallel instead of as one giant serial call.
+/// The polygons are first split into vertex-sharing connected components ([`vertex_components`]) and
+/// each component is unioned independently, in parallel; a component of one polygon — the common
+/// case — passes straight through with no GEOS round-trip at all.
 ///
-/// Adjacency is decided by a shared vertex because separate OSM ways that abut
-/// reference the *same* boundary nodes, so their rings carry bit-identical
-/// coordinates there. This is a near-exact decomposition of the global union: the
-/// only merges it can miss are two same-class polygons that overlap without sharing
-/// a node (a rare mapping artefact), which stay as two parts instead of one — and
-/// since the class merges only fills that render pixel-identically (same z/color/
-/// priority, no outline), two undissolved same-color parts paint exactly as their
-/// union would, so the miss is invisible.
+/// Adjacency is decided by a shared vertex, because separate OSM ways that abut reference the same
+/// boundary nodes and their rings carry bit-identical coordinates there. The only merges this can
+/// miss are two same-class polygons that overlap without sharing a node, and a class merges only
+/// fills that render pixel-identically, so two undissolved parts paint exactly as their union would.
 ///
-/// Returns the flattened [`Geom::Polygon`] parts (a ring of parcels around an
-/// unmapped centre keeps its interior ring); `None` only on an empty input. A
-/// component whose GEOS union fails falls back to passing its own polygons through
-/// unmerged, so map content is never dropped. Order is deterministic: components
-/// are emitted by ascending smallest-member index. Each component builds, unions,
-/// and reads back its GEOS geometries **wholly on one thread** (no `geos::Geometry`
-/// — which is `!Send` — ever crosses a thread boundary), so the parallel map is
-/// safe, and the clustering itself is pure-Rust on plain coordinates.
+/// Returns the flattened [`Geom::Polygon`] parts; `None` only on an empty input. A component whose
+/// GEOS union fails passes its own polygons through unmerged, so map content is never dropped. Order
+/// is deterministic: components are emitted by ascending smallest-member index, and each component
+/// builds, unions and reads back wholly on one thread, since `geos::Geometry` is `!Send`.
 pub fn union_polygons(polys: &[&Geom]) -> Option<Vec<Geom>> {
     if polys.is_empty() {
         return None;
@@ -646,8 +591,7 @@ pub fn union_polygons(polys: &[&Geom]) -> Option<Vec<Geom>> {
         .par_iter()
         .map(|comp| {
             if comp.len() == 1 {
-                // Isolated fill: no neighbour to dissolve into — pass it through
-                // untouched, skipping GEOS entirely.
+                // Isolated fill: no neighbour to dissolve into, so skip GEOS entirely.
                 return vec![polys[comp[0]].clone()];
             }
             let refs: Vec<&Geom> = comp.iter().map(|&i| polys[i]).collect();
@@ -658,19 +602,14 @@ pub fn union_polygons(polys: &[&Geom]) -> Option<Vec<Geom>> {
     (!out.is_empty()).then_some(out)
 }
 
-/// Union a set of polygons with a single global GEOS `unary_union` (the
-/// cascaded/STRtree union). Returns the flattened [`Geom::Polygon`] parts, or
-/// `None` on any GEOS failure or empty result. This is the per-component worker
-/// behind [`union_polygons`]; it builds, unions, and reads back wholly on the
-/// calling thread (`geos::Geometry` is `!Send`).
+/// Union a set of polygons with a single global GEOS `unary_union`. Returns the flattened
+/// [`Geom::Polygon`] parts, or `None` on any GEOS failure or empty result. Builds, unions and reads
+/// back wholly on the calling thread (`geos::Geometry` is `!Send`).
 ///
-/// Public because a caller that needs a *true* union must not go through
-/// [`union_polygons`]: that one clusters by shared vertices first, which is right
-/// for dissolving abutting map fills (they share OSM nodes) and wrong for polygons
-/// that genuinely overlap without touching a vertex — two such polygons would come
-/// back unmerged, and an even-odd reading of the result would count their overlap
-/// as a hole. The bakery's source-coverage test (`obc-bake`'s `coverage`) needs the
-/// real thing, over a handful of country outlines.
+/// Public because a caller that needs a true union must not go through [`union_polygons`]: that one
+/// clusters by shared vertices first, which is right for dissolving abutting map fills and wrong for
+/// polygons that genuinely overlap without touching a vertex — those come back unmerged, and an
+/// even-odd reading of the result would count their overlap as a hole.
 pub fn union_all(polys: &[&Geom]) -> Option<Vec<Geom>> {
     let mut geoms = Vec::with_capacity(polys.len());
     for g in polys {
@@ -686,16 +625,13 @@ pub fn union_all(polys: &[&Geom]) -> Option<Vec<Geom>> {
     (!out.is_empty()).then_some(out)
 }
 
-/// Partition polygon indices `0..polys.len()` into connected components where two
-/// polygons are linked iff they share a vertex. Abutting OSM ways reference the
-/// same boundary nodes, so their rings carry bit-identical coordinates along the
-/// shared edge; quantising to ~1 cm (`1e7` scale) before hashing absorbs any float
-/// noise while keeping genuinely distinct nodes apart. A union-find over "these
-/// indices touched the same grid point" yields the components in one pass.
+/// Partition polygon indices into connected components, where two polygons are linked iff they
+/// share a vertex. Abutting OSM ways reference the same boundary nodes, so their rings carry
+/// bit-identical coordinates along the shared edge; quantising to about 1 cm before hashing absorbs
+/// float noise while keeping genuinely distinct nodes apart.
 ///
-/// Output is deterministic regardless of link order: components are grouped by
-/// walking indices `0..n`, so each component's members are ascending and the
-/// components themselves are ordered by their smallest member.
+/// Output does not depend on link order: components are grouped by walking `0..n`, so each
+/// component's members ascend and the components are ordered by their smallest member.
 fn vertex_components(polys: &[&Geom]) -> Vec<Vec<usize>> {
     let n = polys.len();
     let mut parent: Vec<usize> = (0..n).collect();
@@ -750,22 +686,17 @@ fn vertex_components(polys: &[&Geom]) -> Vec<Vec<usize>> {
     roots_in_order.into_iter().map(|r| groups.remove(&r).unwrap()).collect()
 }
 
-/// Stitch a set of **lines** into maximal-length polylines via GEOS `line_merge`
-/// (the LineMerger): joins linestrings sharing an endpoint at a degree-2 node,
-/// dropping the duplicated join vertex, and stops at degree-≥3 junctions and where
-/// two lines only cross without a shared vertex — so an OSM way split into many
-/// segments recombines, but distinct roads meeting at a junction stay separate.
-/// Returns the flattened [`Geom::Line`] parts of the result (disjoint members pass
-/// straight through as their own lines), or `None` on any GEOS failure or an empty
-/// result — so the caller passes the group through unmerged rather than drop map
-/// content. Builds, merges, and reads back **wholly on the calling thread**: no
-/// `geos::Geometry` ever crosses a thread boundary (it is `!Send`), so this is safe
-/// to call from a rayon worker (see [`union_polygons`]).
+/// Stitch a set of lines into maximal-length polylines with GEOS `line_merge`: linestrings sharing
+/// an endpoint at a degree-2 node join, and merging stops at degree-3 junctions and where two lines
+/// only cross without a shared vertex — so an OSM way split into segments recombines while distinct
+/// roads meeting at a junction stay separate. Returns the flattened [`Geom::Line`] parts, or `None`
+/// on any GEOS failure or an empty result, so the caller passes the group through unmerged rather
+/// than drop map content. Builds, merges and reads back wholly on the calling thread
+/// (`geos::Geometry` is `!Send`).
 pub fn merge_lines_geos(lines: &[&Geom]) -> Option<Vec<Geom>> {
     let mut geoms = Vec::with_capacity(lines.len());
     for g in lines {
-        // A caller in `merge.rs` only ever hands us `Geom::Line`s; a degenerate
-        // <2-vertex line can't form a linestring, so bail to the unmerged fallback.
+        // A degenerate <2-vertex line cannot form a linestring, so bail to the unmerged fallback.
         let Geom::Line(c) = g else { return None };
         if c.len() < 2 {
             return None;
@@ -782,8 +713,7 @@ pub fn merge_lines_geos(lines: &[&Geom]) -> Option<Vec<Geom>> {
     (!out.is_empty()).then_some(out)
 }
 
-/// Flatten a `line_merge` result into its [`Geom::Line`] parts (a single merged
-/// chain reads back as one `Line`; several as a `Multi` of them).
+/// Flatten a `line_merge` result into its [`Geom::Line`] parts.
 pub(crate) fn collect_lines(g: Geom, out: &mut Vec<Geom>) {
     match g {
         l @ Geom::Line(_) => out.push(l),
@@ -796,25 +726,19 @@ pub(crate) fn collect_lines(g: Geom, out: &mut Vec<Geom>) {
     }
 }
 
-// --- the GEOS polygonal-coverage API, via `geos-sys` -----------------------
-//
-// The two entry points [`crate::coverage`] needs that the safe `geos` crate does not wrap.
-
-/// `GEOSCoverageSimplifyVW` / `GEOSCoverageIsValid`, spoken to directly.
+/// `GEOSCoverageSimplifyVW` and `GEOSCoverageIsValid`, spoken to directly.
 ///
-/// `geos` 11.1 wraps `GEOSCoverageUnion` but neither of these two, and its `Geometry` keeps
-/// its raw pointer private (the `AsRaw` trait is crate-private), so a wrapped geometry cannot
-/// be handed to a C entry point the crate does not already cover. This module therefore talks
-/// to `geos::sys` — the same `geos-sys` the safe crate itself is built on, so no new
-/// dependency and no second version of libGEOS — and takes [`Geom`] in and out.
+/// The safe `geos` crate wraps neither, and its `Geometry` keeps its raw pointer private, so a
+/// wrapped geometry cannot be handed to a C entry point the crate does not cover. This module talks
+/// to `geos::sys` — the same `geos-sys` the safe crate is built on, so no new dependency and no
+/// second libGEOS — and takes [`Geom`] in and out.
 ///
 /// # Safety story
 ///
-/// Every raw pointer is created, used and destroyed **inside one call on one thread**, under a
-/// context handle created first and dropped last, and the RAII guards below free their
-/// geometry on every exit path (early return, `?`, panic). Nothing GEOS-owned escapes: results
-/// are copied into owned Rust [`Geom`]s before the guards run, and no pointer is ever shared
-/// between threads or stored. Every `unsafe` block in the packer's coverage path is in here.
+/// Every raw pointer is created, used and destroyed inside one call on one thread, under a context
+/// handle created first and dropped last, and the RAII guards below free their geometry on every
+/// exit path. Nothing GEOS-owned escapes: results are copied into owned [`Geom`]s before the guards
+/// run, and no pointer is shared between threads or stored.
 mod coverage_api {
     use std::ffi::c_int;
     use std::ptr;
@@ -976,8 +900,7 @@ mod coverage_api {
         }
         let mut raw = holes.release();
         // An empty `Vec`'s `as_mut_ptr` is a dangling (aligned, non-null) pointer, and handing one
-        // to a C function is a promise we cannot keep even where it is only read `0` times. A
-        // hole-less polygon passes a real null instead.
+        // to a C function is a promise we cannot keep. A hole-less polygon passes a real null.
         let holes_ptr = if raw.is_empty() { ptr::null_mut() } else { raw.as_mut_ptr() };
         // SAFETY: `shell` and every hole are live rings owned here; `GEOSGeom_createPolygon_r`
         // takes ownership of all of them (the `raw` *array* stays ours) and returns null on
@@ -994,8 +917,7 @@ mod coverage_api {
             nursery.push(build_polygon(ctx, g))?;
         }
         let mut raw = nursery.release();
-        // Same dangling-pointer rule as `build_polygon`: an empty collection passes null, not the
-        // aligned nothing an empty `Vec` hands out.
+        // Same dangling-pointer rule as `build_polygon`: an empty collection passes a real null.
         let members = if raw.is_empty() { ptr::null_mut() } else { raw.as_mut_ptr() };
         // SAFETY: every element is a live polygon owned here; `GEOSGeom_createCollection_r`
         // takes ownership of them (the array stays ours). Same accepted-leak note as above on
@@ -1038,10 +960,8 @@ mod coverage_api {
     /// pointers *borrowed* from `g`, which stays alive for the whole walk, and are never
     /// destroyed here.
     unsafe fn read_geom(ctx: &Context, g: *const GEOSGeometry) -> Option<Geom> {
-        // 1 = empty, 2 = exception. They must not be conflated: an exception means GEOS could not
-        // answer, and reading that as "empty" would silently delete this element's content while
-        // the call as a whole still reported success. `None` instead, which fails the whole call
-        // and takes the caller's never-drop fallback.
+        // 1 = empty, 2 = exception. They must not be conflated: reading an exception as "empty"
+        // would silently delete this element's content while the call still reported success.
         match GEOSisEmpty_r(ctx.raw(), g) {
             0 => {}
             1 => return Some(Geom::Empty),
@@ -1092,21 +1012,15 @@ mod coverage_api {
         }
     }
 
-    /// Simplify a polygonal **coverage** with `GEOSCoverageSimplifyVW`: every edge shared by
-    /// two elements is simplified **once**, so neighbours stay glued at any tolerance — the
-    /// whole reason this pass exists (per-feature simplify moves each copy of a shared
-    /// boundary independently and tears the seam open).
+    /// Simplify a polygonal coverage with `GEOSCoverageSimplifyVW`: every edge shared by two
+    /// elements is simplified once, so neighbours stay glued at any tolerance.
     ///
-    /// `tol` is in degrees, like [`super::topology_preserve_simplify`]. `preserve_boundary`
-    /// pins the coverage's outer edge; the packer passes `false`, because the outer edge of a
-    /// tier's fills is a coastline or a landuse rim like any other line and must simplify at
-    /// the tier's tolerance too — pinning it would leave un-simplified vertex noise around
-    /// every cluster at the coarsest zooms.
+    /// `tol` is in degrees, like [`super::topology_preserve_simplify`]. `preserve_boundary` pins the
+    /// coverage's outer edge; the packer passes `false`, because that edge is a coastline or landuse
+    /// rim like any other line and must simplify at the tier's tolerance too.
     ///
-    /// Returns one [`Geom`] per input element **in input order** (GEOS preserves it, which is
-    /// how the caller keeps each element's style), or `None` on any GEOS failure or a
-    /// element-count mismatch — the caller then falls back to the per-feature path and drops
-    /// nothing.
+    /// Returns one [`Geom`] per input element in input order, which is how the caller keeps each
+    /// element's style, or `None` on any GEOS failure or an element-count mismatch.
     pub fn coverage_simplify_vw(polys: &[&Geom], tol: f64, preserve_boundary: bool) -> Option<Vec<Geom>> {
         if polys.is_empty() {
             return None;
@@ -1138,10 +1052,9 @@ mod coverage_api {
         }
     }
 
-    /// Whether these polygons form a **valid coverage** (`GEOSCoverageIsValid`): interiors
-    /// disjoint and every shared edge vertex-for-vertex identical on both sides. `gap_width`
-    /// is the narrow-gap width to also report as invalid; `0.0` checks overlaps and mismatched
-    /// edges only. A GEOS failure reads as invalid — the caller's fallback is the safe answer.
+    /// Whether these polygons form a valid coverage: interiors disjoint and every shared edge
+    /// vertex-for-vertex identical on both sides. `gap_width` is the narrow-gap width to also report
+    /// as invalid. A GEOS failure reads as invalid, since the caller's fallback is the safe answer.
     pub fn coverage_is_valid(polys: &[&Geom], gap_width: f64) -> bool {
         if polys.is_empty() {
             return false;
@@ -1162,15 +1075,12 @@ mod coverage_api {
 
 pub use coverage_api::{coverage_is_valid, coverage_simplify_vw};
 
-/// Clip `geom` to the node box (integer microdegrees → degrees) via GEOS
-/// `intersection`.
+/// Clip `geom` to the node box (integer microdegrees to degrees) with GEOS `intersection`.
 ///
-/// Real OSM data occasionally arrives here **invalid** — the DACH bake's first casualty was a
-/// merged fill whose union left a hole no shell contains (`TopologyException: unable to assign
-/// free hole to a shell`), which GEOS refuses to intersect. The repair runs **only on the failure
-/// path**: a geometry today's code clips cleanly takes exactly the code it always took, so no
-/// previously-baked cell can move a byte — `make_valid` is reached solely where the bake used to
-/// die, and its output is deterministic, so the recovered cell is too.
+/// Real OSM data occasionally arrives invalid — a merged fill whose union left a hole no shell
+/// contains, which GEOS refuses to intersect. The `make_valid` repair runs only on the failure path,
+/// so a geometry that clips cleanly takes exactly the code it always took and no baked cell moves a
+/// byte.
 pub fn clip_to_box(geom: &Geom, bbox: (i64, i64, i64, i64)) -> Geom {
     let (minx, miny, maxx, maxy) = (bbox.0 as f64 / 1e6, bbox.1 as f64 / 1e6, bbox.2 as f64 / 1e6, bbox.3 as f64 / 1e6);
     let box_geom = box_polygon((minx, miny, maxx, maxy)).expect("box polygon");
@@ -1237,8 +1147,8 @@ mod tests {
         }
     }
 
-    /// Feeding the inner ring first must still yield the lake-with-hole
-    /// (build_area classifies by geometry, not member order/role).
+    /// Feeding the inner ring first must still yield the lake with its hole: `build_area` classifies
+    /// by geometry, not by member order or role.
     #[test]
     fn assemble_is_order_independent() {
         let polys = assemble_multipolygon(&[r1_inner(), r1_outer()]);
@@ -1257,17 +1167,13 @@ mod tests {
         assert!(assemble_multipolygon(&[open]).is_empty());
     }
 
-    // --- clip_to_box ---------------------------------------------------------
-
     fn bounds_of(g: &Geom) -> (f64, f64, f64, f64) {
         g.bounds()
     }
 
-    /// **The DACH bake's crash, pinned.** A merged fill can arrive with a hole no shell contains
-    /// (`TopologyException: unable to assign free hole to a shell` at 10.4874°E 50.0780°N), which
-    /// GEOS refuses to intersect. The clip must repair-and-retry instead of dying: one degenerate
-    /// polygon out of a country's millions must never cost the whole bake. (Probe-verified: this
-    /// fixture genuinely takes the `Err` path — a panic stubbed into the `Ok` arm does not fire.)
+    /// A merged fill can arrive with a hole no shell contains, which GEOS refuses to intersect. The
+    /// clip must repair and retry instead of dying: one degenerate polygon out of a country's
+    /// millions must never cost the whole bake.
     #[test]
     fn clip_repairs_a_free_hole_instead_of_panicking() {
         // A shell with an interior ring entirely OUTSIDE it — the "free hole" GEOS cannot assign.
@@ -1282,8 +1188,7 @@ mod tests {
             ])],
         };
         let clipped = clip_to_box(&invalid, (0, 0, 1000, 1000));
-        // The repaired shell survives the clip; where exactly GEOS puts the freed hole is its
-        // business — what this pins is "a valid, in-box result, not a panic".
+        // The repaired shell survives the clip; where GEOS puts the freed hole is its business.
         let (minx, miny, maxx, maxy) = bounds_of(&clipped);
         assert!(minx >= 0.0 && miny >= 0.0 && maxx <= 0.001 && maxy <= 0.001, "{clipped:?}");
         match &clipped {
@@ -1312,8 +1217,8 @@ mod tests {
         }
     }
 
-    /// A polygon larger than the box clips to exactly the box. Guards the polygon
-    /// branch of `from_geos` (exterior ring read-back) and the clip-box ring.
+    /// A polygon larger than the box clips to exactly the box, which guards the polygon branch of
+    /// `from_geos` and the clip-box ring.
     #[test]
     fn clip_polygon_to_box_yields_box() {
         let big = Geom::Polygon {
@@ -1339,10 +1244,8 @@ mod tests {
         }
     }
 
-    /// A line that leaves and re-enters the box clips to a `MultiLineString`, which
-    /// `from_geos` must turn into a `Geom::Multi` — the Multi-flattening path the
-    /// quadtree relies on. The line dips below the box in the middle, so two inside
-    /// segments survive.
+    /// A line that leaves and re-enters the box clips to a `MultiLineString`, which `from_geos` must
+    /// turn into a `Geom::Multi` — the flattening path the quadtree relies on.
     #[test]
     fn clip_line_reentering_box_is_multi() {
         let line = Geom::Line(vec![
@@ -1367,7 +1270,6 @@ mod tests {
         }
     }
 
-    /// A feature entirely outside the box clips to `Empty` (the quadtree drops it).
     #[test]
     fn clip_disjoint_is_empty() {
         let line = Geom::Line(vec![(0.005, 0.005), (0.006, 0.006)]);
@@ -1375,11 +1277,8 @@ mod tests {
         assert!(clipped.is_empty(), "a disjoint feature clips to Empty");
     }
 
-    // --- topology_preserve_simplify -----------------------------------------
-
-    /// A 3-point line whose middle vertex sits 0.0001° off the chord keeps all 3
-    /// points when `tol` is below that deviation and drops the middle vertex when
-    /// `tol` is above it — `tol` bites exactly at the deviation boundary.
+    /// A 3-point line whose middle vertex sits 0.0001° off the chord keeps all three points below
+    /// that deviation and drops the middle one above it: `tol` bites exactly at the boundary.
     #[test]
     fn simplify_keeps_survivor_drops_redundant() {
         let line = Geom::Line(vec![(0.0, 0.0), (0.001, 0.0001), (0.002, 0.0)]);
@@ -1400,10 +1299,9 @@ mod tests {
         }
     }
 
-    /// Why this is `TopologyPreservingSimplifier` and not plain Douglas–Peucker: a
-    /// concave staple polygon simplified hard must NOT self-intersect. Plain DP can
-    /// pull an edge across the notch and produce an invalid ring, which
-    /// `polygon_is_valid` and the device renderer both assume never happens.
+    /// Why this is `TopologyPreservingSimplifier` and not plain Douglas-Peucker: a concave staple
+    /// simplified hard must not self-intersect, which `polygon_is_valid` and the device renderer
+    /// both assume never happens.
     #[test]
     fn simplify_is_topology_preserving_stays_valid() {
         // A fat C with a deep notch; naive DP could collapse the notch walls.
@@ -1434,10 +1332,9 @@ mod tests {
         }
     }
 
-    /// `tol` is degrees, but the LOD config specifies simplify tolerance in meters,
-    /// converted at the call site as `simplify_m / M_PER_DEG`. Getting the conversion
-    /// wrong would simplify ~111 000× too aggressively and flatten every road. A
-    /// ~22 m deviation survives a 10 m tolerance and is dropped by a 50 m one.
+    /// `tol` is degrees, but the LOD config specifies metres, converted at the call site as
+    /// `simplify_m / M_PER_DEG`. Getting that wrong would simplify ~111 000x too aggressively and
+    /// flatten every road.
     #[test]
     fn simplify_meters_to_degrees_scale() {
         const M_PER_DEG: f64 = 111_320.0;
@@ -1457,11 +1354,8 @@ mod tests {
         }
     }
 
-    // --- assemble_multipolygon node-repair tier -----------------------------
-
-    /// Forces the repair path: a self-crossing bow-tie yields nothing from the fast
-    /// `build_area` pass, so the `node_first=true` retry must node the linework and
-    /// recover the two faces.
+    /// Forces the repair path: a self-crossing bow-tie yields nothing from the fast `build_area`
+    /// pass, so the noded retry must recover the two faces.
     #[test]
     fn assemble_self_touching_uses_node_repair() {
         let bowtie = ring(&[(0.0, 0.0), (0.002, 0.002), (0.002, 0.0), (0.0, 0.002), (0.0, 0.0)]);
@@ -1478,10 +1372,7 @@ mod tests {
         }
     }
 
-    // --- polygon_is_valid ---------------------------------------------------
-
-    /// A simple square is valid; a self-intersecting bow-tie is not (osmium drops
-    /// it); a <4-position ring can't form a linear ring and is rejected.
+    /// A bow-tie is invalid, as osmium also finds, and a <4-position ring cannot form a linear ring.
     #[test]
     fn polygon_is_valid_rejects_self_intersection_and_degenerate() {
         let square = ring(&[(0.0, 0.0), (0.002, 0.0), (0.002, 0.002), (0.0, 0.002), (0.0, 0.0)]);
@@ -1494,10 +1385,8 @@ mod tests {
         assert!(!polygon_is_valid(&degenerate, &[]), "a <4-position ring can't form a polygon");
     }
 
-    // --- footprint_below (coarse-LOD cull) ----------------------------------
-
-    /// A square `side` degrees on a side, anchored near the equator so the `cos`
-    /// foreshortening is ≈1 and the math is easy to reason about.
+    /// A square `side` degrees on a side, anchored near the equator so the `cos` foreshortening is
+    /// about 1 and the arithmetic is easy to follow.
     fn square(side: f64) -> Geom {
         Geom::Polygon {
             exterior: ring(&[(0.0, 0.0), (side, 0.0), (side, side), (0.0, side), (0.0, 0.0)]),
@@ -1505,9 +1394,6 @@ mod tests {
         }
     }
 
-    /// `trim_excess_holes` keeps the largest `max_rings - 1` holes in their
-    /// original order and reports the drop count; within-cap polygons and lines
-    /// pass through untouched.
     #[test]
     fn trim_excess_holes_drops_smallest_keeps_order() {
         let hole = |x0: f64, s: f64| ring(&[(x0, 0.0), (x0 + s, 0.0), (x0 + s, s), (x0, s), (x0, 0.0)]);
@@ -1525,8 +1411,7 @@ mod tests {
         assert_eq!(trim_excess_holes(&mut l, 3), 0, "lines pass through");
     }
 
-    /// `ring_area_deg2` is the plain shoelace area and ignores winding /
-    /// closure: a 0.002°×0.002° square is 4e-6 deg² either way round.
+    /// `ring_area_deg2` is the plain shoelace area and ignores winding and closure.
     #[test]
     fn ring_area_is_shoelace_and_winding_agnostic() {
         let cw = ring(&[(0.0, 0.0), (0.0, 0.002), (0.002, 0.002), (0.002, 0.0), (0.0, 0.0)]);
@@ -1535,17 +1420,16 @@ mod tests {
         assert!((ring_area_deg2(&ccw) - 4e-6).abs() < 1e-12, "closure vertex is optional");
     }
 
-    /// At 18 m/px, a ~111 m square (≈6 px/side, ~38 px²) is kept but a ~22 m
-    /// square (≈1.2 px/side, ~1.5 px²) is dropped by a 4 px² threshold.
+    /// At 18 m/px a ~111 m square (~38 px²) is kept but a ~22 m square (~1.5 px²) is dropped by a
+    /// 4 px² threshold.
     #[test]
     fn polygon_culled_below_area_threshold() {
         assert!(!footprint_below(&square(0.001), 18.0, 4.0), "a ~38 px² wood stays");
         assert!(footprint_below(&square(0.0002), 18.0, 4.0), "a ~1.5 px² sliver goes");
     }
 
-    /// The same tier's `max_mpp` sets the real-world cut: at 120 m/px a field
-    /// that easily survives at 18 m/px is dropped, so the cut widens as the tier
-    /// coarsens even at one `min_area_px`.
+    /// The tier's `max_mpp` sets the real-world cut: at 120 m/px a field that easily survives at
+    /// 18 m/px is dropped, so the cut widens as the tier coarsens even at one `min_area_px`.
     #[test]
     fn coarser_mpp_widens_the_real_world_cut() {
         let field = square(0.001); // ~111 m
@@ -1553,9 +1437,8 @@ mod tests {
         assert!(footprint_below(&field, 120.0, 4.0), "dropped at the country tier");
     }
 
-    /// Lines are never culled by the area test — a road is stored as many short
-    /// ways, and dropping the shortest ones patches holes into it. Even a tiny
-    /// sub-pixel segment survives; zoomed-out line density is a `min_lod` concern.
+    /// A road is stored as many short ways and dropping the shortest patches holes into it, so even
+    /// a tiny sub-pixel segment survives; zoomed-out line density is a `min_lod` concern.
     #[test]
     fn lines_are_never_culled() {
         let road = Geom::Line(ring(&[(0.0, 0.0), (0.02, 0.0)])); // ~2.2 km segment
@@ -1564,8 +1447,6 @@ mod tests {
         assert!(!footprint_below(&stub, 18.0, 4.0), "a short segment stays too — no road holes");
     }
 
-    /// A disabled threshold (`<= 0`) and empty geometry never cull, so the
-    /// packer stays byte-identical when the field is absent.
     #[test]
     fn disabled_and_empty_never_cull() {
         assert!(!footprint_below(&square(0.0002), 18.0, 0.0), "min_area_px 0 is off");
@@ -1574,9 +1455,8 @@ mod tests {
         assert!(!footprint_below(&square(0.001), 0.0, 4.0), "non-positive mpp is off");
     }
 
-    /// Longitude foreshortening shrinks a high-latitude polygon's projected area,
-    /// so a square that survives at the equator can be culled at 60°N (where a
-    /// degree of longitude is half as wide).
+    /// A degree of longitude is half as wide at 60°N, so a square that survives at the equator is
+    /// culled there.
     #[test]
     fn latitude_foreshortening_shrinks_projected_area() {
         let side = 0.0004_f64; // ~6.1 px² at the equator, ~3.1 px² at 60°N — straddles the 4 px² cut
@@ -1589,10 +1469,7 @@ mod tests {
         assert!(footprint_below(&north, 18.0, 4.0), "same size, culled at 60°N");
     }
 
-    // --- strip_small_holes (sub-pixel hole trim) ----------------------------
-
-    /// The exterior of a big 0.01° face, holed by one ~1375 px² courtyard and one ~1.5 px² island at
-    /// 18 m/px.
+    /// A big 0.01° face holed by one ~1375 px² courtyard and one ~1.5 px² island at 18 m/px.
     fn holed(interiors: Vec<Vec<(f64, f64)>>) -> Geom {
         Geom::Polygon { exterior: ring(&[(0.0, 0.0), (0.01, 0.0), (0.01, 0.01), (0.0, 0.01), (0.0, 0.0)]), interiors }
     }
@@ -1603,8 +1480,7 @@ mod tests {
         ring(&[(0.0011, 0.0011), (0.0013, 0.0011), (0.0013, 0.0013), (0.0011, 0.0013), (0.0011, 0.0011)])
     }
 
-    /// A sub-pixel hole is dropped, a supra-pixel hole survives untouched, and the exterior is never
-    /// modified — same 4 px² threshold that culls a standalone ~1.5 px² square in the tests above.
+    /// The same 4 px² threshold that culls a standalone ~1.5 px² square in the tests above.
     #[test]
     fn strip_small_holes_drops_only_subpixel_holes() {
         let mut g = holed(vec![big_hole(), tiny_hole()]);
@@ -1618,8 +1494,8 @@ mod tests {
         }
     }
 
-    /// Disabled (`min_area_px <= 0`) or a non-positive mpp trims nothing, so the packer stays
-    /// byte-identical when the knob is off — the same off-contract as the footprint cull.
+    /// Disabled or a non-positive mpp trims nothing, so the packer stays byte-identical when the
+    /// knob is off — the same off-contract as the footprint cull.
     #[test]
     fn strip_small_holes_disabled_is_a_noop() {
         let mut g = holed(vec![tiny_hole()]);
@@ -1631,7 +1507,6 @@ mod tests {
         }
     }
 
-    /// Lines, hole-free polygons, and empties have nothing to strip; a `Multi` recurses per part.
     #[test]
     fn strip_small_holes_ignores_lines_and_hole_free() {
         assert_eq!(strip_small_holes(&mut Geom::Line(ring(&[(0.0, 0.0), (0.01, 0.0)])), 18.0, 4.0), 0);
@@ -1641,8 +1516,8 @@ mod tests {
     }
 
     /// A degree of latitude is [`M_PER_DEG`]; a degree of longitude is that times `cos(lat)`. At
-    /// 48° N the two axes must therefore measure differently for the same degree span, which is
-    /// the whole reason the length is not a plain euclidean distance in degrees.
+    /// 48° N the two axes measure differently over the same degree span, which is why the length is
+    /// not a plain euclidean distance in degrees.
     #[test]
     fn line_length_km_uses_latitude_foreshortening() {
         let north = Geom::Line(vec![(7.8, 47.99), (7.8, 48.00)]);
@@ -1657,7 +1532,6 @@ mod tests {
         assert!((line_length_km(&multi) - 2.0 * 1.1132).abs() < 1e-3);
     }
 
-    /// Areas are not lengths: a polygon has no length, so the cull can never reach one.
     #[test]
     fn line_length_km_ignores_polygons_and_empties() {
         assert_eq!(line_length_km(&square(0.01)), 0.0);
@@ -1665,8 +1539,7 @@ mod tests {
         assert_eq!(line_length_km(&Geom::Line(vec![])), 0.0, "a degenerate line has no segments");
     }
 
-    /// The threshold is a strict `<`, and `0.0` is off — the default, and what makes a tier
-    /// without the knob pack exactly as it did before.
+    /// The threshold is a strict `<`, and `0.0` is off, which is the default.
     #[test]
     fn line_below_thresholds_and_disabled() {
         let km = |n: f64| Geom::Line(vec![(7.8, 48.0), (7.8, 48.0 + n / 111.32)]);
@@ -1677,8 +1550,8 @@ mod tests {
         assert!(!line_below(&Geom::Empty, 0.5), "an empty is not a short line");
     }
 
-    /// The safety property the pipeline leans on: a polygon is never culled by length, and a
-    /// `Multi` carrying one is safe by the same token however short its line parts are.
+    /// A polygon is never culled by length, and a `Multi` carrying one is safe by the same token,
+    /// however short its line parts are.
     #[test]
     fn line_below_never_culls_a_polygon() {
         let tiny = square(0.0001);

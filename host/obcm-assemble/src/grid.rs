@@ -1,46 +1,40 @@
-//! The OBCA cell grid, as the **assembler** needs it: cell identity, the alignment arithmetic
-//! ([`OBCA_Spec.md`](../../../specs/OBCA_Spec.md) §1–§2), and the assembly-bbox snap of §4.2.
+//! The OBCA cell grid as the assembler needs it: cell identity, the alignment arithmetic, and the
+//! assembly-bbox snap.
 //!
-//! # Why this is not `obc_pack::grid`
-//!
-//! The cutter's copy of this arithmetic lives in `host/obc-pack/src/grid.rs`, and that crate carries
-//! libGEOS — a native dependency the engine must not have (#1024: the core is GEOS-free and compiles
-//! for `wasm32-unknown-unknown`). So the few dozen lines of integer arithmetic are restated here,
-//! deliberately, rather than pulling a C++ geometry library into a browser tab.
-//!
-//! Restating a normative contract is a drift risk, so the drift is **tested**: the oracle suite
-//! (`tests/oracle.rs`, which may dev-depend on obc-pack) asserts cell-for-cell that both copies
-//! compute the same squares, the same containment, and the same boundary predicate. A divergence
-//! fails a test rather than mis-grafting a map.
+//! The cutter's copy of this arithmetic lives in `host/obc-pack/src/grid.rs`, and that crate
+//! carries libGEOS, a native dependency the engine must not have because it compiles for
+//! `wasm32-unknown-unknown`. So the few dozen lines of integer arithmetic are restated here, and
+//! the drift is tested: the oracle suite asserts cell-for-cell that both copies compute the same
+//! squares, the same containment and the same boundary predicate.
 //!
 //! Everything here is integer-only. The grid exists so an OBCM quadtree's floor-midpoint
-//! subdivision lands *exactly* on cell boundaries (§2), and one rounding step in the wrong direction
-//! would break that.
+//! subdivision lands exactly on cell boundaries, and one rounding step in the wrong direction would
+//! break that.
 
 use core::fmt;
 
-/// Origin of the fixed global cell grid, µdeg, on **both** axes (OBCA §1.1).
+/// Origin of the fixed global cell grid, µdeg, on both axes.
 pub const GRID_ORIGIN: i64 = -(1 << 28);
 
-/// Side of the world box, µdeg (OBCA §1.1): `2^29`. The grid does **not** wrap and cells may legally
-/// overhang ±90 / ±180 (§1.4).
+/// Side of the world box, µdeg: `2^29`. The grid does not wrap and cells may legally overhang
+/// ±90 / ±180.
 pub const WORLD_SIDE: i64 = 1 << 29;
 
-/// Smallest permitted cell size as `log2(µdeg)` (OBCA §1.1).
+/// Smallest permitted cell size as `log2(µdeg)`.
 pub const MIN_CELL_LOG2: u32 = 10;
 
-/// Largest permitted cell size as `log2(µdeg)` (OBCA §1.1).
+/// Largest permitted cell size as `log2(µdeg)`.
 pub const MAX_CELL_LOG2: u32 = 28;
 
-/// Largest permitted assembly-bbox span as `log2(µdeg)` (OBCA §2.1: `n ≤ 29`).
+/// Largest permitted assembly-bbox span as `log2(µdeg)`.
 pub const MAX_SPAN_LOG2: u32 = 29;
 
 /// A bbox in the serializer's order: `(min_lon, min_lat, max_lon, max_lat)`, µdeg — the order
 /// `obc-pack`'s writer and `obc-reader`'s `BBox` both use, so nothing here has to swap axes.
 pub type UBox = (i64, i64, i64, i64);
 
-/// One cell of the grid: a size (`log2(µdeg)`) plus its **latitude** index `i` and **longitude**
-/// index `j` (OBCA §1.1/§1.3 — the canonical id is `<log2>/<i>/<j>`, latitude first).
+/// One cell of the grid: a size (`log2(µdeg)`) plus its latitude index `i` and longitude index
+/// `j`. The canonical id is `<log2>/<i>/<j>`, latitude first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CellId {
     pub log2: u32,
@@ -63,7 +57,7 @@ fn decimal_width(mut v: i64) -> usize {
     w
 }
 
-/// Zero-padding width of a cell id's indices (OBCA §1.3): `max(4, digits(cells_per_axis − 1))`.
+/// Zero-padding width of a cell id's indices: `max(4, digits(cells_per_axis − 1))`.
 pub fn id_width(log2: u32) -> usize {
     decimal_width(axis_cells(log2) - 1).max(4)
 }
@@ -87,7 +81,7 @@ impl CellId {
         1 << self.log2
     }
 
-    /// The cell's square, half-open on both axes (OBCA §1.1), in [`UBox`] order.
+    /// The cell's square, half-open on both axes, in [`UBox`] order.
     #[inline]
     pub fn square(self) -> UBox {
         let s = self.size();
@@ -102,8 +96,7 @@ impl CellId {
         CellId { log2, i: (lat - GRID_ORIGIN).div_euclid(1 << log2), j: (lon - GRID_ORIGIN).div_euclid(1 << log2) }
     }
 
-    /// Parse a canonical id `<log2>/<i>/<j>` (OBCA §1.3). Lenient about zero padding in, canonical
-    /// out.
+    /// Parse a canonical id `<log2>/<i>/<j>`. Lenient about zero padding in, canonical out.
     pub fn parse(s: &str) -> Result<Self, String> {
         let mut parts = s.split('/');
         let bad = || format!("cell id {s:?} is not <log2>/<i>/<j>");
@@ -125,8 +118,8 @@ impl fmt::Display for CellId {
     }
 }
 
-/// Whether `v` lies exactly on a grid line of size `2^log2` — the seam predicate OBCA §4.6 admits to
-/// unification, and nothing weaker.
+/// Whether `v` lies exactly on a grid line of size `2^log2` — the seam predicate the nav merge
+/// admits to unification, and nothing weaker.
 #[inline]
 pub fn on_grid_line(v: i64, log2: u32) -> bool {
     (v - GRID_ORIGIN) & ((1 << log2) - 1) == 0
@@ -138,13 +131,13 @@ pub fn on_grid_boundary(lat: i64, lon: i64, log2: u32) -> bool {
     on_grid_line(lat, log2) || on_grid_line(lon, log2)
 }
 
-/// The floor-division midpoint the OBCM quadtree splits at (`OBCM_Spec.md` §4).
+/// The floor-division midpoint the OBCM quadtree splits at.
 #[inline]
 pub fn quad_mid(min: i64, max: i64) -> i64 {
     (min + max).div_euclid(2)
 }
 
-/// The four children of `b`, in the format's **NW, NE, SW, SE** order (`OBCM_Spec.md` §4).
+/// The four children of `b`, in the format's NW, NE, SW, SE order.
 #[inline]
 pub fn quad_children(b: UBox) -> [UBox; 4] {
     let (min_lon, min_lat, max_lon, max_lat) = b;
@@ -158,7 +151,7 @@ pub fn quad_children(b: UBox) -> [UBox; 4] {
     ]
 }
 
-/// A grid-aligned power-of-two assembly bbox (OBCA §2.1) — the box the theorem holds over.
+/// A grid-aligned power-of-two assembly bbox — the box the graft theorem holds over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AlignedBox {
     /// Minimum corner, µdeg. Congruent to [`GRID_ORIGIN`] modulo `S_MAX`.
@@ -176,7 +169,7 @@ impl AlignedBox {
         (self.min_lon, self.min_lat, self.min_lon + side, self.min_lat + side)
     }
 
-    /// Depth at which this box's quadtree nodes **are** the cells of size `2^cell_log2` (OBCA §2.1).
+    /// Depth at which this box's quadtree nodes are the cells of size `2^cell_log2`.
     #[inline]
     pub fn cell_depth(self, cell_log2: u32) -> u32 {
         self.span_log2 - cell_log2
@@ -202,12 +195,12 @@ impl AlignedBox {
     }
 }
 
-/// OBCA §4.2: the **minimal** grid-aligned power-of-two box containing every cell of `cells`, with
-/// its position snapped to `s_max_log2` and its span at least `2^s_max_log2`.
+/// The minimal grid-aligned power-of-two box containing every cell of `cells`, with its position
+/// snapped to `s_max_log2` and its span at least `2^s_max_log2`.
 ///
-/// The box is square, so a selection much wider than tall is padded with empty leaves — one `uint32`
-/// per empty node and nothing else. The assembler MUST NOT shrink it afterwards: that would destroy
-/// the alignment the whole scheme rests on.
+/// The box is square, so a selection much wider than tall is padded with empty leaves — one
+/// `uint32` per empty node and nothing else. The assembler must not shrink it afterwards: that
+/// would destroy the alignment the whole scheme rests on.
 pub fn assembly_box(cells: &[CellId], s_max_log2: u32) -> Result<AlignedBox, String> {
     if cells.is_empty() {
         return Err("an assembly needs at least one cell".into());
@@ -256,22 +249,22 @@ mod tests {
         }
     }
 
-    /// OBCA §7's worked example, end to end: two neighbouring `2^18` cells, the `2^19` assembly box
-    /// they snap into, and the depth at which the box's nodes *are* those cells.
+    /// The spec's worked example, end to end: two neighbouring `2^18` cells, the `2^19` assembly box
+    /// they snap into, and the depth at which the box's nodes are those cells.
     #[test]
     fn worked_example_box_and_depth() {
         let a = CellId::parse("18/1204/1052").expect("valid id");
         let b = CellId::parse("18/1204/1053").expect("valid id");
         assert_eq!(a.square(), (7_340_032, 47_185_920, 7_602_176, 47_448_064));
         assert_eq!(b.square(), (7_602_176, 47_185_920, 7_864_320, 47_448_064));
-        // S_MAX = 2^18 for this toy table (§7 uses one band).
+        // S_MAX = 2^18 for this toy table.
         let bx = assembly_box(&[a, b], 18).expect("aligned box");
         assert_eq!(bx.min_lat, 47_185_920);
         assert_eq!(bx.min_lon, 7_340_032);
         assert_eq!(bx.span_log2, 19, "the two-cell union needs a 2^19 square");
         assert_eq!(bx.ubox(), (7_340_032, 47_185_920, 7_864_320, 47_710_208));
         assert_eq!(bx.cell_depth(18), 1);
-        // The depth-1 children in NW/NE/SW/SE order: SW is cell A, SE is cell B — to the microdegree.
+        // The depth-1 children in NW/NE/SW/SE order: SW is cell A, SE is cell B, to the microdegree.
         let kids = quad_children(bx.ubox());
         assert_eq!(kids[2], a.square(), "SW is cell A");
         assert_eq!(kids[3], b.square(), "SE is cell B");

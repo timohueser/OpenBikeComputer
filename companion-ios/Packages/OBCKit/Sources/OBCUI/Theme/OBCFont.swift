@@ -5,14 +5,12 @@ import UIKit
 import AppKit
 #endif
 
-/// Brand type helpers. Three faces (typography.css + the design HTML):
-/// - **serif** — Iowan Old Style, the brand display face (ships with iOS/macOS;
-///   Spectral is only the *web* stand-in). Large titles, headings, empty-state lines.
-/// - **ui** — SF Pro via the system font. Body, controls, chrome.
-/// - **mono** — the system monospaced face. Stat lines, eyebrow labels, values.
+/// Brand type helpers for three faces: the Iowan Old Style serif for large titles and
+/// headings, the system font for body and chrome, and the system monospace for stat
+/// lines, eyebrow labels and values.
 public extension Font {
-    /// The field-guide serif. Falls back to the system serif design if Iowan
-    /// Old Style is ever unavailable (it is bundled on iOS + macOS).
+    /// The field-guide serif. Falls back to the system serif design if Iowan Old
+    /// Style is ever unavailable.
     static func obcSerif(size: CGFloat, weight: Font.Weight = .bold) -> Font {
         if hasIowan {
             return .custom("Iowan Old Style", size: size).weight(weight)
@@ -20,7 +18,7 @@ public extension Font {
         return .system(size: size, weight: weight, design: .serif)
     }
 
-    /// Monospace for stat lines / labels / values.
+    /// Monospace for stat lines, labels and values.
     static func obcMono(size: CGFloat, weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight, design: .monospaced)
     }
@@ -36,8 +34,8 @@ public extension Font {
     }()
 }
 
-/// The design's monospace **eyebrow** label — 10pt bold mono, uppercase,
-/// letter-spaced, ink-faint ("ELEVATION PROFILE", "CONNECTED SERVICES").
+/// The monospace eyebrow label: bold, uppercase and letter-spaced, as in
+/// "ELEVATION PROFILE".
 public struct OBCEyebrow: View {
     let text: String
 

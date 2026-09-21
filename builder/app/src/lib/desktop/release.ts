@@ -1,8 +1,7 @@
-// What the desktop page offers to download. D3 (#908) builds, signs (or
-// decides not to) and publishes the installers; until it does, `RELEASE` is
-// null and the page says there are no builds yet rather than linking at files
-// that do not exist. Inventing a URL now would cost a visitor a 404 and cost
-// us the one thing the page is for.
+// What the desktop page offers to download. Until the installers are built,
+// signed and published, `RELEASE` is null and the page says there are no builds
+// yet rather than linking at files that do not exist. Inventing a URL now would
+// cost a visitor a 404 and cost us the one thing the page is for.
 
 export interface DesktopDownload {
     readonly os: "macOS" | "Windows" | "Linux";
@@ -32,6 +31,6 @@ export interface DesktopRelease {
     readonly installNote?: string;
 }
 
-/** Filled in by D3 (#908). `src/lib/desktop/release.test.ts` holds it to its
- *  shape from that commit onwards. */
+/** Filled in once the installers are published. `src/lib/desktop/release.test.ts` holds it to
+ *  its shape from then on. */
 export const RELEASE: DesktopRelease | null = null;

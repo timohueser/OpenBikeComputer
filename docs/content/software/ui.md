@@ -1,24 +1,22 @@
 ---
 title: UI system
-description: Screen state, navigation, input, repaint policy, and rider-facing data views.
+description: The screen model, the four buttons, the drawers, and what a rider can do from where.
 copy: ai
 ---
 
 # The UI system
 
-The UI is a `no_std`, allocation-free system for a 240×320-pixel display. It uses four buttons and immediate-mode drawing.
+The UI is a `no_std`, allocation-free system for a 240 × 320 display and four buttons. It draws
+immediately: there is no retained widget tree, and a screen writes the frame it wants.
 
-The screen drawings below are schematics. They explain behavior; they are not current pixel captures.
+The screen drawings below are schematics. They explain behavior. They are not pixel captures.
 
 ## Screen model
 
-Each screen is one `Screen` enum variant. The variant owns its state by value.
-
-A `screens!` table defines each variant and its `Caps`. The table generates the enum, normal input
-and drawing dispatch, and capability metadata. A small manual `prepare` match delegates only the
-four reader-backed screens that need a one-shot operation before drawing.
-
-`Caps` declares cross-cutting behavior. It covers base content, overlays, timers, holds, reader access, idle return, catalog remapping, and the render key.
+Each screen is one variant of a `Screen` enum and owns its state by value. One table declares every
+variant with its capabilities, and generates the enum, the dispatch, and the capability data.
+Capabilities are the cross-cutting facts: base content or overlay, timers, holds, map reader, and
+what a repaint depends on.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -69,19 +67,47 @@ four reader-backed screens that need a one-shot operation before drawing.
 <figcaption>Each screen owns typed state. The <code>Screen</code> enum provides static dispatch without heap allocation.</figcaption>
 </figure>
 
-A normal screen implements these operations:
+A screen handles one gesture, returns a transition, and draws the current frame.
 
-- `handle` reads one `Gesture` and returns a `Transition`.
-- `draw` writes the current frame.
+<figure class="fig">
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
+<svg viewBox="0 0 720 220" role="img" aria-label="Two side-by-side contexts. On the left, handle receives Ctx, the mutable half: app state, activity mode, Navigator route state, Recorder ride state, and settings. On the right, draw receives Render, the read-only half: the map reader, renderer, route guidance, route caches, breadcrumb, size, and hold-progress.">
+  <text class="d-tag" x="20" y="24">Two halves of the world, handed to two methods</text>
 
-Four reader-backed screens also implement `prepare` for a required one-shot reader operation. The
-manual dispatch is partial because other screens do not need this operation.
+  <!-- Ctx -->
+  <rect class="d-panel" x="36" y="44" width="300" height="150" rx="12" />
+  <text class="d-label" x="56" y="68">handle(g, &amp;mut Ctx)</text>
+  <text class="d-tag" x="56" y="84">mutable — change the world</text>
+  <g font-family="var(--mono)">
+    <text class="d-sub" x="56" y="104">state &nbsp;&nbsp;— camera · zoom · pan</text>
+    <text class="d-sub" x="56" y="124">activity — ride mode · UI requests</text>
+    <text class="d-sub" x="56" y="144">navigator — route · match · guidance</text>
+    <text class="d-sub" x="56" y="164">recorder — ride totals · sensors</text>
+    <text class="d-sub" x="56" y="184">settings — units · clock · intervals</text>
+  </g>
 
-The `Ctx` input context contains mutable application state. The `Render` context contains read-only state and borrowed rendering resources.
+  <!-- Render -->
+  <rect class="d-panel-2" x="384" y="44" width="300" height="150" rx="12" />
+  <text class="d-label" x="404" y="68">draw(target, &amp;Render)</text>
+  <text class="d-tag" x="404" y="84">read-only — paint the world</text>
+  <g font-family="var(--mono)">
+    <text class="d-sub" x="404" y="106">reader · renderer — draw the map</text>
+    <text class="d-sub" x="404" y="126">state · guidance · route caches · breadcrumb</text>
+    <text class="d-sub" x="404" y="146">w · h &nbsp;— panel size</text>
+    <text class="d-sub" x="404" y="166">hold_progress — the confirm ring</text>
+  </g>
+</svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
+<figcaption>Input handling uses mutable <code>Ctx</code>. Drawing uses read-only <code>Render</code> data and borrowed render resources.</figcaption>
+</figure>
+
+Input receives a mutable context; drawing receives a read-only one. A screen therefore cannot change
+state while it draws.
 
 ## Navigation
 
-The screen stack is a `heapless::Vec<Screen, 10>`. Home is always the first item.
+The screen stack holds at most ten screens, and Home is always the first.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -131,70 +157,11 @@ The screen stack is a `heapless::Vec<Screen, 10>`. Home is always the first item
 | `Root(screen)` | Keep Home and add one screen. |
 | `Home` | Remove all screens above Home. |
 
-A stack change cancels all incomplete holds. This rule prevents a hold from completing on a new screen.
-
-Each screen owns its ordinary `Back` policy in its typed `handle` method. Back can pop a screen,
-leave an editor, cancel domain work, or move to a sibling view. Back-hold and button chords are
-handled above screen dispatch.
-
-### Detour flow
-
-The Detour command is available during route navigation. It requires a routing graph and a matched route position.
-
-<figure class="fig">
-<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
-<svg viewBox="0 0 720 262" role="img" aria-label="The detour flow in three panels. Panel one, the chooser: the magenta route with an orange inner stroke marking the skipped stretch ahead of the rider and a ring at the candidate rejoin point; Up and Down move the rejoin in 100-metre steps. Panel two, the preview: the planned detour drawn in blue around the skipped stretch, with a panel showing two signed cost figures, here plus 434 metres of distance and 47 metres less climbing. Panel three, the commit: the spliced line — ridden part, detour, and the original route from the rejoin — is written as an ordinary route file and adopted; guidance continues.">
-  <defs>
-    <marker id="aDT" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
-  </defs>
-  <text class="d-tag" x="20" y="24">Choose a rejoin · preview the cost · commit the splice</text>
-
-  <!-- panel 1: chooser -->
-  <text class="d-sub" x="30" y="52" style="font-size:12px;fill:#4d5b3c">① chooser — Up/Down move the rejoin</text>
-  <rect x="30" y="60" width="200" height="150" rx="9" style="fill:#ffffff;stroke:#aaaa55;stroke-width:1.4" />
-  <path d="M55 195 C 90 160, 100 120, 130 100 C 160 80, 185 80, 210 72" fill="none" stroke="#ff00ff" stroke-width="5" />
-  <path d="M95 152 C 110 130, 118 112, 130 100 C 143 91, 152 87, 162 84" fill="none" stroke="#ff5500" stroke-width="2.4" />
-  <path d="M62 188 l8 12 l-8 -4 l-8 4 z" fill="#ff0000" />
-  <circle cx="162" cy="84" r="7" fill="none" stroke="#000" stroke-width="2" />
-  <text class="d-sub" x="120" y="200" style="font-size:12px">skipped stretch</text>
-  <text class="d-sub" x="162" y="112" text-anchor="middle" style="font-size:12px">rejoin</text>
-  <text class="d-sub" x="30" y="228" style="font-size:12px">±100 m steps · 600 m minimum</text>
-
-  <!-- panel 2: preview -->
-  <line class="d-flow" x1="238" y1="135" x2="258" y2="135" marker-end="url(#aDT)" />
-  <text class="d-sub" x="266" y="52" style="font-size:12px;fill:#4d5b3c">② preview — path and cost</text>
-  <rect x="266" y="60" width="200" height="150" rx="9" style="fill:#ffffff;stroke:#aaaa55;stroke-width:1.4" />
-  <path d="M291 195 C 326 160, 336 120, 366 100 C 396 80, 421 80, 446 72" fill="none" stroke="#ff00ff" stroke-width="5" />
-  <path d="M331 152 C 346 130, 354 112, 366 100 C 379 91, 388 87, 398 84" fill="none" stroke="#ff5500" stroke-width="2.4" />
-  <path d="M331 152 C 370 160, 410 130, 398 84" fill="none" stroke="#0000aa" stroke-width="3" />
-  <rect x="280" y="178" width="150" height="20" rx="6" style="fill:#f3f0df;stroke:#3d3427;stroke-width:1" />
-  <text x="291" y="192" style="font-family:var(--mono);font-size:12px;fill:#3d3427">+434 m</text>
-  <path d="M372 194 l6 -9 l6 9 z" fill="#3d3427" />
-  <text x="422" y="192" text-anchor="end" style="font-family:var(--mono);font-size:12px;fill:#3d3427">-47 m</text>
-  <text class="d-sub" x="266" y="228" style="font-size:12px">what it costs: distance · climbing</text>
-
-  <!-- panel 3: commit -->
-  <line class="d-flow" x1="474" y1="135" x2="494" y2="135" marker-end="url(#aDT)" />
-  <text class="d-sub" x="502" y="52" style="font-size:12px;fill:#4d5b3c">③ commit — use the detour</text>
-  <rect x="502" y="60" width="200" height="150" rx="9" style="fill:#ffffff;stroke:#aaaa55;stroke-width:1.4" />
-  <path d="M527 195 C 550 172, 558 152, 564 138 C 592 162, 630 132, 622 96 C 642 82, 662 76, 680 72" fill="none" stroke="#ff00ff" stroke-width="5" />
-  <text class="d-sub" x="502" y="228" style="font-size:12px">an ordinary route file</text>
-  <text class="d-sub" x="30" y="252" style="font-size:12px;fill:#4d5b3c">back cancels at any step · a failed plan suggests the one useful remedy: try a farther rejoin</text>
-</svg>
-</div>
-<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
-<figcaption>The rider selects a rejoin point, reviews the result, and commits the new route.</figcaption>
-</figure>
-
-Up and Down move the rejoin point in 100 m steps. The minimum rejoin distance is 600 m.
-
-A successful plan shows distance and climb differences. Commit stores the splice as the active route.
-
-The splice keeps completed route geometry, adds the detour, and continues from the rejoin point. It then rebuilds route-derived data.
+Any stack change cancels an incomplete hold, so a hold cannot finish on a screen that did not start
+it. Each screen owns its own Back policy: Back can leave an editor, cancel work, move to a sibling
+view, or pop.
 
 ## Input
-
-The device has Up, Down, Select, and Back buttons.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -242,8 +209,6 @@ The device has Up, Down, Select, and Back buttons.
 <figcaption>The recognizer combines button state and elapsed time. A chord consumes both presses and does not also emit their individual gestures.</figcaption>
 </figure>
 
-The recognizer emits these gestures:
-
 | Gesture | Source |
 | --- | --- |
 | `Step(n)` | Up or Down step |
@@ -252,22 +217,19 @@ The recognizer emits these gestures:
 | `Back` | Back release within 200 ms |
 | `BackHold` | Back held for 500 ms |
 
-A release after 200 ms and before 500 ms emits no gesture. Long holds emit at the threshold, not on release.
+A release between the tap window and the hold threshold emits nothing, which is how a rider cancels
+a hold. A hold fires at the threshold, not on release, so the rider feels the moment it commits.
 
-`BackHold` is the **global escape**. The app answers it above the screen stack, so it never reaches a
-screen: it closes any open drawer and goes to the main menu, from every screen. With a main menu
-already on the stack it returns to that one instead of opening a second, so repeated holds cannot
-grow the stack.
+`BackHold` is the global escape. The application answers it above the screen stack, so it never
+reaches a screen: it closes any drawer and opens the main menu from anywhere, and returns to a menu
+already on the stack instead of adding a second one. Three states refuse it, because the rider must
+finish them first: a blocking card, the recovered-ride card, and a confirmed shutdown.
 
-Three states refuse it, because the rider must finish them first: a blocking card (the pairing
-passkey, a map transfer, the terminal update card), the recovered-ride card, and a shutdown that the
-rider has already confirmed. A two-button squeeze is refused in the same three states.
+### Chords
 
-## Chords
-
-Two buttons pressed within 100 ms of each other are one **chord**, not two gestures. The recognizer
-reports the chord above the screen stack and emits nothing for the two buttons: no step, no tap, no
-long press, and no release. The chord stays latched until both buttons are up.
+Two buttons pressed within 100 ms of each other are one chord, not two gestures. The recognizer
+reports the chord above the screen stack and emits nothing for the two buttons, and the chord stays
+latched until both are up.
 
 | Chord | Meaning |
 | --- | --- |
@@ -277,170 +239,112 @@ long press, and no release. The chord stays latched until both buttons are up.
 | Up + Down | Reserved |
 | Select + Back | Reserved |
 
-The Assistant hold starts when the second button goes down. Matching bulges grow beside Up and
-Select, then pop together when Assistant opens. A release before the threshold retracts both.
-Select and Back holds use the same bulge size, at equal distances above and below the screen centre.
-Quick taps do not show a bulge.
-
-A reserved chord is recognized and swallowed. It does nothing. This keeps a squeeze of two buttons
-from becoming two unrelated actions.
-
-Because a chord can start with a direction button, the first step of Up or Down waits for the
-100 ms window. A release inside the window steps immediately, so a tap does not feel slower.
-Automatic repeat measures its delay from the press edge, so a held button keeps its usual cadence.
+A reserved chord is recognized and does nothing, so a squeeze never becomes two unrelated actions.
+Because a chord can start with a direction button, the first step of Up or Down waits for the chord
+window; a release inside the window steps at once, so a tap does not feel slower.
 
 ## Drawers
 
-A drawer is a sheet that the device draws over the current screen. There are two, and only one of
-them can be open: the second chord replaces the sheet instead of adding one.
+A drawer is a sheet drawn over the current screen. There are two, and only one can be open: the
+second chord replaces the sheet instead of stacking another.
 
-The **universal quick drawer** comes down from the top and holds the device-wide controls:
-brightness, the Bluetooth radio, the central settings, and power. Brightness and power open a nested
-page. Back closes the sheet and returns the rider to the screen below it.
+The **universal quick drawer** comes down from the top with the device-wide controls: brightness,
+the Bluetooth radio, the central settings, and power. A platform with no controllable backlight
+does not show brightness.
 
-A platform whose panel has no controllable light does not show the brightness control. The sheet
-has the remaining three controls.
+The **contextual drawer** comes up from the bottom with the current screen's secondary actions. A
+screen does not build a drawer: it declares a static table of rows, and one generic drawer supplies
+the cursor, the transitions, and the drawing. A screen with no table gets no sheet.
 
-Nothing lands on top of a drawer. A card that arrives while a sheet is open takes the sheet with it,
-so dismissing the card returns the rider to the screen they were on.
+The four riding views offer the same four actions in the same order: Up ahead, Detour, POIs, and
+Routes. A row that cannot act now is drawn recessed and does nothing. A row that acts replaces the
+sheet with its screen, so one Back returns to the riding view the rider squeezed from.
 
-The **contextual drawer** comes up from the bottom and holds the current screen's secondary
-actions. A screen does not build a drawer: it declares a static table of rows, and one generic
-drawer supplies the cursor, the transitions and the drawing. A screen that declares no table gets no
-sheet, and the chord does nothing on it — an empty drawer is never shown.
+A row can hold a **value** instead of a screen, and slides the sheet to a small editor. The bike
+type is such a row, and its choices are the routing profile names of the loaded map, so a map built
+with a custom profile offers that profile without a firmware change. A row can also be a **switch**
+that flips in place, so a rider can change a group of preferences with the sheet open.
 
-The four riding views (Map, Statistics, Climb, and the paused page) offer the same four actions in
-the same order: Up ahead, Detour, POIs, and Routes. A row that cannot act right now is drawn
-recessed and does nothing — the Detour row without a route, without map routing data, or off the
-route. A row that can act replaces the sheet with its screen, so one Back returns the rider to the
-riding view they squeezed from.
+The drawer is the only home for a setting that belongs to one screen, and a build check fails if a
+drawer and the settings tree write the same stored setting.
 
-The Map also offers **Map display**. It contains switches for the clock, scale bar and
-contour layer, plus **Map icons**. The icon menu has independent switches for peaks,
-landmarks and POIs. Its category menu controls water, campsites, lodging, resupply,
-pharmacies, bike shops and train stations. The category row shows the selected count.
-Turning POIs off keeps the category selection. These preferences persist through restart
-and do not change Find a Place or routing filters. All icon groups start enabled.
+The screen under a drawer is **frozen**: the drawer states its own facts for repaint, so a moving
+map under a sheet causes no work. Whether the screen below is **dimmed** is a property of that
+screen. A map is not dimmed, because drawing it again is a whole map render and the map reads well
+under the sheet. Menus are dimmed, because drawing them again is nearly free and the recess helps
+the sheet read as being in front.
 
-Category menus show at most five rows and scroll within the same sheet. Back from the
-category menu returns to the icon menu; Back from the icon menu returns to Map display.
-Back from Map display closes the sheet. A replacement sheet arrives without an entrance
-animation.
+Nothing lands on top of a drawer. A card that arrives while a sheet is open takes the sheet with
+it, so dismissing the card returns the rider to the screen they were on.
 
-Map icons stay upright at their source coordinates. Peaks include unnamed summits and
-use a small black triangle without a backing. Other icons use 22-pixel glyphs on white
-discs with a thin gray border. Peaks appear only with contours enabled and at 10 metres
-per pixel or closer, where the shipped map shows the full contour set. The wider,
-index-only contour views do not show peaks. Landmarks appear at 20 metres per pixel
-or closer, and service POIs at 10. The rider, waypoints, clock and bottom map controls have
-reserved space. Route lines draw above icons.
+### What the map drawer controls
 
-The shared application retains at most 64 candidates and draws at most 24 icons, with
-limits of 16 above 5 metres per pixel and 8 above 20. Placement first chooses the nearest
-unobstructed icon from each enabled group: peaks, landmarks and each service category.
-It then chooses a second from each group, and repeats until the display limit is reached
-or no more icons fit. Distance is measured from the map center. Source identity breaks
-ties. The overlap rule can prevent a group from appearing when no candidate fits.
+Map display holds switches for the clock, the scale bar, and the contour layer, and a Map icons
+menu with switches for peaks, landmarks, and the service categories. Icons stay upright at their
+source coordinates as the map rotates, and a group appears only at scales where its icons help
+instead of crowd. Placement takes the nearest unobstructed icon from each enabled group in turn, so
+one dense category cannot take the screen from the others.
 
-The candidate cache has no fixed per-category quota. When full, a less-represented group
-can replace a distant candidate from the most-represented group. Otherwise, a closer
-candidate can replace a farther candidate in its own group. Visible candidates take
-priority over points in the padding. A padded viewport avoids storage reads during small
-camera movements. A full cache is queried again after a quarter-viewport shift, because
-it can have discarded points in the padding. An in-coverage query finishes before a new
-one starts, and existing icons remain visible during the refill. Each preparation advances at most eight POI index or 512-byte record
-steps and eight landmark query steps, then reads at most eight landmark identities.
-Pending work resumes on the next available frame and stops when complete.
+Settlement names are always drawn; there is no switch. Each class of place shows its names inside
+one band of scales: a name appears when the place roughly fits the screen, and goes when the place
+is one dot among many, or when the rider is inside it and the name would only cover the roads.
+Names keep clear of each other and of the chrome the frame actually draws.
 
-During a viewport refill, valid cached icons stay visible at their new screen positions.
-Disabled categories and points outside the new coverage are removed at once. A replacement
-map clears all cached icons. A transient read failure keeps valid cached icons and gets
-two delayed retries; a persistent failure stops until the view or map changes.
+### Detour
 
-The map also shows **settlement names**. There is no switch: the names are always drawn.
-Each class shows its names inside one scale band, in metres per pixel: cities from 40 to 600,
-towns from 12 to 180, villages from 4 to 50 and hamlets from 2 to 16. A name appears when the
-place roughly fits the screen and goes when the place is one dot among too many; under the
-band the rider is inside the place and a name only covers the roads. A name is the stored name
-cut to 12 characters with two dots, in the label face, with a light halo so it reads over every
-map fill. Names stay upright when the map rotates.
+Detour leaves the route and comes back to it. It needs a routing graph in the map and a matched
+position on the route.
 
-The application holds at most 16 candidates over a padded viewport and draws at most 6 names
-in one frame. Candidates refill outside the draw path, when the map changes, when the scale
-leaves a class band, or when the view leaves the padded region. The priority order is the
-class, then the larger population, then the shorter name, then the position. Every frame gives
-the names away in that order from the beginning, so a small place never holds the space a
-larger one needs. The order holds no camera value, so a name that is drawn stays drawn while
-the rider pans, turns or zooms inside one scale band. It goes only when it leaves the panel,
-when its class leaves its band, or when a higher-priority settlement takes its space.
+<figure class="fig">
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
+<svg viewBox="0 0 720 262" role="img" aria-label="The detour flow in three panels. Panel one, the chooser: the magenta route with an orange inner stroke marking the skipped stretch ahead of the rider and a ring at the candidate rejoin point; Up and Down move the rejoin in 100-metre steps. Panel two, the preview: the planned detour drawn in blue around the skipped stretch, with a panel showing two signed cost figures, here plus 434 metres of distance and 47 metres less climbing. Panel three, the commit: the spliced line — ridden part, detour, and the original route from the rejoin — is written as an ordinary route file and adopted; guidance continues.">
+  <defs>
+    <marker id="aDT" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">Choose a rejoin · preview the cost · commit the splice</text>
 
-A name is centred on its place, across and down. A name near a side of the screen leans back
-inside it, which moves it by at most half its width, so a long name beside the screen edge is
-still shown. A name is dropped when its place is off the screen, when the name is wider than
-the screen, or when there is no clear space for it. Names keep 12 pixels of clear space from
-each other, and keep off the map chrome. The chrome is measured for each frame: the rider
-mark, the clock digits when the clock is on, the low-battery cue when the charge is low, the
-pan cues while the rider inspects the map, the bottom chip band and the scale bar. Chrome that
-the frame does not draw holds no space, so the names get that part of the screen.
-Names draw above the terrain and the route and below the waypoints and the rider.
+  <!-- panel 1: chooser -->
+  <text class="d-sub" x="30" y="52" style="font-size:12px;fill:#4d5b3c">① chooser — Up/Down move the rejoin</text>
+  <rect x="30" y="60" width="200" height="150" rx="9" style="fill:#ffffff;stroke:#aaaa55;stroke-width:1.4" />
+  <path d="M55 195 C 90 160, 100 120, 130 100 C 160 80, 185 80, 210 72" fill="none" stroke="#ff00ff" stroke-width="5" />
+  <path d="M95 152 C 110 130, 118 112, 130 100 C 143 91, 152 87, 162 84" fill="none" stroke="#ff5500" stroke-width="2.4" />
+  <path d="M62 188 l8 12 l-8 -4 l-8 4 z" fill="#ff0000" />
+  <circle cx="162" cy="84" r="7" fill="none" stroke="#000" stroke-width="2" />
+  <text class="d-sub" x="120" y="200" style="font-size:12px">skipped stretch</text>
+  <text class="d-sub" x="162" y="112" text-anchor="middle" style="font-size:12px">rejoin</text>
+  <text class="d-sub" x="30" y="228" style="font-size:12px">±100 m steps · 600 m minimum</text>
 
-A row can also hold a **value** in place of a screen. Such a row slides the sheet to a nested
-editor: `Up` and `Down` change the staged choice, `Select` writes it and returns to the row table,
-and `Back` discards it. The editor keeps a mark on the choice that is already in effect. The sheet
-becomes as high as the editor needs and goes back to its table height. The Up-ahead view declares
-two such rows, Filter and Sources. The create-route card declares one, Bike type —
-the routing profile the device plans with. These rows are the only place those controls are set.
+  <!-- panel 2: preview -->
+  <line class="d-flow" x1="238" y1="135" x2="258" y2="135" marker-end="url(#aDT)" />
+  <text class="d-sub" x="266" y="52" style="font-size:12px;fill:#4d5b3c">② preview — path and cost</text>
+  <rect x="266" y="60" width="200" height="150" rx="9" style="fill:#ffffff;stroke:#aaaa55;stroke-width:1.4" />
+  <path d="M291 195 C 326 160, 336 120, 366 100 C 396 80, 421 80, 446 72" fill="none" stroke="#ff00ff" stroke-width="5" />
+  <path d="M331 152 C 346 130, 354 112, 366 100 C 379 91, 388 87, 398 84" fill="none" stroke="#ff5500" stroke-width="2.4" />
+  <path d="M331 152 C 370 160, 410 130, 398 84" fill="none" stroke="#0000aa" stroke-width="3" />
+  <rect x="280" y="178" width="150" height="20" rx="6" style="fill:#f3f0df;stroke:#3d3427;stroke-width:1" />
+  <text x="291" y="192" style="font-family:var(--mono);font-size:12px;fill:#3d3427">+434 m</text>
+  <path d="M372 194 l6 -9 l6 9 z" fill="#3d3427" />
+  <text x="422" y="192" text-anchor="end" style="font-family:var(--mono);font-size:12px;fill:#3d3427">-47 m</text>
+  <text class="d-sub" x="266" y="228" style="font-size:12px">what it costs: distance · climbing</text>
 
-The bike-type row shows what a value row does when its choices come from the loaded map. The
-choices are the map's own routing-profile names. A map built with a custom profile offers that
-profile with no change to the device software. A map with only one profile, or no map at all,
-offers no choice. The row is then drawn recessed and does nothing. The row is on the create-route
-card because that card is where the choice is used: the next press asks for a plan. The route
-overview shows the profile a route was planned with. It does not let the rider change it, because
-a change would make the page say something untrue about the route it shows.
+  <!-- panel 3: commit -->
+  <line class="d-flow" x1="474" y1="135" x2="494" y2="135" marker-end="url(#aDT)" />
+  <text class="d-sub" x="502" y="52" style="font-size:12px;fill:#4d5b3c">③ commit — use the detour</text>
+  <rect x="502" y="60" width="200" height="150" rx="9" style="fill:#ffffff;stroke:#aaaa55;stroke-width:1.4" />
+  <path d="M527 195 C 550 172, 558 152, 564 138 C 592 162, 630 132, 622 96 C 642 82, 662 76, 680 72" fill="none" stroke="#ff00ff" stroke-width="5" />
+  <text class="d-sub" x="502" y="228" style="font-size:12px">an ordinary route file</text>
+  <text class="d-sub" x="30" y="252" style="font-size:12px;fill:#4d5b3c">back cancels at any step · a failed plan suggests the one useful remedy: try a farther rejoin</text>
+</svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
+<figcaption>The rider selects a rejoin point, reviews the result, and commits the new route.</figcaption>
+</figure>
 
-A row can also be a **switch**. It shows its state and flips in place. The sheet stays
-open while the rider changes a group of preferences. The covered map stays still; the
-changes appear when the map is exposed again.
-
-The drawer is the only home for a setting that belongs to one screen. A control that moves into a
-drawer is removed from the central settings tree in the same change. A check in the build fails if
-a drawer and a settings screen write the same stored setting.
-
-The screen under a drawer is **frozen**. A drawer states its own facts as its render key — the page,
-the selected control, the staged value and the value in effect — and that key replaces the facts of
-the screens below. So a moving map under a drawer causes no repaint, and the timed content of the
-screen below stops with it.
-
-Whether the screen below is **dimmed** is a property of that screen. A map view is not dimmed: its
-second drawing is a map render, hundreds of milliseconds on the device, and the map reads well under
-the sheet at full colour. Menus, lists and settings pages are dimmed through a colour table, because
-drawing them again costs almost nothing and the recess helps the sheet read as being in front.
-
-A screen that is not dimmed is also frozen **on the panel**. While a sheet grows over such a screen,
-the device draws the sheet alone and leaves the rows below it exactly as they are, so the open costs
-the sheet and no more. This needs no extra frame buffer: the panel keeps the last frame, and the
-sheet writes over it. A screen that *is* dimmed is drawn again on every one of those frames, because
-the dim is that drawing — but it is a menu, so the drawing is cheap.
-
-Three cases draw the screen below again whatever it is, and all three are cases where the sheet
-stops purely covering. Every frame of a **page slide** does, because the two pages travel through the
-narrow margin either side of the sheet, where the screen below shows; when the two pages differ in
-height, the same drawing puts back the rows the shrinking sheet gives up. The first frame of a drawer
-that **replaces the other drawer** does, once, because the departed sheet's rows are still on the
-panel at the opposite edge. And the frame that **closes** the drawer does, once.
-
-The sheet **slides** in from its edge over about 440 milliseconds, in steps timed to what the panel
-can complete. A step that does not move the sheet is not drawn. Closing is immediate, on every
-screen: the sheet goes, the screen below is drawn once, and the device sends only the rows that
-changed.
-
-A drawer is refused while a blocking card is on the screen: the pairing passkey, a map transfer, and
-the terminal update card.
+Up and Down move the rejoin point along the route ahead. The plan shows the difference in distance
+and climb against the stretch it replaces, and the rider commits it or leaves it. A commit keeps
+the completed geometry, splices in the detour, and continues from the rejoin point.
 
 ## Hold to confirm
-
-A destructive or irreversible action can require `Hold`. The screen must also declare `hold_fill` in its capabilities.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -490,7 +394,8 @@ A destructive or irreversible action can require `Hold`. The screen must also de
 <figcaption>A guarded action runs only when the hold reaches its threshold. The live fill shows hold progress.</figcaption>
 </figure>
 
-The input plane supplies progress from 0.0 through 1.0. The selected guarded row draws this progress.
+A destructive action requires a hold, and the row draws its progress. The action runs only when the
+hold reaches its threshold.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -530,75 +435,60 @@ The input plane supplies progress from 0.0 through 1.0. The selected guarded row
 <figcaption>Delete actions use the same guarded-row contract. A hold on another row has no effect.</figcaption>
 </figure>
 
-Delete actions exist on specific detail or confirmation rows. A hold elsewhere does not delete data.
+Delete lives on one row. A hold anywhere else deletes nothing.
 
-### Deleting things — the hold-to-delete footer
+## Ride Assistant
 
-The delete footer is a guarded row. The action runs only after a complete hold on that row.
+Holding **Up + Select** opens Ride Assistant, which answers four questions from installed offline
+data: find a place, what is next on the route, nearby landmarks, and easier routes. There is no
+network in any of them.
 
-## Find a place
+### Find a place
 
-Find combines places within 10 km by air with places along the next 20 km of the accepted route,
-within 300 m of its line. It takes four eligible nearby places and four from the corridor page,
-alternates sources, and removes duplicate OSM identities. The corridor selection estimates arrival
-using the same route occurrence as Visit and the straight distance from that point to the place.
-This avoids a later pass being treated as an early stop on an overlapping route. Known-closed
-places are excluded before these limits. The shared corridor page keeps its route order.
+Find combines places near the rider with places along the next part of the route, and alternates
+the two sources so that neither crowds out the other. It plans a real route to each candidate and
+shows the measured cost. The drawer sets how many results to calculate, and four is the default.
 
-The shared Visit planner measures at most eight distinct candidates, one at a time. It stores each
-measured route on the card and releases the planner before the next plan starts. The Finding
-indicator stays visible through the complete batch. Its small compass turns by one third of a revolution once per
-second without redrawing the map. Planning a suggestion does not activate a route or change the recording session. Up to four useful choices remain. A choice on the way adds at most 400 m to
-the complete visit. A nearer alternative remains when its measured costs provide a useful choice.
-Unknown ascent cannot eliminate a measured choice.
+Places known to be closed now are hidden, which the rider can turn off for every category at once.
+A place with unknown hours stays in the list and is never labelled open. Opening hours are
+information: they never block a preview, and the device reports the status now, not a guess at the
+status on arrival.
 
-With an accepted route, a visit follows that route to the point nearest the place's access coordinate
-within the next 20 km. Equal whole-metre distances use the first forward occurrence. Two
-directed route searches connect that point to the place and back. The original route before and
-after the excursion, including its waypoints and loops, stays in the visit. A place on the route
-can have no return leg distance; guidance continues after the rider leaves the stop.
+With an accepted route, a choice is a **visit**: the route to the place, the return, and the rest
+of the original journey. The review compares the whole visit, return included, with the remaining
+route, so the added cost is the true cost of stopping. Without a route, the same choice is a direct
+destination. Accepting starts recording if no ride is open; browsing changes nothing.
 
-An imported route can differ from the road graph. At departure and return, a connection within
-the normal 100 m snap limit retains both coordinates and counts toward the visit distance.
-Its surface and elevation are unknown. A larger gap refuses the visit. The preview fits the path
-through the place and back to the original route; the stored journey retains the full continuation.
+A place is routable only where the map gives it a mapped approach. A straight-line distance never
+promises a rideable connection.
 
-The card shows route distance and ascent to arrival. Added costs compare the complete visit,
-including its return, with the remaining accepted route. With no accepted route, the review is a
-direct destination and has no return cost. Membership, order, map bounds, and cost origin stay fixed
-while the cached inputs remain valid. The last category stays cached until another category is
-calculated or the Assistant closes. A changed map, route, bike profile, clock authority, or stale
-origin invalidates the choices. These bounded results do not establish a global nearest place.
-**More places** opens the full paged category browser. Back returns to the category overview
-without route calculation. The browser plans only the place selected for review.
+### What is next
 
-Selecting a Find suggestion opens Visit review directly and loads its stored route without another
-route calculation. With an active route, the action button offers **Add detour** or **Route here**.
-Use Up or Down to switch; the card updates its geometry and costs before Select accepts it.
-**Route here** plans from the current position to the place and replaces the current goal. It has
-no return leg or original-route continuation. **Add detour** is the initial choice in every category.
-With no active route, the card offers only **Route here**. Switching modes stays on the same card.
-Back and reselect reuse the category's original route while its inputs remain valid. Closing
-the Assistant removes unused routes. Restart removes abandoned previews while preserving accepted
-checkpoint routes. More places retains the place detail page and plans the
-selected place through the shared Visit planner. Ordinary service places without an explicit OSM approach
-use normal coordinate destination routing. The review binds the exact map revision and actual
-route endpoint. The preview draws the rider and destination pin above the route. When an explicit
-approach is more than 100 m from the place's map coordinate, a dotted line connects the route end
-to the pin. The pin can mark the center of a feature; the line does not describe a walking path.
-A small pill shows the current opening interval when trusted hours are available. Otherwise it
-shows that the hours are unknown or that the place is closed. A known-closed place, a changed source, or a stale origin
-prevents acceptance. Missing elevation remains unknown. Acceptance
-uses the shared durable Visit transaction. After the route is accepted, the device starts recording
-if no ride session exists. An existing ride keeps its session and pause state. Browsing and
-cancellation leave the active route intact.
+The overview freezes one window of the route, 5 km or 10 km, and shows what is in it: the ascent
+and descent, the next climb, the next waypoint, and the next water and shop. Explore ahead opens
+the full timeline for that window, filtered from the drawer. The window is frozen so the figures do
+not move while the rider reads them; a hold refreshes it.
 
-Implementation: [Find preparation](src:firmware/obc-app/src/find_place.rs),
-[Find and Visit review screens](src:firmware/obc-app/src/screen/find_place.rs).
+### Nearby landmarks
+
+Landmarks answers what a place is. It keeps a page of the nearest sites, with the map and the card
+stable while the rider moves the selection. Select opens short text pages and, where the map has
+one, a photo. **Down + Back** opens the sources, because credits must travel with the content. A
+closed site stays readable and can still be visited: a rider can look at a castle from outside it.
+
+### Easier routes
+
+Easier routes compares the rest of the journey against three goals: less climbing, a smoother
+surface, and a shorter distance. Each goal is one bounded search under the rider's own bike
+profile, not a claim that the router found the best route in the world. A choice appears only when
+it improves its goal and the cost it adds stays within a bound.
+
+The camera stays fixed while the rider compares the current route with the proposal, and Select
+opens a current-and-new table. **Use this route** accepts it through the normal acceptance, and
+recording continues. A shorter route does not claim a shorter time: the device has no arrival model
+to support that.
 
 ## POI browser
-
-The main POI menu contains water, campsite, lodging, resupply, pharmacy, bicycle-shop, and train categories. The schematic shows six example categories.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -654,7 +544,7 @@ The main POI menu contains water, campsite, lodging, resupply, pharmacy, bicycle
 <figcaption>The POI browser has seven categories. Each page holds at most eight nearby places.</figcaption>
 </figure>
 
-A category query uses a 50 km radius and returns pages of eight matching places. The list stores one application-owned page. Forward and reverse paging keep every result reachable. Known-closed places do not consume a result slot. Missing map coverage remains partial.
+The POI menu lists the service categories, and a category returns pages of nearby places.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -694,7 +584,8 @@ A category query uses a 50 km radius and returns pages of eight matching places.
 <figcaption>The list keeps a fixed snapshot. Only the bearing arrow uses live position data.</figcaption>
 </figure>
 
-Page membership and order stay fixed while the list is open. Current opening status can make a place unavailable without selecting another place. The bearing arrow uses the latest fix and heading.
+The page and its order are fixed while the list is open, so a list does not reorder under a rider's
+thumb as the position updates. Only the bearing arrow follows the live fix.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -749,11 +640,11 @@ Page membership and order stay fixed while the list is open. Current opening sta
 <figcaption>The detail screen reads opening hours once. The bearing and distance remain live.</figcaption>
 </figure>
 
-The detail screen reads the POI schedule once through `prepare`. It calculates today's open state from the current local clock.
+The detail screen reads the schedule once and calculates today's state from the local clock. A
+definite open or closed answer needs a trusted clock and a known local offset. Anything else is
+Unknown.
 
 ## Settings
-
-Settings screens use two focus levels. The row cursor selects a setting. Edit focus changes the selected value.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -799,131 +690,32 @@ Settings screens use two focus levels. The row cursor selects a setting. Edit fo
 <figcaption>A press moves focus between the row and its value. Up and Down change the focused value.</figcaption>
 </figure>
 
-The application marks settings dirty when a value changes. `SettingsMachine` waits until the user leaves the Settings subtree before it requests a write. The host writes the snapshot through `SettingsStore` and reports the result.
+Settings have two focus levels: the cursor selects a row, and a press moves focus into the value. A
+changed value is written when the rider leaves the Settings subtree, not once per step.
 
-The settings blob is independent of the SD card. The current UI languages are English, German, French, and Spanish.
-
-Settings use layout version 20. The device rejects older or newer layouts and uses defaults. A valid current layout preserves the rider’s settings across updates.
-
-The build generates a complete translation table from four TOML catalogs. The build fails if a catalog has missing or extra keys.
+Settings do not live on the card, so they survive a card change. The UI languages are English,
+German, French, and Spanish, and the build generates the translation table from four catalogs and
+fails on a missing or extra key.
 
 ## Route cleanup
 
-The device does not delete routes or rides automatically.
-When a route upload fails because storage is full, the device offers a cleanup dialog.
-Choose an age in weeks, then hold **Delete old routes** to confirm. Cancel is selected first.
-The dialog reports completion, no matching routes, or a failure. Retry the upload after cleanup.
-
-Age starts when the current route copy is uploaded under a trusted clock. Navigation does not
-change this date. Cleanup scans the complete store, including routes beyond the visible menu.
-It keeps the active route, routes with unknown dates, and routes newer than the selected age.
-If the current date is unknown, use manual deletion from the Routes menu.
-
-Ride archive proof controls the synced indicator. It never starts a deletion timer.
-See [ride reconciliation](../companion-link/#reconciliation).
-
-## Easier routes
-
-Easier routes compares the remaining journey under the current bike profile. It runs one shared
-baseline and two fixed trials for each goal: less climbing, smoother surfaces, and shorter distance.
-These are bounded alternatives, not a claim that the router found a global optimum. The saved bike
-profile and its road and surface prohibitions do not change.
-
-Each trial passes through the remaining authored waypoints' on-route access points in order. It
-keeps their display positions, names, categories, heights, offsets, and source references. A display
-position beside the route does not become a visit destination. If all remaining records do not fit,
-the comparison is unavailable. An active visit or an unresolved road avoidance also prevents it.
-
-The comparison uses measured route geometry. It requires at least 50 m less ascent, 500 m less rough
-surface, or 500 m less distance. Climb and surface choices can add at most 2 km or 25% of the remaining
-distance, whichever is greater. Surface and distance choices can add at most 100 m or 25% of the
-remaining ascent. Required elevation facts must be complete. A smoother choice must use comparable
-map attribution and cannot increase the distance with unknown surface.
-
-Only useful, distinct choices appear. The camera stays fixed while the rider compares the magenta
-current route and blue proposed route. The review shows the saving and a Current/New table. Back
-keeps the selected choice. **Use this route** starts the existing Navigator acceptance process; it
-checks the exact sources and the rider's position again. Recording continues through acceptance.
-Reopening the comparison uses the accepted route as the new current journey.
-
-The trials run one at a time in the existing planner arena. The app keeps only small result
-records. It releases each trial before starting the next. Opening a selected review reconstructs
-that one route from the same frozen sources and verifies its measured costs and payload checksum.
-
-## Runtime boundaries
-
-Input logic and drawing receive different data views.
-
-<figure class="fig">
-<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
-<svg viewBox="0 0 720 220" role="img" aria-label="Two side-by-side contexts. On the left, handle receives Ctx, the mutable half: app state, activity mode, Navigator route state, Recorder ride state, and settings. On the right, draw receives Render, the read-only half: the map reader, renderer, route guidance, route caches, breadcrumb, size, and hold-progress.">
-  <text class="d-tag" x="20" y="24">Two halves of the world, handed to two methods</text>
-
-  <!-- Ctx -->
-  <rect class="d-panel" x="36" y="44" width="300" height="150" rx="12" />
-  <text class="d-label" x="56" y="68">handle(g, &amp;mut Ctx)</text>
-  <text class="d-tag" x="56" y="84">mutable — change the world</text>
-  <g font-family="var(--mono)">
-    <text class="d-sub" x="56" y="104">state &nbsp;&nbsp;— camera · zoom · pan</text>
-    <text class="d-sub" x="56" y="124">activity — ride mode · UI requests</text>
-    <text class="d-sub" x="56" y="144">navigator — route · match · guidance</text>
-    <text class="d-sub" x="56" y="164">recorder — ride totals · sensors</text>
-    <text class="d-sub" x="56" y="184">settings — units · clock · intervals</text>
-  </g>
-
-  <!-- Render -->
-  <rect class="d-panel-2" x="384" y="44" width="300" height="150" rx="12" />
-  <text class="d-label" x="404" y="68">draw(target, &amp;Render)</text>
-  <text class="d-tag" x="404" y="84">read-only — paint the world</text>
-  <g font-family="var(--mono)">
-    <text class="d-sub" x="404" y="106">reader · renderer — draw the map</text>
-    <text class="d-sub" x="404" y="126">state · guidance · route caches · breadcrumb</text>
-    <text class="d-sub" x="404" y="146">w · h &nbsp;— panel size</text>
-    <text class="d-sub" x="404" y="166">hold_progress — the confirm ring</text>
-  </g>
-</svg>
-</div>
-<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
-<figcaption>Input handling uses mutable <code>Ctx</code>. Drawing uses read-only <code>Render</code> data and borrowed render resources.</figcaption>
-</figure>
-
-The screen table also declares whether a screen needs the map reader. A map screen needs it each frame.
-
-The POI list and detail screens need the reader only until their one-shot data is ready. Other chrome screens do not build a reader.
+The device deletes nothing by itself. When a route upload fails because storage is full, it offers
+cleanup: choose an age in weeks and hold to confirm. Cleanup keeps the active route, routes newer
+than that age, and routes whose date is unknown, because an unknown date is not evidence that a
+route is old. See [ride reconciliation](../companion-link/#reconciliation).
 
 ## Repaint policy
 
-The application renders on demand. `Dirty` separates base-frame changes from transient overlay changes.
-
-- `map` requests a base-frame render.
-- `overlay` requests a transient overlay render.
-- `region` can limit a base-frame update to one rectangle.
-
-A static screen with no new input, data, or timer event does not render. A scrolling name is a
-region update of its text row, and its next step is the only timer it arms.
+The application renders on demand. A static screen with no input, no new data, and no timer does
+not render at all.
 
 ### The render key
 
-Each screen row **declares a render-key kind** — the name of the facts its drawing reads. The frame
-**builds the key** from that declaration: it reads the named facts out of the current state and
-returns their exact values.
-
-Each kind names what its screen draws. The Map names the camera, the fix, the pan mode, the
-route-relative chrome and the low-battery cue. The
-riding grid names the ride readouts and the live sensor values of the fields the rider pinned. The
-Climb view names the climb and the cursor on it. The Up-ahead timeline names the progress its rows
-measure from. Home names the battery level, the connected indicator, and the screensaver backdrop. A
-screen whose content moves only on input declares no facts of its own.
-
-One frame builds the visible screens' key before its work and again after it. A changed key requests
-a base-frame render. The rule this keeps is per screen, not per screen class: a heart-rate reading
-repaints the grid that shows it and not the map beside it.
-
-Five kinds of change cannot move a key, and each asks for its render directly. A host feeds some
-data between two frames, so the change is already in both keys. A screen keeps its own selection and
-scroll position, so each recognized gesture requests a render. The card scheduler answers for the
-cards it owns. A planner landing rewrites the screen stack. Some resident data — the catalogs, the
-derived route data — no row names. Over-redraw is safe. Under-redraw is a defect.
+Each screen declares which facts its drawing reads. Each frame reads those facts before and after
+its work, and a change requests a repaint. The rule is per screen: a new heart-rate reading
+repaints the grid that shows it and not the map beside it. Some changes cannot move a key, such as
+a selection a screen keeps to itself, and they request their repaint directly. Drawing too often is
+safe; drawing too rarely is a defect.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -964,31 +756,18 @@ derived route data — no row names. Over-redraw is safe. Under-redraw is a defe
 <figcaption>This illustrates hold feedback, not a retained notification screen. Cards and drawers follow their own screen-stack and repaint rules.</figcaption>
 </figure>
 
-The high-priority input plane recognizes gestures and advances hold-feedback state.
-The map plane draws that feedback, renders screens, and owns panel output.
-See the [board presenter](src:firmware/obc-fw-nrf54l/src/map_plane.rs).
+The overlay presenter reads the clean base frame, adds the overlay, and leaves the base frame
+unchanged.
 
-The overlay presenter reads the clean base frame, adds the overlay, and presents the result. It leaves the base frame unchanged.
+## Screens the companion pushes
 
-## Screens the companion link pushes
-
-The companion can open modal cards for pairing, route updates, trip updates, and warnings.
-
-The card scheduler assigns a fixed priority to each card type. A new card does not replace a hold in progress.
-
-### The passkey card
-
-The passkey card shows the six-digit pairing code. The rider cannot dismiss it before pairing ends.
-
-### The Sensors screen
-
-The Sensors settings screen shows heart-rate, power, and cadence sensor slots. It also opens the sensor scan list.
+The companion can open modal cards for pairing, route and trip updates, and warnings. The scheduler
+gives each type a fixed priority, and a new card never replaces a hold in progress. The passkey card
+cannot be dismissed before pairing ends.
 
 ## Riding data
 
 ### Climbs
-
-The route processor supplies climb segments and profiles. The Climb screen reads the active segment and its resident profile.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -1050,11 +829,10 @@ The route processor supplies climb segments and profiles. The Climb screen reads
 <figcaption>The climb view shows the current climb profile and four climb values.</figcaption>
 </figure>
 
-The riding-view cycle contains Map and Statistics. It also contains Climb when a climb is active and Climb mode is on.
+The route processor supplies the climb segments and their profiles. Climb joins the riding views
+only while a climb is active.
 
 ### Waypoints
-
-The route file supplies route-ordered waypoints. Navigator tracks the next waypoint from matched route progress.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -1104,11 +882,11 @@ The route file supplies route-ordered waypoints. Navigator tracks the next waypo
 <figcaption>Map, route, and statistics views use the same route-distance axis for waypoints.</figcaption>
 </figure>
 
-The map shows waypoint markers and an approach chip. Statistics shows waypoint progress and configured values.
+Waypoints come from the route file, and Navigator tracks the next one from the matched position.
+The map, route, and statistics views place them on the same route-distance axis, so a waypoint is
+at the same progress in all three.
 
 ### Up ahead
-
-The Up-ahead view merges route waypoints with map POIs near the route.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -1163,13 +941,8 @@ The Up-ahead view merges route waypoints with map POIs near the route.
 <figcaption>Nearby POIs use geographic distance. Up-ahead entries use distance along the route.</figcaption>
 </figure>
 
-The corridor query sorts results by distance along the route. It excludes POIs behind the snapshot anchor.
-A continuous pass within the configured radius of a place produces one encounter, at the nearest
-point on that pass. Equal distances keep the earlier route position and its side. Small bends
-within a pass do not add rows. Leaving the radius and returning produces a later encounter.
-Passes can cross route-chunk and page boundaries. The query completes the nearest-point calculation
-before it publishes the encounter, so changing pages does not change its identity or position.
-
+Nearby POIs use the distance through the air. Up ahead uses the distance along the route, which is
+the distance a rider actually has to ride.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -1211,54 +984,12 @@ before it publishes the encounter, so changing pages does not change its identit
 <figcaption>The Up-ahead view merges two sorted sources without copying rows.</figcaption>
 </figure>
 
-The merge walks both sorted inputs. It does not allocate or copy list rows.
+One pass through the corridor of a place is one row, at the nearest point of that pass, so a bend
+in the road does not add rows. Leaving and returning is a later encounter.
 
-A category filter changes the corridor snapshot key. A source scope selects waypoints, map POIs, or
-both. The rider sets both from the view's own contextual drawer, which replaced an in-view mode the
-`Select` hold used to open. The filter is a selection that starts again at "Everything" each time the
-view opens; the source scope is stored.
-
-A cursor the rider set counts only against the list they set it in. While the list shows something
-else, the cursor is the first row still ahead; it comes back if the rider sets the controls back.
-Without this a rider who scrolls and then filters lands on the last match instead of the nearest
-one.
-
-Replacing active route geometry clears the corridor snapshot. The open view keeps its frozen progress anchor and requests new rows from the replacement route. A card that covers the view does not by itself clear the snapshot.
-
-Configured `Next: category` fields use cached per-category corridor results. A visible Up-ahead screen has priority over these background requests.
-
-## What is next on the accepted route
-
-The Assistant overview uses one frozen interval: the entry position through the next 5 km or 10 km,
-clipped at the end of the accepted journey. An accepted visit's approach, stop, return, and original
-tail share this distance axis. A leg boundary is not the destination. Select opens the timeline;
-Select-hold refreshes the anchor. Replacing the route or map invalidates the view and requires a
-refresh.
-
-The overview reads ascent and descent from measured route facts. Missing elevation produces an
-unknown value. The existing elevation profile supplies the chart and its measured grade colors;
-missing spans remain gaps. The overview selects the climb at the frozen anchor, or the next climb
-that starts inside the interval. Its climb length and gain describe the whole climb, including any
-part after the window. The next authored waypoint can be after the window. Generic and categorized
-waypoints retain their stored name and category.
-
-Water and resupply summaries share the interval and use current trusted opening hours. A completed
-empty query differs from missing coverage or failed reads. A known-closed service is not an
-available choice.
-
-The timeline has a four-row display page. It streams the complete authored waypoint section and
-uses the existing corridor query's continuation keys for map places. The riding waypoint cache is
-not changed. Distance and ascent figures refer to the frozen window start; a separate passed cue
-uses current progress. Page boundaries use route occurrence and source identity, so ties and later
-passes through the same place remain distinct. Previous pages and Back from detail preserve the
-selection.
-
-The timeline's context drawer selects category and source. Category starts at Everything on a fresh
-entry; source is the stored preference. Train is a service category. Generic waypoints appear only
-under Everything; climbs appear only under Everything with both sources enabled. Known-closed
-unselected places leave the page without reordering surviving rows. A selected closed place remains
-visible but cannot start a Visit. Map places use the shared place detail and Visit review. Authored
-waypoint details do not offer Add stop.
+A cursor the rider set counts only against the list they set it in: while the list shows something
+else, the cursor is the first row still ahead. Without that rule a rider who scrolls and then
+filters lands on the last match instead of the nearest one.
 
 ## Main rider flow
 
@@ -1311,42 +1042,21 @@ waypoint details do not offer Add stop.
 <figcaption>Start opens Map on a clean ride stack. Back cycles the available riding views. Drawers and Inspect keep a direct return to the ride.</figcaption>
 </figure>
 
-Home opens the main menu. A route selection opens its overview. Start uses `Root(Map)` to create a clean ride stack.
-
-During a ride, Back cycles through riding views. Press pauses. A Down plus Back squeeze raises the
-ride context sheet. Back-hold opens the main menu from any of them.
-
-Map Inspect uses Select-hold to enter. Back exits Inspect before it changes riding views. Inside
-Inspect a Select tap walks the mode ring: route movement, free movement, then zoom.
-
-Idle return removes abandoned chrome. It returns to Home when idle and to Map during an active ride.
+Home opens the main menu, a route selection opens its overview, and Start opens Map on a clean ride
+stack. During a ride, Back cycles the riding views, a press pauses, and Back-hold reaches the main
+menu. Map Inspect is entered with a Select hold, and Back leaves Inspect before it changes views.
+Idle return removes abandoned chrome: it returns to Home when there is no ride, and to Map during
+one.
 
 ## Visual vocabulary
 
-Screens use shared primitives for titles, lists, rows, bands, tiles, text, and status indicators.
+Screens compose shared primitives for titles, lists, rows, bands, tiles, text, and status, and each
+shared mechanism has one owner.
 
-The `chrome`, `rows`, `list`, and `tiles` modules contain composable drawing parts. The `band`,
-`spinner`, `pager`, and `marquee` modules each own one shared mechanism. The `fmt` module owns
-shared quantity formatting.
-
-The `marquee` module fits a long name into its field. A name that does not fit is cut with `..`.
-One name per frame scrolls instead: the highlighted row of a list, the title of a detail screen or
-card, the selected peak in the Peak View ledger. The draw names it with the text row it occupies,
-and the UI runtime steps it by one character every 250 ms after a 1 s rest at the head, rests 1.5 s
-at the tail, and returns to the head. Every font is monospace, so a step draws a different
-substring and no new primitive. The riding view's waypoint tile scrolls once when the name changes
-and then rests at the head, so nothing moves on the panel while the rider rides.
-
-`ActionRows` owns card-row selection, wrapping, Back dismissal, Press or Hold activation, guard
-state, and row drawing. A card screen maps `CardEvent` to typed domain work and owns its body
-layout. Cards compose the existing `chrome` helpers. There is no universal card-body or frame
-abstraction.
-
-`draw_rows` is for selected, actionable lists. A read-only timeline can compose `list_frame` and
-`scrollbar` without inventing a selection.
-
-Overlays and screen-specific drawing layers stay local. The Climb grade renderer is different from
-the shared elevation band.
+A name that does not fit its field is cut with two dots. One name per frame scrolls instead: the
+highlighted list row, a detail title, the selected peak in Peak View. Every font is monospace, so a
+scroll step is a different substring and needs no new primitive. The riding view's waypoint tile
+scrolls once when the name changes and then rests, so nothing moves while the rider rides.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -1379,17 +1089,18 @@ the shared elevation band.
 <figcaption>All screen colors use the shared RGB565-to-RGB222 conversion.</figcaption>
 </figure>
 
-Palette constants use RGB565. The framebuffer converts them to the device's 64-color RGB222 gamut.
+Palette constants are written once and converted to the panel's 64 colors by the framebuffer, so a
+screen never picks a device color by hand.
 
 ## Source map
 
 - Screen table, capabilities, contexts, and transitions: [`screen/mod.rs`](src:firmware/obc-app/src/screen/mod.rs)
-- Gesture recognition: [`input.rs`](src:firmware/obc-app/src/input.rs)
-- Input and overlay plane: [`input_plane.rs`](src:firmware/obc-app/src/input_plane.rs)
-- Repaint state and UI runtime: [`dirty.rs`](src:firmware/obc-app/src/dirty.rs), [`render_key.rs`](src:firmware/obc-app/src/render_key.rs), [`ui_runtime.rs`](src:firmware/obc-app/src/ui_runtime.rs)
+- Gesture recognition: [`input.rs`](src:firmware/obc-app/src/input.rs), [`input_plane.rs`](src:firmware/obc-app/src/input_plane.rs)
+- Repaint state: [`dirty.rs`](src:firmware/obc-app/src/dirty.rs), [`render_key.rs`](src:firmware/obc-app/src/render_key.rs), [`ui_runtime.rs`](src:firmware/obc-app/src/ui_runtime.rs)
 - Shared screen primitives: [`screen/vocab/`](src:firmware/obc-app/src/screen/vocab)
-- Settings and translations: [`settings.rs`](src:firmware/obc-app/src/settings.rs), [`i18n/`](src:firmware/obc-app/i18n), [`i18n.rs`](src:firmware/obc-app/src/i18n.rs)
-- POI and Up-ahead views: [`poi_list.rs`](src:firmware/obc-app/src/screen/poi_list.rs), [`poi_detail.rs`](src:firmware/obc-app/src/screen/poi_detail.rs), [`whats_next.rs`](src:firmware/obc-app/src/screen/whats_next.rs)
-- Route cleanup: [`route_cleanup.rs`](src:firmware/obc-storage/src/flat/route_cleanup.rs)
+- Settings and translations: [`settings.rs`](src:firmware/obc-app/src/settings.rs), [`i18n/`](src:firmware/obc-app/i18n)
+- Find a place and visits: [`find_place.rs`](src:firmware/obc-app/src/find_place.rs), [`visit.rs`](src:firmware/obc-route/src/visit.rs)
+- POI and Up-ahead views: [`poi_list.rs`](src:firmware/obc-app/src/screen/poi_list.rs), [`whats_next.rs`](src:firmware/obc-app/src/screen/whats_next.rs)
 
-See [system architecture](../architecture/) for the host loop. See [rendering pipeline](../rendering/) for pixel generation.
+See [system architecture](../architecture/) for the host loop and [rendering pipeline](../rendering/)
+for pixel generation.

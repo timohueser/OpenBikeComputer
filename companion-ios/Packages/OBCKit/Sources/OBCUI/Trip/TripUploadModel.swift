@@ -3,18 +3,16 @@ import Observation
 import OBCDomain
 import OBCTransport
 
-/// Drives a **whole-trip upload** (TR8, issue #657) — the queued sibling of
-/// `UploadSheetModel`. One transfer in flight at a time, in ride order: each
-/// stage is skipped (CRC up-to-date), replaced in place (on device but
-/// outdated), or freshly uploaded (absent), then the **trip object last**. The
-/// precheck runs before any bytes — a trip that can't fit fails upfront with the
-/// "delete routes on the device" guidance, never `storageFull` at stage 4.
+/// Drives a whole-trip upload: the queued sibling of `UploadSheetModel`. One transfer in flight
+/// at a time, in ride order: each stage is skipped when it is already up to date, replaced in
+/// place when it is on the device but outdated, or freshly uploaded when it is absent. Then the
+/// trip object, last. The precheck runs before any bytes, so a trip that cannot fit fails up front
+/// with guidance rather than hitting a full device at stage four.
 ///
-/// Interruption keeps `UploadSheetModel`'s restart-current-stage semantics
-/// (uploads restart, not resume); completed stages stay committed; re-running is
-/// idempotent (the skips catch everything already landed). Each object's link is
-/// committed the instant its transfer lands (via the step's `commit` closure into
-/// `MainScreenModel`), exactly like a single upload.
+/// Interruption keeps `UploadSheetModel`'s restart-the-current-stage semantics, completed stages
+/// stay committed, and re-running is idempotent, because the skips catch everything already
+/// landed. Each object's link is committed the instant its transfer lands, exactly like a single
+/// upload.
 @MainActor @Observable
 public final class TripUploadModel: Identifiable {
     public nonisolated let id = UUID()
@@ -26,12 +24,12 @@ public final class TripUploadModel: Identifiable {
         case failed
     }
 
-    /// Why the whole-trip upload failed — a precheck deficit (before any bytes) or
-    /// a device reject mid-queue. Drives the failure copy.
+    /// Why the whole-trip upload failed: a precheck deficit before any bytes, or a device reject
+    /// mid-queue. Drives the failure copy.
     public enum Failure: Equatable, Sendable {
-        /// The precheck found the trip can't fit: `routeDeficit` route slots short.
+        /// The precheck found the trip cannot fit, by this many route slots.
         case storagePrecheck(routeDeficit: Int)
-        /// A device transfer failed for good (storage-full at open, a reject, …).
+        /// A device transfer failed for good.
         case device(DeviceError)
     }
 
@@ -42,10 +40,9 @@ public final class TripUploadModel: Identifiable {
         }
     }
 
-    /// One queue step — a skipped stage (no bytes) or a transfer (a stage or the
-    /// trip object). `makeTransfer` is evaluated **at execution time** so the trip
-    /// object step reads the stage ids the just-committed stages landed under; it
-    /// returns `nil` to degenerate to a skip (nothing resolvable to send).
+    /// One queue step: a skipped stage with no bytes, or a transfer of a stage or the trip object.
+    /// `makeTransfer` is evaluated at execution time, so the trip-object step reads the stage ids
+    /// the just-committed stages landed under. It returns nil to degenerate to a skip.
     public struct QueueStep: Sendable {
         let title: String
         let skip: Bool
@@ -58,7 +55,7 @@ public final class TripUploadModel: Identifiable {
             QueueStep(title: title, skip: true, makeTransfer: nil, commit: nil)
         }
 
-        /// A transfer step (a stage upload or the trip object).
+        /// A transfer step: a stage upload or the trip object.
         public static func transfer(
             title: String,
             makeTransfer: @escaping @MainActor @Sendable () -> (handle: TransferHandle, committedCRC: UInt32)?,
@@ -76,19 +73,18 @@ public final class TripUploadModel: Identifiable {
     public private(set) var shouldDismiss = false
     /// The live link state for the current transfer.
     public private(set) var connection: ConnectionState = .connected
-    /// The current queue step (0-based) — drives the "Stage X of Y" header.
+    /// The current queue step, zero-based, which drives the header.
     public private(set) var stepIndex = 0
-    /// Stages skipped because the device already held them, current — the done
-    /// state's tally.
+    /// Stages skipped because the device already held them: the done state's tally.
     public private(set) var skippedCount = 0
-    /// Objects committed (stages + trip) so far — the done state's tally.
+    /// Objects committed so far, stages and trip: the done state's tally.
     public private(set) var committedCount = 0
 
     // MARK: Fixed facts
 
     public let tripName: String
     public let deviceName: String
-    /// Total queue steps (skips + uploads + trip object) — the "of Y" denominator.
+    /// Total queue steps: the header's denominator.
     public let stepCount: Int
     // MARK: Wiring
 
@@ -135,22 +131,21 @@ public final class TripUploadModel: Identifiable {
         OBCFormat.transferSizeLine(bytesDone: progress.bytesDone, totalBytes: progress.total, hasWaypoints: false)
     }
 
-    /// The current step's title (a stage name, or "Trip details" for the trip
-    /// object) — `nil` in a terminal phase.
+    /// The current step's title, a stage name or the trip object's. Nil in a terminal phase.
     public var currentStepTitle: String? {
         guard stepIndex < steps.count else { return nil }
         return steps[stepIndex].title
     }
 
-    /// "Stage 2 of 5 — Devil's Lake" — the queued-mode header over the per
-    /// transfer bar. Counts every step (skips + trip object) in the denominator.
+    /// The queued-mode header over the per-transfer bar. It counts every step, skips and trip
+    /// object included, in the denominator.
     public var stageProgressLabel: String {
         let position = min(stepIndex + 1, stepCount)
         let title = currentStepTitle ?? tripName
         return "Stage \(position) of \(stepCount) — \(title)"
     }
 
-    /// The done-state tally — "3 uploaded · 1 already on device".
+    /// The done-state tally.
     public var doneTally: String {
         var parts = ["\(committedCount) uploaded"]
         if skippedCount > 0 { parts.append("\(skippedCount) already on device") }
@@ -200,9 +195,8 @@ public final class TripUploadModel: Identifiable {
 
         beginQueue()
     }
-    /// Precheck, then start the queue. The precheck runs before any bytes (issue
-    /// #657): a trip that can't fit fails upfront — never a partial upload that
-    /// hits storageFull at the last stage.
+    /// Precheck, then start the queue. The precheck runs before any bytes, so a trip that cannot
+    /// fit fails up front rather than as a partial upload that fills the device at the last stage.
     private func beginQueue() {
         guard precheck.fits else {
             phase = .failed
@@ -214,8 +208,7 @@ public final class TripUploadModel: Identifiable {
         driver = Task { [weak self] in await self?.runQueue() }
     }
 
-    /// Restart the current stage's transfer after a drop (uploads restart, not
-    /// resume) — the trip queue's Resume.
+    /// Restart the current stage's transfer after a drop: uploads restart, they do not resume.
     public func resume() {
         guard phase == .interrupted else { return }
         currentHandle?.resume()
@@ -223,8 +216,8 @@ public final class TripUploadModel: Identifiable {
         setActive(true)
     }
 
-    /// Cancel the whole trip upload — aborts the in-flight transfer; completed
-    /// stages stay committed on the device (re-running is idempotent).
+    /// Cancel the whole trip upload, aborting the in-flight transfer. Completed stages stay
+    /// committed on the device, and re-running is idempotent.
     public func cancel() {
         currentHandle?.cancel()
     }
@@ -232,8 +225,8 @@ public final class TripUploadModel: Identifiable {
     /// Done / a failure's Close.
     public func dismiss() { shouldDismiss = true }
 
-    /// The sheet left the screen — cancel an unresolved transfer and stop the
-    /// watchers (a completed queue's dismissal passes through untouched).
+    /// The sheet left the screen: cancel an unresolved transfer and stop the watchers. A completed
+    /// queue's dismissal passes through untouched.
     public func sheetDismissed() {
         if let currentHandle, currentHandle.currentOutcome == nil { currentHandle.cancel() }
         tearDown()
@@ -258,17 +251,17 @@ public final class TripUploadModel: Identifiable {
                 continue
             }
             guard let (handle, committedCRC) = step.makeTransfer?() else {
-                // Nothing resolvable to send (e.g. a trip with no on-device
-                // stages) — treat as a skip and move on.
+                // Nothing resolvable to send, such as a trip with no on-device stages, so treat it
+                // as a skip and move on.
                 stepIndex += 1
                 continue
             }
             currentHandle = handle
             phase = .uploading
             watchProgress(handle)
-            // `handle.outcome` stays unresolved across a drop (the transfer is
-            // restartable) — this awaits through interrupt → resume until the
-            // stage truly finishes, fails, or is canceled.
+            // `handle.outcome` stays unresolved across a drop, because the transfer is
+            // restartable, so this awaits through the interrupt and the resume until the stage
+            // truly finishes, fails, or is cancelled.
             let outcome = await handle.outcome
             progressWatcher?.cancel()
             progressWatcher = nil
@@ -302,8 +295,8 @@ public final class TripUploadModel: Identifiable {
             for await tick in handle.progress {
                 guard let self else { return }
                 progress = tick
-                // A tick while interrupted (and the link is back) means the
-                // restart is moving — flip to uploading and re-claim the ledger.
+                // A tick while interrupted, with the link back, means the restart is moving, so
+                // flip to uploading and re-claim the ledger.
                 if phase == .interrupted, linkUp {
                     phase = .uploading
                     setActive(true)

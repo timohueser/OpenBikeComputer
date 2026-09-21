@@ -4,31 +4,29 @@ use embedded_graphics::prelude::*;
 
 use obc_map_scene::BBox;
 
-/// Meters of ground per microdegree of latitude — the renderer's zoom is pixels per
-/// microdegree-lat, so this turns zoom into meters-per-pixel. Derived from the shared
-/// [`obc_map_scene::M_PER_DEG`] so the on-screen scale tracks the route/packer Earth model.
+/// Metres of ground per microdegree of latitude. The renderer's zoom is pixels per
+/// microdegree-lat, so this turns zoom into metres per pixel. Derived from the shared
+/// [`obc_map_scene::M_PER_DEG`], so the on-screen scale tracks the route and packer Earth model.
 const METERS_PER_MICRODEG_LAT: f32 = (obc_map_scene::M_PER_DEG / 1_000_000.0) as f32;
 
-/// The zoom (pixels per microdegree of latitude) that yields a given ground **meters-per-pixel** —
-/// the inverse of [`mpp_for_zoom`]. Lets callers aim the camera at a real-world scale.
+/// The zoom that yields a given ground metres-per-pixel: the inverse of [`mpp_for_zoom`].
 #[inline]
 pub fn zoom_for_mpp(mpp: f32) -> f32 {
     METERS_PER_MICRODEG_LAT / mpp
 }
 
-/// Ground **meters-per-pixel** at a given zoom — the viewport-free form of
-/// [`Viewport::meters_per_pixel`] and the inverse of [`zoom_for_mpp`].
+/// Ground metres per pixel at a given zoom, the inverse of [`zoom_for_mpp`].
 #[inline]
 pub fn mpp_for_zoom(zoom: f32) -> f32 {
     METERS_PER_MICRODEG_LAT / zoom
 }
 
-/// Screen projection: microdegrees → pixels, with longitude aspect correction (`aspect = cos(lat)`)
-/// so the map keeps shape away from the equator. `zoom` is pixels per microdegree of latitude.
+/// Screen projection: microdegrees to pixels, with longitude aspect correction `cos(lat)` so the
+/// map keeps shape away from the equator. `zoom` is pixels per microdegree of latitude.
 ///
-/// Can rotate the map so a given course points to screen-top ("heading-up" navigation).
-/// `course_rad` is that course in radians CW from north; `0` is north-up (plain translate+scale).
-/// Rotation is applied about the camera center, after aspect correction.
+/// It can rotate the map so a given course points to screen-top. `course_rad` is that course in
+/// radians clockwise from north, and `0` is north-up. Rotation is about the camera centre, after
+/// aspect correction.
 #[derive(Debug, Clone, Copy)]
 pub struct Viewport {
     pub w: f32,
@@ -39,7 +37,7 @@ pub struct Viewport {
     pub aspect: f32,
     /// Course (radians CW from north) the projection rotates to screen-up. 0 = north-up.
     pub course_rad: f32,
-    // Precomputed once per frame (rotation is hot — called per projected point).
+    // Precomputed once per frame, because rotation is called per projected point.
     sin_c: f32,
     cos_c: f32,
 }
@@ -50,8 +48,7 @@ impl Viewport {
         Self::new_rotated(w, h, cam_lon, cam_lat, zoom, 0.0)
     }
 
-    /// Like [`new`](Viewport::new) but rotated so `course_rad` (radians CW from
-    /// north) points to screen-top.
+    /// Like [`new`](Viewport::new), but rotated so `course_rad` points to screen-top.
     pub fn new_rotated(w: f32, h: f32, cam_lon: i32, cam_lat: i32, zoom: f32, course_rad: f32) -> Self {
         Viewport {
             w,
@@ -68,8 +65,8 @@ impl Viewport {
 
     #[inline]
     pub fn to_screen(&self, lon: i32, lat: i32) -> (i32, i32) {
-        // Integer difference first, then cast the *small* relative delta to f32 — preserves
-        // absolute microdegree precision that casting the raw coordinates would lose.
+        // Integer difference first, then cast the small relative delta to f32: casting the raw
+        // coordinates would lose absolute microdegree precision.
         let delta_lon = lon.wrapping_sub(self.cam_lon);
         let delta_lat = lat.wrapping_sub(self.cam_lat);
         let ex = (delta_lon as f32) * self.aspect;
@@ -79,9 +76,8 @@ impl Viewport {
         let ry = -self.sin_c * ex - self.cos_c * ny;
         let x = rx * self.zoom + self.w / 2.0;
         let y = ry * self.zoom + self.h / 2.0;
-        // Round to nearest, not truncate: `as i32` truncation is asymmetric around the origin
-        // (biases toward screen center) and feeds the chunk-seam staircase divergence (see
-        // `fill_polygon`). Round-to-nearest is symmetric and sub-pixel correct.
+        // Round to nearest, not truncate: `as i32` truncation is asymmetric around the origin and
+        // feeds the chunk-seam staircase divergence.
         let p = round_pt(x, y);
         (p.x, p.y)
     }
@@ -108,9 +104,8 @@ impl Viewport {
         (lon, lat)
     }
 
-    /// Bounding box (microdegrees) of the on-screen area, for quadtree culling.
-    /// Uses all four screen corners so a *rotated* view still culls correctly —
-    /// the axis-aligned box must cover the tilted rectangle's full extent.
+    /// Bounding box in microdegrees of the on-screen area, for quadtree culling. It uses all four
+    /// screen corners, so a rotated view still culls correctly.
     pub fn visible_bbox(&self) -> BBox {
         let corners =
             [self.to_map(0.0, 0.0), self.to_map(self.w, 0.0), self.to_map(0.0, self.h), self.to_map(self.w, self.h)];
@@ -127,13 +122,12 @@ impl Viewport {
         BBox { min_lon, min_lat, max_lon, max_lat }
     }
 
-    /// Whether a map-space bbox can touch the actual rotated panel rectangle.
+    /// Whether a map-space bbox can touch the rotated panel rectangle.
     ///
-    /// The quadtree must be queried with [`visible_bbox`](Self::visible_bbox), the axis-aligned
-    /// envelope of the rotated screen. At diagonal headings that envelope includes four large
-    /// corner wedges which are not visible. Projection turns a feature bbox into a convex
-    /// parallelogram; this separating-axis test rejects only parallelograms disjoint from the
-    /// panel, before their vertices consume frame scratch.
+    /// The quadtree is queried with [`visible_bbox`](Self::visible_bbox), the axis-aligned
+    /// envelope of the rotated screen, which at diagonal headings includes four large corner
+    /// wedges that are not visible. Projection turns a feature bbox into a convex parallelogram,
+    /// and this separating-axis test rejects the disjoint ones before they consume frame scratch.
     #[inline]
     pub(crate) fn bbox_might_be_visible(&self, bbox: &BBox, margin_px: i32) -> bool {
         let quad = [
@@ -155,11 +149,9 @@ impl Viewport {
             .all(|axis| projections_overlap(&quad, &screen, axis))
     }
 
-    /// Whether decoded geometry itself can paint the panel. This is the exact second stage after
-    /// [`bbox_might_be_visible`](Self::bbox_might_be_visible): clipped coverage faces often have a
-    /// bbox that touches a rotated view although every edge and filled pixel lies in an envelope
-    /// corner. Rejecting those faces before frame selection preserves every visible vertex while
-    /// avoiding false point-budget pressure.
+    /// Whether decoded geometry can paint the panel: the exact second stage after
+    /// [`bbox_might_be_visible`](Self::bbox_might_be_visible). A clipped coverage face often has a
+    /// bbox that touches a rotated view although every filled pixel lies in an envelope corner.
     pub(crate) fn geometry_might_be_visible(
         &self,
         points: &[(i32, i32)],
@@ -192,24 +184,23 @@ impl Viewport {
             }
         }
 
-        // No vertex or edge reaches the panel. A filled polygon can still surround it wholesale;
-        // test every panel corner against all rings with the same even-odd rule as rasterization.
+        // No vertex or edge reaches the panel, but a filled polygon can still surround it, so test
+        // every panel corner against all rings with the rasterizer's even-odd rule.
         is_polygon
             && [(rect.0, rect.1), (rect.0, rect.3), (rect.2, rect.3), (rect.2, rect.1)]
                 .into_iter()
                 .any(|corner| point_in_polygon(self, corner, points, ring_lens))
     }
 
-    /// Ground meters per pixel at the current zoom, used to pick the LOD layer. Independent of
-    /// display size — a 1024px host and a 240px panel over the same ground span pick the same level.
+    /// Ground metres per pixel at the current zoom, used to pick the LOD. Independent of display
+    /// size, so a 1024 px host and a 240 px panel over the same ground span pick the same level.
     #[inline]
     pub fn meters_per_pixel(&self) -> f32 {
         mpp_for_zoom(self.zoom)
     }
 
-    /// Unit screen-space vector pointing to map **north** (for a compass needle). At north-up this
-    /// is `(0, -1)`; heading-up rotates it. A +lat step maps to `(-sin_c, -cos_c)` in
-    /// [`to_screen`](Viewport::to_screen) before the (irrelevant) scale, already unit length.
+    /// Unit screen-space vector pointing to map north, for a compass needle. At north-up this is
+    /// `(0, -1)`, and heading-up rotates it.
     #[inline]
     pub fn north_screen_unit(&self) -> (f32, f32) {
         (-self.sin_c, -self.cos_c)
@@ -283,14 +274,12 @@ fn point_in_polygon(viewport: &Viewport, point: (i32, i32), points: &[(i32, i32)
     inside
 }
 
-/// The longitude-compression factor at a latitude — `cos(lat)` in the shared local-equirectangular
-/// Earth model. The projection and the packer's ground-distance math must agree to the last bit, so
-/// there is one implementation: [`obc_map_scene::cos_lat`].
+/// The longitude-compression factor at a latitude. The projection and the packer's ground-distance
+/// math must agree to the last bit, so there is one implementation.
 pub(crate) use obc_map_scene::cos_lat as aspect_for_lat;
 
-/// Round to nearest, half away from zero — the shared rounding convention for every
-/// screen-space vertex. Same result as `libm::roundf` for all in-screen magnitudes,
-/// without the soft-float call on the hot per-vertex path.
+/// Round to nearest, half away from zero: the shared convention for every screen-space vertex.
+/// Same result as `libm::roundf` for in-screen magnitudes, without the soft-float call.
 #[inline]
 pub fn round_coord(v: f32) -> i32 {
     (v + if v >= 0.0 { 0.5 } else { -0.5 }) as i32

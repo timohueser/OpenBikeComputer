@@ -5,20 +5,12 @@
 //! differs — pacing, the time source, the photo phase, the draw target and its color — arrives as
 //! arguments, so nothing here branches on which host is calling.
 //!
-//! ## The RGBA framebuffer
-//!
-//! A plain in-memory RGBA8888 `DrawTarget` — the buffer `ctx.putImageData` reads.
-//!
-//! The shared render path draws the firmware-identical frame into this buffer; the page then
-//! wraps the bytes in an `ImageData` and blits them to the `<canvas>`. Full-frame transport at
-//! the replay cadence (240×320×4 ≈ 300 KB memcpy) is plenty on a browser — the device's
-//! dirty-row diff machinery stays in the hosts that protect glass (`obc-sim`'s `Present` + its
-//! exact-diff oracle), deliberately **not** duplicated here.
-//!
-//! Lives here rather than in one shell because **both** browser hosts draw into it: the landing
-//! demo (`obc-web-demo`, which renders the whole app) and the builder's preset previews
-//! (for example, the simulator). One framebuffer, one set of clipping and
-//! alpha invariants, one test.
+//! [`RgbaFrame`] is a plain in-memory RGBA8888 `DrawTarget`: the shared render path draws the
+//! firmware-identical frame into it, and the page wraps the bytes in an `ImageData` and blits them
+//! to the `<canvas>`. Full-frame transport at the replay cadence is plenty on a browser, so the
+//! device's dirty-row diff machinery stays in the hosts that protect glass. It lives here rather
+//! than in one shell because both browser hosts draw into it: one framebuffer, one set of clipping
+//! and alpha invariants, one test.
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 use obc_app::photo::FramePhoto;
@@ -78,8 +70,8 @@ where
 /// The resident active-route parse as a reader, when a route is active.
 ///
 /// Ask again immediately before rendering: the executor may have committed new geometry under the
-/// route (a planned route, a spliced detour), and the frame must draw what is there now. A free
-/// function because a `&self` method would borrow the whole host for as long as the reader lives.
+/// route, and the frame must draw what is there now. A free function because a `&self` method would
+/// borrow the whole host for as long as the reader lives.
 pub fn active_route<'a>(session: &'a ActiveRouteSession, routes: &'a FlatRouteStore) -> Option<RouteReader<'a>> {
     match (session.index(), routes.active_source()) {
         (Some(index), Some(source)) => Some(RouteReader::new(index, source)),
@@ -153,8 +145,8 @@ impl DrawTarget for RgbaFrame {
     }
 
     fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
-        // Row-sliced fill: the renderer clears + fills large rects every frame, so don't go
-        // pixel-by-pixel through `draw_iter`.
+        // Row-sliced fill: the renderer clears and fills large rects every frame, so this does not
+        // go pixel by pixel through `draw_iter`.
         let x0 = area.top_left.x.max(0);
         let y0 = area.top_left.y.max(0);
         let x1 = (area.top_left.x + area.size.width as i32).min(self.width as i32);

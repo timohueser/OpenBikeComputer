@@ -1,15 +1,10 @@
 // The build-product guard: every claim this repository makes about the files
-// Vite actually emits is asserted here — the host split (#895), the third-party
-// notices (#1149), deployment portability (#905) and the USB stack's chunk
-// (#909). Each block asserts against what Rollup put in the emitted output, not
-// against source imports or a grep of them.
+// Vite actually emits is asserted here, against what Rollup put in the emitted
+// output rather than against source imports or a grep of them.
 //
-// One file, because Vitest isolates by file and not by test: a build shared
-// inside a file is the only sharing it offers, so four subjects in four files
-// cannot see each other's builds. Four builds, because `web`, `web` built the
-// way the deploy builds it, `production` (the dev host) and `desktop` are four
-// different build inputs and therefore four different products. Every block
-// below reads one of those four — count the calls to {@link product}.
+// One file, because Vitest isolates by file and not by test. Four builds,
+// because `web`, `web` as the deploy builds it, `production` (the dev host) and
+// `desktop` are four different build inputs.
 
 import { build } from "vite";
 import { describe, expect, it } from "vitest";
@@ -30,12 +25,9 @@ const products = new Map<string, Promise<Built>>();
 let queue: Promise<unknown> = Promise.resolve();
 
 /**
- * One build per distinct product, memoised by mode **and** env — and
- * **serialised**, which is the correctness half rather than the speed half.
+ * One build per distinct product, memoised by mode and env, and serialised:
  * Vite reads VITE_-prefixed variables off the one `process.env` this process
- * has, so a build that needs one sets it and restores it in a `finally`; two
- * builds awaited concurrently would read each other's. Every build is chained
- * onto a single queue, so no two ever overlap.
+ * has, so two builds awaited concurrently would read each other's.
  *
  * `write: false` keeps this off disk; outDir is redirected anyway so a future
  * Vite that prepares the directory before writing can't wipe a real build.
@@ -96,22 +88,14 @@ function textFiles(b: Built): Map<string, string> {
     return files;
 }
 
-// The bundle-split guard for #895: the static web tier must not ship the
-// FastAPI job-polling client or the desktop-only style editor.
-//
-// Both targets are built: if the web assertions ever pass because the glob
-// stopped matching anything, the dev assertions fail in the same run.
-
 /**
- * Source modules the static web tier must not contain, and why.
+ * Source modules the static web tier must not contain.
  *
- * The Tauri rows are not the same claim as the rest: `@tauri-apps/api` in a
- * static site's bundle would be dead weight *and* a lie about where the app
- * runs, but more usefully, its presence would mean the host alias picked the
- * wrong module — which the assertions below could not otherwise notice, because
- * a desktop host's methods all resolve and simply never work in a browser.
- * (`lib/desktop/release.ts` is deliberately absent from this list: the *web*
- * tier reads it, to decide whether the desktop app has a download link yet.)
+ * `@tauri-apps/api` in a static site's bundle would mean the host alias picked
+ * the wrong module, which the assertions below could not otherwise notice: a
+ * desktop host's methods all resolve and simply never work in a browser.
+ * `lib/desktop/release.ts` is deliberately absent — the web tier reads it, to
+ * decide whether the desktop app has a download link yet.
  */
 const DESKTOP_ONLY = {
     "the FastAPI client": /\/src\/lib\/api\/client\.ts$/,
@@ -132,18 +116,13 @@ const DESKTOP_ONLY = {
 const DESKTOP_TARGET_ONLY = {
     "the desktop host": /\/src\/lib\/platform\/desktop\.ts$/,
     "the Tauri command bridge": /\/src\/lib\/desktop\/invoke\.ts$/,
-    // D4 (#909): the desktop tier drives USB natively, so the Rust-backed byte
-    // pipe must be in this bundle and nowhere else. Its presence here is also
-    // what proves the dynamic `import()` in `desktop.ts` still resolves —
-    // `device()` is only ever called from a click, so a broken path would
-    // otherwise surface on someone's desk.
+    // The desktop tier drives USB natively. Its presence here also proves the
+    // dynamic `import()` in `desktop.ts` still resolves — `device()` is only
+    // called from a click, so a broken path would surface on someone's desk.
     "the native USB transport": /\/src\/lib\/desktop\/usb\.ts$/,
     "the native USB session": /\/src\/lib\/desktop\/usb\.svelte\.ts$/,
-    // E2 (#912): the ride library is a folder on a disk, so only the tier with
-    // one may carry the code that writes it. Its presence here is also what
-    // proves `desktop.ts`'s dynamic `import()` still resolves — `rides()` is
-    // only called from a click, so a broken path would surface on someone's
-    // desk rather than in CI.
+    // Only the tier with a disk may carry the code that writes the ride library.
+    // Its presence also proves `desktop.ts`'s dynamic `import()` still resolves.
     "the ride library's Tauri backing": /\/src\/lib\/desktop\/library\.ts$/,
     "the Tauri JS API": /\/@tauri-apps\/api\//,
 };
@@ -161,17 +140,14 @@ describe("bundle split", () => {
         );
         expect(found).toEqual([]);
 
-        // The cell composer is now the hosted builder rather than a lazily
-        // loaded alternative selected by a manifest probe.
         expect(modules.some((id) => id.includes("/src/components/coverage/CoverageHome.svelte"))).toBe(
             true,
         );
     }, 180_000);
 
     it("ships the maintainer style editor only in the dev target", async () => {
-        // The dev host's own set: everything in DESKTOP_ONLY except the three
-        // rows that name the *desktop* host, which the dev target must not have
-        // either — one alias picks exactly one host.
+        // The dev host's own set: everything in DESKTOP_ONLY except the rows that
+        // name the *desktop* host — one alias picks exactly one host.
         const modules = modulesOf(await dev());
         const missing = Object.entries(DESKTOP_ONLY)
             .filter(([what]) => !(what in DESKTOP_TARGET_ONLY))
@@ -184,9 +160,8 @@ describe("bundle split", () => {
         );
         expect(strays).toEqual([]);
 
-        // `obc web` serves this target. Localhost is a secure WebUSB context,
-        // so the build must retain the same lazy browser transport as the
-        // static web host instead of rendering a desktop-only dead end.
+        // Localhost is a secure WebUSB context, so this build must keep the same
+        // lazy browser transport rather than a desktop-only dead end.
         expect(modules.some((id) => id.endsWith("/src/lib/usb/webusb.ts"))).toBe(true);
     }, 180_000);
 
@@ -201,12 +176,10 @@ describe("bundle split", () => {
     }, 180_000);
 });
 
-// The third-party notice guard for #1149: whatever the bundler puts in the
-// bundle, its licence text has to ship beside it.
-//
-// A list of `dependencies` would prove nothing here: Svelte is a devDependency
-// whose runtime is compiled into every chunk, and `@tauri-apps/api` is a
-// dependency the web tier never bundles.
+// Whatever the bundler puts in the bundle, its licence text has to ship beside
+// it. A list of `dependencies` would prove nothing: Svelte is a devDependency
+// compiled into every chunk, and `@tauri-apps/api` is one the web tier never
+// bundles.
 
 const LICENSE_FILE = "third-party-licenses.txt";
 
@@ -241,8 +214,7 @@ describe("third-party licences", () => {
         const uncovered = packages.filter((name) => !notices.includes(`\n${name} `));
         expect(uncovered).toEqual([]);
 
-        // Not just named — the permission text itself has to be there, which is the whole
-        // point of the file. Two licences, two distinctive sentences.
+        // The permission text itself has to be there, which is the point of the file.
         expect(notices).toContain("Permission is hereby granted, free of charge"); // MIT
         expect(notices).toContain("Redistribution and use in source and binary forms"); // BSD-2
         // Our own terms and the map data's, so a reader knows what the bundle itself is.
@@ -251,29 +223,21 @@ describe("third-party licences", () => {
     }, 180_000);
 
     it("describes the tier it was built for, not a fixed list", async () => {
-        // The desktop tier bundles the Tauri API the web tier does not, so the two files
-        // must differ — a notice file that ignored the build product would be identical.
+        // The desktop tier bundles the Tauri API the web tier does not, so the two
+        // notice files must differ.
         const built = await desktop();
         expect(bundledPackages(modulesOf(built))).toContain("@tauri-apps/api");
         expect(noticesOf(built)).toContain("@tauri-apps/api");
     }, 180_000);
 });
 
-// The domain-move guard for C6 (#905): the static web tier is published today
-// under GitHub Pages' project sub-path (`/OpenBikeComputer/builder/`) and is
-// expected to move to its own domain. Nothing in the built bundle may assume
-// either one. Two properties, and they fail differently:
+// The static web tier is published under a project sub-path and is expected to
+// move to its own domain. Nothing in the built bundle may assume either one:
 //
-//   * asset URLs are relative — a bundle with `/assets/…` in its HTML is
-//     mounted-at-root-only and would 404 under any prefix. Vite's `base: "./"`
-//     (#895) is what makes this true; this test is what keeps it true.
-//   * built the way the deploy builds it, no absolute site URL survives
-//     anywhere. The deploy passes VITE_SITE_BASE=../ because the docs and the
-//     landing page are siblings in the same artifact; if a hard-coded github.io
-//     URL crept back into a component, every link would keep working right up
-//     until the move.
-
-/** Filenames whose text matches `needle`. */
+//   * asset URLs must be relative — a bundle with `/assets/…` in its HTML is
+//     mounted-at-root-only and would 404 under any prefix.
+//   * built the way the deploy builds it, no absolute site URL survives. A
+//     hard-coded github.io URL would keep every link working until the move.
 function offenders(files: Map<string, string>, needle: string | RegExp): string[] {
     const hit =
         typeof needle === "string"
@@ -283,22 +247,18 @@ function offenders(files: Map<string, string>, needle: string | RegExp): string[
 }
 
 /**
- * A *path-absolute* reference to the project-Pages sub-path — `"/OpenBikeComputer/…"`
- * — which is the thing that breaks on a move. Deliberately not a bare substring
- * search: `https://github.com/timohueser/OpenBikeComputer/releases` contains the same
- * characters and is a perfectly good link to a repository. The preceding quote or
- * bracket is what distinguishes "a URL path starting at the origin root" from "part of
- * some other URL". Same rule as the deploy's own grep.
+ * A path-absolute reference to the project-Pages sub-path, which is what breaks
+ * on a move. Deliberately not a bare substring search: a link to the repository
+ * contains the same characters, and the preceding quote or bracket is what
+ * distinguishes a path from part of some other URL.
  */
 const ROOTED_SITE_PATH = /["'`(=,]\/OpenBikeComputer\//;
 
 /**
- * The *site's own* origin — the thing a portable bundle must never contain, because the site is
- * what moves. An origin match rather than a bare `openbikecomputer.com` substring, for the same
- * reason {@link ROOTED_SITE_PATH} is not one: there is exactly one absolute URL this app is
- * *supposed* to know, and since #1002 it lives on a subdomain. `updates.openbikecomputer.com` is
- * the firmware-update host (#773) — a service endpoint the app fetches a manifest from, not a
- * self-reference. None of the three hosts is served from it, and moving the site does not move it.
+ * The site's own origin, which a portable bundle must never contain.
+ * `updates.openbikecomputer.com` is the firmware-update host: an endpoint the
+ * app fetches a manifest from, not a self-reference, and moving the site does
+ * not move it.
  */
 const SITE_ORIGIN = /https?:\/\/(?:www\.)?openbikecomputer\.com/;
 
@@ -320,26 +280,20 @@ describe("deployment portability", () => {
         expect(offenders(files, "timohueser.github.io")).toEqual([]);
         expect(offenders(files, SITE_ORIGIN)).toEqual([]);
         expect(offenders(files, ROOTED_SITE_PATH)).toEqual([]);
-        // …and the one carve-out above is not vacuous: the update host really is in the bundle,
-        // so a rule written to permit it is being exercised rather than merely stated.
+        // …and the carve-out is not vacuous: the update host really is in the bundle.
         expect(offenders(files, "https://updates.openbikecomputer.com/").length).toBeGreaterThan(0);
     }, 180_000);
 });
 
-// The USB stack must stay in its own chunk, not the web tier's entry bundle.
+// The USB stack must stay in its own chunk, not the web tier's entry bundle. `platform/web.ts`
+// reaches it through a dynamic `import()` so a visitor who only downloads a map never fetches the
+// transport, the codecs and the client. That split disappears *silently*: everything still works,
+// the entry chunk is just bigger.
 //
-// `platform/web.ts` reaches it through a dynamic `import()` so a visitor who only downloads a map
-// never fetches the transport, the codecs and the client — about 24 kB raw. That split is one
-// ordinary-looking import away from disappearing, and it disappears *silently*: everything still
-// works, the entry chunk is just bigger. So it is asserted against the chunks Rollup actually
-// emitted, the same way A1 asserts the host split above.
-//
-// **The likeliest way to break it** is deduplication that looks like a tidy-up. C2's
-// `platform/gating.ts` has its own one-line `hasWebUsb()` — `"usb" in navigator` — which overlaps
-// this module's `webUsb()`. They are duplicated **on purpose**: `gating.ts` is imported by the home
-// route and therefore lives in the entry chunk, so importing anything from `lib/usb/` into it would
-// drag the whole stack in behind it. Two probes, two lines, no import edge. If you are here because
-// you were about to merge them, this is the reason not to.
+// The likeliest way to break it is deduplication that looks like a tidy-up. `platform/gating.ts`
+// has its own one-line `hasWebUsb()` that overlaps this module's `webUsb()`. They are duplicated on
+// purpose: `gating.ts` lives in the entry chunk, so importing anything from `lib/usb/` into it would
+// drag the whole stack in behind it.
 
 const IS_USB = /\/src\/lib\/usb\//;
 
@@ -360,16 +314,10 @@ describe("the USB stack's chunk", () => {
         ["web", web],
         ["desktop", desktop],
     ])("does not ship the simulated device (%s target)", async (_mode, target) => {
-        // Two things must never ship. `loopback.ts` is the in-memory transport, and
-        // `flat-device.ts` with its wasm package is a whole device — the real protocol engine over a
-        // real card. They exist so the epic isn't blocked on #889's silicon, and they have no
-        // business in anything a person installs or visits.
-        //
-        // The **desktop** row is not symmetry for its own sake. That app is the one people take to
-        // a bench with a real board, and D4's (#909) on-glass recipe leans on "if the window says
-        // Connected, something enumerated" as its first tell that a transfer is real. A simulated
-        // device reachable from the shipped app would make that sentence false — quietly, and
-        // exactly when someone is trying to decide whether hardware works.
+        // `loopback.ts` is the in-memory transport and `flat-device.ts` with its wasm package is a
+        // whole device. Neither belongs in anything a person installs or visits. The desktop row
+        // matters most: that app is the one people take to a bench with a real board, where "if the
+        // window says Connected, something enumerated" is the first tell that a transfer is real.
         const shipped = modulesOf(await target()).filter((id) =>
             /\/src\/lib\/usb\/(loopback|flat-device)\.ts$|\/test-support\/flat-device\//.test(id),
         );

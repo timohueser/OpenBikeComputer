@@ -1,15 +1,11 @@
-// The coverage flow's one store (#1038): the selection, its resolution, and the
-// ledger, held reactively for the map pane and the steps column to share.
+// The coverage flow's one store: the selection, its resolution, and the ledger,
+// held reactively for the map pane and the steps column to share.
 //
 // The arithmetic all lives in `lib/catalog/` — this class owns *state and
-// lifetime*: which parts exist, which satellite documents have arrived, which
-// skin is picked, and the two `SelectionResolver`s that keep the corridor
-// slider smooth. Two resolvers, deliberately: each prunes cache entries that
-// were not part of its latest answer, so one resolver alternating between "the
-// selection" (the map) and "the selection plus the corridor panel's preview"
-// (the adds-line) would evict half its cache on every frame. The main resolver
-// answers only the committed selection; the preview resolver answers the
-// superset and keeps both warm.
+// lifetime*. Two `SelectionResolver`s, deliberately: each prunes cache entries
+// that were not part of its latest answer, so one resolver alternating between
+// the committed selection and the selection plus the corridor panel's preview
+// would evict half its cache on every frame.
 
 import { CatalogClient } from "../catalog/client";
 import { cellsIntersecting, coverageBbox, parseCellId, type UBox } from "../catalog/grid";
@@ -58,11 +54,6 @@ export interface PreviewSummary {
     patches: number;
 }
 
-/**
- * Even-odd point-in-polygon over a boundary's rings (`[lat, lon]` µdeg, closed
- * per `OBCC_Spec.md` §7). Every ring toggles — outer rings admit, holes
- * excise — which is the same rule the map's even-odd fill draws them with.
- */
 /** A boundary's bbox area in µdeg², the ladder's smallest-first sort key. Not a
  *  real area — but ordering nested admin regions only needs monotonicity, and a
  *  child's bbox never out-spans its parent's. */
@@ -108,9 +99,9 @@ export class CoverageStore {
      *  computed from some bands is exactly the not-final state the ledger's
      *  `isFinal` exists to name, so nothing is priced until all arrive. */
     indices = $state<ReadonlyMap<string, CellIndexDocument> | null>(null);
-    /** The pinned terrain index (`OBCC_Spec.md` §13.1), or `null` — which is
-     *  both "not loaded yet" and "this catalog publishes no raster", because a
-     *  consumer treats the two the same way: no elevation, no refusal. */
+    /** The pinned terrain index, or `null` — which is both "not loaded yet" and
+     *  "this catalog publishes no raster", because a consumer treats the two the
+     *  same way: no elevation, no refusal. */
     terrain = $state<TerrainIndexDocument | null>(null);
     indexError = $state<string | null>(null);
 
@@ -155,8 +146,7 @@ export class CoverageStore {
         void this.loadIndices();
     }
 
-    /** Resolver cache effectiveness, for the perf note in tests and devtools.
-     *  Not rendered. */
+    /** Resolver cache effectiveness, for tests and devtools. Not rendered. */
     get resolverStats(): { computed: number; reused: number } {
         return this.resolver.stats;
     }
@@ -165,8 +155,7 @@ export class CoverageStore {
         try {
             // Terrain alongside the bands, in one round of requests, because a
             // selection is priced with the raster in it and a price that arrives
-            // in two steps is a price that is briefly wrong. `null` is the
-            // ordinary answer for a catalog with no terrain block (§13).
+            // in two steps is a price that is briefly wrong.
             const [indices, terrain] = await Promise.all([this.client.cellIndices(), this.client.terrain()]);
             this.terrain = terrain;
             this.indices = indices;
@@ -189,12 +178,11 @@ export class CoverageStore {
     /**
      * The committed selection, resolved — or the sentence saying why it cannot
      * be. A resolution *throws* for exactly two kinds of reason, and both are
-     * refusals rather than crashes: a broken publish (a region list naming a
-     * cell no band index carries — `assertRegionCellsIndexed`, the #1030 rule
-     * that a named cell with no bytes must never be drawn as a legal hole), and
-     * a part outside what the grid enumerates (a box over half the planet, a
-     * corridor crossing the antimeridian). The UI shows the sentence and the
-     * parts list stays alive, so the offending part can be removed.
+     * refusals rather than crashes: a broken publish (a region list naming a cell
+     * no band index carries), and a part outside what the grid enumerates (a box
+     * over half the planet, a corridor crossing the antimeridian). The UI shows
+     * the sentence and the parts list stays alive, so the offending part can be
+     * removed.
      */
     readonly resolved = $derived.by<{ resolution: SelectionResolution | null; error: string | null }>(() => {
         const ctx = this.ctx;
@@ -287,20 +275,16 @@ export class CoverageStore {
     }
 
     /**
-     * The selection's holes, from **every** band, deduplicated (#1041 A5).
+     * The selection's holes, from **every** band, deduplicated.
      *
-     * A hole is ground with no published cell, and it is real in whichever
-     * band it occurs: a missing mid or coarse cell means the assembled map has
-     * no zoomed-out context there, which is exactly the kind of surprise the
-     * hatch exists to show *before* the download. So holes are counted,
-     * sentenced and hatched from every band — only the partial hatch below is
-     * band-restricted. The dedup is by canonical id, which also collapses the
-     * network band's squares onto the fine band's where both miss (they share
-     * a cell size by design).
+     * A hole is ground with no published cell, and it is real in whichever band
+     * it occurs: a missing mid or coarse cell means the assembled map has no
+     * zoomed-out context there. Only the partial hatch below is band-restricted.
+     * The dedup is by canonical id, which also collapses the network band's
+     * squares onto the fine band's where both miss.
      *
-     * This selector is also what `acceptHoles` must be derived from: the
-     * assembly may only be told to accept holes the UI has actually shown, and
-     * this is the set it shows.
+     * `acceptHoles` must be derived from this: the assembly may only be told to
+     * accept holes the UI has actually shown, and this is the set it shows.
      */
     holeCells(): string[] {
         const coverage = this.ledger?.coverage;
@@ -315,12 +299,10 @@ export class CoverageStore {
     /**
      * Partial cells in the **detail band** — the warning sentence's full count.
      *
-     * Detail band only, unlike the holes: the bands overlap on the ground (the
-     * mid band's squares each cover four of the fine band's), so a cross-band
-     * partial count would count the same ground two or three times, and the
-     * detail band is the band the outline is drawn from and street detail
-     * lives in. The coarse context band never appears here at all — the
-     * ledger's `partialDetailByBand` keeps it out (#1025's rule).
+     * Detail band only, unlike the holes: the bands overlap on the ground, so a
+     * cross-band partial count would count the same ground two or three times,
+     * and the detail band is where the outline is drawn from and street detail
+     * lives. The coarse context band never appears here at all.
      */
     partialDetailCells(): string[] {
         const coverage = this.ledger?.coverage;
@@ -329,13 +311,11 @@ export class CoverageStore {
     }
 
     /**
-     * The partial detail cells that **hatch** (#1041 A9, decided): only those
-     * abutting a hole in the same band. At extract scale most fine-band
-     * partials are border-overhang normality, and hatching a curated pick's
-     * whole border would be §8 U1's rejected noise tax through another door —
-     * where a partial cell meets a hole, though, the detail visibly stops, and
-     * that edge is worth the ink. The warning sentence keeps the full count
-     * ({@link partialDetailCells}); this set is what the map draws.
+     * The partial detail cells that **hatch**: only those abutting a hole in the
+     * same band. At extract scale most fine-band partials are border-overhang
+     * normality, and hatching a curated pick's whole border would be a noise tax
+     * — where a partial cell meets a hole, though, the detail visibly stops. The
+     * warning sentence keeps the full count ({@link partialDetailCells}).
      */
     partialHatchCells(): string[] {
         const detailHoles =
@@ -344,11 +324,11 @@ export class CoverageStore {
     }
 
     /**
-     * Point the map at the selection's warned ground — the ledger's warning
-     * line and the map's hatched patches are the same fact in two places, and
-     * clicking either zooms to it (mock R2·1 interaction note). For partials
-     * that is the *hatched* subset: with nothing hatched there is nothing on
-     * the map to fly to, and the summary renders the sentence unclickable.
+     * Point the map at the selection's warned ground — the ledger's warning line
+     * and the map's hatched patches are the same fact in two places, and clicking
+     * either zooms to it. For partials that is the *hatched* subset: with nothing
+     * hatched there is nothing to fly to, and the summary renders the sentence
+     * unclickable.
      */
     focusWarnings(kind: "hole" | "partial"): void {
         const ids = kind === "hole" ? this.holeCells() : this.partialHatchCells();
@@ -356,17 +336,14 @@ export class CoverageStore {
         if (box) this.focus = box;
     }
 
-    // --- parts -----------------------------------------------------------
-
     region(regionId: string): RegionEntry | undefined {
         return this.catalog.regions.find((r) => r.id === regionId);
     }
 
     /**
      * Every catalog region whose boundary contains the point, smallest first —
-     * the ancestor ladder a map click offers. Containment is against the
-     * drawable rings (presentation, like everything about the ladder); the
-     * added part still resolves through the region's stored cell list.
+     * the ancestor ladder a map click offers. Containment is against the drawable
+     * rings; the added part still resolves through the region's stored cell list.
      */
     regionsAt(lat: number, lon: number): RegionEntry[] {
         return this.catalog.regions
@@ -422,11 +399,9 @@ export class CoverageStore {
     /**
      * Price a box mid-drag — the live chip under the rubber band.
      *
-     * Through the same resolver + ledger arithmetic as everything else (#1041
-     * low sweep): the chip used to sum index bytes by hand, a second pricing
-     * path that could drift from the one the part would actually cost on
-     * release. Now the drag is priced as a one-part selection, so the number
-     * under the cursor *is* `ledgerFor`'s number, by construction.
+     * Through the same resolver and ledger arithmetic as everything else, so the
+     * number under the cursor *is* `ledgerFor`'s number by construction, rather
+     * than a second pricing path that can drift.
      */
     priceDraggedBox(box: UBox): { bytes: number; cells: number } | { refused: true } | null {
         return this.priceDragged({ kind: "box", id: "drag", name: "", box });
@@ -502,9 +477,9 @@ export class CoverageStore {
 
     /** "Box — <the smallest catalog region under its centre>", because "Box 3"
      *  tells nobody which box to remove. Containment is tested against the
-     *  region's actual boundary rings, not its bounding box (#1041 low sweep):
-     *  a box centred in the sea inside Italy's bbox is not "Box — Italy".
-     *  Falls back to a counter off-catalog. */
+     *  region's actual boundary rings, not its bounding box: a box centred in the
+     *  sea inside Italy's bbox is not "Box — Italy". Falls back to a counter
+     *  off-catalog. */
     private areaName(prefix: string, midLat: number, midLon: number, count: number): string {
         const best = this.regionsAt(midLat, midLon)[0];
         return best ? `${prefix} — ${best.name}` : `${prefix} ${count}`;

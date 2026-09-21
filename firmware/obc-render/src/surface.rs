@@ -1,15 +1,12 @@
-//! [`Surface`] — the palette-565 drawing vocabulary every screen draws with.
+//! [`Surface`]: the palette-565 drawing vocabulary every screen draws with.
 //!
-//! Screen layout code never needs the raw [`DrawTarget`] or the host colour policy; it needs
-//! "fill / round / text / triangle / disc in a palette RGB565". This trait is that vocabulary, and
-//! the [`Canvas`] impl below is the **single** place the
-//! `D: DrawTarget, F: Fn(u16) -> D::Color` bound lives — so a drawing helper is
-//! `fn f(cv: &mut impl Surface, ...)`: one bound, no `where` clause, no `(target, color_fn)` pair
-//! threading.
+//! Screen layout code needs "fill, round, text, triangle, disc in a palette RGB565", not the raw
+//! [`DrawTarget`] and the host colour policy. This trait is that vocabulary, and the [`Canvas`]
+//! impl is the single place the `D: DrawTarget, F: Fn(u16) -> D::Color` bound lives, so a drawing
+//! helper takes one `impl Surface` instead of threading a `(target, color_fn)` pair.
 //!
-//! Every colour argument is a palette **RGB565**, resolved through the host `color_fn` (quantizing
-//! to the panel exactly like the map and [`draw_text`] do). Draw errors are swallowed (host targets
-//! are infallible; a real display can't recover mid-frame anyway), matching the rest of the renderer.
+//! Every colour argument is a palette RGB565, resolved through the host `color_fn`. Draw errors
+//! are swallowed: host targets are infallible and a real display cannot recover mid-frame.
 
 use embedded_graphics::{
     prelude::*,
@@ -31,13 +28,10 @@ fn points_bbox(pts: &[Point]) -> Rectangle {
     rect(x0, y0, x1 - x0 + 1, y1 - y0 + 1)
 }
 
-/// A drawing surface in the palette-565 vocabulary. See the [module docs](self) for the contract;
-/// [`Canvas`] is the one implementor.
+/// A drawing surface in the palette-565 vocabulary. [`Canvas`] is the one implementor.
 pub trait Surface {
-    /// Clear the whole target to `color`.
     fn clear(&mut self, color: u16);
 
-    /// Fill a rectangle.
     fn fill(&mut self, area: Rectangle, color: u16);
 
     /// Fill a rounded rectangle (equal corner radius).
@@ -59,27 +53,24 @@ pub trait Surface {
     /// A 1px straight line between two points.
     fn line(&mut self, a: Point, b: Point, color: u16);
 
-    /// A filled triangle.
     fn triangle(&mut self, a: Point, b: Point, c: Point, color: u16);
 
     /// A filled circle of `radius` centered at `center`.
     fn disc(&mut self, center: Point, radius: u32, color: u16);
 
-    /// Text anchored at `at`, aligned `align`, top baseline. Returns the position
-    /// just past the string (see [`draw_text`]).
+    /// Text anchored at `at`, aligned `align`, top baseline. Returns the position past the string.
     fn text(&mut self, s: &str, at: Point, font: Font, align: TextAlign, color: u16) -> Point;
 
     /// Draw text counter-clockwise from a bottom-left anchor. `divisor = 2` halves both glyph
-    /// dimensions while retaining any lit source pixel in each 2x2 block.
+    /// dimensions while retaining any lit source pixel in each 2×2 block.
     fn text_ccw(&mut self, s: &str, bottom_left: Point, font: Font, divisor: u32, color: u16) {
-        // Recording/test surfaces that do not care about orientation still see the text event.
+        // A recording surface that does not care about orientation still sees the text event.
         let _ = divisor;
         self.text(s, bottom_left, font, TextAlign::Left, color);
     }
 
-    /// [`text`](Surface::text) vertically centred in the `v_span = (top, height)` span: the
-    /// capital ink is centred after subtracting the font's top bearing from the cell anchor.
-    /// Horizontal anchoring is `x` + `align`, unchanged.
+    /// [`text`](Surface::text) vertically centred in the `v_span = (top, height)` span: the capital
+    /// ink is centred after subtracting the font's top bearing.
     fn text_vcentered(
         &mut self,
         s: &str,
@@ -101,8 +92,8 @@ where
     F: Fn(u16) -> D::Color,
 {
     fn clear(&mut self, color: u16) {
-        // Never rejected: on a clipped repaint the target's own clip bounds the cost, and the
-        // clip region must still be cleared for the replayed draw on top of it.
+        // Never rejected: on a clipped repaint the target's own clip bounds the cost, and the clip
+        // region must still be cleared for the replayed draw on top of it.
         let (target, c) = self.split();
         let _ = target.clear(c(color));
     }
@@ -125,9 +116,9 @@ where
     }
 
     fn round_outline(&mut self, area: Rectangle, radius: u32, color: u16) {
-        // The 1 px stroke stays within `radius + 1` of the boundary (the corner arcs reach the
-        // deepest), so a clip wholly inside that ring's hole can also skip it — the full-frame
-        // outline every framed screen draws would otherwise never reject (whole-screen bbox).
+        // The 1 px stroke stays within `radius + 1` of the boundary, so a clip wholly inside that
+        // ring's hole can also skip it. The full-frame outline every framed screen draws would
+        // otherwise never reject.
         let inset = radius as i32 + 1;
         let hole = rect(
             area.top_left.x + inset,
@@ -143,9 +134,9 @@ where
         let _ = RoundedRectangle::with_equal_corners(area, Size::new(radius, radius)).into_styled(style).draw(target);
     }
 
-    /// Draws the bare Bresenham pixel stream (`points()`), **not** a styled 1px stroke: the Home
-    /// contour emits thousands of tiny segments per frame, and the styled-stroke path rebuilds its
-    /// thick-line machinery on every one — pure per-segment overhead at width 1.
+    /// Draws the bare Bresenham pixel stream, not a styled 1 px stroke: the Home contour emits
+    /// thousands of tiny segments per frame, and the styled path rebuilds its thick-line machinery
+    /// on every one.
     fn line(&mut self, a: Point, b: Point, color: u16) {
         if self.rejects(&points_bbox(&[a, b])) {
             return;
@@ -176,11 +167,9 @@ where
     }
 
     fn text(&mut self, s: &str, at: Point, font: Font, align: TextAlign, color: u16) -> Point {
-        // The glyph cell box is exact for the monospace face (spacing 0, top baseline, cell
-        // height): a string outside it decodes no glyphs at all. Multi-line strings (`\n`) would
-        // break the single-cell-row math, so they always draw; no screen passes one today. The
-        // rejected return is `at` — `draw_text`'s own documented fallback; no caller chains off
-        // the return, and a rejected run's successor can't reach the clip anyway.
+        // The glyph cell box is exact for the monospace face, so a string outside it decodes no
+        // glyphs at all. A multi-line string would break the single-cell-row math, so those always
+        // draw; no screen passes one. The rejected return is `at`, `draw_text`'s own fallback.
         if !s.contains('\n') {
             let w = text_width(s, font) as i32;
             let x0 = match align {

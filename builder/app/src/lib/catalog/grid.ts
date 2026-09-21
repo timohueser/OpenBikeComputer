@@ -1,27 +1,27 @@
-// TypeScript mirror of the normative OBCA §1 grid. Shared test vectors pin it to
-// the Rust producer. Boxes use named lat/lon fields; all arithmetic is exact
-// integer microdegrees within JavaScript's safe range.
+// TypeScript mirror of the normative OBCA grid. Shared test vectors pin it to the
+// Rust producer. Boxes use named lat/lon fields; all arithmetic is exact integer
+// microdegrees within JavaScript's safe range.
 
-/** Origin of the fixed global cell grid, µdeg, on **both** axes (§1.1).
+/** Origin of the fixed global cell grid, µdeg, on **both** axes.
  *
- *  A power of two, so every permitted cell size divides it exactly — which is
- *  the whole reason the grid is not anchored at −90/−180. */
+ *  A power of two, so every permitted cell size divides it exactly — which is the
+ *  whole reason the grid is not anchored at −90/−180. */
 export const GRID_ORIGIN = -268_435_456;
 
-/** Side of the world box, µdeg (§1.1): `2^29`, i.e. ≈ ±268.435456°. Strictly
- *  larger than the geographic domain, and the grid does **not** wrap. */
+/** Side of the world box, µdeg: `2^29`, i.e. ≈ ±268.435456°. Strictly larger than
+ *  the geographic domain, and the grid does **not** wrap. */
 export const WORLD_SIDE = 536_870_912;
 
-/** Smallest permitted cell size as `log2(µdeg)` (§1.1). */
+/** Smallest permitted cell size as `log2(µdeg)`. */
 export const MIN_CELL_LOG2 = 10;
 
-/** Largest permitted cell size as `log2(µdeg)` (§1.1). */
+/** Largest permitted cell size as `log2(µdeg)`. */
 export const MAX_CELL_LOG2 = 28;
 
 /** A cell id, or a coordinate, that the grid does not admit. Thrown rather than
- *  returned as a null: every caller here is working from a catalog document that
- *  a producer already validated, so a failure is a bug or a corrupt document,
- *  and neither should be papered over with a fallback cell. */
+ *  returned as a null: every caller here works from a catalog document a producer
+ *  already validated, so a failure is a bug or a corrupt document, and neither
+ *  should be papered over with a fallback cell. */
 export class GridError extends Error {
     constructor(message: string) {
         super(message);
@@ -30,8 +30,8 @@ export class GridError extends Error {
 }
 
 /** One cell of the grid: a size (as `log2(µdeg)`) and its **latitude** index `i`
- *  and **longitude** index `j` — the canonical id is `<log2>/<i>/<j>`, latitude
- *  first (§1.3). */
+ *  and **longitude** index `j`. The canonical id is `<log2>/<i>/<j>`, latitude
+ *  first. */
 export interface CellId {
     readonly log2: number;
     readonly i: number;
@@ -39,7 +39,7 @@ export interface CellId {
 }
 
 /** A box in integer microdegrees. Half-open on `max` wherever a cell square is
- *  meant (§1.1); an ordinary bbox from a user's drag is closed, and
+ *  meant; an ordinary bbox from a user's drag is closed, and
  *  {@link cellsIntersecting} is written to make both behave the same way. */
 export interface UBox {
     minLat: number;
@@ -58,10 +58,10 @@ export function axisCells(log2: number): number {
     return WORLD_SIDE / 2 ** log2;
 }
 
-/** Zero-padding width of a cell id's indices (§1.3): `max(4, digits(cells per
- *  axis − 1))`. Four for every size at or above `2^16`, wider below — producers
- *  MUST widen rather than truncate, and a consumer that assumed four would fail
- *  to key a `2^10` id against its own index. */
+/** Zero-padding width of a cell id's indices: `max(4, digits(cells per axis − 1))`.
+ *  Four for every size at or above `2^16`, wider below — producers MUST widen rather
+ *  than truncate, and a consumer that assumed four would fail to key a `2^10` id
+ *  against its own index. */
 export function idWidth(log2: number): number {
     return Math.max(4, String(axisCells(log2) - 1).length);
 }
@@ -87,10 +87,9 @@ export function cellId(log2: number, i: number, j: number): CellId {
     return { log2, i, j };
 }
 
-/** Parse a canonical id `<log2>/<i>/<j>` (§1.3). Lenient about zero padding on
- *  the way in, strict on the way out ({@link formatCellId} pads canonically) —
- *  the same asymmetry the Rust side has, so an id written by either round-trips
- *  through the other. */
+/** Parse a canonical id `<log2>/<i>/<j>`. Lenient about zero padding on the way in,
+ *  strict on the way out ({@link formatCellId} pads canonically) — the same asymmetry
+ *  the Rust side has, so an id written by either round-trips through the other. */
 export function parseCellId(s: string): CellId {
     const parts = s.split("/");
     if (parts.length !== 3 || parts.some((p) => !/^\d+$/.test(p))) {
@@ -99,18 +98,18 @@ export function parseCellId(s: string): CellId {
     return cellId(Number(parts[0]), Number(parts[1]), Number(parts[2]));
 }
 
-/** The canonical, zero-padded id (§1.3). Also this app's map key for a cell:
- *  canonical means two spellings of one cell cannot end up as two entries. */
+/** The canonical, zero-padded id. Also this app's map key for a cell: canonical
+ *  means two spellings of one cell cannot end up as two entries. */
 export function formatCellId(cell: CellId): string {
     const w = idWidth(cell.log2);
     return `${cell.log2}/${String(cell.i).padStart(w, "0")}/${String(cell.j).padStart(w, "0")}`;
 }
 
-/** The cell's square, half-open on both axes (§1.1).
+/** The cell's square, half-open on both axes.
  *
- *  This is the whole of a cell's coverage: a catalog entry carries no bbox
- *  precisely because the id determines the square to the microdegree, and the
- *  bakery verifies the artifact's own OBCM header against it. */
+ *  This is the whole of a cell's coverage: a catalog entry carries no bbox precisely
+ *  because the id determines the square to the microdegree, and the bakery verifies
+ *  the artifact's own OBCM header against it. */
 export function cellSquare(cell: CellId): UBox {
     const s = cellSize(cell.log2);
     const minLat = GRID_ORIGIN + cell.i * s;
@@ -121,22 +120,19 @@ export function cellSquare(cell: CellId): UBox {
 /** Floor division — `Math.trunc` would round toward zero and drift a whole cell
  *  wherever the dividend is negative.
  *
- *  Which, to be honest about it, no catalog coordinate is: the origin is −2^28,
- *  strictly outside the geographic domain on both axes, so `lat - GRID_ORIGIN`
- *  and `lon - GRID_ORIGIN` are non-negative for every reachable input and
- *  `Math.trunc` would agree with this everywhere a real map is. It stays
- *  because the alternative is arithmetic that is only correct because of a fact
- *  about the origin stated three definitions away, and it is pinned by an
- *  explicitly *below*-origin vector in `grid.test.ts` rather than by a vector
- *  that would pass either way. */
+ *  No catalog coordinate is: the origin is −2^28, strictly outside the geographic
+ *  domain on both axes, so `Math.trunc` would agree everywhere a real map is. It
+ *  stays because the alternative is arithmetic that is only correct because of a
+ *  fact stated three definitions away, and it is pinned by an explicitly
+ *  *below*-origin vector in `grid.test.ts`. */
 function floorDiv(a: number, b: number): number {
     return Math.floor(a / b);
 }
 
 /** The cell of size `2^log2` whose half-open square contains `(lat, lon)`.
  *
- *  Half-open is the point: a coordinate exactly on a cell's `max` edge belongs
- *  to the **next** cell, so a point is owned by exactly one cell of a size. */
+ *  Half-open is the point: a coordinate exactly on a cell's `max` edge belongs to
+ *  the **next** cell, so a point is owned by exactly one cell of a size. */
 export function cellContaining(log2: number, lat: number, lon: number): CellId {
     return {
         log2,
@@ -154,39 +150,32 @@ export function cellContains(cell: CellId, lat: number, lon: number): boolean {
 /**
  * How many cells one call will enumerate before it refuses.
  *
- * Not a format constant — a client one. The covering of a box is a product of
- * two spans, so it grows quadratically as a map view zooms out: the whole world
- * at `2^18` is 2048 × 2048 = 4.2 M cells, and at the grid's smallest size it is
- * 2^38, a number no amount of patience helps with. The ceiling belongs here
- * rather than in each caller because every caller would otherwise need to know
- * the same arithmetic to guess a safe box, and one of them would guess wrong on
- * a slow phone. 2^16 is far above any real selection — the whole of DACH at
- * `2^18` is ≈ 1 500 cells, all of Europe ≈ 20 000 — and far below the point
- * where building the array is what fails.
+ * Not a format constant — a client one, and a chosen value. The covering of a box is
+ * a product of two spans, so it grows quadratically as a map view zooms out: the
+ * whole world at `2^18` is 4.2 M cells. The ceiling belongs here rather than in each
+ * caller, because every caller would otherwise need the same arithmetic to guess a
+ * safe box. 2^16 is far above any real selection — the whole of DACH at `2^18` is
+ * ≈ 1 500 cells, all of Europe ≈ 20 000 — and far below the point where building the
+ * array is what fails.
  */
 export const MAX_ENUMERATED_CELLS = 65_536;
 
 /**
- * Every cell of size `2^log2` whose square intersects `box`, in ascending
- * `(i, j)` order.
+ * Every cell of size `2^log2` whose square intersects `box`, in ascending `(i, j)`
+ * order.
  *
- * Intersection is decided on the **half-open** squares, so the `max` edges of
- * `box` are inclusive of the cell that owns them: a vertex sitting exactly on a
- * grid line belongs to the cell above / east of it, and that cell is therefore
- * part of the covering. The grid does not wrap (§1.4): a box reaching past the
- * world box is clamped to it, and a box lying entirely outside it covers
+ * Intersection is decided on the **half-open** squares, so the `max` edges of `box`
+ * are inclusive of the cell that owns them. The grid does not wrap: a box reaching
+ * past the world box is clamped to it, and a box lying entirely outside it covers
  * nothing at all rather than a clamped strip of edge cells.
  *
- * This is OBCA §1.2's coverage rule in one function, and the *generous coarse*
- * behaviour the epic wants falls straight out of it: run it per band and a
- * corridor is covered precisely at `2^18` and generously — whole covering cells,
- * i.e. context beyond the selection — at `2^20`. There is no second rule and no
- * special case; the generosity is a consequence of cell size.
+ * This is the coverage rule in one function, and the *generous coarse* behaviour
+ * falls straight out of it: run it per band and a corridor is covered precisely at
+ * `2^18` and generously at `2^20`. There is no second rule and no special case.
  *
- * Throws a {@link GridError} rather than enumerating more than `maxCells`
- * (default {@link MAX_ENUMERATED_CELLS}). The count is worked out from the
- * index spans before anything is allocated, so a world-sized box costs four
- * divisions and a message, not a heap.
+ * Throws a {@link GridError} rather than enumerating more than `maxCells`. The count
+ * is worked out from the index spans before anything is allocated, so a world-sized
+ * box costs four divisions and a message, not a heap.
  */
 export function cellsIntersecting(log2: number, box: UBox, maxCells = MAX_ENUMERATED_CELLS): CellId[] {
     checkLog2(log2);
@@ -218,9 +207,8 @@ export function cellsIntersecting(log2: number, box: UBox, maxCells = MAX_ENUMER
     return out;
 }
 
-/** Whether `v` lies exactly on a grid line of size `2^log2` — i.e. on a cell
- *  boundary. A pure function of the coordinate, which is why two neighbours
- *  cannot disagree about it (§3.4). */
+/** Whether `v` lies exactly on a grid line of size `2^log2`. A pure function of the
+ *  coordinate, which is why two neighbours cannot disagree about it. */
 export function onGridLine(v: number, log2: number): boolean {
     const s = cellSize(log2);
     return (v - GRID_ORIGIN) % s === 0;
@@ -230,15 +218,13 @@ export function onGridLine(v: number, log2: number): boolean {
  * The bounding box of a set of cells' squares.
  *
  * Not the coverage outline — that is the union of the squares, drawn as its true
- * stair-edged shape (`OBCC_Spec.md` §7, and `outline.ts` here). This is only
- * what a map view has to fit, and it is `null` for an empty set rather than a
- * degenerate box at the origin.
+ * stair-edged shape (`outline.ts`). This is only what a map view has to fit, and it
+ * is `null` for an empty set rather than a degenerate box at the origin.
  *
- * **Not a re-resolvable box.** Feeding it back to {@link cellsIntersecting}
- * returns the whole rectangle of cells it spans, which for anything but a solid
- * block is a strict superset of the set it came from — an L-shaped selection
- * round-trips into the square that encloses it. A cell set is the answer; this
- * is a viewport.
+ * **Not a re-resolvable box.** Feeding it back to {@link cellsIntersecting} returns
+ * the whole rectangle of cells it spans, which for anything but a solid block is a
+ * strict superset of the set it came from. A cell set is the answer; this is a
+ * viewport.
  */
 export function coverageBbox(cells: Iterable<CellId>): UBox | null {
     let box: UBox | null = null;

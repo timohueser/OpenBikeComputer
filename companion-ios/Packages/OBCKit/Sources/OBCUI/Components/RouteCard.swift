@@ -1,27 +1,19 @@
 import SwiftUI
 import OBCDomain
 
-/// **Route Card** (§9, NEW) — track preview + title + mono stat line. Two
-/// variants, matching the design:
-/// - `RouteCard` (compact, C1/C2) — 128pt track cell on the left, dense rows
-///   for a big library. **The finalized main-screen layout.**
-/// - `RouteCardFullBleed` — track on top, title + stat grid below (detail-ish
-///   feature card).
-///
-/// Convenience inits take `RouteSummary` (planned) or `RideSummary` (tracked)
-/// and format the design's stat lines via `OBCFormat`.
+/// Track preview, title and a mono stat line. `RouteCard` is the compact row the main
+/// screen uses; `RouteCardFullBleed` puts the track on top with a stat grid below.
+/// The convenience inits take a `RouteSummary` or a `RideSummary` and format the stat
+/// line through `OBCFormat`.
 public struct RouteCard: View {
     let title: String
     let subtitle: String
     let preview: TrackPreview?
-    /// The device-copy state — picks the small C1 badge (check = up to date,
-    /// refresh = on device but out of date, nothing when not on the device).
+    /// Picks the small badge: a check when the device's copy is up to date, a refresh
+    /// ring when it is out of date, nothing when the route is not on the device.
     let onDevice: OnDeviceState
-    /// A trip stage's palette color (TR6), drawn as the divider bar between the
-    /// track cell and the text block so a route reads as stage *N* on the trip
-    /// page (owner pick 2026-07-13 — the earlier leading-edge sliver sat outside
-    /// the card's rhythm). `nil` — the default — is the plain top-level card
-    /// everywhere else, byte-identical to before.
+    /// A trip stage's palette color, drawn as the divider bar between the track cell
+    /// and the text block. `nil` is the plain top-level card.
     let stageAccent: Color?
 
     public init(
@@ -65,9 +57,6 @@ public struct RouteCard: View {
                     if stageAccent == nil { OBCTheme.line.frame(width: 1) }
                 }
 
-            // The stage's palette color as the map/text divider — in place of
-            // the hairline, so the color reads as part of the card, not a
-            // sticker on its edge.
             if let stageAccent {
                 stageAccent
                     .frame(width: 4)
@@ -99,11 +88,9 @@ public struct RouteCard: View {
     }
 }
 
-/// The small "on device" badge next to a planned route's title (C1 / E2).
-/// A forest check = the device's copy is up to date; an amber refresh ring = the
-/// device holds this route but the phone's version has moved on (rename,
-/// re-import) — uploading again updates it in place. Deliberately quiet: the
-/// app only tracks routes to push them, so this is the one device fact it shows.
+/// The small "on device" badge next to a route's title. A forest check means the
+/// device's copy is up to date; an amber refresh ring means the device holds the route
+/// but the phone's version has moved on, and uploading again updates it in place.
 public struct OBCOnDeviceBadge: View {
     let upToDate: Bool
 
@@ -120,8 +107,7 @@ public struct OBCOnDeviceBadge: View {
     }
 }
 
-/// The full-bleed variant — hero track on top, title + optional stat grid
-/// below.
+/// The full-bleed variant: hero track on top, title and optional stat grid below.
 public struct RouteCardFullBleed: View {
     let title: String
     let subtitle: String?

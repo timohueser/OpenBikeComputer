@@ -1,45 +1,29 @@
-//! Fixed-size record streams over the [scratch seam](crate::scratch), and the **external sort**
-//! every whole-map pass in the merge is being rewritten around (#1116 phase D).
+//! Fixed-size record streams over the [scratch seam](crate::scratch), and the external sort every
+//! whole-map pass in the merge is built around.
 //!
-//! The merge's blocker at country scale was never bytes, it was *bookkeeping held as whole-map
-//! random-access arrays*. The replacement for random access is a sorted pass, and a sorted pass at
-//! DACH scale does not fit in a browser tab's heap — so it is generated in runs bounded by an
-//! explicit budget and merged back k-way. That is all this module is:
-//!
-//! * [`SpillWriter`] / [`SpillReader`] — a stream of `R`-byte records, written front to back and
-//!   read front to back, through a buffer the caller sizes.
-//! * [`ExternalSort`] — the same stream, sorted, with a hard ceiling on what it may hold.
-//!
-//! # The budget is real, and it is the whole point
+//! The merge's blocker at country scale is bookkeeping held as whole-map random-access arrays. The
+//! replacement for random access is a sorted pass, and a sorted pass at DACH scale does not fit in
+//! a browser tab's heap — so it is generated in runs bounded by an explicit budget and merged back
+//! k-way.
 //!
 //! [`ExternalSort::new`] takes a byte budget and never exceeds it: run generation fills a buffer of
 //! exactly `budget / R` records and spills when it is full, and the k-way merge divides the same
-//! budget among the runs' read buffers. The buffer is grown in steps rather than reserved up front,
-//! so a sort of six records costs six records, but its capacity never passes the ceiling — a
+//! budget among the runs' read buffers. The buffer grows in steps rather than being reserved up
+//! front, so a sort of six records costs six records while its capacity never passes the ceiling; a
 //! doubling `Vec` would sail through it by up to 2× at the worst possible moment.
-//!
-//! `tests/sort_budget.rs` measures this rather than asserting it: a counting global allocator, the
-//! same budget over a 16× range of input sizes, and the peak that does not move.
-//!
-//! # Determinism: the comparator's contract
+//! `tests/sort_budget.rs` measures the peak rather than asserting it.
 //!
 //! Everything downstream of a sorted pass — dense node ids, the edge pool's layout, the adjacency
-//! walk order — is byte-visible in the map, so the sort has to produce **one** answer.
+//! walk order — is byte-visible in the map, so the sort has to produce one answer. It is stable:
+//! records that compare `Equal` come out in push order, across the whole sort and not only inside a
+//! run, because runs are generated with a stable sort, merged with ties broken by lowest run index,
+//! and numbered in push order.
 //!
-//! The sort is **stable**: records that compare `Equal` come out in the order they were pushed.
-//! That holds across the whole sort, not just inside a run — runs are generated with a stable sort
-//! and merged with ties broken by *lowest run index*, and runs are numbered in push order.
-//!
-//! Callers should still prefer a comparator that is a **total order** (no two distinct records
-//! compare `Equal`), because then the result does not depend on stability at all and a later
-//! refactor of the push order cannot move a byte. [`crate::nav`]'s node key is one: it ends in the
-//! node's collection index, which is unique by construction.
-//!
-//! What a comparator may **not** be is inconsistent — it must be a total preorder (antisymmetric,
-//! transitive). `sort_by` is documented to make no guarantee beyond "does not panic, does not lose
-//! records" for an inconsistent one, and the k-way merge would produce an unsorted stream, so
-//! determinism would be lost silently. Comparators here are `fn` pointers over plain byte arrays
-//! precisely so they are easy to keep pure.
+//! Callers should still prefer a comparator that is a total order, because then the result does not
+//! depend on stability at all. What a comparator may not be is inconsistent: `sort_by` guarantees
+//! nothing beyond "does not panic, does not lose records" for one, and the k-way merge would
+//! produce an unsorted stream, so determinism would be lost silently. Comparators here are `fn`
+//! pointers over plain byte arrays precisely so they are easy to keep pure.
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -56,20 +40,18 @@ fn records_in(budget: usize, r: usize) -> usize {
     (budget / r.max(1)).max(1)
 }
 
-/// The share of the budget [`ExternalSort`]'s **run buffer** gets, as a divisor.
+/// The share of the budget [`ExternalSort`]'s run buffer gets, as a divisor.
 ///
-/// Half, because a *stable* sort of that buffer allocates an auxiliary one beside it — Rust's
-/// `slice::sort_by` is a driftsort and reserves up to the slice's own size. So a run buffer given
-/// the whole budget peaks at twice it, at the one moment the budget most needs to hold, and
-/// `tests/sort_budget.rs` caught exactly that. The merge half of the sort has no such companion and
-/// divides the full budget among its cursors.
+/// Half, because a stable sort of that buffer allocates an auxiliary one beside it: Rust's
+/// `slice::sort_by` reserves up to the slice's own size, so a run buffer given the whole budget
+/// peaks at twice it. The merge half has no such companion and divides the full budget among its
+/// cursors.
 const RUN_SHARE: usize = 2;
 
 /// Grow `buf` towards `cap` records without ever passing it, in ×4 steps from a small floor.
 ///
 /// A plain `push` doubles, which would leave a buffer of `2 × cap` capacity the instant it reached
-/// `cap` — the budget would be a suggestion. Reserving `cap` up front instead makes a six-record
-/// sort allocate the whole ceiling. This does neither.
+/// `cap`, and reserving `cap` up front would make a six-record sort allocate the whole ceiling.
 fn grow_to<const R: usize>(buf: &mut Vec<[u8; R]>, cap: usize) {
     if buf.len() < buf.capacity() {
         return;
@@ -205,7 +187,7 @@ impl<const R: usize> Iterator for BlockReader<'_, R> {
 
 /// One run's next record, in the k-way merge's heap.
 ///
-/// `Ord` is **reversed** so [`BinaryHeap`]'s max-heap pops the smallest record, and ties go to the
+/// `Ord` is reversed so [`BinaryHeap`]'s max-heap pops the smallest record, and ties go to the
 /// lowest run index — runs are numbered in push order, which is what makes the whole sort stable.
 struct Head<const R: usize> {
     rec: [u8; R],
@@ -235,8 +217,8 @@ impl<const R: usize> Eq for Head<R> {}
 
 /// A sort of `R`-byte records that never holds more than its budget.
 ///
-/// Push everything, then [`ExternalSort::finish`] for the sorted stream. See the module header for
-/// the budget and the determinism contract. Dropping an unfinished sort removes its runs.
+/// Push everything, then [`ExternalSort::finish`] for the sorted stream. Dropping an unfinished
+/// sort removes its runs.
 pub struct ExternalSort<'s, const R: usize> {
     scratch: &'s dyn ScratchStore,
     budget: usize,
@@ -267,8 +249,8 @@ impl<'s, const R: usize> ExternalSort<'s, R> {
         self.runs.len()
     }
 
-    /// Bytes the run buffer is holding right now — [`RUN_SHARE`]'s share of the budget at most, and
-    /// with the stable sort's companion buffer that is the budget.
+    /// Bytes the run buffer is holding right now — [`RUN_SHARE`]'s share of the budget at most,
+    /// which with the stable sort's companion buffer is the budget.
     pub fn resident_bytes(&self) -> usize {
         self.buf.capacity() * R
     }
@@ -278,7 +260,7 @@ impl<'s, const R: usize> ExternalSort<'s, R> {
         if self.buf.is_empty() {
             return Ok(());
         }
-        // Stable, so equal records keep push order inside the run — see the module header.
+        // Stable, so equal records keep push order inside the run.
         self.buf.sort_by(self.order);
         let id = self.scratch.create()?;
         if let Err(error) = self.scratch.append(id, self.buf.as_flattened()) {
@@ -302,12 +284,12 @@ impl<'s, const R: usize> ExternalSort<'s, R> {
         }
         self.spill()?;
         // The run buffer is dead the moment the last run is on disk, and the read buffers below are
-        // about to be allocated — so it goes first.
+        // about to be allocated.
         self.buf = Vec::new();
 
         // The budget, split over the runs plus one share of slack for the heap and the caller's own
         // record. A run always gets at least one record's worth, so a merge of more runs than the
-        // budget has records still runs (slower, and correct).
+        // budget has records still runs, slower and correct.
         let per = records_in(self.budget / (self.runs.len() + 1), R);
         let mut cursors: Vec<BlockReader<'s, R>> = Vec::with_capacity(self.runs.len());
         let mut heap: BinaryHeap<Head<R>> = BinaryHeap::with_capacity(self.runs.len());
@@ -339,12 +321,10 @@ enum Source<'s, const R: usize> {
     Merge {
         cursors: Vec<BlockReader<'s, R>>,
         heap: BinaryHeap<Head<R>>,
-        /// `None` once a run's file is already deleted — which happens the moment its cursor
-        /// exhausts, not when the stream drops. On the merge's workloads push order correlates
-        /// with key order (collection-index keys are *equal* to it, spatial keys nearly), so runs
-        /// drain one after another and the spill shrinks **while** the next pass's spill grows —
-        /// without this, every sort's runs survive to the end of the stream and two chained passes
-        /// peak at twice the data (#1116 D3 measured 409 MiB of spill at BW where ~half is dead).
+        /// `None` once a run's file is already deleted, which happens the moment its cursor
+        /// exhausts rather than when the stream drops. On the merge's workloads push order
+        /// correlates with key order, so runs drain one after another and the spill shrinks while
+        /// the next pass's spill grows; without this, two chained passes peak at twice the data.
         runs: Vec<Option<ScratchId>>,
     },
 }
@@ -371,9 +351,8 @@ impl<const R: usize> Iterator for SortedRecords<'_, R> {
                     Some(Ok(rec)) => heap.push(Head { rec, run: head.run, order: head.order }),
                     Some(Err(e)) => return Some(Err(e)),
                     None => {
-                        // This run's last record is the one being handed out — its file is dead
-                        // *now*, and on this crate's workloads "now" is early (see `Source::Merge`).
-                        // Best-effort for the same reason `Drop` is.
+                        // This run's last record is the one being handed out, so its file is dead
+                        // now. Best-effort for the same reason `Drop` is.
                         if let Some(id) = runs[head.run].take() {
                             let _ = self.scratch.remove(id);
                         }
@@ -387,16 +366,15 @@ impl<const R: usize> Iterator for SortedRecords<'_, R> {
 
 /// The runs die with the stream that reads them.
 ///
-/// Best-effort by design: a scratch file that cannot be deleted is bytes nothing can reach any more,
-/// on a host that is about to drop its whole scratch area anyway. Failing an assembly over it would
+/// Best-effort by design: a scratch file that cannot be deleted is bytes nothing can reach any
+/// more, on a host that is about to drop its whole scratch area. Failing an assembly over it would
 /// turn a storage hiccup into a map that was never written.
 impl<const R: usize> Drop for SortedRecords<'_, R> {
     fn drop(&mut self) {
         if let Source::Merge { runs, cursors, heap } = &mut self.source {
             cursors.clear();
             heap.clear();
-            // Only what the merge walk has not already deleted — a fully consumed stream leaves
-            // nothing for this to do.
+            // Only what the merge walk has not already deleted.
             for id in runs.drain(..).flatten() {
                 let _ = self.scratch.remove(id);
             }
@@ -625,11 +603,10 @@ mod tests {
         }
     }
 
-    /// **The mid-stream eviction.** On a sequential workload — push order = key order, which is
+    /// The mid-stream eviction. On a sequential workload — push order equals key order, which is
     /// what a collection-index key is exactly and a spatial key nearly — runs drain one after
-    /// another, so their files must die *during* the merge, not when the stream drops. Two chained
-    /// sorts otherwise hold both passes' spill at once, and #1116 D3 measured about half of BW's
-    /// 409 MiB peak spill being exactly that dead weight.
+    /// another, so their files must die during the merge and not when the stream drops. Two chained
+    /// sorts otherwise hold both passes' spill at once.
     #[test]
     fn a_drained_runs_file_dies_mid_stream_not_at_drop() {
         let scratch = Counting::new();
@@ -656,8 +633,8 @@ mod tests {
         assert_eq!(rest, (32..64u32).collect::<Vec<_>>());
         // …a fully consumed stream has deleted everything itself…
         assert_eq!(scratch.live.get(), 0, "a consumed stream left runs behind");
-        // …and the drop after full consumption double-removes nothing (the seam allows a second
-        // remove to refuse, but the eviction must not *rely* on that).
+        // …and the drop after full consumption double-removes nothing. The seam allows a second
+        // remove to refuse, but the eviction must not rely on that.
         drop(stream);
         assert_eq!(scratch.live.get(), 0);
     }

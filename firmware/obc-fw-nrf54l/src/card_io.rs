@@ -1,8 +1,5 @@
-//! Raw sEMMC helpers shared by the flat store and the temporary FAT-only remnants.
-//!
-//! This module owns the one aligned DMA bounce and the optional physical-read census. Neither is
-//! a filesystem concern: the flat store talks to the raw card directly and must keep both after
-//! the FAT map path is deleted.
+//! Raw sEMMC helpers shared by the flat store and the remaining FAT remnants: the one aligned DMA
+//! bounce buffer and the optional physical-read census. Neither is a filesystem concern.
 
 use crate::semmc::BLOCK_BYTES;
 

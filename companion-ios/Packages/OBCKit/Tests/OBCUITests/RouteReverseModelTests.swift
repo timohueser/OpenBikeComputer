@@ -5,11 +5,9 @@ import OBCMock
 import OBCTransport
 @testable import OBCUI
 
-/// Reverse a route, the app half (#503): `MainScreenModel.reverseRoute` lands a
-/// flipped **second** route in the library, leaving the original untouched. The
-/// geometry transform itself is `RouteReverseTests`' beat; this pins the model
-/// wiring — a new id, the disambiguated name, the summary stats re-derived from
-/// the reversed geometry, and the original still present.
+/// Reversing a route, the app half: `MainScreenModel.reverseRoute` lands a flipped second route
+/// in the library and leaves the original untouched. The geometry transform itself is pinned in
+/// `RouteReverseTests`; this pins the model wiring.
 @MainActor @Suite struct RouteReverseModelTests {
     private func makeModel() -> (MainScreenModel, any LibraryStore) {
         let library: any LibraryStore = InMemoryLibraryStore()
@@ -19,8 +17,8 @@ import OBCTransport
         return (model, library)
     }
 
-    /// A climbing route with two waypoints — enough to prove the swap and the
-    /// waypoint re-ordering land end to end.
+    /// A climbing route with two waypoints: enough to prove the swap and the waypoint
+    /// re-ordering land end to end.
     private func climbingRecord(name: String = "Kettle Loop") -> PlannedRouteRecord {
         let points = [
             RoutePoint(coordinate: Coordinate(latitude: 48.00, longitude: 8.0), elevationMeters: 100),
@@ -51,7 +49,6 @@ import OBCTransport
         #expect(newID != nil)
         #expect(newID != RouteID("orig"))
 
-        // Two routes now — the original and its reverse, both in Planned.
         #expect(model.routes.count == 2)
         #expect(model.routes.contains { $0.id == RouteID("orig") })
         #expect(model.routes.contains { $0.id == newID })
@@ -70,17 +67,15 @@ import OBCTransport
         let newID = model.reverseRoute(RouteID("orig"))!
 
         let reversed = model.plannedGeometry(for: newID)!
-        // Point order flipped: the reversed route starts at the old summit.
+        // The reversed route starts at the old summit.
         #expect(reversed.points.first?.coordinate == Coordinate(latitude: 48.02, longitude: 8.0))
         #expect(reversed.points.last?.coordinate == Coordinate(latitude: 48.00, longitude: 8.0))
-        // Waypoints re-ordered: "Top" (was near the end) now leads, and "Start"
-        // (was at 0) is furthest along the reversed route. (Exact `total − along`
-        // math is `RouteReverseTests`' beat.)
+        // "Top" was near the end and now leads; "Start" was at 0 and is now furthest along.
         #expect(reversed.waypoints.map(\.name) == ["Top", "Start"])
         #expect(reversed.waypoints[0].distanceAlongMeters < reversed.waypoints[1].distanceAlongMeters)
 
-        // The summary stats are re-derived from the reversed geometry: the whole
-        // forward climb is now zero gain (a pure descent).
+        // The stats are re-derived from the reversed geometry: the forward climb is now a pure
+        // descent, so the gain is zero.
         let summary = model.routes.first { $0.id == newID }!
         #expect(summary.elevationGainMeters == 0)
         #expect(summary.distanceMeters > 0)
@@ -97,7 +92,7 @@ import OBCTransport
         let (model, _) = makeModel()
         model.addImportedRoute(climbingRecord())
         let newID = model.reverseRoute(RouteID("orig"))!
-        // A fresh library route — no device link until it's uploaded.
+        // A fresh library route has no device link until it is uploaded.
         #expect(model.onDeviceState(newID) == .notOnDevice)
     }
 }

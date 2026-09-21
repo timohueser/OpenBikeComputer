@@ -51,8 +51,8 @@ function decode(bytes: Uint8Array, where: string): string {
 /**
  * A loaded cell catalog and the lazy path to its satellites.
  *
- * Construction is `CatalogClient.load(url)` rather than `new`: a client with
- * an unparsed root would be a client every caller has to check first, and §7's
+ * Construction is `CatalogClient.load(url)` rather than `new`: a client with an
+ * unparsed root would be a client every caller has to check first, and the
  * whole-or-nothing rule is easier to keep when the invalid state is unreachable.
  */
 export class CatalogClient {
@@ -83,12 +83,12 @@ export class CatalogClient {
     /**
      * Fetch and parse the root.
      *
-     * `url` must be absolute: resolving a relative one is a host's job (the web
-     * host has a `document.baseURI`, the desktop host does not), and a client
-     * that guessed would resolve a CDN path against a Tauri asset scheme.
+     * `url` must be absolute: resolving a relative one is a host's job — the web host
+     * has a `document.baseURI`, the desktop host does not — and a client that guessed
+     * would resolve a CDN path against a Tauri asset scheme.
      *
-     * The root is fetched on trust — there is no document above it to pin it —
-     * which is why §9 short-caches it and content-addresses everything else.
+     * The root is fetched on trust, since there is no document above it to pin it,
+     * which is why it is short-cached and everything else is content-addressed.
      */
     static async load(url: string, opts: CatalogClientOptions = {}): Promise<CatalogClient> {
         let base: string;
@@ -98,13 +98,13 @@ export class CatalogClient {
             return fail(`catalog: ${JSON.stringify(url)} is not an absolute URL`);
         }
         const doFetch = opts.fetchImpl ?? globalThis.fetch;
-        // Retried like every other object in the tree. There is nothing to pin the
-        // root against, but a connection dropped while it arrives is a transport
-        // failure either way — and one that leaves the app with no catalog at all.
+        // Retried like every other object in the tree. There is nothing to pin the root
+        // against, but a connection dropped while it arrives is a transport failure either
+        // way — and one that leaves the app with no catalog at all.
         const body = await withRetry(async () => {
             const res = await doFetch(base, { signal: opts.signal });
             if (!res.ok) throw new HttpStatusError(base, res.status, res.statusText);
-            // §7 spelled out: the entire body, then one parse. Nothing here consumes
+            // The whole-document rule spelled out: the entire body, then one parse. Nothing here
             // the response incrementally.
             return res.text();
         }, opts);
@@ -112,12 +112,9 @@ export class CatalogClient {
     }
 
     /**
-     * Build a client from a root body already in hand.
-     *
-     * This exists for hosts that already fetched the catalog root and must not
-     * fetch the same document again just to construct the client. `url` is
-     * where the body actually came from — every
-     * relative satellite `url` resolves against it, so handing a body with the
+     * Build a client from a root body already in hand, for hosts that already fetched the
+     * catalog root and must not fetch it again. `url` is where the body actually came
+     * from: every relative satellite `url` resolves against it, so handing a body with the
      * wrong origin would fetch satellites from the wrong place.
      */
     static fromBody(body: string, url: string, opts: CatalogClientOptions = {}): CatalogClient {
@@ -175,14 +172,11 @@ export class CatalogClient {
     }
 
     /**
-     * The single pinned terrain index (§13.1), or `null` when the catalog
-     * publishes no terrain at all.
+     * The single pinned terrain index, or `null` when the catalog publishes no terrain.
      *
-     * `null` is not a failure and must not be reported as one: a terrain-less
-     * catalog is complete and valid, and every map assembled from it is an
-     * ordinary map whose profiles are flat. It is one document for the whole
-     * store — terrain is not keyed by band — so there is one promise here rather
-     * than a map of them.
+     * `null` is not a failure and must not be reported as one: a terrain-less catalog is
+     * complete and valid. It is one document for the whole store — terrain is not keyed by
+     * band — so there is one promise here rather than a map of them.
      */
     terrain(): Promise<TerrainIndexDocument | null> {
         if (this.terrainIndex) return this.terrainIndex;
@@ -205,11 +199,10 @@ export class CatalogClient {
     /**
      * A named region's stored cell list, verified against the root's pin.
      *
-     * The list is checked against whichever band indices are already loaded
-     * (§6's cross-document MUST). It is not checked against ones that are
-     * not: forcing every index to load to open one region would turn a region
-     * pick into four extra round trips, and the same check runs again — over the
-     * full set — when a selection is resolved.
+     * The list is checked against whichever band indices are already loaded, and not
+     * against ones that are not: forcing every index to load to open one region would turn
+     * a region pick into four extra round trips, and the same check runs again over the
+     * full set when a selection is resolved.
      */
     regionCellList(regionId: string): Promise<RegionCellsDocument> {
         const cached = this.regionCells.get(regionId);

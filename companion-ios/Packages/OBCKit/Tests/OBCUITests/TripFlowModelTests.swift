@@ -5,23 +5,21 @@ import OBCMock
 import OBCTransport
 @testable import OBCUI
 
-/// TR7 host-side flows: the create & file paths — multi-select grouping
-/// (ordering = as listed, not selection order; ≤ 1-trip invariant via the
-/// store), filing per a picker `TripSelection` (the import row + route menus),
-/// and moving a route between trips. Driven through `MainScreenModel` against
-/// the `trips` fixture, exactly as the composition root wires it.
+/// The trip create and file flows: multi-select grouping (stage order follows the list, not the
+/// selection order; a route belongs to at most one trip), filing per a picker `TripSelection`,
+/// and moving a route between trips. Driven through `MainScreenModel` on the `trips` fixture.
 @MainActor
 struct TripFlowModelTests {
     private let tripID = TripID("driftless-weekender")
     private let stageA = RouteID("devils-lake-overnighter")   // filed
     private let stageB = RouteID("cross-plains-gravel")       // filed
-    // Loose routes, in `addedAt` (fixture) order: newest → oldest.
+    // Loose routes in fixture `addedAt` order: newest first.
     private let kettle = RouteID("kettle-moraine-loop")
     private let sugar = RouteID("sugar-river-trail")
     private let blueMounds = RouteID("blue-mounds-backroads")
 
-    /// A started model over the TR6/TR7 trips fixture: one trip (2 stages) + 3
-    /// loose routes, seeded into an in-memory library like the composition root.
+    /// A started model over the trips fixture: one trip with 2 stages and 3 loose routes, seeded
+    /// into an in-memory library like the composition root.
     private func makeModel() -> (MainScreenModel, InMemoryLibraryStore) {
         let control = MockControl(scenario: .happyPath)
         control.latency = .zero
@@ -35,8 +33,7 @@ struct TripFlowModelTests {
 
     // MARK: Multi-select grouping (ordering + invariant)
 
-    /// Group orders stages **as listed** (newest `addedAt` first), not by the
-    /// order the routes were selected in.
+    /// "As listed" means newest `addedAt` first.
     @Test
     func groupOrdersStagesAsListedNotBySelectionOrder() {
         let (model, library) = makeModel()
@@ -49,15 +46,12 @@ struct TripFlowModelTests {
         // Persisted, not just the mirror.
         #expect(library.trips().first { $0.id == newTrip! }?.stageIDs == [kettle, blueMounds])
 
-        // Both routes left the top level; the trip card took their place.
         let ids = model.plannedItems.map(\.id)
         #expect(!ids.contains("route:kettle-moraine-loop"))
         #expect(!ids.contains("route:blue-mounds-backroads"))
         #expect(ids.contains("trip:\(newTrip!.rawValue)"))
     }
 
-    /// Grouping a route that's already in another trip strips it from that trip
-    /// (the ≤ 1-trip invariant, enforced by the store on save).
     @Test
     func groupEnforcesTheOneTripInvariantViaTheStore() {
         let (model, _) = makeModel()
@@ -65,11 +59,9 @@ struct TripFlowModelTests {
         // devils-lake is a driftless stage; grouping it with a loose route moves it.
         let newTrip = model.groupIntoTrip([kettle, stageA], name: "Mixed")
         #expect(model.trip(newTrip!)?.stageIDs == [kettle, stageA])
-        // The old trip lost that stage but keeps the other.
         #expect(model.trip(tripID)?.stageIDs == [stageB])
     }
 
-    /// An empty selection creates nothing (no empty trips).
     @Test
     func groupWithNoResolvableRoutesCreatesNothing() {
         let (model, _) = makeModel()
@@ -78,7 +70,6 @@ struct TripFlowModelTests {
         #expect(model.trips.count == 1)  // only the fixture trip
     }
 
-    /// A blank name falls back to "New trip" (the locked default).
     @Test
     func groupBlankNameFallsBackToNewTrip() {
         let (model, _) = makeModel()
@@ -88,7 +79,6 @@ struct TripFlowModelTests {
 
     // MARK: Import filing — with / without a trip selection
 
-    /// `.none` (the import row's default) files nothing: the route stays loose.
     @Test
     func fileRouteNoneLeavesTheRouteLoose() {
         let (model, _) = makeModel()
@@ -98,7 +88,6 @@ struct TripFlowModelTests {
         #expect(model.plannedItems.map(\.id).contains("route:kettle-moraine-loop"))
     }
 
-    /// `.new` starts a trip with the route as its first stage.
     @Test
     func fileRouteNewStartsATripWithTheRoute() {
         let (model, library) = makeModel()
@@ -110,7 +99,6 @@ struct TripFlowModelTests {
         #expect(library.trips().contains { $0.name == "Overnighter" })
     }
 
-    /// `.existing` files the route as the trip's **last** stage.
     @Test
     func fileRouteExistingAppendsAsLastStage() {
         let (model, _) = makeModel()
@@ -118,7 +106,6 @@ struct TripFlowModelTests {
         #expect(model.trip(tripID)?.stageIDs == [stageA, stageB, kettle])
     }
 
-    /// Filing a route already in the target trip is a no-op (no duplicate stage).
     @Test
     func fileRouteExistingIsIdempotentForAMemberAlreadyThere() {
         let (model, _) = makeModel()
@@ -128,12 +115,9 @@ struct TripFlowModelTests {
 
     // MARK: Move between trips (implicit remove)
 
-    /// Filing a filed route into a different trip moves it — the invariant makes
-    /// the move an implicit remove from the old trip.
     @Test
     func moveBetweenTripsRemovesFromTheOldTrip() {
         let (model, _) = makeModel()
-        // A second trip to move a stage into.
         let target = model.groupIntoTrip([sugar], name: "Target")!
 
         model.fileRoute(stageA, into: .existing(target))
@@ -143,13 +127,11 @@ struct TripFlowModelTests {
         #expect(model.tripContaining(stageA) == target)
     }
 
-    /// Moving the last stage out of a trip dissolves it (the old trip empties).
     @Test
     func moveDissolvesAnEmptiedSourceTrip() {
         let (model, _) = makeModel()
         let solo = model.groupIntoTrip([sugar], name: "Solo")!
 
-        // Move sugar into driftless — solo is now empty and dissolves.
         model.fileRoute(sugar, into: .existing(tripID))
 
         #expect(model.trip(solo) == nil)
@@ -158,7 +140,6 @@ struct TripFlowModelTests {
 
     // MARK: Remove from trip
 
-    /// Remove-from-trip returns a route to the top level; the record survives.
     @Test
     func removeFromTripReturnsRouteToTopLevel() {
         let (model, _) = makeModel()
@@ -170,7 +151,6 @@ struct TripFlowModelTests {
         #expect(model.plannedItems.map(\.id).contains("route:devils-lake-overnighter"))
     }
 
-    /// Remove-from-trip on the last stage dissolves the trip (keeps the route).
     @Test
     func removeFromTripDissolvesOnLastStage() {
         let (model, _) = makeModel()
@@ -182,7 +162,6 @@ struct TripFlowModelTests {
         #expect(model.routes.count == 5)  // no route deleted
     }
 
-    /// Remove-from-trip on a loose route is a harmless no-op.
     @Test
     func removeFromTripNoOpForLooseRoute() {
         let (model, _) = makeModel()
@@ -193,7 +172,6 @@ struct TripFlowModelTests {
 
     // MARK: Picker projection
 
-    /// `tripPickerItems` mirrors the trips with name + stage count.
     @Test
     func tripPickerItemsProjectNameAndStageCount() {
         let (model, _) = makeModel()

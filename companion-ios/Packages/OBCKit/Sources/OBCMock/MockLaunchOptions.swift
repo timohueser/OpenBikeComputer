@@ -3,7 +3,7 @@ import Foundation
 import OBCDomain
 
 public enum FirmwareDemoStage: String, Sendable, Equatable {
-    /// Pre-stage a sample update and stop — the "staged" screenshot.
+    /// Pre-stage a sample update and stop.
     case staged
     /// Also fire Send, so a run walks transferring → awaiting-confirm → done.
     case sending = "send"
@@ -13,46 +13,30 @@ public struct MockLaunchOptions: Equatable, Sendable {
     public var scenario: Scenario?
     public var fixtures: String?
     public var connection: ConnectionState?
-    /// Force the real `BLETransport` (device-only — no BLE in the simulator).
+    /// Force the real `BLETransport`. Device only: the simulator has no BLE.
     public var useBLETransport: Bool
     /// Present the dev control panel immediately at launch.
     public var showDevPanel: Bool
-    /// Present the OBCUI component gallery immediately at launch (B11
-    /// screenshot review).
+    /// Present the OBCUI component gallery immediately at launch.
     public var showUIGallery: Bool
-    /// Suppress the bottom-right Debug scenario tag for product screenshots. The mock transport
-    /// remains active; ordinary XCUITests keep the HUD unless they opt out explicitly.
+    /// Suppress the Debug scenario tag for product screenshots. The mock transport stays active.
     public var hideMockHUD: Bool
-    /// Run the UI with animations off (#1212) — screen pushes, sheet
-    /// presentations, and list insertions land in their final state on the frame
-    /// they happen. Automated captures need this: a screenshot taken the instant
-    /// an element exists must not catch a transition mid-flight. Affects
-    /// presentation only, never what is finally drawn.
+    /// Run the UI with animations off, so an automated capture cannot catch a transition
+    /// mid-flight. It affects presentation only, never what is finally drawn.
     public var disableAnimations: Bool
-    /// Hold every timed confirmation instead of letting it expire (#1212). Three
-    /// of them are real product beats and all three are impossible to photograph
-    /// reliably, because each counts down against a wall clock while a loaded CI
-    /// runner takes its time: the top-bar sync check (2 s), the "Synced N new
-    /// rides just now" line under it (60 s), and the upload sheet's self-dismiss
-    /// after "On the device" (2.6 s). Under this flag the composition root hands
-    /// each owner a hold long enough that the state simply parks.
+    /// Hold every timed confirmation instead of letting it expire. Each one counts down
+    /// against a wall clock, which a loaded CI runner cannot photograph reliably.
     public var holdConfirmations: Bool
-    /// Feed a `SampleRouteFile` to the import path at launch (XCUITests /
-    /// demos — the Files picker can't be driven from automation): `gpx`/`tcx`/`grimsel`
-    /// land on E1 (or H4 when unpaired), `bad` raises H5. `nil` = no import.
+    /// Feed a `SampleRouteFile` to the import path at launch: automation cannot drive the
+    /// Files picker. `bad` raises the import error. `nil` means no import.
     public var importSample: SampleRouteFile.Kind?
-    /// Force the MapKit-basemap reachability (#294): `false` pins the grid
-    /// fallback (offline), `true` pins the basemap; `nil` uses the real
-    /// `NWPathMonitor`. Lets XCUITests exercise the fallback without real network
-    /// flakiness.
+    /// Pin the MapKit-basemap reachability: `false` forces the grid fallback, `true` the
+    /// basemap. `nil` uses the real `NWPathMonitor`.
     public var networkOnline: Bool?
-    /// Open the S7 firmware-update screen at launch with a pre-staged sample
-    /// update (the Files picker can't be driven from automation) — for the flow
-    /// screenshots + demos. `.staged` stops at the staged screen; `.sending`
-    /// also fires Send, so a run walks transfer → confirm → done. Debug-only.
+    /// Open the firmware-update screen at launch with a pre-staged sample update, because
+    /// automation cannot drive the Files picker.
     public var firmwareDemo: FirmwareDemoStage?
-    /// Pad the mock device's route catalog to the 64-route resident-menu
-    /// boundary (TR8) — the flat-store/menu-cap XCUITest / demo hook.
+    /// Pad the mock device's route catalog to the 64-route resident-menu boundary.
     public var deviceRoutesFull: Bool
 
     public var oldFirmware: Bool
@@ -89,9 +73,8 @@ public struct MockLaunchOptions: Equatable, Sendable {
         self.oldFirmware = oldFirmware
     }
 
-    /// Parse process launch arguments (`-OBCKey value` pairs, flag args) with
-    /// environment fallbacks. Unknown values are ignored (the app must still
-    /// boot — a typo in an automation script degrades to defaults, not a crash).
+    /// Parse process launch arguments (`-OBCKey value` pairs, flag args) with environment
+    /// fallbacks. An unknown value degrades to the default: an automation typo must not crash.
     public static func parse(
         arguments: [String] = ProcessInfo.processInfo.arguments,
         environment: [String: String] = ProcessInfo.processInfo.environment
@@ -117,9 +100,8 @@ public struct MockLaunchOptions: Equatable, Sendable {
             || environment["OBC_DISABLE_ANIMATIONS"] == "1"
         let holdConfirmations = arguments.contains("-OBCHoldConfirmations")
             || environment["OBC_HOLD_CONFIRMATIONS"] == "1"
-        // Flag with an optional kind token: bare `-OBCImportSample` (or
-        // `OBC_IMPORT_SAMPLE=1`) means gpx; an unknown kind degrades to gpx
-        // (never crash — automation typo rule).
+        // Bare `-OBCImportSample` (or `OBC_IMPORT_SAMPLE=1`) means gpx; an unknown kind
+        // degrades to gpx.
         let importSample: SampleRouteFile.Kind? = {
             if let index = arguments.firstIndex(of: "-OBCImportSample") {
                 if index + 1 < arguments.count, !arguments[index + 1].hasPrefix("-") {
@@ -138,8 +120,8 @@ public struct MockLaunchOptions: Equatable, Sendable {
         case "online": true
         default: nil
         }
-        // Bare `-OBCFirmwareDemo` (or `OBC_FIRMWARE_DEMO=1`) stops at the staged
-        // screen; a `send` token also fires Send (unknown token → staged).
+        // Bare `-OBCFirmwareDemo` (or `OBC_FIRMWARE_DEMO=1`) stops at the staged screen.
+        // A `send` token also fires Send; an unknown token stops at staged.
         let firmwareDemo: FirmwareDemoStage? = {
             if let index = arguments.firstIndex(of: "-OBCFirmwareDemo") {
                 if index + 1 < arguments.count, !arguments[index + 1].hasPrefix("-") {
@@ -175,8 +157,6 @@ public struct MockLaunchOptions: Equatable, Sendable {
             oldFirmware: oldFirmware)
     }
 
-    /// Build the live `MockControl` these options describe: scenario preset first,
-    /// then the fixture / connection overrides on top.
     public func makeControl() -> MockControl {
         let control = MockControl(scenario: scenario ?? .happyPath)
         if let fixtures { control.loadFixtures(fixtures) }
