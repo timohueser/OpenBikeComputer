@@ -9,7 +9,6 @@
 use core::ops::{Deref, DerefMut};
 
 use embedded_graphics::{draw_target::DrawTarget, primitives::Rectangle};
-use obc_map_scene::MapScene;
 use obc_ports::Fix;
 use obc_reader::Reader;
 use obc_render::{Canvas, Clock, RenderScratch, RenderStats};
@@ -314,7 +313,6 @@ pub struct Render<'a> {
     pub scratch: Option<&'a mut RenderScratch>,
 
     pub state: &'a AppState,
-    pub activity: &'a Activity,
     /// The active route and live guidance facts, borrowed from Navigator without a copied mirror.
     pub navigation: &'a crate::navigator::RouteState,
     /// The Recorder domain, read-only: the ride's own numbers. Distance, moving time, climb, the
@@ -462,17 +460,17 @@ impl Render<'_> {
     }
 }
 
-/// One frame's draw context plus the base-map scene it streams.
+/// One frame's draw context plus the base-map scene it streams. `None` on a chrome-only frame,
+/// which is exactly the set of frames that never reach a map screen's draw.
 ///
-/// Keeping the scene in this thin wrapper is what lets only the map-bearing screens be generic
-/// over [`MapScene`]. Every chrome screen still receives `&mut Render` through `Deref`, so the
-/// generic source does not infect the whole screen catalogue.
-pub struct RenderFrame<'a, S: MapScene> {
-    pub scene: Option<&'a S>,
+/// Every chrome screen receives `&mut Render` through `Deref`, so the scene stays out of the
+/// signatures of the screens that do not stream one.
+pub struct RenderFrame<'a, 'd> {
+    pub scene: Option<&'a Reader<'d>>,
     pub render: Render<'a>,
 }
 
-impl<'a, S: MapScene> Deref for RenderFrame<'a, S> {
+impl<'a> Deref for RenderFrame<'a, '_> {
     type Target = Render<'a>;
 
     fn deref(&self) -> &Self::Target {
@@ -480,7 +478,7 @@ impl<'a, S: MapScene> Deref for RenderFrame<'a, S> {
     }
 }
 
-impl<S: MapScene> DerefMut for RenderFrame<'_, S> {
+impl DerefMut for RenderFrame<'_, '_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.render
     }
@@ -514,15 +512,12 @@ pub struct Prepare<'a, 'd> {
 }
 
 /// A screen's classification, declared in its `screens!` table row so it cannot drift from the
-/// enum. Two kinds carry behaviour: [`Overlay`](ScreenKind::Overlay) screens composite over the
-/// screen below instead of replacing the view, and [`Settings`](ScreenKind::Settings) screens gate
-/// the debounced settings save. `Riding` and `Nav` state what a screen is.
+/// enum. Only the two behaviours that hang off it are kinds: what a screen *is* beyond them is
+/// [`BaseContent`], which is the fact the map plane and the live-data policy read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScreenKind {
-    /// A live riding view (Map, Skip ahead, Statistics) — full-screen, fed by the fix.
-    Riding,
-    /// Navigation chrome: the Home root, the menus, and the full-screen prompts.
-    Nav,
+    /// Replaces the view below: every riding view, the Home root, the menus and the prompts.
+    Base,
     /// Drawn *over* the screen below (the stack composites it on top).
     Overlay,
     /// Part of the settings subtree — edits are held un-persisted while one is on top.
@@ -604,26 +599,14 @@ pub enum RenderKeyKind {
     Drawer,
 }
 
-/// Which durable catalog a screen's held indices are remapped against after a store rescan. The
-/// rescan renumbers the route and ride catalogs, so a screen that caches an index into one must be
-/// re-pointed or dropped. Declared per screen so the remap fan-out cannot silently forget one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RemapKind {
-    /// Holds no catalog index — nothing to remap.
-    None,
-    /// Holds a route catalog index.
-    Route,
-    /// Holds a ride catalog index.
-    Ride,
-}
-
 /// The capability metadata for one screen, declared in its `screens!` table row so cross-cutting UI
-/// policy is a single declaration that cannot drift from the enum. Every consumer reads a screen's
-/// [`Caps`] instead of open-coding a `matches!` on the variant.
+/// policy is a single declaration that cannot drift from the enum. A fact earns a field here by
+/// having a reader: the timer, hold-fill and rescan fan-outs match on the variant, so they declare
+/// nothing.
 ///
 /// Built with the const archetype constructors ([`nav`](Caps::nav), [`map`](Caps::map),
 /// [`riding`](Caps::riding), [`settings`](Caps::settings), [`modal`](Caps::modal)) and refined with
-/// the const chaining setters, so a row reads `Caps::map().timed()`. Not stored in the [`Screen`]
+/// the const chaining setters, so a row reads `Caps::nav().exempt()`. Not stored in the [`Screen`]
 /// enum, which would inflate every stack slot; it compiles to a `const` per variant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Caps {
@@ -641,12 +624,6 @@ pub struct Caps {
     pub browse_exempt: bool,
     /// Whether — and until when — the screen needs the streamed-map [`Reader`] at draw.
     pub reader: ReaderNeed,
-    /// The screen has timed content: its [`tick_timers`](Screen::tick_timers) arm can fire a
-    /// time-driven repaint, and it must therefore have a non-idle arm.
-    pub timed: bool,
-    /// The screen can draw a live hold fill for a guarded selection: it has a
-    /// [`wants_hold_fill`](Screen::wants_hold_fill) arm.
-    pub hold_fill: bool,
     /// A genuinely blocking modal: while it is on top the device-wide drawer chords are refused, so
     /// a squeeze cannot open a drawer over a pairing passkey or a running map transfer. Every other
     /// screen is eligible, because the quick drawer is global by design.
@@ -664,8 +641,6 @@ pub struct Caps {
     /// have its draw skipped and its rows left standing. `false` for a map base, whose second draw
     /// is a whole map render, and for a prepared photo, which cannot decode in draw.
     pub recess: bool,
-    /// Which catalog the screen's held indices remap against after a rescan.
-    pub remap: RemapKind,
     /// The exact facts this screen's draw reads. The pass compares them before and after its stages
     /// and dirties the map when they move.
     pub render_key: RenderKeyKind,
@@ -675,19 +650,16 @@ impl Caps {
     /// Navigation chrome. The neutral base every other archetype refines from.
     pub const fn nav() -> Self {
         Caps {
-            kind: ScreenKind::Nav,
+            kind: ScreenKind::Base,
             base: BaseContent::Chrome,
             idle_exempt: false,
             ride_view: false,
             browse_exempt: false,
             reader: ReaderNeed::Never,
-            timed: false,
-            hold_fill: false,
             blocks_chords: false,
             blocks_escape: false,
 
             recess: true,
-            remap: RemapKind::None,
             render_key: RenderKeyKind::Static,
         }
     }
@@ -696,7 +668,7 @@ impl Caps {
     /// drawn again through the dim LUT is the base's own [`recess`](Caps::recess) declaration, not
     /// the sheet's. Its key kind shadows the base's, which is what freezes it.
     pub const fn overlay() -> Self {
-        Caps { kind: ScreenKind::Overlay, timed: true, render_key: RenderKeyKind::Drawer, ..Caps::nav() }
+        Caps { kind: ScreenKind::Overlay, render_key: RenderKeyKind::Drawer, ..Caps::nav() }
     }
 
     /// A map-base screen: reads the `Reader` every frame, is both a tracking ride view and a
@@ -704,7 +676,6 @@ impl Caps {
     /// second draw would be a whole map render.
     pub const fn map() -> Self {
         Caps {
-            kind: ScreenKind::Riding,
             base: BaseContent::Map,
             ride_view: true,
             browse_exempt: true,
@@ -717,13 +688,7 @@ impl Caps {
 
     /// A live riding view fed by the fix but not the map: redrawn on a fresh fix, no map I/O.
     pub const fn riding() -> Self {
-        Caps {
-            kind: ScreenKind::Riding,
-            base: BaseContent::LiveRiding,
-            ride_view: true,
-            render_key: RenderKeyKind::Statistics,
-            ..Caps::nav()
-        }
+        Caps { base: BaseContent::LiveRiding, ride_view: true, render_key: RenderKeyKind::Statistics, ..Caps::nav() }
     }
 
     /// A settings-subtree screen: a pending save is held un-persisted while one is on top.
@@ -746,16 +711,6 @@ impl Caps {
         self
     }
 
-    pub const fn timed(mut self) -> Self {
-        self.timed = true;
-        self
-    }
-
-    pub const fn hold_fill(mut self) -> Self {
-        self.hold_fill = true;
-        self
-    }
-
     /// A screen that refuses the drawer chords refuses the global escape as well, so this sets
     /// both.
     pub const fn blocking(mut self) -> Self {
@@ -771,11 +726,6 @@ impl Caps {
 
     pub const fn reader(mut self, need: ReaderNeed) -> Self {
         self.reader = need;
-        self
-    }
-
-    pub const fn remap(mut self, remap: RemapKind) -> Self {
-        self.remap = remap;
         self
     }
 
@@ -824,11 +774,10 @@ macro_rules! screens {
             /// Draw the screen into the frame's [`Canvas`]. The two host generics stop here: every
             /// screen below draws through `&mut impl Surface`, except the Map, which reaches the
             /// raw target via [`Canvas::split`] for its `RenderScratch` calls.
-            pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
+            pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, '_>)
             where
                 D: DrawTarget,
                 F: Fn(u16) -> D::Color,
-                S: MapScene,
             {
                 match self {
                     $( Screen::$variant(s) => s.draw(cv, rx), )+
@@ -879,32 +828,32 @@ macro_rules! screens {
 }
 
 screens! {
-    Home(HomeScreen) => Caps::nav().timed().key(RenderKeyKind::Home),
-    Map(MapScreen) => Caps::map().timed(),
+    Home(HomeScreen) => Caps::nav().key(RenderKeyKind::Home),
+    Map(MapScreen) => Caps::map(),
     Assistant(AssistantScreen) => Caps::nav(),
     Journey(JourneyScreen) => Caps::nav(),
     Landmarks(LandmarksScreen) => Caps::map(),
     PeakArticle(PeakArticleScreen) => Caps::nav().reader(ReaderNeed::Articles),
     LandmarkSources(LandmarkSourcesScreen) => Caps::nav().reader(ReaderNeed::Articles),
     LandmarkPhoto(LandmarkPhotoScreen) => Caps { recess: false, ..Caps::nav().ride_view().reader(ReaderNeed::Photo) },
-    Statistics(StatisticsScreen) => Caps::riding().timed(),
+    Statistics(StatisticsScreen) => Caps::riding(),
     /// The current climb's grade-striped elevation profile, cursor, and four climb-scoped tiles.
     Climb(ClimbScreen) => Caps::riding().key(RenderKeyKind::Climb),
     /// The pause page: ride-so-far ledger and the guarded Resume / Finish / Discard rows.
-    RideControl(RideControl) => Caps::nav().ride_view().hold_fill(),
+    RideControl(RideControl) => Caps::nav().ride_view(),
     /// The route-less start card: *Start ride* begins a tracking session with no route.
     RideStart(RideStartScreen) => Caps::nav(),
     /// The one-shot boot decision for a durable recording recovered after reset. Back cannot
     /// dismiss it; Continue preserves restored totals, while Discard is hold-guarded.
-    RideRecovery(RideRecoveryScreen) => Caps::modal().hold_fill().blocks_escape(),
-    Menu(MenuScreen) => Caps::nav().timed(),
+    RideRecovery(RideRecoveryScreen) => Caps::modal().blocks_escape(),
+    Menu(MenuScreen) => Caps::nav(),
     /// Heading-relative three-depth terrain panorama with named summit selection. Its profile is
     /// platform-fed, so the screen is unreachable when no panorama data is installed.
     PeakView(PeakViewScreen) => Caps::riding().reader(ReaderNeed::Articles),
     /// The detour chooser: a map base with streamed skipped-stretch ink and an auto-fit camera.
-    Detour(DetourScreen) => Caps::map().remap(RemapKind::Route),
+    Detour(DetourScreen) => Caps::map(),
     /// The planned detour and its cost line over the map; Press commits the splice.
-    DetourPreview(DetourPreviewScreen) => Caps::map().remap(RemapKind::Route),
+    DetourPreview(DetourPreviewScreen) => Caps::map(),
     /// The "Up ahead" timeline: the route-ordered merge of the waypoint table and the corridor-POI
     /// snapshot. It holds neither the rows nor the scope it reads them under — the category filter
     /// and the source scope are rows of the [context sheet](context_drawer::UP_AHEAD) above it.
@@ -919,32 +868,32 @@ screens! {
     PoiDetail(PoiDetailScreen) => Caps::nav().reader(ReaderNeed::PoiHours),
     /// The route-planning wait: a spinning needle while the host steps the resumable router. Back
     /// cancels; the host's answer replaces it with the computed-route overview or the failure card.
-    NavPlanning(NavPlanningScreen) => Caps::modal().timed(),
+    NavPlanning(NavPlanningScreen) => Caps::modal(),
     /// The route-planning failure card. Info-only: any press or Back returns to the detail.
     NavFail(NavFailScreen) => Caps::nav(),
-    RouteMenu(RouteMenuScreen) => Caps::nav().remap(RemapKind::Route),
+    RouteMenu(RouteMenuScreen) => Caps::nav(),
     /// The trip cascade-delete confirm, reached by long-pressing a trip folder row. A completed
     /// hold records the trip's durable id for the host to delete the trip and its member routes.
-    RouteCleanup(RouteCleanupScreen) => Caps::nav().hold_fill(),
-    TripDelete(TripDeleteScreen) => Caps::nav().hold_fill(),
+    RouteCleanup(RouteCleanupScreen) => Caps::nav(),
+    TripDelete(TripDeleteScreen) => Caps::nav(),
     /// The stored-rides list: name and sync glyph over a `D MON · distance` line; press opens the
     /// Ride detail.
-    Rides(RidesScreen) => Caps::nav().remap(RemapKind::Ride),
+    Rides(RidesScreen) => Caps::nav(),
     /// The recorded sibling of the Route overview: the tracked ride's elevation band, a stat
     /// ledger, and the guarded Delete-ride row.
-    RideDetail(RideDetailScreen) => Caps::nav().timed().hold_fill().remap(RemapKind::Ride),
-    RouteOverview(RouteOverviewScreen) => Caps::nav().timed().hold_fill().remap(RemapKind::Route),
-    RouteSwap(RouteSwapScreen) => Caps::nav().exempt().timed().hold_fill().remap(RemapKind::Route),
+    RideDetail(RideDetailScreen) => Caps::nav(),
+    RouteOverview(RouteOverviewScreen) => Caps::nav(),
+    RouteSwap(RouteSwapScreen) => Caps::nav().exempt(),
     /// The idle route-upload prompt: Start navigation or Dismiss. Host-pushed, and auto-closes
     /// after [`UPLOAD_POPUP_TIMEOUT_MS`]. Advisory: the route is already committed.
-    RouteReceived(RouteReceivedScreen) => Caps::modal().timed().remap(RemapKind::Route),
+    RouteReceived(RouteReceivedScreen) => Caps::modal(),
     /// The active-route-replaced info card. Adoption already happened when it opens, so this only
     /// tells the rider. Dismissed by any press or Back, or by the same auto-close.
-    RouteUpdated(RouteUpdatedScreen) => Caps::modal().timed().remap(RemapKind::Route),
+    RouteUpdated(RouteUpdatedScreen) => Caps::modal(),
     /// The trip-received popup. A committed trip upload always lands after its member routes, so
     /// it replaces the last per-route popup of the burst. It holds the trip's durable id, not a
     /// catalog index, so no rescan remap is needed.
-    TripReceived(TripReceivedScreen) => Caps::modal().timed(),
+    TripReceived(TripReceivedScreen) => Caps::modal(),
     /// The BLE pairing passkey card. Host-pushed when the seam's passkey goes `Some`, popped when
     /// it clears. Opaque and non-dismissible.
     Passkey(PasskeyScreen) => Caps::modal().blocking(),
@@ -958,7 +907,7 @@ screens! {
     Ride(RideScreen) => Caps::settings(),
     DateTime(DateTimeScreen) => Caps::settings(),
     Units(UnitsScreen) => Caps::settings(),
-    StatFields(StatFieldsScreen) => Caps::settings().hold_fill(),
+    StatFields(StatFieldsScreen) => Caps::settings(),
     AddField(AddFieldScreen) => Caps::settings(),
     /// The Map's clock and scale-bar overlay toggles, and the idle-return timeout.
     Display(DisplayScreen) => Caps::settings(),
@@ -966,10 +915,10 @@ screens! {
     Connections(ConnectionsScreen) => Caps::settings(),
     Power(PowerScreen) => Caps::settings(),
     /// Radio on/off, status line, Paired row, and the hold-guarded Forget phone row.
-    Bluetooth(BluetoothScreen) => Caps::settings().hold_fill(),
+    Bluetooth(BluetoothScreen) => Caps::settings(),
     /// The HR, power and cadence rows with their live status. Press opens the scan list; holding a
     /// saved row forgets it.
-    Sensors(SensorsScreen) => Caps::settings().hold_fill().key(RenderKeyKind::SensorSettings),
+    Sensors(SensorsScreen) => Caps::settings().key(RenderKeyKind::SensorSettings),
     /// One quantity's live scan list; press saves and connects the highlighted sensor.
     SensorScan(SensorScanScreen) => Caps::settings().key(RenderKeyKind::SensorSettings),
     /// Cycles the UI language by endonym.
@@ -982,15 +931,15 @@ screens! {
     /// The credits page: OpenStreetMap and ODbL, Copernicus, and the firmware's licence and source
     /// pointer. Read-only, scrolled by line.
     About(AboutScreen) => Caps::settings(),
-    Reset(ResetScreen) => Caps::settings().hold_fill(),
+    Reset(ResetScreen) => Caps::settings(),
     /// The "Checking update..." wait while the board validates the staged package. The answer
     /// replaces it with the confirm screen or an error card.
-    DfuCheck(DfuCheckScreen) => Caps::modal().timed(),
+    DfuCheck(DfuCheckScreen) => Caps::modal(),
     /// The install confirm: installed and update versions, the no-undo and same-version warnings,
     /// and the Install / Cancel rows.
     DfuConfirm(DfuConfirmScreen) => Caps::modal(),
     /// The "Preparing update..." spinner while the install one-shot waits for the board's drain.
-    DfuProgress(DfuProgressScreen) => Caps::modal().timed(),
+    DfuProgress(DfuProgressScreen) => Caps::modal(),
     /// The terminal "Installing update" card, pushed right before the warm reset. It is the last
     /// painted frame, which the MIP panel holds through the whole install.
     DfuInstalling(DfuInstallingScreen) => Caps::modal().blocking(),
@@ -1004,7 +953,7 @@ screens! {
     /// The universal quick drawer: the top sheet Up+Select opens from anywhere the chord is not
     /// suppressed. Four unlabelled device-wide controls — brightness, the BLE radio, central
     /// settings, power — plus the nested brightness editor and the guarded power confirmation.
-    QuickDrawer(QuickDrawerScreen) => Caps::overlay().hold_fill(),
+    QuickDrawer(QuickDrawerScreen) => Caps::overlay(),
     /// The contextual drawer: the bottom sheet Down+Back opens on a screen that declares a
     /// [`ContextMenu`]. It holds no content of its own — the rows come from the base screen's
     /// [`context`](Screen::context) declaration — so one row here serves every context.
@@ -1374,7 +1323,6 @@ mod tests {
                 ReaderNeed::Articles => assert_ne!(c.base, BaseContent::Map, "{name}: article reads do not draw a map"),
                 ReaderNeed::PoiSnapshot | ReaderNeed::PoiHours | ReaderNeed::Photo => {
                     assert_eq!(c.base, BaseContent::Chrome, "{name}: a POI reader screen is chrome-based");
-                    assert_eq!(c.kind, ScreenKind::Nav, "{name}: a POI reader screen is Nav-kind");
                 }
             }
             if c.base != BaseContent::Chrome {
@@ -1392,13 +1340,7 @@ mod tests {
             if c.kind == ScreenKind::Settings {
                 assert_eq!(c.base, BaseContent::Chrome, "{name}: a settings screen is chrome-based");
                 assert_eq!(c.reader, ReaderNeed::Never, "{name}: a settings screen needs no reader");
-                assert_eq!(c.remap, RemapKind::None, "{name}: a settings screen holds no catalog index");
                 assert!(!c.ride_view && !c.idle_exempt && !c.browse_exempt, "{name}: settings carry no view policy");
-            }
-            // Route holders include the live map-backed Skip chooser, so route remapping
-            // deliberately has no base restriction. Ride holders are chrome only.
-            if c.remap == RemapKind::Ride {
-                assert_eq!(c.base, BaseContent::Chrome, "{name}: a ride-remap screen is chrome-based");
             }
             // Whether a drawer recesses a screen follows from its render cost, which the base
             // content already states, so a new map-class screen cannot arrive dimmed by accident.
@@ -1416,7 +1358,6 @@ mod tests {
             );
             if c.kind.is_overlay() {
                 assert_eq!(c.base, BaseContent::Chrome, "{name}: a sheet draws chrome over the base it covers");
-                assert!(c.timed, "{name}: a sheet animates, so it needs a tick arm");
                 assert!(!c.idle_exempt, "{name}: a drawer is not a modal the idle return must respect");
                 assert!(!c.blocks_chords, "{name}: a drawer must not suppress the chord that closes it");
             }
