@@ -9,6 +9,7 @@ source was verified against.
 import sys
 import unittest
 import urllib.parse
+import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -18,6 +19,7 @@ from pyproj import Transformer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import ingest  # noqa: E402
+import ingest.sources.base  # noqa: E402
 from ingest.sources import fr as fr_module  # noqa: E402
 from ingest.sources.protocols import MAX_PIXELS, request_boxes  # noqa: E402
 
@@ -178,6 +180,46 @@ class FrenchBil(unittest.TestCase):
         self.assertEqual(values["crs"], ["EPSG:4326"])
         self.assertEqual(values["bbox"], [f"{BOX[1]},{BOX[0]},{BOX[3]},{BOX[2]}"])
         self.assertEqual((values["width"], values["height"]), ([str(self.px)], [str(self.py)]))
+
+
+class BulkArchives(unittest.TestCase):
+    """A bulk product arrives as a zip of tiles, and only the rasters come out of it."""
+
+    def bundle(self, directory, members):
+        path = Path(directory) / "state.zip"
+        with zipfile.ZipFile(path, "w") as bundle:
+            for name, body in members.items():
+                bundle.writestr(name, body)
+        return path
+
+    def test_only_the_rasters_are_taken_out_and_the_rest_is_left(self):
+        with TemporaryDirectory() as directory:
+            archive = self.bundle(directory, {
+                "dgm/tile_01.tif": b"II*\x00 not really a tiff",
+                "dgm/tile_01.asc": b"ncols 2",
+                "readme.txt": b"licence",
+                "dgm/thumb.png": b"\x89PNG",
+            })
+            out = Path(directory) / "unpacked"
+            rasters = ingest.sources.base.unpack(archive, out)
+            self.assertEqual([path.relative_to(out).as_posix() for path in rasters],
+                             ["dgm/tile_01.asc", "dgm/tile_01.tif"])
+            self.assertFalse((out / "readme.txt").exists())
+
+    def test_a_member_that_reaches_outside_the_directory_is_refused(self):
+        """A zip can name `../../etc/x.tif`, and unpacking it would write there."""
+
+        with TemporaryDirectory() as directory:
+            archive = self.bundle(directory, {"../../escaped.tif": b"II*\x00"})
+            with self.assertRaises(ingest.Refuse) as refusal:
+                ingest.sources.base.unpack(archive, Path(directory) / "unpacked")
+            self.assertIn("reaches outside", str(refusal.exception))
+
+    def test_an_archive_with_no_raster_says_so(self):
+        with TemporaryDirectory() as directory:
+            archive = self.bundle(directory, {"readme.txt": b"licence only"})
+            with self.assertRaises(ingest.Refuse):
+                ingest.sources.base.unpack(archive, Path(directory) / "unpacked")
 
 
 class Registry(unittest.TestCase):

@@ -97,21 +97,21 @@ def http_download(url: str, path: Path) -> Path:
 def unpack(archive: Path, into: Path) -> list[Path]:
     """The rasters inside a downloaded archive, extracted once.
 
-    A bulk product arrives as a zip of tiles. Only rasters are taken out of it, and a
-    member whose name reaches outside the directory is refused rather than written.
+    A bulk product arrives as a zip of tiles. Only rasters are taken out of it, each at
+    the path it has inside the archive so two tiles of the same name cannot collide, and a
+    member that names a path outside the directory is refused rather than written.
     """
 
     rasters = []
     with zipfile.ZipFile(archive) as bundle:
         for member in bundle.namelist():
-            suffix = Path(member).suffix.lower()
-            if suffix not in RASTER_SUFFIXES:
+            if Path(member).suffix.lower() not in RASTER_SUFFIXES:
                 continue
-            target = (into / Path(member).name).resolve()
-            if not str(target).startswith(str(into.resolve())):
+            if Path(member).is_absolute() or ".." in Path(member).parts:
                 raise Refuse(f"{archive}: the member `{member}` reaches outside {into}")
+            target = into / member
             if not target.exists():
-                into.mkdir(parents=True, exist_ok=True)
+                target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(bundle.read(member))
             rasters.append(target)
     if not rasters:
