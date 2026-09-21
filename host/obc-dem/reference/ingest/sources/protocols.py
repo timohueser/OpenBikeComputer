@@ -17,7 +17,7 @@ from rasterio.crs import CRS
 from rasterio.warp import transform_bounds
 
 from ..lattice import Refuse, WGS84
-from .base import Source, http_get
+from .base import Source, http_get, redact
 
 # One request per sub-box. A failed 4000 x 4000 request wastes far more time than four
 # 2000 x 2000 ones, and every service here caps the pixels it will answer with.
@@ -105,8 +105,10 @@ def raster_bytes(url: str, what: str) -> bytes:
 
     body = http_get(url, what=what)
     if body[:4] not in (b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+"):
+        # These services answer an error with a 200 and an XML document that quotes the
+        # request, token and all, so the body is redacted like any other message.
         text = body[:400].decode("utf-8", "replace").replace("\n", " ").strip()
-        raise Refuse(f"{what}: the service did not answer with a TIFF but with: {text}")
+        raise Refuse(redact(f"{what}: the service did not answer with a TIFF but with: {text}"))
     return body
 
 
