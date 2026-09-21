@@ -13,7 +13,7 @@ from rasterio.io import MemoryFile
 
 from ..lattice import Refuse
 from .protocols import TiledService, output_size
-from .base import http_get
+from .base import http_get, redact
 
 # The sentinel IGN puts where RGE ALTI has no ground. The tail drops anything below
 # −500 m anyway; this is here so the assembled raster declares a nodata of its own.
@@ -40,11 +40,11 @@ class BilWmsSource(TiledService):
 
     def request(self, box) -> bytes:
         px, py = output_size(box, self.resolution_m, f"{self.key} {box}")
-        raw = http_get(self.url(box))
+        raw = http_get(self.url(box), what=f"{self.key} {box}")
         if len(raw) != px * py * 4:
             text = raw[:400].decode("utf-8", "replace").replace("\n", " ").strip()
-            raise Refuse(f"{self.key} {box}: asked for {px}x{py} float32 and got "
-                         f"{len(raw)} bytes: {text}")
+            raise Refuse(redact(f"{self.key} {box}: asked for {px}x{py} float32 and got "
+                                f"{len(raw)} bytes: {text}"))
         band = np.frombuffer(raw, dtype="<f4").reshape(py, px)
         west, south, east, north = box
         profile = {
