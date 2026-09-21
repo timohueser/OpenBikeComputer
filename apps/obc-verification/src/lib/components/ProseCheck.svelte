@@ -1,7 +1,7 @@
 <script lang="ts">
   // The writing notes under a prose field. Each note names the problem text, says what is wrong,
   // and offers Harper's fixes as buttons. A note's offsets belong to the text it was found in, so a
-  // fix is applied only while the field still holds that text; the next check replaces the notes.
+  // fix applies only while the field still holds that text.
   import { onMount } from 'svelte';
   import { check, apply, type Note, type Fix } from '$lib/prose';
   export let text = '';

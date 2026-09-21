@@ -11,12 +11,11 @@ export function assert(value: unknown, message: string, status = 400): asserts v
   if (!value) throw new Problem(status, message);
 }
 /**
- * Runs `check` and says where it failed. A save validates a whole draft, so "Test level must be one
- * of unit, integration, system" on its own leaves the owner to search 39 requirements for it.
+ * Runs `check` and says where it failed. A save validates a whole draft, so a message with no place
+ * in it leaves the owner to search every requirement for the one that failed.
  *
- * Labels nest from the outside in, so the message reads
- * `SYS-019 · Transfer speed — criterion 1 — Test level must be one of unit, integration, system.`,
- * and `at` carries the ids the editor needs to go straight there.
+ * Labels nest from the outside in, so the message names the requirement and the criterion, and `at`
+ * carries the ids the editor needs to go straight there.
  */
 export function within<T>(label: string, at: ProblemAt, check: () => T): T {
   try { return check(); }

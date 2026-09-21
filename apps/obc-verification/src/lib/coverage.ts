@@ -72,11 +72,11 @@ export type CoverageState = 'unassessed' | 'needs-review' | 'uncovered' | 'parti
 export interface CoverageSummary { state: CoverageState; label: string; covered: number; total: number }
 const labels: Record<CoverageState, string> = { unassessed: 'Not assessed', 'needs-review': 'Needs review', uncovered: 'Not covered', partial: 'Partial', covered: 'Covered' };
 /**
- * One state per requirement. "Covered" is the only state that satisfies the release gate.
+ * One state per requirement. Only "covered" satisfies the release gate.
  *
- * Writing the criteria down is not coverage: a plan whose criteria all still want evidence is "not
- * covered", the same as a requirement with no plan at all. "Partial" means at least one criterion
- * has its evidence.
+ * Writing the criteria down is not coverage: a plan whose criteria all still want evidence is not
+ * covered, the same as a requirement with no plan. "Partial" means at least one criterion has its
+ * evidence.
  */
 export function coverageSummary(requirement: Requirement): CoverageSummary {
   const plan = requirement.coverage;
