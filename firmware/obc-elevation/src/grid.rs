@@ -62,7 +62,7 @@ pub fn cell_base_sample(cell: u32, posting_log2: u8, cell_log2: u8) -> u32 {
     cell << (cell_log2 - posting_log2)
 }
 
-/// Number of cells along one axis of the world box at `2^cell_log2` µdeg (OBCA §1.1).
+/// Number of cells along one axis of the world box at `2^cell_log2` µdeg.
 #[inline]
 pub fn axis_cells(cell_log2: u8) -> u32 {
     WORLD_SIDE >> cell_log2

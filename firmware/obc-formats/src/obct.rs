@@ -42,14 +42,14 @@ pub const HDR_DIRECTORY_OFFSET: usize = 20;
 /// Start of the 8 reserved header bytes, which a producer must write as zero.
 pub const HDR_RESERVED: usize = 24;
 
-/// One directory slot: an absolute `uint32` byte offset to a cell block (spec §4.3).
+/// One directory slot: an absolute `uint32` byte offset to a cell block.
 pub const DIR_ENTRY_LEN: usize = 4;
 
 /// "This cell is not in the file." Not a valid offset for any cell block, because the header
 /// precedes every block, so no sentinel bit has to be carved out of the offset space.
 pub const DIR_ABSENT: u32 = 0;
 
-/// `log2` of a tile's edge in samples (spec §2).
+/// `log2` of a tile's edge in samples.
 pub const TILE_LOG2: u32 = 4;
 /// Samples along one tile edge: 16.
 pub const TILE_SAMPLES: usize = 1 << TILE_LOG2;
@@ -65,14 +65,14 @@ pub const NODATA: i16 = i16::MIN;
 /// Origin of the sample lattice on both axes, µdeg: the OBCA grid origin, restated here because
 /// `obc-elevation` must not depend on a host crate to learn it.
 pub const GRID_ORIGIN: i32 = -(1 << 28);
-/// Side of the world box, µdeg (OBCA §1.1): `2^29`.
+/// Side of the world box, µdeg: `2^29`.
 pub const WORLD_SIDE: u32 = 1 << 29;
 
 /// Smallest permitted posting as `log2(µdeg)`, finer than any global DEM.
 pub const MIN_POSTING_LOG2: u8 = 4;
 /// Largest permitted posting as `log2(µdeg)`, coarser than any useful terrain.
 pub const MAX_POSTING_LOG2: u8 = 16;
-/// Smallest / largest permitted cell side as `log2(µdeg)`, matching the OBCA §1.1 cell-size range.
+/// Smallest and largest permitted cell side as `log2(µdeg)`, matching the OBCA cell-size range.
 pub const MIN_CELL_LOG2: u8 = 10;
 pub const MAX_CELL_LOG2: u8 = 28;
 /// Largest permitted `log2` of a cell's tiles per edge. The bound is arithmetic, not taste: `2^11`
