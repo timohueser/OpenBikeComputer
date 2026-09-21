@@ -1321,7 +1321,7 @@ impl EdgeIds {
     }
 }
 
-/// The §8 regions the section's directory has to name, as [`walk_nav_section`] found them.
+/// The regions the nav directory has to name, as [`walk_nav_section`] found them.
 struct NavOffsets {
     profile_table_offset: usize,
     index_offset: usize,
@@ -1397,13 +1397,13 @@ fn walk_nav_section<E>(
     Ok(NavOffsets { profile_table_offset, index_offset, edge_pool_offset, snap_index_offset })
 }
 
-/// §8.1's alignment run before a quadtree index of `index_len` bytes starting, unpadded, at `at`.
+/// The alignment run before a quadtree index of `index_len` bytes starting, unpadded, at `at`.
 #[inline]
 fn index_pad(at: u64, index_len: u64) -> u64 {
     nav_index_padding(SCALE, at, index_len).expect("a nav index length never approaches u64::MAX") as u64
 }
 
-/// The 40-byte §8.1 directory, over the offsets [`walk_nav_section`]'s first pass resolved.
+/// The 40-byte nav directory, over the offsets [`walk_nav_section`]'s first pass resolved.
 fn nav_directory(offsets: &NavOffsets, body: Option<&NavBody<'_>>, profile_count: usize) -> Vec<u8> {
     let (node_count, node_chunks, edge_chunks, snap_node_count, snap_chunks) = match body {
         Some(b) => (b.node_count, b.chunk_count, b.edge_chunk_count, b.snap_node_count, b.snap_chunk_count),
@@ -1625,7 +1625,7 @@ const _: () = assert!(
 const _: () =
     assert!(((STYLE_OFFSET - HEADER_LEN) as u64) < SCALE.unit(), "…the *first* such boundary, so the gap is one unit");
 
-/// The v14 OBCM header. Every offset field here is scaled, and both serializers share it.
+/// The OBCM header. Every offset field here is scaled, and both serializers share it.
 ///
 /// `obc-pack` writes a map with no embedded terrain, so the terrain pair is `(0, 0)`: unambiguous
 /// absence, since the header occupies byte `0` and no region can begin there. The producer of a

@@ -2166,7 +2166,6 @@ fn a_mixed_terrain_store_is_refused() {
 
     // And a cell crediting a reference model the tree cannot state a notice for. Publishing it
     // would ship derived national elevation with no attribution at all.
-    // would ship derived national elevation with no attribution at all, which §13.5 forbids.
     let w = TempTree::new("uncreditable-reference");
     example_tree(w.path());
     write_terrain_cell(w.path(), terrain_ne(), 0x22, "2026-08-01T04:00:03Z", TERRAIN_REVISION, "2021-1", "\"no\"");

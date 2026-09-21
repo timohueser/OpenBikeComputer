@@ -1796,8 +1796,8 @@ mod tests {
         assert!(Config::parse(r#"{"merge_lines":true,"lods":[{"merge_line_trails":true}]}"#).is_ok());
     }
 
-    /// `min_line_km` is optional and off by default, so a config written before the knob existed
-    /// parses to a ladder that culls nothing.
+    /// `min_line_km` is optional and off by default, so a config that omits it parses to a ladder
+    /// that culls nothing.
     #[test]
     fn min_line_km_defaults_to_off() {
         let cfg = Config::parse(r#"{"merge_lines": true, "lods": [{"max_mpp": null}, {"max_mpp": 100}]}"#).unwrap();

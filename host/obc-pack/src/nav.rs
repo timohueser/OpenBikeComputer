@@ -1248,7 +1248,7 @@ mod tests {
         assert!(stats.components_found >= 60, "≥ 60 components, got {}", stats.components_found);
         assert_eq!(stats.components_kept, 2, "giant + threshold component kept");
         assert_eq!(stats.edges_dropped, 60, "the 60 islets' edges dropped");
-        // The whole acceptance property: NO edge exceeds either v9 bound.
+        // The whole acceptance property: no edge exceeds either bound.
         for e in &g.edges {
             assert!(!violates(e), "edge {}→{} exceeds a v9 bound: len={}", e.a, e.b, e.length_m);
         }

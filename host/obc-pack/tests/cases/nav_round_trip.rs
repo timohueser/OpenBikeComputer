@@ -178,8 +178,8 @@ fn empty_graph_round_trips() {
     assert!(decoded.is_empty());
 }
 
-/// Populated nav payloads begin on physical-card sector boundaries. This is a producer guarantee,
-/// not a new reader requirement: directory offsets keep older compact v12 maps valid.
+/// Populated nav payloads begin on physical-card sector boundaries. It is a producer guarantee and
+/// not a reader requirement: the reader follows the directory's offsets either way.
 #[test]
 fn populated_nav_chunk_regions_are_sector_aligned() {
     let graph = NavGraph {

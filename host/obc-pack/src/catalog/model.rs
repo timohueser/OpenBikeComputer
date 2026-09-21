@@ -36,8 +36,7 @@ pub struct Catalog {
     pub generated_at: String,
     /// The cell store's data provenance and licence. The store is a derivative database of
     /// OpenStreetMap, and the ODbL's share-alike terms require the published store to say so. The
-    /// generator always writes it; `Option` only so a document published before the field existed
-    /// still deserializes.
+    /// generator always writes it; `Option` only so an older document still deserializes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceEntry>,
     /// The catalog's single schema. Not an array: the hosted store carries one ladder and nothing
@@ -248,8 +247,8 @@ pub struct SkinStyle {
     pub priority: u8,
     /// How the line is stroked: `solid`, `dashed` or `ticked`. Polygons ignore it.
     pub line_style: LineStyle,
-    /// The weight is used verbatim on screen, off the zoom width ramp. Defaulted so a catalog
-    /// written before the bit existed still parses.
+    /// The weight is used verbatim on screen, off the zoom width ramp. Defaulted so an older
+    /// catalog still parses.
     #[serde(default)]
     pub fixed_width: bool,
     /// Part of the suppressible terrain layer.
