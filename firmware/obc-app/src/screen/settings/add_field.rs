@@ -1,6 +1,5 @@
-//! The Add Field picker — a wrapping list of every predefined field not yet on the grid. `press`
-//! adds the highlighted field to the end of the selection and returns; `back` returns without adding.
-//! When every field is already shown it's a quiet empty state.
+//! The Add Field picker: a wrapping list of every field that is not yet on the grid. A press adds
+//! the highlighted field to the end of the selection and returns.
 
 use embedded_graphics::prelude::Point;
 use obc_render::{
@@ -16,15 +15,14 @@ use crate::screen::{Ctx, Render, Transition};
 use crate::stat_fields::StatField;
 use crate::Msg;
 
-/// Per-row height — matches the Stat Fields list so the two read identically.
+/// Per-row height. It matches the Fields list, so the two read the same.
 const ROW_H: i32 = 46;
 
-/// The fields not currently on the grid, in catalogue order — the picker's contents.
+/// The fields that are not on the grid, in catalogue order.
 fn hidden(list: &crate::stat_fields::StatFieldList) -> heapless::Vec<StatField, { StatField::ALL.len() }> {
     StatField::ALL.into_iter().filter(|f| !list.contains(*f)).collect()
 }
 
-/// The Add Field picker. State is just the highlighted row (a wrapping selection, like the menus).
 #[derive(Debug, Default)]
 pub struct AddFieldScreen {
     selected: usize,
@@ -39,7 +37,6 @@ impl AddFieldScreen {
         let avail = hidden(&cx.settings.stat_fields);
         match g {
             Gesture::Step(n) => list::on_step(&mut self.selected, n, avail.len()),
-            // Add the highlighted field to the end of the grid and return to the manage screen.
             Gesture::Press if !avail.is_empty() => {
                 let f = avail[self.selected.min(avail.len() - 1)];
                 cx.settings.stat_fields.push(f);
@@ -71,15 +68,9 @@ impl AddFieldScreen {
             let f = avail[row.index];
             let badge_color = if row.selected { INK } else { SUBTEXT };
             match f.category() {
-                // A `Next: <category>` field (epic #946, U5) wears the category's own row icon in a
-                // left gutter — the same glyph the tile, the Up-ahead rows and the POI menu use. The
-                // icon *is* the "Next:" of the name: six icon rows in a block, directly under
-                // `Next waypoint`, are unmistakably one group, and the name stays the plain
-                // (already-translated) category word instead of a composed label that no longer fits
-                // a row in German or French. It replaces the span badge on these rows — all six are
-                // full-width by construction, so the badge would carry no information the block
-                // doesn't already state, and the freed pixels are what let every language's longest
-                // category name draw whole.
+                // A category field shows its own icon in a left gutter, and the row name stays the
+                // plain category word. The icon replaces the span badge, because all these rows are
+                // full width, and the free space lets the longest category name draw whole.
                 Some(cat) => {
                     let a = row.area;
                     let mid = a.top_left.y + a.size.height as i32 / 2;
