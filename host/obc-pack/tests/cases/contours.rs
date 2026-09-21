@@ -1,13 +1,11 @@
-//! Contours through the **whole** pipeline (EL10a, #1094).
+//! Contours through the whole pipeline.
 //!
-//! `src/contour.rs`'s own tests own the marching squares; these own the wiring, which is where the
-//! issue's acceptance actually lives: that an OBCT container on disk turns into ordinary features in
-//! a real `.obcm`, that a class with no style rule costs nothing, and — the one that has to keep
-//! being true for every map that is not asking for contours — that the whole feature is invisible
-//! when it is off.
+//! `src/contour.rs`'s own tests own the marching squares; these own the wiring: that an OBCT
+//! container on disk turns into ordinary features in a real `.obcm`, that a class with no style rule
+//! costs nothing, and that the whole feature is invisible when it is off.
 //!
 //! Land generation is skipped throughout: it needs the ~950 MB global land-polygon dataset, which is
-//! a network download and not a fixture. Nothing here is about land.
+//! a network download and not a fixture.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -21,9 +19,9 @@ use obc_pack::pipeline::{pack, PackOptions};
 use obc_pack::progress::{Phase, Progress};
 use obc_reader::{MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 
-/// The synthetic terrain's posting and cell size — both legal OBCT v1 header values, both small, so
-/// the rectangle covering the fixture is tens of KB instead of the tens of MB a production 2^19 cell
-/// would be. The sampler cannot tell the difference (`OBCT_Spec.md` §1.3).
+/// The synthetic terrain's posting and cell size: both legal OBCT header values, both small, so the
+/// rectangle covering the fixture is tens of KB instead of the tens of MB a production pairing would
+/// be. The sampler cannot tell the difference.
 const POSTING_LOG2: u8 = 9;
 const CELL_LOG2: u8 = 14;
 /// Metres of rise per lattice row. At a 512 µdeg posting (~57 m) the fixture's ~40 rows climb far
@@ -148,7 +146,7 @@ fn nothing_is_traced_unless_the_run_asks_for_all_three() {
     let terrain = write_terrain(&dir);
 
     // No terrain at all: the comparison has to be against a run that also had none, because
-    // `--terrain` is what fills the §8.3 per-edge ascent as well.
+    // `--terrain` is what fills the per-edge ascent as well.
     let (blind, _) = run(&dir, "blind", &config(OFF, BOTH_CLASSES), None);
     let (no_terrain, lines) = run(&dir, "no-terrain", &config(ON, BOTH_CLASSES), None);
     assert_eq!(no_terrain, blind, "contours on but no terrain must change nothing");

@@ -26,9 +26,8 @@ use obc_formats::obct;
 
 use crate::grid::{id_width, CellId};
 
-// --- fixtures ------------------------------------------------------------------------------
-
-/// A scratch directory that removes itself (the packer
+/// A scratch directory that removes itself: the packer builds its own temp paths rather than adding
+/// a dependency for one.
 /// builds its own temp paths rather than adding a dependency for one).
 struct TempTree(PathBuf);
 
@@ -71,11 +70,10 @@ const FEATURES: &str = r#""features": {
     }
   }"#;
 
-/// The same four feature types, in the same document order — so the same ids — with
-/// only the presentation values a **skin** is allowed to state. `min_lod` is missing
-/// on purpose: it decides the level a feature is first written at, which is a decision
-/// already baked into every cell a skin gets stamped onto, so a skin carrying it is
-/// refused ([`super::check_skin_document`]).
+/// The same four feature types, in the same document order and so with the same ids, carrying only
+/// the presentation values a skin is allowed to state. `min_lod` is missing on purpose: it decides
+/// the level a feature is first written at, which is already baked into every cell a skin gets
+/// stamped onto, so a skin carrying it is refused ([`super::check_skin_document`]).
 const SKIN_FEATURES: &str = r#""features": {
     "highway": {
       "primary": { "color": "0xFAA0", "z_index": 60, "weight": 3, "priority": 2 },
@@ -184,9 +182,9 @@ fn cell_path(tree: &Path, band: &str, id: CellId, ext: &str) -> PathBuf {
     cell_dir(tree, band, id).join(format!("{:0w$}{ext}", id.j, w = w))
 }
 
-/// The schema revision the example tree is baked at. A revision, not `1`, because the
-/// interesting property is that the number in every cell sidecar and every satellite
-/// is the *same* number — a store that mixes revisions is refused (`OBCA_Spec.md` §6.3).
+/// The schema revision the example tree is baked at. Not `1`, because the interesting property is
+/// that the number in every cell sidecar and every satellite is the same number: a store that mixes
+/// revisions is refused.
 const EXAMPLE_REVISION: u32 = 7;
 
 /// Write a cell artifact whose header bbox *is* its grid square, plus its sidecar.
@@ -281,16 +279,13 @@ fn write_region_with_terrain(
     write(&dir.join(REGION_POLY), &poly(id, lon, lat));
 }
 
-// --- the terrain fixture (§13) --------------------------------------------------------------
-
-/// The example's terrain pairing: the **smallest** OBCT permits (a cell exactly one tile wide), so
-/// a checked-in fixture is 548 bytes instead of 2 MiB. A real bake is `2^9` / `2^19`
-/// (`OBCT_Spec.md` §1.3); nothing in this generator reads the pairing except to check it against
-/// the cells' own headers, so the small one exercises the identical path.
+/// The example's terrain pairing: the smallest OBCT permits, a cell exactly one tile wide, so a
+/// checked-in fixture is 548 bytes instead of 2 MiB. Nothing in this generator reads the pairing
+/// except to check it against the cells' own headers, so the small one exercises the same path.
 const TERRAIN_POSTING_LOG2: u8 = 9;
-/// Deliberately a cell size **no band uses**. Terrain is not a band, and its grid is chosen for the
-/// raster rather than for a LOD ladder — a fixture where the two happened to coincide would hide a
-/// generator that had quietly keyed terrain off a band.
+/// Deliberately a cell size no band uses. Terrain is not a band, and its grid is chosen for the
+/// raster rather than for a LOD ladder: a fixture where the two coincided would hide a generator
+/// that had quietly keyed terrain off a band.
 const TERRAIN_CELL_LOG2: u8 = 13;
 const TERRAIN_REVISION: u32 = 3;
 const TERRAIN_DATASET_VERSION: &str = "2021-1";
@@ -317,9 +312,9 @@ fn terrain_sea() -> CellId {
     terrain_cell(38_528, 33_667)
 }
 
-/// A real OBCT 1 × 1 container: header, a one-entry directory, one cell block
-/// (`OBCT_Spec.md` §4.1). Hand-written from `obc-formats`' own field offsets for the same reason
-/// [`obcm_bytes`] is: a fixture built by the code that reads it proves only self-consistency.
+/// A real OBCT 1 x 1 container: header, a one-entry directory, one cell block. Hand-written from
+/// `obc-formats`' own field offsets for the same reason [`obcm_bytes`] is: a fixture built by the
+/// code that reads it proves only self-consistency.
 fn obct_bytes(posting_log2: u8, id: CellId, fill: u8) -> Vec<u8> {
     let block_len = obct::cell_block_len(posting_log2, id.log2 as u8).expect("a pairing OBCT permits") as usize;
     let mut out = vec![0u8; obct::HEADER_LEN + obct::DIR_ENTRY_LEN + block_len];
@@ -434,8 +429,8 @@ fn example_tree(tree: &Path) {
     write_cell(tree, "coarse", coarse_cell(), 2_048, "2026-07-30T02:10:04Z", &ch, false);
     write_cell(tree, "mid", mid_cell(), 1_024, "2026-07-30T02:11:38Z", &ch, false);
     write_cell(tree, "fine", fine_west(), 512, "2026-07-30T02:12:55Z", &ch, false);
-    // A border cell co-baked from both extracts that touch it — the sanctioned way to
-    // make an edge cell canonical without a planet source (OBCA_Spec.md §3.7).
+    // A border cell co-baked from both extracts that touch it: the sanctioned way to make an edge
+    // cell canonical without a planet source.
     write_cell(
         tree,
         "fine",
@@ -459,8 +454,8 @@ fn example_tree(tree: &Path) {
     // Baked from one side only: the sources do not cover the square, so it is partial
     // and a consumer must not present it as canonical coverage.
     write_cell(tree, "network", fine_east(), 128, "2026-07-30T02:14:52Z", &ch, true);
-    // The other artifact class, at its own revision (§13) — deliberately not `EXAMPLE_REVISION`,
-    // so the example itself demonstrates that the two numbers are unrelated.
+    // The other artifact class, at its own revision — deliberately not `EXAMPLE_REVISION`, so the
+    // example itself demonstrates that the two numbers are unrelated.
     write_terrain(tree, TERRAIN_REVISION, TERRAIN_DATASET_VERSION);
 
     write_region_with_terrain(
@@ -515,11 +510,8 @@ fn cell_index_doc(g: &GeneratedCatalog, band: &str) -> CellIndexDocument {
     serde_json::from_str(&satellite(g, &format!("cells/{band}/index.json")).body).expect("cell index parses")
 }
 
-// --- the grid ------------------------------------------------------------------------------
-//
-// The grid itself — the worked example's squares, the nesting, the padding widths — is
-// pinned once in `crate::grid`'s own tests. What is the *catalog's* is the strict reading
-// of an id, so that is what is pinned here.
+// The grid itself — the worked example's squares, the nesting, the padding widths — is pinned once
+// in `crate::grid`'s own tests. What is the catalog's is the strict reading of an id.
 
 #[test]
 fn non_canonical_cell_ids_are_refused() {
@@ -537,8 +529,6 @@ fn non_canonical_cell_ids_are_refused() {
         assert_eq!(parse_strict_id(bad).unwrap_err(), refusal, "`{bad}` refusal changed");
     }
 }
-
-// --- shape ---------------------------------------------------------------------------------
 
 #[test]
 fn walks_a_tree_into_a_root_and_its_satellites() {
@@ -582,8 +572,8 @@ fn walks_a_tree_into_a_root_and_its_satellites() {
         ["europe/switzerland", "europe/switzerland/basel-stadt"],
         "sorted by id"
     );
-    // §11.2: `cell_index` is sorted by cell_log2 descending, with the band id breaking
-    // the tie two same-size bands create.
+    // `cell_index` is sorted by cell_log2 descending, with the band id breaking the tie two
+    // same-size bands create.
     assert_eq!(
         g.root.cell_index.iter().map(|c| (c.band.as_str(), c.cell_log2, c.cell_count)).collect::<Vec<_>>(),
         [("coarse", 20, 1), ("mid", 19, 1), ("fine", 18, 2), ("network", 18, 2)]
@@ -631,8 +621,8 @@ fn a_cell_entry_states_the_bake_and_carries_no_bbox() {
         "sources are published sorted by extract_id"
     );
 
-    // §11.6: the id *is* the coverage statement, so there is no bbox to disagree with
-    // it. Asserted on the serialized document, since that is what a consumer sees.
+    // The id is the coverage statement, so there is no bbox to disagree with it. Asserted on the
+    // serialized document, since that is what a consumer sees.
     let body = &satellite(&g, "cells/fine/index.json").body;
     assert!(!body.contains("bbox"), "a cell entry must not carry a bbox:\n{body}");
     assert!(cell_index_doc(&g, "network").cells[1].partial, "the one-sided border cell is partial");
@@ -656,9 +646,8 @@ fn a_region_prices_its_cell_set_per_band() {
             ("network".to_string(), 2),
         ])
     );
-    // §11.5: `bytes_by_band` must sum to `bytes` — that is what makes §5.7's per-file
-    // projection arithmetic rather than estimation, because a volume set's roles
-    // partition by band.
+    // `bytes_by_band` must sum to `bytes`, which is what makes the per-file projection arithmetic
+    // rather than estimation: a volume set's roles partition by band.
     assert_eq!(ch.bytes_by_band.values().sum::<u64>(), ch.bytes);
     let fine = cell_index_doc(&g, "fine");
     assert_eq!(ch.bytes_by_band["fine"], fine.cells.iter().map(|c| c.bytes).sum::<u64>());
@@ -743,25 +732,23 @@ fn a_skin_is_the_schema_recolored() {
     assert_eq!(track.color2, None);
     let contrast = g.root.skins.iter().find(|s| s.id == "contrast").expect("contrast skin");
     assert_eq!(contrast.marker_color, 0x001F);
-    // `preset_version` has no place here: a skin is stamped at assembly time, so
-    // no artifact can be a revision behind it (§11.4).
+    // `preset_version` has no place here: a skin is stamped at assembly time, so no artifact can be
+    // a revision behind it.
     let body = root_json(&g.root);
     assert!(!body.contains("preset_version"), "the lagging-artifact apparatus must stay absent");
     assert!(!body.contains("\"presets\""), "§11.9: `presets` must not appear in a catalog root");
 }
 
-/// A skin document carrying schema keys is **refused**, and the error names them.
+/// A skin document carrying schema keys is refused, and the error names them.
 ///
-/// Dropping them quietly is the tempting behaviour and the wrong one. A skin is
-/// stamped onto cells already cut at the schema's ladder, tolerances, merge passes and
-/// routing table, so a `lods` block in a skin has no effect whatsoever — and an author
-/// who wrote one believes something false about the map they are shipping, with
-/// nothing anywhere to tell them otherwise. Every offending key is named, not the
-/// first, so one edit fixes the document.
+/// Dropping them quietly is the tempting behaviour and the wrong one. A skin is stamped onto cells
+/// already cut at the schema's ladder, tolerances, merge passes and routing table, so a `lods` block
+/// in a skin has no effect whatsoever, and an author who wrote one believes something false about
+/// the map they are shipping. Every offending key is named, not the first, so one edit fixes the
+/// document.
 ///
-/// This has to be checked against the JSON rather than the parsed [`Config`]: once
-/// parsed, a config that omits `lods` and one that restates the defaults are the same
-/// value, so `check_skin` cannot see the difference at all.
+/// This has to be checked against the JSON rather than the parsed [`Config`]: once parsed, a config
+/// that omits `lods` and one that restates the defaults are the same value.
 #[test]
 fn a_skin_carrying_schema_keys_is_refused_by_name() {
     for (key, body, expect) in [
@@ -807,9 +794,9 @@ fn a_skin_carrying_schema_keys_is_refused_by_name() {
     let err = super::check_skin_document(&doc, "bad.json").expect_err("`min_lod` is schema data");
     assert!(err.contains("`features.*.*.min_lod`"), "{err}");
 
-    // #1095's two style-record flag bits are presentation, not schema: they are bits of the 8-byte
-    // record a skin stamps, and neither changes which features are cut into which cells — so a skin
-    // may carry them, exactly as it may carry `line_style`.
+    // The two style-record flag bits are presentation, not schema: they are bits of the record a
+    // skin stamps, and neither changes which features are cut into which cells, so a skin may carry
+    // them exactly as it may carry `line_style`.
     let doc = r#"{
   "_meta": { "id": "terrain", "name": "Terrain", "description": "Carries the flag bits.", "version": 1 },
   "marker": { "color": "0xF800" },
@@ -829,8 +816,6 @@ fn a_skin_carrying_schema_keys_is_refused_by_name() {
         .expect_err("and the schema is emphatically not a skin");
     assert!(err.contains("`lods`") && err.contains("`routing`"), "{err}");
 }
-
-// --- determinism ---------------------------------------------------------------------------
 
 #[test]
 fn generation_is_deterministic_for_a_given_tree() {
@@ -928,8 +913,6 @@ fn only_generated_at_carries_a_clock() {
     assert_eq!(base.satellites, later.satellites, "a satellite carries no clock at all");
 }
 
-// --- the digest pins -----------------------------------------------------------------------
-
 #[test]
 fn the_root_pins_every_satellite_by_size_and_digest() {
     let t = TempTree::new("pins");
@@ -952,10 +935,9 @@ fn the_root_pins_every_satellite_by_size_and_digest() {
     assert_eq!(hash_str("abc"), (3, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".to_string()));
 }
 
-/// §3.1: the root carries the source declaration, and its human-readable twin
-/// `LICENSE.txt` lands beside `catalog.json` with the same facts — the OSM credit,
-/// the ODbL, and (because the example publishes terrain) the Copernicus credit
-/// from §13.5. Derived from the root, so the two cannot disagree.
+/// The root carries the source declaration, and its human-readable twin `LICENSE.txt` lands beside
+/// `catalog.json` with the same facts: the OSM credit, the ODbL, and — because the example publishes
+/// terrain — the Copernicus credit. Derived from the root, so the two cannot disagree.
 #[test]
 fn the_source_declaration_and_its_license_txt() {
     let t = TempTree::new("license");
@@ -981,9 +963,8 @@ fn write_all_atomic_writes_the_satellites_then_the_root() {
     let g = generated(t.path());
     write_all_atomic(t.path(), &g).expect("write");
 
-    // Every pinned satellite is on disk with exactly the bytes the root's digest
-    // claims — the property that makes "root + matching satellite" as strong a
-    // all-or-nothing document guarantee (§11.1).
+    // Every pinned satellite is on disk with exactly the bytes the root's digest claims, which is
+    // what makes "root plus matching satellite" an all-or-nothing document guarantee.
     for s in &g.satellites {
         let path = t.path().join(s.rel_path.replace('/', std::path::MAIN_SEPARATOR_STR));
         assert_eq!(fs::read_to_string(&path).expect("satellite on disk"), s.body, "{}", s.rel_path);
@@ -1012,8 +993,6 @@ fn walk(dir: &Path) -> Vec<String> {
     }
     out
 }
-
-// --- the version law + lockstep ------------------------------------------------------------
 
 #[test]
 fn a_cell_from_another_obcm_version_is_refused() {
@@ -1084,8 +1063,6 @@ fn a_cell_whose_header_is_not_its_square_is_refused() {
     assert!(err.contains("grid square"), "{err}");
     assert!(err.contains("verbatim"), "the error must say why it matters: {err}");
 }
-
-// --- loud failures -------------------------------------------------------------------------
 
 #[test]
 fn a_region_naming_an_unpublished_cell_fails() {
@@ -1513,8 +1490,8 @@ fn a_band_with_no_cells_is_reported() {
         "{:?}",
         g.warnings
     );
-    // The band still gets an index — one entry per band in the schema (§11.6) — so a
-    // consumer's band loop does not have to handle a missing document.
+    // The band still gets an index, one entry per band in the schema, so a consumer's band loop
+    // does not have to handle a missing document.
     assert_eq!(g.root.cell_index.iter().find(|c| c.band == "mid").expect("mid").cell_count, 0);
 }
 
@@ -1553,8 +1530,6 @@ fn every_truncation_of_a_document_fails_to_parse() {
         );
     }
 }
-
-// --- schema + examples ---------------------------------------------------------------------
 
 #[test]
 fn checked_in_catalog_schema_is_the_current_generated_schema() {
@@ -1728,10 +1703,7 @@ fn catalog_examples_are_current() {
     );
 }
 
-// --- the shipped schema and skins -----------------------------------------------------------
-
 /// The shipped schema (`builder/presets/schema.json`) or, with a `../` path, one of
-/// the retired preset documents kept as a fixture — with a `_meta.revision` and band
 /// table injected, so the real file can be used as this producer's `schema.json`.
 fn as_schema(rel: &str, bands: &str, revision: u32) -> String {
     let text = repo_doc(rel);
@@ -1752,10 +1724,10 @@ fn repo_doc(rel: &str) -> String {
 const SHIPPED_SCHEMA: &str = "../../builder/presets/schema.json";
 /// The schema's own look, restated as a skin.
 const SHIPPED_SKIN: &str = "../../builder/presets/skins/default.json";
-/// The night restyle (epic #1016 P5) — the first skin that legitimately differs.
+/// The night restyle: the first skin that legitimately differs.
 const SHIPPED_DUSK_SKIN: &str = "../../builder/presets/skins/dusk.json";
-/// `OBCA_Spec.md` §1.5's recommended band table, against the shipped bikepacking ladder: LOD
-/// 0–4 coarse, 5–8 mid, 9–13 fine, nav + POI in `network`.
+/// The recommended band table, against the shipped bikepacking ladder: LOD 0-4 coarse, 5-8 mid,
+/// 9-13 fine, nav and POI in `network`.
 const RECOMMENDED_BAND_TABLE: &str = r#"[
     { "id": "coarse", "cell_log2": 20, "lods": [0, 1, 2, 3, 4], "role": "coarse" },
     { "id": "mid", "cell_log2": 19, "lods": [5, 6, 7, 8], "role": "geometry" },
@@ -1763,10 +1735,10 @@ const RECOMMENDED_BAND_TABLE: &str = r#"[
     { "id": "network", "cell_log2": 18, "sections": ["nav", "poi"], "role": "core" }
 ]"#;
 
-/// The shipped documents are what a real bake hands this generator: `schema.json` is
-/// the hosted schema, `skins/default.json` is a skin over it, and the band table of
-/// `OBCA_Spec.md` §1.5 partitions the schema's ladder exactly. If any of that stops
-/// being true, the first real bake fails on data we control.
+/// The shipped documents are what a real bake hands this generator: `schema.json` is the hosted
+/// schema, `skins/default.json` is a skin over it, and the recommended band table partitions the
+/// schema's ladder exactly. If any of that stops being true, the first real bake fails on data we
+/// control.
 #[test]
 fn the_shipped_schema_and_skin_generate_the_current_catalog() {
     let t = TempTree::new("shipped");
@@ -1807,11 +1779,10 @@ fn the_shipped_schema_and_skin_generate_the_current_catalog() {
     assert!(skin.styles.len() > 30, "the shipped schema carries a real style table: {}", skin.styles.len());
     assert!(skin.styles.iter().any(|s| s.line_style == LineStyle::Dashed), "and at least one dashed style");
 
-    // The shipped skin is the schema's *own* look, restated. Nothing else in the tree
-    // enforces that — a skin is free to differ, which is the entire point of skins —
-    // but `default` is the checked-in baseline look, so the two drifting apart
-    // would make its name misleading.
-    // The `dusk` skin (next test) is where a skin legitimately differs.
+    // The shipped skin is the schema's own look, restated. Nothing else in the tree enforces that —
+    // a skin is free to differ, which is the point of skins — but `default` is the checked-in
+    // baseline look, so the two drifting apart would make its name misleading. The `dusk` skin is
+    // where a skin legitimately differs.
     let schema_config = Config::parse(&repo_doc(SHIPPED_SCHEMA)).expect("the schema parses");
     let skin_config = Config::parse(&repo_doc(SHIPPED_SKIN)).expect("the skin parses");
     check_skin(&schema_config, &skin_config).expect("the shipped skin fits the shipped schema");
@@ -1821,12 +1792,10 @@ fn the_shipped_schema_and_skin_generate_the_current_catalog() {
             .expect("the schema's own values, in skin shape");
     assert_eq!(skin.styles, schema_styles, "the `default` skin restates the schema's own presentation values");
 
-    // And the swatch with them. It is `_meta`, so nothing above reaches it — but it is
-    // the six colours the builder paints a style card with, i.e. the *only* part of
-    // either document a user ever sees before downloading a map. A skin whose styles
-    // match the schema while its swatch advertises something else is a card that lies,
-    // and the two documents restating the same values by hand is exactly the setup in
-    // which one of them gets edited alone.
+    // And the swatch with them. It is `_meta`, so nothing above reaches it, but it is the six
+    // colours the builder paints a style card with, which is the only part of either document a
+    // user ever sees before downloading a map. A skin whose styles match the schema while its
+    // swatch advertises something else is a card that lies.
     let swatch = |doc: &str| -> Vec<String> {
         let v: Value = serde_json::from_str(&repo_doc(doc)).expect("valid JSON");
         v["_meta"]["swatch"]
@@ -1846,31 +1815,25 @@ fn the_shipped_schema_and_skin_generate_the_current_catalog() {
     );
 }
 
-/// The second shipped skin (epic #1016 P5): `dusk`, the night restyle — the skin that
-/// legitimately differs from the schema, which is the entire point of skins. Three
-/// properties keep it honest, and each has a way to rot silently without a test:
+/// The second shipped skin, `dusk`: the night restyle, and the skin that legitimately differs from
+/// the schema. Three properties keep it honest, and each can rot silently without a test.
 ///
-/// 1. **It generates beside `default`** — same feature types, same ids, presentation
-///    only. (An edit that drifts it into schema territory should fail here, on data we
-///    ship, not on the first real bake.)
-/// 2. **It respects the bake's merges.** `merge_fills`/`merge_lines` union features
-///    whose *schema* styles render identically and retag the result to one canonical
-///    style id (`merge.rs`), so a skin giving two schema-merged feature types
-///    different values would style only the canonical id's share of the merged
-///    geometry — the other name's entry would be dead weight that looks like a
-///    design decision. Every group the schema merges must be restated uniformly.
-///    The groups are derived from the `default` skin (proved above to restate the
-///    schema's own values) by full render identity — the line-stitch key, which is
-///    identical to the line-stitch key, and — for the current schema, where no fill
-///    carries a weight or line style — a superset of the fill merge classes (verified
-///    empirically: 7 test groups cover all 5 real fill classes). A schema that gives a
-///    fill a weight/dash would open a gap here; widen the key to the union then.
-/// 3. **It survives the panel.** The LS021B7DD02 shows 64 colors (RGB222 — the top
-///    two bits of each channel, `OBCM_Spec.md` §2, `rgb565_to_device64`), so two
-///    RGB565 values in one RGB222 bucket are one color on glass. Every *distinct*
-///    RGB565 value in the document must land in its own bucket, the ground must
-///    quantize dark, and the marker light — a dark-ground skin whose marker
-///    quantizes into the ground is unusable at exactly the moment it exists for.
+/// It generates beside `default`: same feature types, same ids, presentation only.
+///
+/// It respects the bake's merges. `merge_fills` and `merge_lines` union features whose schema styles
+/// render identically and retag the result to one canonical style id, so a skin giving two
+/// schema-merged feature types different values would style only the canonical id's share of the
+/// merged geometry, and the other name's entry would be dead weight that looks like a design
+/// decision. Every group the schema merges must therefore be restated uniformly. The groups are
+/// derived from the `default` skin by full render identity, the line-stitch key, which for the
+/// current schema — where no fill carries a weight or line style — is a superset of the fill merge
+/// classes. A schema that gave a fill a weight or dash would open a gap here.
+///
+/// It survives the panel. The display shows 64 colours (RGB222, the top two bits of each channel),
+/// so two RGB565 values in one bucket are one colour on glass. Every distinct RGB565 value in the
+/// document must land in its own bucket, the ground must quantize dark, and the marker light: a
+/// dark-ground skin whose marker quantizes into the ground is unusable at exactly the moment it
+/// exists for.
 #[test]
 fn the_shipped_dusk_skin_is_a_presentation_only_night_restyle() {
     let t = TempTree::new("shipped-dusk");
@@ -1891,11 +1854,10 @@ fn the_shipped_dusk_skin_is_a_presentation_only_night_restyle() {
     assert_ne!(dusk.marker_color, default.marker_color, "red vanishes on a dark ground; dusk re-picks the marker");
     for (d, s) in dusk.styles.iter().zip(&default.styles) {
         assert_eq!(d.feature_type, s.feature_type);
-        // The skin split lets a skin restate every presentation value in the record, but this
-        // one deliberately recolors only: geometry-shaping stays visually identical to the
-        // day map, so a rider switching skins at dusk sees the same map, re-lit. The #1095
-        // flag bits are in the tuple for that reason — a dusk contour that lost `fixed_width`
-        // would be a different *drawing*, not a different colour.
+        // The skin split lets a skin restate every presentation value in the record, but this one
+        // deliberately recolors only: geometry-shaping stays visually identical to the day map, so a
+        // rider switching skins at dusk sees the same map, re-lit. The flag bits are in the tuple
+        // for that reason — a dusk contour that lost `fixed_width` would be a different drawing.
         assert_eq!(
             (d.weight, d.z_index, d.priority, d.line_style, d.fixed_width, d.terrain_layer),
             (s.weight, s.z_index, s.priority, s.line_style, s.fixed_width, s.terrain_layer),
@@ -1947,8 +1909,6 @@ fn the_shipped_dusk_skin_is_a_presentation_only_night_restyle() {
     assert_eq!(bucket(land.color), (0, 0, 0), "the dark ground the whole design stands on");
     assert_eq!(bucket(dusk.marker_color), (255, 255, 0), "and a marker that reads against it");
 }
-
-// --- the terrain artifact class (§13) ---------------------------------------------------------
 
 fn terrain_index_doc(g: &GeneratedCatalog) -> TerrainIndexDocument {
     serde_json::from_str(&satellite(g, &format!("{CELLS_DIR}/{TERRAIN_DIR}/{CELL_INDEX_NAME}")).body)
@@ -2027,26 +1987,26 @@ fn the_root_carries_a_terrain_block_with_its_own_revision() {
         terrain.terrain_revision, g.root.schema.revision,
         "the two revisions are unrelated numbers, and the worked example says so"
     );
-    // §13.5: the credit is data a consumer reads, not a string a builder hard-codes.
+    // The credit is data a consumer reads, not a string a builder hard-codes.
     assert!(terrain.attribution.contains("Copernicus"), "{}", terrain.attribution);
     assert!(terrain.attribution.contains("ESA"), "{}", terrain.attribution);
 
-    // §13.1: one entry per reference model a published cell's crest lifts came from, and the
-    // obligation covers each of them, so the human-readable licence names them too.
+    // One entry per reference model a published cell's crest lifts came from, and the obligation
+    // covers each of them, so the human-readable licence names them too.
     let references = terrain.references.as_deref().expect("the example has a lifted cell");
     assert_eq!(references.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(), ["ch"]);
     assert_eq!(references[0].attribution, "© swisstopo");
     let license = license_txt(&g.root);
     assert!(license.contains("swissALTI3D 2 m") && license.contains("© swisstopo"), "{license}");
 
-    // §13.1: one pinned index, digest-addressed like every other pinned object.
+    // One pinned index, digest-addressed like every other pinned object.
     let pin = &terrain.cell_index;
     assert_eq!((pin.cell_count, pin.known_empty_count), (2, 1));
     assert_eq!(pin.url, format!("https://maps.example.org/catalog/cells/terrain/index.{}.json", pin.sha256));
     let index = satellite(&g, "cells/terrain/index.json");
     assert_eq!((pin.bytes, pin.sha256.as_str()), (index.bytes, index.sha256.as_str()));
 
-    // §13.4: the one coupling, recorded — and this example is consistent, so nothing is warned.
+    // The one coupling, recorded — and this example is consistent, so nothing is warned.
     assert_eq!(g.root.network_terrain_revision, Some(TERRAIN_REVISION));
     assert!(g.warnings.is_empty(), "{:?}", g.warnings);
 }
@@ -2090,7 +2050,7 @@ fn a_region_lists_and_prices_its_terrain_selection() {
     let doc = terrain_index_doc(&g);
     assert_eq!(footprint.bytes, doc.cells.iter().map(|c| c.bytes).sum::<u64>());
     // Terrain is priced beside the map, never inside it: a rider may take one without the other,
-    // and `bytes_by_band` is the volume set's per-file projection (OBCA_Spec.md §5.7).
+    // and `bytes_by_band` is the volume set's per-file projection.
     assert_eq!(ch.bytes, ch.bytes_by_band.values().sum::<u64>());
     assert!(footprint.bytes > 0 && ch.bytes < footprint.bytes + ch.bytes);
 
@@ -2108,11 +2068,11 @@ fn a_region_lists_and_prices_its_terrain_selection() {
     assert_eq!(basel.terrain.expect("selects terrain").cell_count, 1);
 }
 
-/// **Independence pin (a)**: a schema-revision bump is a complete OBCM cutover — and touches not
-/// one terrain byte.
+/// Independence pin (a): a schema-revision bump is a complete OBCM cutover, and touches not one
+/// terrain byte.
 ///
-/// This is the property the whole issue exists for. Terrain derives from a DEM that changes on a
-/// years cadence; if it joined OBCA principle 5's lockstep, every schema bump would re-publish
+/// This is the property the whole design exists for. Terrain derives from a DEM that changes on a
+/// years cadence; if it joined the OBCM store's lockstep, every schema bump would re-publish
 /// hundreds of MiB of identical raster.
 #[test]
 fn a_schema_revision_bump_republishes_no_terrain_object() {
@@ -2179,7 +2139,7 @@ fn a_terrain_rebake_republishes_no_obcm_object_and_flags_the_network_band() {
 
 #[test]
 fn a_mixed_terrain_store_is_refused() {
-    // A cell from another terrain revision: the terrain track's own lockstep (§13.2).
+    // A cell from another terrain revision: the terrain track's own lockstep.
     let t = TempTree::new("mixed-terrain");
     example_tree(t.path());
     write_terrain_cell(t.path(), terrain_ne(), 0x22, "2026-08-01T04:00:03Z", TERRAIN_REVISION - 1, "2021-1", "");
@@ -2194,7 +2154,7 @@ fn a_mixed_terrain_store_is_refused() {
     let err = generate(u.path(), &opts()).expect_err("a mixed-dataset terrain store must fail");
     assert!(err.contains("dataset version `2023-1`"), "{err}");
 
-    // And a cell store that sampled two different rasters (§13.4).
+    // And a cell store that sampled two different rasters.
     let v = TempTree::new("mixed-network-terrain");
     example_tree(v.path());
     let path = cell_path(v.path(), "network", fine_east(), CELL_SIDECAR_EXT);
@@ -2205,6 +2165,7 @@ fn a_mixed_terrain_store_is_refused() {
     assert!(err.contains("§13.4"), "{err}");
 
     // And a cell crediting a reference model the tree cannot state a notice for. Publishing it
+    // would ship derived national elevation with no attribution at all.
     // would ship derived national elevation with no attribution at all, which §13.5 forbids.
     let w = TempTree::new("uncreditable-reference");
     example_tree(w.path());
@@ -2318,8 +2279,7 @@ fn terrain_is_reserved_and_a_terrainless_catalog_is_complete() {
     let err = generate(t.path(), &opts()).expect_err("`terrain` is reserved");
     assert!(err.contains("reserved"), "{err}");
 
-    // And a catalog with no terrain at all is complete: everything degrades to "no elevation
-    // here", which is what every map had before epic #1068.
+    // And a catalog with no terrain at all is complete: everything degrades to "no elevation here".
     let u = TempTree::new("terrainless");
     example_tree(u.path());
     fs::remove_file(u.path().join(TERRAIN_DOC)).expect("remove the declaration");
