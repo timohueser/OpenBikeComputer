@@ -12,11 +12,14 @@
 
 mod common;
 
-use common::{Scratch, SyntheticDem, PIXEL_IS_AREA, PIXEL_IS_POINT};
+use std::path::Path;
+
+use common::{write_archive, ArchiveTile, Scratch, SyntheticDem, PIXEL_IS_AREA, PIXEL_IS_POINT};
 use obc_dem::bake::{bake_cell, bake_cells, bake_shard, cell_file_name, cell_rect, quantise, BakeParams};
 use obc_dem::container::CellRect;
-use obc_dem::crest::LiftMap;
+use obc_dem::crest::{cell_window, LiftMap};
 use obc_dem::geotiff::{DemMosaic, DemTile};
+use obc_dem::reference::ReferenceArchive;
 use obc_dem::BboxUdeg;
 use obc_elevation::grid::{cell_base_sample, cell_of, lattice_coord, locate};
 use obc_elevation::{TerrainReader, TileCache, DEFAULT_TILE_SLOTS};
@@ -107,7 +110,7 @@ fn bake_plane_shard(raster_type: u16) -> Vec<u8> {
     let path = plane_source(raster_type).write(scratch.path(), "plane");
     mosaic.push(DemTile::open(&path).unwrap());
     let mut out = std::io::Cursor::new(Vec::new());
-    bake_shard(&mosaic, fixture_params(), None, &mut out, |_, _, _, _, _| {}).unwrap();
+    bake_shard(&mosaic, fixture_params(), None, &mut out, |_| {}).unwrap();
     out.into_inner()
 }
 
@@ -203,18 +206,85 @@ fn a_cell_is_the_same_bytes_alone_as_inside_a_shard() {
     }
 }
 
+// === the reference archive ==========================================================================
+
+/// A reference archive over exactly the tiles a list of cells reads, halo included, filled from a
+/// surface in µdeg. `None` leaves a pixel absent, which is how a fixture stops coverage mid-cell.
+///
+/// The heights are whole metres because an archive pixel is: the rule sees the archive's own
+/// rounding, not a continuous function.
+fn write_reference(root: &Path, cells: &[(u32, u32)], surface: impl Fn(f64, f64) -> Option<f64>) {
+    let mut ids = std::collections::BTreeSet::new();
+    for &(ci, cj) in cells {
+        ids.extend(cell_window(ci, cj, POSTING_LOG2, CELL_LOG2).expect("the fixture pairing").tiles());
+    }
+    let tiles: Vec<ArchiveTile> = ids
+        .into_iter()
+        .map(|(ti, tj)| ArchiveTile::filled(ti, tj, |lat, lon| surface(lat as f64, lon as f64).map(quantise)))
+        .collect();
+    assert!(!tiles.is_empty(), "a fixture archive with no tile proves nothing");
+    write_archive(root, "ch", &tiles);
+}
+
+/// A cone one posting wide on a **steep** planar slope — the fixture the lift rule is judged on. The
+/// slope is what the convexity gate has to leave alone: a coarse lattice under-samples a 40° face
+/// honestly, and an ungated rule inflates the whole mountain.
+struct Cone {
+    peak: (f64, f64),
+    height_m: f64,
+}
+
+impl Cone {
+    /// A cone standing on node `(y, x)` of cell `(ci, cj)`.
+    fn on_node(ci: u32, cj: u32, y: i64, x: i64, height_m: f64) -> Cone {
+        let (lat, lon) = node_udeg(ci, cj, y, x);
+        Cone { peak: (f64::from(lat), f64::from(lon)), height_m }
+    }
+
+    /// The slope alone, in metres at a µdeg coordinate — what the native lattice measures.
+    fn slope(lat: f64, lon: f64) -> f64 {
+        let (base_lat, base_lon) = base_sample_udeg();
+        (lat - f64::from(base_lat)) / 512.0 * 40.0 + (lon - f64::from(base_lon)) / 512.0 * 8.0
+    }
+
+    /// The reference surface: the slope with the cone on it.
+    fn reference(&self, lat: f64, lon: f64) -> f64 {
+        let d = ((lat - self.peak.0).powi(2) + (lon - self.peak.1).powi(2)).sqrt() / 512.0;
+        Cone::slope(lat, lon) + (self.height_m - self.height_m * d).max(0.0)
+    }
+
+    /// The native lattice: the slope, quantised, with no cone in it at all.
+    fn native(&self) -> impl Fn(i32, i32) -> i16 {
+        |lat: i32, lon: i32| quantise(Cone::slope(f64::from(lat), f64::from(lon)))
+    }
+}
+
+/// The µdeg coordinate of node `(y, x)` of cell `(ci, cj)`.
+fn node_udeg(ci: u32, cj: u32, y: i64, x: i64) -> (i32, i32) {
+    let base_i = cell_base_sample(ci, POSTING_LOG2, CELL_LOG2);
+    let base_j = cell_base_sample(cj, POSTING_LOG2, CELL_LOG2);
+    (lattice_coord(base_i + y as u32, POSTING_LOG2), lattice_coord(base_j + x as u32, POSTING_LOG2))
+}
+
+/// The lift the rule gives node `(y, x)` of cell `(ci, cj)`.
+fn lift_at(map: &LiftMap, ci: u32, cj: u32, y: i64, x: i64) -> i16 {
+    let (lat, lon) = node_udeg(ci, cj, y, x);
+    map.at(lat, lon)
+}
+
 /// A 120 m cone one posting wide, standing on the node the fixture's first two cells share — the
-/// eastern seam of cell `(0, 0)`, half way up it. Everywhere else the reference **is** the plane, so
-/// §9's rule finds nothing there and only the cells around the seam can move.
-fn seam_cone() -> impl Fn(f64, f64) -> Option<f64> {
+/// eastern seam of cell `(0, 0)`, half way up it. Everywhere else the reference **is** the plane the
+/// source DEM is, so §9's rule finds nothing there and only the cells around the seam can move.
+fn seam_cone_archive(root: &Path) {
     let (base_lat, base_lon) = base_sample_udeg();
     let peak_lat = f64::from(base_lat) + 8.0 * 512.0;
     let peak_lon = f64::from(base_lon) + SPAN as f64 * 512.0;
-    move |lat_deg: f64, lon_deg: f64| {
-        let (lat, lon) = (lat_deg * 1e6, lon_deg * 1e6);
+    let rect = cell_rect(fixture_bbox(), POSTING_LOG2, CELL_LOG2).unwrap();
+    let cells: Vec<(u32, u32)> = rect.cells().collect();
+    write_reference(root, &cells, |lat, lon| {
         let d = ((lat - peak_lat).powi(2) + (lon - peak_lon).powi(2)).sqrt() / 512.0;
         Some(plane_metres(lat, lon) + (120.0 - 120.0 * d).max(0.0))
-    }
+    });
 }
 
 /// A reference is composed **per cell**, so all three ways to bake a cell must still produce one
@@ -230,18 +300,32 @@ fn a_reference_composes_the_same_cell_bytes_in_all_three_bakes() {
     let path = plane_source(PIXEL_IS_POINT).write(scratch.path(), "plane");
     let mut mosaic = DemMosaic::default();
     mosaic.push(DemTile::open(&path).unwrap());
-    let cone = seam_cone();
-    let reference: &dyn Fn(f64, f64) -> Option<f64> = &cone;
+    let archive_root = Scratch::new("reference-archive");
+    seam_cone_archive(archive_root.path());
+    let archive = ReferenceArchive::open(archive_root.path()).unwrap();
+    let reference = Some(&archive);
 
     let mut shard = std::io::Cursor::new(Vec::new());
-    bake_shard(&mosaic, fixture_params(), Some(reference), &mut shard, |_, _, _, _, _| {}).unwrap();
+    let report = bake_shard(&mosaic, fixture_params(), reference, &mut shard, |_| {}).unwrap();
+    assert_eq!(
+        report.sources.iter().map(String::as_str).collect::<Vec<_>>(),
+        vec!["ch"],
+        "the archive's attribution must reach the report"
+    );
     let shard = shard.into_inner();
+    // The digest pin: the rule is one pass over archive pixels, and a change to the pass, the gate,
+    // the dilation or the iteration order has to arrive as a deliberate edit to this number.
+    assert_eq!(
+        common::sha256_hex(&shard),
+        "5d17eec3ccb6c844ad156cedf451db45b3dc278161f1a1db5328b6199f3386b8",
+        "the lifted plane fixture's bytes changed — if that was intended, state why in the PR"
+    );
     let plain = bake_plane_shard(PIXEL_IS_POINT);
     assert_eq!(shard.len(), plain.len(), "a reference costs no bytes");
     assert_ne!(shard, plain, "a cone on the seam has to move some sample");
 
     let published = Scratch::new("reference-cells");
-    bake_cells(&mosaic, fixture_params(), Some(reference), published.path(), |_, _, _, _, _| {}).unwrap();
+    bake_cells(&mosaic, fixture_params(), reference, published.path(), |_| {}).unwrap();
 
     // The same native sampler the baker composes the lift map over, rebuilt here from the public
     // pieces — which is the whole claim of `bake_cell`'s `Option<&LiftMap>` argument.
@@ -253,7 +337,7 @@ fn a_reference_composes_the_same_cell_bytes_in_all_three_bakes() {
     let rect = cell_rect(fixture_bbox(), POSTING_LOG2, CELL_LOG2).unwrap();
     let mut moved = 0;
     for (slot, (ci, cj)) in rect.cells().enumerate() {
-        let lift = LiftMap::bake(ci, cj, POSTING_LOG2, CELL_LOG2, native, reference);
+        let lift = LiftMap::bake(ci, cj, POSTING_LOG2, CELL_LOG2, native, &archive).unwrap();
         let alone = bake_cell(&mosaic, ci, cj, POSTING_LOG2, CELL_LOG2, lift.as_ref())
             .expect("the plane covers every fixture cell");
         assert_eq!(alone.len(), 512, "a lifted cell is the same length as a plain one");
@@ -271,6 +355,153 @@ fn a_reference_composes_the_same_cell_bytes_in_all_three_bakes() {
         moved += i32::from(baked != &plain[in_shard..in_shard + 512]);
     }
     assert!(moved >= 2, "the cone sits on a seam, so both cells either side of it must carry a lift");
+}
+
+/// The rule itself, over an archive: the tower is lifted to its own height, the steep plane it
+/// stands on is not, and the lift reaches the tip's neighbours but no further.
+#[test]
+fn a_tower_is_lifted_and_the_plane_it_stands_on_is_not() {
+    let rect = cell_rect(fixture_bbox(), POSTING_LOG2, CELL_LOG2).unwrap();
+    let (ci, cj) = (rect.min_i, rect.min_j);
+    let cone = Cone::on_node(ci, cj, 8, 8, 120.0);
+    let scratch = Scratch::new("tower");
+    write_reference(scratch.path(), &[(ci, cj)], |lat, lon| Some(cone.reference(lat, lon)));
+    let archive = ReferenceArchive::open(scratch.path()).unwrap();
+
+    let map =
+        LiftMap::bake(ci, cj, POSTING_LOG2, CELL_LOG2, cone.native(), &archive).unwrap().expect("the tower is a crest");
+    let at = |y, x| lift_at(&map, ci, cj, y, x);
+
+    assert!((100..=130).contains(&at(8, 8)), "the tip is lifted to the tower's own height, got {}", at(8, 8));
+    assert_eq!(at(1, 1), 0, "the planar slope seven nodes away is left alone");
+    assert_eq!(at(14, 14), 0, "and so is the far side of it");
+    assert!(at(8, 9) > 0, "the one-node extension reaches the tip's neighbour");
+
+    // The tally is what an operator sees: how much, how many, and where the worst of it is.
+    let tally = map.tally();
+    assert!(tally.nodes < 40, "the rule stays local to the tower, lifted {}", tally.nodes);
+    assert_eq!(tally.max_m, at(8, 8), "the largest lift is the tip's");
+    assert_eq!(tally.max_at, node_udeg(ci, cj, 8, 8), "and it is reported at the tip");
+    assert_eq!(tally.over_report, 0, "a 120 m tower is not worth an operator's attention");
+
+    // `apply` adds the lift, leaves a hole a hole, and leaves a coordinate the map does not
+    // describe alone.
+    let (tip_lat, tip_lon) = node_udeg(ci, cj, 8, 8);
+    let native = cone.native();
+    let mut lifted = map.apply(cone.native());
+    assert_eq!(lifted(tip_lat, tip_lon), native(tip_lat, tip_lon) + at(8, 8));
+    let mut over_hole =
+        map.apply(|lat: i32, lon: i32| if (lat, lon) == (tip_lat, tip_lon) { NODATA } else { native(lat, lon) });
+    assert_eq!(over_hole(tip_lat, tip_lon), NODATA, "a lift never fills a hole");
+    assert_eq!(map.at(tip_lat + 256, tip_lon), 0, "half a posting off the lattice is not a node");
+}
+
+/// The whole point of the halo: a node two or four cells share is lifted by the same amount
+/// whichever of them computes it. The tower stands on the node all four cells of a 2 × 2 block
+/// share, so one fixture exercises both seams, the corner, the convexity ring across a seam and the
+/// dilation across it — and, because the reference is an archive, the tiles the halo reads over the
+/// cell edge as well.
+#[test]
+fn cells_agree_on_every_node_they_share() {
+    let rect = cell_rect(fixture_bbox(), POSTING_LOG2, CELL_LOG2).unwrap();
+    let (ci, cj) = (rect.min_i, rect.min_j);
+    let block: Vec<(u32, u32)> = vec![(ci, cj), (ci, cj + 1), (ci + 1, cj), (ci + 1, cj + 1)];
+    let cone = Cone::on_node(ci, cj, SPAN, SPAN, 120.0);
+    let scratch = Scratch::new("shared-nodes");
+    write_reference(scratch.path(), &block, |lat, lon| Some(cone.reference(lat, lon)));
+    let archive = ReferenceArchive::open(scratch.path()).unwrap();
+    let map = |ci, cj| {
+        LiftMap::bake(ci, cj, POSTING_LOG2, CELL_LOG2, cone.native(), &archive)
+            .unwrap()
+            .expect("the corner tower is a crest in every cell of the block")
+    };
+    let (nw, ne, sw, se) = (map(ci, cj), map(ci, cj + 1), map(ci + 1, cj), map(ci + 1, cj + 1));
+
+    let mut shared = 0;
+    // Each row's eastern seam: cell (i, cj)'s inclusive high edge is cell (i, cj + 1)'s column 0.
+    for (west, east, row) in [(&nw, &ne, ci), (&sw, &se, ci + 1)] {
+        for y in 0..=SPAN {
+            let (lat, lon) = node_udeg(row, cj, y, SPAN);
+            assert_eq!(west.at(lat, lon), east.at(lat, lon), "row {row} seam node {y} disagrees");
+            shared += i32::from(west.at(lat, lon) > 0);
+        }
+    }
+    // Each column's northern seam: cell (ci, j)'s high edge is cell (ci + 1, j)'s row 0.
+    for (south, north, col) in [(&nw, &sw, cj), (&ne, &se, cj + 1)] {
+        for x in 0..=SPAN {
+            let (lat, lon) = node_udeg(ci, col, SPAN, x);
+            assert_eq!(south.at(lat, lon), north.at(lat, lon), "column {col} seam node {x} disagrees");
+            shared += i32::from(south.at(lat, lon) > 0);
+        }
+    }
+    assert!(shared > 0, "the test would pass on four empty edges");
+
+    // The node all four describe, which is the one the tower stands on.
+    let (lat, lon) = node_udeg(ci, cj, SPAN, SPAN);
+    let corner: Vec<i16> = [&nw, &ne, &sw, &se].map(|m| m.at(lat, lon)).into();
+    assert!(corner.iter().all(|&lift| lift == corner[0]), "the shared corner disagrees: {corner:?}");
+    assert!(corner[0] > 0, "the tower stands on that corner");
+}
+
+/// Coverage that stops inside a cell: the archive's pixels end on the cell's own seam, and a ridge
+/// one posting into the neighbour lifts the seam node by dilation alone. The western cell owns no
+/// lifted node at all, so its map has to exist for that one node or the two cells disagree about a
+/// node neither owns alone.
+///
+/// It is also the coverage-edge case in the pass itself — absent pixels, not absent tiles.
+#[test]
+fn a_cell_lifted_only_on_its_seam_still_has_a_map() {
+    let rect = cell_rect(fixture_bbox(), POSTING_LOG2, CELL_LOG2).unwrap();
+    let (ci, cj) = (rect.min_i, rect.min_j);
+    let (_, seam_lon) = node_udeg(ci, cj, 0, SPAN);
+    let ridge_lon = f64::from(seam_lon) + 512.0;
+    let scratch = Scratch::new("seam-only");
+    write_reference(scratch.path(), &[(ci, cj), (ci, cj + 1)], |lat, lon| {
+        if lon < f64::from(seam_lon) {
+            return None;
+        }
+        let d = (lon - ridge_lon).abs() / 512.0;
+        Some(Cone::slope(lat, lon) + (120.0 - 120.0 * d).max(0.0))
+    });
+    let archive = ReferenceArchive::open(scratch.path()).unwrap();
+    let native = |lat: i32, lon: i32| quantise(Cone::slope(f64::from(lat), f64::from(lon)));
+
+    let west =
+        LiftMap::bake(ci, cj, POSTING_LOG2, CELL_LOG2, native, &archive).unwrap().expect("the seam node is lifted");
+    let east =
+        LiftMap::bake(ci, cj + 1, POSTING_LOG2, CELL_LOG2, native, &archive).unwrap().expect("and so is its column 0");
+    assert_eq!(west.tally().nodes, 0, "the west cell owns no lifted node, which is the trap");
+
+    let mut lifted = 0;
+    for y in 0..=SPAN {
+        let (lat, lon) = node_udeg(ci, cj, y, SPAN);
+        assert_eq!(west.at(lat, lon), east.at(lat, lon), "seam node {y} disagrees");
+        lifted += i32::from(west.at(lat, lon) > 0);
+    }
+    assert!(lifted > 0, "the ridge must reach the seam by dilation, or the test proves nothing");
+}
+
+/// A tile whose transform is not the lattice its id names is refused **by name**, rather than
+/// sliding every height in it by the error. Half a pixel — 32 µdeg, 3.5 m — is the size of mistake
+/// a hand-cut tile makes, and it is 32 000 times the tolerance the contract states.
+#[test]
+fn a_tile_whose_transform_is_not_the_lattice_is_refused_by_name() {
+    let rect = cell_rect(fixture_bbox(), POSTING_LOG2, CELL_LOG2).unwrap();
+    let (ci, cj) = (rect.min_i, rect.min_j);
+    let scratch = Scratch::new("skewed-tile");
+    let window = cell_window(ci, cj, POSTING_LOG2, CELL_LOG2).unwrap();
+    let (ti, tj) = window.tiles().next().expect("the cell reads at least one tile");
+    let mut tile = ArchiveTile::filled(ti, tj, |lat, lon| Some(quantise(Cone::slope(lat as f64, lon as f64))));
+    tile.skew_deg = 32e-6;
+    write_archive(scratch.path(), "ch", &[tile]);
+    let archive = ReferenceArchive::open(scratch.path()).unwrap();
+
+    let error = archive.tile(ti, tj).expect_err("a tile off the lattice must be refused");
+    assert!(error.contains(&format!("{tj:04}.tif")), "the refusal must name the file: {error}");
+    assert!(error.contains("origin lat"), "and say what is wrong with it: {error}");
+    // And the refusal reaches the bake rather than turning into a silent absence of lifts.
+    let native = |lat: i32, lon: i32| quantise(Cone::slope(f64::from(lat), f64::from(lon)));
+    assert!(LiftMap::bake(ci, cj, POSTING_LOG2, CELL_LOG2, native, &archive).is_err());
 }
 
 /// The seam rule from both sides: two adjacent cells baked **independently** hand the reader a
@@ -325,7 +556,7 @@ fn a_source_void_propagates_all_the_way_to_none() {
     mosaic.push(DemTile::open(&path).unwrap());
 
     let mut out = std::io::Cursor::new(Vec::new());
-    bake_shard(&mosaic, fixture_params(), None, &mut out, |_, _, _, _, _| {}).unwrap();
+    bake_shard(&mosaic, fixture_params(), None, &mut out, |_| {}).unwrap();
     let bytes = out.into_inner();
 
     // The nearest lattice point to the hole is voided — the stencil that produced it had a NaN
@@ -386,8 +617,7 @@ fn cells_with_no_data_at_all_are_absent_rather_than_written() {
         max_lon: base_lon,
     };
     let mut out = std::io::Cursor::new(Vec::new());
-    let report =
-        bake_shard(&mosaic, BakeParams { bbox, ..fixture_params() }, None, &mut out, |_, _, _, _, _| {}).unwrap();
+    let report = bake_shard(&mosaic, BakeParams { bbox, ..fixture_params() }, None, &mut out, |_| {}).unwrap();
     let bytes = out.into_inner();
 
     assert_eq!(report.cells_total, 16, "a 4 × 4 rectangle");
@@ -411,7 +641,7 @@ fn per_cell_files_are_one_by_one_containers_of_the_same_bytes() {
     let mut mosaic = DemMosaic::default();
     mosaic.push(DemTile::open(&path).unwrap());
 
-    let report = bake_cells(&mosaic, fixture_params(), None, scratch.path(), |_, _, _, _, _| {}).unwrap();
+    let report = bake_cells(&mosaic, fixture_params(), None, scratch.path(), |_| {}).unwrap();
     assert_eq!((report.cells_total, report.cells_written), (9, 9));
 
     let rect = cell_rect(fixture_bbox(), POSTING_LOG2, CELL_LOG2).unwrap();
@@ -441,7 +671,7 @@ fn a_lone_cell_clamps_at_its_own_coverage_edge() {
     let path = plane_source(PIXEL_IS_POINT).write(source.path(), "plane");
     let mut mosaic = DemMosaic::default();
     mosaic.push(DemTile::open(&path).unwrap());
-    bake_cells(&mosaic, fixture_params(), None, scratch.path(), |_, _, _, _, _| {}).unwrap();
+    bake_cells(&mosaic, fixture_params(), None, scratch.path(), |_| {}).unwrap();
 
     let rect = cell_rect(fixture_bbox(), POSTING_LOG2, CELL_LOG2).unwrap();
     let (ci, cj) = (rect.min_i, rect.min_j);
