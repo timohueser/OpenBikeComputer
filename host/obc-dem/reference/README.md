@@ -131,6 +131,12 @@ registry of sources.
 | `sources/` | One module per country, and one row per product. `base.py` is what an adapter is, and `__init__.py` is the registry the CLI reads. The five publication models are `protocols.py` (a service that answers a box: ArcGIS, WCS 1.0.0, 1.1.1 and 2.0.1), `ch.py` (STAC items), `stac.py` (a STAC search), `grid.py` (tiles named on a national kilometre grid) and `cog.py` (a window out of a remote COG too large to download). |
 | `cli.py` | The subcommands, and nothing else. |
 
+Every request in the registry goes through `with_retry` in `sources/base.py`, so one rule covers
+all of them: a dropped connection, a 429 and a 5xx are retried three times; every other 4xx is the
+server's final answer and is refused at once with its body, because that body is the only thing
+that says what happened. A 404 is absence only where the registry says a name is arithmetic — a
+grid square outside its state — and everywhere else it is a refusal.
+
 Adding a country is a module in `sources/` and a row in that registry. Nothing above it changes.
 
 ### What the shared tail does
@@ -157,11 +163,21 @@ Then the priority rule decides which pixels the tile keeps.
 
 ### Priority
 
-`PRIORITY` in `ingest/archive.py` is the one constant, finest and best-maintained national product first:
+`PRIORITY` in `ingest/archive.py` is the one constant, finest and best-maintained national
+product first. A test holds this block against the constant, so the two cannot drift:
 
+```priority
+nl, it-tn,
+de-nw, de-he, de-ni, de-by, de-sn, de-th, de-mv, de-st, de-bw,
+fr, at, no, uk, us, ca, nz,
+ch, it-bz, es
 ```
-nl, de-nw, fr, no, us, ch, es
-```
+
+The bands are the product's step and how much of it a service will part with: half a metre
+first, then the metre-grade national and state products, then two to two and a half metres,
+then five. `de-bw` is last of the German states because its service answers whole metres.
+`it-tn` and `nz` are rows without an adapter, and they are listed so the ranking does not move
+when one lands.
 
 The rule is per pixel, because coverage stops at borders and survey edges: a better source over one
 corner of a tile must not take the rest of the tile away from the source that does cover it.
@@ -249,6 +265,10 @@ each one answered.
 | `de-by` | Germany, Bavaria | 1 m | DGM1 | CC BY 4.0 | `Bayerische Vermessungsverwaltung – www.geodaten.bayern.de` | 1 km tile grid |
 | `de-sn` | Germany, Saxony | 1 m | DGM1 | dl-de/by-2-0 | `GeoSN` | 2 km tile grid |
 | `de-th` | Germany, Thuringia | 1 m | DGM1 (2020–2025) | dl-de/by-2-0 | `© GDI-Th, Freistaat Thüringen` | 1 km tile grid |
+
+`de-sn` and `de-th` carry the shortest Quellenvermerk their services state, because neither agency
+publishes a full attribution sentence the way Bavaria and NRW do. **The owner has to confirm both
+with GeoSN and GDI-Th** before a published map carries them.
 | `de-ni` | Germany, Lower Saxony | 1 m | DGM1 | CC BY 4.0 | `© LGLN` | STAC search |
 
 Germany publishes elevation per state, each on its own service, so `de-*` is a family of rows and
@@ -268,9 +288,11 @@ they are on disk.
 
 ### The vertical datum of each source
 
-A source cannot be registered without one: the archive is orthometric metres, and the bakery
-compares the reference against Copernicus on EGM2008. Every datum below is **orthometric**, so no
-adapter here needs a geoid conversion.
+A row whose datum names no **recognised orthometric** height system is refused, and so is one that
+names an ellipsoidal height: the archive is orthometric metres, and the bakery holds the reference
+against Copernicus on EGM2008. `ORTHOMETRIC` in `ingest/sources/base.py` is the list a datum has to
+name, and a new source's agency documentation is what adds to it. Every datum below is orthometric,
+so no adapter here needs a geoid conversion.
 
 | key | vertical datum | what the agency documents |
 | --- | --- | --- |
@@ -309,10 +331,11 @@ Fetch them by hand and pass `--input <dir>`; the tail treats them exactly like a
 
 ### The live probes
 
-Every adapter is verified against one published summit. The box is about 2 km on a side, the
-ingest is the command in the next section, and **got** is the maximum the archive tile holds
-after max-pooling — not the service's own raster, so the number below is the one the baker
-would read. `ch` is not in the table: it was verified when its adapter landed.
+Every adapter is verified against one published summit. **Every number in the `got` column comes
+from running the command for that source in the next section** and reading the maximum out of the
+archive tile — not out of the service's own raster — so it is the number the baker would read
+after max-pooling. The box is about 2 km on a side. `ch` is not in the table: it was verified when
+its adapter landed.
 
 | key | summit | expected | got | note |
 | --- | --- | --- | --- | --- |
@@ -320,17 +343,17 @@ would read. `ch` is not in the table: it was verified when its adapter landed.
 | `us` | Mount Elbert | 4401 m | 4401 m | |
 | `no` | Galdhøpiggen | 2469 m | 2468 m | |
 | `es` | Torre de Cerredo | 2650 m | 2647 m | MDT05 is a 5 m product and answers `int16`. |
-| `nl` | Vaalserberg | 322 m | 323 m | Two of the four requests came back wholly void: the box reaches into Belgium and Germany, where AHN stops. |
+| `nl` | Vaalserberg | 322 m | 323 m | Two of the four requests came back wholly void and a third is 22 % void: the box reaches into Belgium and Germany, where AHN stops. The run prints the void fraction per raster, so a nearly empty answer is visible. |
 | `uk` | Scafell Pike | 978 m | 978 m | |
-| `at` | Großglockner | 3798 m | 3798 m | One window out of one 6.5 GB square. |
-| `ca` | Mont Royal, Montréal | 233 m | 235 m | |
+| `at` | Großglockner | 3798 m | 3798 m | One window out of one 7.7 GB square. |
+| `ca` | Mont Royal, Montréal | 233 m | 235 m | EPSG:3979 stretches a box here by 9 %, so the split makes four requests of this 2 km box rather than one. |
 | `it-bz` | Ortler / Ortles | 3905 m | 3896 m | A 2.5 m product on a glaciated summit. |
 | `de-nw` | Langenberg | 843 m | 844 m | 7.9 % void: the summit is on the Hesse border and NRW's DGM stops there. |
 | `de-he` | Wasserkuppe | 950 m | 954 m | |
 | `de-bw` | Feldberg (Black Forest) | 1493 m | 1494 m | |
 | `de-mv` | Helpter Berge | 179 m | 179 m | |
-| `de-st` | Brocken | 1141 m | 1141 m | |
-| `de-by` | Zugspitze | 2962 m | 2962 m | Two of the six squares are not published: the box reaches into Austria. |
+| `de-st` | Brocken | 1141 m | 1141 m | Verified, then the server answered HTTP 500 to the same command later the same day, including to the smallest request. Saxony-Anhalt's service is intermittent; the run refuses with the server's own body rather than writing a hole. |
+| `de-by` | Zugspitze | 2962 m | 2962 m | All six squares the box needs are published, including the two that straddle the Austrian border. |
 | `de-sn` | Fichtelberg | 1215 m | 1215 m | |
 | `de-th` | Großer Beerberg | 983 m | 983 m | |
 | `de-ni` | Wurmberg | 971 m | 972 m | The search answered two revisions of one square, 2013 and 2018. The archive keeps the maximum, as it does for swisstopo. |
@@ -379,7 +402,7 @@ python3 ingest.py ingest it-bz --bbox 10.5337,46.5016,10.5557,46.5162      --arc
 python3 ingest.py ingest de-nw --bbox 8.5462,51.2682,8.5722,51.2856        --archive $A --work $W/de-nw
 python3 ingest.py ingest de-he --bbox 9.9287,50.4908,9.9507,50.5054        --archive $A --work $W/de-he
 python3 ingest.py ingest de-bw --bbox 7.9934,47.8666,8.0154,47.8812        --archive $A --work $W/de-bw
-python3 ingest.py ingest de-mv --bbox 13.6051,53.5080,13.6271,53.5226      --archive $A --work $W/de-mv
+python3 ingest.py ingest de-mv --bbox 13.5984,53.4794,13.6204,53.4941      --archive $A --work $W/de-mv
 python3 ingest.py ingest de-st --bbox 10.6046,51.7918,10.6266,51.8064      --archive $A --work $W/de-st
 python3 ingest.py ingest de-by --bbox 10.9743,47.4138,10.9963,47.4284      --archive $A --work $W/de-by
 python3 ingest.py ingest de-sn --bbox 12.9432,50.4213,12.9652,50.4359      --archive $A --work $W/de-sn
@@ -397,9 +420,10 @@ publishes per tile, per square kilometre or per window.
 
 Three of the sources need a word about scale:
 
-- **`at`** reads a window out of a 6.5 GB square, so a country-scale run is bounded by the box and
-  not by the file. The date in its URL is the BEV delivery the row points at; a new delivery is a
-  new date in `ingest/sources/at.py`.
+- **`at`** reads a window out of a 7.7 GB square. The box is split before any window is read, so
+  one read is never larger than the pixel cap however large the box is, and a country-scale run
+  costs one small request per sub-box rather than one square in memory. The date in its URL is the
+  BEV delivery the row points at; a new delivery is a new date in `ingest/sources/at.py`.
 - **`de-by`, `de-sn`, `de-th`** download whole grid squares. Bavaria alone is 71 979 squares, so a
   whole-state run wants the work directory on a big disk. Each state publishes an index with a
   SHA-256 per square, which is the way to check a bulk download that the tool does not do for you.

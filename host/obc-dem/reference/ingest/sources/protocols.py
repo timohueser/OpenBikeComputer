@@ -13,11 +13,10 @@ import os
 import urllib.parse
 from pathlib import Path
 
-import rasterio
-from pyproj import Transformer
 from rasterio.crs import CRS
+from rasterio.warp import transform_bounds
 
-from ..lattice import Refuse
+from ..lattice import Refuse, WGS84
 from .base import Source, http_get
 
 # One request per sub-box. A failed 4000 x 4000 request wastes far more time than four
@@ -29,13 +28,29 @@ MAX_PIXELS = 2000
 METRES_PER_DEGREE = 111320.0
 
 
-def request_boxes(bbox, resolution_m: float):
+def spans(bbox, epsg=None) -> tuple[float, float]:
+    """How many metres wide and tall a box is, measured where the request will be stated.
+
+    A projected grid stretches, and by more than a rounding error: EPSG:3979 over Montréal
+    is 9 % longer than the great-circle span. Sizing a request from the sphere and then
+    stating it on the grid is what made an earlier version ask for 1.0956 m pixels of a
+    1 m product, so the split and the output size are both measured here.
+    """
+
+    if epsg in (None, 4326):
+        west, south, east, north = bbox
+        lat = (south + north) / 2
+        return ((east - west) * METRES_PER_DEGREE * math.cos(math.radians(lat)),
+                (north - south) * METRES_PER_DEGREE)
+    _, (span_x, span_y) = projected_box(bbox, epsg)
+    return span_x, span_y
+
+
+def request_boxes(bbox, resolution_m: float, epsg=None):
     """A WGS84 box cut into requests no larger than `MAX_PIXELS` on a side."""
 
     west, south, east, north = bbox
-    lat = (south + north) / 2
-    span_x = (east - west) * METRES_PER_DEGREE * math.cos(math.radians(lat))
-    span_y = (north - south) * METRES_PER_DEGREE
+    span_x, span_y = spans(bbox, epsg)
     nx = max(1, math.ceil(span_x / resolution_m / MAX_PIXELS))
     ny = max(1, math.ceil(span_y / resolution_m / MAX_PIXELS))
     for i in range(ny):
@@ -44,31 +59,38 @@ def request_boxes(bbox, resolution_m: float):
                    west + (east - west) * (j + 1) / nx, south + (north - south) * (i + 1) / ny)
 
 
-def clamp(count: float) -> int:
-    return max(1, min(int(count), MAX_PIXELS))
+def pixels(count: float, what: str) -> int:
+    """The output size of one request, which the split has already kept inside the cap.
+
+    Over the cap is a refusal and not a smaller number: asking a service for fewer pixels
+    than the box holds gets a coarser raster back, and a quietly coarser reference is the
+    one failure a reference archive must not have.
+    """
+
+    size = max(1, round(count))
+    if size > MAX_PIXELS:
+        raise Refuse(f"{what}: a request of {size} pixels is over the {MAX_PIXELS} cap, so "
+                     "the box was not split small enough; this is a bug in request_boxes")
+    return size
 
 
-def degree_pixels(box, resolution_m: float) -> tuple[int, int]:
-    """The output size of a request stated in degrees, at the product's own step."""
+def output_size(box, resolution_m: float, what: str, epsg=None) -> tuple[int, int]:
+    """The output size of a request, at the product's own step."""
 
-    west, south, east, north = box
-    lat = (south + north) / 2
-    return (clamp((east - west) * METRES_PER_DEGREE * math.cos(math.radians(lat)) / resolution_m),
-            clamp((north - south) * METRES_PER_DEGREE / resolution_m))
+    span_x, span_y = spans(box, epsg)
+    return pixels(span_x / resolution_m, what), pixels(span_y / resolution_m, what)
 
 
 def projected_box(box, epsg: int):
     """A WGS84 box as the service's own grid: the enclosing rectangle, and its span.
 
-    All four corners are transformed and the extremes taken, because a projected grid's
-    axes are not the box's: EPSG:3979 turns a European box inside out, and a LAEA grid
-    turns every box a little. Two opposite corners would give a negative span there.
+    The edges are densified before they are transformed, the same way `pool.read_source`
+    densifies a raster's bounds. A projected grid's axes are not the box's — EPSG:3979
+    turns a European box inside out — and its edges are curves, so the four corners alone
+    miss the bulge between them, which is 130 m for an Austrian box on EPSG:3035.
     """
 
-    west, south, east, north = box
-    transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
-    xs, ys = transformer.transform([west, east, west, east], [south, south, north, north])
-    lo_x, hi_x, lo_y, hi_y = min(xs), max(xs), min(ys), max(ys)
+    lo_x, lo_y, hi_x, hi_y = transform_bounds(WGS84, CRS.from_epsg(epsg), *box, densify_pts=21)
     return (lo_x, lo_y, hi_x, hi_y), (hi_x - lo_x, hi_y - lo_y)
 
 
@@ -89,9 +111,13 @@ def raster_bytes(url: str, what: str) -> bytes:
 class TiledService(Source):
     """A service that answers one box at a time, cached per request in the work directory."""
 
+    #: The grid a request is stated in, when it is not degrees. The split is measured
+    #: there, so a request can never overrun the pixel cap and come back coarsened.
+    epsg = None
+
     def fetch(self, bbox, workdir) -> list[Path]:
         workdir.mkdir(parents=True, exist_ok=True)
-        boxes = list(request_boxes(bbox, self.resolution_m))
+        boxes = list(request_boxes(bbox, self.resolution_m, self.epsg))
         paths = []
         for i, box in enumerate(boxes, 1):
             name = f"{self.key}_{box[0]:.5f}_{box[1]:.5f}_{box[2]:.5f}_{box[3]:.5f}.tif"
@@ -102,27 +128,9 @@ class TiledService(Source):
                 part = path.with_name(name + ".part")
                 part.write_bytes(self.request(box))
                 os.replace(part, path)
-                self.stamp_crs(path)
             print(f"  fetch [{i}/{len(boxes)}] {box[0]:.4f},{box[1]:.4f} → {box[2]:.4f},{box[3]:.4f}")
             paths.append(path)
         return paths
-
-    def stamp_crs(self, path: Path) -> None:
-        """Name the CRS of an answer that arrived without one.
-
-        Brandenburg's coverage answers a GeoTIFF with a transform and no projection at
-        all. The row already declares the grid the subset was stated in, so the raster is
-        stamped with it rather than refused: the tail cannot place a raster with no CRS.
-        """
-
-        epsg = getattr(self, "epsg", None)
-        if epsg is None:
-            return
-        with rasterio.open(path) as src:
-            if src.crs is not None:
-                return
-        with rasterio.open(path, "r+") as dst:
-            dst.crs = CRS.from_epsg(epsg)
 
     def request(self, box) -> bytes:
         raise NotImplementedError
@@ -139,7 +147,7 @@ class ArcGisSource(TiledService):
         self.service = url
 
     def url(self, box) -> str:
-        px, py = degree_pixels(box, self.resolution_m)
+        px, py = output_size(box, self.resolution_m, f"{self.key} {box}")
         query = urllib.parse.urlencode({
             "bbox": ",".join(f"{value}" for value in box), "bboxSR": 4326, "size": f"{px},{py}",
             "imageSR": 4326, "format": "tiff", "pixelType": "F32",
@@ -172,10 +180,9 @@ class Wcs20Source(TiledService):
     def url(self, box) -> str:
         if self.epsg == 4326:
             lo_x, lo_y, hi_x, hi_y = box
-            px, py = degree_pixels(box, self.resolution_m)
         else:
-            (lo_x, lo_y, hi_x, hi_y), (span_x, span_y) = projected_box(box, self.epsg)
-            px, py = clamp(span_x / self.resolution_m), clamp(span_y / self.resolution_m)
+            (lo_x, lo_y, hi_x, hi_y), _ = projected_box(box, self.epsg)
+        px, py = output_size(box, self.resolution_m, f"{self.key} {box}", self.epsg)
         ax, ay = self.axes
         query = (f"{self.service}?service=WCS&version=2.0.1&request=GetCoverage"
                  f"&coverageId={self.coverage}"
@@ -196,8 +203,8 @@ class Wcs10Source(TiledService):
         self.service, self.coverage, self.epsg = url, coverage, epsg
 
     def url(self, box) -> str:
-        (lo_x, lo_y, hi_x, hi_y), (span_x, span_y) = projected_box(box, self.epsg)
-        px, py = clamp(span_x / self.resolution_m), clamp(span_y / self.resolution_m)
+        (lo_x, lo_y, hi_x, hi_y), _ = projected_box(box, self.epsg)
+        px, py = output_size(box, self.resolution_m, f"{self.key} {box}", self.epsg)
         return (f"{self.service}?service=WCS&version=1.0.0&request=GetCoverage"
                 f"&coverage={self.coverage}&crs=EPSG:{self.epsg}"
                 f"&bbox={lo_x},{lo_y},{hi_x},{hi_y}&width={px}&height={py}&format=GeoTIFF")
@@ -219,11 +226,11 @@ class Wcs11Source(TiledService):
         self.service, self.coverage, self.epsg = url, coverage, epsg
 
     def url(self, box) -> str:
-        (lo_x, lo_y, hi_x, hi_y), (span_x, span_y) = projected_box(box, self.epsg)
+        (lo_x, lo_y, hi_x, hi_y), _ = projected_box(box, self.epsg)
+        # The product's own step, never coarser: `output_size` refuses a box the split
+        # left too large rather than letting the service answer at a coarser step.
+        output_size(box, self.resolution_m, f"{self.key} {box}", self.epsg)
         step = self.resolution_m
-        # The request is clamped by the pixel cap, not by the box, so a box wider than the
-        # cap comes back coarser rather than failing. `request_boxes` keeps that rare.
-        step = max(step, span_x / MAX_PIXELS, span_y / MAX_PIXELS)
         crs = f"urn:ogc:def:crs:EPSG::{self.epsg}"
         return (f"{self.service}?service=WCS&version=1.1.1&request=GetCoverage"
                 f"&identifier={self.coverage}&format=image/geotiff"

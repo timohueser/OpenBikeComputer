@@ -23,6 +23,10 @@ from .stac import StacSearchSource
 # earlier 2014–2019 delivery is on DHHN92, so the adapter takes the 2020–2025 one.
 DHHN = "DHHN2016"
 
+# Saxony's and Thuringia's Quellenvermerk are the shortest form their services state, and
+# neither agency publishes a full attribution sentence the way Bavaria and NRW do. The
+# owner has to confirm both with GeoSN and GDI-Th before a map carrying them is published.
+
 NW = Wcs20Source(
     "de-nw", "Germany, North Rhine-Westphalia", "DGM1 1 m", 1.0,
     "dl-de/zero-2-0", "© Geobasis NRW", DHHN, (5.8, 50.3, 9.5, 52.6),
