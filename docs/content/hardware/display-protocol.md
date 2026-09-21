@@ -1,20 +1,17 @@
 ---
 title: The display protocol
-description: The LS021B7DD02 pixel format, scan sequence, polarity waveform, and timing limits.
+description: How the reflective memory LCD holds an image and how the device writes one.
 copy: ai
 ---
 
 # Display protocol
 
-The device uses a Sharp **LS021B7DD02** reflective memory-in-pixel LCD. The panel has 240 × 320 pixels.
+The device uses a Sharp LS021B7DD02 reflective memory-in-pixel LCD of 240 × 320 pixels. Every
+subpixel has a one-bit latch on the glass, so the panel keeps its image with no scan traffic. That
+is the property the device is built around: a map left on the screen costs almost nothing. The
+framebuffer is RGB222, which is four levels per channel and 64 colors.
 
-Each subpixel has a one-bit latch. The panel retains the image without scan traffic.
-
-The framebuffer uses **RGB222**. Each channel has four levels, and each pixel has 64 possible colors.
-
-The FLPR writes pixels through a six-bit parallel bus. The M33 generates the continuous polarity waveform.
-
-## Signal paths
+## Two signal paths
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -61,13 +58,14 @@ The FLPR writes pixels through a six-bit parallel bus. The M33 generates the con
 <figcaption>Path A writes the pixel latches. Path B continuously drives the liquid crystal at approximately 60 Hz. A stored bit selects the <code>VA</code> or <code>VB</code> rail.</figcaption>
 </figure>
 
-Do not stop `VCOM`, `VA`, or `VB` while the panel has power. A DC bias can damage the liquid crystal.
+Writing an image and driving the liquid crystal are separate. The write is intermittent and pushes
+one bit into each subpixel latch. The polarity waveform is continuous, and the stored bit selects
+which rail the subpixel follows.
 
-The hardware timer generates this waveform independently of the scan operation.
+Never stop that waveform while the panel has power: a liquid crystal held at a DC bias is damaged.
+A hardware timer generates it, so a busy or sleeping processor cannot interrupt it.
 
 ## Pixel encoding
-
-The panel makes four levels with area gradation. Each subpixel contains a large block and a small block.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -112,38 +110,11 @@ The panel makes four levels with area gradation. Each subpixel contains a large 
 <figcaption>The connected MSB bands cover two-thirds of the subpixel. The LSB band covers one-third. The two bits give four visible levels.</figcaption>
 </figure>
 
-Each two-bit channel has this mapping:
-
-| Level `l` | (MSB, LSB) | Lit area | Appears as |
-|-----------|------------|----------|--------------------|
-| 0 | (0, 0) | 0 | black |
-| 1 | (0, 1) | 1/3 | LSB / middle band |
-| 2 | (1, 0) | 2/3 | MSB / top + bottom |
-| 3 | (1, 1) | 3/3 | full (channel on) |
-
-Use `msb = (l >> 1) & 1` and `lsb = l & 1`. The packer does not need a lookup table.
-
-### Source-bus interleave
-
-The six data lines carry one bit for each channel of two adjacent pixels.
-
-| Lines | Pixel | Channel |
-|---------------------|----------------|-----------|
-| `R[0]` `G[0]` `B[0]` | **even** column | R / G / B |
-| `R[1]` `G[1]` `B[1]` | **odd** column | R / G / B |
-
-Each `BCK` edge clocks one pixel pair. Thus, 120 pairs require 60 `BCK` cycles.
-
-Present a new pair before each rising and falling edge. Do not hold one pair for a complete cycle.
+The panel makes four levels per channel by area: each subpixel has a large block and a small block,
+two thirds and one third of its area. The two bits of a channel are those two blocks, so a level
+needs no lookup table.
 
 ## Gate scan
-
-The display has one gate line for each of its 320 rows. Write both area planes to the same gate line.
-
-- `GCK` HIGH selects the two-thirds MSB block.
-- `GCK` LOW selects the one-third LSB block.
-
-One `GCK` period writes one row. The rising edge advances the gate. The falling edge keeps the same gate selected.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -177,97 +148,39 @@ One `GCK` period writes one row. The rising edge advances the gate. The falling 
 <figcaption>Send the MSB plane while <code>GCK</code> is high. Send the LSB plane while <code>GCK</code> is low. Pulse <code>GEN</code> after each plane.</figcaption>
 </figure>
 
-## Writing a frame
-
-A frame scans the 320 rows. Keep `INTB` high for the complete scan.
-
-```text
-INTB = HIGH
-GSP = pulse
-send two leading dummy gate periods
-for each row:
-    set GCK HIGH
-    shift the MSB plane
-    pulse GEN
-    set GCK LOW
-    shift the LSB plane
-    pulse GEN
-send six trailing dummy gate periods
-INTB = LOW
-```
-
-- `INTB` LOW holds the current image.
-- One `GCK` period advances one row.
-- Each row uses two `GEN` pulses.
-- Each plane uses 120 data words and four dummy words.
-- Pulse `GSP` at the start. Release it on the first `GCK` edge.
+A row is written in one clock period, in two phases: the larger block while the clock is high and
+the smaller while it is low, with a latch pulse after each. One period advances one row. A frame
+raises the envelope signal, writes the rows, and drops it again; with the envelope low the panel
+holds what it has.
 
 ### Partial update
 
-The presenter compares row hashes and sends changed row spans to the FLPR. The FLPR advances past unchanged rows without `GEN` pulses.
-
-The FLPR writes all 240 columns of each changed row. It stops after the last changed row.
-
-Thus, the scan time depends mainly on the number and position of changed rows.
+The presenter compares row hashes and sends only the changed row spans. The scan advances past
+unchanged rows without latching them and stops after the last changed row, so a frame costs what
+changed and not what the screen holds. That is how a clock digit costs a few rows.
 
 ## Power-on, power-off, and retention
 
-- During power-on, write a black frame. Wait at least 30 µs, and then start the COM waveform.
-- During power-off, write the safe state before you stop the COM waveform.
-- Refresh a static image at least once every two days.
+Write a black frame at power-on, settle, then start the waveform. Write the safe state at power-off
+before the waveform stops. Refresh a static image at least every two days.
 
-## Signal & timing reference
+## Timing
 
-### Pins
+The signal names, their rails, and every timing limit are the panel datasheet's, and the
+implementation holds them in one place: the [wire packer](src:firmware/obc-display/src/ls021/wire.rs)
+builds the bus words, the [COM driver](src:firmware/obc-fw-nrf54l/src/com.rs) makes the polarity
+waveform, and the [scan program](src:firmware/obc-fw-nrf54l/src/flpr/flpr_scan.c) runs on the
+coprocessor that writes the panel.
 
-| Signal | Group | Rail | Role |
-|--------|-------|------|------|
-| `GSP`  | Gate | VDD2 (~5.0 V) | Gate start pulse — once per frame |
-| `GCK`  | Gate | VDD2 | Gate clock **and** MSB/LSB phase select (HIGH = MSB/⅔, LOW = LSB/⅓); one period per row |
-| `GEN`  | Gate | VDD2 | Gate output enable — pulsed once per phase to latch the selected block |
-| `INTB` | Gate | VDD2 | Frame envelope — HIGH for the whole frame; LOW = Hold (no write) |
-| `BSP`  | Source | VDD1 (~3.2 V) | Sub-line (start-of-line) pulse |
-| `BCK`  | Source | VDD1 | Source shift clock; 124 edge words per plane |
-| `R[0]` `G[0]` `B[0]` | Source data | VDD1 | Even-column R/G/B bit |
-| `R[1]` `G[1]` `B[1]` | Source data | VDD1 | Odd-column R/G/B bit |
-| `VCOM` | COM | — | Common AC reference (free-running ~60 Hz) |
-| `VB`   | COM | — | **In phase** with `VCOM` — the "black" rail |
-| `VA`   | COM | — | **Inverse** of `VCOM` — the "white" rail |
+The current scan clocks the source bus faster than the datasheet maximum. It passed a visual test
+on one panel at room temperature, which is not production validation.
 
-### Timing
-
-| Parameter | Value | Notes |
-|-----------|-------|-------|
-| `BCK` max frequency | 0.758 MHz | Source/shift clock ceiling |
-| `BCK` minimum high / low | 660 ns each | Datasheet limit |
-| COM frequency | 54–66 Hz (60 typ) | 48–52 % duty |
-| COM edge (rise/fall) | ≤ 100 µs | Into ~56–77 nF per line; high-drive GPIO / buffer as needed |
-| `GCK` ↔ `GEN` setup & hold | ≥ 16.37 µs | Keep `GEN` clear of `GCK` edges |
-| `GEN` high width | ≥ 24.56 µs | Valid-output / latch window |
-| Power-on settle (black → COM) | ≥ 30 µs | See power-on order above |
-| Current full-frame scan | 44.1 ms | Measured on one development panel |
-
-The current FLPR uses approximately 210 ns for each `BCK` half-period.
-This gives a 420 ns period and approximately 2.38 MHz.
-It exceeds the 0.758 MHz maximum and violates the 660 ns minimum high and low times.
-
-This timing passed a visual test on one panel at room temperature. It is not production validation. See the [timing record](src:firmware/docs/flpr-timing.md).
-
-## Power
-
-The datasheet gives these typical module values. The values exclude COM capacitive-load current.
-
-| State | Power |
-|-------|------:|
-| Hold / static | ≈ 32 µW |
-| 1 Hz update | ≈ 45 µW |
-| 30 Hz update | ≈ 290 µW |
-
-Power increases with the update rate. Partial updates reduce the number of rows that the FLPR writes.
+Panel power follows the update rate, and partial updates are what keep the average near the cost of
+holding an image.
 
 ## Implementation
 
-- COM driver: [`com.rs`](src:firmware/obc-fw-nrf54l/src/com.rs) and [`com_hw.rs`](src:firmware/obc-fw-nrf54l/src/com_hw.rs)
-- FLPR scan: [`flpr_scan.c`](src:firmware/obc-fw-nrf54l/src/flpr/flpr_scan.c)
+- COM driver: [`com.rs`](src:firmware/obc-fw-nrf54l/src/com.rs), [`com_hw.rs`](src:firmware/obc-fw-nrf54l/src/com_hw.rs)
+- Scan program: [`flpr_scan.c`](src:firmware/obc-fw-nrf54l/src/flpr/flpr_scan.c)
 - Wire packer: [`wire.rs`](src:firmware/obc-display/src/ls021/wire.rs)
-- Presenter: [Rendering pipeline](../../software/rendering/)
+- Presenter: [rendering pipeline](../../software/rendering/)
