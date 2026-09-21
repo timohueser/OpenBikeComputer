@@ -7,10 +7,11 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use obc_dem::bake::{bake_cells, bake_shard, BakeParams, BakeReport, V1_CELL_LOG2, V1_POSTING_LOG2};
+use obc_dem::bake::{bake_cells, bake_shard, BakeParams, BakeReport, CellDone, V1_CELL_LOG2, V1_POSTING_LOG2};
 use obc_dem::crest::REPORT_M;
 use obc_dem::fetch::{fetch_tiles, Fetched};
 use obc_dem::geotiff::DemMosaic;
+use obc_dem::reference::ReferenceArchive;
 use obc_dem::BboxUdeg;
 use obc_elevation::{COPERNICUS_ATTRIBUTION, SOURCE_DATASET};
 
@@ -41,7 +42,7 @@ usage:
   obc-dem fetch --bbox <min_lat,min_lon,max_lat,max_lon> --out <dir>
   obc-dem bake  --sources <dir> --bbox <min_lat,min_lon,max_lat,max_lon>
                 (--out <dir> | --shard <file.obcd>)
-                [--reference <dir>]
+                [--reference <archive root>]
                 [--posting-log2 <4..16>] [--cell-log2 <10..28>] [--quiet]
 
   --bbox is LATITUDE FIRST — min_lat,min_lon,max_lat,max_lon — unlike
@@ -55,13 +56,16 @@ usage:
   cell 2^19 µdeg (1024^2 samples, a 2 MiB block). Both are OBCT header data, so
   a different pairing is a re-bake, not a format change.
 
-  --reference <dir>  a finer DEM, as WGS84 GeoTIFFs, for OBCT section 9 crest
-                     lifts. Where it covers the box, summits and ridge crests
-                     the 2^9 lattice loses are raised to the reference ground,
-                     in the baked samples themselves, so every consumer reads
-                     one surface. Cells it does not cover come out
-                     byte-identical to a run without it, so national LiDAR may
-                     stop at a border. The reference keeps its own attribution.
+  --reference <root> a reference archive, or a mirror of one: `index.json` plus
+                     int16 GeoTIFF tiles under `16/<ti>/<tj>.tif`, written by
+                     host/obc-dem/reference/ingest.py. Where it covers the box,
+                     summits and ridge crests the 2^9 lattice loses are raised
+                     to the reference ground, in the baked samples themselves,
+                     so every consumer reads one surface. Cells it does not
+                     cover come out byte-identical to a run without it, so
+                     national LiDAR may stop at a border. The bake streams one
+                     tile at a time and reads each pixel once. The reference
+                     keeps its own attribution.
 
 `fetch` downloads Copernicus GLO-30 tiles from the AWS Open Data mirror; `bake`
 never touches the network.";
@@ -146,33 +150,34 @@ fn bake(args: &[String]) -> Result<(), String> {
     if !quiet {
         println!("{} source tile(s) from {}", mosaic.len(), sources.display());
     }
-    let finer = match &reference {
-        Some(dir) => {
-            let finer = DemMosaic::open_dir(dir)?;
+    let archive = match &reference {
+        Some(root) => {
+            let archive = ReferenceArchive::open(root)?;
             if !quiet {
-                println!("{} reference tile(s) from {}", finer.len(), dir.display());
+                println!("{} reference tile(s) indexed in {}", archive.len(), root.display());
             }
-            Some(finer)
+            Some(archive)
         }
         None => None,
     };
-    let sampler = finer.as_ref().map(|dem| move |lat: f64, lon: f64| dem.height(lat, lon));
-    let sampler = sampler.as_ref().map(|f| f as &dyn Fn(f64, f64) -> Option<f64>);
-    let progress = |done: u64, total: u64, ci: u32, cj: u32, written: bool| {
+    let archive = archive.as_ref();
+    let progress = |cell: CellDone| {
         if !quiet {
+            let CellDone { index, total, ci, cj, written, lifted } = cell;
             let what = if written { "baked" } else { "empty" };
-            println!("  [{done}/{total}] cell {cell_log2}/{ci}/{cj} {what}");
+            let lifts = if lifted == 0 { String::new() } else { format!(", {lifted} lifted") };
+            println!("  [{index}/{total}] cell {cell_log2}/{ci}/{cj} {what}{lifts}");
         }
     };
 
     let report = match (&out, &shard) {
-        (Some(dir), _) => bake_cells(&mosaic, params, sampler, dir, progress)?,
+        (Some(dir), _) => bake_cells(&mosaic, params, archive, dir, progress)?,
         (_, Some(path)) => {
             if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
                 std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
             }
             let file = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
-            let report = bake_shard(&mosaic, params, sampler, std::io::BufWriter::new(file), progress)?;
+            let report = bake_shard(&mosaic, params, archive, std::io::BufWriter::new(file), progress)?;
             if !quiet {
                 let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
                 println!("{} — {len} bytes", path.display());
@@ -191,10 +196,26 @@ fn bake(args: &[String]) -> Result<(), String> {
 }
 
 fn summarise(report: &BakeReport) {
-    let BakeReport { cells_total, cells_written, samples_total, samples_nodata, lifts } = *report;
-    let covered = samples_total - samples_nodata;
-    let pct = if samples_total == 0 { 0.0 } else { covered as f64 * 100.0 / samples_total as f64 };
-    println!("{cells_written}/{cells_total} cells written, {covered}/{samples_total} samples covered ({pct:.1} %)");
+    let covered = report.samples_total - report.samples_nodata;
+    let pct = if report.samples_total == 0 { 0.0 } else { covered as f64 * 100.0 / report.samples_total as f64 };
+    println!(
+        "{}/{} cells written, {covered}/{} samples covered ({pct:.1} %)",
+        report.cells_written, report.cells_total, report.samples_total
+    );
+    if !report.sources.is_empty() {
+        let keys: Vec<&str> = report.sources.iter().map(String::as_str).collect();
+        println!("reference source(s) the lifts come from: {}", keys.join(", "));
+    }
+    // A mirror carries the whole index and the tiles of one box, so a tile the index names and the
+    // mirror lacks is normal at the edges and a short copy in the middle. Either way it costs lifts
+    // without failing, so the count is the operator's only sight of it.
+    if !report.reference_tiles_absent.is_empty() {
+        println!(
+            "{} tile(s) the index names are not in this archive — lifts there were skipped",
+            report.reference_tiles_absent.len()
+        );
+    }
+    let lifts = report.lifts;
     if lifts.nodes == 0 {
         return;
     }

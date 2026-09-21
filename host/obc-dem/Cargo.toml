@@ -20,7 +20,7 @@ description = "Copernicus GLO-30 GeoTIFF -> OBCT terrain cells (obc-dem fetch / 
 [features]
 default = ["dem"]
 dem = ["geotiff", "fetch"]
-geotiff = ["dep:tiff"]
+geotiff = ["dep:tiff", "dep:serde_json"]
 fetch = ["dep:ureq"]
 external-fixtures = []
 
@@ -46,6 +46,11 @@ obc-elevation = { path = "../../firmware/obc-elevation" }
 # features are off deliberately: `fax`, `jpeg` and `lzw` are codecs no DEM ships in, and every one
 # of them is decoder surface this tool would otherwise carry for nothing.
 tiff = { version = "0.11", default-features = false, features = ["deflate"], optional = true }
+# `geotiff` only: the reference archive's `index.json` — which tiles the archive holds and which
+# sources contributed to each of them. Read as a `Value` rather than through derived structs,
+# because the index grows fields (`sha256`, `contributors`) that this reader must tolerate rather
+# than refuse. Already in the workspace lockfile (`obc-pack` and `obc-bake` both use it).
+serde_json = { version = "1", optional = true }
 # `fetch` only. Blocking and rustls-by-default, so no OpenSSL follows it onto macOS or Windows —
 # the same client `obc-pack`'s land-dataset download and the desktop app already use (#907: libGEOS
 # stays the last native dependency in the tree, and this crate has none at all).
