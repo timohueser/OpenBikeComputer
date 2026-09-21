@@ -16,7 +16,6 @@ Usage: python3 tools/governs.py PATH [PATH ...]
 from __future__ import annotations
 
 import argparse
-import fnmatch
 import json
 import re
 import subprocess
@@ -27,14 +26,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def matches(path: str, pattern: str) -> bool:
-    if fnmatch.fnmatch(path, pattern):
-        return True
-    # "a/**" and "a/**/*.rs" should both reach a/b/c.rs
-    if "**" in pattern:
-        loose = pattern.replace("/**/", "/*").replace("/**", "/*")
-        return fnmatch.fnmatch(path, loose) or fnmatch.fnmatch(path, pattern.replace("**", "*"))
-    return False
+sys.path.insert(0, str(ROOT / "tools"))
+from test_plan import glob_matches as matches  # noqa: E402 — the selector's own glob rule
+
+GUARDS = ("tools/check_*.py", "firmware/tools/check_*.py", "firmware/tools/*_guard.py")
 
 
 def cargo_package(path: str) -> tuple[str, str] | None:
@@ -52,7 +47,7 @@ def cargo_package(path: str) -> tuple[str, str] | None:
 
 def guards(path: str) -> list[tuple[str, str, bool]]:
     found = []
-    for script in sorted(Path(ROOT / "tools").glob("check_*.py")):
+    for script in sorted(p for g in GUARDS for p in ROOT.glob(g)):
         text = script.read_text(encoding="utf-8")
         scope = re.search(r"^GOVERNS = (\[.*?\])$", text, re.M | re.S)
         rule = re.search(r"^RULE = (['\"])(.*?)\1$", text, re.M)
@@ -60,7 +55,7 @@ def guards(path: str) -> list[tuple[str, str, bool]]:
             continue
         patterns = json.loads(scope.group(1).replace("'", '"'))
         if any(matches(path, p) for p in patterns):
-            wide = patterns in (["**"], ["**/*.rs"], ["**/*.rs", "**/*.py"])
+            wide = all(p.startswith("**") for p in patterns)
             found.append((script.name, rule.group(2), wide))
     return found
 
@@ -184,8 +179,9 @@ def describe(path: str) -> None:
         ("ui frames", frames(path)),
         ("prose", prose(path)),
     ]
-    scoped = [(g, r) for g, r, wide in guards(path) if not wide]
-    wide = [(g, r) for g, r, w in guards(path) if w]
+    reached = guards(path)
+    scoped = [(g, r) for g, r, w in reached if not w]
+    wide = [(g, r) for g, r, w in reached if w]
     if scoped:
         sections.append(("guards", [f"{g} — {r}" for g, r in scoped]))
     for title, lines in sections:

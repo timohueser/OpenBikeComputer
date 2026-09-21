@@ -12,8 +12,6 @@ never through their constructors.
 
 from __future__ import annotations
 
-# `obc governs` reads these two names. GOVERNS is the scope this guard actually walks;
-# RULE is the one sentence it enforces.
 GOVERNS = ['**/*.rs']
 RULE = 'A scheduler-owned card is built only by the card scheduler.'
 

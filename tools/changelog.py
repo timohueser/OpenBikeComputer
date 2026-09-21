@@ -82,11 +82,17 @@ def main() -> int:
     text = render(found)
 
     if args.check:
+        # A stale file is fine: the merge that lands a pull request can never be in the file
+        # it carries. A line the generator would not write is not.
         current = CHANGELOG.read_text() if CHANGELOG.exists() else ""
-        if current != text:
-            print("changelog: out of date or edited by hand; run `obc changelog --update`")
+        generated = set(text.splitlines())
+        foreign = [l for l in current.splitlines() if l.strip() and l not in generated]
+        if foreign:
+            print("changelog: hand-written lines; run `obc changelog --update` and keep the detail in the pull request")
+            for line in foreign[:5]:
+                print(f"  {line[:100]}")
             return 1
-        print(f"changelog: {len(found)} pull requests, current")
+        print(f"changelog: {len(found)} pull requests, nothing hand-written")
         return 0
 
     CHANGELOG.write_text(text)

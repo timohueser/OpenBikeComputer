@@ -480,7 +480,7 @@ densifying long geometry so each record fits its chunk. See
 An assembled map keeps **one** navigation graph. The assembler copies each surviving edge
 geometry record unchanged, then rebuilds identities, adjacency and the spatial indexes.
 Pruning runs a local union-find per cell, joined through boundary nodes rather than over the
-whole map. See [src:host/obcm-assemble/src/nav.rs].
+whole map. See [`nav.rs`](src:host/obcm-assemble/src/nav.rs).
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">

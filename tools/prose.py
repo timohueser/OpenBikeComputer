@@ -52,10 +52,11 @@ def tracked() -> list[str]:
 
 
 def words(text: str) -> int:
-    """Count prose words: diagrams, code blocks, front matter and comments are not prose."""
+    """Count prose words: diagrams, code, front matter, comments, tables and headings are not prose."""
     for pattern in (SVG, FENCE, COMMENT, FRONT):
         text = pattern.sub("", text)
-    return len(text.split())
+    lines = (l for l in text.splitlines() if not l.lstrip().startswith(("|", "#")))
+    return len(" ".join(lines).split())
 
 
 def published() -> set[str]:
@@ -102,6 +103,8 @@ def structure() -> list[str]:
         text = (ROOT / f).read_text(encoding="utf-8", errors="ignore")
         # A link inside code is an example of syntax, not a link.
         text = CODE.sub("", FENCE.sub("", text))
+        for m in re.finditer(r"\[src:[^\]]+\](?!\()", text):
+            problems.append(f"{f}: {m.group(0)} is not a link; write [text](src:path)")
         for m in re.finditer(r"\]\((src|spec):([^\s)]+)\)", text):
             scheme, target = m.group(1), m.group(2)
             if scheme == "spec":
@@ -147,18 +150,12 @@ def report(found: dict[str, tuple[str, int]], base: dict[str, int]) -> None:
             print(f"  … {len(rows) - 8} more")
 
     # Specs are reported, never gated: capping words on a byte-layout contract would push out
-    # tables, not rationale. Words are the signal — the line ratio barely moves when prose is cut
-    # and every table stays.
+    # tables, not rationale.
     print("\nspec prose words (reported, not gated)")
     for spec in sorted((ROOT / "specs").glob("*.md")):
-        text = spec.read_text(encoding="utf-8")
-        body = FENCE.sub("", text)
-        prose = " ".join(
-            line for line in body.splitlines()
-            if not line.strip().startswith(("|", "#"))
-        )
-        flag = "  ← worth a pass" if len(prose.split()) > 6000 else ""
-        print(f"  {len(prose.split()):>6,}  {spec.name}{flag}")
+        count = words(spec.read_text(encoding="utf-8"))
+        flag = "  ← worth a pass" if count > 6000 else ""
+        print(f"  {count:>6,}  {spec.name}{flag}")
 
 
 def main() -> int:
@@ -182,9 +179,12 @@ def main() -> int:
         if unknown:
             print("prose: not a budgeted file: " + ", ".join(sorted(unknown)))
             return 1
+        # A file not yet recorded is recorded only under its cap; an over-cap newcomer must
+        # be named, so that raising a budget is always a visible diff.
         merged = {
-            f: c if f in deliberate else min(c, base.get(f, c))
-            for f, (_, c) in found.items()
+            f: c if f in deliberate else min(c, base.get(f, CAPS[kind]))
+            for f, (kind, c) in found.items()
+            if f in deliberate or f in base or c <= CAPS[kind]
         }
         BASELINE.write_text(json.dumps(dict(sorted(merged.items())), indent=2) + "\n")
         print(f"prose baseline: {len(merged)} files recorded")

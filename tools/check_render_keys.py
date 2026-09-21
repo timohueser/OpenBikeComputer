@@ -24,8 +24,6 @@ next to the state that already holds it?
 
 from __future__ import annotations
 
-# `obc governs` reads these two names. GOVERNS is the scope this guard actually walks;
-# RULE is the one sentence it enforces.
 GOVERNS = ['**/*.rs']
 RULE = 'A fact a screen draws belongs in its declared render key, never in a private repaint mirror.'
 

@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-# `obc governs` reads these two names. GOVERNS is the scope this guard actually walks;
-# RULE is the one sentence it enforces.
 GOVERNS = ['fixtures/**']
 RULE = 'A development fixture stays inside its archive budget, and a large blob stays out of Git.'
 
