@@ -147,7 +147,9 @@ Three rules keep a credential where it belongs, and each one is a test:
   a request with a token in the query is a request with a secret in it. So a keyed request is
   labelled `<key> <box>` and not by its URL, and every message goes through `redact`, which
   takes out every value the `OBC_REFERENCE_*` namespace holds. What Denmark answers to a wrong
-  token is `dk (9.743, 56.32, 9.746, 56.3215): HTTP 403 — User not authorized`.
+  token is `dk (9.743, 56.32, 9.746, 56.3215): HTTP 403 — User not authorized`. A body is a
+  message too: these services answer an error as a 200 and an XML document that quotes the
+  request, so `raster_bytes`, the French band reader and the STAC reader all redact as well.
 - **It goes to the row's own hosts only.** An index is data, not code: Sweden's STAC answer
   names the host each download is on, and a `href` somewhere else would otherwise be handed
   the password. `credential_hosts` on the row is the allowed suffix, and a URL outside it is

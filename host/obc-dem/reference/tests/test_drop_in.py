@@ -467,6 +467,21 @@ class Redaction(unittest.TestCase):
         self.assertNotIn(self.SECRET, message)
         self.assertIn("after 0 retries", message)
 
+    def test_an_xml_error_with_a_200_does_not_quote_the_token_either(self):
+        """These services answer an error as a 200 and an XML document that quotes the
+        request, so the body is a message like any other."""
+
+        real = ingest.sources.protocols.http_get
+        self.addCleanup(setattr, ingest.sources.protocols, "http_get", real)
+        quoted = f"<ExceptionReport>bad token in api-key={self.SECRET}</ExceptionReport>"
+        ingest.sources.protocols.http_get = lambda url, what=None: quoted.encode()
+        with self.assertRaises(ingest.Refuse) as refusal:
+            self.source.request(self.box)
+        message = str(refusal.exception)
+        self.assertNotIn(self.SECRET, message)
+        self.assertIn("<redacted>", message)
+        self.assertIn("did not answer with a TIFF", message)
+
     def test_a_dropped_connection_names_the_source_and_not_the_url(self):
         message = self.refusal_for(urllib.error.URLError(
             f"cannot reach {self.source.url(self.box)}&api-key={self.SECRET}"))
