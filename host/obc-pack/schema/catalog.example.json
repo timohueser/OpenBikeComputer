@@ -377,6 +377,14 @@
     "cell_log2": 13,
     "terrain_revision": 3,
     "attribution": "produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved",
+    "references": [
+      {
+        "key": "ch",
+        "product": "swissALTI3D 2 m",
+        "attribution": "© swisstopo",
+        "licence": "Open data, attribution required"
+      }
+    ],
     "cell_index": {
       "cell_count": 2,
       "known_empty_count": 1,

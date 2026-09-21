@@ -343,7 +343,9 @@ fn terrain_doc_json(revision: u32, dataset_version: &str) -> String {
     format!(
         "{{\n  \"dataset_id\": \"copernicus-glo-30\",\n  \"dataset_version\": \"{dataset_version}\",\n  \
          \"posting_log2\": {TERRAIN_POSTING_LOG2},\n  \"cell_log2\": {TERRAIN_CELL_LOG2},\n  \"revision\": \
-         {revision},\n  \"attribution\": \"{TERRAIN_ATTRIBUTION}\"\n}}\n"
+         {revision},\n  \"attribution\": \"{TERRAIN_ATTRIBUTION}\",\n  \"references\": [{{\"key\": \"ch\", \
+         \"product\": \"swissALTI3D 2 m\", \"attribution\": \"© swisstopo\", \"licence\": \"Open data, attribution \
+         required\"}}]\n}}\n"
     )
 }
 
@@ -356,7 +358,17 @@ fn terrain_path(tree: &Path, id: CellId, ext: &str) -> PathBuf {
     ))
 }
 
-fn write_terrain_cell(tree: &Path, id: CellId, fill: u8, built_at: &str, revision: u32, dataset_version: &str) {
+/// One published cell and its sidecar. `sources` are the reference models its crest lifts came
+/// from, which is what decides the published block's `references` list.
+fn write_terrain_cell(
+    tree: &Path,
+    id: CellId,
+    fill: u8,
+    built_at: &str,
+    revision: u32,
+    dataset_version: &str,
+    sources: &str,
+) {
     let path = terrain_path(tree, id, TERRAIN_EXT);
     fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
     fs::write(&path, obct_bytes(TERRAIN_POSTING_LOG2, id, fill)).expect("terrain cell");
@@ -364,7 +376,7 @@ fn write_terrain_cell(tree: &Path, id: CellId, fill: u8, built_at: &str, revisio
         &terrain_path(tree, id, TERRAIN_SIDECAR_EXT),
         &format!(
             "{{\n  \"terrain_revision\": {revision},\n  \"dataset_version\": \"{dataset_version}\",\n  \
-             \"built_at\": \"{built_at}\"\n}}\n"
+             \"built_at\": \"{built_at}\",\n  \"reference_sources\": [{sources}]\n}}\n"
         ),
     );
 }
@@ -373,8 +385,10 @@ fn write_terrain_cell(tree: &Path, id: CellId, fill: u8, built_at: &str, revisio
 /// the declaration that gives them a dataset, a pairing and a revision.
 fn write_terrain(tree: &Path, revision: u32, dataset_version: &str) {
     write(&tree.join(TERRAIN_DOC), &terrain_doc_json(revision, dataset_version));
-    write_terrain_cell(tree, terrain_nw(), 0x11, "2026-08-01T04:00:00Z", revision, dataset_version);
-    write_terrain_cell(tree, terrain_ne(), 0x22, "2026-08-01T04:00:03Z", revision, dataset_version);
+    // One lifted cell and one without: the published `references` list is the union over the cells
+    // that used one, so an example with both shapes is the one worth checking in.
+    write_terrain_cell(tree, terrain_nw(), 0x11, "2026-08-01T04:00:00Z", revision, dataset_version, "\"ch\"");
+    write_terrain_cell(tree, terrain_ne(), 0x22, "2026-08-01T04:00:03Z", revision, dataset_version, "");
     let state = format!(
         "{{\n  \"terrain_revision\": {revision},\n  \"known_empty\": [\n    {{\n      \"start\": \"{}\",\n      \
          \"end\": \"{}\",\n      \"built_at\": \"2026-08-01T04:00:07Z\"\n    }}\n  ]\n}}\n",
@@ -1974,7 +1988,7 @@ fn bump_terrain_revision(tree: &Path, to: u32) {
     for (id, fill, built_at) in
         [(terrain_nw(), 0x33, "2026-09-01T04:00:00Z"), (terrain_ne(), 0x44, "2026-09-01T04:00:03Z")]
     {
-        write_terrain_cell(tree, id, fill, built_at, to, TERRAIN_DATASET_VERSION);
+        write_terrain_cell(tree, id, fill, built_at, to, TERRAIN_DATASET_VERSION, "\"ch\"");
     }
     let state = format!(
         "{{\n  \"terrain_revision\": {to},\n  \"known_empty\": [\n    {{\n      \"start\": \"{}\",\n      \"end\": \
@@ -2016,6 +2030,14 @@ fn the_root_carries_a_terrain_block_with_its_own_revision() {
     // §13.5: the credit is data a consumer reads, not a string a builder hard-codes.
     assert!(terrain.attribution.contains("Copernicus"), "{}", terrain.attribution);
     assert!(terrain.attribution.contains("ESA"), "{}", terrain.attribution);
+
+    // §13.1: one entry per reference model a published cell's crest lifts came from, and the
+    // obligation covers each of them, so the human-readable licence names them too.
+    let references = terrain.references.as_deref().expect("the example has a lifted cell");
+    assert_eq!(references.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(), ["ch"]);
+    assert_eq!(references[0].attribution, "© swisstopo");
+    let license = license_txt(&g.root);
+    assert!(license.contains("swissALTI3D 2 m") && license.contains("© swisstopo"), "{license}");
 
     // §13.1: one pinned index, digest-addressed like every other pinned object.
     let pin = &terrain.cell_index;
@@ -2160,7 +2182,7 @@ fn a_mixed_terrain_store_is_refused() {
     // A cell from another terrain revision: the terrain track's own lockstep (§13.2).
     let t = TempTree::new("mixed-terrain");
     example_tree(t.path());
-    write_terrain_cell(t.path(), terrain_ne(), 0x22, "2026-08-01T04:00:03Z", TERRAIN_REVISION - 1, "2021-1");
+    write_terrain_cell(t.path(), terrain_ne(), 0x22, "2026-08-01T04:00:03Z", TERRAIN_REVISION - 1, "2021-1", "");
     let err = generate(t.path(), &opts()).expect_err("a mixed-revision terrain store must fail");
     assert!(err.contains(&format!("terrain revision {}", TERRAIN_REVISION - 1)), "{err}");
     assert!(err.contains("lockstep within its own track"), "{err}");
@@ -2168,7 +2190,7 @@ fn a_mixed_terrain_store_is_refused() {
     // A cell from another dataset version: the other half of the same key.
     let u = TempTree::new("mixed-dataset");
     example_tree(u.path());
-    write_terrain_cell(u.path(), terrain_ne(), 0x22, "2026-08-01T04:00:03Z", TERRAIN_REVISION, "2023-1");
+    write_terrain_cell(u.path(), terrain_ne(), 0x22, "2026-08-01T04:00:03Z", TERRAIN_REVISION, "2023-1", "");
     let err = generate(u.path(), &opts()).expect_err("a mixed-dataset terrain store must fail");
     assert!(err.contains("dataset version `2023-1`"), "{err}");
 
@@ -2181,6 +2203,30 @@ fn a_mixed_terrain_store_is_refused() {
     write(&path, &format!("{}\n", serde_json::to_string_pretty(&doc).expect("serializes")));
     let err = generate(v.path(), &opts()).expect_err("a store that sampled two rasters must fail");
     assert!(err.contains("§13.4"), "{err}");
+
+    // And a cell crediting a reference model the tree cannot state a notice for. Publishing it
+    // would ship derived national elevation with no attribution at all, which §13.5 forbids.
+    let w = TempTree::new("uncreditable-reference");
+    example_tree(w.path());
+    write_terrain_cell(w.path(), terrain_ne(), 0x22, "2026-08-01T04:00:03Z", TERRAIN_REVISION, "2021-1", "\"no\"");
+    let err = generate(w.path(), &opts()).expect_err("an uncreditable reference source must fail");
+    assert!(err.contains("reference source `no`") && err.contains("§13.5"), "{err}");
+
+    // And a reference entry that cannot be displayed. A generic producer writes `terrain.json` by
+    // hand, so a blank credit is caught where the file can be named rather than in a builder.
+    for (what, field, value, expect) in [
+        ("an empty licence", "licence", "   ", "reference `ch` has an empty `licence`"),
+        ("a key that is not an id", "key", "CH 1", "reference key"),
+    ] {
+        let x = TempTree::new("bad-reference");
+        example_tree(x.path());
+        let path = x.path().join(TERRAIN_DOC);
+        let mut doc: Value = serde_json::from_str(&fs::read_to_string(&path).expect("terrain doc")).expect("JSON");
+        doc["references"][0][field] = Value::from(value);
+        write(&path, &format!("{}\n", serde_json::to_string_pretty(&doc).expect("serializes")));
+        let err = generate(x.path(), &opts()).expect_err(what);
+        assert!(err.contains(expect), "{what}: {err}");
+    }
 }
 
 #[test]

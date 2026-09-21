@@ -200,7 +200,20 @@ export interface TerrainEntry {
      *  from here rather than hard-coding it a MUST, so a dataset change carries
      *  its own notice with it. */
     attribution: string;
+    /** The finer reference models the raster's crest lifts come from (§13.1).
+     *  Empty when no published cell used one. §13.5's obligation covers each
+     *  entry exactly as it covers `attribution`, so a consumer that shows the
+     *  one shows all of them. */
+    references: ReferenceEntry[];
     cell_index: TerrainIndexRef;
+}
+
+/** One reference elevation model a terrain cell's crest heights came from (§13.1). */
+export interface ReferenceEntry {
+    key: string;
+    product: string;
+    attribution: string;
+    licence: string;
 }
 
 /** The root's pin on the single terrain index (§13.1). */
@@ -668,6 +681,7 @@ function parseTerrain(v: unknown, where: string): TerrainEntry | null {
         cell_log2: int(o, "cell_log2", where, MIN_CELL_LOG2, MAX_CELL_LOG2),
         terrain_revision: int(o, "terrain_revision", where, 1),
         attribution,
+        references: parseReferences(o.references, `${where}.references`),
         cell_index: {
             cell_count: int(ref, "cell_count", refAt, 0, U32),
             known_empty_count: int(ref, "known_empty_count", refAt, 0, U32),
@@ -676,6 +690,31 @@ function parseTerrain(v: unknown, where: string): TerrainEntry | null {
             url: pinnedUrlStr(ref, "url", sha256, refAt),
         },
     };
+}
+
+/**
+ * §13.1's reference list: the finer models a crest height came from, or none.
+ *
+ * Absent is normal — most maps have no reference coverage at all. Present and
+ * broken is not tolerated: every field carries a licence obligation §13.5 makes
+ * a MUST, and an entry a consumer cannot display is a credit nobody sees.
+ */
+function parseReferences(v: unknown, where: string): ReferenceEntry[] {
+    if (v === undefined || v === null) return [];
+    return arr(v, where).map((entry, n) => {
+        const at = `${where}[${n}]`;
+        const o = obj(entry, at);
+        const reference: ReferenceEntry = {
+            key: str(o, "key", at, KEBAB),
+            product: str(o, "product", at),
+            attribution: str(o, "attribution", at),
+            licence: str(o, "licence", at),
+        };
+        for (const key of ["product", "attribution", "licence"] as const) {
+            if (!reference[key].trim()) fail(`${at}.${key}: a listed reference must be creditable (§13.5)`);
+        }
+        return reference;
+    });
 }
 
 /**

@@ -311,19 +311,27 @@ pub fn tile_path(root: &Path, ti: u32, tj: u32) -> std::path::PathBuf {
 
 /// An `index.json` naming `ids` with the source key `key`, with `contributors` unless
 /// `with_contributors` is false — an archive ingested before that map existed.
+///
+/// The digest of a tile is the digest of its id, not of its pixels: a reader treats `sha256` as an
+/// opaque key, so a fixture only owes it one distinct value per tile.
 pub fn archive_index(key: &str, ids: &[(u32, u32)], with_contributors: bool) -> String {
     let ids: Vec<String> = ids.iter().map(|(ti, tj)| format!("{ti}/{tj}")).collect();
-    let entry = |value: &str| ids.iter().map(|id| format!("    \"{id}\": {value}")).collect::<Vec<_>>().join(",\n");
+    let entry = |value: &dyn Fn(&str) -> String| {
+        ids.iter().map(|id| format!("    \"{id}\": {}", value(id))).collect::<Vec<_>>().join(",\n")
+    };
+    let constant = |text: String| move |_: &str| text.clone();
     let contributors = if with_contributors {
-        format!(",\n  \"contributors\": {{\n{}\n  }}", entry(&format!("[\"{key}\"]")))
+        format!(",\n  \"contributors\": {{\n{}\n  }}", entry(&constant(format!("[\"{key}\"]"))))
     } else {
         String::new()
     };
     format!(
         "{{\n  \"schema\": 1,\n  \"step_log2\": {STEP_LOG2},\n  \"tile_log2\": {TILE_LOG2},\n  \
-         \"sources\": {{\"{key}\": {{\"product\": \"synthetic\", \"attribution\": \"© nobody\"}}}},\n  \
-         \"tiles\": {{\n{}\n  }}{contributors}\n}}\n",
-        entry(&format!("\"{key}\"")),
+         \"sources\": {{\"{key}\": {{\"product\": \"synthetic\", \"attribution\": \"© nobody\", \
+         \"licence\": \"CC0\"}}}},\n  \
+         \"tiles\": {{\n{}\n  }},\n  \"sha256\": {{\n{}\n  }}{contributors}\n}}\n",
+        entry(&constant(format!("\"{key}\""))),
+        entry(&|id: &str| format!("\"{}\"", sha256_hex(id.as_bytes()))),
     )
 }
 
