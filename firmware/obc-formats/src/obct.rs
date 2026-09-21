@@ -1,21 +1,18 @@
-//! OBCT terrain-format constants from `OBCT_Spec.md`.
+//! OBCT terrain-format constants.
 //!
-//! The terrain artifact is a raster on the [OBCA] cell grid: a global sample lattice of `int16`
+//! The terrain artifact is a raster on the OBCA cell grid: a global sample lattice of `int16`
 //! metre heights, cut into 512-byte tiles, grouped into grid cells, published either as a single
-//! cell file or as a multi-cell shard — **one container**, because a cell file is only a shard
-//! whose cell rectangle is 1×1.
+//! cell file or as a multi-cell shard. One container, because a cell file is only a shard whose
+//! cell rectangle is 1×1.
 //!
-//! Like [`obcm`](crate::obcm) this module is the *byte authority* and nothing else: magic, version,
-//! field offsets, the sentinels, and the pure layout arithmetic that turns a lattice coordinate
-//! into a byte offset. No reader policy, no cache, no sampling — those live in `obc-elevation`,
-//! which is the only consumer that decides what a malformed file means.
+//! Like [`obcm`](crate::obcm) this module is the byte authority and nothing else: magic, version,
+//! field offsets, sentinels, and the layout arithmetic that turns a lattice coordinate into a byte
+//! offset. Reader policy lives in `obc-elevation`.
 //!
-//! **Two sizes are data, not shape** (the OBCA §1.5 idiom): the posting `P` and the cell side are
-//! header fields, so retuning either is a terrain re-bake rather than a format bump. The *tile* is
-//! not: 16 × 16 samples = 512 B is the device's I/O quantum (one SD block, the §8 nav-chunk size),
-//! and changing it would change the fetch unit every consumer is budgeted around.
-//!
-//! [OBCA]: ../../../../specs/OBCA_Spec.md
+//! Two sizes are data, not shape: the posting and the cell side are header fields, so retuning
+//! either is a re-bake rather than a format bump. The tile is not: 16 × 16 samples is 512 B, the
+//! device's I/O quantum, and changing it would change the fetch unit every consumer is budgeted
+//! around.
 
 use crate::io::{validate_prefix, DecodeError};
 
@@ -30,8 +27,8 @@ pub const MAGIC: [u8; 4] = *b"OBCT";
 pub const VERSION: u8 = 1;
 pub const HEADER_LEN: usize = 32;
 
-/// Header field offsets (spec §4.2). Named rather than inlined because three implementations
-/// (this reader, the `obc-dem` baker, and the vectors builder) transcribe the same table.
+/// Header field offsets. Named rather than inlined, because three implementations transcribe the
+/// same table.
 pub const HDR_MAGIC: usize = 0;
 pub const HDR_VERSION: usize = 4;
 pub const HDR_POSTING_LOG2: usize = 5;
@@ -42,14 +39,14 @@ pub const HDR_CELL_MIN_J: usize = 12;
 pub const HDR_CELL_ROWS: usize = 16;
 pub const HDR_CELL_COLS: usize = 18;
 pub const HDR_DIRECTORY_OFFSET: usize = 20;
-/// Start of the 8 reserved header bytes (`24..32`), which a v1 producer MUST write as zero.
+/// Start of the 8 reserved header bytes, which a producer must write as zero.
 pub const HDR_RESERVED: usize = 24;
 
 /// One directory slot: an absolute `uint32` byte offset to a cell block (spec §4.3).
 pub const DIR_ENTRY_LEN: usize = 4;
 
 /// "This cell is not in the file." Not a valid offset for any cell block, because the header
-/// precedes every block — so no sentinel bit has to be carved out of the offset space.
+/// precedes every block, so no sentinel bit has to be carved out of the offset space.
 pub const DIR_ABSENT: u32 = 0;
 
 /// `log2` of a tile's edge in samples (spec §2).
@@ -61,31 +58,30 @@ pub const SAMPLE_LEN: usize = 2;
 /// Bytes in one tile: 16 × 16 × 2 = **512**, one SD block.
 pub const TILE_BYTES: usize = TILE_SAMPLES * TILE_SAMPLES * SAMPLE_LEN;
 
-/// "No height here" (spec §1.2). `i16::MIN`, so the whole of `-32767..=32767` stays available as
-/// real orthometric metres — a producer MUST NOT emit `-32768` as a height.
+/// "No height here." `i16::MIN`, so the whole of `-32767..=32767` stays available as real
+/// orthometric metres, and a producer must not emit `-32768` as a height.
 pub const NODATA: i16 = i16::MIN;
 
-/// Origin of the sample lattice on **both** axes, µdeg — the OBCA §1.1 grid origin, restated here
-/// because the raster shares that grid and `obc-elevation` must not depend on a host crate to
-/// learn it. `host/obcm-assemble`'s oracle test pins the three copies against each other.
+/// Origin of the sample lattice on both axes, µdeg: the OBCA grid origin, restated here because
+/// `obc-elevation` must not depend on a host crate to learn it.
 pub const GRID_ORIGIN: i32 = -(1 << 28);
 /// Side of the world box, µdeg (OBCA §1.1): `2^29`.
 pub const WORLD_SIDE: u32 = 1 << 29;
 
-/// Smallest permitted posting as `log2(µdeg)` — `2^4` µdeg ≈ 1.8 m, finer than any global DEM.
+/// Smallest permitted posting as `log2(µdeg)`, finer than any global DEM.
 pub const MIN_POSTING_LOG2: u8 = 4;
-/// Largest permitted posting as `log2(µdeg)` — `2^16` µdeg ≈ 7 km, coarser than any useful terrain.
+/// Largest permitted posting as `log2(µdeg)`, coarser than any useful terrain.
 pub const MAX_POSTING_LOG2: u8 = 16;
 /// Smallest / largest permitted cell side as `log2(µdeg)`, matching the OBCA §1.1 cell-size range.
 pub const MIN_CELL_LOG2: u8 = 10;
 pub const MAX_CELL_LOG2: u8 = 28;
-/// Largest permitted `log2` of a cell's tiles-per-edge (spec §3.2). The bound is arithmetic, not
-/// taste: `2^11` tiles per edge already makes a cell block `2^11 · 2^11 · 512 B` = 2 GiB, and one
-/// more doubling would push a cell block past the `uint32` offsets the directory is made of.
+/// Largest permitted `log2` of a cell's tiles per edge. The bound is arithmetic, not taste: `2^11`
+/// tiles per edge already makes a cell block 2 GiB, and one more doubling would push it past the
+/// `uint32` offsets the directory is made of.
 pub const MAX_CELL_TILES_LOG2: u8 = 11;
 
-/// Samples along one cell edge as a `log2`, or `None` when the pair is out of the spec's range or
-/// would make a cell smaller than one tile (spec §4.5).
+/// Samples along one cell edge as a `log2`, or `None` when the pair is out of range or would make
+/// a cell smaller than one tile.
 #[inline]
 pub const fn cell_samples_log2(posting_log2: u8, cell_log2: u8) -> Option<u8> {
     if posting_log2 < MIN_POSTING_LOG2 || posting_log2 > MAX_POSTING_LOG2 {
@@ -101,7 +97,7 @@ pub const fn cell_samples_log2(posting_log2: u8, cell_log2: u8) -> Option<u8> {
     Some(samples_log2)
 }
 
-/// Tiles along one cell edge as a `log2` (spec §3.2), for a pair [`cell_samples_log2`] accepts.
+/// Tiles along one cell edge as a `log2`, for a pair [`cell_samples_log2`] accepts.
 #[inline]
 pub const fn cell_tiles_log2(posting_log2: u8, cell_log2: u8) -> Option<u8> {
     match cell_samples_log2(posting_log2, cell_log2) {
@@ -110,8 +106,7 @@ pub const fn cell_tiles_log2(posting_log2: u8, cell_log2: u8) -> Option<u8> {
     }
 }
 
-/// Byte length of one cell block: `tiles_per_edge² · 512` (spec §3.2). Fits `u32` by construction —
-/// see [`MAX_CELL_TILES_LOG2`].
+/// Byte length of one cell block. It fits `u32` by construction; see [`MAX_CELL_TILES_LOG2`].
 #[inline]
 pub const fn cell_block_len(posting_log2: u8, cell_log2: u8) -> Option<u32> {
     match cell_tiles_log2(posting_log2, cell_log2) {
@@ -120,21 +115,20 @@ pub const fn cell_block_len(posting_log2: u8, cell_log2: u8) -> Option<u32> {
     }
 }
 
-/// Byte offset of sample `(row, col)` inside a tile (spec §2): row-major, **rows advance latitude**.
+/// Byte offset of sample `(row, col)` inside a tile: row-major, with rows advancing latitude.
 #[inline]
 pub const fn sample_offset_in_tile(row: u32, col: u32) -> usize {
     (row as usize * TILE_SAMPLES + col as usize) * SAMPLE_LEN
 }
 
-/// Byte offset of tile `(ti, tj)` inside a cell block (spec §3.2): row-major over the cell's tile
-/// grid, `ti` advancing latitude, with `tiles_log2` from [`cell_tiles_log2`].
+/// Byte offset of tile `(ti, tj)` inside a cell block: row-major over the cell's tile grid, with
+/// `ti` advancing latitude.
 #[inline]
 pub const fn tile_offset_in_cell(ti: u32, tj: u32, tiles_log2: u8) -> u32 {
     ((ti << tiles_log2) + tj) * TILE_BYTES as u32
 }
 
-/// Validate the five-byte `magic + version` prefix (spec §4.2). Layout policy beyond this — the
-/// directory bounds, the cell-rectangle sanity, the posting/cell pairing — is the reader's.
+/// Validate the five-byte `magic + version` prefix. Layout policy beyond this is the reader's.
 pub fn validate_header_prefix(bytes: &[u8]) -> Result<(), DecodeError> {
     let version = validate_prefix(bytes, &MAGIC, VERSION, SURFACE_VERSION)?;
     if version != VERSION && version != SURFACE_VERSION {
@@ -146,7 +140,7 @@ pub fn validate_header_prefix(bytes: &[u8]) -> Result<(), DecodeError> {
 const _: () = assert!(TILE_BYTES == 512);
 const _: () = assert!(HDR_RESERVED + 8 == HEADER_LEN);
 const _: () = assert!(GRID_ORIGIN as i64 + WORLD_SIDE as i64 == -(GRID_ORIGIN as i64));
-// The v1 pairing of §1.5 must survive its own bounds: posting 2^9, cell 2^19 → 64 tiles per edge.
+// The v1 pairing must survive its own bounds: posting 2^9 and cell 2^19 give 64 tiles per edge.
 const _: () = assert!(matches!(cell_tiles_log2(9, 19), Some(6)));
 
 #[cfg(test)]
@@ -155,7 +149,7 @@ mod tests {
 
     #[test]
     fn header_field_offsets_tile_the_header_exactly() {
-        // Each field starts where the previous one ends — the table in §4.2 read as arithmetic.
+        // Each field starts where the previous one ends.
         assert_eq!(HDR_MAGIC + 4, HDR_VERSION);
         assert_eq!(HDR_VERSION + 1, HDR_POSTING_LOG2);
         assert_eq!(HDR_POSTING_LOG2 + 1, HDR_CELL_LOG2);
@@ -177,7 +171,7 @@ mod tests {
         assert_eq!(sample_offset_in_tile(0, 1), 2);
         assert_eq!(sample_offset_in_tile(1, 0), 32, "a row is 16 samples wide, and rows advance lat");
         assert_eq!(sample_offset_in_tile(15, 15), TILE_BYTES - SAMPLE_LEN);
-        // v1 shape: a 2^19 cell at 2^9 posting is 64 × 64 tiles = 2 MiB.
+        // v1 shape: a 2^19 cell at 2^9 posting is 64 × 64 tiles, 2 MiB.
         assert_eq!(cell_tiles_log2(9, 19), Some(6));
         assert_eq!(cell_block_len(9, 19), Some(64 * 64 * 512));
         assert_eq!(tile_offset_in_cell(0, 1, 6), 512);

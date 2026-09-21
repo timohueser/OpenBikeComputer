@@ -1,18 +1,14 @@
-//! The sample lattice: integer arithmetic from a µdeg coordinate to a lattice index, a cell index,
-//! and a tile-local sample (`OBCT_Spec.md` §1, §3).
+//! The sample lattice: integer arithmetic from a µdeg coordinate to a lattice index, a cell index
+//! and a tile-local sample.
 //!
-//! Deliberately **integer-only and float-free**, for the same reason OBCA's grid is: the whole
-//! contract rests on two implementations landing on the same sample from the same coordinate, and a
-//! float would make that a property of the FPU. Everything here is a shift or a mask over an `i64`
-//! widened from the `int32` µdeg coordinate — no division, no rounding, no `libm`.
+//! Integer-only and float-free on purpose: the contract rests on two implementations landing on
+//! the same sample from the same coordinate, and a float would make that a property of the FPU.
 
 use obc_formats::obct::{GRID_ORIGIN, WORLD_SIDE};
 
 /// Where a query coordinate lands on the lattice: the index of the sample at or below it on each
-/// axis, plus the sub-posting remainder that becomes the bilinear weight (`OBCT_Spec.md` §5.1).
-///
-/// `frac_*` is in µdeg, `0..P`, **not** a normalized fraction — keeping it in the coordinate's own
-/// unit is what lets §5.2's interpolation stay in integers.
+/// axis, plus the sub-posting remainder that becomes the bilinear weight. `frac_*` is in µdeg and
+/// not a normalized fraction, which is what lets the interpolation stay in integers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Lattice {
     /// Latitude sample index: `floor((lat − GRID_ORIGIN) / P)`.
@@ -26,9 +22,8 @@ pub struct Lattice {
 }
 
 /// Locate `(lat, lon)` on the lattice of posting `2^posting_log2`, or `None` when the coordinate is
-/// outside the world box (`OBCT_Spec.md` §1.1). The world box is bigger than the geographic domain,
-/// so this rejects only genuinely impossible coordinates — a `0` from an unfixed GPS is *inside* it
-/// and is the sampler's business to answer, not this function's.
+/// outside the world box. That box is bigger than the geographic domain, so this rejects only
+/// genuinely impossible coordinates.
 #[inline]
 pub fn locate(lat_udeg: i32, lon_udeg: i32, posting_log2: u8) -> Option<Lattice> {
     let (i, frac_lat) = axis(lat_udeg, posting_log2)?;
@@ -36,8 +31,8 @@ pub fn locate(lat_udeg: i32, lon_udeg: i32, posting_log2: u8) -> Option<Lattice>
     Some(Lattice { i, j, frac_lat, frac_lon })
 }
 
-/// One axis of [`locate`]. Widened to `i64` before the subtraction: `lat − GRID_ORIGIN` adds `2^28`
-/// to a value that may legally be any `int32`, which overflows `i32` near its top end.
+/// One axis of [`locate`]. Widened to `i64` before the subtraction, which would otherwise overflow
+/// `i32` near the top of the range.
 #[inline]
 fn axis(v_udeg: i32, posting_log2: u8) -> Option<(u32, u32)> {
     let offset = v_udeg as i64 - GRID_ORIGIN as i64;
@@ -54,16 +49,14 @@ pub fn lattice_coord(i: u32, posting_log2: u8) -> i32 {
     (GRID_ORIGIN as i64 + ((i as i64) << posting_log2)) as i32
 }
 
-/// The cell index owning lattice index `i`, for a cell of `2^cell_log2` µdeg at this posting.
-/// A pure shift, which is exactly why the cell side is a power of two on the same origin: cell
-/// membership is derivable from the lattice index with no table and no search.
+/// The cell index owning lattice index `i`. A pure shift, which is exactly why the cell side is a
+/// power of two on the same origin: cell membership needs no table and no search.
 #[inline]
 pub fn cell_of(i: u32, posting_log2: u8, cell_log2: u8) -> u32 {
     i >> (cell_log2 - posting_log2)
 }
 
-/// The lattice index of a cell's **min** sample on either axis — the sample the cell owns under the
-/// half-open rule (`OBCT_Spec.md` §3.1).
+/// The lattice index of a cell's min sample, the sample the cell owns under the half-open rule.
 #[inline]
 pub fn cell_base_sample(cell: u32, posting_log2: u8, cell_log2: u8) -> u32 {
     cell << (cell_log2 - posting_log2)
@@ -75,18 +68,12 @@ pub fn axis_cells(cell_log2: u8) -> u32 {
     WORLD_SIDE >> cell_log2
 }
 
-/// Zero-padding width of a cell index in a canonical cell id (`OBCA_Spec.md` §1.3):
-/// `max(4, digits(axis_cells − 1))`. Four digits at `2^16` and above, wider below.
+/// Zero-padding width of a cell index in a canonical cell id: `max(4, digits(axis_cells − 1))`.
 ///
-/// The rule is here, in the one crate both sides of the terrain pipeline already depend on,
-/// because it is **content addressing**, not formatting: `18/1204/52` and `18/01204/1052` are two
-/// strings for one cell, and a store keyed by the string would then hold the same square twice
-/// under two names. `obc-pack`'s `grid::id_width` and `obc-dem`'s `bake::cell_file_name` are the
-/// two producers of those strings, they cannot see each other (a host tool must not depend on the
-/// packer), and a second transcription of `max(4, …)` is exactly how the two would drift apart.
-///
-/// Integer-only and allocation-free, like everything else in this crate — the digit count is a
-/// loop, not a `to_string().len()`.
+/// The rule lives here, in the one crate both sides of the terrain pipeline depend on, because it
+/// is content addressing and not formatting: `18/1204/52` and `18/01204/1052` are two strings for
+/// one cell, and a store keyed by the string would hold the same square twice. The two producers
+/// cannot see each other, and a second transcription of `max(4, …)` is how they would drift.
 pub fn id_width(cell_log2: u8) -> usize {
     let mut v = axis_cells(cell_log2) - 1;
     let mut digits = 1;
@@ -105,7 +92,7 @@ pub fn id_width(cell_log2: u8) -> usize {
 mod tests {
     use super::*;
 
-    /// The lattice is anchored on the OBCA origin, not on the query — the same coordinate must land
+    /// The lattice is anchored on the OBCA origin, not on the query: the same coordinate must land
     /// on the same index whatever file asks.
     #[test]
     fn the_origin_is_lattice_index_zero_on_both_axes() {
@@ -138,8 +125,8 @@ mod tests {
         assert!(locate(i32::MIN, 0, 9).is_none());
     }
 
-    /// Cell membership and the lattice must agree in both directions: the base sample of the cell a
-    /// sample belongs to is never above that sample, and never a whole cell below it.
+    /// Cell membership and the lattice must agree both ways: the base sample of a sample's cell is
+    /// never above that sample and never a whole cell below it.
     #[test]
     fn cell_membership_agrees_with_the_lattice_at_every_v1_pairing() {
         let (posting_log2, cell_log2) = (9u8, 19u8);
