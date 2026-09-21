@@ -62,7 +62,7 @@ conversion code is in the tool yet, because no adapter needs one yet.
 ### One addition to the index
 
 `index.json` carries one map more than the contract above shows: **`sha256`**, the digest of each
-tile file, under the same tile ids as `tiles`.
+tile's pixels, under the same tile ids as `tiles`.
 
 ```json
 { "schema": 1, "step_log2": 6, "tile_log2": 16,
@@ -121,8 +121,9 @@ Everything after that is shared, so a new country is an adapter and a row in the
    and the integer microdegrees of that point give the lattice pixel that holds it. The lattice
    pixel keeps the **maximum** of the centres that land in it. This is the contract's rule, done
    directly, and it is not what `Resampling.max` does: that pools by area overlap, which raises
-   every lattice pixel a source pixel merely touches. Measured over an alpine box, area overlap
-   read 39 % of the pixels too high and spread a one-pixel tower over two to four archive pixels.
+   every lattice pixel a source pixel merely touches. Over the Engelberg box, area overlap read
+   51.7 % of the 15.9 M pixels too high and none too low, by up to 286 m; it filled 2 659 pixels no
+   source pixel centre reached; and it spread a one-pixel tower over two to four archive pixels.
 3. The heights become `int16` metres, rounded half away from zero, with `−32768` for absence.
 4. The window is cut into tiles. A tile is always whole: a box that reaches a corner of a tile
    still writes 1024 × 1024 pixels, with nodata where the box did not reach.
