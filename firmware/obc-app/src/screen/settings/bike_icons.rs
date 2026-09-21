@@ -1,18 +1,12 @@
 //! Pixel-art bike sprites for the [ride-start card](crate::screen::RideStartScreen), one per
-//! routing profile, **matched by the profile's name**. Each sprite is a grid of ASCII
-//! rows — a non-space cell is one ink pixel — laid out from simple geometry (round
-//! wheels, straight frame tubes) so the curves stay clean, then kept here as plain,
-//! hand-editable ASCII; [`draw`] blits it scaled with run-length fills (one
-//! [`Surface::fill`](obc_render::Surface) per ink run, not per pixel). Firmware-baked:
-//! the four shipped profiles (Road / Gravel / MTB / Touring) each get their own
-//! silhouette, and a custom web-builder profile falls back to a [`GENERIC`] bike.
+//! routing profile, matched by the profile name. Each sprite is a grid of ASCII rows, where a
+//! non-space cell is one ink pixel. An unknown profile gets the [`GENERIC`] bike.
 
 use obc_render::{rect, Surface};
 
 use crate::screen::palette;
 
-/// One sprite: ASCII rows, a non-space cell is an ink pixel. Every sprite is the same
-/// rectangular grid ([`draw`] centres on it).
+/// One sprite: ASCII rows, where a non-space cell is an ink pixel. All sprites are the same size.
 pub type Bike = &'static [&'static str];
 
 /// Road bike: thin tyres, a diamond frame, drop handlebars.
@@ -120,7 +114,7 @@ pub const MTB: Bike = &[
     "                                                  ",
 ];
 
-/// Touring bike: drop bars plus a rear rack and pannier -- the load is the tell.
+/// Touring bike: drop bars, a rear rack and a pannier.
 #[rustfmt::skip]
 pub const TOURING: Bike = &[
     "                                                  ",
@@ -190,21 +184,19 @@ pub const GENERIC: Bike = &[
     "                                                  ",
 ];
 
-/// The bike type a profile name resolves to. One classifier so the [sprite](for_name) and its
-/// [colour](color_for) can never disagree.
+/// The bike type a profile name gives. One classifier keeps the [sprite](for_name) and the
+/// [colour](color_for) in agreement.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Road,
     Gravel,
     Mtb,
     Touring,
-    /// An unrecognised custom profile.
     Generic,
 }
 
-/// Classify a profile name, case-insensitive substring match; unrecognised => [`Kind::Generic`].
-/// Keyed on the shipped default names and common synonyms so a custom profile that *mentions* a
-/// bike type still resolves.
+/// Classify a profile name by a case-insensitive substring match. It accepts the shipped names and
+/// common synonyms, so a custom profile that mentions a bike type still resolves.
 fn kind_for(name: &str) -> Kind {
     let mut lower: heapless::String<20> = heapless::String::new();
     for c in name.chars().take(20) {
@@ -226,7 +218,6 @@ fn kind_for(name: &str) -> Kind {
     }
 }
 
-/// The sprite for a profile name (see [`kind_for`]); unrecognised => [`GENERIC`].
 pub fn for_name(name: &str) -> Bike {
     match kind_for(name) {
         Kind::Road => ROAD,
@@ -237,23 +228,21 @@ pub fn for_name(name: &str) -> Bike {
     }
 }
 
-/// The ink colour for a profile's bike, hinting at its use: road red, gravel earth-brown, MTB
-/// trail-green, touring blue. A generic/custom profile stays plain ink. All chosen to land on
-/// clean device-64 colours (§ the `palette` quantiser) over the parchment background.
+/// The ink colour for a profile's bike. A custom profile stays plain ink. The colours land on
+/// clean device-64 colours over the parchment background.
 pub fn color_for(name: &str) -> u16 {
     use palette::rgb565;
     match kind_for(name) {
-        Kind::Road => rgb565(200, 30, 30),    // → red
-        Kind::Gravel => rgb565(240, 90, 20),  // → orange
-        Kind::Mtb => rgb565(20, 130, 40),     // → green
-        Kind::Touring => rgb565(30, 70, 180), // → blue
+        Kind::Road => rgb565(200, 30, 30),    // red
+        Kind::Gravel => rgb565(240, 90, 20),  // orange
+        Kind::Mtb => rgb565(20, 130, 40),     // green
+        Kind::Touring => rgb565(30, 70, 180), // blue
         Kind::Generic => palette::INK,
     }
 }
 
-/// Blit `bike` centred horizontally on `center_x`, top edge at `top_y`, each art pixel
-/// a `scale`x`scale` block of `color`. Contiguous ink cells in a row are filled as one
-/// rectangle, so a sprite costs a handful of fills per row, not one per pixel.
+/// Blit `bike` centred on `center_x` with its top edge at `top_y`, each art pixel a `scale` by
+/// `scale` block. Each run of ink cells is one fill, so a sprite costs a few fills per row.
 pub fn draw(cv: &mut impl Surface, bike: Bike, center_x: i32, top_y: i32, scale: i32, color: u16) {
     let cols = bike.iter().map(|r| r.len()).max().unwrap_or(0) as i32;
     let x0 = center_x - cols * scale / 2;
@@ -279,11 +268,9 @@ pub fn draw(cv: &mut impl Surface, bike: Bike, center_x: i32, top_y: i32, scale:
 mod tests {
     use super::*;
 
-    /// The four shipped names (and common synonyms) map to their own sprite, case-insensitively; an
-    /// unrecognised custom profile falls back to the generic bike.
     #[test]
     fn matches_shipped_names_case_insensitively() {
-        // Compare by content -- `const` slices have no stable address, so identify the sprite by value.
+        // `const` slices have no stable address, so compare the sprites by content.
         assert_eq!(for_name("Road"), ROAD);
         assert_eq!(for_name("gravel"), GRAVEL);
         assert_eq!(for_name("MTB"), MTB);
@@ -293,8 +280,7 @@ mod tests {
         assert_eq!(for_name(""), GENERIC);
     }
 
-    /// Every sprite is a rectangular grid of the same dimensions -- guards against a ragged ASCII row
-    /// (a trimmed trailing space) that would misalign the run-length blit.
+    /// A ragged ASCII row, such as one with a trimmed trailing space, misaligns the blit.
     #[test]
     fn sprites_are_uniform_rectangles() {
         let (rows, cols) = (ROAD.len(), ROAD[0].len());
@@ -306,7 +292,6 @@ mod tests {
         }
     }
 
-    /// Each shipped type gets its own colour; a custom profile stays plain ink.
     #[test]
     fn each_type_has_a_distinct_colour() {
         let cols = [color_for("Road"), color_for("Gravel"), color_for("MTB"), color_for("Touring")];

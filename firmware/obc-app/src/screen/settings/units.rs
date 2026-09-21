@@ -1,6 +1,5 @@
-//! The Units screen — metric ↔ imperial. [`Units`](crate::settings::Units) re-captions and re-scales
-//! the Statistics readouts and the off-route distance. A binary choice, so it's a single value row
-//! that press (or a step) flips in place — no field sub-mode.
+//! The Units screen: metric or imperial. The choice re-captions and re-scales the Statistics
+//! readouts and the off-route distance. It is one value row that a press or a step flips.
 
 use embedded_graphics::prelude::Point;
 use obc_render::{
@@ -14,8 +13,7 @@ use crate::screen::vocab::rows::value_row_with_arrows;
 use crate::screen::{palette, Ctx, Render, Transition};
 use crate::Msg;
 
-/// The Units screen. Stateless — the value lives in [`Settings`](crate::Settings); the one row
-/// is always the cursor.
+/// Stateless. The value lives in [`Settings`](crate::Settings), and the one row is always the cursor.
 #[derive(Debug, Default)]
 pub struct UnitsScreen;
 
@@ -26,7 +24,6 @@ impl UnitsScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            // A binary choice: press or a step flips it (no separate edit mode).
             Gesture::Press | Gesture::Step(_) => {
                 cx.settings.units = cx.settings.units.cycled();
                 Transition::None
@@ -42,13 +39,10 @@ impl UnitsScreen {
         let units = rx.settings.units;
         title_frame(cv, w, h, rx.t(Msg::UnitsTitle), "");
 
-        // The single value row — the current system centred, flanked by left/right arrows to read as
-        // "rotate to switch". Shared with the Language picker (`value_row_with_arrows`).
         let area = value_row_with_arrows(cv, LIST_TOP + 8, w, units.name(rx.settings.language));
 
-        // What the system means for each readout — caption left, value right. The value is dimmed
-        // one step (INK → the olive SUBTEXT the captions use) so the block reads as a **read-only
-        // consequence preview** of the choice above, not three more editable rows (T8 item 1).
+        // The unit labels are dimmed, so the block reads as a preview of the choice above and not
+        // as three more editable rows.
         let rows: [(&str, &str); 3] = [
             (rx.t(Msg::UnitsDistance), units.dist_label()),
             (rx.t(Msg::UnitsSpeed), units.speed_label()),

@@ -1,10 +1,7 @@
-//! The shared scrolling-list widget. Three screens (Settings, Route menu, Add field) are "a
-//! title bar over a windowed row list"; this module owns everything they have in common — the
-//! wrapping cursor ([`on_step`], which the compass Menu and the Fields grid editor also step
-//! their selections with), the window math ([`window_start`]), and [`draw_rows`], which walks
-//! the visible slots, paints the amber row cursor and the separators, and finishes with the
-//! scrollbar. Each screen keeps only its per-row body (bullet + label, two-line route pane,
-//! span badge, …) and its Press semantics.
+//! The shared scrolling-list widget: the wrapping cursor ([`on_step`]), the window math
+//! ([`window_start`]), and [`draw_rows`], which walks the visible slots, paints the row cursor and
+//! the separators, and finishes with the scrollbar. Each screen keeps only its per-row body and
+//! its Press semantics.
 
 use core::fmt::Write;
 
@@ -27,17 +24,15 @@ pub(crate) fn step_selection(selected: usize, n: i32, len: usize) -> usize {
     (selected as i32 + n).rem_euclid(len as i32) as usize
 }
 
-/// The shared `Gesture::Step` arm: step a wrapping cursor by `n` steps over `len` rows.
-/// Always [`Transition::None`] — turning never navigates.
+/// The shared `Gesture::Step` arm. Always [`Transition::None`], because turning never navigates.
 pub(crate) fn on_step(selected: &mut usize, n: i32, len: usize) -> Transition {
     *selected = step_selection(*selected, n, len);
     Transition::None
 }
 
 /// First visible index of a scrolling list that keeps `selected` on screen within `visible` rows
-/// of `total` items. Stateless — a pure function of the selection — so list screens need no scroll
-/// state: the highlight moves down to the last visible row, then the window follows it. Cast to
-/// `i32` this is the default `first` for [`draw_rows`].
+/// of `total` items. It is a pure function of the selection, so list screens keep no scroll state.
+/// Cast to `i32`, this is the default `first` for [`draw_rows`].
 pub(crate) fn window_start(selected: usize, visible: usize, total: usize) -> usize {
     if total <= visible || selected < visible {
         0
@@ -49,27 +44,22 @@ pub(crate) fn window_start(selected: usize, visible: usize, total: usize) -> usi
 /// When [`draw_rows`] draws the hairline rule under a row (never under the last one).
 #[derive(Clone, Copy)]
 pub(crate) enum Separators {
-    /// No rules — the Fields / Add-field rows carry enough shape on their own.
     None,
-    /// A rule under every row (the nav menus).
     All,
-    /// A rule under every row except the highlighted one (the Route menu — the amber pane
-    /// reads cleaner without a line hugging it).
+    /// A rule under every row except the highlighted one.
     Unselected,
 }
 
-/// Layout of a scrolling list: the panel width, where rows start, their pitch and inset, the
-/// separator policy, and how many slots fit the windowed area.
+/// Layout of a scrolling list.
 #[derive(Clone, Copy)]
 pub(crate) struct ListGeometry {
     pub w: i32,
     /// Top of the first row slot.
     pub top: i32,
-    /// Row pitch. The row *area* (the amber cursor fill) is `row_h - row_gap` tall, leaving a
-    /// breathing gap between rows.
+    /// Row pitch. The row area is `row_h - row_gap` tall, which leaves a gap between rows.
     pub row_h: i32,
     pub row_gap: i32,
-    /// Left/right inset of the row area from the panel edges.
+    /// Left and right inset of the row area from the panel edges.
     pub side_inset: i32,
     pub separators: Separators,
     /// Slots the windowed area fits.
@@ -77,18 +67,16 @@ pub(crate) struct ListGeometry {
 }
 
 impl ListGeometry {
-    /// Geometry for a list filling the frame below the title bar: rows start at [`LIST_TOP`] and
-    /// fit down to the 6 px margin above the bottom outline. A screen reserving a footer (Fields'
-    /// delete bar) passes `h` minus it.
+    /// Geometry for a list below the title bar: rows start at [`LIST_TOP`] and fit down to the
+    /// 6 px margin above the bottom outline. A screen with a footer passes `h` minus it.
     pub fn below_title(w: i32, h: i32, row_h: i32, row_gap: i32, side_inset: i32, separators: Separators) -> Self {
         let visible = ((h - LIST_TOP - 6) / row_h).max(1) as usize;
         ListGeometry { w, top: LIST_TOP, row_h, row_gap, side_inset, separators, visible }
     }
 
-    /// [`below_title`](Self::below_title), but the rows **consume the whole viewport** (owner
-    /// review round 3, the POI list): the visible count still comes from `nominal_row_h`, then
-    /// the leftover is folded back into the pitch (`viewport ÷ visible`), so the last row lands
-    /// flush with the bottom margin instead of leaving a dead band under it.
+    /// [`below_title`](Self::below_title), but the rows consume the whole viewport: the visible
+    /// count comes from `nominal_row_h`, then the leftover is folded back into the pitch, so the
+    /// last row lands flush with the bottom margin.
     pub fn filling_below_title(
         w: i32,
         h: i32,
@@ -104,8 +92,7 @@ impl ListGeometry {
     }
 }
 
-/// What [`draw_rows`] hands the row body: which item this slot shows, the row area (the same
-/// rectangle the amber cursor filled), and whether it is the highlighted row.
+/// What [`draw_rows`] hands the row body. `area` is the rectangle the row cursor filled.
 pub(crate) struct RowCtx {
     pub index: usize,
     pub area: Rectangle,
@@ -113,17 +100,16 @@ pub(crate) struct RowCtx {
 }
 
 impl RowCtx {
-    /// The row area when this is the highlighted row — where a list scrolls its one long name
-    /// (see [`marquee`](super::marquee)); `None` on every other row, which keeps the `..` cut.
+    /// The row area on the highlighted row, where a list scrolls its one long name. `None` on
+    /// every other row, which keeps the `..` cut.
     pub(crate) fn scroll(&self) -> Option<Rectangle> {
         self.selected.then_some(self.area)
     }
 }
 
-/// Draw a windowed list: for each visible slot, the amber cursor fill (on the selected row),
-/// the screen's row body, and the separator rule; then the right-edge scrollbar. `first` is
-/// signed — a window may start virtually before the list, and slots mapping outside `0..total`
-/// draw as empty space. The scrollbar clamps the virtual offset back into range.
+/// Draw a windowed list: for each visible slot, the cursor fill, the screen's row body and the
+/// separator rule; then the scrollbar. `first` is signed, because a window can start before the
+/// list; slots outside `0..total` draw as empty space.
 pub(crate) fn draw_rows<S: Surface>(
     cv: &mut S,
     geo: ListGeometry,
@@ -162,8 +148,7 @@ pub(crate) fn draw_rows<S: Surface>(
     scrollbar(cv, geo.w - 8, geo.top, geo.visible as i32 * geo.row_h, total, sb_first, geo.visible);
 }
 
-/// The nav-menu row body (the Settings list): a pointer triangle and a Body-tier label,
-/// vertically centred in the row area (the highlight makes the bullet ink, unselected rows muted).
+/// The nav-menu row body: a pointer triangle and a label, centred in the row area.
 pub(crate) fn nav_row(cv: &mut impl Surface, area: Rectangle, label: &str, selected: bool) {
     let x = area.top_left.x;
     let mid = area.top_left.y + area.size.height as i32 / 2;
@@ -172,10 +157,8 @@ pub(crate) fn nav_row(cv: &mut impl Surface, area: Rectangle, label: &str, selec
     cv.text(label, Point::new(x + 38, mid - 14), Font::Body, TextAlign::Left, palette::INK);
 }
 
-/// A whole nav-menu draw — the chrome plus [`nav_row`]s with hairline separators — so a plain
-/// nav list (Settings; the main Menu until it became the compass) is a single call.
+/// A whole nav-menu draw: the chrome plus [`nav_row`]s with hairline separators.
 pub(crate) fn nav_list(cv: &mut impl Surface, w: i32, h: i32, title: &str, items: &[&str], selected: usize) {
-    /// Per-row height — fits a Body-tier row with an amber highlight + padding.
     const ROW_H: i32 = 52;
     let geo = ListGeometry::below_title(w, h, ROW_H, 8, 16, Separators::All);
     list_frame(cv, w, h, title, selected + 1, items.len(), geo.visible);
@@ -183,9 +166,8 @@ pub(crate) fn nav_list(cv: &mut impl Surface, w: i32, h: i32, title: &str, items
     draw_rows(cv, geo, items.len(), selected, first, |cv, row| nav_row(cv, row.area, items[row.index], row.selected));
 }
 
-/// [`title_frame`] with a `pos / total` counter on the right — but only when the list can
-/// scroll (`total > visible`): a `1 / 2` counter on a static two-item menu is noise, while
-/// an overflowing list (Routes with many routes, a full Fields list) needs the position cue.
+/// [`title_frame`] with a `pos / total` counter on the right, but only when the list can scroll.
+/// A counter on a list that fits is noise.
 pub(crate) fn list_frame(cv: &mut impl Surface, w: i32, h: i32, title: &str, pos: usize, total: usize, visible: usize) {
     if total > visible {
         let mut counter: heapless::String<12> = heapless::String::new();
@@ -196,9 +178,8 @@ pub(crate) fn list_frame(cv: &mut impl Surface, w: i32, h: i32, title: &str, pos
     }
 }
 
-/// Draw a list scrollbar — a faint track with a proportional thumb — at the right
-/// edge, or nothing when everything fits. `top`/`height` is the windowed list
-/// area; `first` is [`window_start`]'s result.
+/// Draw a list scrollbar at the right edge, or nothing when everything fits. `top` and `height`
+/// are the windowed list area; `first` is [`window_start`]'s result.
 pub(crate) fn scrollbar(
     cv: &mut impl Surface,
     x: i32,
@@ -221,23 +202,17 @@ pub(crate) fn scrollbar(
 mod tests {
     use super::*;
 
-    // `step_selection` wrapping: a `%` regression is negative for a backward step at the top, which
-    // would hand back a garbage index and highlight nothing or panic on the row lookup.
-
-    /// Backward off the top: `Step(-1)` from index 0 wraps to the last item, not a negative index.
     #[test]
     fn step_selection_wraps_backward_past_the_top() {
         assert_eq!(step_selection(0, -1, 4), 3, "up from the first item lands on the last");
         assert_eq!(step_selection(0, -1, 1), 0, "a single-item list stays put");
     }
 
-    /// Forward off the bottom: `Step(1)` from the last item wraps to the first.
     #[test]
     fn step_selection_wraps_forward_past_the_bottom() {
         assert_eq!(step_selection(3, 1, 4), 0, "down from the last item lands on the first");
     }
 
-    /// A multi-step move larger than the list wraps cleanly, not off the end.
     #[test]
     fn step_selection_wraps_multiple_steps() {
         assert_eq!(step_selection(0, 5, 3), 2, "a long forward flick wraps modulo the length");
@@ -245,8 +220,6 @@ mod tests {
         assert_eq!(step_selection(2, 3, 3), 2, "exactly one lap is a no-op");
     }
 
-    /// An empty list is a no-op for any step — the `len == 0` guard must short-circuit before the
-    /// `% 0` that would panic.
     #[test]
     fn step_selection_on_empty_list_is_a_noop() {
         assert_eq!(step_selection(0, 1, 0), 0, "a forward step on an empty list stays at 0");
@@ -254,12 +227,7 @@ mod tests {
         assert_eq!(step_selection(7, 3, 0), 7, "the selection is returned unchanged, not modulo'd");
     }
 
-    // `draw_rows` windowing with a signed `first` — the virtual-window contract: slots mapping
-    // outside the list draw nothing, in-range items land in the *slot* positions, not clamped
-    // back to the top.
-
-    /// A draw target that swallows every primitive — the windowing tests only observe which rows
-    /// the body callback is invoked for and where.
+    /// A draw target that swallows every primitive.
     struct NullSurface;
     impl Surface for NullSurface {
         fn clear(&mut self, _color: u16) {}
@@ -295,8 +263,6 @@ mod tests {
         seen
     }
 
-    /// A window scrolled past the top (`first < 0`): the leading slots stay empty and the real
-    /// rows keep their slot positions further down.
     #[test]
     fn draw_rows_skips_slots_before_the_list() {
         let g = geo(5);
@@ -305,7 +271,6 @@ mod tests {
         assert_eq!(&seen[..], [(0, y(2)), (1, y(3)), (2, y(4))], "slots 0–1 empty, items 0–2 in slots 2–4");
     }
 
-    /// A window scrolled past the end: the trailing slots stay empty.
     #[test]
     fn draw_rows_skips_slots_past_the_list() {
         let g = geo(5);
