@@ -1186,7 +1186,6 @@ mod tests {
             _ => unreachable!(),
         }
 
-        // The fixes/omissions we MUST honor:
         assert_eq!(n(12, true), 0, "no residential blob (closed-line-way fix)");
         // 5 polygons (3 forest, 1 pedestrian, 1 water lake) + 5 lines.
         assert_eq!(ing.features.len(), 10, "10 features total");

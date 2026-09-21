@@ -268,7 +268,6 @@ fn split_selector(rule: &str) -> (&str, &str) {
     // Walk to the first space-delimited token that looks like a time/keyword.
     let mut i = 0;
     while i < bytes.len() {
-        // Skip leading spaces.
         while i < bytes.len() && bytes[i] == b' ' {
             i += 1;
         }
