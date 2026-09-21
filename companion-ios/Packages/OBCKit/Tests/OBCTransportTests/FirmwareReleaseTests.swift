@@ -2,18 +2,9 @@ import Foundation
 import Testing
 import OBCTransport
 
-/// The update check (#773 U4): the manifest parser, the version dialect, the cache, and the
-/// pre-release channel.
-///
-/// **This suite is a port of the builder's `release.test.ts` matrix**, deliberately case-for-case.
-/// Two parsers read the same published manifest — the Svelte builder's device step over USB and
-/// this app over BLE — and the only thing keeping them from drifting is that both are pinned to
-/// the same table. A case added there belongs here, and vice versa.
-///
-/// The behaviour with a locked decision behind it is the *refusal*: #773 states that a device
-/// reporting a git hash rather than a release version is never offered an auto-update, so the tests
-/// that matter most are the ones proving an unparseable version produces `unknown` and not "you're
-/// out of date".
+/// The firmware update check: manifest parser, version dialect, cache, and pre-release channel.
+/// The case table mirrors the builder's `release.test.ts`: two parsers read the same published
+/// manifest, so a case added in one place belongs in the other.
 struct FirmwareReleaseTests {
     // MARK: Fixtures
 
@@ -51,8 +42,7 @@ struct FirmwareReleaseTests {
         #expect(release.notesURL != nil)
     }
 
-    /// `bytes` is the field U3 emits; `size` is accepted as its synonym (the builder's parser
-    /// takes either, and a manifest that satisfies one parser must satisfy both).
+    /// The builder's parser takes either spelling; a manifest that satisfies one parser must satisfy both.
     @Test func acceptsEitherSpellingOfTheSize() throws {
         let bytes = try parseFirmwareManifest(
             Data(#"{"version":"1.0.0","bytes":42,"sha256":"\#(String(repeating: "c", count: 64))","url":"https://x/"}"#.utf8)
@@ -64,7 +54,6 @@ struct FirmwareReleaseTests {
         #expect(size.bytes == 42)
     }
 
-    /// The builder's `bad` table, verbatim in intent: nothing here is guessed at.
     @Test(arguments: [
         "not json",
         "[]",
@@ -88,8 +77,6 @@ struct FirmwareReleaseTests {
         }
     }
 
-    /// An uppercase digest is a spelling, not a different digest — normalised, like the builder's
-    /// `.toLowerCase()`.
     @Test func normalisesTheDigestCase() throws {
         let release = try parseFirmwareManifest(
             Data(#"{"version":"1.0.0","bytes":1,"sha256":"\#(String(repeating: "A", count: 64))","url":"https://x/"}"#.utf8)
@@ -120,16 +107,13 @@ struct FirmwareReleaseTests {
         #expect(try #require(FirmwareVersion.compare("1.4.0-10", "1.4.0-rc")) < 0)
     }
 
-    /// A manifest controls one side of this comparison. Keep the full shared safe-integer range
-    /// comparable without arithmetic overflow, even at its boundary.
+    /// A manifest controls one side of this comparison, so the boundary must not trap.
     @Test func comparesTheLargestParseableNumericComponentWithoutTrapping() throws {
         let largest = "9007199254740991.0.0"
         #expect(try #require(FirmwareVersion.compare(largest, "0.0.0")) > 0)
         #expect(try #require(FirmwareVersion.compare("0.0.0", largest)) < 0)
     }
 
-    /// The shapes that are *not* release versions. Each one would, if it parsed, put the app in the
-    /// business of guessing what a device is running.
     @Test(arguments: [
         "", " ", "v", "1", "1.2", "1.2.3.4", "1.2.x", "1.2.-1", "v1.2.0-", "1.2.0+",
         "abc1234", "g1a2b3c4", "1.2.0-rc 1", "one.two.three", "1.2.0+build+more", "-1.2.0",
@@ -139,7 +123,6 @@ struct FirmwareReleaseTests {
         #expect(FirmwareVersion.parse(text) == nil, "\"\(text)\" must not parse as a release version")
     }
 
-    /// The shapes that *are*, including the ones DIS and the OBCU header actually produce.
     @Test(arguments: [
         "1.2.0", "v1.2.0", "0.0.0", "10.20.30", "1.2.0+abc1234", "v1.2.0+abc1234",
         "1.2.0-rc1", "1.2.0-rc.1+abc1234", "  1.2.0  ",
@@ -151,8 +134,7 @@ struct FirmwareReleaseTests {
     // MARK: updateStatus
 
     @Test func neverOffersAnUpdateToADeviceRunningAnUnparseableVersion() {
-        // #773's locked behaviour: a probe-flashed dev build reports a hash, and the answer is
-        // "cannot say" — collapsing that into "older" would push firmware onto a dev device.
+        // A dev build reports a git hash. Reading that as "older" would push firmware onto it.
         #expect(FirmwareVersion.updateStatus(running: "abc1234", latest: "1.4.0") == .unknown)
         #expect(FirmwareVersion.updateStatus(running: nil, latest: "1.4.0") == .unknown)
     }
@@ -161,13 +143,9 @@ struct FirmwareReleaseTests {
         #expect(FirmwareVersion.updateStatus(running: "1.3.0", latest: nil) == .noRelease)
     }
 
-    /// The ordering the builder settled on in #1004, mirrored here: what makes a dev build
-    /// undecidable is the hash it reports, not whether anything is published. The other way round
-    /// would hide the "development build" state for as long as U3 hasn't published — which is
-    /// exactly today.
     @Test func stillCallsADevBuildADevBuildWhenNothingIsPublished() {
         #expect(FirmwareVersion.updateStatus(running: "abc1234", latest: nil) == .unknown)
-        // …but a device that has said nothing yet is not a dev build; there is simply no check.
+        // A device that has said nothing yet is not a dev build; there is no check at all.
         #expect(FirmwareVersion.updateStatus(running: nil, latest: nil) == .noRelease)
         #expect(FirmwareVersion.updateStatus(running: "", latest: nil) == .noRelease)
     }
@@ -186,8 +164,7 @@ struct FirmwareReleaseTests {
         let store = InMemoryUpdateCheckStore()
         let record = try await UpdateChecker(fetcher: fetcher, store: store).check()
         #expect(record.release == nil)
-        // …and it is *recorded* as an answer, so the screen doesn't re-ask on every appear until
-        // U3 finally publishes something.
+        // The 404 is recorded as an answer, so the screen does not re-ask on every appear.
         #expect(store.loadCheck()?.release == nil)
         #expect(store.loadCheck() != nil)
     }
@@ -207,9 +184,6 @@ struct FirmwareReleaseTests {
         #expect(record.release?.version == "1.4.0")
     }
 
-    /// The privacy posture is a requirement (#773): the check asks for one public file and sends
-    /// nothing about the device — no query string, no second request, no pre-release probe unless
-    /// the dev switch is on.
     @Test func asksForExactlyOnePublicFileAndNothingElse() async throws {
         let fetcher = StubFetcher()
         fetcher.stub(UpdateChecker.manifestURL, body: Self.manifestBody)
@@ -248,8 +222,6 @@ struct FirmwareReleaseTests {
         #expect(!checker.isFresh(record, now: taken.addingTimeInterval(-60)))
     }
 
-    /// The `UserDefaults` store is the shipping one: a record written by one launch must be
-    /// readable by the next, and an unreadable one must degrade to "no cache", never to a crash.
     @Test func theUserDefaultsStoreRoundTripsAndToleratesGarbage() throws {
         let suite = "obc.tests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -295,8 +267,7 @@ struct FirmwareReleaseTests {
         #expect(try await checker.check().release?.version == "1.5.0-rc1")
     }
 
-    /// Newest wins in *both* directions: a stable release that has overtaken the pre-release
-    /// channel is the answer, or the opt-in would pin testers to a stale rc.
+    /// Without this, the opt-in would pin testers to a stale rc.
     @Test func aStableReleaseNewerThanThePreReleaseStillWins() async throws {
         let fetcher = StubFetcher()
         fetcher.stub(UpdateChecker.manifestURL, body: Self.manifest(version: "1.5.0"))
@@ -317,9 +288,6 @@ struct FirmwareReleaseTests {
         #expect(try await checker.check().release?.version == "1.4.0")
     }
 
-    /// #773 U5: the opt-in channel must not be able to take down the stable check. A rider who once
-    /// flipped the dev switch would otherwise lose the launch sheet and the background check
-    /// entirely the day the pre-release manifest 500s or goes malformed.
     @Test func aBrokenPreReleaseChannelLeavesTheStableAnswerStanding() async throws {
         let fetcher = StubFetcher()
         fetcher.stub(UpdateChecker.manifestURL, body: Self.manifest(version: "1.4.0"))
@@ -338,8 +306,7 @@ struct FirmwareReleaseTests {
         #expect(try await second.check().release?.version == "1.4.0")
     }
 
-    /// The *stable* channel stays loud, which is the half every rider is on: a malformed manifest
-    /// there is a publishing failure and hiding it would hide it forever (U4's rule, unchanged).
+    /// A malformed stable manifest is a publishing failure: hiding it would hide it forever.
     @Test func aBrokenStableChannelStillThrowsWithThePreReleaseSwitchOn() async {
         let fetcher = StubFetcher()
         fetcher.stub(UpdateChecker.manifestURL, body: Data("not json".utf8))
@@ -385,8 +352,6 @@ struct FirmwareReleaseTests {
         #expect(got == body)
     }
 
-    /// The whole point of verifying on the phone: a download that doesn't match the manifest is
-    /// thrown away here, so nothing wrong ever reaches the device.
     @Test func refusesADownloadThatDoesNotMatchTheManifest() async throws {
         let body = Data("abc".utf8)
         let digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
@@ -395,7 +360,7 @@ struct FirmwareReleaseTests {
         fetcher.stub(url, body: body)
         let checker = UpdateChecker(fetcher: fetcher, store: InMemoryUpdateCheckStore())
 
-        // Wrong length — caught before the digest is even computed.
+        // Wrong length: caught before the digest is computed.
         await #expect(throws: FirmwareDownloadError.sizeMismatch(expected: 4, got: 3)) {
             _ = try await checker.download(
                 FirmwareRelease(version: "1.4.0", bytes: 4, sha256: digest, url: url)
@@ -417,7 +382,7 @@ struct FirmwareReleaseTests {
     }
 
     @Test func speaksTheDigestDialectTheManifestUses() {
-        // The classic vector, lowercase hex — the manifest's spelling.
+        // The standard "abc" vector, in the manifest's lowercase hex.
         #expect(
             UpdateChecker.sha256Hex(Data("abc".utf8))
                 == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
@@ -425,9 +390,8 @@ struct FirmwareReleaseTests {
     }
 }
 
-/// A `ManifestFetching` that answers from a table and remembers what was asked for. Anything not
-/// stubbed answers 404 — the "nothing published" default, which is also what the real server says
-/// until #773's U3 ships.
+/// A `ManifestFetching` that answers from a table and remembers what was asked for.
+/// Anything not stubbed answers 404: the "nothing published" default.
 private final class StubFetcher: ManifestFetching, @unchecked Sendable {
     private let lock = NSLock()
     private var responses: [URL: (Int, Data)] = [:]

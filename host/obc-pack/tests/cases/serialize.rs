@@ -69,9 +69,9 @@ fn pack_style_dict_line_style_and_color2() {
     assert_eq!(u16::from_le_bytes([data[7], data[8]]), 0x0000);
 }
 
-/// #1095: fixed width is bit 4 and terrain layer is bit 5, each independent of the other and of the
-/// priority/dashed/color2 bits below them. The record stays 8 bytes — both bits live in the byte
-/// that was already there, which is why defining them cost no format bump.
+/// Fixed width is bit 4 and terrain layer is bit 5, each independent of the other and of the
+/// priority, dashed and color2 bits below them. The record stays 8 bytes, because both bits live in
+/// a byte that was already there.
 #[test]
 fn pack_style_dict_fixed_width_and_terrain_layer_bits() {
     let contour = |fixed_width, terrain_layer| Style {
@@ -99,12 +99,11 @@ fn pack_style_dict_fixed_width_and_terrain_layer_bits() {
 
 #[test]
 fn pack_feature_8bit_line() {
-    // A 2-point line, anchor at the node min corner.
     let f = line(10, &[(1.0, 1.0), (1.0001, 1.0001)]);
     let node_bbox = (1_000_000, 1_000_000, 1_010_000, 1_010_000);
     let data = pack_feature(&f, node_bbox);
 
-    // v11 compact header: 2 vertices and a zero anchor both fit the narrow fields.
+    // Compact header: 2 vertices and a zero anchor both fit the narrow fields.
     assert_eq!(data.len(), 9); // compact header(7) + one 8-bit delta pair(2)
     assert_eq!(data[0], 10); // style
     assert_eq!(data[1], 0); // flags: line, 8-bit, compact (WIDE clear)
@@ -117,7 +116,7 @@ fn pack_feature_8bit_line() {
 
 #[test]
 fn pack_chunk_is_tight_and_ends_in_one_sentinel() {
-    // v11: no padding to `chunk_size`. The chunk is the packed features plus exactly one 0xFF.
+    // No padding to `chunk_size`: the chunk is the packed features plus exactly one 0xFF.
     let f = line(10, &[(1.0, 1.0), (1.0001, 1.0001)]);
     let node_bbox = (1_000_000, 1_000_000, 1_010_000, 1_010_000);
     let (chunk, dropped) = pack_chunk(&[f], node_bbox, 32);
@@ -150,8 +149,8 @@ fn a_closed_line_keeps_its_final_vertex() {
     assert_eq!(data[2], 3, "line loops are explicit stroke paths, not implicit polygon rings");
 }
 
-/// v14 §1.1/§1.2 helpers, spelled out here rather than imported from the writer so these pins stay
-/// an independent restatement of the layout rule.
+/// Layout helpers, spelled out here rather than imported from the writer so these pins stay an
+/// independent restatement of the layout rule.
 const UNIT: usize = 16;
 const FILLER: u8 = obc_formats::obcm::FILLER;
 
@@ -177,7 +176,6 @@ fn integer_collinear_vertices_are_not_serialized() {
 
 #[test]
 fn serialize_lods_header_single_empty_leaf() {
-    // One LOD, one empty leaf, no styles.
     let lods = vec![LodLayer {
         max_mpp: None,
         chunk_size: 2048,
@@ -195,15 +193,15 @@ fn serialize_lods_header_single_empty_leaf() {
     );
     assert_eq!(dropped, 0);
 
-    // v14 §1.2: every structure a header or directory offset reaches begins on a unit boundary, so
-    // the layout is the v13 one with each region start rounded up and the gap `0xFF`-filled.
-    //   header 49 → style table at 64 (the `49..64` gap is filler)
-    //   style count byte 1 → LOD table at 80
-    //   one 18-byte LOD entry → LOD 0's index at 112
-    //   index 4 + the chunkless LOD's one-entry offset table 4 → the region ends at 128
-    // then the empty POI directory — count(1) + chunk_size(2) + 7 entries × 13 + the two v7 pool
-    // fields (offset u32 + count u16 = 6) = 100 bytes, rounded to 112 — the empty hours pool (a bare
-    // `count u16`, rounded to a unit), and the empty nav section at the tail.
+    // Every structure a header or directory offset reaches begins on a unit boundary, so each
+    // region start is rounded up and the gap is `0xFF`-filled.
+    //   header 49 -> style table at 64 (the `49..64` gap is filler)
+    //   style count byte 1 -> LOD table at 80
+    //   one 18-byte LOD entry -> LOD 0's index at 112
+    //   index 4 plus the chunkless LOD's one-entry offset table 4 -> the region ends at 128
+    // then the empty POI directory — count(1) + chunk_size(2) + 7 entries x 13 + the pool fields
+    // (offset u32 + count u16) = 100 bytes, rounded to 112 — the empty hours pool, and the empty nav
+    // section at the tail.
     let poi_dir_len = 1 + 2 + 7 * 13 + 6;
     let hours_pool_len = align_up(2); // an empty pool is just its count, padded to a boundary
                                       // Empty graph: the 40-byte directory, the filler that carries
@@ -229,8 +227,8 @@ fn serialize_lods_header_single_empty_leaf() {
     assert_eq!(bin[poi_off], 7, "empty POI directory still declares 7 categories");
     assert_eq!(u16::from_le_bytes([bin[poi_off + 1], bin[poi_off + 2]]), 512); // shared chunk_size
 
-    // The v7 hours-pool fields trail the seven 13-byte entries: offset u32 + count u16. Count is 0 (no
-    // hours), and the pool region (its bare `count u16`) begins right after the directory.
+    // The hours-pool fields trail the seven 13-byte entries: offset u32 + count u16. Count is 0, and
+    // the pool region (its bare `count u16`) begins right after the directory.
     let pool_fields_off = poi_off + 3 + 7 * 13;
     let hours_pool_off = scaled_at(&bin, pool_fields_off);
     let hours_pool_count = u16::from_le_bytes(bin[pool_fields_off + 4..pool_fields_off + 6].try_into().unwrap());
@@ -267,21 +265,19 @@ fn serialize_lods_header_single_empty_leaf() {
     assert_eq!(node_count, 1);
     assert_eq!(c_size, 2048);
     assert_eq!(chunk_count, 0);
-    // A chunkless LOD still writes its offset table: the single `0` entry, then the §1.2 filler
-    // that carries the region to the boundary `data_start` would have landed on — which is what
-    // lets the section behind it be named.
+    // A chunkless LOD still writes its offset table: the single `0` entry, then the filler that
+    // carries the region to the boundary `data_start` would have landed on, which is what lets the
+    // section behind it be named.
     let table_off = idx_off + node_count as usize * 4;
     assert_eq!(u32::from_le_bytes(bin[table_off..table_off + 4].try_into().unwrap()), 0);
     assert_eq!(align_up(table_off + 4), poi_off, "table of one entry, its filler, then the POI section");
     assert!(bin[table_off + 4..poi_off].iter().all(|&b| b == FILLER));
 }
 
-// === 16-bit delta path — byte-pinned ========================================
-
 #[test]
 fn pack_feature_16bit_line() {
-    // Deltas of 500 µdeg exceed int8 (>127), so the feature flips to the 16-bit
-    // path: flags 0x01, and each delta is an int16 LE pair.
+    // Deltas of 500 µdeg exceed int8, so the feature flips to the 16-bit path: flags 0x01, and each
+    // delta is an int16 LE pair.
     let f = line(10, &[(1.0, 1.0), (1.0005, 1.0005)]);
     let node_bbox = (1_000_000, 1_000_000, 1_010_000, 1_010_000);
     let data = pack_feature(&f, node_bbox);
@@ -312,8 +308,6 @@ fn pack_feature_16bit_negative_delta() {
     assert_eq!(i16::from_le_bytes([data[9], data[10]]), -500, "dy = -500 as signed int16");
 }
 
-// === Densify byte-pinning inside pack_feature ===============================
-
 #[test]
 fn pack_feature_densifies_long_segment_bytes() {
     // A 55 000-µdeg vertical segment exceeds MAX_SEGMENT (30 000): densify inserts
@@ -334,10 +328,9 @@ fn pack_feature_densifies_long_segment_bytes() {
     assert_eq!(i16::from_le_bytes([data[13], data[14]]), 27_500); // dy to endpoint
 }
 
-// === Numeric extremes =======================================================
-// `pack_feature` casts the anchor `as i32` and deltas `as i16`. A continent-
-// spanning anchor must survive the i32 cast, and the anchor-relative deltas (kept
-// small by the node frame) stay correct even for huge absolute coordinates.
+// `pack_feature` casts the anchor `as i32` and deltas `as i16`. A continent-spanning anchor must
+// survive the i32 cast, and the anchor-relative deltas stay correct even for huge absolute
+// coordinates.
 
 #[test]
 fn pack_feature_extreme_anchor_survives_i32() {
@@ -376,11 +369,9 @@ fn pack_feature_antimeridian_negative_anchor() {
     assert_eq!(data[8] as i8, 100, "dy = +100 µdeg");
 }
 
-// === Quadtree budget vs real packed bytes ===================================
-// The quadtree splits on `geom::packed_size_budget`; if that ever under-counts
-// what `pack_feature` really emits, a leaf survives splitting and `pack_chunk`
-// silently drops the overflow. Pin `budget >= packed.len()` for the cases that
-// used to be under-counted: densified long segments and hole bookkeeping bytes.
+// The quadtree splits on `geom::packed_size_budget`; if that ever under-counts what `pack_feature`
+// really emits, a leaf survives splitting and `pack_chunk` silently drops the overflow. Pin
+// `budget >= packed.len()` for densified long segments and hole bookkeeping bytes.
 
 #[test]
 fn budget_covers_packed_bytes_for_densify_and_holes() {
@@ -440,9 +431,8 @@ fn pack_feature_rotates_the_exterior_before_splitting_a_nearby_hole() {
     assert_eq!(u16::from_le_bytes([packed[5], packed[6]]), 40_000, "anchor latitude rotates northeast");
 }
 
-// === Chunk-size overflow drop ===============================================
-// `pack_chunk` drops a feature (and every feature after it) that would overflow
-// the chunk; pin that the padding/contents stay consistent.
+// `pack_chunk` drops a feature, and every feature after it, that would overflow the chunk; pin that
+// the contents stay consistent.
 
 #[test]
 fn pack_chunk_drops_overflowing_feature_and_the_rest() {
@@ -462,7 +452,6 @@ fn pack_chunk_drops_overflowing_feature_and_the_rest() {
     // gone too (break, not continue).
     assert_eq!(chunk[0], 10, "the one feature that fit is `a`");
     assert_eq!(chunk[9], 0xFF, "the sentinel closes the stream right after `a`");
-    // Specifically, style ids 11 and 12 never appear.
     assert!(!chunk.contains(&11) && !chunk.contains(&12), "overflowing features b/c were dropped, not packed");
 }
 
@@ -518,11 +507,9 @@ fn serialize_keeps_chunk_index_consistent_when_a_feature_overflows() {
     assert!(!bin[chunk_off..chunk_off + 10].contains(&11), "the overflowing feature is absent from the chunk");
 }
 
-// === v11 chunk offset table (§5, issue #1009) ================================
-
 /// `serialize_tree`'s data region: a `chunk_count + 1` entry `uint32` table, then the tight chunks.
-/// Every property the reader's arithmetic depends on is pinned here — zero-based, monotonic, the last
-/// entry the region total, and the slice each pair delimits actually being that chunk's bytes.
+/// Every property the reader's arithmetic depends on is pinned here — zero-based, monotonic, the
+/// last entry the region total, and the slice each pair delimits being that chunk's bytes.
 #[test]
 fn serialize_tree_writes_a_monotonic_offset_table() {
     // Two leaves under a branch: NW and NE hold one feature each, SW/SE are empty.
@@ -541,8 +528,8 @@ fn serialize_tree_writes_a_monotonic_offset_table() {
     assert_eq!((node_count, chunk_count, dropped), (5, 2, 0));
     assert_eq!(index.len(), 5 * 4);
 
-    // Since v14 the entries count **units**, and `data_start` is `align_up` of the table's end —
-    // which `serialize_tree` can compute itself, because the index it follows is on a boundary.
+    // The entries count units, and `data_start` is `align_up` of the table's end, which
+    // `serialize_tree` can compute itself because the index it follows is on a boundary.
     let table_len = (chunk_count as usize + 1) * 4;
     let data_start = align_up(index.len() + table_len) - index.len();
     let offsets: Vec<usize> = (0..=chunk_count as usize)
@@ -560,10 +547,9 @@ fn serialize_tree_writes_a_monotonic_offset_table() {
         let span = &data[data_start + offsets[k]..data_start + offsets[k + 1]];
         assert_eq!(span.len() % UNIT, 0, "a chunk's span is a whole number of units");
         assert_eq!(span[0], style, "chunk {k} starts with its feature");
-        // The span ends in a `0xFF` run whose *first* byte is the chunk's one sentinel and whose
-        // rest is filler — so the run is `1..=U` bytes. Counting the trailing run rather than
-        // searching for the first `0xFF` is the point: a feature's own bytes may legitimately be
-        // `0xFF`, which is why the sentinel is positional and not a scan target.
+        // The span ends in a `0xFF` run whose first byte is the chunk's one sentinel and whose rest
+        // is filler, so the run is `1..=U` bytes. Counting the trailing run rather than searching
+        // for the first `0xFF` is the point: a feature's own bytes may legitimately be `0xFF`.
         let run = span.iter().rev().take_while(|&&b| b == FILLER).count();
         assert!((1..=UNIT).contains(&run), "chunk {k}: one sentinel plus 0..U-1 filler, got a run of {run}");
     }
@@ -576,14 +562,12 @@ fn serialize_tree_writes_the_table_even_with_no_chunks() {
     let root = Node::Leaf { bbox: (0, 0, 1_000_000, 1_000_000), features: vec![] };
     let (index, node_count, data, chunk_count, dropped) = serialize_tree(&root, 4096);
     assert_eq!((node_count, chunk_count, dropped), (1, 0, 0));
-    // The single `0` entry, then the §1.2 filler that carries the region to a unit boundary — so
-    // whatever follows this LOD can still be named by a scaled offset.
+    // The single `0` entry, then the filler that carries the region to a unit boundary, so whatever
+    // follows this LOD can still be named by a scaled offset.
     let mut want = vec![0u8, 0, 0, 0];
     want.resize(align_up(index.len() + 4) - index.len(), FILLER);
     assert_eq!(data, want, "one zero entry and its filler, nothing else");
 }
-
-// === v11 compact-vs-wide header selection (§5, issue #1009) ==================
 
 /// Read a packed feature's `(wide, ext_pt_count, ax, ay)` the way the reader does.
 fn header_of(packed: &[u8]) -> (bool, usize, i32, i32) {

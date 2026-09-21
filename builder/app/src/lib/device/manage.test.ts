@@ -2,7 +2,7 @@
  * Rename and trip editing: byte-level checks for the name rewrite (the one place this code edits a
  * format by hand), loopback round-trips for the replace-at-same-id semantics everything rests on.
  *
- * Both mutations are a `PUT` naming an existing object (§3.6), so the two properties worth pinning
+ * Both mutations are a `PUT` naming an existing object, so the two properties worth pinning
  * against a real device are that the replace keeps the `ObjectId` — every reference to the route
  * survives — and that it carries the revision it expects, so a listing something else has already
  * overtaken fails the compare-and-swap instead of clobbering.
@@ -180,7 +180,6 @@ describe("against the real device", () => {
     });
 
     // Gone with the v1 wire: "uploading identical trip bytes twice converges on one object". The
-    // device deduped a fresh upload on (length, CRC) and answered with the existing id; v4 has no
-    // such rule, and §3.4 makes reconciling a create the client's job — `FlatStoreClient.findCreated`,
-    // covered in `flows.test.ts` and `client.test.ts`.
+    // A create is reconciled by the client rather than deduped on the wire —
+    // `FlatStoreClient.findCreated`, covered in `flows.test.ts` and `client.test.ts`.
 });

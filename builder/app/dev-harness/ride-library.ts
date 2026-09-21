@@ -1,20 +1,19 @@
 /**
- * An in-memory {@link RideLibrary} for the dev harness — so the Rides page (desktop-only in the
- * shipping app: `caps.rideLibrary`, Tauri IPC underneath) can be rendered and driven in a browser.
+ * An in-memory {@link RideLibrary} for the dev harness — so the Rides page, desktop-only in the
+ * shipping app, can be rendered and driven in a browser.
  *
- * Same hard line as the simulated device (`simulated-device.svelte.ts`): this file lives outside
- * `src/`, no shipping module imports it, and the harness entry point injects it by overriding the
- * platform object (`main.ts`). The model is `library.test.ts`'s `RecordingLibrary`: real state,
- * not a mock — `import()` resolving is what makes a ride `present` on the next `view()`,
- * `readObject` hands back real §7.2 bytes (so the chart-room preview and the GPX auto-repair run
- * the *actual* decode + wasm export), and `writeGpx` flips `gpxPresent` like the real re-export
- * does.
+ * Same hard line as the simulated device: this file lives outside `src/`, no shipping module
+ * imports it, and the harness entry point injects it by overriding the platform object. The model
+ * is `library.test.ts`'s `RecordingLibrary`: real state, not a mock — `import()` resolving is what
+ * makes a ride `present` on the next `view()`, `readObject` hands back real ride bytes so the
+ * preview and the GPX auto-repair run the *actual* decode and wasm export, and `writeGpx` flips
+ * `gpxPresent` like the real re-export does.
  *
  * The seeds are chosen for the map, not for realism: three rides around Freiburg and the
- * Kaiserstuhl (a cluster, when zoomed out) and one lone ride near Innsbruck (its own badge). One
- * Freiburg ride starts with its GPX "missing", so the panel's quiet auto-repair has something to
- * repair on first open. The simulated *device* (serial 0011223344556677) uses a different serial
- * than these seeds, so "Pull rides from device" lands its three rides as new rows and new tracks.
+ * Kaiserstuhl, a cluster when zoomed out, and one lone ride near Innsbruck with its own badge. One
+ * Freiburg ride starts with its GPX missing, so the panel's quiet auto-repair has something to
+ * repair on first open. The simulated *device* uses a different serial than these seeds, so "Pull
+ * rides from device" lands its three rides as new rows and new tracks.
  */
 
 import {

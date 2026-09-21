@@ -1,34 +1,21 @@
 ---
 title: Firmware updates
-description: The firmware release, delivery, validation, installation, trial, and rollback process.
+description: How a firmware package is released, delivered, validated, installed, and rolled back.
 copy: ai
 ---
 
 # Firmware updates
 
-OpenBikeComputer uses one application slot and a 32 KB bootloader. The update design can reserve storage for the previous image.
+The device has one application slot and a small bootloader, and the update design reserves storage
+for the previous image. An update package uses the [OBCU format](src:specs/OBCU_Spec.md) and is
+stored as an ordinary object on the card.
 
-An update package uses the [OBCU format](src:specs/OBCU_Spec.md). The flat store keeps it as object kind `7`.
-
-Uploading a package does not install it. The [`ARM`](src:specs/FLAT_Store_Protocol.md) contract
-defines a separate request to validate and start installation.
-
-The current [board policy](src:firmware/obc-fw-nrf54l/src/flat_store.rs) rejects every `ARM` request.
-Field installation is disabled. The sections below distinguish package delivery from the install
-contract and bootloader behavior.
+Uploading a package does not install it. Installation is a separate, explicit request. The current
+[board policy](src:firmware/obc-fw-nrf54l/src/flat_store.rs) refuses that request, so field
+installation is disabled: the pages below describe the contract and the bootloader, which are
+built and tested, not a feature a rider can use today.
 
 ## The trust model
-
-The `ARM` contract and boot chain have these properties:
-
-- The device verifies the OBCU structure, image CRC, Ed25519 signature, and version before arming.
-- The device refuses an update during ride recording or when battery power is insufficient.
-- The flat-store service allocates a rollback reserve before it writes the boot handoff.
-- The bootloader verifies the complete staged image before it erases the application slot.
-- A power loss during installation leaves the state as `Armed`. The next boot repeats the complete install.
-- The new image gets one trial boot. After an unconfirmed trial, the bootloader restores an available reserve.
-- The bootloader starts a 24-second watchdog before the trial. A stalled trial resets into the unconfirmed path.
-- A blank or invalid boot-state page means `Idle`. The bootloader starts the current application.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -64,124 +51,52 @@ The `ARM` contract and boot chain have these properties:
 <figcaption>The state transitions describe the install contract and bootloader. The current board policy rejects ARM before this flow starts.</figcaption>
 </figure>
 
-If the card is unreadable before erase, the bootloader retries for approximately one minute.
-It then clears the arm and starts the old image.
+The chain is built so that every failure has one safe answer:
 
-After erase starts, the bootloader retries until it can complete the install or rollback.
+- The device verifies the package structure, the image CRC, the signature, and the version before
+  it arms anything.
+- It refuses to install while a ride is recording or when the battery is too low.
+- The store reserves the rollback space before it writes the boot handoff.
+- The bootloader verifies the whole staged image before it erases the application.
+- A power loss during installation leaves the state armed, and the next boot repeats the whole
+  install.
+- The new image gets one trial boot under a watchdog. An image that does not confirm itself is
+  replaced from the reserve.
+- A blank or invalid boot-state page means idle, and the bootloader starts the current
+  application.
+
+If the card cannot be read before the erase, the bootloader retries for about a minute and then
+starts the old image. After the erase has started there is no old image to fall back to, so it
+retries until it can finish the install or the rollback.
 
 ## Package validation
 
-The package uses CRC-32 for integrity and Ed25519 for authenticity. The signed message contains:
-
-- the context string `"OBCUv2-sig\0"`;
-- the version string;
-- the image length;
-- the application image.
-
-The application verifies the signature before it writes `Armed`. The bootloader verifies the image CRC before erase.
-
-The OBCU container format remains header version `1`. The signature marker uses reserved header bytes.
-The signature follows the application image.
-
-This layout lets the installed bootloader read current packages. See the [OBCU specification](src:specs/OBCU_Spec.md).
+The package carries a CRC for integrity and an Ed25519 signature for authenticity. The signed
+message covers a context string, the version, the image length, and the image, so a package cannot
+be replayed as a different version. The application verifies the signature before it arms; the
+bootloader verifies the image CRC before it erases. See the
+[OBCU specification](src:specs/OBCU_Spec.md).
 
 ## Release publication
 
-An owner prepares a candidate in the [release console](https://releases.openbikecomputer.com).
-The candidate fixes a source commit and a requirement revision. Its SemVer version must match the
-board-crate version. [Candidate verification](src:.github/workflows/verification-candidate.yml)
-runs the complete ordinary CI suite and calls the [firmware build](src:.github/workflows/release.yml).
-A tag push does not publish firmware.
+An owner prepares a candidate in the release console, which fixes the source commit and the
+requirement revision. Candidate verification runs the ordinary CI suite and builds the firmware. A
+tag push publishes nothing by itself.
 
-A published release requires a public key that differs from the committed test key. It also requires the release signing seed.
-A manual dry run can use the test key, but it publishes nothing.
+Publication is gated on verification, not on a green build alone: every active requirement needs an
+approved coverage plan, and every test that plan cites has to pass for this candidate. A missing or
+failing test blocks publication unless an administrator records an exception for that candidate,
+with a reason, and the report says which requirements were accepted that way. The
+[publication workflow](src:.github/workflows/verification-publish.yml) re-checks the frozen
+evidence, tags the tested commit, and publishes the firmware that was already built. Nothing is
+rebuilt at publication.
 
-The workflow builds the bootloader and application. It converts the application to binary, wraps it in OBCU, and signs it.
+The GitHub release is the archive: the binaries, the package, the checksums, and the frozen
+verification report. The workflow also copies the package and a small manifest to the update
+service, which clients read to find the current version, its size, and its digest. There are two
+channels, stable and prerelease, and the path of a published package never changes.
 
-`obc-mkimage inspect` checks both CRC values and the signature before publication.
-
-### Release archive and download service
-
-Each active system requirement needs an approved coverage plan. The plan maps acceptance criteria
-to tests, records remaining gaps, and can name the next test to build for each gap. An agent can
-propose the whole plan or changes to accepted coverage, including a new manual procedure that
-approval creates; an owner approves or rejects each proposal. An owner edits the plan as part of the
-requirement draft, together with its tests, and saving the revision approves it, because a saved
-revision is an owner's act. A requirement carries exactly the tests its plan cites: a plan that
-omits a test unlinks it, and approval of an agent proposal applies the criteria and the test links
-in the same step. Each requirement shows one coverage state: not assessed, partial, or covered.
-Coverage and candidate test results remain separate; only a covered, approved plan satisfies
-verification, even if all its tests pass. The review records one source commit for the report: the
-commit the agent assessed, or the test catalogue commit when the owner saved the plan. The release
-gate checks that every cited test is present and passes in the candidate. Existing candidates
-retain their saved coverage and evidence.
-
-Every cited automated test needs a pass
-from this candidate's CI run. Every cited manual test needs a recorded pass for this candidate.
-The owner can attach input files to manual procedures and evidence files to manual results. A new
-candidate needs new manual results. Missing tests, skipped tests, and failed checks block publication
-unless an administrator records a requirement exception for that candidate. An exception needs a
-reason and retains the original test results. It does not carry into another candidate. The report
-and release notes distinguish accepted exceptions from verified requirements.
-
-An included requirement marked **Definition incomplete** blocks publication. Resolve its definition
-in a new requirement revision and prepare a new candidate. **Implementation needed** also blocks
-publication, but an administrator can accept a candidate exception for this known gap. Requirements
-marked **Excluded from releases** do not need passing verification. The final review, report, and
-release notes list them separately; they are not counted as verified. Exclusion applies to future
-candidates until the owner removes the label. Exceptions cannot bypass incomplete definitions,
-failed CI, firmware signing, missing build files, or evidence provenance checks.
-
-When the release gate passes, the owner can publish. The [publication workflow](src:.github/workflows/verification-publish.yml)
-checks the frozen evidence and retained file hashes again. It creates the tag at the tested commit
-and publishes the retained firmware without a rebuild.
-
-The GitHub release is the versioned archive. It contains ELF files, the OBCU package, checksums,
-and the frozen verification report in HTML and JSON. Requirement revisions and evidence live in
-the console database. Git contains the application and workflow code.
-
-The workflow copies the package and manifest to `updates.openbikecomputer.com`. This service permits browser downloads with CORS.
-
-### Manifest
-
-Clients read this JSON file:
-
-```json
-{
-  "version": "v1.3",
-  "bytes": 1204208,
-  "sha256": "…64 lowercase hex…",
-  "url": "https://updates.openbikecomputer.com/fw/v1.3.0/UPDATE.BIN",
-  "notes": "https://github.com/…/releases/tag/v1.3"
-}
-```
-
-Clients validate all required fields. The URL must use HTTPS. The byte count must be positive.
-The digest must contain 64 hexadecimal characters.
-
-HTTP 404 means that the channel has no published release. Clients ignore unknown fields.
-
-### Release channels
-
-The service uses three object names:
-
-| Object | Written by | Role |
-|---|---|---|
-| `fw/<tag>/UPDATE.BIN` | every tag | immutable package |
-| `fw/manifest.json` | stable tags only | default channel pointer |
-| `fw/prerelease/manifest.json` | SemVer prerelease tags only | opt-in channel pointer |
-
-A prerelease tag updates only the prerelease manifest. A stable tag updates only the stable manifest.
-
-The package path for each tag is immutable.
-
-### Version comparison
-
-The device reports its firmware version through BLE Device Information or the USB EP0 request.
-
-The TypeScript and Swift clients use the same SemVer rules. They ignore build metadata and do not offer a downgrade.
-
-A development build reports a Git hash. Clients do not offer automatic updates when the running version is not SemVer.
+## Three ways a package arrives
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -223,65 +138,41 @@ A development build reports a Git hash. Clients do not offer automatic updates w
 <figcaption>Release clients can stage an update package. Field installation remains disabled by the current board policy.</figcaption>
 </figure>
 
-## Three ways an update arrives
+The companion app uploads a package over Bluetooth, the map builder uploads one over USB, and
+either client can upload a local file. The card is not user-accessible, so a computer cannot copy a
+package onto it directly.
 
-A package can arrive in three ways:
+Both clients check the package header, the CRCs, and the size before they upload, and check the
+manifest size and digest for a published package. They do not verify the signature: the device owns
+the trusted key, and a check on the client would prove nothing about the device.
 
-- The companion app downloads a published package and uploads it through BLE.
-- The map builder downloads a published package and uploads it through USB.
-- A user selects a local `UPDATE.BIN` package in either client. The client uploads it through BLE or USB.
+A client offers only a strictly newer release, and offers nothing for a development build whose
+version is not a release version. After the upload it sends the arm request, naming the staged
+object and its revision. The link authorizes the request: an authenticated bond, or a physical
+cable.
 
-The card is not user-accessible. A computer cannot copy a package directly to the card.
-
-Both clients validate the OBCU header, header CRC, image CRC, signature marker, and size before upload.
-They do not verify the signature. The device owns the trusted public key.
-
-For published packages, clients also check the manifest byte count and SHA-256 digest.
-They obtain the running version from BLE Device Information or the USB EP0 request.
-They offer only a strictly newer SemVer release. They do not offer automatic updates for a development version.
-
-Each client uploads the package with `PUT` as object kind `7`. This operation only stages the package.
-The client then sends `ARM` with the package object ID and expected revision.
-BLE authenticates the control channel. USB enumeration authorizes the request. The device requires no on-device confirmation.
-
-An implementation that enables `ARM` must reject it if any of these conditions apply:
-
-- The object ID or revision does not identify the staged package.
-- The OBCU structure, CRC, or Ed25519 signature is invalid.
-- The package version is not strictly newer than the running version.
-- A ride is recording.
-- The battery is below the install threshold.
-
-The install contract requires a rollback reserve and boot handoff before success.
-It requires the response before reboot. The current board does not enter this path.
-
-The app records the package version and arm generation before reboot. The bootloader records the install result.
-After boot, the app uses both records to show one result message. A normal boot shows no update message.
+An implementation that enables arming must refuse it when the named object is not the staged
+package, when the structure, CRC, or signature is invalid, when the version is not strictly newer,
+while a ride is recording, or when the battery is too low.
 
 ## The chain, layer by layer
-
-Each check has one purpose:
 
 | Check | Performed by | Purpose |
 |---|---|---|
 | HTTPS | client | authenticates the update service |
-| Manifest size and SHA-256 | client | detects a wrong or incomplete download |
-| `ARM` authorization | BLE authentication or USB enumeration | authorizes the install request |
-| Ed25519 signature | device application | authenticates the package |
+| Manifest size and digest | client | detects a wrong or incomplete download |
+| Arm authorization | bond or cable | authorizes the install request |
+| Signature | device application | authenticates the package |
 | Version monotonicity | device application | prevents downgrade and reinstall |
-| Image CRC-32 | application and bootloader | detects storage or transfer corruption |
-| Trial confirmation | new application | proves that the new image can start |
+| Image CRC | application and bootloader | detects storage or transfer corruption |
+| Trial confirmation | new application | proves the new image can start |
 
-The signature does not depend on the download server.
-A compromised server cannot create an accepted package without the signing key.
-
-The SHA-256 digest does not authenticate the package. The manifest and package come from the same service.
-
-The bootloader verifies the complete image CRC before erase. It restores an available rollback reserve after an unconfirmed trial.
+The signature is the load-bearing check, and it does not depend on the download server: a
+compromised server cannot produce an accepted package without the signing key. The manifest digest
+detects a bad download and nothing more, because the manifest and the package come from the same
+service.
 
 ## RRAM layout
-
-The bootloader and application use one fixed RRAM layout. The application starts at `0x8000`.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -329,17 +220,16 @@ The bootloader and application use one fixed RRAM layout. The application starts
 <figcaption>Both RRAM strips are proportional within their own scales. The enlarged tail makes the small regions readable; the card objects have variable sizes.</figcaption>
 </figure>
 
-The bootloader has no filesystem, BLE stack, display driver, or asynchronous executor. It uses blocking storage and RRAM operations.
-
-During installation, the bootloader keeps the display COM waveform active.
-It also keeps the watchdog active when the current state requires it.
+The bootloader has no filesystem, no radio, no display driver, and no asynchronous executor. It
+uses blocking storage and RRAM operations, because everything it must do has to work when the
+application does not exist. It does keep the display's polarity waveform and the watchdog running
+during an install.
 
 ## Implementation
 
 - OBCU and boot-state formats: [`OBCU_Spec.md`](src:specs/OBCU_Spec.md)
 - Install protocol: [`FLAT_Store_Protocol.md`](src:specs/FLAT_Store_Protocol.md)
-- Flat-store layout: [`FLAT_Store_Format.md`](src:specs/FLAT_Store_Format.md)
-- Shared DFU logic: [`obc-dfu`](src:firmware/obc-dfu)
+- Shared update logic: [`obc-dfu`](src:firmware/obc-dfu)
 - Bootloader: [`obc-boot`](src:firmware/obc-boot)
 - Package tool: [`obc-mkimage`](src:host/obc-mkimage)
 - Release workflow: [`release.yml`](src:.github/workflows/release.yml)

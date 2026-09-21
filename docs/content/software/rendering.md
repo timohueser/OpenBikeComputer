@@ -6,11 +6,13 @@ copy: ai
 
 # The rendering pipeline
 
-The renderer converts streamed map data into a 240×320-pixel frame. It uses fixed memory and does not allocate heap memory.
+The renderer turns streamed map data into one 240 × 320 frame. It uses fixed buffers and allocates
+no memory, so a dense city cannot cost more memory than open country.
 
 ## Shared render path
 
-[obc-render](src:firmware/obc-render) is a no_std crate. The simulator and device use the same geometry code.
+[`obc-render`](src:firmware/obc-render) is a `no_std` crate. The device, the simulator, and the
+browser draw with the same geometry code, so a frame on a desktop is the frame the panel shows.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -59,18 +61,11 @@ The renderer converts streamed map data into a 240×320-pixel frame. It uses fix
 <figcaption>The renderer receives a map scene, a pixel target, and a color conversion function.</figcaption>
 </figure>
 
-The render call receives these inputs:
-
-| Input | Purpose |
-| --- | --- |
-| MapScene | Supplies styles, LOD data, candidates, geometry, and diagnostics. |
-| Viewport | Defines camera position, scale, rotation, and panel size. |
-| RenderConfig | Selects per-frame presentation options. |
-| DrawTarget | Receives pixels. |
-| Color function | Converts RGB565 styles to target pixels. |
-| RenderScratch | Supplies all per-frame work buffers. |
-
-The [Reader adapter](src:firmware/obc-reader/src/scene.rs) streams OBCM chunks through MapScene. The interface does not expose file offsets or cache slots.
+A render call receives the map scene, the viewport, the presentation options, a draw target, a
+color function, and the scratch buffers. The
+[reader adapter](src:firmware/obc-reader/src/scene.rs) streams map chunks through the scene
+interface, which exposes no file offsets and no cache slots, so the renderer does not know what
+storage it draws from.
 
 ## Frame stages
 
@@ -127,18 +122,10 @@ The [Reader adapter](src:firmware/obc-reader/src/scene.rs) streams OBCM chunks t
 <figcaption>A frame selects visible data, draws it in z-order, and adds overlays.</figcaption>
 </figure>
 
-The frame uses these operations:
-
-1. Use the viewport to select a level of detail and find visible chunks.
-2. Select complete features against priority, point, and ring budgets.
-3. Decode the selected geometry and project it to the screen.
-4. Sort selected features by paint order.
-5. Rasterize polygons and lines.
-6. Draw route and rider overlays.
+Each stage narrows the work: the selection stages decide what is drawn, and only what survives them
+is decoded, projected, and rasterized.
 
 ## Projection
-
-The [Viewport](src:firmware/obc-render/src/viewport.rs) stores camera position, zoom, latitude correction, and rotation.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -187,13 +174,11 @@ The [Viewport](src:firmware/obc-render/src/viewport.rs) stores camera position, 
 <figcaption>Projection keeps the camera delta precise. It then corrects longitude, rotates, scales, and rounds.</figcaption>
 </figure>
 
-to_screen keeps the camera delta as an integer before conversion to f32. It then corrects longitude, rotates, scales, and rounds.
-
-to_map applies the inverse transform. Panning and viewport bounds use this operation.
+[`Viewport`](src:firmware/obc-render/src/viewport.rs) keeps the camera position, zoom, latitude
+correction, and rotation. The transform holds the offset from the camera as an integer before it
+converts to floating point, so precision does not fall away far from the origin.
 
 ## Level of detail
-
-An OBCM file contains pre-simplified level-of-detail (LOD) tiers. Each tier specifies its maximum meters per pixel.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -237,13 +222,11 @@ An OBCM file contains pre-simplified level-of-detail (LOD) tiers. Each tier spec
 <figcaption>The renderer selects the finest LOD that supports the current meters-per-pixel value.</figcaption>
 </figure>
 
-The renderer selects the finest supported tier. The selection depends on zoom and latitude.
-
-The selection does not depend on display size. Equal geographic views select the same tier on all hosts.
+The renderer selects the finest level whose stated scale still supports the current
+meters-per-pixel value. The selection uses zoom and latitude only, never the panel size, so the
+same geographic view selects the same level on every host.
 
 ## Visible chunks
-
-Each LOD stores geometry in chunks. A quadtree indexes the chunks by geographic bounds.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -333,19 +316,15 @@ Each LOD stores geometry in chunks. A quadtree indexes the chunks by geographic 
 <figcaption>The quadtree walk prunes nodes outside the viewport. It streams candidates from intersecting leaves.</figcaption>
 </figure>
 
-The reader descends only into nodes that intersect the viewport. It streams candidates from each nonempty leaf.
-
-The walk limits recursion depth and rejects backward child references. These checks protect the device from invalid map data.
-
-The walk does not limit the total number of visible chunks. The next stage applies the global feature budget.
+The reader walks the quadtree and descends only into nodes that meet the viewport. It limits the
+depth and refuses a backward child reference, because a damaged map must not be able to make the
+device loop. It does not limit how many chunks it returns: the next stage owns the budget.
 
 ## Feature selection
 
-Dense views can exceed the frame buffers. Each style supplies a retention priority from 1 through 4.
-
-Priority 1 has the highest retention priority. The z-index does not affect retention.
-
-A 256-bit style mask removes hidden styles before geometry decode. The terrain-layer setting uses this mask.
+A dense view holds more geometry than the frame buffers. Each style carries a retention priority,
+and a higher-priority feature can displace a lower-priority one across the whole view. Priority
+decides what survives; paint order decides what covers what.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -373,13 +352,9 @@ A 256-bit style mask removes hidden styles before geometry decode. The terrain-l
 <figcaption>Pass A stores candidate metadata and an opaque token. Pass B decodes selected candidates.</figcaption>
 </figure>
 
-Selection uses two passes:
-
-- Pass A stores style, bounds, size, and an opaque source token.
-- An in-memory selection admits candidates against point and ring budgets.
-- Pass B decodes only admitted candidates into caller-owned buffers.
-
-A higher-priority candidate can evict a lower-priority candidate. The decision applies across all visible chunks.
+Selection runs in two passes. The first stores only the style, bounds, size, and an opaque token
+for each candidate; the budget is applied in memory; the second decodes only what was admitted.
+Decoding is the expensive step, so nothing is decoded to be thrown away.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -446,17 +421,14 @@ A higher-priority candidate can evict a lower-priority candidate. The decision a
 <figcaption>The point counts and capacity are illustrative. Selection compares complete candidates across all visible chunks; higher-priority candidates can displace lower-priority ones.</figcaption>
 </figure>
 
-The renderer drops an invalid or oversized feature as one unit. It does not publish partial geometry.
-
-Each selected feature becomes a compact span. The span references points and rings in the frame buffers.
-
-RenderStats reports budget drops, decode failures, malformed data, source failures, cache activity, and stage time.
+A feature is dropped as one unit: the renderer never publishes part of a polygon. `RenderStats`
+reports drops, decode failures, malformed data, cache activity, and stage time, which is how a map
+that draws badly is diagnosed without a debugger.
 
 ## Paint order
 
-The renderer sorts spans by z-index and collection sequence.
-
-Priority controls feature retention. The z-index controls paint order. Collection sequence gives deterministic order for equal z-index values.
+Spans are sorted by paint order, and equal values keep collection order, so a frame is
+deterministic.
 
 ## Polygon fill
 
@@ -498,9 +470,8 @@ Priority controls feature retention. The z-index controls paint order. Collectio
 <figcaption>The even-odd fill rule supports concave polygons and holes.</figcaption>
 </figure>
 
-The polygon filler uses the even-odd scanline rule. It sorts edge crossings for each row and fills between pairs.
-
-The filler writes clipped horizontal rectangles. It skips a row if its crossing buffer is full.
+The filler uses the even-odd scanline rule, which handles concave rings and holes with one rule and
+no separate hole test.
 
 ## Line stroke
 
@@ -536,29 +507,15 @@ The filler writes clipped horizontal rectangles. It skips a row if its crossing 
 <figcaption>The stroker clips lines before rasterization. It removes subpixel duplicate points.</figcaption>
 </figure>
 
-Embedded Graphics strokes 1-pixel lines. The renderer converts wider segments to convex quadrilaterals and fills them as spans.
+One-pixel lines go through Embedded Graphics. A wider segment becomes a convex quadrilateral filled
+as spans, and discs close the ends and sharp joints. Line width follows zoom, except for styles
+fixed at one pixel, such as contours.
 
-Discs close run ends and sharp joints. Normal line width changes with zoom and stays from 1 through 12 pixels.
-
-Fixed-width styles bypass the zoom scale. Contours use this style property.
-
-### Style combinations
-
-| Feature | Dashed | color2 | Result |
-| --- | --- | --- | --- |
-| Line | No | None | Solid stroke |
-| Line | No | Set | Road casing and road fill |
-| Line | Yes | None | Dashed stroke |
-| Line | Yes | Set | Solid base and dashed top stroke |
-| Polygon | Ignored | Set | Fill and ring outline |
-
-Dashed lines use screen-space arc length. The renderer measures the arc from the first point of the
-line, and includes the parts that the view clip removes. Thus the dashes stay at the same map
-positions when the camera moves. A railway style draws a solid color2 base and color dashes.
+A dashed line measures its pattern along the screen arc from the first point of the line, including
+the part the view clip removed, so the dashes stay at the same place on the map while the camera
+moves.
 
 ### Road casing
-
-A road casing uses color2 and adds 2 pixels to the road width. Casings run only at the finest LOD.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 800px">
@@ -611,13 +568,11 @@ A road casing uses color2 and adds 2 pixels to the road width. Casings run only 
 <figcaption>The casing pass starts at the road z-band. Road fills then cover casing inside intersections.</figcaption>
 </figure>
 
-The renderer draws casings at the start of the road z-band. It then draws all road fills.
-
-This order keeps the casing above land fills. It also prevents casing lines inside road intersections.
+A casing is the darker outline of a road. The renderer draws every casing at the start of the road
+paint band and then every road fill, so a casing stays above the land fill and no casing line
+crosses an intersection.
 
 ### Polygon outlines
-
-A polygon with color2 receives a closed outline at the finest LOD.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 760px">
@@ -674,26 +629,15 @@ A polygon with color2 receives a closed outline at the finest LOD.
 <figcaption>The renderer fills every polygon in a z-group before it draws the outlines.</figcaption>
 </figure>
 
-The renderer fills all polygons in one z-group first. It then draws all outlines in that group.
-
-This order keeps shared walls between adjacent buildings.
+For the same reason, the renderer fills every polygon of a paint group before it outlines them,
+which keeps one shared wall between two adjacent buildings.
 
 ## Map overlays
 
-The renderer draws moving map content after the base map:
-
-1. Active route and direction chevrons
-2. Breadcrumb trail
-3. Waypoints and rider marker
-4. Map status and tool indicators
-
-The route and breadcrumb use the shared line stroker. Markers use the shared polygon filler.
+After the base map come the active route and its chevrons, the breadcrumb trail, the waypoints and
+the rider marker, and the status indicators, through the same stroker and filler as the map.
 
 ## Frame storage and presentation
-
-The device stores one RGB222 frame byte per pixel. The 240×320 frame uses 75 KiB.
-
-Each byte has the 00_RR_GG_BB format. The framebuffer converts RGB565 pixels when it stores them.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -764,53 +708,31 @@ Each byte has the 00_RR_GG_BB format. The framebuffer converts RGB565 pixels whe
 <figcaption>The presenter stores one u32 hash for each of the 320 panel rows. It combines adjacent changes into spans and sends only those rows to the panel.</figcaption>
 </figure>
 
-The LS021 presenter hashes each row. It sends the changed row spans through the FLPR coprocessor.
+The device holds one frame byte per pixel in the panel's own 64-color gamut. The presenter hashes
+each panel row, joins the changed rows into spans, and sends only those. A partial update is what
+makes the panel cheap: an unchanged row costs no transfer and no scan time. The simulator
+implements the same display contracts, so its output is the same frame.
 
-The M33 renders the frame and publishes dirty rows. The FLPR reads shared SRAM and writes the panel wire format.
+A transient overlay, such as hold feedback, is not stored in the clean base frame. The presenter
+reads the base window, composites the overlay, and sends the result, so clearing the overlay needs
+no map render.
 
-The simulator implements the same display contracts. Its final presenter writes changed rows to the host texture.
+## Landmark and peak photos
 
-### Transient overlays
-
-A transient overlay is not stored in the clean base frame. The presenter reads the required base-frame window and composites the overlay.
-
-Clearing the overlay presents the clean window again. It does not require a map render.
-
-A base-frame update can exclude a live overlay region. This rule prevents overlay flicker during a map update.
-
-## Memory budgets
-
-RenderScratch contains fixed-capacity buffers. The device initializes it in place in the shared scratch arena.
-
-| Buffer | Purpose | Capacity |
-| --- | --- | ---: |
-| Frame points | Selected projected vertices | 16,323 |
-| Frame ring lengths | Selected feature rings | 3,328 |
-| Candidate spans | Candidate and draw records | 3,072 |
-| Decode points | One decoded feature | 2,048 |
-| Screen points | One drawn feature | 2,048 |
-| Scanline crossings | One polygon row | 384 |
-
-The board build checks the complete scratch size against its arena budget. Increasing a capacity is a device-memory decision.
-
-## Landmark photo preparation
-
-A selected landmark photo uses the same resident frame as the map. The screen stores the map generation, record index, QID, title and render state. It does not store image pixels or a decoder.
-
-The base draw clears the photo rectangle and draws its header. A separate mutable phase then reads the selected photo through the normal map reader. Each step reads at most 256 compressed bytes and produces at most 4,096 pixels. Header and record reads also remain bounded. The board borrows its shared scratch arena for one step and releases it before presentation or any await. No source or frame reference survives the step.
-
-The next step preserves completed pixels. A full base redraw, a fresh capture or a return from a covering page starts the photo again. An ordinary drawer preserves the prepared photo and suspends its work. When a fresh frame or a drawer transition requires the base to be rebuilt, the shared frame pipeline prepares photo pixels before it draws the drawer. Interactive reconstruction advances one bounded step per pass; the drawer is composed after each step. A fresh headless capture finishes the background photo before it composes the drawer. If another arena user replaces the decoder state, the next photo step clears the rectangle and starts again. A map generation or QID mismatch removes the previous image. An unreadable photo shows **Photo unavailable**; an absent photo shows **No photo available**.
-
-The simulator and browser use the same preparation phase. Interactive hosts advance one step per frame. A fresh headless capture runs bounded steps until the image is complete or unavailable. Text pages, Visit actions and Sources navigation use the content screen's own controls.
+A photo in an article is decoded into the same resident frame as the map, in bounded steps. There
+is no image buffer and no resident decoder: each step writes more pixels into the frame and
+releases the shared work area before it presents, so a photo never delays a gesture. An interrupted
+photo starts again; an unreadable one leaves the text and credits available.
 
 ## Source map
 
-- Renderer and scratch budgets: [lib.rs](src:firmware/obc-render/src/lib.rs)
-- Projection: [viewport.rs](src:firmware/obc-render/src/viewport.rs)
-- Collection and selection: [collect.rs](src:firmware/obc-render/src/collect.rs)
-- Polygon and line rasterization: [fill.rs](src:firmware/obc-render/src/fill.rs), [stroke.rs](src:firmware/obc-render/src/stroke.rs)
-- Streamed map contract: [obc-map-scene](src:firmware/obc-map-scene/src/lib.rs)
-- OBCM adapter and quadtree walk: [scene.rs](src:firmware/obc-reader/src/scene.rs), [reader/mod.rs](src:firmware/obc-reader/src/reader/mod.rs)
+- Renderer and scratch budgets: [`lib.rs`](src:firmware/obc-render/src/lib.rs)
+- Projection: [`viewport.rs`](src:firmware/obc-render/src/viewport.rs)
+- Collection and selection: [`collect.rs`](src:firmware/obc-render/src/collect.rs)
+- Polygon and line rasterization: [`fill.rs`](src:firmware/obc-render/src/fill.rs), [`stroke.rs`](src:firmware/obc-render/src/stroke.rs)
+- Streamed map contract: [`obc-map-scene`](src:firmware/obc-map-scene/src/lib.rs)
+- OBCM adapter and quadtree walk: [`scene.rs`](src:firmware/obc-reader/src/scene.rs)
 - Frame and presenters: [display contracts](src:firmware/obc-display/src/display_contracts), [LS021](src:firmware/obc-display/src/ls021)
 
-See [system architecture](../architecture/) for the host loop. See [data formats](../formats/) for the OBCM format.
+See [system architecture](../architecture/) for the host loop and [data formats](../formats/) for
+the map format.

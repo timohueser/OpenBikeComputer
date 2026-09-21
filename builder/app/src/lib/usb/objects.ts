@@ -1,21 +1,17 @@
 /**
  * Object **payload** layouts: the ride object and the trip object.
  *
- * Not the wire. Protocol v4 carries an object as opaque bytes with a kind, a display name and a
- * whole-payload CRC (`FLAT_Store_Protocol.md` §3), so nothing in this file crosses a frame boundary
- * or has a §3 offset — it is what the bytes *inside* one object mean, and only for the two kinds
- * this app has to look inside.
+ * Not the wire. The protocol carries an object as opaque bytes with a kind, a display name and a
+ * whole-payload CRC, so nothing in this file crosses a frame boundary — it is what the bytes
+ * *inside* one object mean, and only for the two kinds this app has to look inside.
  *
  * Routes, maps and firmware images are absent on purpose: an `.obcr`, an `.obcm` and an `UPDATE.BIN`
- * are written verbatim and read back verbatim, so there is nothing here to decode. The browser's
- * OBCR encoding is the wasm bridge's job, and `device/route.ts` reads its header.
+ * are written verbatim and read back verbatim. The browser's OBCR encoding is the wasm bridge's job,
+ * and `device/route.ts` reads its header.
  *
- * The **list objects are gone with the v1 wire**. There is no `routeList`, `rideList` or `tripList`
- * any more: `LIST` is a control response carrying 88-byte catalog entries (§3.3), and what a client
- * can know about an object without downloading it is exactly what that entry holds — id, revision,
- * length, CRC, kind, flags and display name. The richer per-kind metadata those objects used to
- * carry (a route's distance and ascent, a ride's start time and moving time) lives in the payload,
- * and a client that wants it reads the payload.
+ * There is no list object: `LIST` is a control response carrying 88-byte catalog entries, and what a
+ * client can know about an object without downloading it is exactly what that entry holds. The
+ * richer per-kind metadata lives in the payload, and a client that wants it reads the payload.
  */
 
 import { viewOf } from "./protocol";
@@ -23,10 +19,9 @@ import { viewOf } from "./protocol";
 /**
  * A payload this build cannot read.
  *
- * Object payloads are not the wire. §3 carries an object as opaque bytes with a kind, a name and a
- * CRC, so nothing below is a protocol failure the device could have answered differently — a ride
- * this page cannot decode is a page behind its device, and it needs its own error rather than one of
- * §3.9's codes.
+ * Object payloads are not the wire, so nothing below is a protocol failure the device could have
+ * answered differently — a ride this page cannot decode is a page behind its device, and it needs
+ * its own error rather than one of the wire's codes.
  */
 export class ObjectDecodeError extends Error {
     constructor(message: string) {
@@ -34,8 +29,6 @@ export class ObjectDecodeError extends Error {
         this.name = "ObjectDecodeError";
     }
 }
-
-// --- the ride object ---------------------------------------------------
 
 /** Absent-value sentinels in both samples and the final summary footer. */
 const NO_U8 = 0xff;
@@ -184,8 +177,6 @@ function clippedUtf8(value: string, cap: number): Uint8Array {
     return encoded.subarray(0, end);
 }
 
-// --- the trip object ---------------------------------------------------
-
 export const TRIP_HEADER_LEN = 56;
 
 /**
@@ -219,11 +210,9 @@ export function decodeTripObject(data: Uint8Array): TripObject {
 }
 
 export function encodeTripObject(t: TripObject): Uint8Array {
-    // **Refused here, not left to call-site discipline.** `setUint16` wraps silently, so a trip with
-    // 65,536 stages would encode as one with zero and the device would commit a trip that is not the
-    // trip it was given — a wrong object rather than a rejected one, which is the failure direction
-    // worth spending a branch on. Every caller today is far under the cap; that is exactly why the
-    // check belongs in the encoder, where it stays true when a caller stops being careful.
+        // **Refused here, not left to call-site discipline.** `setUint16` wraps silently, so a trip
+        // with 65,536 stages would encode as one with zero and the device would commit a trip that is
+        // not the trip it was given — a wrong object rather than a rejected one.
     if (t.stages.length > 0xffff) {
         throw new RangeError(`a trip carries at most 65535 stages; this one has ${t.stages.length}`);
     }
@@ -236,8 +225,6 @@ export function encodeTripObject(t: TripObject): Uint8Array {
     return out;
 }
 
-// --- name helpers -------------------------------------------------------------
-
 /** Read a `name_len u8` + zero-padded UTF-8 field, clamping a bogus length to the field's cap. */
 function paddedName(data: Uint8Array, lenAt: number, nameAt: number, cap: number): string {
     const len = Math.min(data[lenAt], cap);
@@ -247,9 +234,9 @@ function paddedName(data: Uint8Array, lenAt: number, nameAt: number, cap: number
 /**
  * Write a `name_len u8` + zero-padded UTF-8 field, truncating an over-long name.
  *
- * Truncation is on a **byte** boundary, matching the firmware encoder — which can split a
- * multi-byte character. Names are capped at the source (48 bytes, the OBCR field), so this is a
- * backstop rather than a path anything travels.
+ * Truncation is on a **byte** boundary, matching the firmware encoder, which can split a multi-byte
+ * character. Names are capped at the source, so this is a backstop rather than a path anything
+ * travels.
  */
 function writePaddedName(out: Uint8Array, lenAt: number, nameAt: number, cap: number, name: string): void {
     const bytes = new TextEncoder().encode(name);

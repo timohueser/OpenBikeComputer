@@ -1195,9 +1195,8 @@ impl PlanetBake<'_> {
             }],
             chunk_size: None,
             no_land: false,
-            // The terrain published in this tree, or nothing (`OBCC_Spec.md` §13.4). A tree with
-            // no terrain writes `Ascent M = 0`, which is a decode-valid v12 map and exactly what
-            // v11 was.
+            // The terrain published in this tree, or nothing. A tree with no terrain writes
+            // `Ascent M = 0`, which is a decode-valid map.
             terrain: self.opts.terrain.as_ref().map(|t| t.dir.clone()),
             landmarks: self.opts.landmarks.clone(),
             peaks: self.opts.peaks.clone().into_iter().collect(),

@@ -1,20 +1,17 @@
 <!--
-  "Firmware 1.4.0 is available" — said once, when a device connects (#1002, epic #773).
+  "Firmware 1.4.0 is available" — said once, when a device connects.
 
   Mounted at the app root next to `ConfirmDialog`, and for the same reason: it belongs to no page,
   because a device can be plugged in while the rider is anywhere in the app. Unlike the dialog it is
   **not** modal — there is no backdrop and nothing is blocked. An update is worth mentioning; it is
-  never worth stopping someone mid-task over, and a rider who came here to send a map should be able
-  to keep sending it.
+  never worth stopping someone mid-task over.
 
   It can point and nothing else. Downloading, checksumming, staging and asking the device to install
-  all stay in `device/FirmwareCard.svelte`, which is where the rider can see what is happening; this
-  scrolls them to it. Both read the one shared check (`lib/firmware/check.svelte.ts`), which is also
-  where the "at most once per (device, version)" memory lives.
+  all stay in `device/FirmwareCard.svelte`; this scrolls them to it. Both read the one shared check,
+  which is also where the "at most once per (device, version)" memory lives.
 
-  Entry-chunk discipline (`platform/bundle.test.ts`): the root is the entry bundle, so nothing here may
-  reach `lib/usb` at runtime. `deviceHolder` and `jobRegistry` are already in it — the header's
-  device chip imports both — and the check is a plain `fetch` module with no device code in it.
+  Entry-chunk discipline: the root is the entry bundle, so nothing here may reach `lib/usb` at
+  runtime. The check is a plain `fetch` module with no device code in it.
 -->
 <script lang="ts">
     import { jobRegistry } from "../lib/device/job.svelte";
@@ -49,8 +46,7 @@
      *
      * On a tier with a Device page that is a navigation, and the page arrives through a dynamic
      * import — so the element does not exist yet at the moment of the click. Hence the short poll
-     * rather than one `scrollIntoView` into nothing; it gives up quietly after a second, by which
-     * point either the page is there or something else is wrong.
+     * rather than one `scrollIntoView` into nothing; it gives up quietly after a second.
      */
     function show(release: { version: string }) {
         answer(release);

@@ -5,28 +5,22 @@ use obc_formats::io::ByteSource;
 
 use crate::{TerrainReader, TileCache};
 
-/// Where a height comes from. **This trait is the seam** — `obc-route`, `obc-pack` and `obc-app`
-/// take one of these and never learn whether a raster exists.
+/// Where a height comes from. This trait is the seam: consumers take one and never learn whether a
+/// raster exists.
 ///
-/// `&mut self` because the real implementation caches tiles behind the call; a sample is a *read*
-/// conceptually, but pretending it is one would push the cache behind a `RefCell` for no gain (the
-/// callers are all single-threaded sweeps that own their source for the duration).
+/// `&mut self` because the real implementation caches tiles behind the call, and pretending a
+/// sample is a read would push the cache behind a `RefCell` for no gain.
 ///
-/// `None` means "no height here" and covers every reason at once — outside coverage, a `NODATA`
-/// corner, no terrain file at all, a failed read. Consumers must already behave sanely without
-/// elevation ([`NullElevation`] is the pin that they do), so a richer answer would only buy them
-/// branches they have no different action for.
+/// `None` means "no height here" and covers every reason at once: outside coverage, a `NODATA`
+/// corner, no terrain file, a failed read. Consumers must already behave sanely without elevation.
 pub trait ElevationSource {
     /// The height at `(lat, lon)` in whole metres, or `None`.
     fn sample(&mut self, lat_udeg: i32, lon_udeg: i32) -> Option<i16>;
 }
 
-/// The no-terrain source: `None` everywhere.
-///
-/// Not a placeholder — it is the **contract that the epic's "zero changes downstream" claim rests
-/// on**. Wiring a consumer through `ElevationSource` must leave its behaviour bit-for-bit identical
-/// while this is the implementation, which is what makes the terrain file removable: delete it and
-/// the map still renders, routing still works, profiles degrade to flat.
+/// The no-terrain source: `None` everywhere. Not a placeholder but the contract that wiring a
+/// consumer through `ElevationSource` leaves its behaviour identical, which is what makes the
+/// terrain file removable.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NullElevation;
 
@@ -37,11 +31,8 @@ impl ElevationSource for NullElevation {
     }
 }
 
-/// A [`TerrainReader`] and its [`TileCache`] bound together as one [`ElevationSource`].
-///
-/// **Never build one on a stack**: it embeds the cache, which is ≈ 2.1 KB at `N = 4` (see
-/// [`TileCache`]). Place it where the `App` lives — a `static`, or the device's reserved region —
-/// and hand out `&mut`.
+/// A [`TerrainReader`] and its [`TileCache`] bound together as one [`ElevationSource`]. Never
+/// build one on a stack: it embeds the cache. Place it where the `App` lives and hand out `&mut`.
 pub struct TerrainElevation<'a, const N: usize> {
     reader: TerrainReader<'a>,
     cache: TileCache<N>,
@@ -53,8 +44,7 @@ impl<'a, const N: usize> TerrainElevation<'a, N> {
         Ok(TerrainElevation { reader: TerrainReader::parse(src)?, cache: TileCache::new() })
     }
 
-    /// The reader underneath — for the header (coverage bbox, posting) a caller wants to show or
-    /// check without going through a sample.
+    /// The reader underneath, for the header fields a caller wants without taking a sample.
     #[inline]
     pub fn reader(&self) -> &TerrainReader<'a> {
         &self.reader
@@ -78,8 +68,8 @@ impl<const N: usize> ElevationSource for TerrainElevation<'_, N> {
 mod tests {
     use super::*;
 
-    /// The null source answers `None` for everything, including the coordinates a real one would
-    /// answer — that is the whole point of it.
+    /// The null source answers `None` for everything, including coordinates a real one would
+    /// answer.
     #[test]
     fn the_null_source_has_no_height_anywhere() {
         let mut null = NullElevation;

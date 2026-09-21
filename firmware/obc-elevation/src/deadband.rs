@@ -1,13 +1,12 @@
 use core::ops::{Add, Neg, Sub};
 
-/// Default elevation dead-band (m): a move smaller than this is treated as noise — it neither
-/// counts toward ascent/descent nor moves the reference. The single source of truth for
-/// every [`DeadBand::new`]; the per-sample-type value is this constant cast in [`Elev`].
+/// Default elevation dead-band in metres: a smaller move is noise, so it neither counts toward
+/// ascent or descent nor moves the reference. The single source of truth for every
+/// [`DeadBand::new`].
 pub const ELE_DEADBAND_M: f64 = 3.0;
 
-/// A float usable as an elevation sample. Implemented for the converter's `f64` and the
-/// profile/app `f32`; both take the same [`ELE_DEADBAND_M`] dead-band, cast to the sample
-/// type via [`Elev::DEADBAND`].
+/// A float usable as an elevation sample, implemented for `f64` and `f32`. Both take the same
+/// [`ELE_DEADBAND_M`], cast to the sample type.
 pub trait Elev: Copy + PartialOrd + Add<Output = Self> + Sub<Output = Self> + Neg<Output = Self> {
     /// The additive identity for this type (`0.0`).
     const ZERO: Self;
@@ -25,16 +24,13 @@ impl Elev for f64 {
     const DEADBAND: f64 = ELE_DEADBAND_M;
 }
 
-/// Hysteresis integrator over a stream of elevations. Feed samples in route/time order
-/// with [`push`](DeadBand::push) and read the running [`ascent`](DeadBand::ascent) /
-/// [`descent`](DeadBand::descent) at any point. A caller wanting only climb reads
-/// `ascent` and ignores `descent` (it still tracks, harmlessly).
+/// Hysteresis integrator over a stream of elevations. Feed samples in route or time order and read
+/// the running totals at any point. A caller wanting only climb ignores `descent`.
 #[derive(Debug, Clone, Copy)]
 pub struct DeadBand<T: Elev> {
     /// Reference the next sample is measured against; `None` until the first sample.
     ref_ele: Option<T>,
-    /// The hysteresis threshold this integrator books against — [`Elev::DEADBAND`] unless the
-    /// caller supplied its own.
+    /// The hysteresis threshold this integrator books against.
     threshold: T,
     ascent: T,
     descent: T,
@@ -46,23 +42,22 @@ impl<T: Elev> DeadBand<T> {
         Self::with_threshold(T::DEADBAND)
     }
 
-    /// A fresh integrator at a caller-chosen threshold (m). See the module docs: use this only with
-    /// a measured error model, and say so where it is pinned — a total booked at a different
-    /// dead-band is not comparable with the rider-facing ones.
+    /// A fresh integrator at a caller-chosen threshold in metres. Use it only with a measured
+    /// error model: a total booked at a different dead-band is not comparable with the
+    /// rider-facing ones.
     pub fn with_threshold(threshold: T) -> Self {
         DeadBand { ref_ele: None, threshold, ascent: T::ZERO, descent: T::ZERO }
     }
 
     /// Restore already-booked totals after a persistence boundary, deliberately without restoring
-    /// the elevation reference. The next sample re-anchors, exactly like a pause, so an altitude
-    /// change while the device was off is never booked as one giant climb.
+    /// the elevation reference. The next sample re-anchors, so an altitude change while the device
+    /// was off is never booked as one giant climb.
     pub fn from_totals(ascent: T, descent: T) -> Self {
         DeadBand { ref_ele: None, threshold: T::DEADBAND, ascent, descent }
     }
 
-    /// Integrate one elevation sample. A move of at least the threshold from the reference books
-    /// the whole delta as ascent (up) or descent (down) and re-anchors the reference there; a
-    /// smaller move is ignored (neither booked nor re-anchored).
+    /// Integrate one elevation sample. A move of at least the threshold books the whole delta and
+    /// re-anchors the reference; a smaller move is ignored.
     pub fn push(&mut self, e: T) {
         match self.ref_ele {
             None => self.ref_ele = Some(e),
@@ -79,12 +74,9 @@ impl<T: Elev> DeadBand<T> {
         }
     }
 
-    /// The current smoothed elevation: the reference the next sample is measured against, i.e.
-    /// the last elevation that moved at least the threshold. `None` until the first
-    /// [`push`](DeadBand::push). This is the dead-band's staircase view of the signal — the same
-    /// hysteresis that filters ascent/descent, exposed for callers (e.g. `obc_route::climb`) that
-    /// segment on the *smoothed* height rather than the raw noisy samples, so a sub-band wiggle
-    /// can't spuriously open or close a segment.
+    /// The current smoothed elevation: the last sample that moved at least the threshold. `None`
+    /// until the first push. This staircase view is what callers segment on, so a sub-band wiggle
+    /// cannot spuriously open or close a segment.
     #[inline]
     pub fn smoothed(&self) -> Option<T> {
         self.ref_ele
@@ -108,9 +100,8 @@ impl<T: Elev> DeadBand<T> {
         self.threshold
     }
 
-    /// Drop the reference but keep the accumulated totals — for a tracking pause, so an
-    /// elevation change *during* the gap isn't booked when sampling resumes. The next
-    /// [`push`](DeadBand::push) re-anchors instead of measuring across the hole.
+    /// Drop the reference but keep the accumulated totals, for a tracking pause, so an elevation
+    /// change during the gap is not booked when sampling resumes.
     #[inline]
     pub fn pause(&mut self) {
         self.ref_ele = None;
@@ -127,8 +118,8 @@ impl<T: Elev> Default for DeadBand<T> {
 mod tests {
     use super::*;
 
-    /// The shape of the hysteresis: sub-band wiggle books nothing and does not re-anchor, so a
-    /// staircase of noise cannot accumulate; a clear move books its *whole* delta.
+    /// The shape of the hysteresis: a sub-band wiggle books nothing and does not re-anchor, so a
+    /// staircase of noise cannot accumulate, while a clear move books its whole delta.
     #[test]
     fn sub_band_noise_books_nothing_and_a_clear_move_books_all_of_it() {
         let mut db = DeadBand::<f32>::new();
@@ -148,7 +139,7 @@ mod tests {
     }
 
     /// A pause drops the reference without touching the totals, so a gap in sampling cannot be
-    /// booked as one giant climb when tracking resumes.
+    /// booked as one giant climb.
     #[test]
     fn a_pause_re_anchors_instead_of_measuring_across_the_hole() {
         let mut db = DeadBand::<f64>::new();

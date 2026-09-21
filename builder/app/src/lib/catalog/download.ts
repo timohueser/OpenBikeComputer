@@ -10,9 +10,9 @@ import { knownEmptyAt, type CellEntry, type CellIndexDocument, type TerrainCellE
 import type { SelectionResolution } from "./selection";
 
 export interface CellDownloadItem {
-    /** The band this cell belongs to, or `null` for a **terrain** cell — which
-     *  belongs to no band by construction (`OBCC_Spec.md` §13: a second artifact
-     *  class, not a band), and is what tells the assembler which door it goes in. */
+    /** The band this cell belongs to, or `null` for a **terrain** cell — which belongs
+     *  to no band by construction, and is what tells the assembler which door it goes
+     *  in. */
     band: string | null;
     cell: CellEntry | TerrainCellEntry;
 }
@@ -22,16 +22,15 @@ export interface CellDownloadPlan {
      *  The plan is the ordering authority; completion order is whatever the
      *  network does. */
     items: CellDownloadItem[];
-    /** Selected canonical-empty cells. They have no request or byte buffer,
-     *  but the assembler needs their identities for bbox and coverage math.
-     *  Terrain's void squares are **not** here: an absent terrain cell and an
-     *  all-`NODATA` one read identically (`OBCT_Spec.md` §4.3), so they need no
-     *  identity downstream at all. */
+    /** Selected canonical-empty cells. They have no request or byte buffer, but the
+     *  assembler needs their identities for bbox and coverage math. Terrain's void
+     *  squares are **not** here: an absent terrain cell and an all-`NODATA` one read
+     *  identically, so they need no identity downstream at all. */
     knownEmpty: { band: string; id: string }[];
-    /** Summed `bytes` of every item — knowable before the fetch (§6/§5.7). */
+    /** Summed `bytes` of every item — knowable before the fetch. */
     totalBytes: number;
-    /** Of which, the raster's: the number a UI shows on its own line, because
-     *  §13.3 requires the two prices to be presented separately. */
+    /** Of which, the raster's: the number a UI shows on its own line, because the two
+     *  prices must be presented separately. */
     terrainBytes: number;
 }
 
@@ -52,9 +51,9 @@ export interface CellDownloadOptions {
      */
     onCell: (item: CellDownloadItem, bytes: Uint8Array, index: number) => void | Promise<void>;
     onProgress?: (p: CellDownloadProgress) => void;
-    /** How many cells are in flight at once. Small objects over one HTTP/2
-     *  connection: enough to keep the pipe full, not so many that a hundred
-     *  buffers coexist. */
+    /** How many cells are in flight at once. A chosen value: enough small objects over
+     *  one HTTP/2 connection to keep the pipe full, not so many that a hundred buffers
+     *  coexist. */
     concurrency?: number;
     signal?: AbortSignal;
     fetchImpl?: typeof fetch;
@@ -73,13 +72,12 @@ function abortReason(signal: AbortSignal): unknown {
 }
 
 /**
- * The cells a resolved selection needs, in a stable order, with the total the
- * ledger already showed.
+ * The cells a resolved selection needs, in a stable order, with the total the ledger
+ * already showed.
  *
- * A cell the selection names but the catalog does not publish is *not* in the
- * plan and is not an error here: a hole is legal by construction (a missing cell
- * is an empty leaf and the renderer paints backdrop there) and the ledger has
- * already reported it as coverage the rider is choosing to accept.
+ * A cell the selection names but the catalog does not publish is *not* in the plan and
+ * is not an error here: a hole is legal by construction, and the ledger has already
+ * reported it as coverage the rider is choosing to accept.
  */
 export function planCells(
     resolution: SelectionResolution,
@@ -178,21 +176,18 @@ export async function downloadCells(
                     },
                 });
             } finally {
-                // `finally`, because a cell that failed or was aborted mid-body
-                // still has its partial byte count in `inflight`, and every
-                // other slot's progress report would keep adding it — a bar
-                // that creeps past what was actually received, for bytes that
-                // will never arrive.
+                // `finally`, because a cell that failed or was aborted mid-body still
+                // has its partial byte count in `inflight`, and every other slot's
+                // progress report would keep adding it — a bar that creeps past what
+                // was received, for bytes that will never arrive.
                 inflight.delete(index);
             }
             completedBytes += bytes.byteLength;
             completedCells += 1;
             report();
-            // A cell that arrives after another slot has failed belongs to a run
-            // that is already over. Handing it to `onCell` would write it into
-            // an assembly the caller is about to throw away — and the caller's
-            // sink is a file, a database, or a wasm assembler, none of which
-            // enjoy a write after the rejection.
+            // A cell that arrives after another slot has failed belongs to a run that is
+            // already over. Handing it to `onCell` would write it into an assembly the
+            // caller is about to throw away.
             if (controller.signal.aborted) throw abortReason(controller.signal);
             await opts.onCell(item, bytes, index);
         }

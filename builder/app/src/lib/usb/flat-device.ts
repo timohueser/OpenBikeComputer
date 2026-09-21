@@ -2,24 +2,20 @@
  * The real device, on the other end of a {@link DeviceLink}.
  *
  * `obc_link::flat::Engine` over `obc_storage::flat`'s simulated card, compiled to wasm and driven
- * from here. It is the same assembly `firmware/obc-link`'s Rust suites run on, so a flow that works
- * in this file works against the code the board runs — and a difference between the browser's idea
- * of the protocol and the device's shows up as a failing test rather than on a rider's desk.
+ * from here. It is the same assembly `firmware/obc-link`'s Rust suites run on, so a difference
+ * between the browser's idea of the protocol and the device's shows up as a failing test rather than
+ * on a rider's desk.
  *
- * **This module never ships.** The wasm package lives outside `src/` (`test-support/flat-device/`)
- * and `platform/bundle.test.ts` asserts neither it nor this adapter reaches a built bundle.
+ * **This module never ships.** The wasm package lives outside `src/` and `platform/bundle.test.ts`
+ * asserts neither it nor this adapter reaches a built bundle.
  *
- * ## What this adapter does, and what the device does
- *
- * The device answers **one bounded reaction at a time**: hand it a record, get back one thing to
- * send, ask again. Everything else is this file's:
- *
- * - **Record framing** is `RecordChannel`'s, the same class the client uses on the other end.
- * - **Ordering** is one send queue per channel, so a channel's records leave in the order the device
- *   produced them while the other channel is free to answer — which is what keeps `CANCEL`
- *   serviceable when a download's stream write is parked on a full endpoint.
- * - **Backpressure** is the pipe's: a write resolves when the reader has taken the bytes, and the
- *   device is not polled for the next record until it does. Nothing buffers a whole download.
+ * The device answers one bounded reaction at a time: hand it a record, get back one thing to send,
+ * ask again. Everything else is this file's. Record framing is `RecordChannel`'s, the same class the
+ * client uses on the other end. Ordering is one send queue per channel, so a channel's records leave
+ * in the order the device produced them while the other channel is free to answer — which is what
+ * keeps `CANCEL` serviceable when a download's stream write is parked on a full endpoint.
+ * Backpressure is the pipe's: a write resolves when the reader has taken the bytes, and the device is
+ * not polled for the next record until it does.
  */
 
 import init, { FlatDevice as WasmDevice, type DeviceReaction, type InitInput } from "../../../test-support/flat-device/pkg/obc_flat_device.js";
@@ -42,7 +38,7 @@ import { loopbackLink, type LoopbackLink, type LoopbackOptions } from "./loopbac
  *
  * Leave `source` out in the browser: the generated glue resolves the module next to itself, which is
  * the form the bundler rewrites to a hashed asset URL. Node has no `fetch` for `file:` URLs, so a
- * Vitest suite reads the `.wasm` and passes the bytes, exactly as the conversion bridge's suites do.
+ * Vitest suite reads the `.wasm` and passes the bytes.
  */
 export async function initFlatDevice(source?: InitInput): Promise<void> {
     await init(source === undefined ? undefined : { module_or_path: source });
@@ -59,11 +55,11 @@ export interface FlatDeviceOptions {
     /** The identity the card is formatted with, as 32 hex characters. */
     storeId?: string;
     /**
-     * §5's control record ceiling. `LIST` pages at this number — it is the only thing that decides
+     * The control record ceiling. `LIST` pages at this number — it is the only thing that decides
      * how many entries fit in a page, so a test that wants two pages lowers it.
      */
     controlCeiling?: number;
-    /** §5's stream record ceiling. */
+    /** The stream record ceiling. */
     streamCeiling?: number;
     /** Whether `ARM` may succeed. `refuse` — the default — is the device's current policy. */
     armPolicy?: "refuse" | "allow";
@@ -94,8 +90,8 @@ export const DEFAULT_STORE_ID = "11111111111111111111111111111111";
 /**
  * The control ceiling at which `LIST` pages at exactly `entries` entries.
  *
- * The real device pages at its link's record ceiling and at nothing else — there is no page-size
- * dial — so a test that wants two pages says how wide the link is.
+ * The real device pages at its link's record ceiling and at nothing else — there is no page-size dial
+ * — so a test that wants two pages says how wide the link is.
  */
 export function controlCeilingFor(entries: number): number {
     return HEADER_LEN + LIST_PREFIX_LEN + entries * LIST_ENTRY_LEN;
@@ -148,15 +144,13 @@ export class FlatDevice {
         if (this.tracing) this.device.traceRequests();
     }
 
-    // --- serving ---------------------------------------------------------------
-
     /**
      * Serve until the link closes: two readers and one pump.
      *
      * **Exactly one task polls.** The device has one live transfer, and its next record is whatever
-     * `poll` answers, so a second poller would take a record out of the middle of a download and
-     * send it after the rest. The readers therefore never poll: they hand one record to the device,
-     * queue whatever came back, and wake the pump.
+     * `poll` answers, so a second poller would take a record out of the middle of a download and send
+     * it after the rest. The readers therefore never poll: they hand one record to the device, queue
+     * whatever came back, and wake the pump.
      *
      * Rejects only on a defect, never on a normal disconnect.
      */
@@ -177,8 +171,8 @@ export class FlatDevice {
     /**
      * Read whole records off one channel and hand each to the device.
      *
-     * The answer is queued rather than awaited, so this loop goes straight back to reading — which
-     * is what makes a `CANCEL` reach a device whose download is parked on a full endpoint.
+     * The answer is queued rather than awaited, so this loop goes straight back to reading — which is
+     * what makes a `CANCEL` reach a device whose download is parked on a full endpoint.
      */
     private async read(channel: "control" | "stream", feed: (record: Uint8Array) => DeviceReaction): Promise<void> {
         while (this.running) {
@@ -250,7 +244,7 @@ export class FlatDevice {
     private async send(channel: "control" | "stream", reaction: Reaction): Promise<void> {
         if (reaction.kind === "idle") return;
         if (reaction.kind === "close") {
-            // §3.1: an unanswerable record gets nothing at all and closes the record stream.
+                // An unanswerable record gets nothing at all and closes the record stream.
             this.stop();
             return;
         }
@@ -263,7 +257,7 @@ export class FlatDevice {
             return;
         }
         if (reaction.kind === "send-and-reboot") {
-            // §4 steps 4 and 5: the answer reached the transport, and now the device restarts.
+                // The answer reached the transport, and now the device restarts.
             this.device.reboot();
         }
     }

@@ -1,44 +1,35 @@
-//! Region **outlines** for the `schema_version 3` catalog: an Osmosis/Geofabrik
-//! `.poly` file in, a handful of simplified microdegree rings out
-//! ([`OBCC_Spec.md` §7](../../../../specs/OBCC_Spec.md)).
+//! Region outlines for the catalog: an Osmosis/Geofabrik `.poly` file in, a handful of simplified
+//! microdegree rings out.
 //!
-//! A region is a cell-set selection, and a cell set draws as a staircase. Users
-//! expect a border, so each named region ships the border — simplified hard, because
-//! the catalog is fetched before anything else and a full-resolution Germany outline
-//! is megabytes. The source is the region's own Geofabrik `.poly` (the same file that
-//! defines the extract), so the outline and the coverage come from one statement of
-//! what the region *is*.
+//! A region is a cell-set selection, and a cell set draws as a staircase, so each named region ships
+//! a border — simplified hard, because the catalog is fetched before anything else and a
+//! full-resolution country outline is megabytes. The source is the region's own `.poly`, the same
+//! file that defines the extract, so the outline and the coverage come from one statement of what
+//! the region is.
 //!
-//! Two properties are load-bearing:
-//!
-//! - **Presentation only.** The outline never decides a cell set (that is stored,
-//!   `OBCC_Spec.md` §6), never prices a selection, and is never a packer input
-//!   bbox. A simplification error here must not be able to drop a cell, which is why
-//!   it cannot be in the derivation path of one.
-//! - **Deterministic.** Same `.poly`, same tolerance, same bytes: rings are ordered
-//!   by a content-derived key rather than by GEOS output order, and every coordinate
-//!   is the same `(deg * 1e6).round()` the packer uses everywhere else
-//!   ([`OBCA_Spec.md` §3.2](../../../../specs/OBCA_Spec.md)).
+//! Two properties are load-bearing. Presentation only: the outline never decides a cell set, never
+//! prices a selection, and is never a packer input bbox, so a simplification error here cannot drop
+//! a cell. Deterministic: same `.poly`, same tolerance, same bytes, because rings are ordered by a
+//! content-derived key rather than by GEOS output order and every coordinate is the same
+//! `(deg * 1e6).round()` the packer uses everywhere else.
 
 use crate::geom::{assemble_multipolygon, collect_polygons, topology_preserve_simplify, Geom};
 
 /// One closed ring of `[lat, lon]` integer microdegree pairs.
 pub type Ring = Vec<[i32; 2]>;
 
-/// Default simplification tolerance, in microdegrees (0.002° ≈ 150–220 m at DACH
-/// latitudes). Chosen so a country outline lands in the low single-digit kilobytes —
-/// the budget `OBCC_Spec.md` §7 sets — while still reading as that country's
-/// border at every zoom the builder draws it at.
+/// Default simplification tolerance, in microdegrees (0.002°, roughly 150-220 m at DACH latitudes).
+/// Chosen so a country outline lands in the low single-digit kilobytes while still reading as that
+/// country's border at every zoom the builder draws it at.
 pub const DEFAULT_TOLERANCE_UDEG: i32 = 2_000;
 
 /// A ring straight out of the `.poly` file: degrees, and whether the file marked it
 /// as subtracted (`!`).
 #[derive(Debug, Clone, PartialEq)]
 struct PolyRing {
-    /// Osmosis marks a subtracted ring with a leading `!`. Kept for the diagnostic
-    /// below; the actual hole assignment is GEOS's even-odd nesting rule, which is
-    /// what the packer already trusts for OSM multipolygon relations and what makes
-    /// a mis-flagged file assemble correctly anyway.
+    /// Osmosis marks a subtracted ring with a leading `!`. Kept for the diagnostic below; the hole
+    /// assignment is GEOS's even-odd nesting rule, which is what the packer already trusts for OSM
+    /// multipolygon relations and what makes a mis-flagged file assemble correctly anyway.
     subtracted: bool,
     /// `(lon, lat)` degrees, closed.
     points: Vec<(f64, f64)>,
@@ -128,13 +119,11 @@ fn dedup_consecutive<T: PartialEq>(points: &mut Vec<T>) {
     points.dedup();
 }
 
-/// The `.poly`'s rings at **full resolution**, `(lon, lat)` degrees, closed.
+/// The `.poly`'s rings at full resolution, `(lon, lat)` degrees, closed.
 ///
-/// This is the parse without the reduction: [`simplified_rings`] is presentation
-/// and MUST NOT decide a cell set (`OBCC_Spec.md` §7), so the bakery — which
-/// *does* have to decide one, and has to decide whether a source covers a cell —
-/// reads the rings from here instead. One parser, two consumers, no chance of the
-/// drawn border and the baked coverage disagreeing about what the file said.
+/// This is the parse without the reduction. [`simplified_rings`] is presentation and must not decide
+/// a cell set, so the bakery, which does have to decide one, reads the rings from here instead: one
+/// parser, two consumers, and no chance of the drawn border and the baked coverage disagreeing.
 pub fn poly_rings(poly_text: &str) -> Result<Vec<Vec<(f64, f64)>>, String> {
     Ok(parse_poly(poly_text)?.into_iter().map(|r| r.points).collect())
 }
@@ -145,9 +134,9 @@ pub fn poly_rings(poly_text: &str) -> Result<Vec<Vec<(f64, f64)>>, String> {
 /// microdegrees — topology-preserving rather than plain Douglas–Peucker, so a
 /// simplified border cannot cross itself and an island cannot swallow its neighbour.
 ///
-/// Ring order is `[exterior, its holes…]` per polygon, polygons ordered by their
-/// own minimum corner. OBCC §7 interprets the flattened list with even-odd fill,
-/// so regions with several pieces, islands, or exclaves need no extra role marker.
+/// Ring order is `[exterior, its holes…]` per polygon, polygons ordered by their own minimum corner.
+/// The catalog interprets the flattened list with even-odd fill, so regions with several pieces,
+/// islands or exclaves need no extra role marker.
 pub fn simplified_rings(poly_text: &str, tolerance_udeg: i32) -> Result<Vec<Ring>, String> {
     if tolerance_udeg <= 0 {
         return Err(format!("boundary tolerance {tolerance_udeg} µdeg must be positive"));
@@ -383,11 +372,10 @@ END
 
     #[test]
     fn simplification_cannot_erase_the_region() {
-        // Four degrees of tolerance against a 1° square: `TopologyPreservingSimplifier`
-        // still returns a drawable ring, which is exactly why it is used here rather
-        // than plain Douglas–Peucker — an outline that vanished would render as "no
-        // such region" instead of as a coarse border. (The "every ring collapsed"
-        // guard remains for a GEOS failure, which is a different thing.)
+        // Four degrees of tolerance against a 1° square: `TopologyPreservingSimplifier` still
+        // returns a drawable ring, which is why it is used here rather than plain
+        // Douglas-Peucker — an outline that vanished would render as "no such region". The
+        // "every ring collapsed" guard remains for a GEOS failure, which is a different thing.
         let rings = simplified_rings(&simple_poly(), 4_000_000).expect("the outline survives");
         assert_eq!(rings.len(), 1);
         assert!(rings[0].len() >= 4, "{:?}", rings[0]);
@@ -397,8 +385,8 @@ END
 
     #[test]
     fn a_country_scale_outline_is_a_few_kilobytes() {
-        // A 400-point circle stands in for a border; at the default tolerance it must
-        // land inside §11.8's few-kilobyte budget.
+        // A 400-point circle stands in for a border; at the default tolerance it must land inside
+        // the catalog's few-kilobyte budget.
         let mut body = String::new();
         for k in 0..400 {
             let a = f64::from(k) / 400.0 * std::f64::consts::TAU;

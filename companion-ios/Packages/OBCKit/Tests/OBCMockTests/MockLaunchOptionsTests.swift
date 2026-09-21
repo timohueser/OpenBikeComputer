@@ -3,10 +3,9 @@ import OBCDomain
 import OBCTransport
 @testable import OBCMock
 
-/// The B1P launch-arg surface: `-OBCScenario` & friends parse into
-/// `MockLaunchOptions` and produce a correctly-configured `MockControl`. These
-/// names are stable automation API — a rename here must be deliberate (and
-/// update CLAUDE.md + the XCUITest helper).
+/// The launch-argument surface: `-OBCScenario` and friends parse into `MockLaunchOptions` and
+/// produce a configured `MockControl`. These names are stable automation API; a rename must also
+/// update CLAUDE.md and the XCUITest helper.
 final class MockLaunchOptionsTests: XCTestCase {
     private func parse(_ args: [String], env: [String: String] = [:]) -> MockLaunchOptions {
         // Real argv always has the executable path first; mirror that.
@@ -48,8 +47,8 @@ final class MockLaunchOptionsTests: XCTestCase {
         XCTAssertTrue(options.holdConfirmations)
     }
 
-    /// #1212 — the two capture-determinism flags. Both must default to **off**: an ordinary run
-    /// keeps its animations and lets the post-sync confirmation expire on schedule.
+    /// The two capture-determinism flags must default to off: an ordinary run keeps its
+    /// animations and lets the post-sync confirmation expire on schedule.
     func testParsesCaptureDeterminismFlags() {
         XCTAssertFalse(parse([]).disableAnimations)
         XCTAssertTrue(parse(["-OBCDisableAnimations"]).disableAnimations)
@@ -95,7 +94,7 @@ final class MockLaunchOptionsTests: XCTestCase {
 
     func testImportSampleFlagKindsAndFallbacks() {
         XCTAssertNil(parse([]).importSample)
-        // Bare flag = gpx — including when another -OBCKey follows.
+        // A bare flag means gpx, including when another -OBCKey follows.
         XCTAssertEqual(parse(["-OBCImportSample"]).importSample, .gpx)
         XCTAssertEqual(parse(["-OBCImportSample", "-OBCShowDevPanel"]).importSample, .gpx)
         XCTAssertEqual(parse(["-OBCImportSample", "tcx"]).importSample, .tcx)

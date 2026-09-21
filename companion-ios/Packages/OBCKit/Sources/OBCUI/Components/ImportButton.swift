@@ -1,14 +1,12 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// **Import Button & Files Picker** (§9) — the large-title `+` button (I1):
-/// opens the system document picker directly, filtered to the supported route
-/// extensions (pass `RouteImporter.supportedFileExtensions` from the
-/// composition root so the filter always matches the registered decoders).
+/// The large-title `+` button: it opens the system document picker directly, filtered
+/// to the supported route extensions. Pass `RouteImporter.supportedFileExtensions`
+/// from the composition root so the filter always matches the registered decoders.
 ///
-/// Deliberately not a menu: with one in-app action, an intermediate popover is
-/// a dead click (share-from-another-app arrives via the registered document
-/// types → `onOpenURL`, not from here).
+/// It is deliberately not a menu: with one in-app action an intermediate popover is a
+/// dead click, and a share from another app arrives through `onOpenURL`.
 public struct OBCImportButton: View {
     let fileExtensions: Set<String>
     let onPick: (URL) -> Void
@@ -20,8 +18,8 @@ public struct OBCImportButton: View {
     }
 
     private var contentTypes: [UTType] {
-        // Ad-hoc file types: UTType(filenameExtension:) covers gpx/tcx without
-        // the app having to declare imported type identifiers.
+        // Ad-hoc file types: UTType(filenameExtension:) covers gpx and tcx without the
+        // app having to declare imported type identifiers.
         fileExtensions.sorted().compactMap { UTType(filenameExtension: $0) }
     }
 

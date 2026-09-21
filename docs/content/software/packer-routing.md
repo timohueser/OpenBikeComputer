@@ -6,12 +6,11 @@ copy: ai
 
 # Packer and routing
 
-`obc-pack` converts OpenStreetMap PBF extracts to the OBCM map format.
-It also builds POIs, opening-hours data, contours, and a navigation graph.
-The device uses this graph for route planning.
+[`obc-pack`](src:host/obc-pack) converts OpenStreetMap extracts into the OBCM map format, with the
+POIs, the opening hours, the contours, and the navigation graph the device plans routes on. The
+GPX converter writes OBCR routes, and the matcher puts the live position on the active route.
 
-The GPX converter creates OBCR route files.
-The route matcher maps live positions to an active route.
+Everything expensive happens here, on a computer, so that the device only reads.
 
 ## Packing a map
 
@@ -64,44 +63,15 @@ The route matcher maps live positions to an active route.
 <figcaption>The packer ingests OSM data, adds generated features, builds each LOD, and writes one OBCM map.</figcaption>
 </figure>
 
-The pipeline performs these operations:
-
-1. Ingest and optionally crop or merge PBF sources.
-2. Calculate the content bounding box.
-3. Add land, sea, and optional contours.
-4. Build POIs and the navigation graph.
-5. Build each level of detail (LOD).
-6. Write the map and release the completed LOD.
-
-The packer keeps approximately one LOD quadtree in memory at a time.
-It removes a partial output file after an error or cancellation.
+The pipeline ingests the sources, measures the content, adds the land, sea, and contour features
+that OSM does not supply, builds the POIs and the navigation graph, then builds each level of
+detail and writes the map. It holds about one level's quadtree at a time.
 
 ### Styling: first match wins
 
-The `features` object in `config.json` is ordered.
-The packer checks tag keys in document order.
-The first matching key and value supplies the style.
-An exact value has priority over the `"*"` catch-all.
-The packer drops a way when no style matches.
-
-Style IDs start at 1 and follow document order.
-A style contains color, paint order, width, priority, minimum LOD, and line properties.
-The style table can contain at most 254 entries.
-
-The shipped style uses fixed one-pixel strokes for tracks, paths, footways, steps, and
-bridleways. Tracks are light brown; paths and bridleways are darker solid lines. Footways and
-steps use dark dashes. Via ferratas and ladders use indigo dashes. These marks use the OSM way
-type. They do not indicate hiking or mountain bike difficulty. These minor ways and cycleways
-appear at up to 5 m per pixel, together with service roads. Residential roads remain visible
-through 10 m per pixel. Passenger cableways and ski lifts use a thin purple line with regular cross ticks.
-This is the third line style, beside solid and dashed.
-They are transport, not a way the rider travels on, so they have their own colour and their own shape.
-The panel shows 64 colours. Two one-pixel dashed lines have only their colour to separate them, and
-the colours ran out, so the lifts get a different shape instead.
-Gardens, golf courses, recreation grounds, and heath share the green vegetation fill.
-Rock, scree, and shingle share a grey fill. Glaciers have a separate pale cyan
-fill. Cliffs use thin dark edge lines, including closed cliff rims; the lines do not indicate
-which side is lower.
+The `features` object in the configuration is ordered, and the first matching tag key and value
+gives a way its style. An exact value beats the catch-all. A way that matches nothing is dropped,
+which is how the map stays small: a class of feature is in the map because the style asked for it.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -150,15 +120,12 @@ which side is lower.
 <figcaption>A way uses the first matching tag key. An exact value has priority over the catch-all value.</figcaption>
 </figure>
 
+The shipped style works inside the panel's 64 colors, and that limit shapes it. Two one-pixel
+dashed lines have only their color to separate them, so where the colors run out a line gets a
+different shape instead: cableways and ski lifts use a ticked line, the third line style beside
+solid and dashed. These marks report the OSM way type. They do not rate difficulty.
+
 ### Ingest: two passes, then assemble
-
-The ingester normally reads each PBF twice.
-Pass 1 stores node coordinates and collects renderable area relations.
-Pass 2 resolves ways and captures relation-member geometry.
-The ingester then uses GEOS to assemble polygons and holes.
-
-A closed way becomes a polygon only when its tags identify an area.
-A closed road loop remains a line.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -209,45 +176,22 @@ A closed road loop remains a line.
 <figcaption>The ingester reads nodes and relations first. It then resolves ways and assembles area relations.</figcaption>
 </figure>
 
-### Cropping to a box
+The ingester reads each source twice: the first pass stores node coordinates and collects area
+relations, and the second resolves ways and captures relation members. It then assembles polygons
+and holes with GEOS. A closed way becomes a polygon only when its tags say it is an area, so a road
+that returns to its start stays a line.
 
-Use `--bbox W,S,E,N` to select data during ingest.
-This option adds an ID-selection pass before the two normal passes.
+A bounding box adds a selection pass before those two. It keeps each selected way whole, with the
+nodes and relation members it needs, so roads do not stop at an artificial edge. Complete objects
+can reach outside the box, so the map's own bounding box is larger than the request and is not the
+box to ask for next time.
 
-The selection keeps each selected way complete.
-It also keeps all required nodes and renderable area-relation members.
-Thus, roads do not stop at artificial box edges.
-Area relations do not lose required geometry.
+Several sources can be read in the same passes. For a duplicate object the first file listed wins,
+and objects are emitted in ascending identity order, so the same inputs always give the same map.
 
-Complete objects can extend outside the requested box.
-Therefore, the map header bounding box can be larger than the requested box.
-Do not use the output bounding box as the next crop request.
-
-### A limit on the region
-
-One pack makes a map of a maximum of 10,000 km².
-The region is the `--bbox` box.
-If there is no box, the region is the area that the sources declare in their PBF headers.
-
-The packer refuses a larger region before it reads the data.
-The message gives the measured area and the limit.
-Use a smaller box, or `--allow-large` to pack the full region.
-
-### Merging several regions
-
-The ingester can read multiple PBF files in the same passes.
-It does not create an intermediate merged file.
-For a duplicate object type and ID, the first listed file wins.
-The ingester emits surviving objects in ascending ID order for each type.
-These rules make the result deterministic.
+One pack covers a limited area, and the packer refuses a larger region before it reads any data.
 
 ### Land and sea
-
-OpenStreetMap supplies coastlines, but not a complete land fill.
-The packer downloads and caches a global land-polygon dataset.
-It clips this dataset to the content bounding box.
-When land is the backdrop, the packer stores only the sea complement.
-Use `--no-land` to skip this stage.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -288,53 +232,20 @@ Use `--no-land` to skip this stage.
 <figcaption>The packer clips the land dataset to the map. It stores the sea complement when land is the backdrop.</figcaption>
 </figure>
 
+OSM supplies coastlines but no land fill. The packer clips a cached global land-polygon dataset to
+the map, and where land is the backdrop it stores only the sea, because most maps are mostly land.
+
 ### Contours, traced from the terrain
 
-The packer can trace contours from [OBCT terrain](../terrain/).
-Set `contours.enabled` and supply `--terrain`.
-The packer uses marching squares on the terrain lattice.
-It skips a lattice square if one corner has no height.
+The packer traces contours from the [terrain raster](../terrain/) with marching squares, and skips
+a lattice square when a corner has no height. It writes ordinary line features, so contours use the
+same levels, quadtree, and renderer as everything else. A flag marks them as the terrain layer,
+which lets the renderer hide their ink without removing their bytes.
 
-The packer creates `contour.major` and `contour.index` line features.
-The defaults are a 100 m interval and an index at every fifth contour.
-The shipped style shows the 500 m index contours at up to 35 m per pixel and the other contours
-at up to 10 m per pixel. Both use muted dashed strokes, fixed at one pixel wide.
-Their colour is a dark teal.
-The panel shows 64 colours, so a colour that only differs from a fill can still be unreadable.
-This colour keeps a clear brightness difference from rock, forest, grassland, and the land base.
-It also stays outside the warm colour group that tracks and paths use.
-The default pre-LOD simplify tolerance is 15 m.
-The configuration can change these values.
-
-A contour class needs a matching style rule.
-Contours then use the normal LOD and quadtree pipeline.
-The terrain-layer flag lets the renderer hide their ink.
-It does not remove their bytes from the map.
+Their color is chosen for a 64-color panel: it keeps a clear brightness difference from rock,
+forest, grass, and the land base, and stays out of the warm group that tracks and paths use.
 
 ### Extracting POIs
-
-The packer uses a fixed table of service-POI tag mappings.
-The table covers water, campsites, accommodation, resupply, pharmacies, bicycle shops, and train stations.
-The first matching table row supplies the subtype.
-
-POI subtype IDs, categories, and fallback labels are normative.
-The packer stores names as at most 24 printable ASCII bytes.
-It transliterates supported Latin characters.
-An unnamed POI uses its subtype fallback label.
-
-The packer keeps the OSM type and ID for each place.
-It removes repeated copies of the same source object and keeps nearby objects separate.
-It then builds one spatial index for each category.
-
-A place has a route approach only when a source node belongs to a routable way.
-An area can use one of its own boundary nodes when that node also belongs to a routable way.
-The stored approach has that node's identity, coordinate, and supported profile bits.
-A nearby road or entrance does not establish access.
-Wiki-tagged objects retain their source links and normalized hours for the landmark compiler.
-Relations can retain these facts without a coordinate or approach.
-
-Named summit nodes use a separate category for Peak View. Their names retain UTF-8 characters,
-and their records carry elevation instead of opening hours. Distinct summit source identities remain separate.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -396,33 +307,17 @@ and their records carry elevation instead of opening hours. Distinct summit sour
 <figcaption>The packer classifies, normalizes, and deduplicates POIs before it builds the POI index.</figcaption>
 </figure>
 
+A fixed table maps tags to the service categories the device browses, and the first matching row
+wins. The packer keeps the source identity of each place, removes repeated copies of the same
+object, and builds one index per category.
+
+A place gets a route approach only when one of its source nodes belongs to a routable way, or, for
+an area, one of its own boundary nodes. A road that merely passes nearby does not establish access:
+the device must not plan a route to a gate that does not exist.
+
+Named summits go into their own category for Peak View, with elevation in place of opening hours.
+
 ### Parsing opening hours
-
-The packer parses a subset of the OSM `opening_hours` grammar.
-It stores a 29-byte weekly schedule in a shared pool.
-The device does not parse the source text.
-
-The subset supports these forms:
-
-- Weekday ranges and lists.
-- Up to two intervals per day.
-- `24/7`, `off`, and `closed`.
-- Time-only rules for all days.
-- Overnight intervals.
-- Representative seasonal weeks.
-
-The parser rounds times to the nearest 15 minutes with half-to-even rounding.
-It flags a partial result when it rounds a time or drops an unsupported rule.
-A fully unsupported value produces no schedule.
-
-The device uses one Open, Closed, or Unknown result for all place consumers.
-A missing schedule, a partial or seasonal schedule, or untrusted local time produces Unknown.
-GPS UTC alone does not establish local time: a rider or phone must also set the UTC offset.
-An overnight interval continues into the next day, including the Sunday-to-Monday boundary.
-Known-closed places are removed before the query fills its bounded page.
-Queries continue beyond sixteen places with source-based keys.
-Clock ticks update status without changing the selected identity or geometric order.
-Read failures and unavailable coverage remain distinct from an empty result.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -467,20 +362,15 @@ Read failures and unavailable coverage remain distinct from an empty result.
 <figcaption>The packer converts supported opening-hours rules to one fixed weekly schedule.</figcaption>
 </figure>
 
+The packer parses the part of the grammar that fits a weekly schedule: weekday ranges and lists, up
+to two intervals a day, overnight intervals, all day, closed, and a representative seasonal week.
+It rounds times to a quarter of an hour and flags a result it rounded or trimmed.
+
+The device turns a schedule into Open, Closed, or Unknown. A missing or flagged schedule is
+Unknown, and so is an untrusted clock: a GPS fix gives UTC, and UTC does not say when a bakery
+opens. The local offset has to come from the rider or the phone.
+
 ### Building the navigation graph
-
-The packer always builds the navigation graph. Shared OSM node IDs form junctions; the packer
-splits ways there, removes duplicate edges, and drops disconnected components below the
-configured threshold. The legality filter rejects private access, motor roads and bicycle
-prohibitions, then classifies each accepted edge by highway and surface into one `way_kind`
-byte. The serializer writes tiled nodes, adjacency records, edge geometry and snap anchors,
-densifying long geometry so each record fits its chunk. See
-[OBCM section 8](src:specs/OBCM_Spec.md) for the normative tables.
-
-An assembled map keeps **one** navigation graph. The assembler copies each surviving edge
-geometry record unchanged, then rebuilds identities, adjacency and the spatial indexes.
-Pruning runs a local union-find per cell, joined through boundary nodes rather than over the
-whole map. See [`nav.rs`](src:host/obcm-assemble/src/nav.rs).
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -537,41 +427,25 @@ whole map. See [`nav.rs`](src:host/obcm-assemble/src/nav.rs).
 <figcaption>The packer converts routable OSM ways to a navigation graph. Shared OSM nodes form graph junctions.</figcaption>
 </figure>
 
+Shared OSM node identities become junctions. The packer splits ways there, removes duplicate edges,
+and drops small disconnected components. A legality filter rejects private access, motor roads, and
+bicycle prohibitions, and each accepted edge is classified by highway and surface into one way-kind
+byte, which is what the profile weights read. See
+[OBCM section 8](src:specs/OBCM_Spec.md).
+
+An assembled map keeps one graph: the assembler copies each surviving edge geometry record
+unchanged and rebuilds the identities, the adjacency, and the indexes.
+
 ### Weighting the graph: bike profiles
 
-Each map contains one to eight bike profiles.
-The defaults are Road, Gravel, MTB, and Touring.
-Each profile supplies highway, surface, and climb weights.
+A map carries a few bike profiles, and the defaults are Road, Gravel, MTB, and Touring. A profile
+gives a multiplier for each highway class and surface, and a climb weight.
 
-Highway and surface multipliers use `1/16` fixed-point values.
-A value of `16` means `1.0`.
-Zero forbids the class.
-Every nonzero multiplier must be at least `1.0`.
-This limit keeps the A* distance heuristic admissible.
-
-The router starts weighted A* with epsilon 1.3.
-If the fixed search table fills, it retries with 2.0 and then 3.0.
-The successful epsilon bounds the returned profile-weighted cost.
+Every multiplier is at least one, and zero means forbidden. That is not a style choice: A* needs a
+heuristic that never overestimates, and a multiplier below one would make the straight-line
+distance an overestimate and the answer wrong.
 
 ### Weighting the climb
-
-Each adjacency stores ascent for its travel direction.
-The packer calculates ascent along the edge polyline.
-It samples terrain at intervals of at most 50 m.
-The shared integrator uses a 3 m dead band.
-A missing sample pauses the dead band without using zero elevation.
-Valid samples after the gap start a new ascent segment.
-The gap contributes no ascent.
-An edge with no valid sample has zero ascent.
-
-```text
-edge_cost = weighted_distance + ascent_m × climb_weight
-```
-
-The climb weight is a profile value from 0 through 255.
-Zero disables climb cost.
-The defaults are Road 10, Gravel 8, MTB 6, and Touring 8.
-A descent never reduces edge cost.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -613,25 +487,18 @@ A descent never reduces edge cost.
 <figcaption>Directional ascent measures all uphill travel along an edge. A longer path can cost less when it avoids enough climb.</figcaption>
 </figure>
 
+Each adjacency stores the ascent for its own direction, integrated along the edge with a small dead
+band so that sampling noise is not counted as climbing. A missing sample pauses the integration
+instead of reading as flat ground.
+
+```text
+edge_cost = weighted_distance + ascent_m × climb_weight
+```
+
+A descent never reduces the cost. A profile with a higher climb weight therefore accepts a longer
+way round to avoid a hill, which is the whole point of having profiles.
+
 ### Building the LOD pyramid
-
-Each style defines the coarsest permitted LOD.
-Each LOD defines its simplify and size thresholds.
-The packer builds each LOD independently.
-
-- `min_area_px` removes small polygons and holes from coarse LODs.
-- `merge_fills` combines fills with the same render identity.
-- `merge_lines` joins connected lines with the same render identity.
-- `min_line_km` removes short joined lines.
-- Coverage simplification creates coarse semantic coverage.
-
-Rock and ice participate in the same coarse land-cover generalization as vegetation and towns.
-Rock, scree, and shingle share one output class. Ice remains separate from rock and water.
-The output uses ordinary polygons and the existing device renderer.
-
-`min_line_km` requires `merge_lines`.
-The finest LOD does not use `min_area_px`.
-The packer joins lines before it applies the line-length filter.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -688,18 +555,9 @@ The packer joins lines before it applies the line-length filter.
 <figcaption>Each LOD applies its configured filters. The packer then builds and writes its quadtree.</figcaption>
 </figure>
 
-### The quadtree: packing geometry into chunks
-
-Each LOD uses a quadtree over the global bounding box.
-A node becomes a leaf when both conditions are true:
-
-- Its estimated feature bytes fit the configured chunk size.
-- Each feature has at most 32 rings.
-
-Otherwise, the node splits into four children.
-The packer clips features to each child box.
-A feature that crosses a boundary can occur in multiple children.
-The renderer walks the same flat quadtree to select visible chunks.
+Each style names the coarsest level it may appear at, and each level applies its own filters:
+sub-pixel polygons are removed, fills and lines that look the same are merged, short joined lines
+are dropped, and coarse land cover is generalized.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -744,69 +602,23 @@ The renderer walks the same flat quadtree to select visible chunks.
 <figcaption>A quadtree node becomes a leaf when its features fit the chunk and ring limits.</figcaption>
 </figure>
 
+A node becomes a leaf when its features fit the chunk size and the ring limit; otherwise it splits
+and its features are clipped into the children, so a feature that crosses a boundary appears in
+both. The device walks the same flat quadtree, so the packer's decision is the renderer's index.
+
 ### The builder
 
-The product builder assembles published cells.
-It does not run the packer.
-A selection can contain named regions, boxes, lassos, and GPX corridors.
-The builder unions all parts before it prices or downloads cells.
-Thus, overlapping parts do not duplicate cells.
+The product builder assembles published cells; it does not run the packer. A selection can mix
+named regions, boxes, lassos, and GPX corridors, and the builder unions them before it prices or
+downloads anything, so overlapping parts do not pay twice. It verifies every object against the
+catalog, and the assembler verifies the finished map with the production readers.
 
-The builder verifies each object length and SHA-256 digest.
-The assembler verifies the completed map before it exposes the output.
-If the catalog supplies terrain, the builder downloads the required terrain cells.
-The assembler puts them in the final map terrain region.
-The builder does not provide a terrain switch.
-
-### Editing a skin
-
-The product skin editor changes presentation fields only.
-It does not change feature types, style IDs, LODs, or routing profiles.
-The editor uses the production reader and renderer for its preview.
-The builder rejects a saved skin that does not match the current schema.
-
-### One source, three hosts
-
-One Svelte application supplies the website, desktop app, and maintainer server.
-Host modules supply transport and storage capabilities.
-They do not supply separate selection or assembly algorithms.
-
-| Capability | Website | Desktop | Maintainer server |
-| :-- | :--: | :--: | :--: |
-| Coverage selection | Yes | Yes | Yes |
-| WebAssembly assembly | Yes | Yes | Yes |
-| Product skin editor | Yes | Yes | Yes |
-| Managed ride library | No | Yes | No |
-| Advanced schema editor | No | No | Yes |
-| Product PBF build | No | No | No |
-
-The maintainer server can pack a fixed reference crop for schema previews.
-This preview is not a product build path.
-Published cells still require an explicit maintainer bake.
-
-### Device and ride surfaces
-
-The builder outputs one `.obcm` file.
-A device transfer commits the complete map or no map.
-The device verifies a whole-object CRC-32 before it commits the map.
-The desktop app also manages routes and recorded rides.
-Protocol v4 has no ride-possession acknowledgment. A local import does not mark a device ride
-as synced or eligible for automatic expiry. See [ride reconciliation](../companion-link/#reconciliation).
-
-### Where the hosted tier lives
-
-The website is a static application.
-The catalog and cells use separate object storage.
-A catalog update does not require a website deployment.
-The publisher uploads content before it publishes the new catalog root.
+One Svelte application serves the website, the desktop app, and the maintainer server; the host
+modules differ in transport and storage, never in the selection or assembly algorithm. The website
+is static and the cells live in object storage, so publishing a new region does not deploy the
+website.
 
 ## Following a route
-
-The GPX converter creates an OBCR route.
-It measures the retained geometry after decimation.
-It preserves elevation changes, surface transitions, and missing-data boundaries.
-It chunks the route and shares the seam point between adjacent chunks.
-The same `no_std` converter runs on the device, simulator, and web host.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 760px">
@@ -853,12 +665,12 @@ The same `no_std` converter runs on the device, simulator, and web host.
 <figcaption>The GPX converter keeps exact ride statistics and reduces only the displayed geometry.</figcaption>
 </figure>
 
-### Map-matching: a forward-biased cursor
+The GPX converter writes an OBCR route. It measures the geometry it keeps, so the statistics
+describe the stored route and not the source file, and it preserves elevation changes, surface
+transitions, and the boundaries of missing data. The same `no_std` converter runs on the device, in
+the simulator, and in the browser.
 
-The matcher keeps a cursor on the active route.
-For each position fix, it searches a bounded segment window around that cursor.
-The window has more forward range than backward range.
-This bias prevents a loop from matching an earlier pass.
+### Map-matching: a forward-biased cursor
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -902,66 +714,41 @@ This bias prevents a loop from matching an earlier pass.
 <figcaption>The matcher searches forward from its route cursor. It freezes progress when the rider is off-route.</figcaption>
 </figure>
 
-The first fix searches the complete route. An explicit skip-ahead action sets a progress floor;
-later matches cannot return to the skipped section.
-Normal tracking searches 3 segments backward and 64 segments forward.
-Off-route tracking searches 3 segments backward and 320 segments forward.
-A caller can request the wide window after an unmatched interval.
+The matcher keeps a cursor on the route and searches a window around it, with more range forward
+than backward. The bias is what stops a loop or a there-and-back route from matching the earlier
+pass. The first fix searches the whole route, and a skip-ahead sets a floor that later matches
+cannot fall back through.
 
-The matcher marks the rider off-route at 25 m or more.
-It clears this state below 15 m.
-This hysteresis prevents state changes from GPS noise.
-While off-route, cross-track distance stays live and route progress stays fixed.
+The rider goes off route past one distance and back on route below a smaller one, and the gap
+between the two stops GPS noise from switching the state. While off route the cross-track distance
+stays live and the route progress stays where it was.
 
-## Preparing landmark content
+## Landmark and peak content
 
-The host can prepare landmark text and photos from captured Wikidata, Wikipedia and Commons
-responses. This step uses local source files with recorded digests. It selects sites inside the map
-polygon, including points on its boundary. Country claims do not define coverage.
+The host compiles landmark text and photos from captured Wikidata, Wikipedia, and Commons
+responses into the map. Selection is deterministic: a fixed list of permitted types, matched
+through subclass steps, with excluded types winning. There is no popularity score and no per-place
+judgement, so the same snapshot always gives the same landmarks. Lakes, mountains, and glaciers are
+excluded even where a permitted type also matches: lake names belong on the map and mountains
+belong in Peak View. Mountain passes are kept.
 
-The category policy follows Wikidata types and their parent classes. Excluded types take priority.
-Claims use the preferred rank when present, otherwise the normal rank. The compiler retains every
-usable article in the supported UI languages: English, German, French and Spanish. Each version
-has one or two complete lead sentences within four readable pages. The device selects its UI
-language, then English, then the baked local fallback. All versions share one optional photo.
+Each usable article is kept in the four UI languages, and the device picks its own language, then
+English, then the language the baker stored. Text and photos carry separate credits, and an asset
+whose credits do not fit is rejected; a rejected photo still leaves readable text. Photos are
+converted to the panel palette with ordered dithering at a fixed size, with no crop and no
+image-specific correction.
 
-Text and photos have separate source and attribution records. The compiler rejects an asset when
-its required credits cannot fit or use unsupported characters. A rejected photo leaves valid text
-available. Photos use a fixed size and palette; there is no subject crop or image ranking.
-
-The output reports captured sites, usable content and omissions separately. Source coverage remains
-explicit. An approach count is unknown until the OSM source join runs. This host preparation step
-does not by itself install content or establish that a landmark has a routeable approach.
-
-
-## Preparing peak articles
-
-Peak articles form a separate host catalogue. Discovery uses the same named OSM summit nodes as
-Peak View. Only explicit Wikidata or Wikipedia tags can establish an article link. Captured source
-redirects and Wikipedia language links can resolve those tags; names and coordinates never infer
-a match. The OSM node determines region membership. A linked article can describe several summits
-and does not need a coordinate inside that region.
-
-The compiler stores each canonical article once and retains every summit node association. It
-shares text extraction, supported languages, local fallback, photos and credits with landmark
-preparation. Candidate, article, photo and omission counts remain separate. A rejected photo leaves
-a text-only peak article. A summit without usable text remains an ordinary summit.
-
-The peak catalogue cannot enter Ride Assistant landmark packaging. Map references and Peak View
-access still need their own integration. Regional capture and artifact orchestration also remain
-required for normal map delivery. The current host entry points and bounded captured evidence are
-in the [compiler README](src:host/obc-pack/src/landmarks/README.md).
+Peak articles are a separate collection, linked only by an explicit tag on the OSM summit node: a
+name and a coordinate cannot prove an article is about that summit. One article can serve several
+summits. See the [compiler](src:host/obc-pack/src/landmarks/mod.rs).
 
 ## Attribution and share-alike
 
-OpenStreetMap data uses the Open Database License 1.0.
-A rendered map is a Produced Work.
-The device provides the required attribution on its About page.
-
-A published `.obcm` map is a Derivative Database.
-The catalog declares `ODbL-1.0` and publishes the license text.
-A distributor of this map data must follow the same license terms.
-Maps with terrain-derived contours also require the [Copernicus attribution](../terrain/#attribution).
+OpenStreetMap data is under the Open Database License 1.0. A rendered map is a Produced Work, and
+the device gives the required attribution on its About page. A published `.obcm` map is a
+Derivative Database: the catalog declares `ODbL-1.0` and publishes the license text, and anyone who
+distributes that map data is bound by the same terms. A map with terrain-derived contours also
+carries the [Copernicus attribution](../terrain/#attribution).
 
 ## Implementation
 

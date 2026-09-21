@@ -1,28 +1,12 @@
-//! **The LS021B7DD02 pairing** — everything specific to the shipping Sharp memory-LCD panel and the
-//! row-span presentation strategy built around it, owned in one place so the generic
-//! [`display_contracts`](crate::display_contracts) stay free of any panel's width, wire format, or
+//! The LS021B7DD02 pairing: everything specific to the shipping Sharp memory-LCD panel and the
+//! row-span presentation strategy built around it, so the generic
+//! [`display_contracts`](crate::display_contracts) stay free of any panel's width, wire format or
 //! damage model.
 //!
-//! The shipping display pairing is `Device64Frame<FRAME_W, FRAME_H>` + a row-span presenter (the
-//! board's LS021/FLPR backend; the simulator's host backend). This module owns the pairing's shared
-//! substance:
-//!
-//! - [`FRAME_W`] / [`FRAME_H`] — the panel-native frame geometry, the single authority every
-//!   frame-sized thing derives from (the board's resident plane, the simulator's default window,
-//!   the render-call viewports). Pinned against the wire pack's row width below.
-//! - [`rowdiff`] — the **damage strategy**: the per-row hash store ([`RowDiff`]), the span-emitting
-//!   self-diff ([`diff_rows`]), the live-overlay span clip ([`clip_span`]), and the exact-diff
-//!   host oracle ([`spans_missed_changes`]). Row hashing and span masking are *this pairing's*
-//!   choice — the generic contracts impose no damage model on other panels.
-//! - [`wire`] — the LS021 source-bus **wire pack** (device-64 row → the 6-line DDR words the FLPR
-//!   clocks out), host-tested here as the normative reference the C blob ports line-for-line.
-//! - [`RowDamage`] / [`RowWindow`] — the pairing's damage/region vocabulary behind the contracts'
-//!   `Presenter::Damage` / `OverlayPresenter::Region` associated types, shared by the board and the
-//!   simulator so the two backends speak (and test) one strategy.
-//! - [`composite_into_resident`] — the **mutate-and-restore overlay composite** the FLPR transport
-//!   needs (the coprocessor scans the resident frame directly, and a second full frame is banned):
-//!   save the clean window bytes, write the composited window in, push, restore byte-identically.
-//!   Transport-generic so the host conformance tests drive the *same* engine the board runs.
+//! It owns the panel-native frame geometry, [`rowdiff`]'s per-row hash damage strategy, [`wire`]'s
+//! source-bus pack, the [`RowDamage`] and [`RowWindow`] vocabulary both backends share, and
+//! [`composite_into_resident`], the mutate-and-restore overlay composite the FLPR transport needs
+//! because the coprocessor scans the resident frame directly.
 
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::Rectangle;
@@ -35,42 +19,36 @@ pub mod wire;
 
 pub use rowdiff::{clip_span, diff_rows, row_hash, spans_missed_changes, RowDiff};
 
-/// **The frame geometry — the single authority.** The frame the app renders and the LS021 pairing
-/// presents: `FRAME_W × FRAME_H` device-64 bytes. Everything frame-sized derives from these two
-/// constants (the board's `FB` plane, the `RowDiff` height, the overlay-window columns, every
-/// render-call viewport, the simulator's default window); the board backend statically asserts its
-/// panel-native geometry equals them, so a panel change can't silently desynchronize the
-/// framebuffer the app renders from the frame the backend scans.
+/// The frame geometry, and the single authority for it. Everything frame-sized derives from these
+/// two constants, and the board backend statically asserts its panel-native geometry equals them,
+/// so a panel change cannot silently desynchronize the framebuffer from the scanned frame.
 pub const FRAME_W: usize = 240;
 /// Frame height in rows — see [`FRAME_W`].
 pub const FRAME_H: usize = 320;
 
-// The wire pack ([`wire`]) consumes exactly one `WIDTH`-pixel row per framebuffer row, so the
-// panel-native row width *is* the frame width. Pin them together here at the single authority (the
-// LS021/FLPR backend also re-asserts it against its FLPR gate-scan height).
+// The wire pack consumes one `WIDTH`-pixel row per framebuffer row, so pin them together here.
 const _: () = assert!(wire::WIDTH == FRAME_W, "ls021::wire::WIDTH diverged from ls021::FRAME_W");
 
-/// The LS021 pairing's damage description — the `Presenter::Damage` type both the board and the
-/// simulator presenters use. Callers construct it only through the contracts' neutral constructors
-/// (`damage_full` / `damage_unknown` / `damage_around`), so rows never leak into generic code.
+/// The LS021 pairing's damage description. Callers construct it only through the contracts'
+/// neutral constructors, so rows never leak into generic code.
 pub enum RowDamage {
-    /// Forced full repaint: re-seed the row-hash store and push every row — the panel-reinit /
-    /// transport-recovery damage, collapsing the old `reset_diff()` + full-present pair.
+    /// Forced full repaint: re-seed the row-hash store and push every row. This is the panel-reinit
+    /// and transport-recovery damage.
     Full,
-    /// Self-diff against the row-hash store ([`RowDiff::diff_clipped`]), optionally going *around*
-    /// a live overlay's rows: the half-open row span `exclude = Some((y0, rows))` is clipped out of
-    /// the pushed spans (the store still tracks the clean frame for them) so a map redraw never
-    /// flashes a live bulge off.
+    /// Self-diff against the row-hash store, optionally going around a live overlay's rows: the
+    /// half-open row span `exclude = Some((y0, rows))` is clipped out of the pushed spans, while
+    /// the store still tracks the clean frame for them, so a map redraw never flashes a live
+    /// bulge off.
     SelfDiff {
         /// A live overlay's rows `(y0, rows)`, owned by the overlay plane this present.
         exclude: Option<(u16, u16)>,
     },
 }
 
-/// The LS021 pairing's overlay region — the `OverlayPresenter::Region` type: a bounded column
+/// The LS021 pairing's overlay region, the `OverlayPresenter::Region` type: a bounded column
 /// window on full-width rows. The row-addressed panel re-latches all columns of a touched row, so
-/// exclusion and the row push widen to full-width rows `[y0, y0 + rows)` while the composite only
-/// repaints the `[x0, x0 + w)` columns.
+/// exclusion and the row push widen to full-width rows while the composite repaints only the
+/// `[x0, x0 + w)` columns.
 #[derive(Clone, Copy)]
 pub struct RowWindow {
     /// First frame column of the overlay window.
@@ -79,30 +57,29 @@ pub struct RowWindow {
     pub y0: u16,
     /// Window width in columns.
     pub w: u16,
-    /// Window height in rows — also the widened region's row span.
+    /// Window height in rows, and the widened region's row span.
     pub rows: u16,
 }
 
 impl RowWindow {
-    /// The smallest window covering `rect`, clamped to a `frame_w × frame_h` frame — the pairing's
-    /// `OverlayPresenter::region` widening rule (shared by both backends).
+    /// The smallest window covering `rect`, clamped to a `frame_w × frame_h` frame: the pairing's
+    /// widening rule, shared by both backends.
     pub fn from_rect(rect: Rectangle, frame_w: u32, frame_h: u32) -> Self {
         let c = rect.intersection(&Rectangle::new(Point::zero(), Size::new(frame_w, frame_h)));
         Self { x0: c.top_left.x as u16, y0: c.top_left.y as u16, w: c.size.width as u16, rows: c.size.height as u16 }
     }
 
-    /// The full-width row span `(y0, rows)` this window's rows occupy — what a base present
-    /// excludes while the overlay is live ([`RowDamage::SelfDiff`]).
+    /// The full-width row span `(y0, rows)` this window's rows occupy, which a base present
+    /// excludes while the overlay is live.
     pub fn exclude_span(&self) -> (u16, u16) {
         (self.y0, self.rows)
     }
 }
 
-/// The paired scratch buffers one [`composite_into_resident`] call borrows — kept together because
-/// they describe the *same* window: `win` is the RGB565 composite the drawer paints
-/// ([`composite_overlay_window`]'s target), `save` the clean device-64 window bytes the engine
-/// restores after the push. Both are call-scoped transients on the caller's stack (the board's
-/// `MAX_OVERLAY_*`-sized arrays), never resident state.
+/// The paired scratch buffers one [`composite_into_resident`] call borrows. They describe the same
+/// window: `win` is the RGB565 composite the drawer paints, and `save` the clean device-64 window
+/// bytes the engine restores after the push. Both are call-scoped transients on the caller's
+/// stack, never resident state.
 pub struct OverlayScratch<'a> {
     /// RGB565 composite window, ≥ `w × rows` pixels.
     pub win: &'a mut [u16],
@@ -110,27 +87,24 @@ pub struct OverlayScratch<'a> {
     pub save: &'a mut [u8],
 }
 
-/// **The mutate-and-restore overlay composite** (#347): present `draw_overlay` composited over the
-/// clean resident `fb` backdrop within `window`, for a transport that scans the resident frame
-/// directly — so the composited window must transiently *be* in the frame. The clean window bytes
-/// are saved (≤ the window's area), the composited window written in (each RGB565 scratch pixel
-/// re-quantized to a device-64 byte through [`rgb565_to_device64_byte`]), `push` drives the full-width rows
-/// `[y0, y0 + rows)` to glass, and the clean bytes are restored — **byte-identically, push fault or
-/// not** (a mid-scan transport reading restored clean bytes just paints clean rows; the caller
-/// retries). The row-hash store keeps tracking the clean frame throughout: after the restore the
-/// frame is byte-identical to before, so the store needs no touch-up.
+/// The mutate-and-restore overlay composite: present `draw_overlay` composited over the clean
+/// resident `fb` backdrop within `window`, for a transport that scans the resident frame directly,
+/// so the composited window must transiently be in the frame.
 ///
-/// The composite itself is the shared [`composite_overlay_window`] (backdrop fill + one
-/// `draw_overlay` call over a frame-absolute [`Band`] — the caller's brief input-plane lock inside
-/// it is taken once per overlay frame, never per row). The re-quantization is this crate's own
-/// [`rgb565_to_device64_byte`] — the same packer the resident frame was rendered with, so an
-/// overlay pixel and a map pixel of the same colour land on the same device-64 byte by
-/// construction rather than by two callers agreeing.
+/// The clean window bytes are saved, the composited window is written in with each RGB565 scratch
+/// pixel re-quantized through [`rgb565_to_device64_byte`], `push` drives the full-width rows
+/// `[y0, y0 + rows)` to glass, and the clean bytes are restored byte-identically, on the fault
+/// path too: a mid-scan transport reading restored clean bytes just paints clean rows, and the
+/// caller retries. The row-hash store keeps tracking the clean frame throughout, so it needs no
+/// touch-up after the restore.
 ///
-/// Both [`OverlayScratch`] slices must hold at least `w × rows` entries (panics otherwise — a
-/// backend wiring bug, caught loudly). Transport-generic: the board's `push` is the blocking FLPR
-/// span push; the host conformance double's copies the pushed rows to its glass — so the *same*
-/// save/composite/push/restore engine is what the clean-frame postcondition tests.
+/// The composite itself is the shared [`composite_overlay_window`], and the re-quantization is the
+/// same packer the resident frame was rendered with, so an overlay pixel and a map pixel of one
+/// colour land on the same device-64 byte by construction.
+///
+/// Both [`OverlayScratch`] slices must hold at least `w × rows` entries, and panic otherwise.
+/// Transport-generic: the board pushes an FLPR span, and the host conformance double copies the
+/// pushed rows to its glass, so both test the same engine.
 pub fn composite_into_resident<E>(
     fb: &mut [u8],
     frame: Size,
@@ -144,14 +118,14 @@ pub fn composite_into_resident<E>(
     let fw = frame.width as usize;
     assert!(win_scratch.len() >= w * rows && save_scratch.len() >= w * rows, "overlay scratch smaller than the window");
 
-    // 1. Composite the overlay ONCE into the window scratch over the clean `fb` backdrop: the
-    //    shared helper fills the window from `fb` (device-64 → RGB565) and lets `draw_overlay`
-    //    paint over it through a frame-absolute `Band`. `fb` is untouched so far.
+    // 1. Composite the overlay once into the window scratch over the clean `fb` backdrop. The
+    //    shared helper fills the window from `fb` and lets `draw_overlay` paint over it through a
+    //    frame-absolute `Band`. `fb` is untouched so far.
     let rect = Rectangle::new(Point::new(x0 as i32, y0 as i32), Size::new(w as u32, rows as u32));
     composite_overlay_window(fb, frame, rect, win_scratch, draw_overlay);
 
-    // 2. Save the clean window bytes, then write the composited window into the fb (re-quantized
-    //    to device-64) — the transport scans the fb, so the overlay must transiently live there.
+    // 2. Save the clean window bytes, then write the composited window into the fb, re-quantized
+    //    to device-64: the transport scans the fb, so the overlay must transiently live there.
     for r in 0..rows {
         for c in 0..w {
             let idx = (y0 + r) * fw + x0 + c;
@@ -160,12 +134,11 @@ pub fn composite_into_resident<E>(
         }
     }
 
-    // 3. Push the full-width rows `[y0, y0+rows)` — the transport packs them from the fb, overlay
-    //    included.
+    // 3. Push the full-width rows, which the transport packs from the fb, overlay included.
     let result = push(fb);
 
-    // 4. Restore the clean map under the overlay — the fb is byte-identical to before, so the
-    //    row-hash store (which tracks the clean fb) needs no touch-up. Runs on the fault path too.
+    // 4. Restore the clean map under the overlay. The fb is byte-identical to before, so the
+    //    row-hash store needs no touch-up. This runs on the fault path too.
     for r in 0..rows {
         for c in 0..w {
             fb[(y0 + r) * fw + x0 + c] = save_scratch[r * w + c];
@@ -196,7 +169,7 @@ mod tests {
     }
 
     /// The engine's contract: the composited window is what the transport scans, and the frame is
-    /// byte-identical afterwards — on the success path *and* the fault path.
+    /// byte-identical afterwards, on the success path and the fault path alike.
     #[test]
     fn composite_pushes_the_window_and_restores_the_frame() {
         let (fw, fh) = (8usize, 6usize);

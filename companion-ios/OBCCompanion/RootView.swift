@@ -4,54 +4,40 @@ import OBCTransport
 import OBCFormats
 import OBCUI
 
-/// The app's root: the B2 launch gate (bond check → quiet reconnect, or the
-/// D1–D5 pairing flow) in front of the main screen (B3), which pushes the B4
-/// detail screens. Holds only the seams the composition root chose —
-/// `any DeviceTransport` + `any BondStore` — plus the file-format edge
-/// (`RouteImporter`) that turns a picked file into the E1 import landing.
-///
-/// The import flow itself (replace-vs-new, rename validation, the H5 failure)
-/// is `ImportFlowModel` in OBCUI, where it runs under `swift test`; this view
-/// only binds its cover/dialog/alert state and hands it the decode closure.
+/// The app's root: the launch gate, a bond check and quiet reconnect or the pairing flow, in
+/// front of the main screen, which pushes the detail screens. Holds only the seams the
+/// composition root chose, plus the file-format edge that turns a picked file into an import.
+/// The import flow itself is `ImportFlowModel`; this view only binds its presentation state.
 struct RootView: View {
     @State private var launchModel: LaunchFlowModel
     @State private var mainModel: MainScreenModel
     @State private var importModel: ImportFlowModel
-    /// The foreground-only link policy (#459): a real background transition
-    /// suspends the link (after draining any in-flight transfer under the
-    /// system grace window); foreground re-raises it via the bonded
-    /// silent-reconnect path. Fed raw `scenePhase` changes below.
+    /// The foreground-only link policy: a real background transition suspends the link, after
+    /// draining any in-flight transfer; foreground re-raises it over the bonded reconnect path.
     @State private var lifecycleModel: LinkLifecycleModel
-    /// Online/offline signal for the MapKit basemap previews (#294), injected
-    /// into the whole tree as `\.obcIsOnline`.
+    /// Online and offline signal for the basemap previews, injected into the tree.
     @State private var reachability: ReachabilityStore
-    /// The proactive update surface (#773 U5): decides, on becoming active, whether a published
-    /// firmware update is worth a sheet. Answers from U4's 6-hour cache, so foregrounding is not a
-    /// network request.
+    /// Decides, on becoming active, whether a published firmware update is worth a sheet. Answers
+    /// from the cache, so foregrounding is not a network request.
     @State private var updateSurfaceModel: UpdateSurfaceModel
     @State private var path: [MainDestination] = []
     @Environment(\.scenePhase) private var scenePhase
 
     private let transport: any DeviceTransport
     private let bondStore: any BondStore
-    /// The proactive-update preferences (#773 U5) — the auto-check toggle, the answered ledger and
-    /// the last-seen device. Shared by the launch surface here and the Settings toggle, so the switch
-    /// silences the surface it names.
+    /// The proactive-update preferences: the auto-check toggle, the answered ledger and the
+    /// last-seen device. Shared with the Settings toggle, so the switch silences what it names.
     private let updateSurface: any UpdateSurfaceStore
-    /// The in-flight transfer ledger (#459) — shared by the upload sheets and
-    /// the ride-sync coordinator (the writers) and the lifecycle model (the
-    /// reader draining before a background disconnect).
+    /// The in-flight transfer ledger, shared by the upload sheets and the ride-sync coordinator as
+    /// writers, and by the lifecycle model as the reader draining before a background disconnect.
     private let transferActivity: TransferActivity
-    /// The registered import formats (B6): GPX + TCX. Adding a format = one
-    /// more decoder here; the picker filter and share-sheet registration
-    /// follow `supportedFileExtensions`.
+    /// The registered import formats. One more format is one more decoder here; the picker filter
+    /// and the share-sheet registration follow `supportedFileExtensions`.
     private let importer: RouteImporter
-    /// A route file handed in at launch (`-OBCImportSample`) — opens E1 as soon
-    /// as the main screen is up.
+    /// A route file handed in at launch, which opens the import landing once the main screen is up.
     private let importAtLaunch: (data: Data, fileName: String)?
-    /// A pre-staged firmware update handed in at launch (`-OBCFirmwareDemo`) —
-    /// pushes the S7 screen straight to its staged state (the Files picker can't
-    /// be driven from automation), optionally auto-sending. `nil` in normal runs.
+    /// A pre-staged firmware update handed in at launch, which pushes the update screen straight
+    /// to its staged state, because the Files picker cannot be driven from automation.
     private let firmwareDemoAtLaunch: (data: Data, autoSend: Bool)?
 
     init(
@@ -65,8 +51,7 @@ struct RootView: View {
         importAtLaunch: (data: Data, fileName: String)? = nil,
         firmwareDemoAtLaunch: (data: Data, autoSend: Bool)? = nil,
         // The sync coordinator's own timing seam, threaded so the composition root can park the
-        // post-sync confirmation for an automated capture (`-OBCHoldSyncConfirmation`, #1212).
-        // Untouched in every ordinary run.
+        // post-sync confirmation for an automated capture. Untouched in every ordinary run.
         syncTiming: RideSyncCoordinator.Timing = RideSyncCoordinator.Timing()
     ) {
         self.transport = transport
@@ -86,16 +71,14 @@ struct RootView: View {
         _mainModel = State(initialValue: MainScreenModel(
             transport: transport, library: library,
             syncTiming: syncTiming,
-            // The rename self-heal (#361): once per established connection,
-            // push the bond record's desired name if the device config
-            // disagrees (a rename whose write never landed).
+            // Once per established connection, push the bond record's desired name if the device
+            // config disagrees, which heals a rename whose write never landed.
             nameReconciler: DeviceNameReconciler(transport: transport, bondStore: bondStore),
             transferActivity: transferActivity
         ))
         _importModel = State(initialValue: ImportFlowModel(
-            // The decode stays app-side (formats at the edges — OBCUI doesn't
-            // import OBCFormats); the flow model gets a closure over it, and a
-            // narrow bond check for the E1 vs H4 framing.
+            // The decode stays app-side, because OBCUI does not import OBCFormats; the flow model
+            // gets a closure over it, and a narrow bond check for the framing.
             decode: { data, fileName in
                 try importer.importRoute(from: data, fileExtension: (fileName as NSString).pathExtension)
             },
@@ -103,9 +86,8 @@ struct RootView: View {
             isBonded: { bondStore.load() != nil }
         ))
         _reachability = State(initialValue: ReachabilityStore(reachability))
-        // #773 U5 — the launch surface. The runner (policy + U4's checker + this store) is the
-        // *same* type the background refresh runs, so the sheet and the notification can't disagree
-        // about what's worth raising.
+        // The runner is the same type the background refresh runs, so the sheet and the
+        // notification cannot disagree about what is worth raising.
         _updateSurfaceModel = State(initialValue: UpdateSurfaceModel(
             transport: transport,
             bondStore: bondStore,
@@ -139,28 +121,26 @@ struct RootView: View {
                         path.append(.trash)
                     }
                 )
-                // Back label for the pushed details — the main screen draws its
-                // own chrome, but the title still names the pop target ("‹ Routes").
+                // The main screen draws its own chrome, but the title still names the pop target.
                 .navigationTitle("Routes")
                 .navigationDestination(for: MainDestination.self) { destination in
                     detailScreen(for: destination)
                 }
             }
         }
-        // Everything below hangs OUTSIDE the launch gate: a share can arrive
-        // before pairing (H4) — the E1 cover and the H5 alert must present
-        // over D1 just as they do over the main screen.
+        // Everything below hangs outside the launch gate: a share can arrive before pairing, so
+        // the import cover and its alert must present over the pairing flow too.
         .fullScreenCover(item: $importModel.pendingImport) { pending in
             importLanding(for: pending)
         }
-        // H5 — the share sheet can hand over anything; say what we accept.
+        // The share sheet can hand over anything; say what we accept.
         .alert("Couldn't read that file", isPresented: $importModel.importFailed) {
             Button("OK", role: .cancel) {}
         } message: {
             Text("OBC imports GPX and TCX route files. That one looked like something else.")
         }
-        // A re-import whose name matches a saved route (e.g. an edited Komoot
-        // tour): update that route in place, or keep both.
+        // A re-import whose name matches a saved route, such as an edited tour: update that route
+        // in place, or keep both.
         .confirmationDialog(
             collisionTitle,
             isPresented: collisionShown,
@@ -186,33 +166,28 @@ struct RootView: View {
         .task {
             lifecycleModel.start()
             reachability.start()
-            // #773 U5: remember the device's version while the link can be read, and run the launch
-            // check once for this cold start (the `.active` edge below covers every return).
+            // Remember the device's version while the link can be read, and run the launch check
+            // once for this cold start; the `.active` edge below covers every return.
             updateSurfaceModel.start()
             updateSurfaceModel.appBecameActive()
-            // A notice tapped from a cold launch: iOS delivers the response during startup, so the
-            // flag may already be set by the time the first `.task` runs.
+            // A notice tapped from a cold launch: iOS delivers the response during startup, so
+            // the flag may already be set by the time the first `.task` runs.
             if UpdateRouteRequest.shared.consume() { pushFirmwareUpdate() }
             if let importAtLaunch {
                 importModel.open(data: importAtLaunch.data, fileName: importAtLaunch.fileName)
             }
-            // The `-OBCFirmwareDemo` hook: push the S7 screen (pre-staged) once
-            // the main screen is up — the demo/screenshot entry the Files picker
-            // can't provide from automation.
+            // Push the update screen, pre-staged, once the main screen is up: the demo entry the
+            // Files picker cannot provide from automation.
             if firmwareDemoAtLaunch != nil, path.isEmpty {
                 path = [.firmwareUpdate]
             }
         }
-        // The foreground-only link (#459): only a real `.background` transition
-        // suspends (the model ignores `.inactive` flickers — notification
-        // shade, app switcher); `.active` re-raises via the bonded
-        // silent-reconnect path.
+        // Only a real `.background` transition suspends the link; the model ignores `.inactive`
+        // flickers such as the notification shade and the app switcher.
         .onChange(of: scenePhase) { _, newPhase in
             lifecycleModel.scenePhaseChanged(to: newPhase)
-            // #773 U5: the launch check on every return to the front (cache-backed — see
-            // `UpdateSurfaceModel`), and the background wake requested on the way out. `.inactive`
-            // is deliberately neither: it's the shade/app-switcher flicker the link policy ignores
-            // too.
+            // The launch check on every return to the front, and the background wake requested on
+            // the way out. `.inactive` is deliberately neither.
             switch newPhase {
             case .active:
                 updateSurfaceModel.appBecameActive()
@@ -221,23 +196,18 @@ struct RootView: View {
             default: break
             }
         }
-        // Share-sheet / "open with OBC" delivery: iOS hands route files here
-        // (registered in project.yml → CFBundleDocumentTypes). Same path as a
-        // Files pick, so a Komoot share lands on E1.
+        // Share-sheet delivery: iOS hands route files here, the same path as a Files pick.
         .onOpenURL { url in
             Task { await importModel.openFile(at: url) }
         }
-        // One shared online/offline signal for every basemap preview (#294) —
-        // the E1 cover + pushed details inherit it through the presentation.
+        // One shared online and offline signal for every basemap preview.
         .environment(\.obcIsOnline, reachability.isOnline)
-        // Hold the screen awake while any transfer is in flight (#754) — the
-        // idle-timer touch reads the same ledger the upload sheets, ride sync,
-        // and firmware send claim from. UIKit stays at the composition root.
+        // Hold the screen awake while any transfer is in flight: the idle-timer touch reads the
+        // same ledger the upload sheets, ride sync and firmware send claim from.
         .keepAwakeDuringTransfers(transferActivity)
-        // #773 U5 — the launch sheet. Presented only when the policy says so (auto-check on, a
-        // parseable running version, a fresh answer of `available`, and this version not already
-        // put to the rider); a swipe-down is routed to `dismiss()` because closing it *is* an
-        // answer, the same as Not now.
+        // The launch sheet, presented only when the policy says so: auto-check on, a parseable
+        // running version, a fresh answer of "available", and this version not already put to the
+        // rider. A swipe-down routes to `dismiss()`, because closing it is an answer.
         .sheet(item: pendingUpdate) { update in
             UpdateAvailableSheet(
                 update: update,
@@ -249,17 +219,16 @@ struct RootView: View {
             )
             .presentationDetents([.height(400)])
         }
-        // A tapped update notice lands on S7 (the delegate set in `OBCCompanionApp` flips the flag;
-        // a cold-launch tap is picked up by the `.task` above, a foreground one here).
+        // A tapped update notice lands on the update screen. A cold-launch tap is picked up by
+        // the `.task` above, a foreground one here.
         .onChange(of: UpdateRouteRequest.shared.openFirmwareUpdate) { _, wants in
             if wants, UpdateRouteRequest.shared.consume() { pushFirmwareUpdate() }
         }
     }
 
-    // MARK: The proactive update surface (#773 U5)
+    // MARK: The proactive update surface
 
-    /// Presentation binding for the launch sheet. Dismissal answers — a rider who swipes it away has
-    /// said "not now" just as deliberately as one who taps it.
+    /// Presentation binding for the launch sheet. Dismissal answers: a swipe-away says "not now".
     private var pendingUpdate: Binding<UpdateSurfaceModel.PendingUpdate?> {
         Binding(
             get: { updateSurfaceModel.pending },
@@ -267,9 +236,8 @@ struct RootView: View {
         )
     }
 
-    /// Push S7, from the sheet's View or from a tapped notification. Idempotent: a second tap while
-    /// the screen is already on the stack must not stack a second copy (which would strand the
-    /// in-flight transfer the lower one owns).
+    /// Push the update screen, from the sheet or from a tapped notification. Idempotent: a second
+    /// copy on the stack would strand the in-flight transfer the lower one owns.
     private func pushFirmwareUpdate() {
         guard !path.contains(.firmwareUpdate) else { return }
         path.append(.firmwareUpdate)
@@ -277,15 +245,11 @@ struct RootView: View {
 
     // MARK: Import-flow presentation pieces
     //
-    // Extracted from `body` — not for reuse but for the type-checker: the launch
-    // gate + ten chained presentation modifiers with inline closures and
-    // `Binding(get:set:)` constructions form one expression, and each addition
-    // pushed inference time up until Xcode gave up ("unable to type-check this
-    // expression in reasonable time", #754's `.keepAwakeDuringTransfers` was the
-    // straw). Keep new presentation logic in helpers like these, not inline.
+    // Extracted from `body` for the type-checker, not for reuse: the launch gate plus ten chained
+    // presentation modifiers form one expression, and each addition pushed inference time up
+    // until the compiler gave up. Keep new presentation logic in helpers like these, not inline.
 
-    /// The E1 import cover's content (H4): save / upload / pair-detour actions
-    /// around one pending import.
+    /// The import cover's content: save, upload and pair-detour actions around one pending import.
     private func importLanding(for pending: PendingImport) -> some View {
         ImportLandingHost(
             transport: transport,
@@ -294,13 +258,10 @@ struct RootView: View {
             fileName: pending.fileName,
             deviceName: mainModel.deviceName,
             noDevicePaired: pending.noDevicePaired,
-            // The optional TR7 "Add to trip" row's picker offers the existing
-            // trips (+ New trip…); a trip is app-local, so it works with no
-            // device paired just the same.
+                    // A trip is app-local, so the picker works with no device paired just the same.
             tripPickerItems: mainModel.tripPickerItems,
             replacing: pending.replacing,
-            // Scope-gated (#769): replace-by-id only when the replaced route's
-            // link is valid for the connected device's (serial, epoch).
+                    // Replace by id only when the replaced route's link is valid for this device.
             replacingDeviceObjectID: pending.replacing.flatMap {
                 mainModel.plannedDeviceObjectID(for: $0.id)
             },
@@ -309,17 +270,13 @@ struct RootView: View {
             },
             onSave: { detail, tripSelection in
                 mainModel.addImportedRoute(pending.record(for: detail))
-                // File into the chosen trip as its last stage (TR7); `.none`
-                // leaves it loose (the opt-in default).
+                    // File into the chosen trip as its last stage; `.none` leaves it loose.
                 mainModel.fileRoute(detail.summary.id, into: tripSelection)
                 importModel.closeImport()
             },
-            // "Uploading saves it too" (B5): the route lands in Planned
-            // the moment the upload completes (recorded as on-device, up to
-            // date, under the id the device assigned); the cover closes
-            // after F₂. The link is recorded through `markRouteUploaded` —
-            // the model scopes it to the connected device's (serial, epoch)
-            // identity (#769); `record(for:)` itself never mints links.
+                    // Uploading saves it too: the route lands in Planned the moment the upload
+                    // completes, under the id the device assigned, and the cover closes after it.
+                    // The model scopes the recorded link to the connected device's identity.
             onUploaded: { detail, tripSelection, objectID, crc in
                 mainModel.addImportedRoute(pending.record(for: detail))
                 mainModel.fileRoute(detail.summary.id, into: tripSelection)
@@ -328,8 +285,7 @@ struct RootView: View {
                         detail.summary.id, objectID: objectID, crc32: crc)
                 }
             },
-            // H4 "Pair a device": save first (a pairing detour must not
-            // cost the import), then drop into the D2 scan.
+                    // Save first, so a pairing detour does not cost the import, then start the scan.
             onPair: { detail, tripSelection in
                 mainModel.addImportedRoute(pending.record(for: detail))
                 mainModel.fileRoute(detail.summary.id, into: tripSelection)
@@ -340,8 +296,7 @@ struct RootView: View {
         )
     }
 
-    /// The collision dialog's title — the imported route's name (file name when
-    /// the route carries none), quoted.
+    /// The collision dialog's title: the imported route's name, or the file name, quoted.
     private var collisionTitle: String {
         let name = importModel.collision?.pending.route.name ?? importModel.collision?.pending.fileName ?? ""
         return "\u{201C}\(name)\u{201D} is already in your library"
@@ -363,7 +318,7 @@ struct RootView: View {
         )
     }
 
-    // MARK: Detail destinations (B4)
+    // MARK: Detail destinations
 
     @ViewBuilder
     private func detailScreen(for destination: MainDestination) -> some View {
@@ -374,13 +329,12 @@ struct RootView: View {
                     transport: transport,
                     activity: transferActivity,
                     dressing: .planned(route),
-                    // Routes saved from an import keep their parsed waypoints/
-                    // profile app-side; the device can't serve them.
+                    // Routes saved from an import keep their parsed waypoints and profile
+                    // app-side; the device cannot serve them.
                     preloadedDetail: mainModel.importedDetail(for: id),
-                    // …and their geometry, which an upload re-encodes to OBCR.
+                    // And their geometry, which an upload re-encodes.
                     plannedGeometry: mainModel.plannedGeometry(for: id),
-                    // …and the device link (object id + committed fingerprint),
-                    // so a re-upload replaces in place and the button knows
+                    // And the device link, so a re-upload replaces in place and the button knows
                     // whether the copy is current.
                     deviceObjectID: mainModel.plannedDeviceObjectID(for: id),
                     provenCommittedCRC: mainModel.plannedProvenCommittedCRC(for: id),
@@ -390,8 +344,7 @@ struct RootView: View {
                         path.removeAll()
                     },
                     onRename: { mainModel.renameRoute(id, to: $0) },
-                    // #503 — reverse lands a flipped copy alongside the original
-                    // and opens it, so the rider sees the direction they'll ride.
+                    // Reverse lands a flipped copy alongside the original and opens it.
                     onReverse: {
                         if let reversedID = mainModel.reverseRoute(id) {
                             path.append(.route(id: reversedID))
@@ -403,8 +356,7 @@ struct RootView: View {
                                 id, objectID: objectID, crc32: crc)
                         }
                     },
-                    // TR7 route menu (detail overflow): Add to trip… on a loose
-                    // route, Move to trip… + Remove from trip on a filed one.
+                    // Add to trip on a loose route; Move to trip and Remove from trip on a filed one.
                     tripPickerItems: mainModel.tripPickerItems,
                     currentTripID: mainModel.tripContaining(id),
                     onAddToTrip: { mainModel.fileRoute(id, into: $0) },
@@ -417,12 +369,10 @@ struct RootView: View {
                     transport: transport,
                     activity: transferActivity,
                     dressing: .tracked(ride),
-                    // The full tracklog (#294) — the interactive map draws this,
-                    // never the ride card's downsampled preview.
+                    // The full tracklog: the interactive map draws this, never the preview.
                     rideGeometry: mainModel.rideGeometry(for: id),
                     deviceName: mainModel.deviceName,
-                    // Phone-side only — the ride stays on the device's card;
-                    // app-side it lands in Recently Deleted (#292), recoverable.
+                    // Phone-side only: the ride stays on the device's card and lands in Recently Deleted.
                     onDelete: {
                         mainModel.deleteRide(id)
                         path.removeAll()
@@ -434,11 +384,9 @@ struct RootView: View {
             TripDetailView(
                 model: mainModel,
                 tripID: id,
-                // A stage opens the ordinary route detail (E2), exactly as a
-                // top-level route card does.
+                // A stage opens the ordinary route detail, as a top-level route card does.
                 onSelectRoute: { route in path.append(.route(id: route.id)) },
-                // The trip dissolved or was deleted — pop back to the routes list
-                // (drop the trip and anything pushed above it).
+                // The trip dissolved or was deleted: pop back and drop anything pushed above it.
                 onClose: {
                     if let index = path.firstIndex(of: .trip(id: id)) {
                         path.removeSubrange(index...)
@@ -451,19 +399,16 @@ struct RootView: View {
             SettingsScreen(
                 transport: transport,
                 bondStore: bondStore,
-                // #773 U5: the same store the launch surface reads, so the toggle it hosts silences
-                // both proactive surfaces at once.
+                // The same store the launch surface reads, so this toggle silences both surfaces.
                 updateSurface: updateSurface,
                 onDeviceRenamed: { mainModel.deviceRenamed(to: $0) },
-                // H2: bond is cleared + link dropped by the model; pop the
-                // stack and hand the launch flow back to the D1 prompt.
+                // Bond cleared and link dropped by the model; pop the stack and show the pairing prompt.
                 onForget: {
                     path.removeAll()
                     launchModel.forgetDevice()
                 },
-                // S7: push the firmware-update screen (its own destination so
-                // the host owns a stable model — an in-flight transfer survives
-                // Settings body passes).
+                // Its own destination, so the host owns a stable model and an in-flight transfer
+                // survives Settings body passes.
                 onOpenFirmwareUpdate: { path.append(.firmwareUpdate) },
 
                 onOpenDevPanel: devPanelOpener
@@ -479,9 +424,8 @@ struct RootView: View {
         }
     }
 
-    /// The hidden dev-panel entry Settings hosts (B1P's second entry point):
-    /// Debug-only, and only when the mock is driving — Release and forced-BLE
-    /// runs pass `nil`, so the gesture goes nowhere.
+    /// The hidden dev-panel entry Settings hosts: Debug-only, and only when the mock is driving.
+    /// Release and forced-BLE runs pass nil, so the gesture goes nowhere.
     private var devPanelOpener: (() -> Void)? {
         #if DEBUG
         guard OBCCompanionApp.mockControl != nil else { return nil }
@@ -492,8 +436,8 @@ struct RootView: View {
     }
 }
 
-/// Pushed-detail routing. Carries only ids — the screens look the live summary
-/// up in `MainScreenModel`, so a rename mid-stack stays consistent.
+/// Pushed-detail routing. Carries only ids, so the screens look the live summary up in
+/// `MainScreenModel` and a rename mid-stack stays consistent.
 enum MainDestination: Hashable {
     case route(id: RouteID)
     case trip(id: TripID)

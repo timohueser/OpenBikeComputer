@@ -43,8 +43,8 @@ public actor TransferClient {
     private var currentStoreID: StoreID?
     private let archiveResponseTimeout: Duration
 
-    // Actor reentrancy must not turn two callers into two live transfers. This small FIFO is the
-    // client's operation gate; BLETransport has no transfer slot or operation queue anymore.
+    // Actor reentrancy must not turn two callers into two live transfers. This small FIFO is
+    // the client's operation gate.
     private var busy = false
     private var operationWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -78,8 +78,8 @@ public actor TransferClient {
     }
 
     /// Establish the store identity from the first LIST page without walking the whole catalog.
-    /// A BLE page carries only two entries at the preferred MTU, so using `catalog()` merely to
-    /// learn the StoreId turns a full benchmark card into hundreds of needless control writes.
+    /// A BLE page carries only two entries at the preferred MTU, so `catalog()` would cost
+    /// hundreds of needless control writes for one StoreId.
     public func storeID() async throws -> StoreID {
         await acquire()
         defer { release() }
@@ -167,8 +167,8 @@ public actor TransferClient {
                 return try await putOnLiveLink(request, payload: payload, progress: progress)
             }
 
-            // A create has no ObjectId until its response. LIST's immutable fingerprint is the
-            // normative reconciliation key for the lost assignment.
+            // A create has no ObjectId until its response, so LIST's immutable fingerprint is
+            // the reconciliation key for the lost assignment.
             let catalog = try await listAll(kind: kind)
             let matches = catalog.entries.filter {
                 !$0.flags.contains(.retained)
@@ -230,9 +230,7 @@ public actor TransferClient {
         return result
     }
 
-    /// Destructively initialize the card as a new empty flat store. No iOS product surface exposes
-    /// this today; keeping it in the shared v4 client makes FORMAT transport-neutral rather than a
-    /// USB-only dialect.
+    /// Destructively initialize the card as a new empty flat store. No iOS surface calls it today.
     public func format(expectedStoreID: StoreID, replacementStoreID: StoreID) async throws -> FormatResult {
         await acquire()
         defer { release() }
@@ -311,9 +309,9 @@ public actor TransferClient {
                     do {
                         while true {
                             let record = try StreamRecord(decoding: try await link.receiveStreamRecord())
-                            // Stream traffic can outlive the answer that ended an earlier transfer.
-                            // Request ids name the live direction; every other valid record is late
-                            // traffic and is discarded in silence (§3.8).
+                            // Stream traffic can outlive the answer that ended an earlier
+                            // transfer. Request ids name the live direction; every other valid
+                            // record is late traffic and is discarded in silence.
                             guard record.requestID == requestID else { continue }
                             if try await accumulator.append(record) { return .streamComplete }
                         }
@@ -509,13 +507,10 @@ public actor TransferClient {
 
 /// Wait for this request's control answer, and tell the link when the operation stops waiting.
 ///
-/// Two rules meet here. A task group returns only once every child has finished, so an
-/// announce-and-stream pair never unwinds while its answer is still parked on the link — the
-/// receive that outlives its operation has to be released from the outside, and cancellation is
-/// the only signal that reaches it. And the peer answers every request exactly once, when it
-/// terminates (§3.1, §3.8), so the answer to a request nobody waits for any more still arrives.
-/// It echoes its own `RequestId`, belongs to no live operation, and is skipped. A record that
-/// does echo this request stays the caller's to judge, malformed ones included.
+/// A task group returns only after every child finishes, so a parked receive that outlives its
+/// operation must be released from outside; cancellation is the only signal that reaches it. The
+/// peer answers every request exactly once, so the answer to a request nobody waits for any more
+/// still arrives. It echoes its own `RequestId`, belongs to no live operation, and is skipped.
 private func awaitControlRecord(on link: any TransferLink, for requestID: RequestID) async throws -> Data {
     while true {
         let record = try await withTaskCancellationHandler {

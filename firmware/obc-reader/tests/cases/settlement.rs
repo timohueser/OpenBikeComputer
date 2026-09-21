@@ -44,7 +44,7 @@ fn record_at(map: &[u8], name: &str) -> usize {
     map.windows(name.len()).position(|w| w == name.as_bytes()).expect("stored name") - 10
 }
 
-/// Summits beside settlements is the directory a real v18 map has: nine entries, which is
+/// Summits beside settlements is the directory a real map has: nine entries, which is
 /// `POI_MAX_CATEGORIES`. The summit category must not reach this query.
 #[test]
 fn settlements_inside_the_view_are_visited() {

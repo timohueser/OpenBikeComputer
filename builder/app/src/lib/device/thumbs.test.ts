@@ -61,7 +61,7 @@ describe("thumb keys", () => {
 
     it("uses the route CRC and does not invent a missing fingerprint", () => {
         expect(entryFingerprint({ payloadCrc32: 0xdeadbeef })).toBe(`c${0xdeadbeef}`);
-        // A ride the device is still recording declares a zero CRC (§3.5), and a null fingerprint is
+        // A ride the device is still recording declares a zero CRC, and a null fingerprint is
         // what keeps its half-written payload out of the durable cache.
         expect(entryFingerprint({ payloadCrc32: 0 })).toBeNull();
     });

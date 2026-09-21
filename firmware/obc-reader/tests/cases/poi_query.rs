@@ -1,25 +1,23 @@
-//! Query-contract tests for the nearest-16 POI scan (`Reader::nearest_pois`, #424).
+//! Query-contract tests for the nearest-16 POI scan (`Reader::nearest_pois`).
 //!
-//! Each test builds a synthetic v8 `.obcm` whose POI section is a real per-category quadtree (via
-//! `obcm-testkit`'s `build_poi_map`, which mirrors the packer's tree build), then asserts the
-//! reader's expanding-ring scan returns exactly the brute-force nearest-16 — same set, same order,
-//! same distances. The last test runs the query against the committed real Monaco map.
+//! Each test builds a synthetic `.obcm` whose POI section is a real per-category quadtree, then
+//! asserts the reader's expanding-ring scan returns exactly the brute-force nearest-16: same set,
+//! same order, same distances. The last test runs against the committed real Monaco map.
 
 use obc_map_scene::{cos_lat, ground_dist_m_cl};
 use obc_reader::{MapCache, MapTables, Poi, PoiCategory, Reader, SliceSource, MAX_POI_RESULTS};
 use obcm_testkit::{align_up, build_poi_map, resolve_offset, PoiSpec};
 
-/// Ground distance (m) from `pos` (lon, lat µdeg) to a POI, the same equirectangular metric the
-/// reader uses — so the brute-force truth and the query agree to the µm before the `u32` round.
+/// Ground distance in metres from `pos` to a POI, in the same equirectangular metric the reader
+/// uses, so the brute-force truth and the query agree before the `u32` round.
 fn dist_m(pos: (i32, i32), lat: i32, lon: i32) -> f32 {
     ground_dist_m_cl(pos, (lon, lat), cos_lat(pos.1))
 }
 
-/// Brute-force truth: the nearest-16 POIs of `cat_id` to `pos`, each as `(rounded_distance, lat,
-/// lon, subtype)` in canonical (distance, key) order. Selection uses the exact float distance (the
-/// same metric the query rounds), then sorts the winners canonically so equal-distance members
-/// compare as a *set* — the query orders ties by scan order, which is a valid, different sequence.
-/// The fixtures avoid a tie straddling the 16/17 boundary, so the winner *set* is unambiguous.
+/// Brute-force truth: the nearest-16 POIs of `cat_id` to `pos` in canonical order. Selection uses
+/// the exact float distance, then sorts the winners canonically so equal-distance members compare
+/// as a set, because the query orders ties by scan order. The fixtures avoid a tie straddling the
+/// 16/17 boundary, so the winner set is unambiguous.
 fn brute_force(
     pois: &[PoiSpec],
     cat_id: u8,
@@ -33,15 +31,14 @@ fn brute_force(
         .collect();
     by_dist.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
     by_dist.truncate(MAX_POI_RESULTS);
-    // Canonicalize to (rounded distance, key) so the set comparison ignores the query's tie order.
+    // Canonicalize so the set comparison ignores the query's tie order.
     let mut out: Vec<(u32, i32, i32, u8)> =
         by_dist.into_iter().map(|(d, lat, lon, s)| (d as u32, lat, lon, s)).collect();
     out.sort();
     out
 }
 
-/// Subtype → category id for the fixtures (mirrors spec §7.4 so the tests don't depend on the
-/// reader's internal table). Only the subtypes the fixtures use are covered.
+/// Subtype to category id for the fixtures, so the tests do not depend on the reader's own table.
 fn cat_of(subtype: u8) -> u8 {
     match subtype {
         1..=4 => 1,   // Water
@@ -54,7 +51,6 @@ fn cat_of(subtype: u8) -> u8 {
     }
 }
 
-/// Run the query over a built map and return the results.
 fn query(bytes: &[u8], cat: PoiCategory, pos: (i32, i32)) -> Vec<Poi> {
     let src = SliceSource(bytes);
     let tables = MapTables::parse(&src).unwrap();
@@ -65,24 +61,23 @@ fn query(bytes: &[u8], cat: PoiCategory, pos: (i32, i32)) -> Vec<Poi> {
     out.into_iter().collect()
 }
 
-/// Assert the query returns exactly the brute-force nearest-16 (same *set*), with ascending
-/// distances that equal the recomputed metric, and that the query is deterministic (same sequence on
-/// a re-run). Tie order is scan-order, so the set — not the raw sequence — is what must match truth.
+/// Assert the query returns exactly the brute-force nearest-16 as a set, with ascending distances
+/// that equal the recomputed metric, and that a re-run gives the identical sequence.
 fn assert_matches_brute_force(pois: &[PoiSpec], cat: PoiCategory, cat_id: u8, pos: (i32, i32), bytes: &[u8]) {
     let got = query(bytes, cat, pos);
-    // Ascending, and each distance equals the truth (rounded to whole meters).
+    // Ascending, and each distance equals the truth.
     let mut prev = 0u32;
     for p in &got {
         assert!(p.distance_m >= prev, "results ascending by distance");
         prev = p.distance_m;
         assert_eq!(p.distance_m, dist_m(pos, p.lat, p.lon) as u32, "distance matches the metric");
     }
-    // The returned set equals the brute-force winner set (canonical order on both sides).
+    // The returned set equals the brute-force winner set.
     let mut got_canon: Vec<(u32, i32, i32, u8)> = got.iter().map(|p| (p.distance_m, p.lat, p.lon, p.subtype)).collect();
     got_canon.sort();
     let want = brute_force(pois, cat_id, pos, cat_of);
     assert_eq!(got_canon, want, "query set must equal brute-force nearest-16");
-    // Determinism: a second identical query yields the identical sequence (stable tie order).
+    // Determinism: a second identical query yields the identical sequence.
     let again = query(bytes, cat, pos);
     let seq: Vec<(i32, i32, u8)> = got.iter().map(|p| (p.lat, p.lon, p.subtype)).collect();
     let seq2: Vec<(i32, i32, u8)> = again.iter().map(|p| (p.lat, p.lon, p.subtype)).collect();
@@ -92,12 +87,12 @@ fn assert_matches_brute_force(pois: &[PoiSpec], cat: PoiCategory, cat_id: u8, po
 const BBOX: (i32, i32, i32, i32) = (7_000_000, 43_000_000, 8_000_000, 44_000_000);
 const CS: usize = 512;
 
-/// A grid of POIs across the map. Two categories interleaved so the query must filter by category.
+/// A grid of POIs across the map, two categories interleaved so the query must filter.
 #[test]
 fn grid_nearest_matches_brute_force() {
     let mut water = Vec::new();
     let mut bikes = Vec::new();
-    // 10×10 grid, ~1 km spacing (9000 µdeg lat), two categories on alternating cells.
+    // 10×10 grid at about 1 km spacing, two categories on alternating cells.
     for i in 0..10 {
         for j in 0..10 {
             let lat = 43_100_000 + i * 9_000;
@@ -113,19 +108,19 @@ fn grid_nearest_matches_brute_force() {
     let mut all = water.clone();
     all.extend(bikes.clone());
     let bytes = build_poi_map(BBOX, CS, &[(1, water), (6, bikes)]);
-    // A query point in the grid interior — many POIs within the first ring, so the set fills fast.
+    // A query point in the grid interior, so the set fills from the first ring.
     let pos = (7_150_000, 43_150_000);
     assert_matches_brute_force(&all, PoiCategory::Water, 1, pos, &bytes);
     assert_matches_brute_force(&all, PoiCategory::BikeShop, 6, pos, &bytes);
 }
 
 /// Tight clusters far apart: the ring must expand past the near-empty first ring to reach the
-/// nearest cluster, and multiple chunks are involved.
+/// nearest cluster, over multiple chunks.
 #[test]
 fn clusters_across_multiple_chunks() {
     let mut pois = Vec::new();
-    // Three clusters of 20 water POIs each, ~20 km apart. 20 > 16 records/chunk ⇒ each cluster
-    // subdivides into multiple leaves/chunks in the tree.
+    // Three clusters of 20 water POIs about 20 km apart. 20 is more than one chunk holds, so each
+    // cluster subdivides into several leaves.
     for (ci, (clat, clon)) in
         [(43_200_000, 7_200_000), (43_500_000, 7_500_000), (43_800_000, 7_800_000)].iter().enumerate()
     {
@@ -140,10 +135,10 @@ fn clusters_across_multiple_chunks() {
         }
     }
     let bytes = build_poi_map(BBOX, CS, &[(1, pois.clone())]);
-    // Query near the middle cluster — its 20 fill the set; the ring shouldn't need the far clusters.
+    // Query near the middle cluster: its 20 fill the set.
     let pos = (7_500_000, 43_500_000);
     assert_matches_brute_force(&pois, PoiCategory::Water, 1, pos, &bytes);
-    // And a query between clusters — forces ring expansion to gather 16 from more than one cluster.
+    // And a query between clusters, which forces ring expansion across more than one.
     let pos2 = (7_350_000, 43_350_000);
     assert_matches_brute_force(&pois, PoiCategory::Water, 1, pos2, &bytes);
 }
@@ -168,15 +163,13 @@ fn all_in_one_chunk() {
     assert_eq!(query(&bytes, PoiCategory::Campsite, pos).len(), 12);
 }
 
-/// A category dense enough to span **many** leaves/chunks, all far from `pos`, so the ring must
-/// expand to a map-covering (exhaustive) pass to collect 16. Guards the streaming scan against
-/// silently dropping a leaf on a wide pass (a per-leaf buffer would have): a query in a near-empty
-/// corner must still find the true nearest 16 among the far cloud.
+/// A category dense enough to span many leaves, all far from `pos`, so the ring must expand to a
+/// map-covering pass to collect 16. This guards the streaming scan against silently dropping a
+/// leaf on a wide pass, which a per-leaf buffer would have.
 #[test]
 fn dense_category_exhaustive_pass_drops_no_leaf() {
     let mut pois = Vec::new();
-    // ~300 POIs on a coarse grid across the whole map — far more than fit one chunk, so the tree is
-    // many leaves deep. None near the query corner.
+    // About 300 POIs on a coarse grid across the whole map, none near the query corner.
     let mut n = 0;
     for i in 0..18 {
         for j in 0..18 {
@@ -191,15 +184,15 @@ fn dense_category_exhaustive_pass_drops_no_leaf() {
         }
     }
     let bytes = build_poi_map(BBOX, CS, &[(1, pois.clone())]);
-    // Query the far SW corner — the first rings are empty, forcing wide expansion over the cloud.
+    // Query the far corner, so the first rings are empty and expansion is forced.
     let pos = (7_010_000, 43_010_000);
     let got = query(&bytes, PoiCategory::Water, pos);
     assert_eq!(got.len(), MAX_POI_RESULTS, "16 found despite all POIs being far + across many leaves");
     assert_matches_brute_force(&pois, PoiCategory::Water, 1, pos, &bytes);
 }
 
-/// More than 16 within the very first ring (all near `pos`): must return the 16 nearest, dropping
-/// the farther ones — the "> 16 in the first ring" case.
+/// More than 16 within the very first ring: the query must return the 16 nearest and drop the
+/// farther ones.
 #[test]
 fn more_than_16_in_first_ring() {
     let mut pois = Vec::new();
@@ -221,8 +214,7 @@ fn more_than_16_in_first_ring() {
 }
 
 /// The termination-guarantee edge: 15 POIs just inside the first ring plus one true 16th-nearest
-/// **just outside** it. The scan must expand the ring to find that 16th — proving it doesn't stop
-/// early with a not-yet-full-or-provably-complete set.
+/// just outside it. The scan must expand to find it rather than stop with an incomplete set.
 #[test]
 fn ring_expansion_finds_the_16th_just_outside() {
     let pos = (7_500_000, 43_500_000);
@@ -237,8 +229,8 @@ fn ring_expansion_finds_the_16th_just_outside() {
             payload: 0xFFFF,
         });
     }
-    // The 16th: ~3 km north — outside the initial 2 km half-extent, so the first ring finds only 15
-    // and can't prove completeness (d[14] is fine but the set isn't full). Must expand and find it.
+    // The 16th sits outside the initial ring, so the first pass finds only 15 and cannot prove
+    // completeness.
     let far = PoiSpec { lat: 43_500_000 + 27_000, lon: 7_500_000, subtype: 7, name: "Far".into(), payload: 0xFFFF };
     pois.push(far.clone());
     let bytes = build_poi_map(BBOX, CS, &[(3, pois.clone())]);
@@ -248,13 +240,13 @@ fn ring_expansion_finds_the_16th_just_outside() {
     assert_matches_brute_force(&pois, PoiCategory::Accommodation, 3, pos, &bytes);
 }
 
-/// POIs straddling a ring boundary must all be found once (dedup across the widened re-walk).
+/// POIs straddling a ring boundary must all be found once, deduped across the widened re-walk.
 #[test]
 fn straddling_ring_boundary_no_duplicates() {
     let pos = (7_500_000, 43_500_000);
     let mut pois = Vec::new();
-    // A ring of POIs at ~2 km (right at the initial half-extent) plus a few farther — the second
-    // pass re-walks the inner ones, which must not be returned twice.
+    // A ring of POIs right at the initial half-extent plus a few farther, so the second pass
+    // re-walks the inner ones, which must not be returned twice.
     for k in 0..24 {
         let r = 18_000 + (k % 3) * 4_000; // 18k, 22k, 26k µdeg from pos
         let ang = k as f32 * 0.26;
@@ -277,7 +269,7 @@ fn straddling_ring_boundary_no_duplicates() {
     assert_matches_brute_force(&pois, PoiCategory::Resupply, 4, pos, &bytes);
 }
 
-/// An empty category (`node_count == 0`) yields an empty result, no error.
+/// An empty category yields an empty result, not an error.
 #[test]
 fn empty_category_returns_empty_ok() {
     // Only Water populated; query Campsite (empty).
@@ -304,17 +296,15 @@ fn names_and_fields_round_trip() {
     assert_eq!(supermarket.name.as_str(), "", "unnamed POI ⇒ empty name (app shows the label)");
 }
 
-// === Corrupt-input robustness (skip or clean, never panic/UB) ================
-
-/// A directory advertising `chunk_size == 0` must not divide-by-zero / loop forever — the query
+/// A directory advertising `chunk_size == 0` must not divide by zero or loop forever: the query
 /// reports the unwalkable section as an error.
 #[test]
 fn corrupt_zero_chunk_size_is_safe() {
     let pois = vec![PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "W".into(), payload: 0xFFFF }];
     let mut bytes = build_poi_map(BBOX, CS, &[(1, pois)]);
     let poi_off = resolve_offset(&bytes, 32);
-    // Forge the shared chunk_size (u16 at poi_off+1) to 0. `MapTables::parse` accepts a 0 chunk_size
-    // (it only rejects > cap); the query must handle it without panicking.
+    // Forge the shared chunk_size to 0. `MapTables::parse` accepts it, so the query must handle
+    // it without panicking.
     bytes[poi_off + 1..poi_off + 3].copy_from_slice(&0u16.to_le_bytes());
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).unwrap();
@@ -359,21 +349,21 @@ fn corrupt_service_subtypes_fail_without_partial_results() {
 }
 
 /// A chunk whose 0xFF end-of-records sentinel is overwritten with a valid-looking record byte must
-/// still terminate at the chunk boundary (the record-count bound), never reading past it.
+/// still terminate at the chunk boundary, never reading past it.
 #[test]
 fn corrupt_missing_sentinel_stops_at_chunk_end() {
-    // One POI ⇒ one record, then a 0xFF sentinel, then padding. Overwrite the sentinel's subtype
-    // byte with 1 (a valid subtype) — the record loop must still stop at records_per_chunk, and the
-    // forged record has invalid metadata and is reported as an error, never a panic.
+    // One POI, then a 0xFF sentinel, then padding. Overwriting the sentinel's subtype byte with a
+    // valid subtype must still stop the record loop at the record cap, and the forged record has
+    // invalid metadata and is reported as an error.
     let pois = vec![PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "One".into(), payload: 0xFFFF }];
     let mut bytes = build_poi_map(BBOX, CS, &[(1, pois)]);
     let poi_off = resolve_offset(&bytes, 32);
     let e1 = poi_off + 3;
     let idx_off = resolve_offset(&bytes, e1 + 1);
     let node_count = u32::from_le_bytes(bytes[e1 + 5..e1 + 9].try_into().unwrap()) as usize;
-    // §7.1: a category's chunks begin one rounding step past its index, not flush behind it.
+    // A category's chunks begin one rounding step past its index, not flush behind it.
     let data_start = align_up(idx_off + node_count * 4);
-    // Sentinel subtype byte is at the 2nd record slot: data_start + 64 + 8 (64-byte stride). Forge to 1.
+    // The sentinel subtype byte is at the second record slot; forge it to 1.
     bytes[data_start + 64 + 8] = 1;
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).unwrap();
@@ -384,8 +374,8 @@ fn corrupt_missing_sentinel_stops_at_chunk_end() {
         .is_err());
 }
 
-/// A regional summit tree must return every in-radius candidate for the app's angular
-/// selection, even when there are more than 32, without mixing service POIs into it.
+/// A regional summit tree must return every in-radius candidate for the app's angular selection,
+/// even past 32, without mixing service POIs into it.
 #[test]
 fn summit_spatial_query_preserves_metadata_and_clamps_the_search_radius() {
     let pos = (7_500_000, 43_500_000);

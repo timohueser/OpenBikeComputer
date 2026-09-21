@@ -1,5 +1,5 @@
 //! `obc-mkimage` end-to-end tests: drive the built binary through the real
-//! `keygen`/`wrap`/`sign`/`inspect` flow, including the OBCU v2 signature (#997).
+//! `keygen`/`wrap`/`sign`/`inspect` flow, including the OBCU v2 signature.
 
 use std::path::PathBuf;
 use std::process::Command;

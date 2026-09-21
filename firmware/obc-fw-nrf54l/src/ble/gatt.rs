@@ -4,20 +4,18 @@ use crate::link::identity;
 use crate::object_store::ObjectStore;
 
 /// The dynamic L2CAP SPSM the CoC server listens on, published in the `psm` characteristic. A fixed
-/// value in the LE dynamic range (`0x0080..=0x00FF`) — the app reads whatever we advertise, so a
-/// constant is simpler than negotiating one and equally correct.
+/// value in the LE dynamic range (`0x0080..=0x00FF`): the app reads whatever we advertise, so a
+/// constant is simpler than negotiating one.
 pub(crate) const OBC_PSM: u16 = 0x0080;
 
-// The GATT control plane: the two SIG services + the custom OBC Control service. The attribute table
-// is auto-sized by the derive; runtime values (DIS strings, the Config default) are seeded via
-// `server.set` after `new_with_config` in `run`.
+// The GATT control plane: the two SIG services plus the custom OBC Control service. The attribute
+// table is auto-sized by the derive; runtime values (the DIS strings, the Config default) are seeded
+// with `server.set` in `run`.
 //
-// `connections_max` (default 1): the server's per-connection (CCCD) table serves the phone **and**
-// every sensor link (epic #744 SR1). A sensor we connect to runs its own GATT client against us —
-// a Garmin watch probes its collector right after subscribe — and an unanswered inbound request
-// stalls the peer's ATT for the spec's 30 s transaction timeout, after which the peer terminates
-// the link. So the sensor manager attaches this same server to its central connections, and the
-// table must hold phone + sensors.
+// `connections_max` covers the phone and every sensor link. A sensor we connect to runs its own GATT
+// client against us, and an unanswered inbound request stalls the peer's ATT for the spec's 30 s
+// transaction timeout, after which the peer terminates the link. So the sensor manager attaches this
+// same server to its central connections.
 #[gatt_server(connections_max = crate::ble::CONNECTIONS_MAX)]
 pub(crate) struct Server {
     pub dis: DeviceInformationService,
@@ -25,12 +23,12 @@ pub(crate) struct Server {
     pub obc: ObcControlService,
 }
 
-/// Device Information Service. All read-only strings, seeded at boot; `value` can't hold a runtime
-/// string, so the macro declares them empty and `run` fills them.
+/// Device Information Service. All read-only strings, seeded at boot, because `value` cannot hold a
+/// runtime string.
 #[gatt_service(uuid = service::DEVICE_INFORMATION)]
 pub(crate) struct DeviceInformationService {
-    // 32 = the OBCU container's `fw_version` field width, which is what the value now carries
-    // (#996) — a release tag verbatim, or the build's git hash on a dev device.
+    // 32 = the OBCU container's `fw_version` field width, which is what the value carries: a release
+    // tag verbatim, or the build's git hash on a dev device.
     #[characteristic(uuid = characteristic::FIRMWARE_REVISION_STRING, read)]
     pub firmware_revision: heapless09::String<32>,
     #[characteristic(uuid = characteristic::HARDWARE_REVISION_STRING, read)]
@@ -46,74 +44,57 @@ pub(crate) struct BatteryService {
     pub level: u8,
 }
 
-/// OBC Control service: the custom `3C92XXXX-…` base, the 16-bit block selecting the entity.
+/// OBC Control service: the custom `3C92XXXX-…` base, with the 16-bit block selecting the entity.
 ///
-/// **Security:** every characteristic here is `permissions(authenticated)` — access requires an
-/// encrypted, LESC-authenticated (MITM) link — **except `protocol_version`**, which stays open so the
-/// app can version-check before pairing. DIS/BAS are open too (their own services). An unbonded
-/// stranger discovers the service but gets Insufficient-Authentication on every gated
-/// read/write/subscribe.
+/// Every characteristic here is `permissions(authenticated)`, so access needs an encrypted,
+/// LESC-authenticated link, except `protocol_version`, which stays open so the app can version-check
+/// before pairing. DIS and BAS are open too. An unbonded stranger discovers the service but gets
+/// Insufficient-Authentication on every gated read, write or subscribe.
 #[gatt_service(uuid = "3C920000-9916-4EBA-ABC2-342FE08F6B10")]
 pub(crate) struct ObcControlService {
     /// Small imperative commands. Write; answered by a `status` `commandResult`. 64 bytes fits the
-    /// biggest write: an `ackRides` chunk of 31 ids (`2 + 31 × 2`) — the app splits longer
-    /// possession lists across writes (the command is idempotent and order-free).
+    /// biggest write, an `ackRides` chunk of 31 ids; the app splits longer possession lists across
+    /// writes, because the command is idempotent and order-free.
     #[characteristic(uuid = "3C920001-9916-4EBA-ABC2-342FE08F6B10", write, permissions(authenticated))]
     pub command: heapless09::Vec<u8, 64>,
     #[characteristic(uuid = "3C920002-9916-4EBA-ABC2-342FE08F6B10", notify, permissions(authenticated))]
     pub status: heapless09::Vec<u8, { obc_ble::StatusMessage::MAX_ENCODED_LEN }>,
-    // `…0003` (the `objectStore` digest) is **retired** in protocol v2 — `storeChanged` (status
-    // msg 2) is the sole change signal. The UUID block is not reassigned.
+    // The retired `…0003`, `…0005` and `…0006` UUID blocks are never reassigned.
     /// The Config object, whole-blob read + write — round-trips through the persisted settings: seeded
     /// at boot, re-seeded canonical after every accepted write.
     #[characteristic(uuid = "3C920004-9916-4EBA-ABC2-342FE08F6B10", read, write, permissions(authenticated))]
     pub config: heapless09::Vec<u8, 128>,
-    // `…0005` (the v2 `transferControl` descriptor write) is **retired** in protocol v4 — the
-    // control channel is `…0009` below and the descriptor it carried does not exist: a transfer is
-    // one `PUT` or `GET` request and its own `RequestId`. The UUID block is not reassigned, per the
-    // no-reuse convention of `obc-ble-interface-spec.md`.
-    // `…0006` (the reserved `diagnostics` characteristic) is **retired** in protocol v2 — diagnostics
-    // cross the CoC as object type 4. The UUID block is not reassigned.
-    /// The L2CAP CoC PSM the app opens the channel on — protocol v4's stream channel
-    /// (`FLAT_Store_Protocol.md` §5.1), one complete stream frame per SDU.
+    /// The L2CAP CoC PSM the app opens the channel on — protocol v4's stream channel, one complete
+    /// stream frame per SDU.
     #[characteristic(uuid = "3C920007-9916-4EBA-ABC2-342FE08F6B10", read, permissions(authenticated), value = OBC_PSM)]
     pub psm: u16,
-    /// `protocolVersion` — read **without** encryption, because §5's "version before framing" makes
-    /// it the transport fact a peer reads before it can send a frame it would have to misparse, and
-    /// that check happens before pairing.
+    /// `protocolVersion` — read without encryption, because a peer reads the transport version
+    /// before it can send a frame it would otherwise have to misparse, and that check happens before
+    /// pairing.
     ///
-    /// **Two bytes, `u16` = 4** (§5.1). Protocol v2's wider [`VersionRead`](obc_ble::VersionRead)
-    /// blob — `version u16 · store_epoch u32 · obcm_version u8` — is retired on this link: v4 has no
-    /// store epoch, because a client learns the card's identity and the freshness of its cache from
-    /// the `StoreId` every `LIST` page carries (§3), and a `StoreId` it has not seen means the card
-    /// was re-initialized and everything it cached is void. A fixed `value` rather than a boot seed
-    /// follows: there is nothing card-dependent left in it.
+    /// Two bytes, `u16` = 4. A client learns the card's identity, and the freshness of its cache,
+    /// from the `StoreId` every `LIST` page carries, so nothing card-dependent is left here and a
+    /// fixed `value` is enough.
     #[characteristic(uuid = "3C920008-9916-4EBA-ABC2-342FE08F6B10", read, value = obc_link::flat::WIRE_MAJOR as u16)]
     pub protocol_version: u16,
-    /// **The protocol-v4 control channel** (§5.1): one Write Request value carries one complete
-    /// control frame, and one confirmed indication carries its response.
-    ///
-    /// `…0009` remains the control channel under the UUID no-reuse convention.
-    /// `protocolVersion` announces the frames it carries.
+    /// The protocol-v4 control channel: one Write Request value carries one complete control frame,
+    /// and one confirmed indication carries its response.
     ///
     /// 244 bytes is `ATT_MTU - 3` at the device's preferred 247-byte MTU, which is the control
-    /// ceiling §5.1 names; the largest fixed message in §3 is the 100-byte `PUT`, and a `LIST` page
-    /// carries as many 88-byte entries as the ceiling allows.
+    /// ceiling. The largest fixed message is the 100-byte `PUT`, and a `LIST` page carries as many
+    /// 88-byte entries as the ceiling allows.
     #[characteristic(uuid = "3C920009-9916-4EBA-ABC2-342FE08F6B10", write, indicate, permissions(authenticated))]
     pub object_control: heapless09::Vec<u8, 244>,
 }
 
-// ============================ Radio identity ============================
-
-/// How many bytes of the advertised name fit the 31-byte scan-response PDU beside the AD
-/// structure overhead (length + type = 2 bytes).
+/// How many bytes of the advertised name fit the 31-byte scan-response PDU, beside the 2-byte AD
+/// structure overhead.
 const ADV_NAME_MAX: usize = 29;
 
-/// The name the device advertises **right now**: [`identity::resolved_name`], re-read by every
-/// advertise cycle so a rename lands in the airwaves on the next advertising start (the current
-/// connection's GAP name keeps the boot value — the Config characteristic, not GAP, is
-/// authoritative). Truncated to the scan-response budget on a char boundary; the full name still
-/// serves on the `config` read.
+/// The name the device advertises right now, re-read by every advertise cycle so a rename lands on
+/// the next advertising start. The current connection's GAP name keeps the boot value, because the
+/// Config characteristic, not GAP, is authoritative. Truncated to the scan-response budget on a char
+/// boundary; the full name still serves on the `config` read.
 pub(crate) fn advertised_name(store: &ObjectStore) -> heapless::String<48> {
     let full = identity::resolved_name(store);
     let name = full.as_str();
@@ -126,39 +107,34 @@ pub(crate) fn advertised_name(store: &ObjectStore) -> heapless::String<48> {
     s
 }
 
-/// A GATT-typed string (trouble-host's heapless 0.9) from a shared heapless-0.8 one — the DIS values
-/// live in the attribute table, which is 0.9. Truncates to `N` on overflow (all callers fit by
-/// construction).
+/// A GATT-typed string (trouble-host's heapless 0.9) from a shared heapless-0.8 one, because the
+/// attribute table is 0.9. Truncates to `N` on overflow; all callers fit by construction.
 fn gatt_str<const N: usize>(s: &str) -> heapless09::String<N> {
     let mut out = heapless09::String::new();
     let _ = out.push_str(&s[..s.len().min(N)]);
     out
 }
 
-/// A GATT-typed blob (heapless 0.9) from a shared byte slice.
 fn gatt_vec<const N: usize>(bytes: &[u8]) -> heapless09::Vec<u8, N> {
     let mut v = heapless09::Vec::new();
     let _ = v.extend_from_slice(&bytes[..bytes.len().min(N)]);
     v
 }
 
-/// The DIS **Firmware Revision** attribute value.
 pub(crate) fn dis_firmware_revision() -> heapless09::String<32> {
     gatt_str(identity::firmware_revision().as_str())
 }
 
-/// The DIS **Hardware Revision** attribute value.
 pub(crate) fn dis_hardware_revision() -> heapless09::String<16> {
     gatt_str(identity::HARDWARE_REVISION)
 }
 
-/// The DIS **Serial Number** attribute value.
 pub(crate) fn dis_serial_number() -> heapless09::String<16> {
     gatt_str(identity::serial_string().as_str())
 }
 
-/// A **static random** address derived from the factory device id (top two bits must be `11` per the
-/// spec), so every board advertises a stable, distinct address.
+/// A static random address derived from the factory device id, so every board advertises a stable,
+/// distinct address. The top two bits must be `11`.
 pub(crate) fn device_address() -> Address {
     let (id0, id1) = identity::device_id_words();
     let (id0, id1) = (id0.to_le_bytes(), id1.to_le_bytes());
@@ -166,8 +142,8 @@ pub(crate) fn device_address() -> Address {
     Address::random([id0[0], id0[1], id0[2], id0[3], id1[0], id1[1] | 0xC0])
 }
 
-/// The canonical Config blob as a GATT attribute value. Served on the `config` read; re-seeded after
-/// every accepted write so reads always return canonical bytes.
+/// The canonical Config blob as a GATT attribute value. Served on the `config` read and re-seeded
+/// after every accepted write, so reads always return canonical bytes.
 pub(crate) fn config_blob(store: &ObjectStore) -> heapless09::Vec<u8, 128> {
     let (buf, len) = identity::config_bytes(store);
     gatt_vec(&buf[..len])

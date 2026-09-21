@@ -1,9 +1,8 @@
 import XCTest
 
-/// B3 acceptance on the simulator: the main screen's design states (C1 / C2 /
-/// SYNC / S4 / H6 / H11→H1) driven through the real UI against the mock. The
-/// same logic is host-tested in `MainScreenModelTests`; this proves the wiring
-/// launch-arg → scenario → screen.
+/// The main screen's design states driven through the real UI against the mock. The same logic is
+/// host-tested in `MainScreenModelTests`; this proves the wiring from launch argument to scenario
+/// to screen.
 final class MainScreenTests: XCTestCase {
     override func setUp() {
         super.setUp()
@@ -15,15 +14,13 @@ final class MainScreenTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += ["-OBCScenario", scenario]
         if let fixtures { app.launchArguments += ["-OBCFixtures", fixtures] }
-        // Pin the locale: `OBCFormat` localizes numbers ("62,4 km" on a German
-        // sim), and these tests assert the design's en-US strings.
+        // Pin the locale: the formatter localizes numbers, and these tests assert English strings.
         app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
         return app
     }
 
-    /// Keep a named screenshot in the result bundle — the visual record of each
-    /// design screen (export with `xcresulttool export attachments`).
+    /// Keep a named screenshot in the result bundle: the visual record of each design screen.
     @MainActor
     private func snap(_ app: XCUIApplication, _ name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
@@ -45,7 +42,7 @@ final class MainScreenTests: XCTestCase {
         wait(for: [expectation(for: completed, evaluatedWith: line)], timeout: 30)
     }
 
-    /// C1 → C2: compact rows with the per-tab stat lines.
+    /// Compact rows with the per-tab stat lines.
     @MainActor
     func testPlannedAndTrackedTabsShowCompactRows() {
         let app = launch(scenario: "happyPath")
@@ -56,8 +53,8 @@ final class MainScreenTests: XCTestCase {
         snap(app, "C1-main-planned")
 
         app.buttons["Tracked"].tap()
-        // Tracked is library-first (#296): rides show only after a sync pulls
-        // them in — an un-synced device ride is never a half-empty row.
+        // Tracked is library-first: rides show only after a sync pulls them in, and an un-synced
+        // device ride is never a half-empty row.
         app.buttons["topbar.sync"].tap()
         XCTAssertTrue(app.staticTexts["Sunday Coffee Spin"].waitForExistence(timeout: 30))
         let statLine = app.staticTexts.matching(
@@ -71,8 +68,8 @@ final class MainScreenTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].waitForExistence(timeout: 5))
     }
 
-    /// Search hides until a pull-down reveals it (Mail-style); then it
-    /// filters, and no matches → H6 with the query kept editable.
+    /// Search hides until a pull-down reveals it; then it filters, and no matches keeps the query
+    /// editable.
     @MainActor
     func testSearchRevealsOnPullThenFiltersAndShowsH6() {
         let app = launch(scenario: "happyPath")
@@ -83,7 +80,7 @@ final class MainScreenTests: XCTestCase {
         XCTAssertFalse(search.exists, "search must stay hidden until pulled")
         snap(app, "C1-search-hidden")
 
-        app.swipeDown()   // over-scroll the list → the bar slides in
+        app.swipeDown()   // over-scroll the list, and the bar slides in
         XCTAssertTrue(search.waitForExistence(timeout: 5), "pull did not reveal search")
         search.tap()
         search.typeText("sugar")
@@ -99,8 +96,8 @@ final class MainScreenTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].waitForExistence(timeout: 5))
     }
 
-    /// The bar is transient (Mail-style): once the cleared bar scrolls off the
-    /// top it un-reveals — back at the top the list is search-free again.
+    /// The bar is transient: once the cleared bar scrolls off the top it un-reveals, and back at
+    /// the top the list is search-free again.
     @MainActor
     func testSearchHidesAgainAfterScrollingAway() {
         let app = launch(scenario: "happyPath", fixtures: "large")
@@ -111,24 +108,24 @@ final class MainScreenTests: XCTestCase {
         let search = app.textFields.firstMatch
         XCTAssertTrue(search.waitForExistence(timeout: 5), "pull did not reveal search")
 
-        app.swipeUp(velocity: .fast)   // scroll the (empty) bar off the top
-        // Return toward the top *without* momentum — a flick would over-scroll
-        // and legitimately re-reveal the bar. Held drags don't bounce.
+        app.swipeUp(velocity: .fast)   // scroll the empty bar off the top
+        // Return toward the top without momentum: a flick would over-scroll and legitimately
+        // re-reveal the bar. A held drag does not bounce.
         let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
         let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85))
         for _ in 0..<8 where !app.buttons["Planned"].isHittable {
             from.press(forDuration: 0.05, thenDragTo: to, withVelocity: 400, thenHoldForDuration: 0.3)
         }
-        // The selector row is on screen, so a still-revealed bar (right below
-        // it) would be too — its absence means it re-hid.
+        // The selector row is on screen, so a still-revealed bar, right below it, would be too.
+        // Its absence means it re-hid.
         XCTAssertTrue(app.buttons["Planned"].isHittable, "did not make it back to the top")
         let hidden = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: search)
         wait(for: [hidden], timeout: 5)
         snap(app, "C1-search-rehidden")
     }
 
-    /// H11: swipe reveals Delete; the tap deletes directly — the swipe reveal
-    /// is the deliberate second action, no extra confirm.
+    /// A swipe reveals Delete and the tap deletes directly: the swipe reveal is the deliberate
+    /// second action, so there is no extra confirm.
     @MainActor
     func testSwipeToDeleteRemovesTheRowDirectly() {
         let app = launch(scenario: "happyPath")
@@ -149,17 +146,16 @@ final class MainScreenTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Sugar River Trail"].exists, "other rows must survive")
     }
 
-    /// A deleted ride must stay deleted: the device still lists it (its copy
-    /// stays on the SD card), but a later sync must neither re-download nor
-    /// re-list it. Tracked is library-first (#296), so the ride is synced in
-    /// first, then deleted, then a re-sync must leave it gone.
+    /// A deleted ride must stay deleted: the device still lists it, because its copy stays on the
+    /// card, but a later sync must neither re-download nor re-list it. Tracked is library-first, so
+    /// the ride is synced in first, then deleted, then a re-sync must leave it gone.
     @MainActor
     func testDeletedRideDoesNotResurrectOnSync() {
         let app = launch(scenario: "happyPath")
         waitForMain(app)
         app.buttons["Tracked"].tap()
 
-        // Sync pulls the rides in (library-first).
+        // Sync pulls the rides in.
         app.buttons["topbar.sync"].tap()
         waitForSyncedRides(app)
         let card = app.buttons["main.card.ride-sunday-coffee-spin"]
@@ -173,8 +169,8 @@ final class MainScreenTests: XCTestCase {
         let gone = NSPredicate(format: "exists == false")
         wait(for: [expectation(for: gone, evaluatedWith: card)], timeout: 5)
 
-        // A second sync: nothing new (the deleted ride stays tombstoned, its
-        // SD-card copy untouched) — it must not come back.
+        // A second sync finds nothing new: the deleted ride stays tombstoned, and its card copy is
+        // untouched, so it must not come back.
         app.buttons["topbar.sync"].tap()
         let toast = app.staticTexts.matching(
             NSPredicate(format: "label CONTAINS 'up to date'")
@@ -184,8 +180,8 @@ final class MainScreenTests: XCTestCase {
         snap(app, "SYNC-after-delete-no-resurrect")
     }
 
-    /// #292: deleting a ride is recoverable — it lands in Recently Deleted,
-    /// and Recover puts the row back in Tracked.
+    /// Deleting a ride is recoverable: it lands in Recently Deleted, and Recover puts the row back
+    /// in Tracked.
     @MainActor
     func testTrashedRideCanBeRecovered() {
         let app = launch(scenario: "happyPath")
@@ -200,11 +196,11 @@ final class MainScreenTests: XCTestCase {
         let reveal = app.buttons["Delete"]
         XCTAssertTrue(reveal.waitForExistence(timeout: 5))
         reveal.tap()
-        // Let the row-removal animation settle — a tap mid-shift can miss.
+        // Let the row-removal animation settle: a tap mid-shift can miss.
         let gone = NSPredicate(format: "exists == false")
         wait(for: [expectation(for: gone, evaluatedWith: card)], timeout: 5)
 
-        // The trash entry-row appears with the count…
+        // The trash entry row appears with the count.
         let trashRow = app.buttons["main.recentlyDeleted"]
         XCTAssertTrue(trashRow.waitForExistence(timeout: 5), "Recently Deleted row missing")
         snap(app, "TRASH-entry-row")
@@ -213,7 +209,7 @@ final class MainScreenTests: XCTestCase {
             app.descendants(matching: .any)["trash.screen"].firstMatch.waitForExistence(timeout: 5),
             "Recently Deleted screen missing")
 
-        // …and the trashed ride sits inside; tap → Recover restores it.
+        // The trashed ride sits inside; a tap on Recover restores it.
         let trashed = app.buttons["trash.card.ride-sunday-coffee-spin"]
         XCTAssertTrue(trashed.waitForExistence(timeout: 5), "trashed ride not listed")
         snap(app, "TRASH-recently-deleted")
@@ -228,8 +224,8 @@ final class MainScreenTests: XCTestCase {
         snap(app, "TRASH-after-recover")
     }
 
-    /// #292: Delete Permanently inside Recently Deleted really removes the
-    /// ride — the trash empties and a re-sync doesn't bring it back.
+    /// Delete Permanently inside Recently Deleted really removes the ride: the trash empties and a
+    /// re-sync does not bring it back.
     @MainActor
     func testPermanentDeleteEmptiesTheTrashForGood() {
         let app = launch(scenario: "happyPath")
@@ -244,7 +240,7 @@ final class MainScreenTests: XCTestCase {
         let reveal = app.buttons["Delete"]
         XCTAssertTrue(reveal.waitForExistence(timeout: 5))
         reveal.tap()
-        // Let the row-removal animation settle — a tap mid-shift can miss.
+        // Let the row-removal animation settle: a tap mid-shift can miss.
         let gone = NSPredicate(format: "exists == false")
         wait(for: [expectation(for: gone, evaluatedWith: card)], timeout: 5)
 
@@ -275,21 +271,21 @@ final class MainScreenTests: XCTestCase {
         XCTAssertFalse(card.exists, "permanently deleted ride resurrected by sync")
     }
 
-    /// SYNC states: idle → syncing → done + "Synced N new rides just now";
-    /// a second sync is the quiet H9 up-to-date toast.
+    /// Sync states: idle, syncing, then done with the confirm line. A second sync is the quiet
+    /// up-to-date toast.
     @MainActor
     func testSyncCyclesAndConfirmsThenReportsUpToDate() {
         let app = launch(scenario: "happyPath")
         waitForMain(app)
         app.buttons["Tracked"].tap()
-        // Library-first (#296): no rows until the first sync — that first sync
-        // is exactly what this test drives.
+        // Library-first: no rows until the first sync, and that first sync is what this test
+        // drives.
         let sync = app.buttons["topbar.sync"]
         XCTAssertTrue(sync.isEnabled)
         sync.tap()
 
-        // The confirm line lands when the batch completes (~8 s of mock
-        // throughput); the ~2 s forest check on the button rides along.
+        // The confirm line lands when the batch completes, and the short forest check on the
+        // button rides along.
         let line = app.descendants(matching: .any)["main.syncLine"].firstMatch
         XCTAssertTrue(line.waitForExistence(timeout: 5), "sync progress line missing")
         let confirmed = NSPredicate(format: "label CONTAINS 'Synced 4 new rides just now'")
@@ -305,7 +301,7 @@ final class MainScreenTests: XCTestCase {
         snap(app, "H9-up-to-date")
     }
 
-    /// S4: out of range degrades — banner + dimmed sync, library browsable.
+    /// Out of range degrades to a banner and a dimmed sync, with the library still browsable.
     @MainActor
     func testOutOfRangeShowsBannerAndDisablesSync() {
         let app = launch(scenario: "outOfRange")
@@ -320,7 +316,7 @@ final class MainScreenTests: XCTestCase {
         snap(app, "S4-out-of-range")
     }
 
-    /// Card tap → the B4 route detail (walked in depth by `RouteDetailTests`).
+    /// A card tap opens the route detail, which `RouteDetailTests` walks in depth.
     @MainActor
     func testCardTapPushesDetail() {
         let app = launch(scenario: "happyPath")
@@ -332,8 +328,7 @@ final class MainScreenTests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5), "detail missing")
     }
 
-    /// I1: the + opens the Files picker directly — no intermediate menu with
-    /// dead rows.
+    /// The plus opens the Files picker directly: no intermediate menu with dead rows.
     @MainActor
     func testImportButtonOpensFilePickerDirectly() {
         let app = launch(scenario: "happyPath")
@@ -348,7 +343,7 @@ final class MainScreenTests: XCTestCase {
         waitForMain(app)
     }
 
-    /// S1: an empty library points at import, it doesn't dead-end.
+    /// An empty library points at import; it does not dead-end.
     @MainActor
     func testEmptyLibraryShowsS1() {
         let app = launch(scenario: "emptyLibrary")
