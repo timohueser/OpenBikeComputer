@@ -1,23 +1,18 @@
-//! `obc-crc` — CRC-32/IEEE, the one copy.
+//! CRC-32/IEEE, the one copy.
 //!
-//! Standard CRC-32/IEEE (zlib/gzip/PNG): reflected polynomial `0xEDB88320`, init/xor-out
-//! `0xFFFFFFFF`, check value `crc32("123456789") == 0xCBF43926`. Incremental with O(1) state.
-//! `no_std`, `core`-only, and with no dependencies of its own — small enough that both callers can
-//! link it without giving anything up:
+//! Standard CRC-32/IEEE (zlib, gzip, PNG): reflected polynomial `0xEDB88320`, init and xor-out
+//! `0xFFFFFFFF`, check value `crc32("123456789") == 0xCBF43926`. Incremental with O(1) state,
+//! `no_std` and dependency-free, so both callers can link it.
 //!
-//! - `obc-dfu` hashes the OBCU image header, the boot-state RRAM page and the staged image with
-//!   it. The bootloader folds a ~900 KB staged image extent-by-extent (`OBCU_Spec.md` §S3) rather
-//!   than buffering it, which is why [`Crc32`] is `Copy` and [`finalize`](Crc32::finalize) doesn't
-//!   consume the hasher — a partial CRC is a resume anchor.
-//! - `obc-ble` puts one CRC on each whole transferred **object**, never per chunk. Not an on-air
-//!   check — the BLE Link Layer already CRCs every packet — but an end-to-end one, covering what
-//!   the link can't: encode bugs and storage write errors, from the phone's encode to the device's
-//!   card and back. It must stay byte-identical to the companion app's Swift `CRC32.Hasher`, and
-//!   the shared `specs/vectors/` fixtures pin both sides.
+//! `obc-dfu` hashes the image header, the boot-state page and the staged image with it. The
+//! bootloader folds a staged image extent by extent rather than buffering it, which is why
+//! [`Crc32`] is `Copy` and [`finalize`](Crc32::finalize) does not consume the hasher: a partial
+//! CRC is a resume anchor.
 //!
-//! The two used to carry a byte-identical copy each, kept apart because a dependency from the
-//! phone-facing wire crate onto a DFU crate would have been the wrong direction. This crate is the
-//! third option both module docs asked for: neither depends on the other, both depend on nothing.
+//! `obc-ble` puts one CRC on each whole transferred object, never per chunk. Not an on-air check,
+//! because the BLE Link Layer already CRCs every packet, but an end-to-end one covering encode
+//! bugs and storage write errors. It must stay byte-identical to the companion app's Swift
+//! hasher, and the shared vector fixtures pin both sides.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -39,9 +34,9 @@ const TABLE: [u32; 256] = {
     table
 };
 
-/// Eight reflected lookup lanes. Enabled only by the application firmware: independent table
-/// lookups let the Cortex-M33 fold a word pair without the byte-at-a-time dependency chain, while
-/// compact bootloader builds retain the single 1 KiB table above.
+/// Eight reflected lookup lanes, enabled only by the application firmware: independent lookups let
+/// the Cortex-M33 fold a word pair without the byte-at-a-time dependency chain, while compact
+/// bootloader builds keep the single 1 KiB table above.
 #[cfg(feature = "slice-by-8")]
 const TABLES: [[u32; 256]; 8] = {
     let mut tables = [[0u32; 256]; 8];
@@ -59,9 +54,8 @@ const TABLES: [[u32; 256]; 8] = {
     tables
 };
 
-/// An incremental CRC-32/IEEE hasher. `Copy`, so a partial CRC is a trivial resume anchor —
-/// snapshot it at a committed offset and continue from the copy after a drop, or fold a staged
-/// image one extent at a time without ever holding the whole thing.
+/// An incremental CRC-32/IEEE hasher. `Copy`, so a partial CRC is a resume anchor: snapshot it at
+/// a committed offset and continue from the copy, or fold a staged image one extent at a time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Crc32 {
     state: u32,
@@ -74,10 +68,8 @@ impl Crc32 {
     }
 
     /// Resume after a durable checkpoint that stored [`finalize`](Self::finalize)'s value.
-    ///
     /// CRC-32's xor-out is reversible, so this restores the exact incremental state without
-    /// rereading the already-checkpointed prefix. The flat ride journal uses it to continue a
-    /// recovered recording in O(1) mount I/O.
+    /// rereading the checkpointed prefix.
     pub const fn from_checksum(checksum: u32) -> Self {
         Self { state: checksum ^ 0xFFFF_FFFF }
     }
@@ -108,8 +100,7 @@ impl Crc32 {
         self.state = c;
     }
 
-    /// The CRC-32 of everything fed so far. Doesn't consume the hasher — read a partial value
-    /// mid-stream and keep hashing.
+    /// The CRC-32 of everything fed so far. It does not consume the hasher.
     pub fn finalize(&self) -> u32 {
         self.state ^ 0xFFFF_FFFF
     }
@@ -128,7 +119,7 @@ impl Default for Crc32 {
     }
 }
 
-/// One-shot CRC-32/IEEE over `data` — the free-function spelling the DFU codecs use.
+/// One-shot CRC-32/IEEE over `data`.
 pub fn crc32(data: &[u8]) -> u32 {
     Crc32::checksum(data)
 }
@@ -137,8 +128,8 @@ pub fn crc32(data: &[u8]) -> u32 {
 mod tests {
     use super::{crc32, Crc32};
 
-    /// The standard check vector. Both wire contracts — the OBCU header and the app's Swift
-    /// `CRC32.Hasher` — are anchored to it, so this one assert is what makes the merge safe.
+    /// The standard check vector. Both wire contracts are anchored to it, so this one assert is
+    /// what makes the shared implementation safe.
     #[test]
     fn check_value() {
         assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
@@ -150,9 +141,9 @@ mod tests {
         assert_eq!(crc32(b""), 0);
     }
 
-    /// Incremental hashing over any chunk split equals the one-shot checksum — the bootloader's
-    /// extent-by-extent verify must land on the same value as the wrapper's one-shot, and the
-    /// receiver must accept any CoC segmentation.
+    /// Incremental hashing over any chunk split equals the one-shot checksum: the bootloader's
+    /// extent-by-extent verify must land on the same value, and the receiver must accept any
+    /// segmentation.
     #[test]
     fn incremental_matches_oneshot() {
         let data: [u8; 259] = core::array::from_fn(|i| (i * 7 + 3) as u8);
@@ -165,7 +156,7 @@ mod tests {
         }
     }
 
-    /// A snapshot copy resumes to the same value — the offset-resume anchor.
+    /// A snapshot copy resumes to the same value.
     #[test]
     fn copy_resumes() {
         let data: [u8; 128] = core::array::from_fn(|i| i as u8);
