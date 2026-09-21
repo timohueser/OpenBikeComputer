@@ -2,8 +2,9 @@
 
 Every test writes its own source raster, so nothing here needs a network or a credential.
 The two facts the archive stands on are the exact lattice — integer microdegrees in, the
-same integers back out of the GeoTIFF — and max-pooling, which is what lets a 7 m archive
-carry a one-pixel rock tower.
+same integers back out of the GeoTIFF — and the pooling rule: a lattice pixel keeps the
+maximum of the source pixels whose centres lie in it, which is what lets a 7 m archive
+carry a one-pixel rock tower without spreading it over its neighbours.
 """
 
 import json
@@ -29,39 +30,48 @@ PLATEAU, TOWER = 1000.4, 1500.6
 TOWER_ROW, TOWER_COL = 50, 50
 
 
-def source_raster(path, values, dtype="float32", nodata=None, step=1.0, east=EAST):
+def grid(step=1.0, east=EAST, north=NORTH, rotation=0.0):
+    """A source transform: north-up by default, rotated when a test asks for it."""
+
+    return Affine.translation(east, north) * Affine.rotation(rotation) * Affine.scale(step, -step)
+
+
+def source_raster(path, values, dtype="float32", nodata=None, transform=None, scales=None):
     height, width = values.shape
     profile = {
         "driver": "GTiff", "height": height, "width": width, "count": 1, "dtype": dtype,
-        "crs": LV95, "transform": Affine(step, 0, east, 0, -step, NORTH),
+        "crs": LV95, "transform": transform if transform is not None else grid(),
     }
     if nodata is not None:
         profile["nodata"] = nodata
     with rasterio.open(path, "w", **profile) as dst:
         dst.write(values.astype(dtype), 1)
+        if scales is not None:
+            dst.scales, dst.offsets = scales
     return path
 
 
-def plateau_with_tower(plateau=PLATEAU, tower=TOWER):
+def plateau_with_tower(plateau=PLATEAU, tower=TOWER, row=TOWER_ROW, col=TOWER_COL):
     values = np.full((SIDE, SIDE), plateau, dtype="float32")
-    values[TOWER_ROW, TOWER_COL] = tower
+    values[row, col] = tower
     return values
 
 
 def bbox_of(path, pad=0.0005):
     with rasterio.open(path) as src:
-        west, south, east, north = transform_bounds(src.crs, ingest.WGS84, *src.bounds)
+        envelope = ingest.source_envelope(src.transform, src.width, src.height)
+        west, south, east, north = transform_bounds(src.crs, ingest.WGS84, *envelope)
     return f"{west - pad},{south - pad},{east + pad},{north + pad}"
 
 
-def tower_pixel(step=1.0):
-    """The archive tile and pixel that holds the tower's centre."""
+def archive_pixel(transform, row, col):
+    """The archive tile and pixel that holds one source pixel's centre."""
 
-    x, y = EAST + (TOWER_COL + 0.5) * step, NORTH - (TOWER_ROW + 0.5) * step
-    lon, lat = rasterio.warp.transform(LV95, ingest.WGS84, [x], [y])
-    row = ingest.pixel_index(int(np.floor(lat[0] * ingest.DEGREE)))
-    col = ingest.pixel_index(int(np.floor(lon[0] * ingest.DEGREE)))
-    return ingest.tile_index(row), ingest.tile_index(col), row, col
+    x, y = ingest.source_xy(transform, np.array([row + 0.5]), np.array([col + 0.5]))
+    lon, lat = rasterio.warp.transform(LV95, ingest.WGS84, list(x), list(y))
+    r = ingest.pixel_index(int(np.floor(lat[0] * ingest.DEGREE)))
+    c = ingest.pixel_index(int(np.floor(lon[0] * ingest.DEGREE)))
+    return ingest.tile_index(r), ingest.tile_index(c), r, c
 
 
 def local_source(key, country="Testland"):
@@ -118,18 +128,55 @@ class Lattice(unittest.TestCase):
 
 
 class Ingest(ArchiveCase):
-    def test_the_tower_survives_max_pooling_in_one_pixel(self):
+    def pool(self, values, name, transform=None, **kw):
+        """Ingest one raster into an archive of its own, and return the single tile."""
+
+        directory = self.root / name
+        directory.mkdir()
+        self.archive = self.root / f"archive-{name}"
+        raster = source_raster(directory / f"{name}.tif", values, transform=transform, **kw)
+        self.ingest("ch", raster, inputs=directory)
+        tile, path = self.only_tile()
+        with rasterio.open(path) as src:
+            return tile, path, src.read(1)
+
+    def test_the_tower_stays_one_pixel_wherever_it_stands(self):
+        """The centre rule puts a one-pixel tower in exactly one archive pixel, always.
+
+        Area-overlap resampling spreads it over two to four, because the archive pixel is
+        about 7 m by 5 m and the tower's 1 m square touches more than one of them.
+        """
+
+        for row, col in ((50, 50), (51, 53), (7, 191), (123, 44), (0, 0), (199, 199)):
+            with self.subTest(row=row, col=col):
+                values = plateau_with_tower(row=row, col=col)
+                tile, _, data = self.pool(values, f"t{row}x{col}")
+                ti, tj, r, c = archive_pixel(grid(), row, col)
+                self.assertEqual(tile, ingest.tile_id(ti, tj))
+                self.assertEqual(int((data == round(TOWER)).sum()), 1)
+                self.assertEqual(int(data[(ti + 1) * ingest.TILE_PX - 1 - r, c - tj * ingest.TILE_PX]),
+                                 round(TOWER))
+
+    def test_a_rotated_source_loses_nothing(self):
+        """A centre is a point, so a 30° rotated grid pools like any other."""
+
+        transform = grid(rotation=30.0)
+        values = plateau_with_tower()
+        tile, _, data = self.pool(values, "rotated", transform=transform)
+        ti, tj, r, c = archive_pixel(transform, TOWER_ROW, TOWER_COL)
+        self.assertEqual(tile, ingest.tile_id(ti, tj))
+        self.assertEqual(int((data == round(TOWER)).sum()), 1)
+        self.assertEqual(int(data[(ti + 1) * ingest.TILE_PX - 1 - r, c - tj * ingest.TILE_PX]), round(TOWER))
+        self.assertEqual(int((data != ingest.NODATA).sum()), int((data == round(PLATEAU)).sum()) + 1)
+
+    def test_the_tile_is_whole_and_holds_nothing_the_source_did_not_say(self):
         raster = source_raster(self.inputs / "tower.tif", plateau_with_tower())
         self.ingest("ch", raster)
-        tile, path = self.only_tile()
-        ti, tj, row, col = tower_pixel()
-        self.assertEqual(tile, ingest.tile_id(ti, tj))
+        _, path = self.only_tile()
         with rasterio.open(path) as src:
             data = src.read(1)
         self.assertEqual(data.shape, (ingest.TILE_PX, ingest.TILE_PX))
-        self.assertEqual(int((data == round(TOWER)).sum()), 1)
-        self.assertEqual(int(data[(ti + 1) * ingest.TILE_PX - 1 - row, col - tj * ingest.TILE_PX]), round(TOWER))
-        # The tile is whole: a 200 m square covers about 28 x 41 pixels of it, the rest is nodata.
+        # A 200 m square covers about 28 x 41 pixels of the tile; the rest is nodata.
         covered = int((data != ingest.NODATA).sum())
         self.assertTrue(1000 <= covered <= 1400, covered)
         self.assertEqual(covered, int((data == round(PLATEAU)).sum()) + 1)
@@ -155,7 +202,8 @@ class Ingest(ArchiveCase):
 
         east = self.root / "east"
         east.mkdir()
-        source_raster(east / "east.tif", np.full((SIDE, SIDE), 1100.0, dtype="float32"), east=EAST + 150)
+        source_raster(east / "east.tif", np.full((SIDE, SIDE), 1100.0, dtype="float32"),
+                      transform=grid(east=EAST + 150))
         self.ingest("ch", east / "east.tif", inputs=east)
         with rasterio.open(path) as src:
             data = src.read(1)
@@ -199,31 +247,17 @@ class Ingest(ArchiveCase):
             ("huge", np.where(plateau_with_tower() > 1400, 3.4e38, PLATEAU), "float32", None),
         ):
             with self.subTest(void=name):
-                directory = self.root / name
-                directory.mkdir()
-                raster = source_raster(directory / f"{name}.tif", values, dtype=dtype, nodata=nodata)
-                archive = self.archive
-                self.archive = self.root / f"archive-{name}"
-                try:
-                    self.ingest("ch", raster, inputs=directory)
-                    _, path = self.only_tile()
-                    with rasterio.open(path) as src:
-                        data = src.read(1)
-                    self.assertEqual(int(data.max()), round(PLATEAU))
-                    self.assertNotIn(round(TOWER), set(np.unique(data).tolist()))
-                finally:
-                    self.archive = archive
+                _, _, data = self.pool(values, name, dtype=dtype, nodata=nodata)
+                self.assertEqual(int(data.max()), round(PLATEAU))
+                self.assertNotIn(round(TOWER), set(np.unique(data).tolist()))
 
-    def test_a_source_coarser_than_the_step_repeats_and_invents_nothing(self):
-        """A 20 m source fills its own footprint only, by repeating the pixel it has."""
+    def test_a_source_coarser_than_the_step_invents_nothing(self):
+        """A 20 m source reaches the lattice pixels its centres land in, and no others."""
 
-        raster = source_raster(self.inputs / "coarse.tif", np.full((10, 10), 1234.0, dtype="float32"), step=20.0)
-        self.ingest("ch", raster)
-        _, path = self.only_tile()
-        with rasterio.open(path) as src:
-            data = src.read(1)
+        values = np.full((10, 10), 1234.0, dtype="float32")
+        _, _, data = self.pool(values, "coarse", transform=grid(step=20.0))
         filled = int((data == 1234).sum())
-        self.assertGreater(filled, 400)  # 200 m square over a 7 m lattice, repeated
+        self.assertEqual(filled, 100)  # one lattice pixel per source pixel centre
         self.assertEqual(int(((data != 1234) & (data != ingest.NODATA)).sum()), 0)
 
 
