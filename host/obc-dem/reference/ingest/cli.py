@@ -22,26 +22,31 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import publish
+from . import publish, wizard
 from .archive import (contributors, ingest_raster, load_manifests, local_rasters, rebuild_index,
                       read_index, tile_path, tile_problems, tile_digest, write_manifest)
 from .lattice import Refuse, box_tiles, check_world, tile_id
 from .sources import SOURCES
 
 
+def registered(key: str):
+    if key not in SOURCES:
+        raise Refuse(f"unknown source `{key}`; this tool implements {', '.join(sorted(SOURCES))}")
+    return SOURCES[key]
+
+
 def command_ingest(args) -> int:
     bbox = parse_bbox(args.bbox)
     check_world(bbox, "--bbox")
-    if args.source not in SOURCES:
-        raise Refuse(f"unknown source `{args.source}`; this tool implements {', '.join(sorted(SOURCES))}")
-    source = SOURCES[args.source]
+    source = registered(args.source)
     if not source.covers(bbox):
         print(f"warning: {args.bbox} looks outside {source.country}", file=sys.stderr)
     root = Path(args.archive)
+    work = Path(args.work) if args.work else Path(tempfile.gettempdir()) / f"obc-reference-{source.key}"
     if args.input:
-        rasters = local_rasters(Path(args.input), bbox)
+        rasters = local_rasters(source, Path(args.input), bbox, work)
     else:
-        work = Path(args.work) if args.work else Path(tempfile.gettempdir()) / f"obc-reference-{source.key}"
+        source.require_credential()
         rasters = source.fetch(bbox, work)
     if not rasters:
         raise Refuse("no rasters cover that box")
@@ -80,6 +85,21 @@ def command_ingest(args) -> int:
     print(f"  {outside} source pixel centre(s) fell outside their lattice window")
     print(f"Attribution: {source.attribution} ({source.licence})")
     return 0
+
+
+def command_wizard(args, ask=input, say=print) -> int:
+    """Walk one portal's download, then ingest what it delivered."""
+
+    source = registered(args.source)
+    if not source.steps:
+        raise Refuse(f"{source.key} needs no account: run `ingest {source.key}` directly")
+    if not wizard.walk(source, ask, say):
+        return 1
+    directory = wizard.input_directory(source, args.input, ask, say)
+    if directory is None:
+        return 1
+    args.input = directory or None
+    return command_ingest(args)
 
 
 def command_index(args) -> int:
@@ -215,12 +235,17 @@ def main(argv=None) -> int:
         sub.add_argument("--archive", required=True, help="the archive root")
         return sub
 
-    ingest = with_archive("ingest", "warp a source's rasters onto the lattice and write tiles")
-    ingest.add_argument("source", help=f"source key: {', '.join(sorted(SOURCES))}")
-    ingest.add_argument("--bbox", required=True, help="min_lon,min_lat,max_lon,max_lat")
-    ingest.add_argument("--input", help="a directory of hand-fetched rasters, instead of the service")
-    ingest.add_argument("--work", help="where fetched rasters are cached (default: the system temp dir)")
-    ingest.set_defaults(run=command_ingest)
+    def for_source(name, help_text, run):
+        sub = with_archive(name, help_text)
+        sub.add_argument("source", help=f"source key: {', '.join(sorted(SOURCES))}")
+        sub.add_argument("--bbox", required=True, help="min_lon,min_lat,max_lon,max_lat")
+        sub.add_argument("--input", help="a directory of hand-fetched files, instead of the service")
+        sub.add_argument("--work", help="where fetched rasters are cached (default: the system temp dir)")
+        sub.set_defaults(run=run)
+
+    for_source("ingest", "warp a source's rasters onto the lattice and write tiles", command_ingest)
+    for_source("wizard", "walk the account and download steps of a source behind a login",
+               command_wizard)
 
     with_archive("index", "rebuild index.json from the source manifests").set_defaults(run=command_index)
     with_archive("check", "hold every tile against the contract").set_defaults(run=command_check)

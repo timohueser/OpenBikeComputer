@@ -37,17 +37,19 @@ REMOTE = {
 }
 
 
-class CogGrid(Source):
-    """Remote COGs on a metre grid; a box is the window read out of each one it touches."""
+class CogWindows(Source):
+    """Remote COGs; a box is the window read out of each one it touches.
 
-    def __init__(self, *args, base, name, epsg, tile_m, **kw):
+    `urls` is the whole adapter: which published objects a box needs. Everything after
+    that — whether a square exists, the window, the cache — is shared.
+    """
+
+    def __init__(self, *args, base, epsg, **kw):
         super().__init__(*args, **kw)
-        self.base, self.name, self.epsg, self.tile_m = base, name, epsg, tile_m
+        self.base, self.epsg = base, epsg
 
     def urls(self, bbox) -> list[tuple[str, str]]:
-        return [(name, self.base + name)
-                for name in (self.name.format(east=east, north=north)
-                             for east, north in grid_squares(bbox, self.epsg, self.tile_m))]
+        raise NotImplementedError
 
     def published(self, url: str) -> bool:
         """Whether a square exists at all, from one ranged byte.
@@ -130,3 +132,16 @@ class CogGrid(Source):
             dst.write(values, 1)
         part.replace(path)
         return path
+
+
+class CogGrid(CogWindows):
+    """COGs named after the square of a national metre grid they cover."""
+
+    def __init__(self, *args, name, tile_m, **kw):
+        super().__init__(*args, **kw)
+        self.name, self.tile_m = name, tile_m
+
+    def urls(self, bbox) -> list[tuple[str, str]]:
+        return [(name, self.base + name)
+                for name in (self.name.format(east=east, north=north)
+                             for east, north in grid_squares(bbox, self.epsg, self.tile_m))]
