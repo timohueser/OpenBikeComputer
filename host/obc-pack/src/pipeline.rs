@@ -1,16 +1,10 @@
-//! The end-to-end pack: `.osm.pbf`(s) → `.obcm`, as one function.
+//! The end-to-end pack: `.osm.pbf`(s) to `.obcm`, as one function.
 //!
-//! This used to live in `main.rs`, which was fine while the CLI was the only way
-//! to run it. The desktop app links the packer in rather than spawning it (#906),
-//! and two implementations of "the pipeline" — one in a binary, one in a Tauri
-//! command — would drift the first time a stage moved. So the pipeline is here and
-//! [`pack`] is the only entry point: `main.rs` parses flags and calls it, the
-//! desktop app builds the same [`PackOptions`] and calls it, and
-//! `tests/cli_library_parity.rs` packs the same fixture both ways and compares the
-//! bytes.
+//! [`pack`] is the only entry point: `main.rs` parses flags and calls it, the desktop app builds the
+//! same [`PackOptions`] and calls it, and a parity test packs the same fixture both ways and
+//! compares the bytes, so the two hosts cannot grow different pipelines.
 //!
-//! Everything the run wants to say, and the only way to stop it, arrive together
-//! in [`Progress`] — see [`crate::progress`].
+//! Everything the run wants to say, and the only way to stop it, arrive together in [`Progress`].
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -46,15 +40,14 @@ pub struct PackOptions {
     pub chunk_size: Option<usize>,
     /// Skip land generation even when the config has a land style.
     pub no_land: bool,
-    /// Print the classified POI list. A CLI eyeball aid (#422) — it writes to
-    /// stdout directly rather than through the progress sink, because a host with
-    /// a log pane has no use for a few thousand POI lines.
+    /// Print the classified POI list. It writes to stdout directly rather than through the progress
+    /// sink, because a host with a log pane has no use for a few thousand POI lines.
     pub dump_pois: bool,
-    /// Print each POI's parsed weekly schedule (#440). Same stdout caveat.
+    /// Print each POI's parsed weekly schedule. Same stdout caveat.
     pub dump_hours: bool,
-    /// Baked OBCT terrain (a `.obcd` container or a directory of them) to integrate the OBCM §8.3
-    /// per-direction `Ascent M` from. Absent ⇒ every adjacency entry gets `0`, which is a
-    /// decode-valid v12 map that routes exactly as v11 did.
+    /// Baked OBCT terrain (a `.obcd` container or a directory of them) to integrate the
+    /// per-direction `Ascent M` from. Absent means every adjacency entry gets `0`, a decode-valid
+    /// map that routes climb-blind.
     pub terrain: Option<PathBuf>,
     /// Offline compiler output embedded in the ordinary map.
     pub landmarks: Option<PathBuf>,
@@ -73,18 +66,13 @@ pub struct PackSummary {
 
 /// Pack `pbfs` into `output` using `config`.
 ///
-/// The one code path both hosts run. Cancellation is decided by the token inside
-/// `progress`, never by an error string: any failure that lands while the token is
-/// set is reported as [`PackError::Cancelled`], and the partial output is removed
-/// so a cancelled build leaves nothing behind that looks like a map.
+/// The one code path both hosts run. Cancellation is decided by the token inside `progress`, never
+/// by an error string: any failure that lands while the token is set is reported as
+/// [`PackError::Cancelled`].
 ///
-/// The removal is **not** conditional on cancellation. A half-written `.obcm` has a
-/// valid header and truncated LODs, and the reader would accept the first tree and
-/// show a partial map — which is just as true of a GEOS failure, a full disk or a
-/// failed flush as it is of a cancel. Every error exit leaves the destination path
-/// empty rather than holding something that looks like a map. (Unconditionally, so
-/// a failed *re*-pack cannot leave the truncated new file where the old map was;
-/// the file is `create`d, so by then the old bytes are gone either way.)
+/// Every error exit removes the partial output, cancelled or not. A half-written `.obcm` has a valid
+/// header and truncated LODs, and the reader would accept the first tree and show a partial map —
+/// which is as true of a GEOS failure or a full disk as it is of a cancel.
 pub fn pack(
     pbfs: &[String],
     config: &Config,
@@ -116,11 +104,9 @@ fn run(
     // Fail loud before any work if chunk_size would let a feature outgrow the reader's cap.
     crate::serialize::validate_chunk_size(chunk_size)?;
 
-    // --- Ingest (two passes: nodes, then ways — three with a bbox, which adds the
-    // id-only crop selection; reports its own Merging / Pass 0/1/2 stages and the
-    // per-category POI counts line). Several `.pbf`s are merged *inside* those
-    // passes — no external tool, no merged intermediate on disk (see
-    // [`crate::ingest`]). ---
+    // Ingest: two passes, nodes then ways, and three with a bbox, which adds the id-only crop
+    // selection. Several `.pbf`s are merged inside those passes, with no external tool and no merged
+    // intermediate on disk (see [`crate::ingest`]).
     let mut ingested = ingest_osm(pbfs, config, opts.bbox, progress)?;
     if ingested.features.is_empty() && ingested.coastlines.is_empty() {
         return Err("no features found matching config".into());
@@ -152,15 +138,14 @@ fn run(
         global_bbox.3 = global_bbox.3.max(i64::from(landmark.record.lat));
     }
 
-    // --- Coastline base: clip the global land-polygon dataset to the bbox. Land stays in the
-    // working set for semantic coverage; when it is the implicit backdrop, its complement is added
-    // as explicit sea and land itself is stripped only after each LOD has been built. ---
+    // Coastline base: clip the global land-polygon dataset to the bbox. Land stays in the working
+    // set for semantic coverage; when it is the implicit backdrop, its complement is added as
+    // explicit sea and land itself is stripped only after each LOD has been built.
     add_land(&mut ingested, config, global_bbox, opts.no_land, progress)?;
     progress.check()?;
 
-    // --- Build + serialize the LOD pyramid in one streaming pass: each LOD's tree
-    // is built, serialized, streamed to disk, and dropped before the next, so peak
-    // memory is ~one tree. ---
+    // Build and serialize the LOD pyramid in one streaming pass: each LOD's tree is built,
+    // serialized, streamed to disk and dropped before the next, so peak memory is about one tree.
     let styles = config.styles();
     // Fill-dissolve / line-stitch equivalence classes over the style table, computed
     // once. Read only when their respective `merge_*` flag is on.
@@ -172,9 +157,9 @@ fn run(
         None => None,
         Some(path) => Some(TerrainSet::open(path)?),
     };
-    // Contours: traced out of that same terrain and appended to `ingested` as ordinary line
-    // features, before anything looks at a LOD. Everything downstream — simplify, cull, quadtree,
-    // serialize — treats them as geometry it has always had, which is the point (#1094).
+    // Contours are traced out of that same terrain and appended to `ingested` as ordinary line
+    // features before anything looks at a LOD, so everything downstream treats them as geometry it
+    // has always had.
     crate::contour::add_contours(&mut ingested, config, global_bbox, terrain_set.as_ref(), progress)?;
     progress.check()?;
 
@@ -205,16 +190,14 @@ fn run(
         None => &mut null,
     };
     crate::poi::fill_summit_elevations(&mut ingested.pois, terrain);
-    // Shared by the coverage tiers: they dissolve the same classes over the same fills, and only
-    // the decimation below that differs per tier (see `crate::coverage::PredissolveCache`). It is
-    // cleared at the first tier that does not want the pass — the coarse tiers come first, and the
-    // fine ones, where the pack's memory peak lives, have no use for what it holds.
+    // Shared by the coverage tiers: they dissolve the same classes over the same fills, and only the
+    // decimation below that differs per tier. It is cleared at the first tier that does not want the
+    // pass, because the fine tiers, where the pack's memory peak lives, have no use for it.
     let predissolved = PredissolveCache::new();
     let file = std::fs::File::create(output).map_err(|e| format!("create {out_name}: {e}"))?;
     let mut w = std::io::BufWriter::new(file);
-    // The per-LOD closure runs inside the serializer, which has no error channel
-    // for a *caller's* failure — so a cancellation noticed in here is recorded and
-    // re-raised the moment the streaming call returns.
+    // The per-LOD closure runs inside the serializer, which has no error channel for a caller's
+    // failure, so a cancellation noticed in there is recorded and re-raised when the call returns.
     let (total, dropped) = serialize_lods_streaming(
         &mut w,
         config.lods.len(),
@@ -233,49 +216,37 @@ fn run(
                 predissolved.clear();
             }
             progress.stage(Phase::Quadtree, format!("Building Quadtree LOD {i} (simplify {}m)...", lod.simplify_m));
-            // The cheapest and most valuable checkpoint in the whole pipeline: a
-            // cancelled build has one to three of these LODs still ahead of it,
-            // each a merge + a simplify + a tree, and skipping them outright is
-            // the difference between a cancel that lands in a moment and one that
-            // lands in a minute. The empty level still goes through the same
-            // build+serialize so the streaming serializer's contract is unchanged.
+            // The cheapest and most valuable checkpoint in the pipeline: a cancelled build has one
+            // to three of these LODs still ahead of it, each a merge, a simplify and a tree. The
+            // empty level still goes through build and serialize, so the serializer's contract is
+            // unchanged.
             if progress.is_cancelled() {
                 return (Some(build_lod_with(Vec::new(), global_bbox, chunk_size, progress)), chunk_size, lod.max_mpp);
             }
             let tol = if lod.simplify_m > 0.0 { lod.simplify_m / M_PER_DEG } else { 0.0 };
             let line_tol = if lod.line_simplify_m > 0.0 { lod.line_simplify_m / M_PER_DEG } else { 0.0 };
-            // Coarse-LOD footprint cull: after simplify, drop features too small to
-            // render at the finest scale this tier is ever shown at — the next-finer
-            // tier's `max_mpp`. The finest tier has no finer fallback (a drop there
-            // would erase the feature at every zoom), so it is never culled and its
-            // `min_area_px` is ignored. Off (`None`) ⇒ byte-identical to before.
+            // Coarse-LOD footprint cull: after simplify, drop features too small to render at the
+            // finest scale this tier is ever shown at, which is the next-finer tier's `max_mpp`. The
+            // finest tier has no finer fallback, so it is never culled and its `min_area_px` is
+            // ignored.
             let cull_mpp = (lod.min_area_px > 0.0).then(|| config.lods.get(i + 1).and_then(|l| l.max_mpp)).flatten();
             let culled = std::sync::atomic::AtomicUsize::new(0);
             let holes_stripped = std::sync::atomic::AtomicUsize::new(0);
             let min_area_px = lod.min_area_px;
-            // Per-feature simplify + coarse-LOD footprint cull + sub-pixel hole trim. Each call runs
-            // wholly on one thread using that thread's own GEOS context, so no geometry crosses
-            // threads; rayon's `collect` preserves order. The quadtree build stays sequential.
+            // Per-feature simplify, footprint cull and sub-pixel hole trim. Each call runs wholly on
+            // one thread using that thread's own GEOS context, so no geometry crosses threads, and
+            // rayon's `collect` preserves order. The quadtree build stays sequential.
             //
-            // The cancellation check is here, per feature, rather than only between
-            // LODs: this closure is where a country-scale build spends its GEOS
-            // time, and a `None` return drains the remaining rayon items in the time
-            // it takes to walk them. What is left running after a cancel is at most
-            // one `topology_preserve_simplify` per busy worker.
+            // The cancellation check is per feature rather than only between LODs: this closure is
+            // where a country-scale build spends its GEOS time, and a `None` return drains the
+            // remaining rayon items in the time it takes to walk them.
             //
             // `simplify` is `false` for a feature the coverage pass already cut to this tier's
-            // tolerance (below): simplifying it a second time would move exactly the shared
-            // boundaries that pass exists to keep glued.
-            //
-            // `from_coverage` marks the output of [`crate::coverage`]: that pass already applied
-            // this tier's `min_area_px`, as *elimination* rather than a drop, so culling it a
-            // second time would punch back the holes it exists to avoid. The **hole** trim runs
-            // on it unchanged, at exactly the same threshold: a hole in a coverage polygon is
-            // another class's kept face, so filling one above the elimination threshold would
-            // paint a face the pass deliberately kept out of existence while it still costs a
-            // span, a ring and its points. Below the threshold no such face can exist — it was
-            // absorbed into its neighbour, which leaves no hole — so the ordinary trim is exactly
-            // the safe bound.
+            // tolerance: cutting it again would move the shared boundaries that pass keeps glued.
+            // `from_coverage` skips the footprint cull for the same reason, since the pass already
+            // applied this tier's `min_area_px` as elimination rather than a drop. The hole trim
+            // still runs at the same threshold, because a hole in a coverage polygon is another
+            // class's kept face, and filling one would paint a face the pass kept out of existence.
             let simplify_cull =
                 |style_id: u8, geom: &Geom, simplify: bool, from_coverage: bool| -> Option<(u8, Geom)> {
                     if progress.is_cancelled() {
@@ -292,8 +263,8 @@ fn run(
                             culled.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             return None;
                         }
-                        // Survivors: trim sub-pixel holes (invisible; frees a ring + its vertices in the
-                        // render scratch, on the same tier gate + threshold as the footprint cull).
+                        // Survivors: trim sub-pixel holes, which frees a ring and its vertices in
+                        // the render scratch at the same tier gate and threshold as the cull.
                         let n = strip_small_holes(&mut g, mpp, min_area_px);
                         if n > 0 {
                             holes_stripped.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
@@ -301,24 +272,17 @@ fn run(
                     }
                     Some((style_id, g))
                 };
-            // Optionally dissolve pixel-identical fill polygons and/or stitch
-            // same-styled line fragments BEFORE simplify (see `crate::merge`):
-            // merging first deletes shared parcel boundaries / duplicated way
-            // endpoints exactly, where simplifying first would move each copy
-            // independently (fills: seam cracks) or retain the now-interior junction
-            // vertex (lines: less reduction). The two passes are orthogonal (polygon
-            // vs line kind), so they compose. Off ⇒ the original filter→simplify→cull
-            // path, byte-identical to before.
+            // Optionally dissolve pixel-identical fill polygons and stitch same-styled line
+            // fragments BEFORE simplify: merging first deletes shared parcel boundaries and
+            // duplicated way endpoints exactly, where simplifying first would move each copy
+            // independently (seam cracks for fills, a retained junction vertex for lines). The two
+            // passes are orthogonal, polygon against line kind, so they compose.
             //
-            // A tier with `coverage_simplify` hands its plain fills to [`crate::coverage`]
-            // instead, which dissolves *and* simplifies them as one arrangement — so
-            // `merge_fills` is skipped there (it would be a strictly weaker version of the
-            // dissolve the coverage pass already did, over the same candidate set) while
-            // `merge_lines`, which touches only lines, still runs and runs first.
-            // The post-stitch length cull (`min_line_km`). It runs only where `merge_lines` just
-            // ran, because it is only meaningful on a stitched record — see
-            // [`crate::geom::line_below`]. `Config::normalize` refuses the knob without
-            // `merge_lines`, so "only here" costs no reachable configuration. `0.0` ⇒ untouched.
+            // A tier with `coverage_simplify` hands its plain fills to [`crate::coverage`] instead,
+            // which dissolves and simplifies them as one arrangement, so `merge_fills` is skipped
+            // there while `merge_lines` still runs, and runs first. The post-stitch length cull
+            // runs only where `merge_lines` just ran, because it is only meaningful on a stitched
+            // record (see [`crate::geom::line_below`]).
             let cull_short_lines = |feats: Vec<(u8, Geom)>| -> Vec<(u8, Geom)> {
                 if lod.min_line_km <= 0.0 {
                     return feats;
@@ -418,10 +382,10 @@ fn run(
                     .filter_map(|f| simplify_cull(f.style_id, &f.geom, true, false))
                     .collect()
             };
-            // A land-backdrop map still carries land through every merge/coverage operation above:
+            // A land-backdrop map carries land through every merge and coverage operation above:
             // that complete base is what lets small semantic faces be absorbed without opening
-            // holes. It becomes redundant only at this serialization boundary, where the renderer's
-            // clear supplies exactly the same fill for free.
+            // holes. It becomes redundant at this serialization boundary, where the renderer's clear
+            // supplies the same fill for free.
             if let Some(land_id) = implicit_land_style_id {
                 level.retain(|(style_id, _)| *style_id != land_id);
             }
@@ -433,20 +397,19 @@ fn run(
             if holes_stripped > 0 {
                 progress.log(format!("  stripped {holes_stripped} sub-pixel hole(s) from surviving polygons"));
             }
-            // Always `Some`: a whole-extract pack writes every ladder level as a real (possibly
-            // featureless) tree. `None` is the cell cutter's empty out-of-band region (§3.1).
+            // Always `Some`: a whole-extract pack writes every ladder level as a real, possibly
+            // featureless, tree. `None` is the cell cutter's empty out-of-band region.
             (Some(build_lod_with(level, global_bbox, chunk_size, progress)), chunk_size, lod.max_mpp)
         },
     )
     .map_err(|e| format!("write {out_name}: {e}"))?;
     w.flush().map_err(|e| format!("flush {out_name}: {e}"))?;
-    // A cancel noticed inside the per-LOD closure produced an empty level rather
-    // than an error, so the streaming call returned "successfully" with a stunted
-    // map. Catch it here, before anyone is told a file was written.
+    // A cancel noticed inside the per-LOD closure produced an empty level rather than an error, so
+    // the streaming call returned "successfully" with a stunted map. Catch it before anyone is told
+    // a file was written.
     progress.check()?;
-    // With densify-aware quadtree budgeting this should stay zero; a non-zero count
-    // means real map content is missing (a feature too big for its chunk even at
-    // the 10-µdeg split floor) and must not pass silently.
+    // With densify-aware quadtree budgeting this should stay zero; a non-zero count means real map
+    // content is missing and must not pass silently.
     if dropped > 0 {
         progress.warn(format!(
             "warning: {dropped} feature(s) exceeded chunk_size {chunk_size} and were dropped — \
@@ -460,12 +423,11 @@ fn run(
 
 /// Clip the global land-polygon dataset to `global_bbox` and append the faces to the working set as
 /// `natural.land`. When land is the actual backdrop, also append `bbox - land` as `natural.sea`;
-/// final LOD construction removes the now-redundant land records after coverage processing.
-/// A no-op when the config has no land style or `no_land` is set.
+/// final LOD construction removes the redundant land records after coverage processing. A no-op
+/// when the config has no land style or `no_land` is set.
 ///
-/// Shared with the cell cutter ([`crate::cut`]): land is generated **once** over the whole extract
-/// and then cut like any other feature, so a cell's coastline geometry cannot depend on which cell
-/// asked for it.
+/// Shared with the cell cutter: land is generated once over the whole extract and then cut like any
+/// other feature, so a cell's coastline geometry cannot depend on which cell asked for it.
 pub(crate) fn add_land(
     ingested: &mut Ingested,
     config: &Config,
@@ -511,9 +473,8 @@ pub(crate) fn add_land(
     Ok(())
 }
 
-/// One-line per-LOD merge report (fills or lines), reported only when something
-/// actually merged. `noun` names the consumed input ("fill polygon" / "line
-/// fragment"); `verb` bridges to the output count ("into").
+/// One-line per-LOD merge report, reported only when something actually merged. `noun` names the
+/// consumed input and `verb` bridges to the output count.
 pub(crate) fn report_merge(progress: &Progress, m: MergeStats, noun: &str, verb: &str) {
     if m.merged_inputs == 0 && m.fallbacks == 0 {
         return;
@@ -566,10 +527,10 @@ pub(crate) fn report_coverage(progress: &Progress, c: CoverageStats) {
     progress.log(line);
 }
 
-/// Total bounds over geometry and point records. Geometry truncates `v*1e6` toward zero. The
-/// coords are the exact osmium f64s, so the bbox is stable across runs. Truncation
-/// pulls the max edges (and, for negative coordinates, the min edges) inward by
-/// under 1 µdeg (~0.11 m); vertices past the shrunken edge are clipped at the root.
+/// Total bounds over geometry and point records. Geometry truncates `v * 1e6` toward zero, and the
+/// coords are the exact osmium f64s, so the bbox is stable across runs. Truncation pulls the max
+/// edges, and for negative coordinates the min edges, inward by under 1 µdeg; vertices past the
+/// shrunken edge are clipped at the root.
 pub fn compute_bbox(ing: &Ingested) -> (i64, i64, i64, i64) {
     let (mut minx, mut miny, mut maxx, mut maxy) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
     let mut widen = |x: f64, y: f64| {

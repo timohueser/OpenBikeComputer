@@ -1,21 +1,16 @@
-//! `land.rs` — land-fill polygons for an extract, by clipping the global
-//! [land-polygons-split-3857] dataset to the map bbox. No GIS stack: a direct
-//! shapefile read + closed-form reprojection + a GEOS clip.
+//! Land-fill polygons for an extract, by clipping the global [land-polygons-split-3857] dataset to
+//! the map bbox. No GIS stack: a direct shapefile read, closed-form reprojection, and a GEOS clip.
 //!
 //! [land-polygons-split-3857]: https://osmdata.openstreetmap.de/data/land-polygons.html
 //!
-//!   - **Shapefile read** — parse the `.shp` directly, with a per-record
-//!     bounding-box skip so only records touching the query box are decoded (the
-//!     dataset has no spatial index).
-//!   - **Reproject** — EPSG:3857 here is the Web Mercator Auxiliary Sphere
-//!     (`SPHEROID` radius `6378137`, per the `.prj`): closed-form spherical
-//!     mercator, no PROJ datum grids.
-//!   - **Clip** — a GEOS `intersection` against the forward-projected bbox box,
-//!     done in 3857 *before* reprojecting the result.
+//! The `.shp` is parsed directly, with a per-record bounding-box skip so only records touching the
+//! query box are decoded, because the dataset has no spatial index. EPSG:3857 here is the Web
+//! Mercator auxiliary sphere, so the reprojection is closed-form and needs no PROJ datum grids, and
+//! the GEOS clip runs in 3857 before the result is reprojected.
 //!
-//! Output is one [`Geom::Polygon`] per land face (flattened to simple polygons,
-//! like the relation path). The pipeline keeps those faces internally as the semantic-coverage
-//! base, but when land is the renderer backdrop it serializes only their complement as
+//! Output is one [`Geom::Polygon`] per land face. The pipeline keeps those faces internally as the
+//! semantic-coverage base, but when land is the renderer backdrop it serializes only their
+//! complement as `natural.sea`.
 //! `natural.sea`.
 
 use std::fs::File;
@@ -47,8 +42,8 @@ fn merc_inverse(x: f64, y: f64) -> (f64, f64) {
     (lon, lat)
 }
 
-/// EPSG:4326 → EPSG:3857: (lon°, lat°) → (meters east, meters north). Used only
-/// for the clip-box corners.
+/// EPSG:4326 to EPSG:3857: (lon°, lat°) to (metres east, metres north). Used only for the clip-box
+/// corners.
 #[inline]
 fn merc_forward(lon: f64, lat: f64) -> (f64, f64) {
     let x = R * lon.to_radians();
@@ -62,8 +57,7 @@ fn reproject_ring(ring: &mut [(f64, f64)]) {
     }
 }
 
-/// Reproject every vertex of a (possibly multi/nested) geometry from 3857 → deg,
-/// in place.
+/// Reproject every vertex of a possibly nested geometry from 3857 to degrees, in place.
 fn reproject_geom(g: &mut Geom) {
     match g {
         Geom::Line(c) => reproject_ring(c),
@@ -89,9 +83,8 @@ fn reproject_geom(g: &mut Geom) {
 pub fn get_land_polygons(bbox_deg: (f64, f64, f64, f64), progress: &Progress) -> Result<Vec<Geom>, String> {
     let shp = ensure_dataset(progress)?;
     let (min_lon, min_lat, max_lon, max_lat) = bbox_deg;
-    // EPSG:3857 has no finite representation at the poles. The source dataset
-    // itself ends at the Web-Mercator limit, so the geographic overhang of the
-    // outermost OBCA cells is provably empty in this layer.
+    // EPSG:3857 has no finite representation at the poles. The source dataset itself ends at the
+    // Web-Mercator limit, so the geographic overhang of the outermost cells is provably empty here.
     if max_lat < -WEB_MERCATOR_MAX_LAT || min_lat > WEB_MERCATOR_MAX_LAT {
         return Ok(Vec::new());
     }
@@ -112,11 +105,9 @@ pub fn get_land_polygons(bbox_deg: (f64, f64, f64, f64), progress: &Progress) ->
 
 /// The part of `bbox_deg` not covered by `land`, flattened to serializable sea polygons.
 ///
-/// This is the representation flip's one topology operation: the global dataset remains land
-/// internally (so the coverage builders retain their complete base), while the final map carries
-/// only the usually-small coastline complement. A real union is required before `difference`:
-/// shapefile records may overlap without sharing vertices, and subtracting an even-odd
-/// multipolygon directly could turn an overlap into a spurious water hole.
+/// A real union is required before `difference`: shapefile records may overlap without sharing
+/// vertices, and subtracting an even-odd multipolygon directly could turn an overlap into a spurious
+/// water hole.
 pub(crate) fn sea_complement(bbox_deg: (f64, f64, f64, f64), land: &[Geom]) -> Result<Vec<Geom>, String> {
     let bbox = box_polygon(bbox_deg).map_err(|e| format!("sea bbox: {e}"))?;
     if land.is_empty() {
@@ -168,21 +159,17 @@ struct ShapeRecord {
     bbox: (f64, f64, f64, f64),
 }
 
-/// The process-wide record table, **memoized on success only**.
+/// The process-wide record table, memoized on success only.
 ///
-/// A `OnceLock<Result<..>>` would have cached the first *failure* just as durably as
-/// the first success, and one of the ways this call fails is the user pressing stop:
-/// a cancelled build inside the desktop app or the bakery — both of which link the
-/// packer in-process — would have poisoned land generation for the rest of the
-/// session, as would one transient read error. A failed or cancelled index leaves
-/// the slot empty, so the next call simply indexes again.
+/// A `OnceLock<Result<..>>` would cache the first failure as durably as the first success, and one
+/// way this call fails is the user pressing stop: a cancelled build inside a host that links the
+/// packer in-process would then have poisoned land generation for the rest of the session. A failed
+/// or cancelled index leaves the slot empty, so the next call indexes again.
 static LAND_INDEX: Mutex<Option<Arc<Vec<ShapeRecord>>>> = Mutex::new(None);
 
 /// The record table for `shp`: the memoized one, or a fresh scan stored on success.
 fn land_index(shp: &Path, progress: &Progress) -> Result<Arc<Vec<ShapeRecord>>, String> {
-    // A poisoned lock means an earlier scan panicked, not that the slot is unusable —
-    // recovering keeps a panic from becoming the same session-long brick the cached
-    // `Err` was.
+    // A poisoned lock means an earlier scan panicked, not that the slot is unusable.
     let mut slot = LAND_INDEX.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(index) = slot.as_ref() {
         return Ok(Arc::clone(index));
@@ -192,11 +179,10 @@ fn land_index(shp: &Path, progress: &Progress) -> Result<Arc<Vec<ShapeRecord>>, 
     Ok(index)
 }
 
-/// Scan the record headers once per process. A planet bake calls the land clip
-/// hundreds of times; re-reading the 1.3 GB shapefile for every source leaf would
-/// dominate the entire pipeline even though almost every record is rejected by
-/// its MBR. The compact offset/MBR table is tens of MiB and makes later queries
-/// seek directly to the handful of intersecting polygon bodies.
+/// Scan the record headers once per process. A planet bake calls the land clip hundreds of times,
+/// and re-reading the 1.3 GB shapefile for every source leaf would dominate the pipeline even though
+/// almost every record is rejected by its MBR. The compact offset and MBR table is tens of MiB and
+/// lets later queries seek straight to the intersecting polygon bodies.
 fn index_shapefile(shp: &Path, progress: &Progress) -> Result<Vec<ShapeRecord>, String> {
     let file = File::open(shp).map_err(|e| format!("open {}: {e}", shp.display()))?;
     let mut r = BufReader::with_capacity(1 << 20, file);
@@ -332,9 +318,8 @@ fn process_record(rings: Vec<Vec<(f64, f64)>>, fully_inside: bool, box_geom: &Ge
     collect_polygons(g, out);
 }
 
-/// Build a GEOS geometry from a record's rings (still in 3857). A single ring is a
-/// plain polygon; multiple rings (holes and/or disjoint outers) go through
-/// `build_area`, which applies the even-odd nesting rule to attach holes — robust
+/// Build a GEOS geometry from a record's rings, still in 3857. A single ring is a plain polygon;
+/// several rings go through `build_area`, whose even-odd nesting rule attaches holes and is robust
 /// to ring winding.
 fn geos_polygon_from_rings(rings: &[Vec<(f64, f64)>]) -> Option<Geometry> {
     if rings.len() == 1 {
@@ -356,18 +341,12 @@ fn geos_polygon_from_rings(rings: &[Vec<(f64, f64)>]) -> Option<Geometry> {
     mls.build_area().ok()
 }
 
-// --- Dataset cache ---------------------------------------------------------
-
-/// Where the unpacked dataset lives: `$OBCM_CACHE_DIR/land`, else
-/// `~/.cache/obcm/land`.
+/// Where the unpacked dataset lives: `$OBCM_CACHE_DIR/land`, else `~/.cache/obcm/land`.
 ///
-/// The override and the Windows home variable are not decoration. The desktop app
-/// (`obc-desktop/src/paths.rs`) documents this directory as *the shared cache* —
-/// the CLI, the dev server and the app all point at one 2.3 GB dataset instead of
-/// three — and it reads `OBCM_CACHE_DIR` to find it. This function ignoring the
-/// variable would have quietly split that dataset in two the first time anyone set
-/// it, and `HOME` alone is simply unset on Windows, where the packer would have
-/// failed with "HOME not set" for a user who has no idea what `HOME` is (#907).
+/// The override and the Windows home variable are both load-bearing. The desktop app documents this
+/// directory as the shared cache, so the CLI, the dev server and the app point at one 2.3 GB
+/// dataset instead of three, and it finds it through `OBCM_CACHE_DIR`. `HOME` alone is unset on
+/// Windows.
 pub(crate) fn cache_dir() -> Result<PathBuf, String> {
     if let Some(dir) = std::env::var_os("OBCM_CACHE_DIR") {
         return Ok(PathBuf::from(dir).join("land"));
@@ -380,20 +359,15 @@ pub(crate) fn cache_dir() -> Result<PathBuf, String> {
     Ok(PathBuf::from(home).join(".cache/obcm/land"))
 }
 
-/// Return the cached `land_polygons.shp`, downloading + extracting the dataset on
-/// first use (~950 MB). There's no `Last-Modified` freshness check — delete the
-/// cache dir to force a refresh.
+/// Return the cached `land_polygons.shp`, downloading and extracting the dataset on first use
+/// (~950 MB). There is no freshness check: delete the cache directory to force a refresh.
 ///
-/// Concurrency-safe: download + extract go to pid-suffixed temp paths, then the
-/// extracted directory is renamed into place. Two cold-cache packers racing each
-/// other both succeed — the loser's rename fails against the winner's directory
-/// and its temp files are cleaned up.
+/// Concurrency-safe: download and extract go to pid-suffixed temp paths, then the extracted
+/// directory is renamed into place. Two cold-cache packers racing each other both succeed, and the
+/// loser's rename fails against the winner's directory.
 ///
-/// Both steps run **in process** ([`crate::net`]). They used to shell out to `curl`
-/// and `unzip`, which was fine while the packer was a developer's CLI and fatal the
-/// moment it became the engine inside a shipped Windows app (#907): `unzip` is not
-/// a Windows program. The in-process versions are also cancellable and report a
-/// percentage, neither of which a subprocess could do.
+/// Both steps run in process ([`crate::net`]), which a subprocess could not be: they are cancellable
+/// and report a percentage, and `unzip` is not a Windows program.
 fn ensure_dataset(progress: &Progress) -> Result<PathBuf, String> {
     let dir = cache_dir()?;
     let dataset = dir.join("land-polygons-split-3857");
@@ -405,14 +379,13 @@ fn ensure_dataset(progress: &Progress) -> Result<PathBuf, String> {
     let pid = std::process::id();
     let zip = dir.join(format!("land-polygons-{pid}.zip"));
     let extract_dir = dir.join(format!("extract-{pid}"));
-    // Reported rather than printed: on the desktop app this is the one step that
-    // can stall a first build for minutes, and a silent app is indistinguishable
-    // from a hung one. (Still stderr on the CLI — `Progress::stdout`'s `warn`.)
+    // Reported rather than printed: in a host with a log pane this is the one step that can stall a
+    // first build for minutes, and a silent app is indistinguishable from a hung one.
     progress.warn(format!("Downloading land polygons (~950 MB, one-time) from {LAND_URL} ..."));
     let mut last = 0u8;
     let downloaded = net::download(LAND_URL, &zip, progress, |pct| {
-        // Every 5 %: a one-time 950 MB download over a slow link is minutes of
-        // silence otherwise, and per-percent lines would bury the build log.
+        // Every 5 %: a one-time 950 MB download over a slow link is minutes of silence otherwise,
+        // and per-percent lines would bury the build log.
         if pct >= last + 5 || pct == 100 {
             last = pct;
             progress.warn(format!("  land polygons: {pct}%"));
@@ -429,8 +402,8 @@ fn ensure_dataset(progress: &Progress) -> Result<PathBuf, String> {
         let _ = std::fs::remove_dir_all(&extract_dir);
         return Err(e);
     }
-    // Move the extracted dataset into place; a rename failure is fine iff a
-    // concurrent run installed the dataset first.
+    // Move the extracted dataset into place; a rename failure is fine iff a concurrent run
+    // installed the dataset first.
     let installed = std::fs::rename(extract_dir.join("land-polygons-split-3857"), &dataset);
     let _ = std::fs::remove_dir_all(&extract_dir);
     if !shp.exists() {
@@ -509,8 +482,8 @@ mod tests {
         assert_eq!(rings[0][2], (10.0, 10.0));
     }
 
-    /// The cached record table points at the bytes after each shape type + MBR,
-    /// and a later spatial query seeks only to records whose MBR intersects it.
+    /// The cached record table points at the bytes after each shape type and MBR, and a later
+    /// spatial query seeks only to records whose MBR intersects it.
     #[test]
     fn indexed_shapefile_queries_the_matching_record_body() {
         fn body(points: &[(f64, f64)]) -> Vec<u8> {
@@ -583,10 +556,9 @@ mod tests {
         std::fs::write(path, bytes).unwrap();
     }
 
-    /// A cancelled index must not be remembered as a failure: the packer is linked
-    /// in-process by the desktop app and the bakery, so one stopped build used to
-    /// leave land generation broken for the life of the process. (The only test that
-    /// touches the process-wide slot — it leaves the fixture's table memoized.)
+    /// A cancelled index must not be remembered as a failure: the packer is linked in-process by
+    /// the desktop app and the bakery, so one stopped build would leave land generation broken for
+    /// the life of the process. The only test that touches the process-wide slot.
     #[test]
     fn a_cancelled_index_is_not_memoized() {
         let dir = std::env::temp_dir().join(format!("obc-land-retry-{}", std::process::id()));
@@ -605,8 +577,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // --- geos_polygon_from_rings + process_record ---------------------------
-
     /// A square in 3857 metres, CCW, closed. `cx,cy` = lower-left corner, `s` = side.
     fn box3857(cx: f64, cy: f64, s: f64) -> Vec<(f64, f64)> {
         vec![(cx, cy), (cx + s, cy), (cx + s, cy + s), (cx, cy + s), (cx, cy)]
@@ -619,8 +589,8 @@ mod tests {
         assert_eq!(g.get_num_interior_rings().unwrap(), 0, "a lone outer ring has no holes");
     }
 
-    /// Outer + concentric inner ring ⇒ `build_area`'s even-odd rule attaches the
-    /// inner as a hole (the real dataset's lakes-with-islands).
+    /// Outer plus concentric inner ring: `build_area`'s even-odd rule attaches the inner as a hole,
+    /// which is the real dataset's lakes-with-islands.
     #[test]
     fn geos_polygon_from_outer_and_inner_attaches_hole() {
         let outer = box3857(0.0, 0.0, 10_000.0);
@@ -629,8 +599,8 @@ mod tests {
         assert_eq!(g.get_num_interior_rings().unwrap(), 1, "even-odd nesting makes the inner ring a hole");
     }
 
-    /// `process_record` fully-inside single-ring fast path: no GEOS clip, just
-    /// reproject + emit, matching `merc_inverse` exactly. `box_geom` is unused here.
+    /// The fully-inside single-ring fast path: no GEOS clip, just reproject and emit, matching
+    /// `merc_inverse` exactly.
     #[test]
     fn process_record_fully_inside_single_ring_skips_clip() {
         let s = 1000.0;
@@ -653,8 +623,8 @@ mod tests {
         }
     }
 
-    /// `process_record` GEOS-clip path: a record straddling the query box is clipped,
-    /// reprojected, and stays within the box (in degrees).
+    /// The GEOS-clip path: a record straddling the query box is clipped, reprojected, and stays
+    /// within the box.
     #[test]
     fn process_record_straddling_is_clipped_to_box() {
         let qbox = (0.0, 0.0, 10_000.0, 10_000.0);

@@ -1,50 +1,50 @@
-//! `grid.rs` — the OBCA cell grid: the fixed global µdeg lattice, cell identity, the
-//! per-band cell-size table, and the integer arithmetic the cell cutter cuts with.
+//! The OBCA cell grid: the fixed global µdeg lattice, cell identity, the per-band cell-size table,
+//! and the integer arithmetic the cell cutter cuts with.
 //!
-//! Everything here is normative in [`OBCA_Spec.md`](../../../specs/OBCA_Spec.md) §1–§2 and
-//! deliberately **integer-only**: the grid exists so that an OBCM quadtree's floor-midpoint
-//! subdivision lands *exactly* on cell boundaries (§2, the alignment theorem), and a single
-//! rounding step in the wrong direction would break that. No float ever reaches a coordinate
-//! computed in this module.
+//! Everything here is normative in [`OBCA_Spec.md`](../../../specs/OBCA_Spec.md) and deliberately
+//! integer-only: the grid exists so that an OBCM quadtree's floor-midpoint subdivision lands exactly
+//! on cell boundaries, and a single rounding step in the wrong direction would break that. No float
+//! ever reaches a coordinate computed in this module.
 //!
-//! Two things are constants here and never change: the origin ([`GRID_ORIGIN`]) and the *shape* of
-//! the grid (square, power-of-two, one origin for every band and size). The actual **cell sizes and
-//! band membership are schema data** — [`BandTable`] carries them, [`BandTable::recommended`] is the measured
-//! recommendation of OBCA §1.5, and a bakery is expected to hand in the table its catalog
-//! publishes rather than trust a default. Retuning a band is a re-bake, not a format bump (§1.2).
+//! The origin ([`GRID_ORIGIN`]) and the shape of the grid — square, power-of-two, one origin for
+//! every band and size — are constants. Cell sizes and band membership are schema data:
+//! [`BandTable`] carries them, and a bakery is expected to hand in the table its catalog publishes
+//! rather than trust [`BandTable::recommended`]. Retuning a band is a re-bake, not a format bump.
 
 use std::collections::HashSet;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-/// Origin of the fixed global cell grid, µdeg, on **both** axes (OBCA §1.1).
+/// Origin of the fixed global cell grid, µdeg, on **both** axes.
 ///
 /// A power of two, so every permitted cell size divides it exactly — which is the whole reason the
 /// grid is not anchored at −90/−180 (`−90_000_000` is a multiple of no candidate cell size, so no
 /// size would ever make a quadtree midpoint coincide with a cell edge).
 pub const GRID_ORIGIN: i64 = -(1 << 28);
 
-/// Side of the world box, µdeg (OBCA §1.1): `2^29`, i.e. ≈ ±268.435456°. Strictly larger than the
-/// geographic domain, and the grid does **not** wrap — cells may legally overhang ±90 / ±180 and
-/// producers MUST NOT clamp them (§1.4).
+/// Side of the world box, µdeg: `2^29`, about ±268.435456°. Strictly larger than the geographic
+/// domain, and the grid does not wrap — cells may legally overhang ±90 / ±180 and producers MUST
+/// NOT clamp them.
 pub const WORLD_SIDE: i64 = 1 << 29;
 
-/// Smallest permitted cell size as `log2(µdeg)` (OBCA §1.1).
+/// Smallest permitted cell size as `log2(µdeg)`.
 pub const MIN_CELL_LOG2: u32 = 10;
 
-/// Largest permitted cell size as `log2(µdeg)` (OBCA §1.1).
+/// Largest permitted cell size as `log2(µdeg)`.
 pub const MAX_CELL_LOG2: u32 = 28;
 
 /// A bbox in the packer's own order: `(min_lon, min_lat, max_lon, max_lat)`, µdeg.
 ///
-/// The order is the serializer's ([`crate::serialize`]) and not the spec tables' `lat, lon` — a cell
+/// The order is the serializer's ([`crate::serialize`]) and not the spec tables' `lat, lon`: a cell
+/// square is handed straight to the quadtree builder and the header writer, so matching them is what
+/// keeps the cutter free of swap bugs.
 /// square is handed straight to the quadtree builder and the header writer, so matching them is what
 /// keeps the cutter free of swap bugs.
 pub type UBox = (i64, i64, i64, i64);
 
 /// One cell of the grid: a size (as `log2(µdeg)`) and its **latitude** index `i` and **longitude**
-/// index `j` (OBCA §1.1/§1.3 — the canonical id is `<log2>/<i>/<j>`, latitude first).
+/// index `j`. The canonical id is `<log2>/<i>/<j>`, latitude first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CellId {
     pub log2: u32,
@@ -58,7 +58,8 @@ pub fn axis_cells(log2: u32) -> i64 {
     WORLD_SIDE >> log2
 }
 
-/// Zero-padding width of a cell id's indices (OBCA §1.3): `max(4, digits(cells_per_axis − 1))`.
+/// Zero-padding width of a cell id's indices: `max(4, digits(cells_per_axis - 1))`. Four for every
+/// size at or above `2^16`, wider below — producers MUST widen rather than truncate.
 /// Four for every size at or above `2^16`, wider below — producers MUST widen rather than truncate.
 ///
 /// The rule itself lives in [`obc_elevation::grid::id_width`]: `obc-dem` names published terrain
@@ -69,7 +70,7 @@ pub fn id_width(log2: u32) -> usize {
 }
 
 impl CellId {
-    /// Reject a size outside OBCA §1.1's `2^10 .. 2^28`.
+    /// Reject a size outside the grid's `2^10 .. 2^28`.
     fn check_log2(log2: u32) -> Result<(), String> {
         if !(MIN_CELL_LOG2..=MAX_CELL_LOG2).contains(&log2) {
             return Err(format!("cell size 2^{log2} µdeg is outside the grid's {MIN_CELL_LOG2}..={MAX_CELL_LOG2}"));
@@ -93,7 +94,7 @@ impl CellId {
         1 << self.log2
     }
 
-    /// The cell's square, half-open on both axes (OBCA §1.1), in [`UBox`] order.
+    /// The cell's square, half-open on both axes, in [`UBox`] order.
     #[inline]
     pub fn square(self) -> UBox {
         let s = self.size();
@@ -118,7 +119,8 @@ impl CellId {
         lat >= min_lat && lat < max_lat && lon >= min_lon && lon < max_lon
     }
 
-    /// Parse a canonical id `<log2>/<i>/<j>` (OBCA §1.3). Lenient about zero padding on the way in
+    /// Parse a canonical id `<log2>/<i>/<j>`. Lenient about zero padding on the way in (any decimal
+    /// width is accepted), strict on the way out ([`fmt::Display`] pads canonically).
     /// (any decimal width is accepted), strict on the way out ([`fmt::Display`] pads canonically).
     pub fn parse(s: &str) -> Result<Self, String> {
         let mut parts = s.split('/');
@@ -135,7 +137,7 @@ impl CellId {
 }
 
 impl fmt::Display for CellId {
-    /// The canonical, zero-padded id (OBCA §1.3).
+    /// The canonical, zero-padded id.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let w = id_width(self.log2);
         write!(f, "{}/{:0w$}/{:0w$}", self.log2, self.i, self.j, w = w)
@@ -144,11 +146,6 @@ impl fmt::Display for CellId {
 
 /// Every cell of size `2^log2` whose square intersects `bbox`, in ascending `(i, j)` order.
 ///
-/// Intersection is decided on the **half-open** squares, so the `max` edges of `bbox` are inclusive
-/// of the cell that owns them: a vertex sitting exactly on a grid line belongs to the cell above /
-/// east of it, and that cell is therefore part of the covering. A bbox reaching past the world box
-/// is clamped to it rather than wrapped (OBCA §1.4) — the grid has no wrap, so there is nothing on
-/// the other side to reach.
 pub fn cells_intersecting(log2: u32, bbox: UBox) -> Vec<CellId> {
     let (min_lon, min_lat, max_lon, max_lat) = bbox;
     if min_lon > max_lon || min_lat > max_lat {
@@ -168,11 +165,11 @@ pub fn cells_intersecting(log2: u32, bbox: UBox) -> Vec<CellId> {
     out
 }
 
-/// Whether `v` lies exactly on a grid line of size `2^log2` — i.e. on a cell boundary.
+/// Whether `v` lies exactly on a grid line of size `2^log2`, that is, on a cell boundary.
 ///
-/// This is the seam predicate: OBCA §3.4 makes every vertex on a boundary line a junction, and §4.6
-/// admits **only** such coordinates to unification. It is a pure function of the coordinate, which
-/// is why two neighbours cannot disagree about it.
+/// This is the seam predicate: every vertex on a boundary line is a junction, and only such a
+/// coordinate is admitted to unification. It is a pure function of the coordinate, which is why two
+/// neighbours cannot disagree about it.
 #[inline]
 pub fn on_grid_line(v: i64, log2: u32) -> bool {
     (v - GRID_ORIGIN) & ((1 << log2) - 1) == 0
@@ -184,23 +181,20 @@ pub fn on_grid_boundary(lat: i64, lon: i64, log2: u32) -> bool {
     on_grid_line(lat, log2) || on_grid_line(lon, log2)
 }
 
-/// The floor-division midpoint the OBCM quadtree splits at (`OBCM_Spec.md` §4), spelled out once so
-/// the alignment theorem (OBCA §2) can be *tested* against the same arithmetic the packer and the
-/// reader use.
+/// The floor-division midpoint the OBCM quadtree splits at, spelled out once so the alignment
+/// theorem can be tested against the same arithmetic the packer and the reader use.
 #[inline]
 pub fn quad_mid(min: i64, max: i64) -> i64 {
     (min + max).div_euclid(2)
 }
 
-// --- exact rational rounding, for the boundary-junction formula (OBCA §3.4) -------------------
-
 /// `num / den` rounded **half to even** in exact integer arithmetic (banker's rounding), for any
 /// sign of either operand. `den` must be non-zero.
 ///
-/// OBCA §3.4 mandates this exact mode for the boundary-junction interpolation: both neighbours run
+/// The spec mandates this exact mode for the boundary-junction interpolation: both neighbours run
 /// the same formula over the same two source vertices, so anything short of an exactly specified
-/// rounding rule would let them land a µdeg apart — and a µdeg apart is a *different* junction that
-/// no assembler may unify (§3.4's epsilon rule).
+/// rounding rule would let them land a µdeg apart — a different junction that no assembler may
+/// unify.
 pub fn div_round_half_even(num: i128, den: i128) -> i64 {
     debug_assert!(den != 0, "a crossing on a degenerate segment is never computed");
     let (num, den) = if den < 0 { (-num, -den) } else { (num, den) };
@@ -224,21 +218,18 @@ pub enum Axis {
     Lon,
 }
 
-/// The boundary junction where segment `p`–`q` crosses the cell-edge line `axis = c`, as
-/// `(lat, lon)` µdeg — the verbatim OBCA §3.4 computation.
+/// The boundary junction where segment `p`-`q` crosses the cell-edge line `axis = c`, as
+/// `(lat, lon)` µdeg.
 ///
-/// Two properties make this the seam's foundation, and both are deliberate:
+/// Direction-independent: the endpoints are ordered canonically by `(lat, lon)` before the
+/// interpolation, so a way and its reversed copy produce the identical integer pair. Exact: the
+/// interpolation runs in `i128` with [`div_round_half_even`], so the result is reproducible on any
+/// toolchain and not merely on this one.
 ///
-/// - **Direction-independent.** The endpoints are ordered canonically by `(lat, lon)` before the
-///   interpolation, so a way and its reversed copy produce the identical integer pair.
-/// - **Exact.** The interpolation runs in `i128` with [`div_round_half_even`]; no float is involved,
-///   so the result is reproducible on any toolchain, not merely on this one.
-///
-/// Returns `None` when the segment does not properly cross the line (it is parallel to it, or the
-/// line passes through an endpoint — §3.4(1): such a vertex *is* the boundary junction, so there is
-/// nothing to interpolate).
+/// `None` when the segment does not properly cross the line: it is parallel to it, or the line
+/// passes through an endpoint, and such a vertex is itself the boundary junction.
 pub fn segment_crossing(p: (i64, i64), q: (i64, i64), axis: Axis, c: i64) -> Option<(i64, i64)> {
-    // Canonical endpoint order (lat, lon) lexicographic — §3.4(2).
+    // Canonical endpoint order, (lat, lon) lexicographic.
     let (p, q) = if p <= q { (p, q) } else { (q, p) };
     let (p_lat, p_lon) = p;
     let (q_lat, q_lon) = q;
@@ -264,9 +255,7 @@ pub fn segment_crossing(p: (i64, i64), q: (i64, i64), axis: Axis, c: i64) -> Opt
     }
 }
 
-// --- the band table (schema data, OBCA §1.2/§1.5) ---------------------------------------------
-
-/// Which physical file of a volume set a band's content is assembled into (OBCA §5.1).
+/// Which physical file of a volume set a band's content is assembled into.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BandRole {
@@ -288,17 +277,15 @@ impl BandRole {
     }
 }
 
-/// One band: a named class of cell content with one cell size (OBCA §1.2).
-///
-/// The JSON shape is `OBCC_Spec.md` §4's `bands` entry verbatim, so a bakery can hand the
-/// catalog's own schema straight to the cutter.
+/// One band: a named class of cell content with one cell size. The JSON shape is `OBCC_Spec.md`'s
+/// `bands` entry verbatim, so a bakery can hand the catalog's own schema straight to the cutter.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Band {
     /// Stable band id, e.g. `fine`. Also the cutter's output directory name.
     pub id: String,
     /// Cell size, `log2(µdeg)`.
     pub cell_log2: u32,
-    /// Ladder LOD indices this band's cells carry. Every other LOD is written **empty** (§3.1).
+    /// Ladder LOD indices this band's cells carry. Every other LOD is written **empty**.
     #[serde(default)]
     pub lods: Vec<usize>,
     /// Non-geometry sections this band carries: `"nav"` and/or `"poi"`.
@@ -308,40 +295,34 @@ pub struct Band {
 }
 
 impl Band {
-    /// Whether this band's cells carry the §8 nav graph.
+    /// Whether this band's cells carry the nav graph.
     pub fn has_nav(&self) -> bool {
         self.sections.iter().any(|s| s == "nav")
     }
 
-    /// Whether this band's cells carry the §7 POI section + hours pool.
+    /// Whether this band's cells carry the POI section and hours pool.
     pub fn has_poi(&self) -> bool {
         self.sections.iter().any(|s| s == "poi")
     }
 }
 
-/// The schema's band table: which LODs and sections live in which cell size (OBCA §1.2).
+/// The schema's band table: which LODs and sections live in which cell size.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BandTable {
     pub bands: Vec<Band>,
 }
 
 impl BandTable {
-    /// The **recommended band table** — OBCA §1.5, measured for schema `bikepacking`
-    /// revision 1 over the shipped 14-LOD ladder:
+    /// The recommended band table, measured for schema `bikepacking` over the shipped 14-LOD
+    /// ladder: `coarse` at `2^20` carries LOD 0-4, `mid` at `2^19` carries LOD 5-8, `fine` at `2^18`
+    /// carries LOD 9-13, and `network` at `2^18` carries the nav graph and POIs and no LOD.
     ///
-    /// | band | size | carries |
-    /// | :-- | :-- | :-- |
-    /// | `coarse` | `2^20` | LOD 0, 1, 2, 3, 4 |
-    /// | `mid` | `2^19` | LOD 5, 6, 7, 8 |
-    /// | `fine` | `2^18` | LOD 9, 10, 11, 12, 13 |
-    /// | `network` | `2^18` | nav graph + POIs, **no** LOD |
+    /// The semantic ladder keeps all tiers through 20 m/px in `mid`, and ordinary geometry at
+    /// 16 m/px and below stays in `fine`, which puts the cartographic regime boundary on a shard
+    /// boundary and lets a volume omit close-range detail.
     ///
-    /// The semantic ladder keeps all tiers through 20 m/px in `mid`; the ordinary geometry at
-    /// 16 m/px and below stays in `fine`. This puts the cartographic regime boundary on a shard
-    /// boundary and lets a volume omit all close-range detail when only overview maps are needed.
-    ///
-    /// These are *values*, not format constants: a catalog states them, a producer reads them from
-    /// the catalog, and this default exists so the CLI and the tests have something to run with.
+    /// These are values, not format constants: a catalog states them, a producer reads them from the
+    /// catalog, and this default exists so the CLI and the tests have something to run with.
     pub fn recommended() -> Self {
         let band = |id: &str, cell_log2: u32, lods: &[usize], sections: &[&str], role: BandRole| Band {
             id: id.to_string(),
@@ -384,13 +365,13 @@ impl BandTable {
     }
 
     /// `S_MAX` as `log2` — the largest cell size in the table, which is the assembly bbox's
-    /// alignment modulus (OBCA §2.1).
+    /// alignment modulus.
     pub fn max_cell_log2(&self) -> u32 {
         self.bands.iter().map(|b| b.cell_log2).max().unwrap_or(MIN_CELL_LOG2)
     }
 
-    /// Check the table against a ladder of `lod_count` levels: OBCA §1.2's **partition** rule and
-    /// §5.1's role rules, both of which a consumer MUST reject a violation of.
+    /// Check the table against a ladder of `lod_count` levels: the partition rule and the role
+    /// rules, both of which a consumer MUST reject a violation of.
     ///
     /// A LOD in no band is a map that is blank at that zoom; a LOD in two bands is a map that
     /// carries it twice; a `core` band carrying geometry would spend the one file that cannot be
@@ -439,7 +420,7 @@ impl BandTable {
                 return Err(format!("the {name} section must be in exactly one band, found {count}"));
             }
         }
-        // Roles (OBCA §5.1).
+        // Roles.
         let cores: Vec<&Band> = self.bands.iter().filter(|b| b.role == BandRole::Core).collect();
         if cores.len() != 1 {
             return Err(format!("exactly one band must have role \"core\", found {}", cores.len()));
@@ -481,7 +462,7 @@ impl BandTable {
 mod tests {
     use super::*;
 
-    /// OBCA §1.1's constants, and the divisibility that makes every band nest.
+    /// The grid's constants, and the divisibility that makes every band nest.
     #[test]
     fn grid_constants_and_nesting() {
         assert_eq!(GRID_ORIGIN, -268_435_456);
@@ -496,8 +477,8 @@ mod tests {
         const { assert!(GRID_ORIGIN < -180_000_000 && GRID_ORIGIN + WORLD_SIDE > 180_000_000) };
     }
 
-    /// The spec's worked example (OBCA §7): cell A = `18/1204/1052` is
-    /// lat [47185920, 47448064) × lon [7340032, 7602176).
+    /// The spec's worked example: cell A = `18/1204/1052` is lat [47185920, 47448064) x lon
+    /// [7340032, 7602176).
     #[test]
     fn worked_example_squares() {
         let a = CellId::parse("18/1204/1052").expect("valid id");
@@ -523,7 +504,7 @@ mod tests {
         assert_eq!(CellId::containing(18, max_lat - 1, max_lon - 1), a);
     }
 
-    /// Id widths follow §1.3: four digits at `2^16` and above, wider below, never truncated.
+    /// Id widths: four digits at `2^16` and above, wider below, never truncated.
     #[test]
     fn id_padding_widths() {
         assert_eq!(id_width(20), 4, "2^20 ⇒ 512 cells/axis ⇒ 3 digits, floored to 4");
@@ -547,9 +528,9 @@ mod tests {
         assert!(CellId::parse("18/0/0/0").is_err());
     }
 
-    /// **The alignment theorem** (OBCA §2), checked against the packer's own arithmetic: subdividing
-    /// a grid-aligned power-of-two box by [`quad_mid`] `n − s` times yields *exactly* the cells of
-    /// size `2^s`, to the microdegree.
+    /// The alignment theorem, checked against the packer's own arithmetic: subdividing a
+    /// grid-aligned power-of-two box by [`quad_mid`] `n - s` times yields exactly the cells of size
+    /// `2^s`, to the microdegree.
     fn assert_alignment(a_lat: i64, a_lon: i64, n: u32, s: u32) {
         // Depth-by-depth subdivision, exactly as `quadtree::build_node` splits.
         let mut level: Vec<UBox> = vec![(a_lon, a_lat, a_lon + (1 << n), a_lat + (1 << n))];
@@ -676,20 +657,18 @@ mod tests {
         // lat = 47_200_000 + round(10_000 * 2176 / 10_000) = 47_202_176.
         assert_eq!(fwd, (47_202_176, c));
 
-        // A latitude line, and the ties that exercise banker's rounding. Note the rounding applies
-        // to the interpolated **delta** from the canonical first endpoint, exactly as §3.4 writes it.
+        // A latitude line, and the ties that exercise banker's rounding. The rounding applies to
+        // the interpolated delta from the canonical first endpoint.
         assert_eq!(segment_crossing((100, 0), (102, 1), Axis::Lat, 101), Some((101, 0)), "delta 0.5 → 0 (even)");
         assert_eq!(segment_crossing((100, 0), (102, 3), Axis::Lat, 101), Some((101, 2)), "delta 1.5 → 2 (even)");
         assert_eq!(segment_crossing((100, 0), (102, 5), Axis::Lat, 101), Some((101, 2)), "delta 2.5 → 2 (even)");
         assert_eq!(segment_crossing((100, 0), (102, 4), Axis::Lat, 101), Some((101, 2)), "delta 2 → 2, no tie");
 
-        // No crossing: parallel, past the segment, or through an endpoint (§3.4(1)).
+        // No crossing: parallel, past the segment, or through an endpoint.
         assert_eq!(segment_crossing((0, c), (10, c), Axis::Lon, c), None, "collinear with the line");
         assert_eq!(segment_crossing(p, q, Axis::Lon, 9_000_000), None, "the line misses the segment");
         assert_eq!(segment_crossing((0, c), (10, c + 5), Axis::Lon, c), None, "the line hits an endpoint");
     }
-
-    // --- the band table -----------------------------------------------------------------------
 
     #[test]
     fn recommended_band_table_is_the_spec_table() {
@@ -748,7 +727,7 @@ mod tests {
         let t = BandTable::recommended();
         let json = serde_json::to_string(&t).expect("serialize");
         assert_eq!(BandTable::parse(&json).expect("parse"), t);
-        // A bare array is accepted too — that is the shape `OBCC_Spec.md` §4 nests.
+        // A bare array is accepted too, which is the shape the catalog nests.
         let bare = serde_json::to_string(&t.bands).expect("serialize bands");
         assert_eq!(BandTable::parse(&bare).expect("parse bare"), t);
         // Roles are lowercase strings on the wire.

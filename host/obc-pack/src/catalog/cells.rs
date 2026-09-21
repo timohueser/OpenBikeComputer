@@ -23,18 +23,17 @@ pub(super) const CELL_SIDECAR_EXT: &str = ".obcm.json";
 
 /// Every published cell, grouped by band, plus the one OBCM version they all agree on.
 ///
-/// §8's "MUST NOT publish a canonical cell and a partial cell for the same `id` at
-/// the same `schema_revision`" holds by construction here: a (band, i, j) is one path
-/// in the tree, so a re-bake that finds a covering source overwrites the partial cell
-/// rather than adding a second entry beside it.
+/// The rule that a canonical cell and a partial cell must not both be published for one `id` at one
+/// `schema_revision` holds by construction: a (band, i, j) is one path in the tree, so a re-bake
+/// that finds a covering source overwrites the partial cell rather than adding a second entry.
 pub(super) struct Cells {
     pub(super) by_band: BTreeMap<String, Vec<CellEntry>>,
     pub(super) known_empty_by_band: BTreeMap<String, Vec<KnownEmptyRun>>,
     pub(super) obcm_version: u8,
-    /// The terrain revision every cell in the store was baked against, read from the
+    /// The terrain revision every cell in the store was baked against, read from the sidecars the
+    /// way `obcm_version` is read from the headers. `None` when the store was baked with no terrain;
+    /// a store where some cells sampled terrain and others did not is refused rather than published.
     /// sidecars the way `obcm_version` is read from the headers. `None` when the store
-    /// was baked with no terrain at all; a store where some cells sampled terrain and
-    /// others did not is refused rather than published (§13.4).
     pub(super) terrain_revision: Option<u32>,
     pub(super) pinned_artifacts: Vec<PinnedArtifact>,
 }
@@ -62,23 +61,23 @@ pub(super) fn build_band_index<'a>(
     )
 }
 
-/// The facts a cell's bytes cannot state. Band is **not** among them: band membership
-/// is a property of the schema revision, and a cell writes the full ladder with the
-/// LODs outside its band empty, so a legitimately empty cell is indistinguishable
-/// from an out-of-band one (`OBCA_Spec.md` §3.1). The tree's path says the band.
+/// The facts a cell's bytes cannot state. Band is not among them: band membership is a property of
+/// the schema revision, and a cell writes the full ladder with the LODs outside its band empty, so a
+/// legitimately empty cell is indistinguishable from an out-of-band one. The tree's path says the
+/// band.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CellSidecar {
-    /// The schema revision this cell was baked at. Recorded per cell so the generator
-    /// can refuse a tree that mixes revisions (`OBCA_Spec.md` §6.3).
+    /// The schema revision this cell was baked at. Recorded per cell so the generator can refuse a
+    /// tree that mixes revisions.
     schema_revision: u32,
     built_at: String,
     /// Every extract this cell was baked from, with that extract's snapshot date.
     sources: Vec<CellSource>,
-    /// Whether the sources fully cover the cell's square (`OBCA_Spec.md` §3.7).
+    /// Whether the sources fully cover the cell's square.
     partial: bool,
-    /// The terrain revision the cell's nav ascents were integrated from (§13.4).
-    /// Absent for a terrain-less bake, which is every cell before epic #1068.
+    /// The terrain revision the cell's nav ascents were integrated from. Absent for a terrain-less
+    /// bake.
     #[serde(default)]
     terrain_revision: Option<u32>,
 }
@@ -98,8 +97,8 @@ pub(super) fn read_cells(tree: &Path, schema: &SchemaDoc, base_url: &str) -> Res
     for band_dir in sorted_entries(&root)? {
         let name = file_name(&band_dir)?;
         if name.starts_with('.') || name == TERRAIN_DIR {
-            // `cells/terrain/` is the other artifact class, on its own revision track
-            // and owned by the terrain scanner. It is deliberately not a band (§13.1).
+            // `cells/terrain/` is the other artifact class, on its own revision track and owned
+            // by the terrain scanner. It is deliberately not a band.
             continue;
         }
         if !band_dir.is_dir() {
@@ -214,9 +213,9 @@ fn read_cell_row(
             ));
         }
 
-        // The world box is wider than the geographic domain and a cell may legally
-        // overhang ±90°/±180° (OBCA_Spec.md §1.4), so this is the one header read
-        // that must not apply the ordinary geographic-domain clamp.
+        // The world box is wider than the geographic domain and a cell may legally overhang
+        // ±90°/±180°, so this is the one header read that must not apply the ordinary
+        // geographic-domain clamp.
         let header = read_obcm_header(&path)?;
         if header.version != OBCM_VERSION {
             return Err(format!(
@@ -234,9 +233,9 @@ fn read_cell_row(
             Some(_) => {}
         }
 
-        // §13.4: the OBCM store as a whole was baked against one terrain revision or
-        // against none. Two cells disagreeing means half the nav graph's ascents came
-        // from one raster and half from another — a router that is right nowhere.
+        // The OBCM store as a whole was baked against one terrain revision or against none. Two
+        // cells disagreeing means half the nav graph's ascents came from one raster and half from
+        // another: a router that is right nowhere.
         match terrain_revision {
             None => *terrain_revision = Some(sidecar.terrain_revision),
             Some(have) if *have != sidecar.terrain_revision => {
@@ -252,9 +251,9 @@ fn read_cell_row(
             Some(_) => {}
         }
 
-        // §8: no bbox is stored, so this is where the identifier and the bytes are
-        // made to agree. A cell whose header is not exactly its grid square would
-        // graft into an assembly at the wrong place, silently.
+        // No bbox is stored, so this is where the identifier and the bytes are made to agree. A cell
+        // whose header is not exactly its grid square would graft into an assembly at the wrong
+        // place, silently.
         let (sq_min_lon, sq_min_lat, sq_max_lon, sq_max_lat) = id.square();
         let (hd_min_lon, hd_min_lat, hd_max_lon, hd_max_lat) = header.bbox;
         let got = (hd_min_lat, hd_min_lon, hd_max_lat, hd_max_lon);
@@ -318,8 +317,8 @@ fn validate_sources(path: &Path, sources: &mut [CellSource]) -> Result<(), Strin
             return Err(format!("{}: extract `{}` is listed twice", path.display(), source.extract_id));
         }
     }
-    // §8 publishes sources sorted by extract_id; the order a bake job happened to
-    // write them in is not content.
+    // Sources are published sorted by extract_id; the order a bake job happened to write them in is
+    // not content.
     sources.sort();
     Ok(())
 }
