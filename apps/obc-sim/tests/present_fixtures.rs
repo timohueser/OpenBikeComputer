@@ -12,16 +12,16 @@ use obc_display::FbDevice64;
 use obc_host_core::{flat_store::HostStore, FlatRouteStore, RouteRepository};
 use present::*;
 
-/// Driven through the real [`App`] + renderer over the demo map into the device-64 frame: an
-/// idle Home re-render pushes **zero** rows, a Home minute tick only the **clock's** rows, and a
-/// map pan **~all**. The oracle inside [`Present::present_now`] backs every count.
+/// Driven through the real [`App`] and renderer over the demo map: an idle Home re-render pushes
+/// no rows, a Home minute tick pushes the clock's rows, and a map pan pushes nearly all. The oracle
+/// inside [`Present::present_now`] backs every count.
 #[test]
 fn app_scenarios_idle_is_free_tick_is_small_pan_is_most() {
     use obc_app::{App, AppState};
     use obc_ports::InputClock;
     use obc_reader::{MapCache, MapTables, Reader, SliceSource};
 
-    // The device resolution is the single ls021 authority, not a re-declared literal.
+    // The device resolution comes from the one display authority.
     const W: u32 = FRAME_W as u32;
     const H: u32 = FRAME_H as u32;
     let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcm");
@@ -29,21 +29,21 @@ fn app_scenarios_idle_is_free_tick_is_small_pan_is_most() {
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
     let reader = Reader::new(&src, &tables, &cache);
-    // A fixed Meiringen street view stays inside the canonical fixture crop.
-    // Complete OSM ways can expand the file bbox far beyond this rendered region.
+    // A fixed street view stays inside the canonical fixture crop. Complete OSM ways can expand
+    // the file bbox far beyond this rendered region.
     let (cx, cy, zoom) = (8_184_271, 46_727_359, W as f32 / 12_000.0);
 
-    // Render the whole frame into the resident device-64 plane, exactly as the GUI loop does —
-    // the device color path (`Rgb565` → device-64 pack), not an RGB888 side buffer.
+    // Render the whole frame into the resident device-64 plane, as the GUI loop does: the device
+    // colour path, not an RGB888 side buffer.
     let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
-    // The host's render scratch, built once and lent to every frame below (#1146).
+    // The host's render scratch, built once and lent to every frame below.
     let mut scratch = Box::new(obc_render::RenderScratch::new());
     let mut render = |app: &mut App, fb: &mut [u8]| {
         let mut fbdev = FbDevice64::new(fb, W, H);
         app.render_frame(Some(&mut scratch), &mut fbdev, &reader, None, W as f32, H as f32, color_fn);
     };
 
-    // --- Home idle + a minute tick ---
+    // Home idle, then a minute tick.
     let mut app = App::new_idle(AppState::new(cx, cy, zoom));
     app.reseed_home(0); // pin the contour backdrop so only the clock moves
     let mut fb = vec![0u8; (W * H) as usize];
@@ -61,7 +61,7 @@ fn app_scenarios_idle_is_free_tick_is_small_pan_is_most() {
     present.present_now(&fb, None);
     let tick = present.stats.pushed_rows;
 
-    // --- A fresh map, then a pan ---
+    // A fresh map, then a pan.
     let mut app = App::new(AppState::new(cx, cy, zoom));
     let mut fb = vec![0u8; (W * H) as usize];
     let mut present = Present::new(W, H);
@@ -75,20 +75,16 @@ fn app_scenarios_idle_is_free_tick_is_small_pan_is_most() {
 
     assert_eq!(idle, 0, "an idle Home re-render pushes nothing");
     assert!(tick > 0 && tick < H as usize / 3, "a minute tick pushes only the clock rows, got {tick}");
-    // A pan invalidates far more rows than a clock tick — the exact count is content-dependent
-    // (how many rows the panned view's features touch), so assert the three-tier contrast
-    // (idle ≪ tick ≪ pan) rather than a brittle absolute fraction that a re-pack's new OSM
-    // vintage can dip under.
+    // A pan invalidates far more rows than a clock tick, and the exact count depends on the
+    // content, so the assertion is the three-tier contrast and not an absolute fraction.
     assert!(pan > 3 * tick && pan > H as usize / 3, "a map pan pushes far more than a tick, got pan {pan} tick {tick}");
 }
 
-/// Real-data pack→parse of the POI section (#423): the committed `monaco.obcm` — a POI-dense
-/// coastal fixture the packer produced from a real OSM extract — must parse at the current format version and expose a
-/// full POI directory with several **non-empty** categories, each carrying a real
-/// quadtree (non-zero node + chunk counts), plus a populated §8 nav graph (#464). This
-/// complements the reader's hand-built byte pins (`obc-reader/tests/format.rs`) by exercising
-/// the whole write→read path on real geometry, and gives the #425 POI browser a map with POIs
-/// to browse in the sim/snapshot suite.
+/// Real-data pack and parse of the POI section: the committed `monaco.obcm`, a POI-dense coastal
+/// fixture, must parse at the current format version and expose a POI directory with several
+/// non-empty categories, each carrying a real quadtree, plus a populated nav graph. It complements
+/// the reader's hand-built byte pins by exercising the whole write and read path on real
+/// geometry.
 #[test]
 fn monaco_fixture_parses_populated_poi_and_nav_sections() {
     use obc_reader::{MapCache, MapTables, Reader, SliceSource};
@@ -107,8 +103,8 @@ fn monaco_fixture_parses_populated_poi_and_nav_sections() {
     expected.sort_unstable();
     assert_eq!(dir.entries.iter().map(|e| e.category_id).collect::<Vec<_>>(), expected);
     assert_eq!(dir.chunk_size, 512, "the packer's fixed 512-byte POI chunks");
-    // Monaco is a dense coastal city → several categories populated. Each non-empty category
-    // must carry a real quadtree: node_count and chunk_count both non-zero, known category ids.
+    // A dense coastal city populates several categories, and each must carry a real quadtree:
+    // non-zero node and chunk counts, and known category ids.
     let populated: Vec<u8> = dir
         .entries
         .iter()
@@ -121,8 +117,8 @@ fn monaco_fixture_parses_populated_poi_and_nav_sections() {
         .collect();
     assert!(populated.len() >= 3, "Monaco packs ≥3 POI categories, got {populated:?}");
 
-    // The §8 nav graph: a dense city extract must bake a real routable graph — a populated
-    // node quadtree and a non-empty edge pool, streets everywhere in the bbox.
+    // The nav graph: a dense city extract must bake a routable graph, with a populated node
+    // quadtree and a non-empty edge pool.
     let nav = r.nav_directory();
     assert!(!nav.is_empty(), "Monaco has routable streets");
     assert!(nav.chunk_count > 0 && nav.edge_chunk_count > 0, "node chunks + edge pool present");
@@ -137,10 +133,9 @@ fn monaco_fixture_parses_populated_poi_and_nav_sections() {
     assert!(nodes > 100, "a city extract yields a real junction set, got {nodes}");
 }
 
-/// One full sim frame, exactly the `gui.rs::render_to_texture` skeleton: drain nav
-/// request/cancel, step an in-flight route plan, open the active route, advance the GPX replay +
-/// tick, render into the resident device-64 plane, then present. After presenting it asserts
-/// the full byte-equality postcondition and panics with diagnostics on the FIRST miss.
+/// One full sim frame, on the `gui.rs` skeleton: drain nav requests, step an in-flight route plan,
+/// open the active route, advance the GPX replay and tick, render into the resident device-64
+/// plane, then present. It then asserts the byte-equality postcondition.
 #[allow(clippy::too_many_arguments)]
 fn tour_frame(
     app: &mut obc_app::App,
@@ -163,30 +158,25 @@ fn tour_frame(
     const H: u32 = FRAME_H as u32;
 
     let reader = map.reader();
-    // The tour rides, and it asks the way a host should: only once the device has reported the
-    // card that makes a ride possible. Asking earlier is refused — kept, but with a
-    // recording-error card the tour's own frames would then have to dwell on.
+    // The tour rides, and asks only once the device has reported the card that makes a ride
+    // possible. Asking earlier is refused, and the refusal card would sit in the tour's frames.
     if app.active_route_index().is_some() && !app.recording() && app.can_record() {
         app.recorder.request(obc_app::RecorderIntent::Start);
     }
 
-    // This tour uses only routes, so the ride/track/trip repositories are empty stand-ins and
-    // the platform has nothing of its own to do.
+    // This tour uses only routes, so the ride, track and trip repositories are empty stand-ins.
     let mut rides = obc_host_core::MemRideStore::new(Vec::new());
     let mut tracks = obc_host_core::MemTrackStore::new();
     let mut no_trips = ();
-    // The tour drives geometry, not terrain: the null source keeps its frames byte-comparable
-    // with the pre-EL7 ones.
+    // The tour drives geometry and not terrain, so it wires the null terrain source.
     let mut elev = obc_route::NullElevation;
 
-    // Open the active route's geometry from the resident session (gui.rs's per-frame open) and
-    // run one DeviceCore pass over it.
+    // Open the active route's geometry from the resident session and run one DeviceCore pass
+    // over it.
     //
-    // The **UI clock stands still at zero**, which is what this tour has always run at: it
-    // drives gestures directly and never had an animation clock, and the ambient reset seeks the
-    // replay *backwards*, so a UI clock taken from playback time would run backwards with it.
-    // A still clock advances no needle and arms no idle return — the tour asserts presents, not
-    // animation phases.
+    // The UI clock stands still at zero. The tour drives gestures directly, and its ambient reset
+    // seeks the replay backwards, so a UI clock taken from playback time would run backwards with
+    // it. A still clock advances no needle and arms no idle return.
     session.sync(app, store);
     let mut plan = {
         let route_src = store.active_source();
@@ -204,12 +194,11 @@ fn tour_frame(
             support::SIM_SUPPORT,
         )
     };
-    // The typed executor — the same `obc-host-core::HostLoop` gui.rs drives (the route planner's
-    // lifecycle, one bounded step per frame).
+    // The typed executor: the same `obc-host-core::HostLoop` the GUI drives, one bounded step per
+    // frame.
     host.execute(app, &mut plan, session, store, &mut rides, &mut tracks, &mut no_trips, map, &mut elev, &mut ());
 
-    // The wasm demo's ambient auto-restart (suppressed while a tour runs — the branch's
-    // `!tour_active` gate).
+    // The wasm demo's ambient auto-restart, suppressed while a tour runs.
     if !tour_active && !player.is_playing() {
         player.play();
         app.recorder.request(obc_app::RecorderIntent::Start);
@@ -229,9 +218,8 @@ fn tour_frame(
         Rgb565::from(RawU16::new(c))
     });
 
-    // Present (the oracle inside asserts no miss, with row diagnostics on failure), then the
-    // full-strength postcondition: after a clean present the reconstruction equals the frame
-    // byte-for-byte on EVERY row — what the acceptance calls "texture matches the framebuffer".
+    // Present, where the oracle asserts no miss, then the postcondition: after a clean present
+    // the reconstruction equals the frame byte for byte on every row.
     present.present_now(fb, None);
     for y in 0..present.rows {
         let r = y * present.width..(y + 1) * present.width;
@@ -243,13 +231,11 @@ fn tour_frame(
     *frame_no += 1;
 }
 
-/// #626 acceptance: drive the real `App` + renderer through the guided tour's exact command
-/// sequences — the ambient ride, a demo-style app rebuild + mid-climb `GpxPlayer::seek` per
-/// `enter`, the climb demo's Back-cycle, the reroute-to-POI demo including the frame-stepped
-/// planner, and the ambient reset's backward seek — dwelling ≥300 presents on each tour screen
-/// (Map, Statistics, Climb, FindPlace, VisitReview). Every frame presents
-/// under the oracle (debug asserts on) *and* the full byte-equality postcondition in
-/// [`tour_frame`], so any diff miss — the pre-fix panic — fails here with row diagnostics.
+/// Drive the real `App` and renderer through the guided tour's own command sequences: the ambient
+/// ride, an app rebuild and mid-climb seek per `enter`, the climb demo's Back-cycle, the
+/// reroute-to-POI demo with its frame-stepped planner, and the ambient reset's backward seek. Each
+/// tour screen is dwelt on for hundreds of presents, all under the oracle and the byte-equality
+/// postcondition in [`tour_frame`].
 #[test]
 fn tour_screens_dwell_with_no_present_miss() {
     use std::path::Path;
@@ -267,7 +253,7 @@ fn tour_screens_dwell_with_no_present_miss() {
     let owner = HostStore::memory().unwrap();
     let map = obc_host_core::flat_map::FlatMap::from_bytes_in(&owner, &bytes).unwrap();
 
-    // The route and planner publications share the map's card and exact source identities.
+    // The route and planner publications share the map's card and source identities.
     let mut store = FlatRouteStore::new(
         owner,
         &[include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr")],
@@ -287,11 +273,11 @@ fn tour_screens_dwell_with_no_present_miss() {
     let mut fb = vec![0u8; (W * H) as usize];
     let mut present = Present::new(W, H);
     let mut frame_no = 0usize;
-    // One host-owned render scratch for the whole tour (#1146), lent to every frame.
+    // One host-owned render scratch for the whole tour, lent to every frame.
     let mut scratch = Box::new(obc_render::RenderScratch::new());
 
-    // A fixed Meiringen street view stays inside the canonical fixture crop.
-    // Complete OSM ways can expand the file bbox far beyond this rendered region.
+    // A fixed street view stays inside the canonical fixture crop. Complete OSM ways can expand
+    // the file bbox far beyond this rendered region.
     let (cx, cy, zoom) = (8_184_271, 46_727_359, W as f32 / 12_000.0);
     let build_app = |settings: Settings, store: &FlatRouteStore| {
         let mut state = AppState::new(cx, cy, zoom * 12.0);
@@ -307,10 +293,9 @@ fn tour_screens_dwell_with_no_present_miss() {
         app
     };
 
-    // Run frames until the top screen matches (the page's closed-loop `until` polling), then
-    // park there for `$dwell` more presents (the tour's dwell — where a missed row would sit
-    // stale forever). Panics if the target screen is never reached: the sequences below must
-    // not drift, or the dwell wouldn't be testing the screen it claims.
+    // Run frames until the top screen matches, as the page's closed-loop polling does, then park
+    // there for the dwell, which is where a missed row would sit stale. It panics if the target
+    // screen is never reached, because otherwise the dwell would test the wrong screen.
     macro_rules! until_then_dwell {
         ($app:expr, $label:expr, $pat:pat, $dwell:expr) => {
             until_then_dwell!($app, $label, $pat, $dwell, true)
@@ -367,7 +352,7 @@ fn tour_screens_dwell_with_no_present_miss() {
         }};
     }
 
-    // --- Page load: ambient ride from the start. ---
+    // Page load: an ambient ride from the start.
     let mut app = build_app(Settings::default(), &store);
     player.seek(0.0);
     player.play();
@@ -389,8 +374,8 @@ fn tour_screens_dwell_with_no_present_miss() {
         );
     }
 
-    // --- The "See the climb ahead" demo (`enter` → Back-cycle to the Climb park). Runs first,
-    // while the active route is still the demo climb, before the Visit changes its geometry. ---
+    // The climb demo: `enter`, then a Back-cycle to the Climb park. It runs first, while the
+    // active route is still the demo climb.
     app = build_app(Settings { climb_mode: ClimbMode::Manual, ..Settings::default() }, &store);
     player.seek(1500.0);
     player.play();
@@ -402,8 +387,8 @@ fn tour_screens_dwell_with_no_present_miss() {
     app.apply_gesture(Gesture::Back);
     until_then_dwell!(&mut app, "climb: Map again", Screen::Map(_), 60);
 
-    // --- The "Add a stop" demo. Its `enter` is a demo-style reset from deep in the
-    // previous demo's session — the app rebuild plus a BACKWARD `GpxPlayer::seek`. ---
+    // The add-a-stop demo. Its `enter` is a reset from deep in the previous demo's session: an
+    // app rebuild plus a backward seek.
     app = build_app(Settings { climb_mode: ClimbMode::Manual, ..Settings::default() }, &store);
     player.seek(1500.0);
     player.play();
@@ -447,7 +432,7 @@ fn tour_screens_dwell_with_no_present_miss() {
     assert_eq!(store.read_checkpoint().unwrap().unwrap().route, preview.source);
     assert_eq!(app.route_ids()[app.active_route_index().unwrap()], preview.source.object);
 
-    // --- Back to the interactive page: ambient reset (seek 0 — a big backward jump). ---
+    // Back to the interactive page: the ambient reset, which is a big backward seek.
     app = build_app(Settings::default(), &store);
     player.seek(0.0);
     player.play();
@@ -470,10 +455,9 @@ fn tour_screens_dwell_with_no_present_miss() {
     }
 }
 
-/// #626 regression (b): a demo-style reset — the mid-session `App` rebuild plus a
-/// `GpxPlayer::seek` that `enter_tour_baseline` / `enter_ambient` perform — followed by
-/// repeated presents, twice (forward to mid-climb, then backward to the start). Every present
-/// runs under the oracle + the byte-equality postcondition in [`tour_frame`].
+/// A mid-session `App` rebuild plus the seek that the baseline resets perform, followed by repeated
+/// presents, twice: forward to mid-climb, then backward to the start. Every present runs under the
+/// oracle and the byte-equality postcondition in [`tour_frame`].
 #[test]
 fn demo_reset_rebuild_and_seek_present_clean() {
     use std::path::Path;
@@ -509,11 +493,11 @@ fn demo_reset_rebuild_and_seek_present_clean() {
     let mut fb = vec![0u8; (W * H) as usize];
     let mut present = Present::new(W, H);
     let mut frame_no = 0usize;
-    // One host-owned render scratch for the whole tour (#1146), lent to every frame.
+    // One host-owned render scratch for the whole tour, lent to every frame.
     let mut scratch = Box::new(obc_render::RenderScratch::new());
 
-    // A fixed Meiringen street view stays inside the canonical fixture crop.
-    // Complete OSM ways can expand the file bbox far beyond this rendered region.
+    // A fixed street view stays inside the canonical fixture crop. Complete OSM ways can expand
+    // the file bbox far beyond this rendered region.
     let (cx, cy, zoom) = (8_184_271, 46_727_359, W as f32 / 12_000.0);
     let build_app = |settings: Settings, store: &FlatRouteStore| {
         let mut state = AppState::new(cx, cy, zoom * 12.0);
@@ -558,7 +542,7 @@ fn demo_reset_rebuild_and_seek_present_clean() {
         }
     };
 
-    // A short ambient ride, then the `enter` reset: rebuild + seek forward to mid-climb.
+    // A short ambient ride, then the `enter` reset: rebuild and seek forward to mid-climb.
     let mut app = build_app(Settings::default(), &store);
     player.seek(0.0);
     player.play();
@@ -592,7 +576,7 @@ fn demo_reset_rebuild_and_seek_present_clean() {
         "after enter",
     );
 
-    // The `ambient` reset: rebuild + seek backward to the start.
+    // The ambient reset: rebuild and seek backward to the start.
     app = build_app(Settings::default(), &store);
     player.seek(0.0);
     player.play();

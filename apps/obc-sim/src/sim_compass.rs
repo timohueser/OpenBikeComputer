@@ -1,11 +1,11 @@
-//! The simulator's [`CompassSource`] — a manually-set heading the control panel edits, the
-//! host-side mirror of the device's magnetometer. Read through the same trait; the app consults it
-//! while stopped on a heading-up map or in Peak View.
+//! The simulator's [`CompassSource`]: a manually-set heading the control panel edits, mirroring
+//! the device's magnetometer through the same trait. The app consults it while stopped on a
+//! heading-up map or in Peak View.
 
 use obc_ports::CompassSource;
 
-/// A compass backed by a single overridable heading (degrees CW from north). `None` until the
-/// panel sets one, so before then the app holds north / the last GPS course while stopped.
+/// A compass backed by one overridable heading, in degrees clockwise from north. `None` until the
+/// panel sets one, so before then the app holds north or the last GPS course while stopped.
 #[derive(Debug, Default)]
 pub struct SimCompass {
     heading: Option<f32>,
@@ -16,7 +16,7 @@ impl SimCompass {
         SimCompass { heading: None }
     }
 
-    /// Set the simulated magnetic heading (degrees CW from north).
+    /// Set the simulated magnetic heading, in degrees clockwise from north.
     pub fn set(&mut self, deg: f32) {
         self.heading = Some(deg);
     }
@@ -24,8 +24,8 @@ impl SimCompass {
 
 impl CompassSource for SimCompass {
     // Returns the latest heading on every poll rather than a fresh-only cadence. The app dedups
-    // by value, so a constant reading never forces a redraw — and a real fresh-only driver looks
-    // the same to the app, which retains the last reading between samples.
+    // by value, so a constant reading never forces a redraw, and a fresh-only driver looks the
+    // same to the app.
     fn poll(&mut self) -> Option<f32> {
         self.heading
     }

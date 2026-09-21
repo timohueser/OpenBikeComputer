@@ -1,16 +1,11 @@
-//! The simulator's **device housing** — the stylized body drawn around the screen.
+//! The simulator's device housing: the stylized body drawn around the screen.
 //!
-//! Pure host chrome: drawn with the egui painter *around* the screen texture, never
-//! through the device framebuffer or the 64-color quantization (so its colors are
-//! independent of the map palette). Nothing here touches `obc-render` / `obc-app`.
+//! Host chrome only, drawn with the egui painter around the screen texture, never through the
+//! device framebuffer or the 64-colour quantization, so its colours are independent of the map
+//! palette.
 //!
-//! It traces the current industrial design: a two-tone shell (a colored upper body seated on a
-//! lighter accent base that shows as a lip around the bottom and sides), a deep black bezel, the
-//! embossed `OBC` wordmark on the chin, and **four rubber buttons** — UP / DOWN on the left flank,
-//! SELECT / BACK on the right — each a textured pad that sinks in when pressed.
-//!
-//! The look lives entirely in the geometry ([`HousingStyle`], in *screen-pixel units* so it scales
-//! with the display scale) and colors ([`Colorway`] / [`HousingPalette`]); the drawing code derives
+//! The look lives in the geometry ([`HousingStyle`], in screen-pixel units so it scales with the
+//! display scale) and the colours ([`Colorway`] and [`HousingPalette`]). The drawing code derives
 //! everything from them, so a reskin only touches those.
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Rounding, Stroke, Vec2};
@@ -20,8 +15,8 @@ pub fn background() -> Color32 {
     hex("#1e1e20")
 }
 
-/// Backdrop padding (screen-pixel units) left around the device when sizing the
-/// window, so it floats in a little charcoal instead of touching the edges.
+/// Backdrop padding in screen-pixel units, left around the device when sizing the window, so it
+/// floats in a little charcoal instead of touching the edges.
 pub const WINDOW_MARGIN: f32 = 18.0;
 
 /// The body colors the device ships in, selectable in the control panel.
@@ -35,7 +30,7 @@ pub enum Colorway {
 }
 
 impl Colorway {
-    /// Drives the dropdown, in the colorway sheet's order (01–05); Forest is the default.
+    /// Drives the dropdown, in the colorway sheet's order. Forest is the default.
     pub const ALL: [Colorway; 5] =
         [Colorway::Petrol, Colorway::Forest, Colorway::Wine, Colorway::Aubergine, Colorway::Stealth];
 
@@ -49,7 +44,8 @@ impl Colorway {
         }
     }
 
-    /// The upper-shell color; the rest of the palette is derived from it + shared dark tones.
+    /// The upper-shell colour. The rest of the palette derives from it and the shared dark
+    /// tones.
     fn body(self) -> Color32 {
         match self {
             Colorway::Petrol => hex("#29465c"),
@@ -60,7 +56,7 @@ impl Colorway {
         }
     }
 
-    /// The accent base the upper shell is seated on — the lighter half of the two-tone body.
+    /// The accent base the upper shell sits on: the lighter half of the two-tone body.
     fn accent(self) -> Color32 {
         match self {
             Colorway::Petrol => hex("#3ad3e2"),
@@ -78,7 +74,7 @@ impl Colorway {
             body_edge: darken(body, 0.72),
             accent: self.accent(),
             wordmark: darken(body, 0.62),
-            // Shared dark tones across all colorways (the bezel + the four rubber buttons).
+            // Shared dark tones across all colorways: the bezel and the four rubber buttons.
             bezel: hex("#141518"),
             button: hex("#36393f"),
             button_pressed: hex("#26282d"),
@@ -91,7 +87,7 @@ impl Colorway {
 pub struct HousingPalette {
     pub body: Color32,
     pub body_edge: Color32,
-    /// The lighter base shell the body sits on (the two-tone lip).
+    /// The lighter base shell the body sits on, which shows as the two-tone lip.
     pub accent: Color32,
     pub wordmark: Color32,
     pub bezel: Color32,
@@ -110,39 +106,37 @@ pub struct ControlVisual {
     pub back_down: bool,
 }
 
-/// Which of the four buttons a rect belongs to — picks the flank a press sinks toward.
+/// Which of the four buttons a rect belongs to, which picks the flank a press sinks toward.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Flank {
     Left,
     Right,
 }
 
-/// All housing geometry, in **screen-pixel units**, so a single display `scale` scales the
-/// whole device while the screen stays an exact multiple. The draw code derives every rect
-/// from these.
+/// All housing geometry, in screen-pixel units, so one display `scale` scales the whole device
+/// while the screen stays an exact multiple.
 pub struct HousingStyle {
-    /// Colored body padding around the screen (left/right, above, below). The bottom is much
-    /// roomier — the real device wears a tall chin under the bezel, embossed with the wordmark.
+    /// Coloured body padding around the screen. The bottom is roomier, because the device wears a
+    /// tall chin under the bezel.
     pub pad_x: f32,
     pub pad_top: f32,
     pub pad_bottom: f32,
     /// Outer body corner radius.
     pub body_radius: f32,
-    /// How far the lighter accent base peeks out past the upper shell — an even lip on all four
-    /// sides, so the two-tone edge reads as one concentric rim rather than a dropped shadow.
+    /// How far the lighter accent base peeks out past the upper shell: an even lip on all four
+    /// sides, so the two-tone edge reads as a concentric rim and not a dropped shadow.
     pub accent_lip: f32,
     /// Black bezel thickness around the screen, and its corner radius.
     pub bezel_gap: f32,
     pub bezel_radius: f32,
-    /// The four buttons: how far a pad sits inside the body, how far it protrudes past
-    /// the body edge, its corner radius, and how far a pressed pad sinks in.
+    /// The four buttons: how far a pad sits inside the body, how far it protrudes past the body
+    /// edge, its corner radius, and how far a pressed pad sinks in.
     pub btn_inset: f32,
     pub btn_protrude: f32,
     pub btn_radius: f32,
     pub btn_press: f32,
     /// Button pad height and the gap between the two pads of a flank. The pair is centred on the
-    /// body's vertical midpoint — as on the real device — and both flanks share it, so UP/SELECT
-    /// sit level with each other and DOWN/BACK likewise.
+    /// body's vertical midpoint, and both flanks share it, so the two upper pads sit level.
     pub btn_h: f32,
     pub btn_gap: f32,
     /// Spacing of the grid moulded into each rubber pad.
@@ -153,8 +147,8 @@ pub struct HousingStyle {
 
 impl Default for HousingStyle {
     fn default() -> Self {
-        // Proportioned off the reference render: a 308×470 body (≈0.65 w:h) around the 240×320
-        // panel, the bezel reaching to within ~6% of each side, and a chin ≈22% of the height.
+        // Proportioned off the reference render: the bezel reaches to within about 6 % of each
+        // side, and the chin is about 22 % of the height.
         HousingStyle {
             pad_x: 34.0,
             pad_top: 32.0,
@@ -175,8 +169,8 @@ impl Default for HousingStyle {
     }
 }
 
-/// The resolved on-screen rects for a placed device. The caller hit-tests the four button
-/// rects for the clickable controls and blits the framebuffer into `screen`.
+/// The resolved on-screen rects for a placed device. The caller hit-tests the four button rects and
+/// blits the framebuffer into `screen`.
 pub struct Layout {
     pub body: Rect,
     /// The accent base peeking out behind `body`.
@@ -189,46 +183,44 @@ pub struct Layout {
     pub back: Rect,
     pub wordmark_center: Pos2,
     pub wordmark_size: f32,
-    /// Points per device pixel (carried so [`draw`] needn't re-take it).
+    /// Points per device pixel, carried so [`draw`] does not re-take it.
     pub scale: f32,
 }
 
 impl HousingStyle {
-    /// Full device footprint (incl. the protruding side buttons, on *both* flanks now) in
-    /// screen-pixel units, given the screen's pixel size.
+    /// Full device footprint, including the protruding side buttons on both flanks, in
+    /// screen-pixel units.
     pub fn device_size_px(&self, screen: Vec2) -> Vec2 {
         let body_w = screen.x + 2.0 * self.pad_x;
         let body_h = screen.y + self.pad_top + self.pad_bottom;
-        // The pads hang off both flanks; the accent lip rings the whole body.
+        // The pads hang off both flanks, and the accent lip rings the whole body.
         Vec2::new(body_w + 2.0 * (self.btn_protrude + self.accent_lip), body_h + 2.0 * self.accent_lip)
     }
 
-    /// Window footprint: the device plus the backdrop [`WINDOW_MARGIN`] on every side,
-    /// so the device floats in a little charcoal.
+    /// Window footprint: the device plus [`WINDOW_MARGIN`] on every side.
     pub fn window_size_px(&self, screen: Vec2) -> Vec2 {
         self.device_size_px(screen) + Vec2::splat(2.0 * WINDOW_MARGIN)
     }
 
-    /// Screen corner radius (points) — follows the bezel's *inner* radius so the
-    /// rounded display corners track the black insert. The caller rounds the screen
-    /// texture by this (its corners then reveal the bezel behind).
+    /// Screen corner radius in points. It follows the bezel's inner radius, so the rounded display
+    /// corners track the black insert and reveal the bezel behind.
     pub fn screen_radius_pts(&self, scale: f32) -> f32 {
         (self.bezel_radius - self.bezel_gap).max(0.0) * scale
     }
 
-    /// Resolve every rect for the device centered in `available`, at `scale` points
-    /// per screen-pixel.
+    /// Resolve every rect for the device centred in `available`, at `scale` points per
+    /// screen-pixel.
     pub fn layout(&self, available: Rect, scale: f32, screen: Vec2) -> Layout {
         let s = scale;
-        // Center the device, snapped to whole points so an integer scale stays crisp.
+        // Centre the device, snapped to whole points so an integer scale stays crisp.
         let origin = (available.center() - self.device_size_px(screen) * s / 2.0).round();
         let body_w = (screen.x + 2.0 * self.pad_x) * s;
         let body_h = (screen.y + self.pad_top + self.pad_bottom) * s;
-        // The body is inset by the button protrusion + the lip, so both have room on both flanks.
+        // The body is inset by the button protrusion and the lip, so both have room.
         let inset = (self.btn_protrude + self.accent_lip) * s;
         let body = Rect::from_min_size(origin + Vec2::new(inset, self.accent_lip * s), Vec2::new(body_w, body_h));
-        // The accent base is the same slab grown evenly on all four sides — a concentric rim, so
-        // the two-tone edge is symmetric rather than reading as a dropped shadow.
+        // The accent base is the same slab grown evenly on all four sides, so the two-tone edge is
+        // symmetric rather than reading as a dropped shadow.
         let base = body.expand(self.accent_lip * s);
 
         let screen_rect = Rect::from_min_size(
@@ -267,8 +259,8 @@ impl HousingStyle {
     }
 }
 
-/// Paint the housing into the precomputed [`Layout`] (from [`HousingStyle::layout`]).
-/// The caller then blits the framebuffer into `lo.screen`, over the bezel.
+/// Paint the housing into the precomputed [`Layout`]. The caller then blits the framebuffer into
+/// `lo.screen`, over the bezel.
 pub fn draw(
     painter: &egui::Painter,
     lo: &Layout,
@@ -278,16 +270,16 @@ pub fn draw(
 ) {
     let scale = lo.scale;
 
-    // The lighter base shell, first — the upper body covers all but its lip.
+    // The lighter base shell first: the upper body covers all but its lip.
     painter.rect_filled(lo.base, Rounding::same((style.body_radius + style.accent_lip) * scale), palette.accent);
 
-    // Body — colored rounded slab with a subtle darker rim against the backdrop.
+    // The body: a coloured rounded slab with a darker rim against the backdrop.
     let body_round = Rounding::same(style.body_radius * scale);
     painter.rect_filled(lo.body, body_round, palette.body);
     painter.rect_stroke(lo.body, body_round, Stroke::new((1.5 * scale).max(1.0), palette.body_edge));
 
-    // The four buttons (drawn before the bezel; they don't overlap it): UP / DOWN on the left
-    // flank, SELECT / BACK on the right.
+    // The four buttons, drawn before the bezel because they do not overlap it: UP and DOWN on the
+    // left flank, SELECT and BACK on the right.
     for (rect, flank, pressed) in [
         (lo.up, Flank::Left, ctrl.up_down),
         (lo.down, Flank::Left, ctrl.down_down),
@@ -297,7 +289,7 @@ pub fn draw(
         draw_pad(painter, rect, flank, scale, style, palette, pressed);
     }
 
-    // Bezel — the dark frame the (corner-rounded) screen texture is blitted over.
+    // The bezel: the dark frame the corner-rounded screen texture is blitted over.
     painter.rect_filled(lo.bezel, Rounding::same(style.bezel_radius * scale), palette.bezel);
 
     painter.text(
@@ -309,8 +301,8 @@ pub fn draw(
     );
 }
 
-/// One rubber button pad: a rounded slab with a fine moulded grid, which sinks toward its flank
-/// and darkens when pressed.
+/// One rubber button pad: a rounded slab with a fine moulded grid, which sinks toward its flank and
+/// darkens when pressed.
 fn draw_pad(
     painter: &egui::Painter,
     rect: Rect,
@@ -320,7 +312,7 @@ fn draw_pad(
     palette: &HousingPalette,
     pressed: bool,
 ) {
-    // A press sinks the pad *into* the body, so the direction flips with the flank.
+    // A press sinks the pad into the body, so the direction flips with the flank.
     let sink = if pressed { style.btn_press * scale } else { 0.0 };
     let dx = match flank {
         Flank::Left => sink,
@@ -330,8 +322,7 @@ fn draw_pad(
     let fill = if pressed { palette.button_pressed } else { palette.button };
     painter.rect_filled(r, Rounding::same(style.btn_radius * scale), fill);
 
-    // Moulded grid: a fine cross-hatch inset from the rounded corners, like the render's
-    // textured rubber.
+    // A fine cross-hatch inset from the rounded corners, like textured rubber.
     let spacing = style.btn_grid * scale;
     let inset = style.btn_radius * scale;
     let inner = Rect::from_min_max(
@@ -354,12 +345,13 @@ fn draw_pad(
     }
 }
 
-/// A `#rrggbb` literal → `Color32`. Panics on a malformed literal (they're all constants above).
+/// A `#rrggbb` literal as a `Color32`. It panics on a malformed literal, which can only be a
+/// constant above.
 fn hex(s: &str) -> Color32 {
     Color32::from_hex(s).expect("valid #rrggbb literal")
 }
 
-/// Scale each channel toward black by `f` (0 = black, 1 = unchanged).
+/// Scale each channel toward black by `f`, where 0 is black and 1 is unchanged.
 fn darken(c: Color32, f: f32) -> Color32 {
     let ch = |x: u8| (x as f32 * f) as u8;
     Color32::from_rgb(ch(c.r()), ch(c.g()), ch(c.b()))
