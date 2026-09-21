@@ -539,8 +539,9 @@ impl JsonSchema for MultiplierValue {
     }
 }
 
-/// A line's stroke style: `"solid"` (the default), `"dashed"`, or `"ticked"` — a solid stroke with
-/// regular perpendicular ticks, the cableway and lift mark. Polygons ignore it.
+/// A line's stroke style (OBCM §2 style-record flag bits 2 and 6). The config value is `"solid"`
+/// (the default), `"dashed"`, or `"ticked"` — a solid stroke with regular perpendicular ticks, the
+/// cableway and lift mark. Polygons ignore it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 #[schemars(rename = "line_style", rename_all = "lowercase")]
