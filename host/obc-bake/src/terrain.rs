@@ -41,6 +41,11 @@
 //! contributes no digest, so a cell baked without it is pinned to that fact and re-bakes when the
 //! tile arrives.
 //!
+//! A cell whose window is short of a tile the index names is **refused** by default, because this
+//! stage publishes: the cell would be lifted on one side of that tile's edge and not the other. The
+//! key's honesty is what makes `--allow-short-reference` a safe escape hatch rather than a state a
+//! tree gets stuck in — the cells it publishes re-bake by themselves once the mirror is complete.
+//!
 //! # A reference archive change is a terrain revision bump
 //!
 //! A new archive release moves baked samples, exactly as a new DEM release does. So it is a terrain
@@ -223,13 +228,15 @@ pub trait TerrainCutter {
     fn bake_cell(&self, ci: u32, cj: u32, posting_log2: u8, cell_log2: u8) -> Result<TerrainCell, String>;
     /// The reference archive tiles this cell's rule reads, as `"<ti>/<tj>=<sha256>"` in the window's
     /// own order — the per-cell half of the skip key. Empty when the cutter has no reference.
-    fn reference_digests(&self, _ci: u32, _cj: u32, _posting_log2: u8, _cell_log2: u8) -> Result<Vec<String>, String> {
-        Ok(Vec::new())
-    }
+    ///
+    /// Required rather than defaulted: a cutter that answered nothing here would be keyed as though
+    /// its reference could never change, and the silence would look exactly like having none.
+    fn reference_digests(&self, ci: u32, cj: u32, posting_log2: u8, cell_log2: u8) -> Result<Vec<String>, String>;
     /// Every reference source the cutter can credit, sorted by key, for `terrain.json`.
-    fn reference_credits(&self) -> Vec<ReferenceSource> {
-        Vec::new()
-    }
+    ///
+    /// Required for the same reason: a cutter that answered nothing here would publish cells whose
+    /// sidecars name sources the tree cannot state a notice for, which the generator then refuses.
+    fn reference_credits(&self) -> Vec<ReferenceSource>;
 }
 
 /// What rasterising one cell produced.
@@ -333,6 +340,15 @@ pub struct TerrainBakeOptions {
     pub doc: TerrainDoc,
     /// Re-bake even when the key says nothing changed.
     pub force: bool,
+    /// Publish a cell whose window is short of reference tiles the index names, instead of refusing
+    /// it.
+    ///
+    /// The default is to refuse, because this stage **publishes**. A cell short of one tile is
+    /// lifted on one side of that tile's edge and not the other, so its contours and its route
+    /// profile carry a step no ground has — and it is a 2 MiB object a rider downloads, not a local
+    /// bake someone re-runs. `obc-dem bake` warns instead, which is right for a one-box bake an
+    /// operator is looking at.
+    pub allow_short_reference: bool,
 }
 
 /// How one terrain cell ended.
@@ -478,8 +494,9 @@ impl TerrainBakery<'_> {
         }
         if let Some(first) = absent_tiles.iter().next() {
             let warning = format!(
-                "the reference index names {} tile(s) the mirror does not hold, starting at {}/{} — those cells were \
-                 baked without their lifts. Mirror the whole box (`ingest.py mirror`) and re-run to get them.",
+                "--allow-short-reference: the reference index names {} tile(s) the mirror does not hold, starting at \
+                 {}/{} — those cells are published lifted on one side of a coverage edge and not the other. Mirror \
+                 the box the cells cover and re-run to get them.",
                 absent_tiles.len(),
                 first.0,
                 first.1
@@ -577,7 +594,21 @@ impl TerrainBakery<'_> {
         }
 
         let baked = self.cutter.bake_cell(ci, cj, doc.posting_log2, doc.cell_log2)?;
-        absent_tiles.extend(baked.absent_reference_tiles);
+        if let Some(first) = baked.absent_reference_tiles.first() {
+            if !self.opts.allow_short_reference {
+                return Err(format!(
+                    "terrain cell {cell}: the reference index names {} tile(s) this mirror does not hold, starting at \
+                     {}/{} — the cell would be published lifted on one side of that tile's edge and not the other, \
+                     which is a step in its contours and its route profile that no ground has. Mirror the box the \
+                     cells cover (`ingest.py mirror` pads a box by one tile; a cell overhangs a coverage polygon by \
+                     up to its own side) and re-run, or pass --allow-short-reference to publish it as it is.",
+                    baked.absent_reference_tiles.len(),
+                    first.0,
+                    first.1
+                ));
+            }
+            absent_tiles.extend(baked.absent_reference_tiles.iter().copied());
+        }
         let Some(block) = baked.block else {
             // No object at all: §13.1's known-empty run says the square is canonically void, which
             // is a different statement from "not published".
@@ -815,6 +846,12 @@ mod tests {
         fn bake_cell(&self, _: u32, _: u32, _: u8, _: u8) -> Result<TerrainCell, String> {
             Ok(TerrainCell::default())
         }
+        fn reference_digests(&self, _: u32, _: u32, _: u8, _: u8) -> Result<Vec<String>, String> {
+            Ok(Vec::new())
+        }
+        fn reference_credits(&self) -> Vec<ReferenceSource> {
+            Vec::new()
+        }
     }
 
     /// A cutter whose archive holds one tile per cell, so a digest can be changed under one cell and
@@ -838,6 +875,9 @@ mod tests {
                 .map(|(ti, tj)| format!("{ti}/{tj}={}", (self.digest)(ti, tj)))
                 .collect())
         }
+        fn reference_credits(&self) -> Vec<ReferenceSource> {
+            Vec::new()
+        }
     }
 
     /// A source that is never fetched from: every test here stops at the key.
@@ -857,7 +897,12 @@ mod tests {
             regions: &[],
             source,
             cutter,
-            opts: TerrainBakeOptions { out: PathBuf::from("/nonexistent"), doc, force: false },
+            opts: TerrainBakeOptions {
+                out: PathBuf::from("/nonexistent"),
+                doc,
+                force: false,
+                allow_short_reference: false,
+            },
         }
     }
 

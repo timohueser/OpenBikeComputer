@@ -315,6 +315,16 @@ impl Fixture {
 
     /// Bake the terrain artifact class into the same tree, at `revision`.
     fn terrain_bake(&self, cutter: &dyn TerrainCutter, revision: u32) -> TerrainRunSummary {
+        self.try_terrain_bake(cutter, revision, false).expect("the terrain run completes")
+    }
+
+    /// The same run, with its outcome and the short-reference policy in the caller's hands.
+    fn try_terrain_bake(
+        &self,
+        cutter: &dyn TerrainCutter,
+        revision: u32,
+        allow_short_reference: bool,
+    ) -> Result<TerrainRunSummary, String> {
         TerrainBakery {
             regions: &self.regions,
             source: &LocalExtracts::new(&self.extracts).with_snapshot(SNAPSHOT),
@@ -323,10 +333,10 @@ impl Fixture {
                 out: self.tree.clone(),
                 doc: terrain_doc(revision, TERRAIN_DATASET_VERSION),
                 force: false,
+                allow_short_reference,
             },
         }
         .run(&Progress::silent())
-        .expect("the terrain run completes")
     }
 
     /// Generate the catalog into the tree, as the CLI does after a bake.
@@ -469,17 +479,24 @@ struct FakeDem {
     fill: u8,
     /// The reference sources every cell it bakes is derived from.
     reference: Vec<ReferenceSource>,
+    /// Reference tiles the index names and this mirror does not hold, per cell.
+    absent: Vec<(u32, u32)>,
 }
 
 impl FakeDem {
     /// Copernicus alone: no reference archive, so no cell credits one.
     fn plain(fill: u8) -> FakeDem {
-        FakeDem { fill, reference: Vec::new() }
+        FakeDem { fill, reference: Vec::new(), absent: Vec::new() }
     }
 
     /// With a reference archive whose lifts every cell uses.
     fn lifted(fill: u8) -> FakeDem {
-        FakeDem { fill, reference: vec![fake_reference()] }
+        FakeDem { fill, reference: vec![fake_reference()], absent: Vec::new() }
+    }
+
+    /// With a mirror that is short of one tile every cell's window reads.
+    fn short_mirror(fill: u8) -> FakeDem {
+        FakeDem { absent: vec![(4809, 4222)], ..FakeDem::lifted(fill) }
     }
 }
 
@@ -503,8 +520,12 @@ impl TerrainCutter for FakeDem {
                     .collect::<Vec<u8>>(),
             ),
             reference_sources: self.reference.iter().map(|r| r.key.clone()).collect(),
-            absent_reference_tiles: Vec::new(),
+            absent_reference_tiles: self.absent.clone(),
         })
+    }
+
+    fn reference_digests(&self, ci: u32, cj: u32, _: u8, _: u8) -> Result<Vec<String>, String> {
+        Ok(self.reference.iter().map(|r| format!("{ci}/{cj}={}", r.key)).collect())
     }
 
     fn reference_credits(&self) -> Vec<ReferenceSource> {
@@ -651,6 +672,25 @@ fn a_terrain_bake_publishes_cells_ocean_runs_and_a_priced_region_selection() {
     }
     // The producer record travels with the objects it explains, on a stable key.
     assert!(keys.contains(&"terrain.json"), "{keys:?}");
+}
+
+/// A cell short of a reference tile the index names is **refused**, because this stage publishes:
+/// it would be lifted on one side of that tile's edge and not the other, which is a step in the
+/// contours and the route profile that no ground has. `--allow-short-reference` publishes it anyway
+/// and says so, and a tree that took the escape hatch publishes nothing silently.
+#[test]
+fn a_cell_short_of_its_reference_tiles_is_refused_unless_the_operator_allows_it() {
+    let f = fixture_dirs("short-reference");
+    let error = f.try_terrain_bake(&FakeDem::short_mirror(1), 1, false).expect_err("a short mirror must be refused");
+    assert!(error.contains("terrain cell 19/0601/0525"), "the refusal names the cell: {error}");
+    assert!(error.contains("names 1 tile(s)") && error.contains("4809/4222"), "…the count and the id: {error}");
+    assert!(error.contains("--allow-short-reference"), "…and the way out: {error}");
+    assert!(!terrain_dir(&f.tree).join("0601").join("0525.obcd").exists(), "and it published nothing");
+
+    let summary = f.try_terrain_bake(&FakeDem::short_mirror(1), 1, true).expect("the escape hatch publishes");
+    assert!(terrain_dir(&f.tree).join("0601").join("0525.obcd").is_file());
+    assert_eq!(summary.warnings.len(), 1, "{:?}", summary.warnings);
+    assert!(summary.warnings[0].contains("4809/4222"), "{:?}", summary.warnings);
 }
 
 /// **Independence pin (b), at the bakery**: a terrain re-bake re-publishes no OBCM object, and the
