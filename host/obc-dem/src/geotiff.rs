@@ -3,26 +3,24 @@
 //!
 //! Everything this module knows about the source is read from the file's own tags — the
 //! geotransform, the raster convention, the void value. Nothing about Copernicus GLO-30 is
-//! hard-coded, because the one property of that dataset that *would* have been worth hard-coding is
-//! false: **tile shape varies with latitude**. A 1° × 1° tile is 3600 columns up to 50 °N, 1800
-//! from 50 to 60 °N, and coarser again further north, while every tile is 3600 rows. A mosaic that
-//! assumed one global post lattice would silently misplace every sample above 50 °N.
+//! hard-coded, because the one property of that dataset that would have been worth hard-coding is
+//! false: tile shape varies with latitude. A 1° × 1° tile is 3600 columns up to 50 °N, 1800 from 50
+//! to 60 °N, and coarser again further north, while every tile is 3600 rows. A mosaic that assumed
+//! one global post lattice would silently misplace every sample above 50 °N.
 //!
-//! ## The two conventions that decide where a sample *is*
+//! Two conventions decide where a sample is:
 //!
-//! 1. **`RasterPixelIsPoint`.** GLO-30 sets `GTRasterTypeGeoKey = 2`: the tie point names the
-//!    **centre of post (0, 0)**, not the corner of a pixel. So tile `N46E008` carries posts from
-//!    lon 8.0 to 8.99972 and from lat 47.0 down to 46.00028, and the post at lon 9.0 belongs to
-//!    `N46E009` — the global post lattice is seamless, with every post owned exactly once. The
-//!    `RasterPixelIsArea` convention is handled too (the tie point then names a pixel *corner*, so
-//!    post centres sit half a step in), because it is the GeoTIFF default and a re-projected source
-//!    would use it.
-//! 2. **Row order.** A GeoTIFF's row 0 is the **northernmost** scanline; OBCT rows advance latitude
-//!    northward (`OBCT_Spec.md` §2). The flip happens **here, once, on ingest** — exactly as that
-//!    section says a baker must — so every row index downstream of this module means "north is up".
+//! 1. `RasterPixelIsPoint`. GLO-30 sets `GTRasterTypeGeoKey = 2`: the tie point names the centre of
+//!    post (0, 0), not the corner of a pixel. So tile `N46E008` carries posts from lon 8.0 to
+//!    8.99972 and from lat 47.0 down to 46.00028, and the post at lon 9.0 belongs to `N46E009` —
+//!    the global post lattice is seamless, with every post owned exactly once. `RasterPixelIsArea`
+//!    is handled too, because it is the GeoTIFF default and a re-projected source would use it.
+//! 2. Row order. A GeoTIFF's row 0 is the northernmost scanline, and OBCT rows advance latitude
+//!    northward. The flip happens here, once, on ingest, so every row index downstream of this
+//!    module means "north is up".
 //!
-//! Sampling the mosaic is `f64` throughout and bilinear over the four surrounding source posts;
-//! see [`DemMosaic::height`] for why that is a point sample and not an area aggregate.
+//! Sampling the mosaic is `f64` throughout and bilinear over the four surrounding source posts; see
+//! [`DemMosaic::height`] for why that is a point sample and not an area aggregate.
 
 use std::fs::File;
 use std::io::BufReader;
@@ -52,9 +50,9 @@ pub(crate) enum RasterType {
 ///
 /// Both rasters this crate reads — a Copernicus source tile and a reference-archive tile — are one
 /// tie point, one pixel scale and the GeoKeys that say what those mean, so the checks that a file
-/// *is* that shape live here once. What the numbers then have to **be** is each reader's own
-/// business: a source tile takes whatever lattice the file declares, and an archive tile must be on
-/// the lattice its id names.
+/// is that shape live here once. What the numbers then have to be is each reader's own business: a
+/// source tile takes whatever lattice the file declares, and an archive tile must be on the lattice
+/// its id names.
 pub(crate) struct NorthUp {
     /// The coordinate of raster (0, 0): a post centre under `PixelIsPoint`, the raster's north-west
     /// pixel corner under `PixelIsArea`.
@@ -69,8 +67,8 @@ pub(crate) struct NorthUp {
 /// Read and check the georeferencing of a north-up geographic raster.
 ///
 /// Refuses anything that is not a plain north-up geographic grid — a transformation matrix, a tie
-/// point that is not anchored on raster (0, 0), a non-positive step, a projected model type, a datum
-/// that is not WGS 84 — because guessing at any of them misplaces every sample in the file.
+/// point that is not anchored on raster (0, 0), a non-positive step, a projected model type, a
+/// datum that is not WGS 84 — because guessing at any of them misplaces every sample in the file.
 pub(crate) fn read_north_up<R: std::io::Read + std::io::Seek>(
     dec: &mut Decoder<R>,
     name: &impl Fn() -> String,
@@ -114,13 +112,12 @@ pub(crate) fn read_north_up<R: std::io::Read + std::io::Seek>(
 
 /// One decoded DEM tile: a rectangular grid of posts on a regular lat/lon lattice.
 ///
-/// Rows are stored **south-up** (row 0 is the southernmost), which is the one place the GeoTIFF's
-/// north-up scanline order is undone.
+/// Rows are stored south-up, which is the one place the GeoTIFF's north-up scanline order is
+/// undone.
 #[derive(Debug)]
 pub struct DemTile {
-    /// Latitude of post row 0, degrees — the southernmost row after the ingest flip.
-    /// (No source path is kept: every error `open` can raise is raised while the local
-    /// `path` is still in scope, and nothing downstream names the file again.)
+    /// Latitude of post row 0, degrees — the southernmost row after the ingest flip. No source path
+    /// is kept: every error `open` can raise is raised while the local `path` is still in scope.
     south_lat_deg: f64,
     /// Longitude of post column 0, degrees.
     west_lon_deg: f64,
@@ -140,9 +137,9 @@ pub struct DemTile {
 impl DemTile {
     /// Decode a GeoTIFF DEM tile from `path`.
     ///
-    /// Every rejection here is a property of the *file*, checked once, so [`DemMosaic::height`] can
-    /// be free of them: a tile that survives this is a regular geographic post grid whose every
-    /// sample position is one multiply away.
+    /// Every rejection here is a property of the file, checked once, so [`DemMosaic::height`] can be
+    /// free of them: a tile that survives this is a regular geographic post grid whose every sample
+    /// position is one multiply away.
     pub fn open(path: &Path) -> Result<DemTile, String> {
         let file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let mut dec =
@@ -155,7 +152,6 @@ impl DemTile {
             return Err(format!("{}: {cols}×{rows} is too small to interpolate over", name()));
         }
 
-        // --- the geotransform ------------------------------------------------------------------
         let NorthUp { tie_lat_deg, tie_lon_deg, step_lat_deg, step_lon_deg, raster_type } =
             read_north_up(&mut dec, &name)?;
         // With `PixelIsArea` the tie point is a pixel corner, so post centres sit half a step in.
@@ -166,13 +162,12 @@ impl DemTile {
         let west_lon_deg = tie_lon_deg + half_lon;
         let north_lat_deg = tie_lat_deg - half_lat;
 
-        // --- the void value --------------------------------------------------------------------
         let nodata = dec
             .get_tag_ascii_string(Tag::GdalNodata)
             .ok()
             .and_then(|s| s.trim().trim_end_matches('\0').parse::<f64>().ok());
 
-        // --- the samples, flipped once (spec §2) -----------------------------------------------
+        // The samples, flipped once.
         let image = dec.read_image().map_err(|e| format!("{}: decode failed ({e})", name()))?;
         let north_up: Vec<f32> = match image {
             DecodingResult::F32(v) => v,
@@ -212,7 +207,7 @@ impl DemTile {
         (self.step_lat_deg, self.step_lon_deg)
     }
 
-    /// Position of post `(0, 0)` — the **south-west** post, after the ingest flip. Where this lands
+    /// Position of post `(0, 0)` — the south-west post, after the ingest flip. Where this lands
     /// relative to the file's tie point is the whole `PixelIsPoint` / `PixelIsArea` question, so it
     /// is exposed rather than inferred.
     pub fn south_west_deg(&self) -> (f64, f64) {
@@ -240,8 +235,8 @@ impl DemTile {
     }
 
     /// The height at post `(row, col)`, or `None` for a void — the declared `GDAL_NODATA`, a NaN, or
-    /// a value outside any believable terrain range. **No inpainting**: a void stays a void all the
-    /// way to the `NODATA` sample the bake writes.
+    /// a value outside any believable terrain range. No inpainting: a void stays a void all the way
+    /// to the `NODATA` sample the bake writes.
     fn post(&self, row: usize, col: usize) -> Option<f64> {
         let v = f64::from(self.data[row * self.cols + col]);
         if !v.is_finite() || !(-12_000.0..=12_000.0).contains(&v) {
@@ -262,12 +257,12 @@ impl DemTile {
     }
 }
 
-/// Index-space slack: a query within a billionth of a post spacing of a post **is** on that post.
+/// Index-space slack: a query within a billionth of a post spacing of a post is on that post.
 ///
 /// It exists for one case, which is not hypothetical: a target coordinate that lands exactly on the
 /// tile's outermost post arrives as `last ± 1 ULP` after the degrees round-trip through the
 /// geotransform, and without the snap that post would be a hole on one machine and a value on
-/// another. A billionth of a post is ~30 nm on the ground.
+/// another. A billionth of a post is about 30 nm on the ground.
 const POST_EPS: f64 = 1e-9;
 
 /// Pull a post index that is a hair outside `0..=last` back onto the boundary. Anything further out
@@ -282,9 +277,9 @@ fn snap(v: f64, last: f64) -> f64 {
     }
 }
 
-/// Every `(key, value)` in the GeoTIFF GeoKey directory whose value is inline (`location = 0`).
-/// The keys this crate reads are all of that kind; a key stored out-of-line points into
-/// `GeoDoubleParams`/`GeoAsciiParams` and names a datum detail, not a geometry fact.
+/// Every `(key, value)` in the GeoTIFF GeoKey directory whose value is inline (`location = 0`). The
+/// keys this crate reads are all of that kind; a key stored out-of-line names a datum detail, not a
+/// geometry fact.
 pub(crate) fn geo_keys<R: std::io::Read + std::io::Seek>(dec: &mut Decoder<R>) -> Vec<(u16, u16)> {
     let Ok(raw) = dec.get_tag_u32_vec(Tag::GeoKeyDirectoryTag) else {
         return Vec::new();
@@ -304,29 +299,27 @@ pub(crate) fn geo_keys<R: std::io::Read + std::io::Seek>(dec: &mut Decoder<R>) -
 
 /// The source DEM as one surface: a set of tiles, sampled bilinearly.
 ///
-/// Tiles are held in a fixed order and looked up by coordinate, never by name — so a mosaic of one
-/// tile, of a whole country, or of two tiles at different latitudes with *different* post spacings
+/// Tiles are held in a fixed order and looked up by coordinate, never by name, so a mosaic of one
+/// tile, of a whole country, or of two tiles at different latitudes with different post spacings
 /// all sample the same way.
 ///
-/// **Every tile is held decoded in memory** — ~52 MB per 1° GLO-30 tile. That is the right shape for
-/// a bake of a map-sized box, and the wrong shape for a continent: a caller baking DACH must feed it
-/// the tiles a region needs and drop them between regions, not the whole dataset at once.
+/// Every tile is held decoded in memory, about 52 MB per 1° GLO-30 tile. That is the right shape
+/// for a bake of a map-sized box and the wrong shape for a continent: a caller baking DACH must
+/// feed it the tiles a region needs and drop them between regions.
 #[derive(Debug, Default)]
 pub struct DemMosaic {
     tiles: Vec<DemTile>,
     /// The tile that answered the previous query. A bake walks a cell sample by sample, so
     /// essentially every query lands in the same tile as the one before it, and without this the
-    /// lookup is a linear scan of the mosaic **per sample** — invisible at two tiles, quadratic
-    /// misery at six hundred.
+    /// lookup is a linear scan of the mosaic per sample.
     ///
-    /// It cannot change an answer: tile coverage boxes are disjoint by construction (§`owns`), so
-    /// at most one tile ever matches and checking a different one first only reorders the search.
+    /// It cannot change an answer: tile coverage boxes are disjoint by construction, so at most one
+    /// tile ever matches and checking a different one first only reorders the search.
     last_hit: std::cell::Cell<usize>,
     /// The same memo, for the corner resolver alone. `height` resolves an off-tile stencil corner
-    /// through [`DemMosaic::nearest_post`], which is a *different* tile by definition — sharing one
-    /// slot meant every seam-adjacent sample overwrote the memo with the neighbour and then the next
-    /// sample overwrote it back, i.e. two linear scans per sample exactly along the seams, where the
-    /// memo is worth the most.
+    /// through [`DemMosaic::nearest_post`], which is a different tile by definition; sharing one
+    /// slot means every seam-adjacent sample overwrites the memo with the neighbour and the next
+    /// sample overwrites it back, which is two linear scans per sample exactly along the seams.
     last_corner_hit: std::cell::Cell<usize>,
 }
 
@@ -381,7 +374,7 @@ impl DemMosaic {
     }
 
     /// [`DemMosaic::tile_for`], against a caller-chosen memo slot. Which slot is used can only
-    /// change how long the search takes, never its answer (coverage boxes are disjoint).
+    /// change how long the search takes, never its answer, because coverage boxes are disjoint.
     fn tile_for_memo(&self, lat_deg: f64, lon_deg: f64, memo: &std::cell::Cell<usize>) -> Option<&DemTile> {
         if let Some(tile) = self.tiles.get(memo.get()) {
             if tile.owns(lat_deg, lon_deg) {
@@ -393,10 +386,10 @@ impl DemMosaic {
         Some(tile)
     }
 
-    /// The nearest source post to `(lat, lon)`, or `None` outside coverage / over a void. Used only
-    /// to reach a corner that lies in a *neighbouring* tile: asking by coordinate rather than by
-    /// index is what lets two tiles with different post spacings meet without inventing a lattice
-    /// that neither of them is on.
+    /// The nearest source post to `(lat, lon)`, or `None` outside coverage or over a void. Used only
+    /// to reach a corner that lies in a neighbouring tile: asking by coordinate rather than by index
+    /// is what lets two tiles with different post spacings meet without inventing a lattice that
+    /// neither of them is on.
     fn nearest_post(&self, lat_deg: f64, lon_deg: f64) -> Option<f64> {
         let tile = self.tile_for_memo(lat_deg, lon_deg, &self.last_corner_hit)?;
         let row = ((lat_deg - tile.south_lat_deg) / tile.step_lat_deg).round();
@@ -409,40 +402,37 @@ impl DemMosaic {
     /// The source height at `(lat, lon)` in metres, bilinearly interpolated over the four
     /// surrounding posts — or `None` outside coverage or next to a void.
     ///
-    /// **A point sample of the source surface, not an area aggregate** (epic #1068's design note).
-    /// At the v1 posting the target lattice is ~1.5 × coarser than a 30 m source, and at that ratio
-    /// the difference between bilinear and box-averaging is well below the source's own ~2–4 m
-    /// vertical RMSE — while a point sample is exactly reproducible from four numbers, which
-    /// matters far more here than a fractionally better estimate.
+    /// A point sample of the source surface, not an area aggregate. At the v1 posting the target
+    /// lattice is about 1.5× coarser than a 30 m source, and at that ratio the difference between
+    /// bilinear and box-averaging is well below the source's own 2 to 4 m vertical RMSE, while a
+    /// point sample is exactly reproducible from four numbers.
     ///
-    /// **A void poisons the sample**, the same rule `OBCT_Spec.md` §5.4 applies on the read side and
-    /// for the same reason: a void is typically water or radar shadow, exactly where a value
-    /// interpolated from the surviving corners would be most confidently wrong.
+    /// A void poisons the sample, the same rule the read side applies and for the same reason: a
+    /// void is typically water or radar shadow, exactly where a value interpolated from the
+    /// surviving corners would be most confidently wrong.
     ///
-    /// All-`f64`, and every operation is an IEEE-754 correctly rounded add/subtract/multiply/divide
-    /// — Rust contracts none of them into an FMA and reads no rounding mode — so the result is a
-    /// function of the inputs alone and not of the host. That is the whole determinism claim.
+    /// All-`f64`, and every operation is an IEEE-754 correctly rounded add, subtract, multiply or
+    /// divide — Rust contracts none of them into an FMA and reads no rounding mode — so the result
+    /// is a function of the inputs alone and not of the host.
     ///
-    /// **The interpolation is written in corner-and-slope form**, not as the four weighted corners
-    /// `OBCT_Spec.md` §5.2 spells out. The two are the same expression algebraically; only the
-    /// reader's *integer* evaluation of §5.2 is normative, and no `f64` expression reproduces that
-    /// bit for bit anyway. What this form buys is the case that dominates the dataset by area:
-    /// GLO-30 **flattens water**, so a lake or the sea is a large patch of one exactly-repeated
-    /// value. In the weighted-corner form the four `f64` weights sum to `1 ± a few ULP`, so a
-    /// flattened surface at, say, 1879.5 m interpolates to 1879.4999999999998 at some points and
-    /// 1879.5 at others — and half away from zero then quantises one lake into two different metres.
-    /// Here the three difference terms are exactly `0.0` over equal corners, so a flat surface stays
-    /// flat, to the bit.
+    /// The interpolation is written in corner-and-slope form, not as four weighted corners. The two
+    /// are the same expression algebraically, and only the reader's integer evaluation is
+    /// normative. What this form buys is the case that dominates the dataset by area: GLO-30
+    /// flattens water, so a lake or the sea is a large patch of one exactly-repeated value. In the
+    /// weighted-corner form the four `f64` weights sum to `1 ± a few ULP`, so a flattened surface at
+    /// 1879.5 m interpolates to 1879.4999999999998 at some points and 1879.5 at others, and half
+    /// away from zero then quantises one lake into two different metres. Here the three difference
+    /// terms are exactly `0.0` over equal corners, so a flat surface stays flat, to the bit.
     pub fn height(&self, lat_deg: f64, lon_deg: f64) -> Option<f64> {
         let tile = self.tile_for(lat_deg, lon_deg)?;
         let (last_row_f, last_col_f) = (tile.rows as f64 - 1.0, tile.cols as f64 - 1.0);
         let y = snap((lat_deg - tile.south_lat_deg) / tile.step_lat_deg, last_row_f);
         let x = snap((lon_deg - tile.west_lon_deg) / tile.step_lon_deg, last_col_f);
         // The stencil's base post. Clamped one short of the last post when the query lands exactly
-        // *on* it: there is no post beyond the last one, so the honest interpolant there is the
-        // last interval evaluated at its far end (`f = 1`) rather than a stencil with a missing
-        // corner. Past the last post the clamp does not apply — that is genuinely off this tile,
-        // and the corner resolver below is what decides whether a neighbour covers it.
+        // on it: there is no post beyond the last one, so the honest interpolant there is the last
+        // interval evaluated at its far end rather than a stencil with a missing corner. Past the
+        // last post the clamp does not apply — that is genuinely off this tile, and the corner
+        // resolver below decides whether a neighbour covers it.
         let r0 = if y <= last_row_f { y.floor().min(last_row_f - 1.0) } else { y.floor() };
         let c0 = if x <= last_col_f { x.floor().min(last_col_f - 1.0) } else { x.floor() };
         let (fy, fx) = (y - r0, x - c0);
@@ -485,7 +475,7 @@ mod tests {
     }
 
     /// The artifact this form exists to remove: a surface that is one repeated value must
-    /// interpolate to **exactly** that value everywhere, or a `.5` lake level quantises into two
+    /// interpolate to exactly that value everywhere, or a `.5` lake level quantises into two
     /// different metres across one body of water.
     #[test]
     fn a_flattened_surface_interpolates_to_exactly_its_own_value() {
@@ -497,11 +487,11 @@ mod tests {
         }
     }
 
-    /// **The source is never extrapolated.** An interpolated height needs four real posts, so
-    /// coverage ends exactly at the outermost post — not at the half-step skirt, which decides only
-    /// *which tile* answers a coordinate. One microdegree past the last post is silence, and the
-    /// coverage-edge clamp that softens that on the read side (`OBCT_Spec.md` §5.3 step 3) is the
-    /// reader's rule about its own file, not a licence for the baker to invent source data.
+    /// The source is never extrapolated. An interpolated height needs four real posts, so coverage
+    /// ends exactly at the outermost post, not at the half-step skirt, which decides only which tile
+    /// answers a coordinate. One microdegree past the last post is silence, and the coverage-edge
+    /// clamp that softens that on the read side is the reader's rule about its own file, not a
+    /// licence for the baker to invent source data.
     #[test]
     fn the_source_surface_stops_at_its_outermost_post() {
         let mosaic = flat_mosaic(100.0);
@@ -518,7 +508,7 @@ mod tests {
 
     /// Two abutting tiles are one surface: a sample between the last post of one and the first post
     /// of the next interpolates across the join, because a corner outside the home tile is resolved
-    /// by **coordinate** and lands in its neighbour.
+    /// by coordinate and lands in its neighbour.
     #[test]
     fn a_corner_in_the_next_tile_is_fetched_rather_than_clamped() {
         let step = 1.0 / 3600.0;
