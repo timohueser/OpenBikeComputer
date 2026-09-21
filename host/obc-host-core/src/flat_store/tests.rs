@@ -64,6 +64,31 @@ fn native_map_and_routes_share_persistent_identity_and_revision_leases() {
     }
 }
 
+fn names(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn creation_publishes_one_card_name_and_refuses_an_occupied_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("card.obc");
+    let identity = HostStore::create_file(&path).unwrap().store_id().unwrap();
+    // The card is built under a temporary sibling. Only the published name survives.
+    assert_eq!(names(dir.path()), ["card.obc"]);
+    assert!(
+        matches!(HostStore::create_file(&path), Err(ImportError::Io(e)) if e.kind() == io::ErrorKind::AlreadyExists)
+    );
+    let absent = dir.path().join("absent").join("card.obc");
+    assert!(matches!(HostStore::create_file(absent), Err(ImportError::Io(e)) if e.kind() == io::ErrorKind::NotFound));
+    assert_eq!(names(dir.path()), ["card.obc"]);
+    assert_eq!(HostStore::open_file(&path).unwrap().store_id().unwrap(), identity);
+}
+
 #[test]
 fn final_reader_holds_exclusive_file_lock_and_new_cards_have_distinct_identity() {
     let dir = tempfile::tempdir().unwrap();
