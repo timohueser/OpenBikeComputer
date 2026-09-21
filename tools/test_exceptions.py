@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
-"""Check the test-policy exceptions declared in `testing/suites.toml`.
+"""Check the `sleep_exception` blocks declared in `testing/suites.toml`.
 
-An exception is a named, temporary deviation from test policy. Two kinds exist:
-`budget_exception` (a suite that costs more than its budget) and `sleep_exception`
-(a suite that waits on real time). Each one needs a reason and an open GitHub issue,
-so it expires with that issue instead of living forever.
-
-This script validates the shape of every exception block offline, then asks GitHub
-once per distinct issue whether it is still open. `test-exception-health.yml` runs it
-weekly; run it by hand with an authenticated `gh` when you add an exception.
+A suite that waits on real time declares one, with a reason and an open GitHub issue,
+so the exception expires with the issue. This validates each block offline, then asks
+GitHub once per distinct issue whether it is still open.
 
 Usage: python3 tools/test_exceptions.py --repo OWNER/REPO
 """
@@ -24,7 +19,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, Sequence
 
-EXCEPTION_FIELDS = ("budget_exception", "sleep_exception")
+EXCEPTION_FIELDS = ("sleep_exception",)
 REPOSITORY_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 ISSUE_RE = re.compile(r"^(?:#\d+|https://github\.com/[^/]+/[^/]+/issues/\d+)$")
 
