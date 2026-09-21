@@ -1,16 +1,12 @@
-//! The host harness the protocol-v4 suites run on: the shared device from `obc-flat-device` — a
-//! real flat store over a deterministic sparse card with the engine on top — plus the pump, the
-//! probes and the hand-written client this suite drives it with.
+//! The host harness these suites run on: the shared device from `obc-flat-device` — a real flat
+//! store over a deterministic sparse card with the engine on top — plus the pump, the probes and the
+//! hand-written client this suite drives it with.
 //!
-//! The split is the point. **The device** is the assembly the browser's tests run on too, so a
-//! behaviour proved here is proved against the same engine and the same card a TypeScript flow
-//! meets. **The harness** is everything only a Rust test wants: a pump that collects every record of
-//! one exchange into a [`Wire`], store probes that ask the card questions no opcode answers, and
-//! request bytes written at the offsets the spec states.
-//!
-//! Building requests here rather than through the codec is deliberate. The device never encodes a
-//! request, so `obc-link` has no encoder for one; writing the bytes at the offsets
-//! `FLAT_Store_Protocol.md` §3 states keeps the tests honest about what a phone would actually send.
+//! The device is the assembly the browser's tests run on too, so a behaviour proved here is proved
+//! against the same engine and the same card. The harness is what only a Rust test wants: a pump
+//! that collects every record of one exchange into a [`Wire`], store probes, and request bytes
+//! written at the offsets `FLAT_Store_Protocol.md` states. The device never encodes a request, so
+//! writing those bytes by hand keeps the tests honest about what a phone would send.
 
 #![allow(dead_code)]
 
@@ -24,22 +20,19 @@ use obc_storage::flat::sim::SparseDisk;
 use obc_storage::flat::{BlockDevice, EntryFlags, EntryMeta, ObjectId};
 
 use obc_flat_device::{CATALOG_BLOCKS, TOTAL_BLOCKS};
-// The two test targets compile this module separately and name different halves of it, which is the
-// same reason `dead_code` is allowed above.
+// The two test targets compile this module separately and name different halves of it, which is
+// what the `dead_code` allow above is for.
 #[allow(unused_imports)]
 pub use obc_flat_device::{crc32, STORE};
 
-/// A device over a plain card.
 pub type Plain<'a> = Device<&'a SparseDisk>;
 /// A device over a card that refuses one media operation and then behaves.
 pub type Faulty<'a> = Device<&'a obc_storage::flat::sim::FaultOnce<&'a SparseDisk>>;
 
-/// A blank card of the harness geometry.
 pub fn blank_card(seed: u64) -> SparseDisk {
     obc_flat_device::blank_card(TOTAL_BLOCKS, seed)
 }
 
-/// A card this harness has formatted.
 pub fn formatted_card(seed: u64) -> SparseDisk {
     obc_flat_device::formatted_card(TOTAL_BLOCKS, seed)
 }
@@ -108,28 +101,26 @@ pub fn boot<D: BlockDevice>(disk: D) -> Device<D> {
     Device { inner: obc_flat_device::Device::boot(disk) }
 }
 
-/// The same on a link of the caller's shape — a USB one, where §5.2's ceiling is a constant of the
-/// binding and a stream record is whole stages wide rather than one radio SDU.
+/// The same on a link of the caller's shape — a USB one, whose ceiling is a constant of the binding
+/// and whose stream record is whole stages wide rather than one radio SDU.
 pub fn boot_on<D: BlockDevice>(disk: D, ceilings: Ceilings) -> Device<D> {
-    // Every test that does not care which wire it is on is on the radio, which is what the suite
-    // meant before links had identities. `link_up` is what a test that *does* care calls.
+    // Every test that does not care which wire it is on is on the radio. A test that does care
+    // calls `link_up`.
     Device { inner: obc_flat_device::Device::boot_on(disk, Link::Ble, ceilings) }
 }
 
 impl<D: BlockDevice> Device<D> {
     /// Hands the engine one control record and pumps it until it is quiet. The device has no kind
-    /// validators and no update path, which is what a board without FS7 and FS9 runs.
+    /// validators and no update path.
     pub fn control(&mut self, record: &[u8]) -> Wire {
         self.control_with(record, &mut OpenPolicy)
     }
 
-    /// One control record from a named link.
     pub fn control_on(&mut self, link: Link, record: &[u8]) -> Wire {
         let first = self.inner.on_control_with(link, &mut OpenPolicy, record);
         self.drive_on(link, first, usize::MAX)
     }
 
-    /// One stream record from a named link.
     pub fn stream_on(&mut self, link: Link, record: &[u8]) -> Wire {
         let first = self.inner.on_stream_with(link, &mut OpenPolicy, record);
         self.drive_on(link, first, usize::MAX)
@@ -141,13 +132,12 @@ impl<D: BlockDevice> Device<D> {
         self.drive_on(link, first, usize::MAX)
     }
 
-    /// Pump a named link once — what an adapter does until it is told there is nothing to do.
+    /// Pump a named link once.
     pub fn pump_on(&mut self, link: Link) -> Wire {
         let first = self.inner.poll_on(link);
         self.drive_on(link, first, usize::MAX)
     }
 
-    /// That link went away.
     pub fn link_lost_on(&mut self, link: Link) {
         self.inner.link_down(link);
     }
@@ -182,21 +172,16 @@ impl<D: BlockDevice> Device<D> {
         self.drive(first, 1)
     }
 
-    /// One stream record.
     pub fn stream(&mut self, record: &[u8]) -> Wire {
         let first = self.inner.on_stream(record);
         self.drive(first, usize::MAX)
     }
 
-    /// The link went away.
-    /// **The radio link broke and the client came back** — a break, in the sense the break matrix
-    /// means it: the transfer is released with nobody to answer, and the next thing the peer does is
-    /// reconnect and retry. Both halves are here because a link that is down is now genuinely
-    /// unserved (`on_control` answers `Idle`), so a helper that only tore down would leave every
-    /// following statement in those tests talking to a wire nobody is on.
+    /// The radio link broke and the client came back: the transfer is released with nobody to
+    /// answer, and the peer then reconnects and retries. Both halves are here because a link that is
+    /// down is unserved, so tearing down alone would leave the test talking to a wire nobody is on.
     ///
-    /// [`link_down`](obc_flat_device::Device::link_down) is the un-reconnected half, for the two-link
-    /// tests that care about the difference.
+    /// [`link_down`](obc_flat_device::Device::link_down) is the un-reconnected half.
     pub fn link_lost(&mut self) {
         let ceilings = self.inner.ceilings();
         self.inner.link_down(Link::Ble);
@@ -248,8 +233,8 @@ impl<D: BlockDevice> Device<D> {
         key(self.inner.seed_reserved(ObjectKind::Ride.value(), reserve, EntryFlags::RECORDING, ""))
     }
 
-    /// Exercise the exact device-owned FS8 path: start a `RECORDING` reserve, journal the final
-    /// bytes, then publish those same extents by clearing `RECORDING` in one amend commit.
+    /// The device-owned ride path: start a `RECORDING` reserve, journal the final bytes, then
+    /// publish those same extents by clearing `RECORDING` in one amend commit.
     pub fn finish_recording(&mut self, bytes: &[u8], name: &str) -> (u64, u64) {
         key(self.inner.finish_recording(bytes, name))
     }
@@ -259,7 +244,6 @@ impl<D: BlockDevice> Device<D> {
         Store::allocate(&self.store, bytes).expect("a row was free")
     }
 
-    /// Gives one back.
     pub fn release(&mut self, allocation: obc_storage::flat::Allocation) {
         obc_storage::flat::FlatStore::cancel(&self.store, allocation);
     }
@@ -274,15 +258,14 @@ impl<D: BlockDevice> Device<D> {
         Store::entries(&self.store).find(|meta| meta.id == ObjectId(id) && !meta.flags.has(EntryFlags::RETAINED))
     }
 
-    /// Every entry, in catalog order.
     pub fn entries(&self) -> Vec<EntryMeta> {
         self.inner.catalog()
     }
 
     /// Removes every entry of one `ObjectId` through the seam, and reports the extents that came
     /// back with them. A hold the engine failed to close keeps them out of the allocator, so this is
-    /// how a leaked hold is caught. Both entries go in one commit, because §5.3 has no state in which
-    /// a retained revision is an object's only entry.
+    /// how a leaked hold is caught. Both entries go in one commit, because a retained revision is
+    /// never an object's only entry.
     pub fn remove_and_measure(&mut self, id: u64) -> u32 {
         let before = self.free_extents();
         let batch: Vec<obc_storage::flat::Mutation> = Store::entries(&self.store)
@@ -320,7 +303,7 @@ impl obc_formats::io::ByteSink for VecSink {
 
 use obc_storage::flat::seam::Store;
 
-/// Request bytes, written at the offsets `FLAT_Store_Protocol.md` §3 states.
+/// Request bytes, written at the offsets `FLAT_Store_Protocol.md` states.
 pub mod client {
     use super::*;
 
@@ -335,14 +318,14 @@ pub mod client {
         record
     }
 
-    /// §3.3, first page.
+    /// The first page.
     pub fn list(request: u32, kind: Option<u16>) -> Vec<u8> {
         let mut body = vec![0u8; 32];
         body[0..2].copy_from_slice(&kind.unwrap_or(0).to_le_bytes());
         frame(0x01, request, &body)
     }
 
-    /// §3.3, a page resuming after a `(ObjectId, Revision)` pair.
+    /// A page resuming after a `(ObjectId, Revision)` pair.
     pub fn list_from(request: u32, kind: Option<u16>, cursor: (u64, u64), sequence: u64) -> Vec<u8> {
         let mut body = vec![0u8; 32];
         body[0..2].copy_from_slice(&kind.unwrap_or(0).to_le_bytes());
@@ -353,7 +336,6 @@ pub mod client {
         frame(0x01, request, &body)
     }
 
-    /// §3.4.
     pub fn status(request: u32, id: u64, revision: u64) -> Vec<u8> {
         let mut body = vec![0u8; 16];
         body[0..8].copy_from_slice(&id.to_le_bytes());
@@ -361,7 +343,6 @@ pub mod client {
         frame(0x02, request, &body)
     }
 
-    /// §3.5.
     pub fn get(request: u32, id: u64, revision: u64) -> Vec<u8> {
         let mut body = vec![0u8; 16];
         body[0..8].copy_from_slice(&id.to_le_bytes());
@@ -369,7 +350,6 @@ pub mod client {
         frame(0x03, request, &body)
     }
 
-    /// §3.6.
     pub fn put(request: u32, id: u64, expected: u64, bytes: &[u8], kind: u16, name: &str) -> Vec<u8> {
         let mut body = vec![0u8; 84];
         body[0..8].copy_from_slice(&id.to_le_bytes());
@@ -382,7 +362,6 @@ pub mod client {
         frame(0x04, request, &body)
     }
 
-    /// §3.7.
     pub fn remove(request: u32, id: u64, expected: u64) -> Vec<u8> {
         let mut body = vec![0u8; 16];
         body[0..8].copy_from_slice(&id.to_le_bytes());
@@ -390,12 +369,10 @@ pub mod client {
         frame(0x05, request, &body)
     }
 
-    /// §3.8.
     pub fn cancel(request: u32, transfer: u32) -> Vec<u8> {
         frame(0x06, request, &transfer.to_le_bytes())
     }
 
-    /// §4.
     pub fn arm(request: u32, package: u64, expected: u64) -> Vec<u8> {
         let mut body = vec![0u8; 16];
         body[0..8].copy_from_slice(&package.to_le_bytes());
@@ -403,8 +380,8 @@ pub mod client {
         frame(0x07, request, &body)
     }
 
-    /// §3.10. The expected identity is the destructive compare-and-swap; replacement starts the
-    /// new store era and must be non-zero and different.
+    /// The expected identity is the destructive compare-and-swap; the replacement starts the new
+    /// store era and must be non-zero and different.
     pub fn format(request: u32, expected: [u8; 16], replacement: [u8; 16]) -> Vec<u8> {
         let mut body = vec![0u8; 32];
         body[0..16].copy_from_slice(&expected);
@@ -412,7 +389,6 @@ pub mod client {
         frame(0x08, request, &body)
     }
 
-    /// §3.8's stream record.
     pub fn stream(transfer: u32, offset: u64, bytes: &[u8]) -> Vec<u8> {
         let mut record = vec![0u8; STREAM_HEADER_LEN + bytes.len()];
         record[0..4].copy_from_slice(&transfer.to_le_bytes());
@@ -474,7 +450,7 @@ impl Answer {
         u64::from_le_bytes(self.body[at..at + 8].try_into().unwrap())
     }
 
-    /// One body byte — §3.8's `CANCEL` answer is exactly one.
+    /// One body byte: a `CANCEL` answer is exactly one.
     pub fn byte_at(&self, at: usize) -> u8 {
         self.body[at]
     }
