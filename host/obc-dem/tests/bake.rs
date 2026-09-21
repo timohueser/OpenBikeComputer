@@ -317,7 +317,7 @@ fn a_reference_composes_the_same_cell_bytes_in_all_three_bakes() {
     // the dilation or the iteration order has to arrive as a deliberate edit to this number.
     assert_eq!(
         common::sha256_hex(&shard),
-        "5d17eec3ccb6c844ad156cedf451db45b3dc278161f1a1db5328b6199f3386b8",
+        "677d91af6c137de0dce25baf16a255d667999622605b19fb106db8ad88618982",
         "the lifted plane fixture's bytes changed — if that was intended, state why in the PR"
     );
     let plain = bake_plane_shard(PIXEL_IS_POINT);
@@ -394,6 +394,50 @@ fn a_tower_is_lifted_and_the_plane_it_stands_on_is_not() {
         map.apply(|lat: i32, lon: i32| if (lat, lon) == (tip_lat, tip_lon) { NODATA } else { native(lat, lon) });
     assert_eq!(over_hole(tip_lat, tip_lon), NODATA, "a lift never fills a hole");
     assert_eq!(map.at(tip_lat + 256, tip_lon), 0, "half a posting off the lattice is not a node");
+}
+
+/// A reference that stands a uniform **8 m** above our surface lifts nothing, however steep and
+/// however convex the mountain under it — and this is the one thing measuring the gap against the
+/// *roof* of a pooled pixel's footprint buys.
+///
+/// The native lattice is a pyramid of 40 m per posting, so the bilinear surface through it is the
+/// pyramid exactly (each interval is affine) and `node_max` is sharply convex at the apex: the gate
+/// this test isolates is the 10 m one. An archive pixel is the maximum of the source inside a
+/// 7.1 × 4.9 m square, so on that slope the pooled value sits about 3 m above the surface at the
+/// pixel's own centre. Measured from the centre the 8 m offset reads as an 11 m gap and the apex is
+/// lifted; measured from the roof it reads as the 8 m it is, and §9 refuses it.
+///
+/// A DTM reading a metre or two above a surface model over bare rock is the ordinary case, not a
+/// contrived one, which is why this must not become a lift.
+#[test]
+fn a_reference_below_the_gate_lifts_nothing_however_steep_the_mountain() {
+    let rect = cell_rect(fixture_bbox(), POSTING_LOG2, CELL_LOG2).unwrap();
+    let (ci, cj) = (rect.min_i, rect.min_j);
+    let (apex_lat, apex_lon) = node_udeg(ci, cj, 8, 8);
+    // Per posting: 40 m down each axis from the apex. Integral at every node, and affine inside
+    // every lattice interval, so the native bilinear is this pyramid to the bit.
+    let pyramid = |lat: f64, lon: f64| {
+        let dy = (lat - f64::from(apex_lat)).abs() / 512.0;
+        let dx = (lon - f64::from(apex_lon)).abs() / 512.0;
+        2000.0 - 40.0 * dy - 40.0 * dx
+    };
+    let native = |lat: i32, lon: i32| quantise(pyramid(f64::from(lat), f64::from(lon)));
+
+    let scratch = Scratch::new("under-the-gate");
+    write_reference(scratch.path(), &[(ci, cj)], |lat, lon| Some(pyramid(lat, lon) + 8.0));
+    let archive = ReferenceArchive::open(scratch.path()).unwrap();
+    assert!(
+        LiftMap::bake(ci, cj, POSTING_LOG2, CELL_LOG2, native, &archive).unwrap().is_none(),
+        "8 m is not 10 m, and the slope under it must not make up the difference"
+    );
+
+    // The same mountain under a reference that *is* 12 m above it is a crest, so the test above is
+    // about the gate and not about a fixture that could never lift anything.
+    let over = Scratch::new("over-the-gate");
+    write_reference(over.path(), &[(ci, cj)], |lat, lon| Some(pyramid(lat, lon) + 12.0));
+    let archive = ReferenceArchive::open(over.path()).unwrap();
+    let map = LiftMap::bake(ci, cj, POSTING_LOG2, CELL_LOG2, native, &archive).unwrap().expect("12 m clears the gate");
+    assert_eq!(lift_at(&map, ci, cj, 8, 8), 12, "and the apex rises by exactly what the reference says");
 }
 
 /// The whole point of the halo: a node two or four cells share is lifted by the same amount

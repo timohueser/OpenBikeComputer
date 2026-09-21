@@ -230,19 +230,35 @@ impl ArchiveTile {
         ArchiveTile { ti, tj, north_up: vec![NO_PIXEL; TILE_PIXELS * TILE_PIXELS], skew_deg: 0.0 }
     }
 
-    /// Fill it by evaluating `height` at every **pixel centre**, in µdeg, exactly as the reader
-    /// computes that centre. `None` leaves the pixel absent.
+    /// Fill it by **pooling** `height` over every pixel's own square, in µdeg.
+    ///
+    /// An archive pixel is the maximum of the source inside its square, not a sample at its centre,
+    /// and the baker's rule depends on that: it measures a gap against the highest our surface
+    /// reaches over the same square. A fixture that point-sampled the centre would therefore be a
+    /// different kind of reference from the one the contract describes.
+    ///
+    /// The maximum is taken over the square's four corners and its centre, which is exact for a
+    /// surface that is affine inside a square and for one that peaks on a lattice node — the two
+    /// shapes these fixtures use. **Presence** is the centre's alone, so a fixture can stop coverage
+    /// on an exact line.
     pub fn filled(ti: u32, tj: u32, mut height: impl FnMut(i64, i64) -> Option<i16>) -> ArchiveTile {
         let mut tile = ArchiveTile::empty(ti, tj);
         let step = 1i64 << STEP_LOG2;
+        let half = step / 2;
         let (lat0, lon0) = tile.origin_udeg();
         for row in 0..TILE_PIXELS {
             // `r` counts north, the GeoTIFF's rows count south: row 0 is pixel row TILE_PIXELS - 1.
-            let lat = lat0 + (TILE_PIXELS - 1 - row) as i64 * step + step / 2;
+            let lat = lat0 + (TILE_PIXELS - 1 - row) as i64 * step + half;
             for col in 0..TILE_PIXELS {
-                if let Some(metres) = height(lat, lon0 + col as i64 * step + step / 2) {
-                    tile.north_up[row * TILE_PIXELS + col] = metres;
+                let lon = lon0 + col as i64 * step + half;
+                let Some(centre) = height(lat, lon) else { continue };
+                let mut pooled = centre;
+                for (dy, dx) in [(-half, -half), (-half, half), (half, -half), (half, half)] {
+                    if let Some(corner) = height(lat + dy, lon + dx) {
+                        pooled = pooled.max(corner);
+                    }
                 }
+                tile.north_up[row * TILE_PIXELS + col] = pooled;
             }
         }
         tile
