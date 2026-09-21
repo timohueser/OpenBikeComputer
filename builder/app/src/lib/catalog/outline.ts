@@ -19,6 +19,7 @@
 // Both take cells of **one** size. A band's cells are all one size by construction,
 // and mixing two would make "the cell north of this one" ambiguous, so it is refused
 // rather than approximated.
+
 import { cellSize, GRID_ORIGIN, GridError, type CellId, type UBox } from "./grid";
 
 /** A vertex of an outline: integer microdegrees, `[lat, lon]` — the catalog's own
