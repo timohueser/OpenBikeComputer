@@ -111,6 +111,3 @@ builder/app/public/data/
 target/
 fixtures/build/
 
-# Scratch Peak View binaries (see scratch/peak-view/README.md — temporary)
-scratch/peak-view/pano/target/
-scratch/peak-view/pano/Cargo.lock
