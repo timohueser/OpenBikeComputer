@@ -85,8 +85,8 @@ fn fixed_buffer_captions_fit() {
         (Msg::ClimbGrade, 12, "climb.rs ClimbCell caption (String<12>)"),
         (Msg::ClimbAvgGrad, 12, "climb.rs ClimbCell caption (String<12>)"),
         (Msg::ClimbToGo, 10, "climb.rs cap_dist: 2-char unit label + this → String<12>"),
-        // Map off-route pill: `write_off_route`'s `String<20>` = this prefix + a distance suffix up
-        // to ~7 bytes ("9999km" / "5279ft"), so the prefix must clear ≤ 13 (map.rs).
+        // Map off-route pill: `write_distance_coarse` fills a `String<20>` with this prefix plus a
+        // distance suffix up to ~7 bytes ("9999km" / "5279ft"), so the prefix must clear ≤ 13 (map.rs).
         (Msg::MapOffRoute, 13, "map.rs off-route pill (String<20>, ≤7-byte distance follows)"),
         // The quick drawer's brightness title: `draw_brightness` writes this plus " 100%" into a
         // `String<24>` and discards the result, so a caption past the budget silently loses its
