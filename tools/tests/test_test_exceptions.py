@@ -15,7 +15,7 @@ import test_exceptions
 class ExceptionIssueStateTests(unittest.TestCase):
     """The offline shape rules and the one bounded request per distinct issue."""
 
-    def suite(self, reference: str, field: str = "budget_exception", name: str = "demo") -> dict:
+    def suite(self, reference: str, field: str = "sleep_exception", name: str = "demo") -> dict:
         return {"id": name, field: {"reason": "Pending repair", "issue": reference}}
 
     def response(self, value: object) -> subprocess.CompletedProcess:
@@ -39,15 +39,11 @@ class ExceptionIssueStateTests(unittest.TestCase):
     @patch.object(test_exceptions.subprocess, "run")
     def test_distinct_issues_report_all_owning_fields(self, run) -> None:
         run.side_effect = [self.response({"state": "closed"}), self.response({"state": "closed"})]
-        suites = [
-            self.suite("#1"),
-            self.suite("#1", "sleep_exception", "other"),
-            self.suite("#2", "sleep_exception"),
-        ]
+        suites = [self.suite("#1"), self.suite("#1", name="other"), self.suite("#2")]
         with patch("sys.stderr") as stderr:
             self.assertEqual(self.check(suites), 1)
         reported = "".join(str(call.args[0]) for call in stderr.write.call_args_list)
-        for owner in ("demo.budget_exception", "other.sleep_exception", "demo.sleep_exception"):
+        for owner in ("demo.sleep_exception", "other.sleep_exception"):
             self.assertIn(owner, reported)
         self.assertEqual(run.call_count, 2)
 
@@ -57,8 +53,8 @@ class ExceptionIssueStateTests(unittest.TestCase):
             [self.suite("#1"), self.suite("garbage", "sleep_exception")],
             [self.suite("https://example.com/o/r/issues/3")],
             [self.suite("https://github.com/o/r?bad/issues/3")],
-            [{"id": "demo", "budget_exception": {"reason": "", "issue": "#1"}}],
-            [{"id": "demo", "budget_exception": "not a table"}],
+            [{"id": "demo", "sleep_exception": {"reason": "", "issue": "#1"}}],
+            [{"id": "demo", "sleep_exception": "not a table"}],
         ]
         for suites in cases:
             with self.subTest(suites=suites), patch("sys.stderr"):
@@ -75,7 +71,7 @@ class ExceptionIssueStateTests(unittest.TestCase):
                 with patch("sys.stderr") as stderr:
                     self.assertEqual(self.check([self.suite("#1")]), 1)
                 reported = "".join(str(call.args[0]) for call in stderr.write.call_args_list)
-                self.assertIn("demo.budget_exception: owner/repo#1", reported)
+                self.assertIn("demo.sleep_exception: owner/repo#1", reported)
 
     @patch.object(test_exceptions.subprocess, "run")
     def test_api_auth_timeout_and_decode_errors_are_visible_without_retry(self, run) -> None:
@@ -95,7 +91,7 @@ class ExceptionIssueStateTests(unittest.TestCase):
                 with patch("sys.stderr") as stderr:
                     self.assertEqual(self.check([self.suite("#1")]), 1)
                 reported = "".join(str(call.args[0]) for call in stderr.write.call_args_list)
-                self.assertIn("demo.budget_exception: owner/repo#1", reported)
+                self.assertIn("demo.sleep_exception: owner/repo#1", reported)
                 run.assert_called_once()
 
 
