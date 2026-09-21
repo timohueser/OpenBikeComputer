@@ -216,7 +216,7 @@ impl MapPlan {
     }
 
     fn past_u64(&self) -> Error {
-        Error::Capacity("the map's layout does not fit a u64 of bytes (OBCA §5.7)".into())
+        Error::Capacity("the map's layout does not fit a u64 of bytes".into())
     }
 
     /// A section base that does not fit the host's `usize`, which is 32-bit in the wasm32 build
@@ -224,7 +224,7 @@ impl MapPlan {
     /// so that it stays unreachable if the ceiling moves.
     fn past_usize(&self, what: &str, at: u64) -> Error {
         Error::Capacity(format!(
-            "the map's {what} section starts at byte {at}, past the {} bytes this host can address (OBCA §5.7)",
+            "the map's {what} section starts at byte {at}, past the {} bytes this host can address",
             usize::MAX
         ))
     }
@@ -663,7 +663,7 @@ mod tests {
         match err {
             Error::Capacity(m) => {
                 assert!(m.contains("the map"), "the refusal names what it refused: {m}");
-                assert!(m.contains("reduce the coverage"), "and the remedy (OBCA §5.7): {m}");
+                assert!(m.contains("reduce the coverage"), "and the remedy: {m}");
                 assert!(m.contains("OBCM"), "and which rule is the wall: {m}");
             }
             other => panic!("an over-size plan is a capacity refusal, got {other:?}"),
