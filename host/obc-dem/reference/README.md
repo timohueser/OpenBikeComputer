@@ -146,18 +146,26 @@ Three rules keep a credential where it belongs, and each one is a test:
 - **A refusal never quotes it.** A service answers a 403 by quoting the request it refused, and
   a request with a token in the query is a request with a secret in it. So a keyed request is
   labelled `<key> <box>` and not by its URL, and every message goes through `redact`, which
-  takes out every value the `OBC_REFERENCE_*` namespace holds. What Denmark answers to a wrong
-  token is `dk (9.743, 56.32, 9.746, 56.3215): HTTP 403 — User not authorized`. A body is a
-  message too: these services answer an error as a 200 and an XML document that quotes the
-  request, so `raster_bytes`, the French band reader and the STAC reader all redact as well.
-- **It goes to the row's own hosts only.** An index is data, not code: Sweden's STAC answer
-  names the host each download is on, and a `href` somewhere else would otherwise be handed
-  the password. `credential_hosts` on the row is the allowed suffix, and a URL outside it is
-  refused by name — not fetched unsigned, because a download that quietly drops its credential
+  takes out every value the `OBC_REFERENCE_*` namespace holds — and every form it travels in,
+  because a token rides in a URL and a server that echoes the request echoes it
+  percent-escaped. There is no length floor: a short credential is still a credential. What
+  Denmark answers to a wrong token is
+  `dk (9.743, 56.32, 9.746, 56.3215): HTTP 403 — User not authorized`. A body is a message
+  too: these services answer an error as a 200 and an XML document that quotes the request, so
+  `raster_bytes`, the French band reader and the STAC reader all redact as well.
+- **It goes to the row's own hosts only, and only over https.** An index is data, not code:
+  Sweden's STAC answer names the host each download is on, and a `href` somewhere else would
+  otherwise be handed the password. `credential_hosts` on the row is the allowed suffix, and a
+  URL outside it — or one that is not https, since HTTP Basic is the password in clear text —
+  is refused by name. It is not fetched unsigned: a download that quietly drops its credential
   comes back as an error page and not as a raster.
 - **A redirect does not carry it.** urllib copies a request's headers onto the redirect it
   follows, so `Authorization` would follow a `Location` anywhere. `DropAuthOnRedirect` takes
   the header off when the host changes, and every request in the tool goes through that opener.
+  It drops the header on **any** host change, including one inside the row's own domain, so a
+  portal that redirected `api.` to `dl1.` mid-request would fail closed with a 401 rather than
+  hand the credential on. That is the safe direction: the fix is to name the real download host
+  in the index, which Lantmäteriet's already does.
 
 A row states which shape it wants and the adapter states which shape it can send
 (`credential_style`), so a credential an adapter would drop on the floor is refused where the
@@ -409,7 +417,11 @@ portal left it. Everything the tool writes goes into the work directory:
   is what makes a **re-issued** delivery of the same file name a different directory: keyed on
   the name alone, the second order's members would be skipped as already unpacked and the archive
   would silently keep the first order's tiles. Members are streamed to disk, not read whole.
-- A zip inside the zip is refused, naming the inner one. Unpack it and pass the directory.
+- A zip inside the zip is refused, naming the inner one, but **only** when that level holds no
+  raster of its own. An order that ships its paperwork as `metadata/docs.zip` beside the DEM is
+  an ordinary delivery, and refusing it would be refusing the data over the paperwork.
+- `--work` inside `--input` is refused. The tool writes into the work directory, and a second
+  run would otherwise read its own unpacked members as if the portal had delivered them.
 - An ESRI ASCII grid that came without a `.prj` is copied into the work directory under its own
   digest and the `.prj` is written beside the copy. A `.prj` the portal shipped is used as it is.
 

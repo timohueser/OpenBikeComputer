@@ -73,7 +73,14 @@ def command_ingest(args) -> int:
     work = Path(args.work) if args.work else Path(tempfile.gettempdir()) / f"obc-reference-{source.key}"
     if args.input:
         require_datum(source, getattr(args, "datum", None))
-        rasters = local_rasters(source, Path(args.input), bbox, work)
+        inputs = Path(args.input)
+        # The work directory is where the tool writes and the delivery directory is what
+        # the owner downloaded. Writing into the delivery would also make the next run
+        # read its own unpacked members as if the portal had delivered them.
+        if work.resolve() == inputs.resolve() or inputs.resolve() in work.resolve().parents:
+            raise Refuse(f"--work {work} is inside --input {inputs}; the tool writes into the "
+                         "work directory and never into a delivery, so name another one")
+        rasters = local_rasters(source, inputs, bbox, work)
     else:
         source.require_credential()
         rasters = source.fetch(bbox, work)
