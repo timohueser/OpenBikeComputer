@@ -312,8 +312,9 @@ def pool_onto_lattice(values, src_transform, src_crs, window: Window):
     Every source pixel goes to the one lattice pixel that contains its centre, and a
     lattice pixel keeps the maximum of the pixels that reached it. `Resampling.max` cannot
     do this: it pools by area overlap, so a source pixel that merely touches a lattice
-    pixel raises it. Over an alpine box that read 39 % of the pixels too high, and a
-    one-pixel tower reached two to four archive pixels instead of one.
+    pixel raises it. Over the Engelberg box that read 51.7 % of the pixels too high and
+    none too low, by up to 286 m, it filled 2 659 pixels no source centre reached, and it
+    spread a one-pixel tower over two to four archive pixels.
 
     A centre is a point, so a rotated or sheared source needs no special case, and a source
     coarser than the lattice simply reaches fewer lattice pixels: the pooling never invents
@@ -351,7 +352,7 @@ def to_int16(values):
 
 
 def cut_tile(window: Window, data, ti: int, tj: int):
-    """The part of a warped window that belongs in one tile, as a full 1024 × 1024 raster.
+    """The part of a pooled window that belongs in one tile, as a full 1024 × 1024 raster.
 
     A tile is always whole: a box that covers a corner of it still writes 1024 × 1024
     pixels, with `NODATA` everywhere the box did not reach.
@@ -808,7 +809,8 @@ def command_publish(args) -> int:
             print(f"  rclone {' '.join(fetch)}")
             run_rclone(fetch, remote.env)
         published = staging / "index.json"
-        merged = merge_index(json.loads(published.read_text(encoding="utf-8")) if published.is_file() else None, local)
+        already = json.loads(published.read_text(encoding="utf-8")) if published.is_file() else None
+        merged = merge_index(already, local)
         published.write_text(
             json.dumps(merged, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8"
         )
