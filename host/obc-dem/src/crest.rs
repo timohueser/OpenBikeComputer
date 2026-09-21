@@ -38,10 +38,15 @@
 //! the node whose half-posting cell holds its centre. Every archive pixel inside the window is read
 //! exactly once, which is both the cheapest possible pass and a finer probe grid than any node-side
 //! sub-sampling: at the v1 posting a node's cell holds 64 archive pixels.
+//!
+//! A pooled pixel is a maximum, not a sample, so the gap under one is measured against the
+//! **highest** the native surface reaches over that pixel's own footprint
+//! ([`roof`](NativeWindow::roof)). Measuring it at the pixel's centre instead reads the gap high
+//! wherever the ground is steep, and lifts nodes the reference does not stand `LIFT_M` above.
 
 use obc_formats::obct::{cell_samples_log2, GRID_ORIGIN, NODATA};
 
-use crate::reference::{ReferenceArchive, Window, NO_PIXEL};
+use crate::reference::{ReferenceArchive, Window, NO_PIXEL, STEP_LOG2};
 
 /// A node is a candidate when the reference stands this far above our bilinear surface.
 const LIFT_M: f64 = 10.0;
@@ -50,6 +55,8 @@ const CONVEX_M: f64 = 3.0;
 /// Nodes the scan reaches beyond the map's own range, which is the 2-ring the rule reads: the
 /// convexity test needs a node's four neighbours, and the dilation needs their own selection.
 const HALO: i64 = 2;
+/// Half an archive pixel, µdeg: the reach of a pooled pixel's footprint from its centre.
+const HALF_PIXEL: i64 = 1 << (STEP_LOG2 - 1);
 /// A lift past this is worth an operator's attention. There is no ceiling on a lift — where the
 /// source lost a rock wall, the reference is the better measurement and a clamp would put the error
 /// back — but a reference with a spike in it looks exactly like a cliff, and the two have to be
@@ -139,12 +146,13 @@ impl LiftMap {
 
         // The native heights the rule reads: every node the scan holds, plus the one further ring
         // its 3×3 hole test and its bilinear intervals reach into.
-        let heights = NativeWindow::sample(origin_y, origin_x, step, scan.low - 1, scan.high + 1, native);
+        let heights = NativeWindow::sample(origin_y, origin_x, posting_log2, scan.low - 1, scan.high + 1, native);
         // A node with a hole anywhere in its 3×3 native ring is out of the rule altogether (§9.1):
         // there is no bilinear surface there to measure a gap against. Deciding it once per node
         // rather than once per pixel is also what keeps the hole test off the inner loop — and it is
         // what lets the loop below interpolate without checking for a hole, because a pixel lands in
-        // the node nearest it, whose 3×3 ring holds every corner of the interval the pixel is in.
+        // the node nearest it, and the interval holding the pixel's whole footprint has all four of
+        // its corners in that node's 3×3 ring.
         let holed: Vec<bool> = scan.nodes_iter().map(|(y, x)| heights.hole_in_ring(y, x)).collect();
 
         // The reference maximum inside each node's own half-posting cell, and how far that maximum
@@ -154,14 +162,13 @@ impl LiftMap {
         let mut any = false;
         for (ti, tj) in window.tiles() {
             let Some(tile) = archive.tile(ti, tj)? else { continue };
-            let mut interval = Interval::default();
             tile.centres_in(window, |lat, lon, height| {
                 let at = scan.at(node_of(lat, origin_y, step), node_of(lon, origin_x, step));
                 if holed[at] {
                     return;
                 }
                 node_max[at] = node_max[at].max(height);
-                gap[at] = gap[at].max(f64::from(height) - interval.surface(&heights, lat, lon));
+                gap[at] = gap[at].max(f64::from(height) - heights.roof(lat, lon));
                 any = true;
             });
         }
@@ -302,6 +309,7 @@ impl Scan {
 struct NativeWindow {
     origin_y: i64,
     origin_x: i64,
+    posting_log2: u8,
     step: i64,
     low: i64,
     side: usize,
@@ -312,11 +320,12 @@ impl NativeWindow {
     fn sample(
         origin_y: i64,
         origin_x: i64,
-        step: i64,
+        posting_log2: u8,
         low: i64,
         high: i64,
         mut native: impl FnMut(i32, i32) -> i16,
     ) -> NativeWindow {
+        let step = 1i64 << posting_log2;
         let side = (high - low + 1) as usize;
         let mut heights = Vec::with_capacity(side * side);
         for y in low..=high {
@@ -324,7 +333,7 @@ impl NativeWindow {
                 heights.push(native((origin_y + y * step) as i32, (origin_x + x * step) as i32));
             }
         }
-        NativeWindow { origin_y, origin_x, step, low, side, heights }
+        NativeWindow { origin_y, origin_x, posting_log2, step, low, side, heights }
     }
 
     /// The native height at a node coordinate. Outside the window is a hole, which stops the rule
@@ -342,41 +351,46 @@ impl NativeWindow {
         (y - 1..=y + 1).any(|dy| (x - 1..=x + 1).any(|dx| self.at(dy, dx) == NODATA))
     }
 
-    /// The four native corners of the lattice interval `(iy, ix)`, as
-    /// `[(iy, ix), (iy + 1, ix), (iy, ix + 1), (iy + 1, ix + 1)]`.
-    fn corners(&self, iy: i64, ix: i64) -> [f64; 4] {
-        [(0, 0), (1, 0), (0, 1), (1, 1)].map(|(dy, dx)| f64::from(self.at(iy + dy, ix + dx)))
-    }
-}
-
-/// The bilinear native surface at a reference pixel centre, keeping the four corners of the lattice
-/// interval between pixels.
-///
-/// A pass walks a tile row-major, so the interval changes once every `step / 2^6` pixels — eight at
-/// the v1 posting — and a one-entry cache removes seven lookups in eight.
-///
-/// The interpolation is in corner-and-slope form, as `DemMosaic::height` is and for the same
-/// reason: over four equal corners the three difference terms are exactly `0.0`, so a flat surface
-/// stays flat to the bit and a gap over it is exactly the reference's own height above it.
-#[derive(Default)]
-struct Interval {
-    at: Option<(i64, i64)>,
-    corners: [f64; 4],
-}
-
-impl Interval {
-    fn surface(&mut self, native: &NativeWindow, lat: i64, lon: i64) -> f64 {
-        let (dy, dx) = (lat - native.origin_y, lon - native.origin_x);
-        let (iy, ix) = (dy.div_euclid(native.step), dx.div_euclid(native.step));
-        if self.at != Some((iy, ix)) {
-            self.corners = native.corners(iy, ix);
-            self.at = Some((iy, ix));
-        }
-        let [v00, v10, v01, v11] = self.corners;
-        let step = native.step as f64;
-        let fy = dy.rem_euclid(native.step) as f64 / step;
-        let fx = dx.rem_euclid(native.step) as f64 / step;
+    /// The bilinear native surface at a µdeg coordinate inside the window.
+    ///
+    /// In corner-and-slope form, as `DemMosaic::height` is and for the same reason: over four equal
+    /// corners the three difference terms are exactly `0.0`, so a flat surface stays flat to the bit
+    /// and a gap over it is exactly the reference's own height above it.
+    fn surface_at(&self, lat: i64, lon: i64) -> f64 {
+        let (dy, dx) = (lat - self.origin_y, lon - self.origin_x);
+        // A posting is a power of two, so `>>` is the floor division and `&` the remainder — for a
+        // coordinate south or west of the cell origin as well, which is where the halo reads.
+        let (iy, ix) = (dy >> self.posting_log2, dx >> self.posting_log2);
+        let step = self.step as f64;
+        let (fy, fx) = ((dy & (self.step - 1)) as f64 / step, (dx & (self.step - 1)) as f64 / step);
+        let v00 = f64::from(self.at(iy, ix));
+        let v10 = f64::from(self.at(iy + 1, ix));
+        let v01 = f64::from(self.at(iy, ix + 1));
+        let v11 = f64::from(self.at(iy + 1, ix + 1));
         v00 + (v10 - v00) * fy + (v01 - v00) * fx + (v11 - v01 - v10 + v00) * fy * fx
+    }
+
+    /// The **highest** the native surface reaches over one archive pixel's footprint: the pixel's
+    /// own square, [`HALF_PIXEL`] µdeg either side of the centre this is given.
+    ///
+    /// §9.1's gap has to be a lower bound on how far the reference stands above our surface, and an
+    /// archive pixel is a *maximum* that may have come from anywhere inside its square. Measuring
+    /// it against the surface at the pixel's centre therefore reads the gap high on steep ground —
+    /// up to 3 m on a 40° face, which is a third of the 10 m gate — and lifts nodes the reference
+    /// does not stand 10 m above. Against the roof of the footprint the gap can only read low.
+    ///
+    /// Four corners settle it. A bilinear patch is a saddle, so its maximum over an axis-aligned
+    /// rectangle is at a corner, and each corner is evaluated in the lattice interval that holds it.
+    /// At every posting from `2^6` µdeg up — the archive's own step, and every posting a production
+    /// bake uses — a footprint lies inside one interval, because the interval boundaries are
+    /// multiples of the pixel side; so the four corners are the exact maximum rather than a bound.
+    fn roof(&self, lat: i64, lon: i64) -> f64 {
+        let (south, north) = (lat - HALF_PIXEL, lat + HALF_PIXEL);
+        let (west, east) = (lon - HALF_PIXEL, lon + HALF_PIXEL);
+        self.surface_at(south, west)
+            .max(self.surface_at(south, east))
+            .max(self.surface_at(north, west))
+            .max(self.surface_at(north, east))
     }
 }
 
