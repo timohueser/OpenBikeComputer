@@ -1,22 +1,16 @@
 import Foundation
 
-/// Whether the phone currently has a usable network path — the one signal the
-/// MapKit basemap preview (#294) needs. MapKit tiles come off Apple's servers,
-/// so offline (or a captive/failed path) means no basemap; the preview then
-/// degrades to the grid renderer. This is **infrastructure, not UI** — it lives
-/// beside `DeviceTransport` and is injected the same way (a protocol seam, so the
-/// online/offline decision is unit-testable without a real radio).
-///
-/// The map path is the only consumer, so the surface is deliberately tiny: a
-/// stream that replays the current value on subscribe, then yields on change.
+/// Whether the phone has a usable network path: the one signal the MapKit basemap preview
+/// needs. MapKit tiles come off Apple's servers, so offline means no basemap and the preview
+/// degrades to the grid renderer. A protocol seam, so the decision is testable with no radio.
 public protocol NetworkReachability: Sendable {
-    /// Online/offline updates. **Replays** the current value immediately on
-    /// subscribe (like `DeviceLink.state`), then emits on every change.
+    /// Online and offline updates. It replays the current value immediately on subscribe, then
+    /// emits on every change.
     var updates: AsyncStream<Bool> { get }
 }
 
-/// A fixed reachability — the whole point is testability and the forced-offline
-/// launch override (`-OBCNetwork offline`). Emits `isOnline` once and holds it.
+/// A fixed reachability, for tests and the `-OBCNetwork offline` launch override. It emits
+/// `isOnline` once and holds it.
 public struct ConstantReachability: NetworkReachability {
     private let isOnline: Bool
 
@@ -28,8 +22,8 @@ public struct ConstantReachability: NetworkReachability {
         let isOnline = self.isOnline
         return AsyncStream { continuation in
             continuation.yield(isOnline)
-            // Never finishes: a finished stream would read as "no more updates",
-            // and a consumer that treats stream-end as offline must not flip.
+            // Never finishes: a consumer that reads the end of the stream as offline must not
+            // flip.
         }
     }
 }
@@ -37,11 +31,9 @@ public struct ConstantReachability: NetworkReachability {
 #if canImport(Network)
 import Network
 
-/// The real reachability, backed by `NWPathMonitor`. Each `updates` subscription
-/// spins up its own monitor on a private queue and tears it down when the stream
-/// is cancelled (the composition root holds exactly one subscription for the app
-/// lifetime). `@unchecked Sendable` is safe: the only mutable state is confined
-/// to the monitor's queue.
+/// The real reachability, backed by `NWPathMonitor`. Each `updates` subscription starts its own
+/// monitor on a private queue and cancels it when the stream ends. `@unchecked Sendable` is
+/// safe: the only mutable state is confined to the monitor's queue.
 public final class PathMonitorReachability: NetworkReachability, @unchecked Sendable {
     public init() {}
 
