@@ -31,12 +31,10 @@
 //! `network`-band square with no roads — so the walk has no "must contain features"
 //! rule left; what it reports back is only what the caller then checks against the id.
 
-use std::cell::RefCell;
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
-use obc_formats::io::{ByteSource, Error as IoError};
+use obc_file_source::FileSource;
+use obc_formats::io::ByteSource;
 use obc_map_scene::BBox;
 use obc_reader::{MapCache, MapTables, Reader, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 
@@ -78,7 +76,7 @@ pub fn verify_cell(path: &Path, square: (i64, i64, i64, i64)) -> Result<Verified
 }
 
 fn walk(path: &Path) -> Result<Verified, String> {
-    let src = FileSource::open(path)?;
+    let src = open_map(path)?;
     let tables = MapTables::parse(&src).map_err(|e| format!("{}: not a readable OBCM map: {e:?}", path.display()))?;
     // The cache is ~277 KB — heap, never the stack (`alloc` feature).
     let cache = MapCache::new_boxed();
@@ -129,7 +127,7 @@ fn walk(path: &Path) -> Result<Verified, String> {
 /// else read. Forty bytes, so a whole cell store can be checked against its ids
 /// without decoding a single chunk.
 pub fn header_of(path: &Path) -> Result<(u8, BBox), String> {
-    let src = FileSource::open(path)?;
+    let src = open_map(path)?;
     let tables = MapTables::parse(&src).map_err(|e| format!("{}: not a readable OBCM map: {e:?}", path.display()))?;
     let cache = MapCache::new_boxed();
     let reader = Reader::new(&src, &tables, &cache);
@@ -548,39 +546,16 @@ fn satellite<T: serde::de::DeserializeOwned>(
     }
 }
 
-/// A [`ByteSource`] over an open file: positioned reads, nothing resident.
+/// The artifact as a [`ByteSource`]: positioned reads, nothing resident.
 ///
-/// `RefCell` because `ByteSource::read_at` takes `&self` (the device's sources are
-/// interior-mutable too) and verification is single-threaded.
-struct FileSource {
-    file: RefCell<File>,
-    len: u32,
-}
-
-impl FileSource {
-    fn open(path: &Path) -> Result<Self, String> {
-        let file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let len = file.metadata().map_err(|e| format!("{}: {e}", path.display()))?.len();
-        // The format addresses bytes with u32 offsets, so a >4 GB artifact is not a
-        // map the reader could ever open — say so here rather than truncating.
-        let len = u32::try_from(len)
-            .map_err(|_| format!("{}: {len} bytes exceeds the format's 4 GB limit", path.display()))?;
-        Ok(Self { file: RefCell::new(file), len })
+/// OBCM addresses bytes with `u32` offsets, so a >4 GB artifact is not a map the reader could
+/// ever open. That is the format's wall, not the read seam's, which is why it is stated here
+/// rather than inside the shared adapter.
+fn open_map(path: &Path) -> Result<FileSource, String> {
+    let src = FileSource::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let len = src.len();
+    if len > u64::from(u32::MAX) {
+        return Err(format!("{}: {len} bytes exceeds the format's 4 GB limit", path.display()));
     }
-}
-
-impl ByteSource for FileSource {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), IoError> {
-        let end = offset.checked_add(buf.len() as u64).ok_or(IoError::BadOffset)?;
-        if end > u64::from(self.len) {
-            return Err(IoError::BadOffset);
-        }
-        let mut file = self.file.try_borrow_mut().map_err(|_| IoError::Io)?;
-        file.seek(SeekFrom::Start(offset)).map_err(|_| IoError::Io)?;
-        file.read_exact(buf).map_err(|_| IoError::Io)
-    }
-
-    fn len(&self) -> u64 {
-        self.len.into()
-    }
+    Ok(src)
 }

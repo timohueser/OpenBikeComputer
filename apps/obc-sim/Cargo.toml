@@ -18,6 +18,8 @@ obc-reader = { path = "../../firmware/obc-reader" }
 # (the headless one-shot planner builds its own scratch; the stepped NavPlan lives in obc-host-core).
 obc-route = { path = "../../firmware/obc-route", features = ["alloc"] }
 obc-formats = { path = "../../firmware/obc-formats" } # the byte-I/O seam (ByteSource/ByteSink/SliceSource/Error) — the authority, not via obc-route
+# The one file adapter onto that seam, shared with the host tools.
+obc-file-source = { path = "../../host/obc-file-source" }
 obc-ble = { path = "../../firmware/obc-ble" }
 chrono = { version = "0.4.34", default-features = false, features = ["std", "clock"] }
 obc-render = { path = "../../firmware/obc-render" }

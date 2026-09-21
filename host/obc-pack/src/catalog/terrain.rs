@@ -390,7 +390,7 @@ struct ObctHeader {
 }
 
 fn read_obct_header(path: &Path) -> Result<ObctHeader, String> {
-    let source = crate::terrain::FileSource::open(path)?;
+    let source = crate::terrain::open_obct(path)?;
     let reader = obc_elevation::TerrainReader::parse(&source)
         .map_err(|e| format!("{}: not a usable OBCT artifact ({e:?})", path.display()))?;
     let header = reader.header();
