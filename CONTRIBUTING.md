@@ -22,11 +22,13 @@ wrapper, use `./tools/obc` from the worktree root until the installed checkout h
 
 Each `obc` task declares a group. `obc` lists every group but `agent`, so the everyday list stays
 short, and the last line points at the rest. `obc --agent` lists the agent tasks and `obc --all`
-lists all of them. Every task runs by name, whatever its group. Bash completion offers the tasks
+lists all of them. `obc help TASK`, or `obc TASK --help`, prints the whole comment block above
+the recipe. Every task runs by name, whatever its group. Bash completion offers the tasks
 outside the `agent` group; `OBC_COMPLETE_ALL=1` offers all of them.
 
 A task belongs to `agent` when an automation is its main user. Give each new task a
-`[group('...')]` attribute in `tools/justfile`.
+`[group('...')]` attribute in `tools/justfile` and a comment block whose last line is the
+one-sentence summary the listing shows; the lines above it are the help text.
 
 For concurrent browser sessions, set `OBC_BROWSER_PORT` to a free port before the builder or web
 demo browser suite. For a separate builder frontend, start the backend with `obc web --port 8001`

@@ -1,8 +1,12 @@
 from pathlib import Path
+import re
 import tempfile
 import unittest
 
 from tools import tasks
+
+
+REAL_JUSTFILE = Path(__file__).parents[1] / "justfile"
 
 
 JUSTFILE = """
@@ -49,17 +53,30 @@ class TasksTests(unittest.TestCase):
         self.tasks = tasks.load(justfile)
 
     def test_reads_the_group_and_doc_and_drops_private_tasks(self):
-        self.assertEqual(self.tasks["sim"], ("run", "Run the simulator."))
-        self.assertEqual(self.tasks["loc-ledger"][0], "agent")
-        self.assertEqual(self.tasks["stray"][0], "")
+        self.assertEqual(self.tasks["sim"], tasks.Task("run", ("Run the simulator.",)))
+        self.assertEqual(self.tasks["loc-ledger"].group, "agent")
+        self.assertEqual(self.tasks["stray"].group, "")
         self.assertNotIn("default", self.tasks)
 
     def test_reads_no_task_from_an_assignment_a_setting_or_a_recipe_body(self):
         self.assertEqual(set(self.tasks), {"sim", "flash", "loc-ledger", "stray"})
 
     def test_the_last_comment_line_is_the_doc_and_an_empty_line_breaks_the_block(self):
-        self.assertEqual(self.tasks["flash"][1], "Flash the board.")
-        self.assertEqual(self.tasks["loc-ledger"][1], "")
+        self.assertEqual(self.tasks["flash"].doc, "Flash the board.")
+        self.assertEqual(self.tasks["loc-ledger"].doc, "")
+
+    def test_describe_leads_with_the_summary_and_indents_the_rest_of_the_block(self):
+        self.assertEqual(
+            tasks.describe("flash", self.tasks["flash"]),
+            "obc flash  Flash the board.\n\n  The first line of the block.",
+        )
+        self.assertEqual(tasks.describe("sim", self.tasks["sim"]), "obc sim  Run the simulator.")
+
+    def test_every_real_task_summary_is_a_sentence_not_a_trailing_fragment(self):
+        for name, task in tasks.load(REAL_JUSTFILE).items():
+            with self.subTest(task=name):
+                self.assertRegex(task.doc, re.compile(r"^[A-Z]"), f"{name}: summary is not a sentence")
+                self.assertFalse(task.doc.startswith("Args"), f"{name}: summary is only its arguments")
 
     def test_a_justfile_with_no_task_is_an_error(self):
         with tempfile.TemporaryDirectory() as scratch:
