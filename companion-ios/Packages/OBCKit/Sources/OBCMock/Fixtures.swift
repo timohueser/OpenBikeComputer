@@ -172,9 +172,9 @@ public struct RideEntry: Sendable {
 // MARK: - Loading
 
 extension FixtureSet {
-    /// Decode a bundled fixture set by name. The website ride-only variant reuses its source
-    /// fixture without the planned route, so an import can share that launch without a collision.
-    /// Missing or unreadable resources fall back to `builtIn` — the mock never traps.
+    /// Decode a bundled fixture set by name. The ride-only variant reuses its source fixture
+    /// without the planned route, so an import can share that launch without a collision. Missing
+    /// or unreadable resources fall back to `builtIn`: the mock never traps.
     public static func load(_ named: String) -> FixtureSet {
         if named == "website-rides" {
             var fixtures = load("website")
@@ -199,7 +199,7 @@ extension FixtureSet {
     /// device is a device, so it states one rather than serving a short read by default.
     public static let defaultObcmVersion: UInt8 = 14
 
-    /// Minimal safety net when no JSON is present (keeps the mock alive without resources).
+    /// Minimal safety net when no JSON is present, which keeps the mock alive without resources.
     public static let builtIn = FixtureSet(
         deviceInfo: DeviceInfo(
             name: "OBC (mock)", firmwareVersion: "0.0.0-mock",
@@ -211,13 +211,11 @@ extension FixtureSet {
     )
 }
 
-/// The bundled sample route files the `-OBCImportSample` launch hook feeds the
-/// import path, so E1/H4/H5 demos and XCUITests exercise the same decoder a
-/// Files pick does. `gpx` is a real Komoot export (Schwarzwald tour,
-/// downsampled), `tcx` a Garmin-style course (Alpe d'Huez), and `bad` the
-/// design's I2 impostor — a PDF name over non-route bytes, for H5.
+/// The bundled sample route files the import launch hook feeds the import path, so demos and UI
+/// tests exercise the same decoder a Files pick does. One is a real GPX export, one a
+/// Garmin-style TCX course, and one an impostor: a PDF name over non-route bytes.
 public enum SampleRouteFile {
-    /// Raw values are the `-OBCImportSample <kind>` launch tokens.
+    /// Raw values are the launch-argument tokens.
     public enum Kind: String, Sendable {
         case gpx, tcx, bad, grimsel
     }
@@ -244,20 +242,18 @@ public enum SampleRouteFile {
     }
 }
 
-/// A synthetic OBCU v2 update container (`OBCU_Spec.md` §1) for the
-/// `-OBCFirmwareDemo` launch hook and previews — the Files picker can't be driven
-/// from automation, so a demo/screenshot run needs a pre-staged file. Both CRCs
-/// are correct and the signature marker is set, so `StagedFirmware.validate` accepts
-/// it just like a real `UPDATE.BIN`. Not a real image — the raw body is a
-/// deterministic pattern.
+/// A synthetic update container for the firmware demo launch hook and for previews: the Files
+/// picker cannot be driven from automation, so a demo run needs a pre-staged file. Both CRCs are
+/// correct and the signature marker is set, so validation accepts it just like a real one. It is
+/// not a real image: the raw body is a deterministic pattern.
 ///
-/// **Its signature is a placeholder.** The app deliberately does not verify signatures
-/// (the trusted key lives in the firmware — §1.4), so a demo fixture only needs a
-/// well-formed 64-byte trailer to exercise every app-side path. A real device would
-/// refuse this file at the arm, which is exactly correct: it isn't a real release.
+/// Its signature is a placeholder. The app deliberately does not verify signatures, because the
+/// trusted key lives in the firmware, so a demo fixture only needs a well-formed 64-byte trailer
+/// to exercise every app-side path. A real device refuses this file at the install request, which
+/// is exactly correct.
 public enum SampleFirmwareFile {
-    /// A ~0.9 MB container tagged `version`, sized to feel like a real firmware
-    /// image so the transfer bar paces realistically.
+    /// A container of about 0.9 MB tagged `version`, sized to feel like a real firmware image so
+    /// the transfer bar paces realistically.
     public static func container(version: String = "0.5.0", imageBytes: Int = 900_000) -> Data {
         var image = Data(capacity: imageBytes)
         image.append(contentsOf: withUnsafeBytes(of: UInt32(0x2002_0000).littleEndian, Array.init))
@@ -265,24 +261,24 @@ public enum SampleFirmwareFile {
 
         var header = Data(count: 64)
         header.replaceSubrange(0..<4, with: Array("OBCU".utf8))
-        header[4] = 1 // header_version LE — still 1 in a v2 container (§1.2)
+        header[4] = 1 // header_version, still 1 in a signed container
         header.replaceSubrange(8..<12, with: withUnsafeBytes(of: UInt32(image.count).littleEndian, Array.init))
         header.replaceSubrange(12..<16, with: withUnsafeBytes(of: CRC32.checksum(image).littleEndian, Array.init))
         let v = Array(version.utf8.prefix(32))
         header.replaceSubrange(16..<16 + v.count, with: v)
-        // 48..52: sig_scheme = 1 (Ed25519), sig_len = 64 — the v2 marker (§1.1).
+        // Bytes 48 to 52 hold the signature scheme and length: the signed-container marker.
         header.replaceSubrange(48..<50, with: withUnsafeBytes(of: UInt16(1).littleEndian, Array.init))
         header.replaceSubrange(50..<52, with: withUnsafeBytes(of: UInt16(64).littleEndian, Array.init))
         header.replaceSubrange(60..<64, with: withUnsafeBytes(of: CRC32.checksum(header[0..<60]).littleEndian, Array.init))
-        // A deterministic stand-in trailer (see the note above — not a valid signature).
+        // A deterministic stand-in trailer, not a valid signature.
         let signature = Data((0..<64).map { UInt8(($0 &* 7 &+ 3) & 0xFF) })
         return header + image + signature
     }
 }
 
-/// Deterministic opaque payload bytes — stands in for the compact-binary route/ride
-/// object the real path would stream. Cheap to make; the exact bytes don't matter
-/// (the mock never frames or CRCs them — see `OBCProtocol.md`).
+/// Deterministic opaque payload bytes: a stand-in for the compact-binary object the real path
+/// would stream. Cheap to make, and the exact bytes do not matter, because the mock never frames
+/// or checksums them.
 public enum MockPayload {
     public static func make(count: Int) -> Data {
         guard count > 0 else { return Data() }
@@ -295,10 +291,10 @@ public enum MockPayload {
     }
 }
 
-// MARK: - JSON DTOs (editable-fixture shape → domain)
+// MARK: - JSON DTOs
 
-/// Top-level fixture file. Kept separate from `FixtureSet` so the on-disk shape (raw
-/// lat/lon tracks, string enums, optional fields) can stay human-editable.
+/// Top-level fixture file. Kept separate from `FixtureSet`, so the on-disk shape can stay
+/// human-editable.
 private struct FixtureFile: Decodable {
     let deviceInfo: DeviceInfoDTO
     let config: ConfigDTO
@@ -306,8 +302,8 @@ private struct FixtureFile: Decodable {
     let diagnostics: String?
     let routes: [RouteDTO]
     let rides: [RideDTO]
-    /// Optional (only the trips demo fixture carries it) — grouping some of
-    /// `routes` into trips by their string ids.
+    /// Optional, and carried only by the trips demo fixture: it groups some of `routes` into trips
+    /// by their string ids.
     let trips: [TripDTO]?
 
     var fixtureSet: FixtureSet {
@@ -343,8 +339,8 @@ private struct DeviceInfoDTO: Decodable {
     let serial: String?
     let protocolVersion: UInt16?
     let storeID: String?
-    /// Optional in the JSON; defaults to `FixtureSet.defaultObcmVersion` so a
-    /// mock device states the map format it reads, the way a real one does.
+    /// Optional in the JSON; it defaults so a mock device states the map format it reads, the way
+    /// a real one does.
     let obcmVersion: UInt8?
 
     var domain: DeviceInfo {
@@ -368,7 +364,7 @@ private struct ConfigDTO: Decodable {
 private struct GeoDTO: Decodable {
     let lat: Double
     let lon: Double
-    /// Elevation in metres — feeds the detail screens' profile card (E2/E3).
+    /// Elevation in metres, which feeds the detail screens' profile card.
     let ele: Double?
     var coordinate: Coordinate { Coordinate(latitude: lat, longitude: lon) }
 }
@@ -390,9 +386,9 @@ private struct RouteDTO: Decodable {
     let source: String?
     let maxGradePercent: Double?
     let payloadBytes: Int?
-    /// The device object id when the (mock) device holds a copy — lights the C1
-    /// badge and puts the route in `listRoutes()`. Absent = phone-library only.
-    /// A bare number in the JSON, wrapped into the domain's `DeviceObjectID`.
+    /// The device object id when the mock device holds a copy: it lights the badge and puts the
+    /// route in the device catalog. Absent means the route is phone-library only. A bare number in
+    /// the JSON, wrapped into the domain type.
     let deviceObjectID: DeviceObjectID?
     let track: [GeoDTO]
     let waypoints: [WaypointDTO]?
