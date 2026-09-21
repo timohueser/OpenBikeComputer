@@ -1,5 +1,4 @@
 //! Streaming GPX conversion and the shared bounded OBCR emitter.
-//! The emitter owns retained geometry, incoming facts, chunk seams and measured totals.
 
 use heapless::Vec;
 
@@ -18,19 +17,17 @@ use obc_map_scene::{cos_lat, delta_m, ground_dist_m};
 /// Decimation tolerance: drop a vertex within this perpendicular distance of the chord.
 const EPSILON_M: f32 = 1.0;
 /// Force a kept geometry vertex at least this often, so a long near-straight run keeps shape
-/// fidelity at real (not interpolated) points. (The stored-delta `int16` bound is guaranteed
-/// unconditionally by [`MAX_SEGMENT_UDEG`] densification — even a segment with no candidate.)
+/// fidelity at real (not interpolated) points.
 const MAX_SPAN_M: f32 = 1200.0;
 /// Largest stored per-vertex coordinate delta (µdeg). A longer segment is split with
-/// interpolated vertices so `(x - px) as i16` never wraps — including a 2-point track whose one
-/// segment has no intermediate candidate for the `MAX_SPAN_M` rule to keep. Mirrors the OBCM
-/// packer's `MAX_SEGMENT` so both formats densify on the same threshold.
+/// interpolated vertices so `(x - px) as i16` never wraps. Mirrors the OBCM packer's
+/// `MAX_SEGMENT` so both formats densify on the same threshold.
 const MAX_SEGMENT_UDEG: i64 = 30_000;
 
 /// Max bytes of one chunk's record body (`(points-1) × 7`).
 const BODY_CAP: usize = (MAX_POINTS_PER_CHUNK - 1) * POINT_RECORD_LEN;
 
-/// Stats computed during conversion (also written into the header).
+/// Stats computed during conversion and written into the header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RouteStats {
     pub point_count: u32,
@@ -46,8 +43,7 @@ pub struct RouteStats {
     pub has_elevation: bool,
 }
 
-/// Convert a GPX byte source into a `.obcr` written to `sink`, naming the route
-/// `name`. Returns the computed [`RouteStats`].
+/// Convert a GPX byte source into a `.obcr` written to `sink`, naming the route `name`.
 pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) -> Result<RouteStats, Error> {
     gpx_to_obcr_attributed(src, name, sink, None, |_, _| Ok(0))
 }
@@ -63,16 +59,14 @@ pub fn gpx_to_obcr_attributed(
     let mut em = ObcrEmitter::new(sink)?;
     em.set_attribution_map(map_source);
 
-    // Waypoint pass first (GPX carries `<wpt>` file-level, before the track): collect
-    // up to MAX_WAYPOINTS into a bounded resident set, then place each on the track
-    // during the main pass below. Scoped so the scanner's block buffer is gone before
-    // the track scanner's exists — the passes are sequential, never co-resident.
+    // GPX carries `<wpt>` before the track, so collect up to MAX_WAYPOINTS first and place each
+    // on the track in the pass below. The scope keeps the two scanners' block buffers from being
+    // resident at the same time.
     let mut wps: Vec<WpPlace, MAX_WAYPOINTS> = Vec::new();
     {
         let mut scan = WptScanner::new(src);
         while let Some(wp) = scan.next_waypoint()? {
-            // The symbol → category mapping happens once, here: what's stored is the category, so
-            // the freeform `<sym>` text never has to be carried past the import.
+            // Only the category is stored, so the freeform `<sym>` text stops at the import.
             let category_id = category_for_symbol(&wp.symbol).map_or(WAYPOINT_CATEGORY_GENERIC, |c| c.id());
             let place = WpPlace {
                 wp,
@@ -85,7 +79,7 @@ pub fn gpx_to_obcr_attributed(
                 raw_index: 0,
             };
             if wps.push(place).is_err() {
-                break; // cap reached — keep the first MAX_WAYPOINTS
+                break; // cap reached: keep the first MAX_WAYPOINTS
             }
         }
     }
@@ -93,23 +87,22 @@ pub fn gpx_to_obcr_attributed(
     let mut scan = GpxScanner::new(src);
 
     let mut raw_index = 0;
-    // The previous raw point, kept only for the waypoint offset's *direction of travel*.
+    // The previous raw point, kept only for the waypoint offset's direction of travel.
     let mut prev_raw: Option<(i32, i32)> = None;
 
     while !wps.is_empty() {
         let Some(p) = scan.next_point()? else { break };
 
-        // Waypoint placement: nearest **raw** track point wins; its cumulative distance is
-        // the waypoint's position along the route. Matches the phone importer's nearest-point
-        // (not segment-projection) placement so the two OBCR producers agree. The same
-        // projection also yields the stored lateral offset: its magnitude is the distance to
-        // that winning point, its sign which side of the direction of travel the waypoint fell.
+        // Placement: the nearest raw track point wins and its cumulative distance becomes the
+        // waypoint's position along the route. The phone importer uses the same nearest-point
+        // rule, so the two OBCR producers agree. The stored lateral offset comes from the same
+        // winning point: magnitude is the distance to it, sign is the side of travel.
         if !wps.is_empty() {
             let cl = cos_lat(p.lat);
             let here = (p.lon, p.lat);
             for w in wps.iter_mut() {
-                // A waypoint whose best point was the track's *first* has no incoming segment to
-                // take a heading from, so its sign waits one point for the outgoing one.
+                // A best point that is the track's first has no incoming segment for a heading,
+                // so the sign waits one point for the outgoing segment.
                 if w.sign_pending {
                     if let Some(pr) = prev_raw {
                         w.lateral_offset_m = signed_offset_m(w.best_d2, cross(pr, here, pr, (w.wp.lon, w.wp.lat), cl));
@@ -125,8 +118,8 @@ pub fn gpx_to_obcr_attributed(
                         Some(pr) => {
                             w.lateral_offset_m = signed_offset_m(d2, cross(pr, here, here, (w.wp.lon, w.wp.lat), cl));
                         }
-                        // Magnitude now, side on the next point (or, for a one-point track, never
-                        // — `signed_offset_m`'s positive default stands).
+                        // Magnitude now, side on the next point. A one-point track keeps
+                        // `signed_offset_m`'s positive default.
                         None => {
                             w.lateral_offset_m = signed_offset_m(d2, 0.0);
                             w.sign_pending = true;
@@ -159,17 +152,12 @@ pub fn gpx_to_obcr_attributed(
 }
 
 /// The streaming OBCR writer shared by [`gpx_to_obcr`] and the nav router's emit
-/// ([`crate::nav`]): reserves the v4 header up front, feeds raw points through the
-/// 1-step-lookahead decimator and the `int16`-delta densify guard into the chunk
-/// [`Encoder`], then backfills the header once offsets and totals are known. Owns every
-/// format/geometry invariant (bbox growth, start point, cumulative distance, chunk
-/// seams) so the two OBCR producers stay byte-compatible by construction; the final encoded geometry owns all route facts.
+/// ([`crate::nav`]). It owns every format and geometry invariant, so the two OBCR producers stay
+/// byte-compatible by construction.
 pub(crate) struct ObcrEmitter {
     enc: Encoder,
-    /// Cumulative raw-path distance in `f64`: each per-segment distance is a small `f32`
-    /// (see `geo`), but a long route's running total needs the dynamic range — `f32`'s
-    /// ~7 significant digits resolve a 300 km total to only ~3 cm and would drift over
-    /// thousands of segments.
+    /// Cumulative raw-path distance. `f64` because an `f32` running total drifts over the
+    /// thousands of segments of a long route.
     cum_dist: f64,
     prev: Option<(i32, i32)>,
     bbox: Option<BBox>,
@@ -178,7 +166,7 @@ pub(crate) struct ObcrEmitter {
     // Decimation state (1-step lookahead).
     last_kept: Option<Cand>,
     pending: Option<Cand>,
-    /// Elevation-detail keep threshold (m), `0` = off — see
+    /// Elevation-detail keep threshold (m). `0` turns it off. See
     /// [`keep_elevation_detail`](ObcrEmitter::keep_elevation_detail).
     ele_keep_m: i16,
     surface: u8,
@@ -187,8 +175,6 @@ pub(crate) struct ObcrEmitter {
 }
 
 impl ObcrEmitter {
-    /// Initialize the emitter directly inside its phase-owned workspace.
-    ///
     /// # Safety
     /// `slot` must be aligned, writable and exclusively owned for a complete emitter.
     pub(crate) unsafe fn init_in_place(slot: *mut Self) {
@@ -222,14 +208,13 @@ impl ObcrEmitter {
             } = &*slot;
         }
     }
-    /// Reserve the v4 header on `sink`; the body follows immediately
-    /// (`data_offset = HEADER_FULL_LEN`).
+    /// Reserve the header on `sink`. The body follows at `data_offset = HEADER_FULL_LEN`.
     pub(crate) fn new(sink: &mut dyn ByteSink) -> Result<ObcrEmitter, Error> {
         Self::begin(sink)?;
         Ok(Self::empty())
     }
 
-    /// Construct in the owner's workspace before streaming starts. No sink write occurs here.
+    /// Construct in the owner's workspace before streaming starts. Nothing is written to a sink.
     pub(crate) fn empty() -> Self {
         ObcrEmitter {
             enc: Encoder::new(HEADER_FULL_LEN as u32),
@@ -288,10 +273,9 @@ impl ObcrEmitter {
         self.enc.data_pos + self.enc.index.len() as u32 * CHUNK_META_LEN as u32
     }
 
-    /// Feed one raw point: accumulate distance/bbox, then run the decimator — each kept
-    /// point is emitted (densified) to the encoder.
+    /// Feed one raw point: accumulate distance and bbox, then run the decimator. Each kept point
+    /// is emitted to the encoder, densified.
     pub(crate) fn push(&mut self, sink: &mut dyn ByteSink, lon: i32, lat: i32, ele: i16) -> Result<(), Error> {
-        // Distance from the previous raw point.
         if let Some(pr) = self.prev {
             self.cum_dist += ground_dist_m(pr, (lon, lat)) as f64;
         } else {
@@ -335,8 +319,7 @@ impl ObcrEmitter {
         Ok(())
     }
 
-    /// Stored route geometry is already simplified. Keep its vertices and measure its
-    /// output axis before a transform records a waypoint or seam anchor.
+    /// Stored route geometry is already simplified, so keep every vertex.
     pub(crate) fn push_retained(&mut self, sink: &mut dyn ByteSink, lon: i32, lat: i32, ele: i16) -> Result<(), Error> {
         self.push(sink, lon, lat, ele)?;
         self.flush_pending(sink)
@@ -350,10 +333,9 @@ impl ObcrEmitter {
         Ok(())
     }
 
-    /// Flush the trailing point, write the chunk index + waypoint table, and backfill the
-    /// header. `Error::Empty` if no point was ever pushed. `wps` is the (already collected)
-    /// waypoint set — pass an empty one for a waypoint-free route. Call once; after any error
-    /// discard this stream. The owner keeps the emitter in place until its terminal phase.
+    /// Flush the trailing point, write the chunk index and waypoint table, and backfill the
+    /// header. `Error::Empty` if no point was pushed. Pass an empty `wps` for a waypoint-free
+    /// route. Call once; discard the stream after any error.
     pub(crate) fn finish(
         &mut self,
         sink: &mut dyn ByteSink,
@@ -395,33 +377,28 @@ impl ObcrEmitter {
     }
 }
 
-/// A waypoint being placed: the raw `<wpt>` plus the best (squared) distance to any
-/// raw track point seen so far and the cumulative route distance there. `pub(crate)`
-/// only so the nav router can hand [`ObcrEmitter::finish`] an empty set and the
-/// splicer can re-place stored waypoints.
+/// A waypoint being placed: the raw `<wpt>` plus the best squared distance to any raw track point
+/// seen so far and the cumulative route distance there.
 pub(crate) struct WpPlace {
     wp: RawWaypoint,
     best_d2: f32,
     along_m: u32,
-    /// The stored category byte (§4), mapped from `<sym>`/`<type>` at import and preserved
-    /// verbatim across a splice.
+    /// The stored category byte, mapped from `<sym>`/`<type>` at import and preserved verbatim
+    /// across a splice.
     category_id: u8,
-    /// Signed lateral offset from the route line, m (positive = right of travel). Recomputed
-    /// whenever a nearer track point wins the placement; carried verbatim through a splice.
+    /// Signed lateral offset from the route line, m. Positive is right of travel.
     lateral_offset_m: i16,
-    /// The winning track point had no predecessor (it was the track's first), so the offset's
-    /// magnitude is stored but its side still waits for the outgoing segment.
+    /// The winning track point was the track's first, so the offset magnitude is stored but its
+    /// side still waits for the outgoing segment.
     sign_pending: bool,
     provenance: Option<obc_formats::obcr::WaypointProvenance>,
     raw_index: u32,
 }
 
 impl WpPlace {
-    /// Re-place an already-stored [`Waypoint`](crate::reader::Waypoint) at a (possibly shifted)
-    /// along-route distance — the splicer's constructor: placement is already decided, so the
-    /// nearest-point search state is inert. The category byte and the lateral offset ride along
-    /// unchanged: a splice only replaces the avoided span (whose waypoints are dropped), so every
-    /// surviving waypoint still sits beside the very geometry its offset was measured against.
+    /// Re-place a stored [`Waypoint`](crate::reader::Waypoint) at a possibly shifted along-route
+    /// distance. The category byte and the lateral offset stay unchanged: a splice drops the
+    /// waypoints of the replaced span, so every survivor still sits beside its own geometry.
     pub(crate) fn from_stored(w: &crate::reader::Waypoint, along_m: u32) -> WpPlace {
         WpPlace {
             wp: RawWaypoint {
@@ -442,20 +419,18 @@ impl WpPlace {
     }
 }
 
-/// The 2-D cross product of the direction of travel `dir_a → dir_b` with the offset `at → wp`, in
-/// the local-equirectangular metric (`cl = cos_lat`). Positive means `wp` lies to the **left** of
-/// travel; only its sign is used.
+/// The 2-D cross product of the direction of travel `dir_a` to `dir_b` with the offset `at` to
+/// `wp`, in the local-equirectangular metric (`cl = cos_lat`). Positive means `wp` is left of
+/// travel. Only the sign is used.
 fn cross(dir_a: (i32, i32), dir_b: (i32, i32), at: (i32, i32), wp: (i32, i32), cl: f32) -> f32 {
     let (ux, uy) = delta_m(dir_a, dir_b, cl);
     let (vx, vy) = delta_m(at, wp, cl);
     ux * vy - uy * vx
 }
 
-/// The stored lateral offset: `sqrt(d2)` metres carrying the side as its sign — negative left of
-/// travel, positive right. Saturates at the `i16` range rather than wrapping, so a waypoint dropped
-/// 40 km off route reads as "very far right", not "slightly left". A waypoint exactly on the line
-/// of travel (`cross == 0`, including the undetermined one-point-track case) takes the positive
-/// sign; at the magnitudes where the side is drawn at all, that case doesn't occur in practice.
+/// The stored lateral offset: `sqrt(d2)` metres with the side as its sign, negative left of
+/// travel and positive right. It saturates instead of wrapping, so a waypoint 40 km off route
+/// reads as very far right, not slightly left. `cross == 0` takes the positive sign.
 fn signed_offset_m(d2: f32, cross: f32) -> i16 {
     let m = libm::roundf(libm::sqrtf(d2)).clamp(0.0, i16::MAX as f32) as i16;
     if cross > 0.0 {
@@ -465,14 +440,14 @@ fn signed_offset_m(d2: f32, cross: f32) -> i16 {
     }
 }
 
-/// Sort the placed waypoints by position along the route and write the fixed-record
-/// table (spec §4) at `offset` (right after the chunk index). Returns the table's file
-/// offset for the header extension — 0 when there are no waypoints.
+/// Sort the placed waypoints by position along the route and write the fixed-record table at
+/// `offset`, right after the chunk index. Returns the table's file offset for the header
+/// extension, or 0 when there are no waypoints.
 fn write_waypoints(sink: &mut dyn ByteSink, wps: &mut Vec<WpPlace, MAX_WAYPOINTS>, offset: u32) -> Result<u32, Error> {
     if wps.is_empty() {
         return Ok(0);
     }
-    // Insertion sort by `along_m` (stable, N ≤ MAX_WAYPOINTS — no allocator).
+    // Insertion sort by `along_m`: stable, bounded by MAX_WAYPOINTS, and needs no allocator.
     for i in 1..wps.len() {
         let mut j = i;
         while j > 0 && wps[j - 1].along_m > wps[j].along_m {
@@ -498,7 +473,6 @@ fn write_waypoints(sink: &mut dyn ByteSink, wps: &mut Vec<WpPlace, MAX_WAYPOINTS
     Ok(offset)
 }
 
-/// A decimation candidate: a kept point with its cumulative stats.
 #[derive(Debug, Clone, Copy)]
 struct Cand {
     lon: i32,
@@ -508,15 +482,10 @@ struct Cand {
     cum_d: u32,
 }
 
-/// Emit `c`, first inserting linearly-interpolated synthetic vertices so no stored
-/// `(Δlon, Δlat)` exceeds the `int16` range. `prev` is the last-emitted vertex (the segment
-/// start), or `None` for the very first point. Returns the count emitted (synthetic
-/// intermediates + `c`) so the caller's running total stays exact.
-///
-/// `MAX_SPAN_M` only force-keeps an intermediate *raw* candidate between two kept vertices; a
-/// single raw segment with no candidate (e.g. a 2-point export) would otherwise be stored as
-/// one oversized delta that silently wraps `int16`. Splitting the span here makes the guard
-/// candidate-independent, mirroring the OBCM packer's `densify` on `MAX_SEGMENT_UDEG`.
+/// Emit `c`, first inserting interpolated synthetic vertices so no stored `(Δlon, Δlat)` exceeds
+/// the `int16` range. `prev` is the last emitted vertex, or `None` for the first point. Returns
+/// the count emitted. `MAX_SPAN_M` alone is not enough: a single raw segment with no intermediate
+/// candidate, such as a 2-point export, would wrap `int16`.
 fn emit_densified(enc: &mut Encoder, sink: &mut dyn ByteSink, prev: Option<Cand>, c: Cand) -> Result<u32, Error> {
     let prev = match prev {
         Some(p) => p,
@@ -530,7 +499,7 @@ fn emit_densified(enc: &mut Encoder, sink: &mut dyn ByteSink, prev: Option<Cand>
     let mut emitted = 0u32;
     let max_dist = dlon.abs().max(dlat.abs());
     if max_dist > MAX_SEGMENT_UDEG {
-        let steps = max_dist / MAX_SEGMENT_UDEG + 1; // integer step count
+        let steps = max_dist / MAX_SEGMENT_UDEG + 1;
         for step in 1..steps {
             enc.emit(sink, lerp(prev, c, step as f64 / steps as f64))?;
             emitted += 1;
@@ -540,8 +509,6 @@ fn emit_densified(enc: &mut Encoder, sink: &mut dyn ByteSink, prev: Option<Cand>
     Ok(emitted + 1)
 }
 
-/// A synthetic candidate fraction `t` (0..1) of the way from `a` to `b`, interpolating the
-/// position, elevation and cumulative stats linearly.
 fn lerp(a: Cand, b: Cand, t: f64) -> Cand {
     let f = |s: i32, e: i32| s + libm::round((e as f64 - s as f64) * t) as i32;
     let g = |s: u32, e: u32| (s as f64 + (e as f64 - s as f64) * t) as u32;
@@ -558,8 +525,8 @@ fn lerp(a: Cand, b: Cand, t: f64) -> Cand {
     }
 }
 
-/// Accumulates kept points into seam-sharing chunks, streaming each finished chunk's
-/// body out and collecting its `ChunkMeta` in a bounded resident index.
+/// Accumulates kept points into seam-sharing chunks, streams each finished chunk's body out, and
+/// collects its `ChunkMeta` in a bounded resident index.
 struct Encoder {
     index: Vec<ChunkMeta, MAX_ROUTE_CHUNKS>,
     cur: Vec<(i32, i32, i16, u8), MAX_POINTS_PER_CHUNK>,
@@ -650,7 +617,8 @@ impl Encoder {
         Ok(())
     }
 
-    /// Flush the trailing chunk (skipping a lone seam point already in the prior chunk).
+    /// Flush the trailing chunk. A lone seam point is already in the prior chunk, so it is
+    /// skipped.
     fn finish(&mut self, sink: &mut dyn ByteSink) -> Result<(), Error> {
         if self.cur.len() >= 2 || (self.index.is_empty() && !self.cur.is_empty()) {
             self.finalize(sink)?;
@@ -730,7 +698,6 @@ fn build_header(
     h[0..4].copy_from_slice(MAGIC);
     h[4] = VERSION;
     h[5] = if s.has_elevation { obc_formats::obcr::FLAG_HAS_ELEVATION } else { 0 };
-    // h[5] flags = 0, h[7] reserved = 0
 
     // Name truncated to NAME_CAP on a char boundary.
     let mut nlen = 0;
@@ -758,17 +725,15 @@ fn build_header(
     put_u32(&mut h, 52, s.chunk_count);
     put_u32(&mut h, 56, index_offset);
     put_u32(&mut h, 60, HEADER_FULL_LEN as u32); // data_offset
-                                                 // Waypoint header extension (§1.1): table offset + count; the rest reserved.
+                                                 // Waypoint header extension: table offset and count.
     put_u32(&mut h, 112, wpt_offset);
     put_u16(&mut h, 116, s.waypoint_count);
     h
 }
 
-/// Does the path reverse direction at `b` (the heading turns by more than 90°)? A perfectly
-/// collinear out-and-back — a computed detour riding back to a junction, a turnaround at a
-/// dead end — has zero perpendicular distance everywhere, so the chord test alone would
-/// collapse the whole doubled-back stretch onto its endpoints and silently lose its length
-/// from the geometry (#882). A reversal vertex is always kept.
+/// Does the path reverse direction at `b`? A collinear out-and-back has zero perpendicular
+/// distance everywhere, so the chord test alone collapses the doubled-back stretch onto its
+/// endpoints and loses its length. A reversal vertex is always kept.
 fn reverses(a: Cand, b: Cand, c: Cand) -> bool {
     let cl = cos_lat(a.lat);
     let (ux, uy) = delta_m((a.lon, a.lat), (b.lon, b.lat), cl);
@@ -776,9 +741,8 @@ fn reverses(a: Cand, b: Cand, c: Cand) -> bool {
     ux * vx + uy * vy < 0.0
 }
 
-/// Perpendicular distance (m) from point `p` to the chord `a → c`, in local-equirectangular
-/// meters. The decimator's straight-chord sibling of the matcher's clamped `project_to_segment`;
-/// segment distance / projection live in [`geo`](crate::geo), shared with the elevation profile.
+/// Perpendicular distance (m) from point `p` to the chord `a` to `c`, in local-equirectangular
+/// metres. Unlike the matcher's `project_to_segment`, this does not clamp to the segment.
 fn perp_dist_m(a: Cand, c: Cand, p: Cand) -> f32 {
     let cl = cos_lat(a.lat);
     let (cx, cy) = delta_m((a.lon, a.lat), (c.lon, c.lat), cl);
@@ -800,7 +764,6 @@ fn grow(b: Option<BBox>, lon: i32, lat: i32) -> BBox {
     }
 }
 
-/// Expand `bbox` in place to include `(lon, lat)`.
 fn bbox_extend(bbox: &mut BBox, lon: i32, lat: i32) {
     bbox.min_lon = bbox.min_lon.min(lon);
     bbox.min_lat = bbox.min_lat.min(lat);

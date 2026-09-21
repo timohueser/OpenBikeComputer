@@ -1,7 +1,7 @@
 //! Resumable detour splice through the shared OBCR emitter.
-//! Retains source head/tail facts and detour measurements. Valid sampled detour elevations are
-//! aligned to valid seam elevations by a linear residual blend. Missing heights remain unknown.
-//! Output totals measure retained geometry; waypoint provenance and avoidance state survive.
+//!
+//! Valid sampled detour elevations are aligned to the seam elevations by a linear residual blend.
+//! Missing heights stay unknown. Output totals measure the retained geometry.
 
 pub use crate::trim::trim_detour_to_tail;
 
@@ -16,57 +16,53 @@ use obc_formats::io::{ByteSink, Error};
 use obc_formats::obcr::NAME_CAP;
 use obc_map_scene::ground_dist_m;
 
-/// Source chunks decoded per [`Splicer::step`] — the splice's pacing unit (one chunk ≈ one
-/// bounded decode + a burst of emitter pushes), mirroring the search's miss budget philosophy.
+/// Source chunks decoded per [`Splicer::step`]: one bounded decode and a burst of emitter pushes.
 pub(crate) const SPLICE_CHUNKS_PER_STEP: usize = 1;
 
 /// The spliced route's name prefix. A re-spliced detour keeps its name unchanged instead of
 /// stacking prefixes.
 const NAME_PREFIX: &str = "Detour · ";
 
-/// The height move (m) that forces the splice's emitter to keep a vertex once the detour carries
-/// sampled terrain (#1091) — the same [`ELE_DEADBAND_M`] the nav emit and the GPX converter
-/// integrate at, for the same reason: "kept" and "booked by the dead-band" must be the same set of
-/// vertices, or an export of the spliced route re-imports with a different climb than its header.
+/// The height move (m) that forces the emitter to keep a vertex once the detour carries sampled
+/// terrain. It matches [`ELE_DEADBAND_M`], the band the nav emit and the GPX converter integrate
+/// at: kept vertices and vertices booked by the dead-band must be the same set, or an export of
+/// the spliced route re-imports with a different climb than its header.
 const ELE_SPLICE_KEEP_M: i16 = ELE_DEADBAND_M as i16;
 
 /// One [`Splicer::step`] outcome.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SpliceStep {
-    /// More work remains — step again next pass.
     Running,
-    /// The spliced OBCR is complete (header patched); its [`RouteStats`].
     Done(RouteStats),
-    /// The splice failed; the caller discards the sink's contents.
+    /// The caller discards the sink's contents.
     Failed(Error),
 }
 
-/// The splice's coarse phase (one enum arm per bounded unit of work).
+/// The splice's coarse phase, one arm per bounded unit of work.
 enum Phase {
-    /// Read one seam elevation per step; arm the emitter after the rejoin.
+    /// Read one seam elevation per step, then arm the emitter after the rejoin.
     Init,
     Rejoin,
-    /// Stream `original[0..split_m]`, one chunk per step (real elevations).
+    /// Stream `original[0..split_m]`, one chunk per step.
     Head,
-    /// Pre-measure the detour polyline length (the residual blend's denominator) and read its
-    /// first/last sampled heights (the blend's two residuals).
+    /// Pre-measure the detour polyline length, the blend's denominator, and read its first and
+    /// last sampled heights, the blend's two residuals.
     Measure,
     /// Stream the detour, one chunk per step, offsetting each sampled elevation by the blended
     /// seam residual.
     Detour,
-    /// Stream `original[rejoin_m..]`, one chunk per step (real elevations).
+    /// Stream `original[rejoin_m..]`, one chunk per step.
     Tail,
-    /// Re-place one stored waypoint per step, retaining at most the existing cap.
+    /// Re-place one stored waypoint per step, up to the existing cap.
     Waypoints,
     /// Write the bounded index and waypoint table, then patch the header.
     Finish,
     Terminal(Result<RouteStats, Error>),
 }
 
-/// The resumable detour splicer. Construct with [`new`](Self::new), then call
-/// [`step`](Self::step) with the same `orig`/`detour`/`sink` views each pass until it returns
-/// [`SpliceStep::Done`]/[`Failed`](SpliceStep::Failed). Like the planner, this is a caller-owned
-/// object (heap box on the host) — its one big field is the emitter.
+/// The resumable detour splicer. Call [`step`](Self::step) with the same `orig`, `detour` and
+/// `sink` views each pass until it returns [`SpliceStep::Done`] or
+/// [`Failed`](SpliceStep::Failed). The caller owns the object; its one big field is the emitter.
 pub struct Splicer {
     phase: Phase,
     adds_avoidance: bool,
@@ -79,7 +75,7 @@ pub struct Splicer {
     head_k: usize,
     det_k: usize,
     tail_k: usize,
-    /// Seam elevations read off the original route (Init).
+    /// Seam elevations read off the original route.
     ele_split: i16,
     ele_rejoin: i16,
     /// Stored endpoint elevations used to align the detour's datum to the original route.
@@ -88,25 +84,24 @@ pub struct Splicer {
     /// Valid seam elevation minus the corresponding detour endpoint elevation.
     res_start: f32,
     res_end: f32,
-    /// Measured detour polyline length (Measure) and the emit pass's running position on it.
+    /// Measured detour polyline length and the emit pass's running position on it.
     det_total: f32,
     det_along: f32,
-    /// Last point handed to the emitter (chunk-seam dedup) and the previous detour point (the
-    /// arc-length accumulator).
+    /// Last point handed to the emitter, for the seam dedup, and the previous detour point, for
+    /// the arc-length accumulator.
     last_pushed: Option<(i32, i32)>,
     prev_det: Option<(i32, i32)>,
-    /// The first tail point's cumulative distance in the spliced route — the tail waypoints'
-    /// shift base; `None` while the tail hasn't started (or is empty).
+    /// The first tail point's cumulative distance in the spliced route, which is the shift base
+    /// for the tail waypoints. `None` while the tail has not started or is empty.
     tail_first_along: Option<u32>,
-    /// Elevation accounting over the spliced stream.
     waypoints: Vec<WpPlace, MAX_WAYPOINTS>,
     waypoint_cursor: Option<WaypointCursor>,
 }
 
 impl Splicer {
-    /// A splicer for `original[0..split_m] + detour + original[rejoin_m..]`. `detour_len_m` is
-    /// The distance and elevation hints are retained in this call shape; stored point facts and
-    /// final geometry determine the output. `orig_name` supplies the derived route name.
+    /// A splicer for `original[0..split_m] + detour + original[rejoin_m..]`. The stored point
+    /// facts and the final geometry determine the output, so the distance and elevation hints in
+    /// the call shape are unused. `orig_name` supplies the derived route name.
     pub fn new(
         split_m: u32,
         rejoin_m: u32,
@@ -150,7 +145,7 @@ impl Splicer {
         }
     }
 
-    /// Visit composition retains existing flags without adding a new unresolved avoidance.
+    /// Visit composition keeps the existing flags and adds no unresolved avoidance.
     pub fn set_assistant_candidate(&mut self) {
         self.assistant_candidate = true;
     }
@@ -159,15 +154,13 @@ impl Splicer {
         self.adds_avoidance = false;
     }
 
-    /// Terminal-transition helper: latch and return the failure.
     fn fail(&mut self, e: Error) -> SpliceStep {
         self.phase = Phase::Terminal(Err(e));
         SpliceStep::Failed(e)
     }
 
     /// Run one bounded unit of splicing. `orig` is the route being detoured, `detour` the
-    /// retained detour-only OBCR from the plan phase, `sink` the spliced route's output —
-    /// the caller passes the same three views every step.
+    /// detour-only OBCR from the plan phase, and `sink` the spliced route's output.
     pub fn step(&mut self, orig: &RouteReader, detour: &RouteReader, sink: &mut dyn ByteSink) -> SpliceStep {
         match &self.phase {
             Phase::Init => {
@@ -202,7 +195,7 @@ impl Splicer {
                         0
                     } | if self.assistant_candidate { obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE } else { 0 },
                 );
-                // Preserve the sampled heights that the planner deliberately densified.
+                // Preserve the sampled heights the planner densified.
                 if detour.has_elevation() {
                     self.em.keep_elevation_detail(ELE_SPLICE_KEEP_M);
                 }
@@ -211,7 +204,7 @@ impl Splicer {
             }
             Phase::Head => {
                 for _ in 0..SPLICE_CHUNKS_PER_STEP {
-                    // A chunk intersects [0, split_m] iff it starts at or before the split.
+                    // A chunk intersects [0, split_m] only if it starts at or before the split.
                     let intersects = orig.chunks().get(self.head_k).is_some_and(|cm| cm.cum_distance_m <= self.split_m);
                     if !intersects || self.split_m == 0 {
                         self.phase = Phase::Measure;
@@ -325,10 +318,10 @@ impl Splicer {
         }
     }
 
-    /// Push one point into the emitter, maintaining the seam dedup and elevation accounting.
+    /// Push one point into the emitter, keeping the seam dedup.
     fn push_point(&mut self, sink: &mut dyn ByteSink, lon: i32, lat: i32, ele: i16) -> Result<(), Error> {
         if self.last_pushed == Some((lon, lat)) {
-            return Ok(()); // chunk-seam / hop-seam duplicate
+            return Ok(()); // seam duplicate
         }
         self.em.push_retained(sink, lon, lat, ele)?;
         self.last_pushed = Some((lon, lat));
@@ -336,12 +329,10 @@ impl Splicer {
     }
 
     /// Stream one original-route chunk clipped to `[lo, hi]`, elevations verbatim. A chunk that
-    /// misses the interval is a no-op (interval endpoints land mid-chunk on either side).
-    /// `tail: true` records the first pushed point's spliced-route distance as the waypoint
-    /// shift base ([`tail_first_along`](field@Splicer::tail_first_along)).
+    /// misses the interval is a no-op. `tail: true` records the first pushed point's
+    /// spliced-route distance as the waypoint shift base.
     ///
-    /// `#[inline(never)]` — the ~2 kB decode buffer lives in this popped frame, never the step
-    /// frame (the #419/#501 stack discipline).
+    /// Must stay `#[inline(never)]`: the decode buffer lives in this popped frame, not the step frame.
     #[inline(never)]
     fn push_orig_chunk(
         &mut self,
@@ -367,10 +358,11 @@ impl Splicer {
         Ok(())
     }
 
-    /// Measure one detour chunk's polyline length with the same per-segment metric the emit
-    /// pass accumulates — the blend's denominator must match its numerator — and latch the
-    /// detour's first/last **sampled** heights on the way past (the residuals' subtrahends); no
-    /// second pass over the detour is needed for them.
+    /// Measure one detour chunk's polyline length with the same per-segment metric the emit pass
+    /// accumulates, so the blend's denominator matches its numerator, and latch the detour's
+    /// first and last sampled heights on the way past.
+    ///
+    /// Must stay `#[inline(never)]`: the decode buffer lives in this popped frame, not the step frame.
     #[inline(never)]
     fn measure_detour_chunk(&mut self, detour: &RouteReader, k: usize) -> Result<f32, Error> {
         let mut buf = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
@@ -396,9 +388,11 @@ impl Splicer {
         Ok(len)
     }
 
-    /// Stream one detour chunk, offsetting each point's **sampled** elevation by the blended seam
-    /// residual at its arc-length position (#1091). The two ends land exactly on the stored
-    /// route's seam heights; the interior keeps whatever shape the terrain gave it.
+    /// Stream one detour chunk, offsetting each sampled elevation by the blended seam residual at
+    /// its arc-length position. The two ends land exactly on the stored route's seam heights, and
+    /// the interior keeps the shape the terrain gave it.
+    ///
+    /// Must stay `#[inline(never)]`: the decode buffer lives in this popped frame, not the step frame.
     #[inline(never)]
     fn push_detour_chunk(&mut self, detour: &RouteReader, k: usize, sink: &mut dyn ByteSink) -> Result<(), Error> {
         let mut buf = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
@@ -407,13 +401,13 @@ impl Splicer {
             let c = (p.lon, p.lat);
             if let Some(prev) = self.prev_det {
                 if prev == c {
-                    continue; // chunk-seam duplicate: no arc advance, already pushed
+                    continue; // seam duplicate: no arc advance, already pushed
                 }
                 self.det_along += ground_dist_m(prev, c);
             }
             self.prev_det = Some(c);
             let t = if self.det_total > 1e-3 { (self.det_along / self.det_total).clamp(0.0, 1.0) } else { 1.0 };
-            // Missing endpoints prevent datum alignment; valid stored heights still survive.
+            // A missing endpoint blocks the datum alignment. Valid stored heights still survive.
             let ele = if p.elevation().is_none() {
                 i16::MIN
             } else if self.ele_split == i16::MIN
@@ -432,9 +426,9 @@ impl Splicer {
         Ok(())
     }
 
-    /// Write the collected waypoints and patch the header — the splice's last writes.
+    /// Write the collected waypoints and patch the header, the splice's last writes.
     ///
-    /// Keep the final chunk/index write scratch separate from the per-step decode frame.
+    /// Must stay `#[inline(never)]`: the index write scratch stays out of the per-step frame.
     #[inline(never)]
     fn finish_splice(&mut self, _orig: &RouteReader, sink: &mut dyn ByteSink) -> Result<RouteStats, Error> {
         self.em.finish(sink, &self.name, &mut self.waypoints)
@@ -446,9 +440,9 @@ fn blend_ele(sampled: i16, r0: f32, r1: f32, t: f32) -> i16 {
     libm::roundf(sampled as f32 + (r0 + (r1 - r0) * t)).clamp((i16::MIN + 1) as f32, i16::MAX as f32) as i16
 }
 
-/// One-shot convenience over [`Splicer`]: loop [`step`](Splicer::step) to completion — the
-/// headless sim and the tests; interactive hosts step the splicer themselves.
-#[allow(clippy::too_many_arguments)] // the splice request plus its two readers and the sink
+/// One-shot convenience over [`Splicer`] for the headless sim and the tests. Interactive hosts
+/// step the splicer themselves.
+#[allow(clippy::too_many_arguments)]
 pub fn splice_detour(
     orig: &RouteReader,
     detour: &RouteReader,

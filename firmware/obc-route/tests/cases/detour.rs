@@ -1,12 +1,9 @@
-//! Host tests for the detour pipeline (#882): the corridor blacklist, the corridor-aware A*
-//! (`plan_detour`), and the splice (`splice_detour`) — fixture graphs serialized with the real
-//! `obc-pack` writer and parsed with the real `obc-reader` (the `tests/nav.rs` pattern), original
-//! routes built through the public GPX converter, so every byte crosses genuine on-wire formats.
+//! Host tests for the detour pipeline: the corridor blacklist, the corridor-aware A*
+//! (`plan_detour`), and the splice (`splice_detour`). Fixture graphs and routes go through the real
+//! writers and readers, so every byte crosses the genuine on-wire formats.
 //!
-//! The workhorse fixture is a **blocked road with a parallel relief street**: a straight
-//! west→east road (the route), a parallel street ~400 m north, and connector edges at both ends.
-//! The corridor over the skipped span must force the plan onto the street; a grade-separated
-//! bridge chord crossing mid-span and the at-grade junction edges must stay usable.
+//! The workhorse fixture is a blocked road with a parallel relief street: a straight west-to-east
+//! road (the route), a parallel street ~400 m north, and connector edges at both ends.
 
 use crate::common::{convert, route_points, VecSink};
 use obc_elevation::NullElevation;
@@ -20,17 +17,17 @@ use obc_route::reader::for_each_waypoint;
 use obc_route::splice::{splice_detour, trim_detour_to_tail};
 use obc_route::{RouteIndex, RoutePoint, RouteReader, TrimOutcome};
 
-/// Global bbox (µdeg) — roomy so the node quadtree genuinely subdivides (see tests/nav.rs).
+/// Global bbox, µdeg. Roomy, so the node quadtree subdivides.
 const GLOBAL: (i64, i64, i64, i64) = (0, 0, 1_000_000, 1_000_000);
-/// Fixture origin (lon, lat) µdeg = (0.5°, 0.5°); cos_lat ≈ 1 so lon µdeg ≈ lat µdeg ≈ 0.111 m.
+/// Fixture origin, µdeg = (0.5°, 0.5°). cos_lat is ~1, so 1 µdeg is ~0.111 m on both axes.
 const BASE: (i32, i32) = (500_000, 500_000);
 /// Road/street node spacing, µdeg (~278.3 m ground).
 const SP: i32 = 2_500;
 /// Number of road segments (13 nodes, road length ~3 340 m).
 const SEGS: i32 = 12;
-/// The street's northward offset, µdeg (~400 m — outside the corridor, below the bridge scale).
+/// The street's northward offset, µdeg (~400 m: outside the corridor, below the bridge scale).
 const STREET_OFF: i32 = 3_600;
-/// Stored edge length for one road/street segment (≥ its ~278.3 m chord: admissible).
+/// Stored edge length for one road/street segment. At or above its ~278.3 m chord, so admissible.
 const SEG_COST: u32 = 280;
 /// Stored connector length (≥ its ~400.8 m chord).
 const CONN_COST: u32 = 401;
@@ -39,7 +36,7 @@ fn neutral_profile() -> NavProfile {
     NavProfile { name: "Neutral".into(), highway: [16; 32], surface: [16; 8], climb_weight: 0 }
 }
 
-/// Serialize `graph` into a minimal v9 map with one neutral profile (tests/nav.rs's `map_with`).
+/// Serialize `graph` into a minimal map with one neutral profile.
 fn map_with(graph: &NavGraph) -> Vec<u8> {
     let lods =
         vec![LodLayer { max_mpp: None, chunk_size: 2048, root: GeomNode::Leaf { bbox: GLOBAL, features: vec![] } }];
@@ -49,20 +46,17 @@ fn map_with(graph: &NavGraph) -> Vec<u8> {
     bin
 }
 
-/// Road node i's coordinate.
 fn road_at(i: i32) -> (i32, i32) {
     (BASE.0 + i * SP, BASE.1)
 }
 
-/// Street node i's coordinate.
 fn street_at(i: i32) -> (i32, i32) {
     (BASE.0 + i * SP, BASE.1 + STREET_OFF)
 }
 
-/// The blocked-road fixture: road nodes (ids 0..=SEGS), street nodes + end connectors, and
-/// optionally a grade-separated bridge chord crossing the road mid-span (endpoints ~111 m to
-/// either side — sharing no node with the road). Node ids are dense (the packer asserts it):
-/// street ids follow the road's, bridge ids follow whatever came before.
+/// The blocked-road fixture: road nodes, an optional parallel street with end connectors, and an
+/// optional grade-separated bridge chord that crosses the road mid-span without sharing a node.
+/// Node ids must stay dense; the packer asserts it.
 fn road_graph(street: bool, bridge: bool) -> NavGraph {
     let road = |i: i32| i as u32;
     let street_id = |i: i32| (SEGS + 1 + i) as u32;
@@ -125,10 +119,9 @@ fn road_graph(street: bool, bridge: bool) -> NavGraph {
     NavGraph { nodes, edges }
 }
 
-/// The original route: a GPX straight along the road (one `<trkpt>` per node position) with a
-/// linear elevation ramp 100 → 200 m and three named waypoints — head (~278 m), mid-span
-/// (~1 670 m, on the avoided road), tail (~3 062 m). Each waypoint carries a `<sym>` and sits a
-/// little off the (eastward) road line, so a splice has a category and a signed offset to carry.
+/// The original route: a GPX straight along the road with a linear elevation ramp 100 to 200 m and
+/// three named waypoints at ~278 m, ~1 670 m (on the avoided road) and ~3 062 m. Each waypoint has
+/// a `<sym>` and sits off the road line, so a splice has a category and a signed offset to carry.
 const WPT_LAT_OFF: i32 = 900; // µdeg, ~100 m at this latitude
 
 fn road_route_obcr() -> Vec<u8> {
@@ -159,9 +152,8 @@ fn road_route_obcr() -> Vec<u8> {
     convert("Road trip", &g)
 }
 
-/// Plan a detour over `bytes` with a corridor built from `route` over `[progress_m, target_m]`,
-/// from/to resolved on the route — the host pipeline in miniature. Returns the plan result and
-/// the detour OBCR bytes.
+/// Plan a detour with a corridor built over `[progress_m, target_m]` and endpoints resolved on the
+/// route. Returns the plan result and the detour OBCR bytes.
 fn detour_over(
     bytes: &[u8],
     route_obcr: &[u8],
@@ -171,8 +163,7 @@ fn detour_over(
     detour_over_terrain(bytes, route_obcr, progress_m, target_m, &mut NullElevation)
 }
 
-/// [`detour_over`] with an explicit terrain the emit phase fills the detour's heights from (EL7) —
-/// what a device with a mounted `.obcd` does, and what #1091's splice has to preserve.
+/// [`detour_over`] with a terrain that the emit phase fills the detour's heights from.
 fn detour_over_terrain(
     bytes: &[u8],
     route_obcr: &[u8],
@@ -209,9 +200,8 @@ fn detour_over_terrain(
     (res, sink.buf)
 }
 
-/// Coordinate the original route asks the detour planner to snap to at `distance_m`. Exact edge
-/// snapping deliberately returns this projection rather than quantizing it to the nearest graph
-/// node, so detour endpoint assertions use the request itself as their oracle.
+/// The coordinate the detour planner snaps to at `distance_m`. Exact edge snapping returns this
+/// projection, not the nearest graph node, so endpoint assertions use the request as their oracle.
 fn route_coord_at(route_obcr: &[u8], distance_m: u32) -> (i32, i32) {
     let src = SliceSource(route_obcr);
     let idx = RouteIndex::read(&src).unwrap();
@@ -219,17 +209,11 @@ fn route_coord_at(route_obcr: &[u8], distance_m: u32) -> (i32, i32) {
     (p.lon, p.lat)
 }
 
-/// Measured polyline length of a stitched point list (the same metric the emitter uses).
+/// Measured polyline length, the metric the emitter uses.
 fn measured_len(pts: &[RoutePoint]) -> f32 {
     pts.windows(2).map(|w| obc_map_scene::ground_dist_m((w[0].lon, w[0].lat), (w[1].lon, w[1].lat))).sum()
 }
 
-// ---------------------------------------------------------------------------- corridor unit
-
-/// The corridor's edge test, pinned case by case against the #882 mechanism: the span's own
-/// edges are blocked, a parallel edge is blocked, a grade-separated bridge chord and an
-/// at-grade junction edge stay usable, exemption discs clear the take-off/landing, and the
-/// bbox prefilter rejects far-away edges.
 #[test]
 fn corridor_blocks_span_edges_not_bridge_or_junction() {
     let obcr = road_route_obcr();
@@ -241,28 +225,25 @@ fn corridor_blocks_span_edges_not_bridge_or_junction() {
     c.set_exempt_nodes(road_at(0), road_at(SEGS));
 
     let mid_x = BASE.0 + 6 * SP;
-    // The road's own mid-span edge: both endpoints on the span, far from the exempts — blocked.
     assert!(c.blocks(road_at(5), road_at(6)), "a mid-span road edge must be blacklisted");
-    // A hypothetical parallel edge 20 m north — inside the corridor — blocked.
+    // A parallel edge 180 µdeg (~20 m) north, inside the corridor.
     assert!(
         c.blocks((road_at(5).0, BASE.1 + 180), (road_at(6).0, BASE.1 + 180)),
         "a parallel edge hugging the span must be blacklisted"
     );
-    // The bridge chord: endpoints ~111 m to either side — crossing, not parallel — usable.
+    // The bridge chord: ~111 m to either side, so it crosses instead of running parallel.
     assert!(!c.blocks((mid_x, BASE.1 + 1_000), (mid_x, BASE.1 - 1_000)), "a grade-separated crossing must stay usable");
-    // An at-grade junction edge: one endpoint on the span, the far one off it — usable.
+    // One endpoint on the span, the far one off it.
     assert!(!c.blocks((mid_x, BASE.1), (mid_x, BASE.1 + 1_000)), "a side street leaving the span must stay usable");
-    // Take-off exemption: a road edge within the start disc — usable.
     assert!(!c.blocks(road_at(0), road_at(1)), "edges near the start snap stay usable");
-    // Far-away edge: bbox prefilter — usable.
+    // Far away: rejected by the bbox prefilter.
     assert!(!c.blocks((BASE.0, BASE.1 + 100_000), (BASE.0 + SP, BASE.1 + 100_000)));
 }
 
-/// A long, vertex-dense span downsamples into the fixed corridor capacity; a sub-minimum span
-/// reports degenerate and blocks nothing.
+/// A long, vertex-dense span downsamples into the fixed capacity. A sub-minimum span is degenerate.
 #[test]
 fn corridor_build_downsamples_within_capacity() {
-    // A ~20 km zigzag (vertices every ~55 m survive the converter's decimator).
+    // A ~20 km zigzag. The bends keep vertices ~55 m apart through the converter's decimator.
     let mut g = String::from("<gpx><trk><trkseg>\n");
     for i in 0..400 {
         let lon = 0.5 + i as f64 * 0.000_45;
@@ -285,11 +266,6 @@ fn corridor_build_downsamples_within_capacity() {
     assert!(!short.blocks((BASE.0, BASE.1), (BASE.0 + SP, BASE.1)), "a degenerate corridor blocks nothing");
 }
 
-// ---------------------------------------------------------------------------- detour planning
-
-/// The headline mechanism: the corridor over the whole road forces the plan onto the parallel
-/// street — the emitted geometry never touches the road's blocked middle, and the total is the
-/// street path's summed edge lengths.
 #[test]
 fn detour_routes_via_parallel_street() {
     let bytes = map_with(&road_graph(true, false));
@@ -301,7 +277,7 @@ fn detour_routes_via_parallel_street() {
 
     let (res, detour) = detour_over(&bytes, &obcr, 0, total);
     let stats = res.expect("the street detour plans");
-    // connector + 12 street segments + connector — the unique unblocked path.
+    // Connector + 12 street segments + connector, the unique unblocked path.
     assert_eq!(stats.total_distance_m, 4140);
 
     let pts = route_points(&detour);
@@ -318,16 +294,14 @@ fn detour_routes_via_parallel_street() {
     );
 }
 
-/// A mid-route span (rider at ~600 m, rejoin at ~2 800 m): the exemption discs let the plan use
-/// the road near its snapped endpoints, but the blocked middle still forces the street loop.
 #[test]
 fn detour_mid_span_uses_exempt_take_off_and_landing() {
     let bytes = map_with(&road_graph(true, false));
     let obcr = road_route_obcr();
     let (res, detour) = detour_over(&bytes, &obcr, 600, 2_800);
     let stats = res.expect("the mid-span detour plans");
-    // Near node2 →1→0 → connector → street ×12 → connector → 12→11→ near node10. The exact
-    // virtual endpoints add only their two sub-edge fragments to the old node-quantized cost.
+    // Near node2 → 1 → 0 → connector → street ×12 → connector → 12 → 11 → near node10. The exact
+    // virtual endpoints add only their two sub-edge fragments to the node path below.
     let node_path = 4 * SEG_COST + 2 * CONN_COST + 12 * SEG_COST;
     assert!(
         (node_path.saturating_sub(4)..=node_path + 2 * SEG_COST).contains(&stats.total_distance_m),
@@ -335,22 +309,20 @@ fn detour_mid_span_uses_exempt_take_off_and_landing() {
         stats.total_distance_m
     );
     let pts = route_points(&detour);
-    // The blocked middle (nodes 5..=8 at ~1 390..2 230 m) is never touched.
+    // The blocked middle is nodes 5..=8, at ~1 390..2 230 m along.
     for p in &pts {
         let in_blocked_middle = p.lat == BASE.1 && p.lon > BASE.0 + 4 * SP && p.lon < BASE.0 + 9 * SP;
         assert!(!in_blocked_middle, "the detour re-entered the blocked middle at ({}, {})", p.lon, p.lat);
     }
 }
 
-/// The bridge chord crossing the corridor is not blacklisted: with the road's far side reachable
-/// only over the bridge, a plan to a south-side goal succeeds.
 #[test]
 fn detour_bridge_crossing_edge_stays_usable() {
     // Road + bridge; the goal is the bridge's south end, reachable only over the bridge.
     let mut graph = road_graph(false, true);
     let bridge_north = (SEGS + 1) as u32; // road_graph's dense-id layout, street absent
     let south = (BASE.0 + 6 * SP, BASE.1 - 1_000);
-    // A direct link from the (exempt) start node to the bridge's north end — the approach road.
+    // The approach road: the exempt start node to the bridge's north end.
     graph.edges.push(Edge {
         a: 0,
         b: bridge_north,
@@ -389,8 +361,6 @@ fn detour_bridge_crossing_edge_stays_usable() {
     assert_eq!(stats.total_distance_m, 1896);
 }
 
-/// With no relief street, the corridor seals the only connection: the frontier drains without
-/// filling the table — an honest `NoPath`.
 #[test]
 fn detour_corridor_seals_only_path_is_nopath() {
     let bytes = map_with(&road_graph(false, false));
@@ -402,8 +372,6 @@ fn detour_corridor_seals_only_path_is_nopath() {
     assert_eq!(res.unwrap_err(), NavError::NoPath);
 }
 
-/// A degenerate (sub-minimum) corridor blocks nothing: the detour plan is byte-identical to a
-/// plain plan over the same endpoints — the POI path's untouched-behavior regression.
 #[test]
 fn detour_with_degenerate_corridor_matches_plain_plan() {
     let bytes = map_with(&road_graph(true, false));
@@ -438,10 +406,8 @@ fn detour_with_degenerate_corridor_matches_plain_plan() {
     assert_eq!(plain.buf, det.buf, "a degenerate corridor must not perturb the plan by a single byte");
 }
 
-// ---------------------------------------------------------------------------- splice
-
-/// Splice fixture: the mid-span detour (600 → 2 800 m) spliced into the road route. Returns
-/// `(spliced_bytes, spliced_stats, detour_len_m)`.
+/// The mid-span detour (600 to 2 800 m) spliced into the road route. Returns the spliced bytes,
+/// the spliced stats and the detour length.
 fn spliced_road() -> (Vec<u8>, obc_route::RouteStats, u32) {
     let bytes = map_with(&road_graph(true, false));
     let obcr = road_route_obcr();
@@ -461,9 +427,6 @@ fn spliced_road() -> (Vec<u8>, obc_route::RouteStats, u32) {
     (sink.buf, stats, dstats.total_distance_m)
 }
 
-/// The spliced OBCR is a completely ordinary route: it parses, its per-chunk cumulative
-/// distances are strictly monotonic, its name carries the detour prefix, and its header total is
-/// the measured head/seams/tail plus the planner's honest detour length.
 #[test]
 fn splice_output_roundtrips_and_total_is_preview_consistent() {
     let (spliced, stats, detour_len) = spliced_road();
@@ -480,11 +443,10 @@ fn splice_output_roundtrips_and_total_is_preview_consistent() {
         prev = Some(cm.cum_distance_m);
     }
 
-    // Header total = measured(head + seams + tail) + planner detour length: reconstruct the
-    // measured non-detour part from the stitched polyline and the detour's own measured length.
+    // Header total = measured(head + seams + tail) + the planner's detour length, so the two
+    // differ only in the detour term.
     let pts = route_points(&spliced);
     let all_measured = measured_len(&pts);
-    // The spliced measured total differs from the override only in the detour term.
     let header = stats.total_distance_m as f32;
     assert!(
         (header - all_measured).abs() < 0.02 * all_measured + (detour_len as f32 - 0.0) * 0.05,
@@ -493,9 +455,6 @@ fn splice_output_roundtrips_and_total_is_preview_consistent() {
     assert!(header as u32 >= 600 + detour_len, "total ≥ head + planner detour length");
 }
 
-/// Elevation across the splice: head/tail keep the ramp verbatim, the detour is a monotone lerp
-/// between the seam elevations — the whole spliced profile is non-decreasing (the ramp ascends),
-/// with no spike at either seam, and the recomputed ascent matches the ramp's ~100 m.
 #[test]
 fn splice_interpolates_detour_elevation_without_spikes() {
     let (spliced, stats, _) = spliced_road();
@@ -521,9 +480,6 @@ fn splice_interpolates_detour_elevation_without_spikes() {
     assert_eq!(stats.total_descent_m, 0);
 }
 
-/// Waypoints across the splice: the head waypoint keeps its distance, the mid-span waypoint (on
-/// the avoided road) is dropped, and the tail waypoint lands at the same distance-from-end on
-/// the spliced route as on the original.
 #[test]
 fn splice_keeps_head_drops_span_shifts_tail_waypoints() {
     let (spliced, _, _) = spliced_road();
@@ -545,9 +501,7 @@ fn splice_keeps_head_drops_span_shifts_tail_waypoints() {
     );
 }
 
-/// …and each surviving waypoint keeps its **category** and its **signed lateral offset** through
-/// the rewrite (#947): head and tail sit beside untouched geometry, so both ride along verbatim —
-/// the same treatment `dist_along_m` gets on the head.
+/// Head and tail sit beside untouched geometry, so both ride along verbatim.
 #[test]
 fn splice_preserves_waypoint_categories_and_offsets() {
     let original = road_route_obcr();
@@ -570,8 +524,8 @@ fn splice_preserves_waypoint_categories_and_offsets() {
     assert_eq!(after, vec![before[0].clone(), before[2].clone()], "the survivors' category + offset are unchanged");
 }
 
-/// The seam contract the matcher-floor install relies on: the spliced head is the original
-/// `[0, split_m]` verbatim, so `position_at(split_m)` lands on the same coordinate on both.
+/// The spliced head is the original `[0, split_m]` verbatim, so `position_at(split_m)` lands on
+/// the same coordinate on both.
 #[test]
 fn splice_head_length_equals_split_progress() {
     let (spliced, _, _) = spliced_road();
@@ -590,7 +544,6 @@ fn splice_head_length_equals_split_progress() {
     assert!(d < 5.0, "the spliced head must measure split_m at the seam (drift {d} m)");
 }
 
-/// Splicing a previous splice's output works and does not stack name prefixes.
 #[test]
 fn splice_self_input_is_previous_output() {
     let (first, _, detour_len) = spliced_road();
@@ -612,10 +565,6 @@ fn splice_self_input_is_previous_output() {
     assert_eq!(idx.total_distance_m, stats.total_distance_m);
 }
 
-// ---------------------------------------------------------------------------- rejoin-at-first-contact
-
-/// Run [`trim_detour_to_tail`] over an original + detour OBCR at `target_m`; return the outcome and
-/// the (possibly trimmed) sink bytes.
 fn trim_run(
     orig_obcr: &[u8],
     detour_obcr: &[u8],
@@ -633,7 +582,6 @@ fn trim_run(
     (out, sink.buf)
 }
 
-/// Splice an original + detour and return the spliced route's header total distance.
 fn spliced_total(
     orig_obcr: &[u8],
     detour_obcr: &[u8],
@@ -654,10 +602,9 @@ fn spliced_total(
         .total_distance_m
 }
 
-/// The headline #882 fix: with connectors only at the road's ends, a plan to a mid-route rejoin
-/// (target ≈ node 9) must overshoot to road12 up the parallel street and ride the route tail back
-/// down (12→…→9) to reach the goal. `trim_detour_to_tail` advances the rejoin to that first tail
-/// contact (≈ the road end), truncating the retrace — and the spliced route is far shorter.
+/// With connectors only at the road's ends, a plan to a mid-route rejoin must overshoot to road12
+/// up the parallel street and ride the route tail back down to reach the goal. The trim advances
+/// the rejoin to that first tail contact and removes the retrace.
 #[test]
 fn trim_rejoins_at_first_tail_contact_and_removes_the_retrace() {
     let bytes = map_with(&road_graph(true, false));
@@ -666,8 +613,7 @@ fn trim_rejoins_at_first_tail_contact_and_removes_the_retrace() {
     let (res, detour) = detour_over(&bytes, &obcr, 0, target);
     let dstats = res.expect("the street detour plans");
 
-    // Fixture check: the UNTRIMMED plan reproduces the bug — it overshoots to road12 and then
-    // descends the tail to the goal node9 (the retrace the rider sees on glass).
+    // Non-vacuity: the untrimmed plan overshoots to road12, then descends the tail to node9.
     let untrimmed = route_points(&detour);
     assert!(
         untrimmed.iter().any(|p| (p.lon, p.lat) == road_at(SEGS)),
@@ -680,12 +626,10 @@ fn trim_rejoins_at_first_tail_contact_and_removes_the_retrace() {
         "…then descends the tail to land at the exact requested projection near node9"
     );
 
-    // Trim: rejoin advances to the first contact near the road end, past the chosen minimum.
     let (out, trimmed) = trim_run(&obcr, &detour, target, dstats.has_elevation);
     let out = out.expect("the retrace is trimmed");
     assert!(out.rejoin_m > target + 500, "rejoin advances toward the road end (got {})", out.rejoin_m);
 
-    // The trimmed detour ends at the ring (road12) and no longer descends the tail.
     let tpts = route_points(&trimmed);
     assert_eq!(
         (tpts.last().unwrap().lon, tpts.last().unwrap().lat),
@@ -697,7 +641,6 @@ fn trim_rejoins_at_first_tail_contact_and_removes_the_retrace() {
         assert!(!descends_tail, "no trimmed point rides the tail between node9 and node12 ({}, {})", p.lon, p.lat);
     }
 
-    // The whole splice is far shorter: the retrace is gone from both the detour and the re-ridden tail.
     let untrimmed_total = spliced_total(&obcr, &detour, 0, target, dstats.total_distance_m, dstats.has_elevation);
     let trimmed_total = spliced_total(&obcr, &trimmed, 0, out.rejoin_m, out.detour_len_m, dstats.has_elevation);
     assert!(
@@ -706,14 +649,12 @@ fn trim_rejoins_at_first_tail_contact_and_removes_the_retrace() {
     );
 }
 
-/// A normal landing that touches the route tail only at its final pair, right at the goal, is a
-/// no-op: every plan hugs the tail near the goal by construction, so the trim must not churn bytes.
-/// Hand-built detour (loops north, lands on the road at node6 = the target, rides one segment to
-/// node7) so the landing geometry is exact.
+/// Every plan hugs the tail near the goal, so a landing that touches the tail only at its final
+/// pair must not trim. The detour is hand-built, so the landing geometry is exact.
 #[test]
 fn trim_is_a_noop_for_a_normal_landing() {
     let obcr = road_route_obcr();
-    // node6 ≈ 1 670 m along; the detour lands there and rides one segment forward (node7).
+    // node6 is ~1 670 m along. The detour lands there and rides one segment forward.
     let target = 1_670;
     let n = |k: i32| road_at(k);
     let north = |k: i32| (road_at(k).0, BASE.1 + STREET_OFF);
@@ -743,9 +684,8 @@ fn trim_is_a_noop_for_a_normal_landing() {
     assert_eq!(out, None, "a final-pair landing at the goal is not trimmed");
 }
 
-/// A detour that merely *crosses* the route tail once (a single near point, its neighbours ~400 m
-/// off to either side) must not trim — the same both-points rule the corridor uses, so a crossing
-/// or a bridge overpass never triggers.
+/// A detour that only crosses the route tail must not trim. Contact needs both points of a pair
+/// near the tail, so a crossing or a bridge overpass never triggers.
 #[test]
 fn trim_ignores_a_perpendicular_crossing() {
     let obcr = road_route_obcr();
@@ -772,8 +712,6 @@ fn trim_ignores_a_perpendicular_crossing() {
     assert_eq!(out, None, "a single-point crossing is not sustained contact");
 }
 
-/// A rejoin at the route end: the tail is empty, the spliced route ends at the detour's last
-/// point, and only the head waypoint survives.
 #[test]
 fn splice_span_at_route_end() {
     let bytes = map_with(&road_graph(true, false));
@@ -813,22 +751,17 @@ fn splice_span_at_route_end() {
     );
 }
 
-// ------------------------------------------------------- climb-aware dispatch (EL6, epic #1068)
-//
-// #882's detour dispatch is not a second router: `plan_detour` is `plan_route` plus a corridor
-// blacklist, running the same `settle` and therefore the same §8.6 edge cost. EL6 added a climb
-// term to that cost, so detours became climb-aware with no code of their own — and these two tests
-// are what stops a future change from quietly forking the model.
+// `plan_detour` is `plan_route` plus a corridor blacklist and shares its edge cost. The two tests
+// below stop a future change from forking the cost model.
 
-/// A steep north-facing hillside for the detour fixture: 1 m of rise per 5 µdeg of latitude above
-/// the road, dead flat at or below it. The **north** relief street therefore sits [`NORTH_CLIMB_M`]
-/// above the road and the **south** one is on the flat, which is the only difference between them
-/// the climb term can see.
+/// A steep north-facing hillside: 1 m of rise per 5 µdeg of latitude above the road, flat at or
+/// below it. The north relief street then sits [`NORTH_CLIMB_M`] above the road and the south one
+/// is flat, which is the only difference the climb term can see.
 struct Hillside;
 
 /// What the north connector climbs: `STREET_OFF / 5`.
 const NORTH_CLIMB_M: u32 = 720;
-/// One segment of the (longer, flat) south relief street, m — chosen so the south corridor costs
+/// One segment of the longer, flat south relief street, m. Chosen so the south corridor costs
 /// 3 000 m more ground than the north one, three times the ε inflation the frontier carries.
 const SOUTH_SEG_COST: u32 = 530;
 
@@ -838,7 +771,7 @@ impl obc_route::ElevationSource for Hillside {
     }
 }
 
-/// [`map_with`] with an explicit profile and a terrain to bake §8.3 `Ascent M` from.
+/// [`map_with`] with an explicit profile and a terrain to bake the edge ascents from.
 fn map_with_terrain(graph: &NavGraph, profile: NavProfile, terrain: &mut dyn obc_route::ElevationSource) -> Vec<u8> {
     let lods =
         vec![LodLayer { max_mpp: None, chunk_size: 2048, root: GeomNode::Leaf { bbox: GLOBAL, features: vec![] } }];
@@ -847,20 +780,17 @@ fn map_with_terrain(graph: &NavGraph, profile: NavProfile, terrain: &mut dyn obc
     bin
 }
 
-/// A neutral-multiplier profile carrying nothing but a climb weight.
 fn climb_profile(climb_weight: u8) -> NavProfile {
     NavProfile { name: "Climb".into(), highway: [16; 32], surface: [16; 8], climb_weight }
 }
 
-/// South relief street node `i` — the mirror of [`street_at`], the same offset below the road.
 fn south_at(i: i32) -> (i32, i32) {
     (BASE.0 + i * SP, BASE.1 - STREET_OFF)
 }
 
-/// The road with **two** relief corridors: the usual street north of it (short, but reached by
-/// climbing [`NORTH_CLIMB_M`] up the [`Hillside`]) and a mirror street south of it (flat, but
-/// 3 000 m more ground). With the road blacklisted the detour has a genuine choice, and only the
-/// climb term can make it.
+/// The road with two relief corridors: the street north of it (short, but it climbs
+/// [`NORTH_CLIMB_M`] up the [`Hillside`]) and a mirror street south of it (flat, but 3 000 m more
+/// ground). With the road blacklisted, only the climb term can choose between them.
 fn road_graph_two_reliefs() -> NavGraph {
     let mut g = road_graph(true, false);
     let south_id = |i: i32| (2 * (SEGS + 1) + i) as u32;
@@ -888,9 +818,8 @@ fn road_graph_two_reliefs() -> NavGraph {
     g
 }
 
-/// Plan `from → to` over `bytes`, optionally under a corridor blacklist — the two dispatch paths
-/// side by side, sharing every other argument, so a difference in their output can only come from
-/// the corridor.
+/// Plan `from` to `to`, with or without a corridor blacklist. Every other argument is shared, so a
+/// difference in the output can only come from the corridor.
 fn plan_either(bytes: &[u8], from: (i32, i32), to: (i32, i32), corridor: Option<Corridor>) -> (u32, Vec<u8>) {
     let src = SliceSource(bytes);
     let tables = MapTables::parse(&src).unwrap();
@@ -906,17 +835,12 @@ fn plan_either(bytes: &[u8], from: (i32, i32), to: (i32, i32), corridor: Option<
     (res.expect("the fixture always has a legal path").total_distance_m, sink.buf)
 }
 
-/// **The detour dispatch is climb-aware for free.** With the road blacklisted the plan must choose
-/// between the two reliefs, and it flips on the profile's climb weight exactly as a plain plan
-/// would: climb-blind it takes the short hill, climb-weighted it pays 3 km of extra ground to stay
-/// on the flat.
 #[test]
 fn a_detour_weighs_climb_the_same_way_a_plan_does() {
     let graph = road_graph_two_reliefs();
     let obcr = road_route_obcr();
 
-    // Non-vacuity: the north connector really does bake the climb this test spends, and only in the
-    // uphill direction.
+    // Non-vacuity: the north connector bakes the climb this test spends, and only uphill.
     let (up, down) = obc_pack::nav::integrate_edge_ascent(&[road_at(0), street_at(0)], &mut Hillside);
     assert!(
         (up as i64 - NORTH_CLIMB_M as i64).abs() <= 4,
@@ -939,12 +863,9 @@ fn a_detour_weighs_climb_the_same_way_a_plan_does() {
     assert_eq!(dist, 4140, "at a heavy climb weight it detours south, onto the flat");
 }
 
-/// **One cost model, not two.** `detour_with_degenerate_corridor_matches_plain_plan` above pins the
-/// same equality on a *flat* map; this is its v12 twin, and the difference is the whole point: the
-/// map's ascents are real and the profile charges 20 flat metres for each of them, so the two paths
-/// agree on a cost the climb term dominates. The corridor is then provably the only thing the
-/// detour dispatch adds — the climb term is not re-derived, re-scaled or re-rounded on the way to a
-/// detour.
+/// The corridor is the only thing the detour dispatch adds. Here the map's ascents are real and
+/// the profile charges 20 flat metres for each, so the two paths must agree on a cost the climb
+/// term dominates.
 #[test]
 fn a_detour_and_a_plan_cost_identically_when_nothing_is_blacklisted() {
     let bytes = map_with_terrain(&road_graph_two_reliefs(), climb_profile(20), &mut Hillside);
@@ -960,22 +881,15 @@ fn a_detour_and_a_plan_cost_identically_when_nothing_is_blacklisted() {
     let (plan_len, plan_obcr) = plan_either(&bytes, road_at(0), road_at(SEGS), None);
     assert_eq!(detour_len, plan_len);
     assert_eq!(detour_obcr, plan_obcr, "an unblacklisted detour is a plan, byte for byte");
-    // …and the shared answer is the road itself, which is flat and shorter than either relief.
+    // The shared answer is the road itself: flat, and shorter than either relief.
     assert_eq!(plan_len, 3339, "the road is the cheapest way when nothing blocks it");
 }
 
-// --------------------------------------------- the splice keeps sampled terrain (#1091, epic #1068)
-//
-// Before EL7 a detour arrived with `ele == 0` throughout and the splice's only honest option was a
-// seam-to-seam lerp. Now `plan_detour` samples the map's terrain at every emitted vertex, so the
-// splice keeps those heights and only removes the *datum* mismatch at the two joins, by adding a
-// linear blend of the two seam residuals. These tests pin both halves of that: the blend, and the
-// exact identity it degrades to when there is no terrain.
+// `plan_detour` samples the map's terrain at every emitted vertex. The splice keeps those heights
+// and removes only the datum mismatch at the two joins, with a linear blend of the seam residuals.
 
-/// The [`Hillside`] shifted up by a constant — a terrain whose datum disagrees with the fixture
-/// route's own `<ele>` ramp everywhere, which is the GPX-imported case (canopy / barometric offset
-/// against a bare-earth DEM). The residual blend must absorb the offset without flattening the
-/// shape underneath it.
+/// The [`Hillside`] shifted up by a constant: a terrain whose datum disagrees with the fixture
+/// route's own `<ele>` ramp everywhere, which is the GPX-imported case.
 const DEM_OFFSET_M: i16 = 300;
 
 struct OffsetHillside;
@@ -986,15 +900,13 @@ impl obc_route::ElevationSource for OffsetHillside {
     }
 }
 
-/// Splice the mid-span (600 → 2 800 m) detour planned over `elev` into the road route; returns the
-/// spliced bytes, the spliced stats and the detour plan's own stats.
+/// The mid-span (600 to 2 800 m) detour planned over `elev`, spliced into the road route.
 fn spliced_over(elev: &mut dyn obc_route::ElevationSource) -> (Vec<u8>, obc_route::RouteStats, obc_route::RouteStats) {
     spliced_span(600, 2_800, elev)
 }
 
-/// The **whole-route** splice (`split_m = 0`, rejoin at the route end): the head and the tail are
-/// both empty, so the spliced point stream *is* the blended detour and nothing has to guess where
-/// its two seams sit in the output. The seam heights are then simply the original's first and last.
+/// The whole-route splice: head and tail are both empty, so the spliced point stream is the
+/// blended detour and the seams are the original's first and last heights.
 fn spliced_whole(elev: &mut dyn obc_route::ElevationSource) -> (Vec<u8>, obc_route::RouteStats, obc_route::RouteStats) {
     let obcr = road_route_obcr();
     let src = SliceSource(&obcr[..]);
@@ -1035,7 +947,6 @@ fn road_route_seams(split_m: u32, rejoin_m: u32) -> (i16, i16) {
     (orig.elevation_at(split_m).unwrap(), orig.elevation_at(rejoin_m).unwrap())
 }
 
-/// The whole-route splice's seam pair.
 fn whole_route_seams() -> (i16, i16) {
     let obcr = road_route_obcr();
     let src = SliceSource(&obcr[..]);
@@ -1044,11 +955,6 @@ fn whole_route_seams() -> (i16, i16) {
     road_route_seams(0, total)
 }
 
-/// **The degrade is an identity.** A detour that resolved no terrain at all (`NullElevation` ⇒
-/// `has_elevation == false`) keeps every detour point on the straight seam-to-seam lerp, recomputed
-/// here independently, and the whole file on a pinned digest. #1184 intentionally moved the
-/// detour's ends from nearby graph nodes to the exact route projections, so the digest pins that
-/// new geometry while the independent check below continues to pin the elevation behaviour.
 #[test]
 fn splice_without_detour_elevation_keeps_the_seam_lerp() {
     let (spliced, _, _) = spliced_road();
@@ -1064,9 +970,6 @@ fn splice_without_detour_elevation_keeps_the_seam_lerp() {
     assert!(route_points(&whole).iter().all(|p| p.elevation().is_none()));
 }
 
-/// **Sampled heights survive, and both seams stay exact.** With the hillside mounted, the
-/// whole-route detour up the 720 m north street arrives carrying that hump — and the spliced route
-/// still opens and lands exactly on the stored route's own seam heights.
 #[test]
 fn splice_keeps_the_detour_sampled_shape_and_matches_both_seams() {
     let (spliced, stats, dstats) = spliced_whole(&mut Hillside);
@@ -1078,8 +981,8 @@ fn splice_keeps_the_detour_sampled_shape_and_matches_both_seams() {
     assert_eq!(*eles.first().unwrap(), lo, "no step at the split seam");
     assert_eq!(*eles.last().unwrap(), hi, "no step at the rejoin seam");
 
-    // The interior is the terrain's, not a ramp: the street sits NORTH_CLIMB_M above the road, so
-    // the span peaks far outside the seam interval a lerp could never leave.
+    // The interior is the terrain's, not a ramp: the street peaks far outside the seam interval
+    // that a lerp could never leave.
     let peak = *eles.iter().max().unwrap();
     assert!(
         peak > hi + NORTH_CLIMB_M as i16 / 2,
@@ -1090,7 +993,6 @@ fn splice_keeps_the_detour_sampled_shape_and_matches_both_seams() {
         "…and it must be the sampled hump plus the blended residual, not something invented (peak {peak})"
     );
 
-    // The mid-span twin keeps head and tail verbatim while the same blend runs between them.
     let (mid, _, _) = spliced_over(&mut Hillside);
     let mid_pts = route_points(&mid);
     assert_eq!(mid_pts.first().unwrap().ele, 100, "the head keeps the original's stored heights");
@@ -1102,11 +1004,8 @@ fn splice_keeps_the_detour_sampled_shape_and_matches_both_seams() {
     );
 }
 
-/// **A DEM that disagrees with the route's datum.** `OffsetHillside` puts the whole raster
-/// [`DEM_OFFSET_M`] above the fixture route's `<ele>` ramp — the GPX-imported case. The blend must
-/// absorb the offset at both seams *and* leave the shape between them alone: a constant datum shift
-/// moves both residuals by the same constant, so it cancels exactly and the spliced span is
-/// height-for-height what the un-offset terrain produced.
+/// A constant DEM datum offset moves both seam residuals by the same constant, so the blend
+/// absorbs it exactly and the spliced span is height-for-height what the un-offset terrain gave.
 #[test]
 fn splice_absorbs_a_dem_datum_offset_without_flattening_the_interior() {
     let offset: Vec<i16> = route_points(&spliced_whole(&mut OffsetHillside).0).iter().map(|p| p.ele).collect();
@@ -1128,9 +1027,8 @@ fn splice_absorbs_a_dem_datum_offset_without_flattening_the_interior() {
     );
 }
 
-/// **The spliced header's climb is recomputed over the final stream.** Independently re-integrate
-/// the spliced route's own points through the shared dead-band and compare — the header must be
-/// what a plain planned route's would be over those bytes, not a sum of two producers' totals.
+/// The header must be the climb recomputed over the final point stream, not a sum of the two
+/// producers' totals.
 #[test]
 fn splice_stats_are_the_dead_band_over_the_final_point_stream() {
     let cases = [("no terrain", spliced_road().0, spliced_road().1), {
@@ -1155,19 +1053,17 @@ fn splice_stats_are_the_dead_band_over_the_final_point_stream() {
         assert_eq!((stats.min_ele_m, stats.max_ele_m), (lo, hi), "{label}: header min/max are the stream's");
     }
 
-    // The terrain case must actually exercise the descent arm, or those assertions are vacuous: the
-    // detour climbs the street and comes back down.
+    // Non-vacuity: the terrain case must exercise the descent arm as well.
     let terrain = &cases[1].2;
     assert!(terrain.total_ascent_m > NORTH_CLIMB_M / 2, "the hump is climbed (got {})", terrain.total_ascent_m);
     assert!(terrain.total_descent_m > NORTH_CLIMB_M / 2, "…and descended (got {})", terrain.total_descent_m);
-    // The elevation-less splice books the ramp only — the pre-#1091 figures, unchanged.
+    // The elevation-less splice books the ramp only.
     assert_eq!(cases[0].2.total_descent_m, 0);
     assert!((20..=40).contains(&cases[0].2.total_ascent_m));
 }
 
-/// The trim path is on the same contract: a trimmed detour must reach the splice with its sampled
-/// heights **and** its own climb, or the residual blend has nothing to blend onto and the preview
-/// has nothing to price.
+/// A trimmed detour must reach the splice with its sampled heights and its own climb, or the
+/// residual blend has nothing to blend onto and the preview has nothing to price.
 #[test]
 fn a_trimmed_detour_keeps_its_sampled_heights_and_reports_its_climb() {
     let bytes = map_with_terrain(&road_graph(true, false), neutral_profile(), &mut Hillside);
@@ -1186,18 +1082,17 @@ fn a_trimmed_detour_keeps_its_sampled_heights_and_reports_its_climb() {
     );
     assert!(out.ascent_m > NORTH_CLIMB_M / 2, "…and report the climb it actually does (got {})", out.ascent_m);
 
-    // The elevation-less twin still trims to the zeroed shape it always did.
     let (res, detour) = detour_over(&bytes, &obcr, 0, target);
     let (_, trimmed) = trim_run(&obcr, &detour, target, res.unwrap().has_elevation);
     assert!(route_points(&trimmed).iter().all(|p| p.elevation().is_none()), "no elevation in, no elevation out");
 }
 
-/// `has_elevation` is the producers' own answer end to end, and never a look at the values: a
-/// sea-level route is *not* an elevation-less one.
+/// `has_elevation` is the producer's own answer end to end, never a look at the values. A
+/// sea-level route is not an elevation-less one.
 #[test]
 fn has_elevation_is_the_producers_answer_not_the_values() {
-    // A GPX with no `<ele>` at all, and the same track at a constant 0 m, store identical bytes —
-    // so no amount of looking at the values can tell them apart. The converter can, and does.
+    // A GPX with no `<ele>` and the same track at a constant 0 m store the same height values, so
+    // the values alone cannot tell them apart. The converter can.
     let track = |ele: Option<f64>| {
         let mut g = String::from("<gpx><trk><trkseg>\n");
         for i in 0..=SEGS {
@@ -1216,13 +1111,13 @@ fn has_elevation_is_the_producers_answer_not_the_values() {
     let sea = convert("Same name", &track(Some(0.0)));
     assert_ne!(none, sea, "stored validity distinguishes sea level from missing elevation");
 
-    // The reader, which only ever has the bytes, therefore gives the weaker honest answer for both…
+    // The reader has only the bytes, so it gives the weaker honest answer for both.
     let src = SliceSource(&sea[..]);
     let idx = RouteIndex::read(&src).unwrap();
     assert!(RouteReader::new(&idx, &src).has_elevation(), "a stored file has no better answer than its header");
 
-    // …while the producer, which watched the parse, tells them apart — which is the whole reason
-    // the bit is threaded from the plan to the splice instead of re-derived there.
+    // The producer watched the parse and tells them apart, which is why the bit is threaded from
+    // the plan to the splice instead of re-derived there.
     let mut sink = VecSink::default();
     assert!(obc_route::gpx_to_obcr(&SliceSource(track(Some(0.0)).as_bytes()), "n", &mut sink).unwrap().has_elevation);
     let mut sink = VecSink::default();
