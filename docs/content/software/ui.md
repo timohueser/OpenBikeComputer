@@ -1143,7 +1143,7 @@ One module and one row declare a screen. The row alone does not put it on the gl
 | The module declaration, the variant, and its capabilities. | [`screen/mod.rs`](src:firmware/obc-app/src/screen/mod.rs): its `mod` line and the `screens!` table |
 | Every string it prints, in four languages. | the catalogs under [`i18n/`](src:firmware/obc-app/i18n) |
 | The way in: a menu row, a drawer row, a settings row, a companion card, or the module that owns the work the screen reports. | with that entry point, which usually sits outside `screen/` |
-| A sweep frame, whose `expect` names the variant it must reach. | [`ui-frames.toml`](src:firmware/ui-frames.toml) |
+| A sweep frame, whose `expect` names the variant it must reach, and its digest row — one row per language for a `langs` frame. | [`ui-frames.toml`](src:firmware/ui-frames.toml), then `obc shot --accept` records the digest in [`ui-snapshots.sha256`](src:firmware/ui-snapshots.sha256) |
 
 The acceptance test is the copy-fit gate over every reachable screen and language.
 
