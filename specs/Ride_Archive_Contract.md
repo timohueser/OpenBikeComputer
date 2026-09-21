@@ -25,8 +25,8 @@ link. It checks the served revision, length and CRC against the requested source
 the download. The canonical archive is decoded from the returned payload; an earlier catalog's
 display fields do not replace the downloaded fields.
 
-GET completion is transport delivery. It is not client storage proof. See
-[GET](FLAT_Store_Protocol.md#35-get) for the current wire behavior.
+[GET](FLAT_Store_Protocol.md#35-get) completion is transport delivery. It is not client storage
+proof.
 
 ## Atomic local archive
 
@@ -70,8 +70,6 @@ visible generation durable. A failed check or barrier returns no source, so the 
 eligible for download. An unreferenced temporary file is never an archive.
 
 These guarantees depend on the filesystem and storage device honoring the requested barriers.
-Host fault tests verify operation order and reported errors. They do not establish physical
-power-loss behavior on a phone or the board.
 
 ## Client sync and deletion
 
@@ -103,29 +101,7 @@ local saves, never device proof. The device synced indicator uses only validated
 
 ## Device archive proof
 
-ARCHIVE_RIDE accepts proof only for the exact current finalized Ride source on the mounted card.
-A replaced revision, removed object, different StoreId, recording, retained-only revision, wrong
-kind or length/CRC mismatch fails without changing metadata. No catalog sequence is required from
-the client. An unrelated commit cannot invalidate possession of unchanged bytes.
-
-The synchronous storage owner inserts an exact Ride metadata row with timestamp zero. It returns
-success only after atomic commit and readback. Row presence records archive possession; zero does
-not start an expiry countdown. Invalid metadata is not absence. A failed or unsupported operation
-cannot report success. An uncertain publication or failed committed readback fences all mutations
-until remount.
-
-An exact existing proof returns its original timestamp without another payload write or commit,
-including when the timestamp is zero. It repeats the media sync barrier before acknowledgment.
-This makes a proof durable even when a live-medium remount read a gate left pending by a failed
-final sync. A failed repeat barrier fences mutations until remount. A duplicate cannot restart the clock. After a lost response or disconnect,
-the client can retry from its revalidated archive. If the first write committed, the device returns
-the stored proof; otherwise it must finish a new write or fail. A source that has since vanished
-or changed fails without recreating any object or proof.
-
-## Device display
-
-The runtime overlays validated archive proof on the visible finalized ride summaries.
-The full store determines whether a proof still names the exact current source. Missing proof,
-invalid metadata, and failed reads cannot mark a ride synced. Duplicate receipts are safe.
-
-Archive proof never starts a timer and never authorizes deletion. The rider deletes rides explicitly.
+The wire rules are [`ARCHIVE_RIDE`](FLAT_Store_Protocol.md#312-archive_ride); the stored rows and
+the synced indicator are [card archive metadata](Ride_Archive_Metadata.md). The device accepts proof
+only for the exact current finalized Ride source on the mounted card, and a source that has since
+changed or vanished is terminal for that receipt: the device never recreates the ride or its proof.
