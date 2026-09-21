@@ -1,108 +1,85 @@
-//! Card geometry (`FLAT_Store_Format.md` §2), the extent area (§6) and the address arithmetic that
-//! is the whole read path (§6.1).
+//! Card geometry, the extent area, and the address arithmetic that is the whole read path
+//! (`FLAT_Store_Format.md`).
 //!
-//! Every address the store computes is arithmetic on these constants and on the one value that is
-//! *not* a constant: the extent size, which §8 scales to the card and §4 records. [`Geometry`] is
-//! that value, and every byte, block and count derived from it goes through it. There is no partition
-//! table, no filesystem, no indirection block and no chain walk.
+//! Every address is arithmetic on these constants and on the one value that is not a constant: the
+//! extent size, which initialization scales to the card and the superblock records. [`Geometry`] is
+//! that value. There is no partition table, filesystem, indirection block or chain walk.
 
 use super::error::{DecodeError, Reason, Record, Result};
 
-/// One block.
 pub const BLOCK: usize = 512;
 /// The media program page: a cut may corrupt blocks inside the page being programmed and no block
-/// outside it (§1). Every region boundary and record stride below is a multiple of it.
+/// outside it. Every region boundary and record stride below is a multiple of it.
 pub const PROGRAM_PAGE: usize = 16_384;
-/// Blocks in one program page.
 #[cfg(any(test, feature = "std"))]
 pub const PAGE_BLOCKS: u64 = (PROGRAM_PAGE / BLOCK) as u64;
 
-/// Superblock copy A, and copy B (§2). The body is block 0 of the copy.
+/// Superblock copy A, and copy B. The body is block 0 of the copy.
 pub const SUPERBLOCK: [u64; 2] = [0, 32];
-/// Catalog copy A, and copy B (§2).
 pub const CATALOG: [u64; 2] = [64, 576];
-/// Blocks in one catalog copy.
 #[cfg(test)]
 pub const CATALOG_BLOCKS: u64 = 512;
-/// The gate block of a catalog copy, copy-relative (§5.1).
+/// The gate block of a catalog copy, copy-relative.
 pub const CATALOG_GATE_BLOCK: u64 = 480;
-/// Blocks of the entry array (§5.1).
 pub const ENTRY_BLOCKS: usize = 480;
-/// Entries in one block.
 pub const ENTRIES_PER_BLOCK: usize = BLOCK / ENTRY_STRIDE;
-/// One catalog entry (§5.3).
+/// One catalog entry, in bytes.
 pub const ENTRY_STRIDE: usize = 128;
-/// Entries one copy holds: `479 × 4` (§5.1).
+/// Entries one copy holds: `479 × 4`.
 pub const ENTRY_CAPACITY: usize = (ENTRY_BLOCKS - 1) * ENTRIES_PER_BLOCK;
 
 /// Blocks the catalog moves per media operation.
 ///
-/// §5.5's block *count* is a property of the format and this does not change it: what changes is how
-/// many card commands those blocks are issued in. The card charges roughly one program cycle per
-/// write command — 1.34 ms measured on the sEMMC path, which polls CMD13 per write so durability is
-/// folded into it — and about 74 µs a block beyond the first, so a 76-block body written a block at a
-/// time costs 102 ms and the same body in windows costs 18. Reads pay the same shape at 0.5 ms a
-/// command and ~41 µs a block.
+/// The block count is a property of the format; this decides how many card commands those blocks are
+/// issued in. The card charges roughly one program cycle per write command and about 74 µs a block
+/// beyond the first, so a 76-block body written a block at a time costs 102 ms and the same body in
+/// windows costs 18.
 ///
-/// Eight is 4 KiB, and it is a **stack** decision as much as a cost one. A commit holds two of these
-/// at once — one to read the live prefix through, one to stage the body it writes — and a mount one,
-/// against a 51.2 KB residual main stack. So doubling it is not "one constant": it costs *two* windows
-/// of `commit`'s frame, taking that frame from 9,664 B to about 17,900 and through the 16,384 B ceiling
-/// `resource_guard.py frames` holds `obc_storage::flat` to. What doubling buys, against that, is one
-/// card command per doubling — a fifth of a commit's I/O at 1,024 entries, and by then the M33's
-/// per-entry work is the larger term anyway (`flat::cost`). It is stated here rather than spelled `8`
-/// at the call sites so that trade is in one place.
+/// Eight is 4 KiB, and it is a stack decision as much as a cost one: a commit holds two of these at
+/// once and a mount one, and doubling it takes `commit`'s frame through the 16,384 B ceiling CI holds
+/// `obc_storage::flat` to. What doubling buys is one card command per doubling.
 pub const STREAM_BLOCKS: usize = 8;
 /// One streaming window, in bytes. A whole number of entries (`4096 / 128 = 32`), so a window never
 /// splits an entry across two of them.
 pub const STREAM_WINDOW: usize = STREAM_BLOCKS * BLOCK;
 
-/// Blocks the **mount** scan carries — half a commit's, for a stack reason rather than a cost one.
+/// Blocks the mount scan carries — half a commit's, for a stack reason rather than a cost one.
 ///
-/// `load` runs in the frame that is building the `FlatStore` itself: 10,416 B of store, most of it the
-/// free bitmap, and the module's largest frame before any of this. Putting a second big buffer in that
-/// frame is the shape this repo's stack rules exist to refuse, and the measurement is on a knife edge —
-/// `FlatStore::mount` links at 15,744 B against the 16,384 B ceiling `resource_guard.py frames` holds
-/// `obc_storage::flat` to, and whether `load`'s window lands *inside* that or on top of it is a
-/// codegen choice: fat LTO overlaps the two today and a build that did not would be at ~19 KB.
-///
-/// Two blocks fewer removes the question. It costs about 9 ms of a mount the M33's per-entry work
-/// already puts near 117 (`flat::cost`) — 8%, on the half of the path a schedule can reach at all.
+/// `load` runs in the frame that is building the `FlatStore` itself, which is the module's largest.
+/// `FlatStore::mount` links close to the 16,384 B ceiling CI holds `obc_storage::flat` to, and whether
+/// `load`'s window lands inside that frame or on top of it is a codegen choice. Two blocks fewer
+/// removes the question, at about 9 ms of a mount.
 pub const MOUNT_STREAM_BLOCKS: usize = 4;
 /// One mount scan window, in bytes. A whole number of entries, as [`STREAM_WINDOW`] is.
 pub const MOUNT_STREAM_WINDOW: usize = MOUNT_STREAM_BLOCKS * BLOCK;
 
-/// The ride journal (§2): 16 full-page tail slots followed by 16 page-isolated header records.
+/// The ride journal: 16 full-page tail slots followed by 16 page-isolated header records.
 pub const JOURNAL: u64 = 1_088;
 /// Blocks in one 16 KiB tail slot, and in the isolated page reserved for its header.
 pub const SLOT_BLOCKS: u64 = 32;
-/// Journal slots (§7).
 pub const SLOTS: usize = 16;
 
-/// The extent area begins here (§6).
+/// The extent area begins here.
 pub const EXTENT_AREA: u64 = 4_096;
-/// Extents a `u16` extent index can address (§6), and therefore the 8 KiB the resident free bitmap
-/// costs — the one figure card-scaled extents exist to keep fixed.
+/// Extents a `u16` extent index can address, and therefore the 8 KiB the resident free bitmap costs —
+/// the one figure card-scaled extents exist to keep fixed.
 pub const MAX_EXTENTS: u32 = 65_536;
-/// Extent ranges one object may have (§5.3).
+/// Extent ranges one object may have.
 pub const MAX_RANGES: usize = 8;
 
-/// The smallest extent, and the one every card of 64 GiB or less gets (§6).
+/// The smallest extent, and the one every card of 64 GiB or less gets.
 pub const MIN_EXTENT_SIZE: u64 = 1 << 20;
-/// §4 records the extent size as a base-2 logarithm, which is what makes "a power of two" a property
-/// of the *encoding* rather than a rule a decoder has to enforce. Only the range needs checking.
+/// The superblock records the extent size as a base-2 logarithm, so "a power of two" is a property of
+/// the encoding. Only the range needs checking.
 const MIN_EXTENT_LOG2: u8 = MIN_EXTENT_SIZE.trailing_zeros() as u8;
-/// 2 GiB. `65,536 × 2 GiB` is 128 TiB, the SDUC address ceiling — so every card that can exist is
-/// expressible, and the arithmetic below stays far inside a `u64`: the widest product this format
-/// can form is `65,536 × 2 GiB`.
+/// 2 GiB. `65,536 × 2 GiB` is 128 TiB, the SDUC address ceiling, so every card that can exist is
+/// expressible and the widest product this format can form stays far inside a `u64`.
 const MAX_EXTENT_LOG2: u8 = 31;
 
-/// The extent size this card was initialized with (§4), and every address derived from it (§6).
+/// The extent size this card was initialized with, and every address derived from it.
 ///
-/// The size is **not** a constant of the format: the entry's `u16` extent index names 65,536 extents,
-/// so a fixed 1 MiB would have capped the card at 64 GiB — a ceiling the bench card already sat at 95%
-/// of. §8 scales the size to the card instead and records it, and this type is the one place the
-/// recorded value turns into bytes, blocks and counts. The trade is granularity: past 64 GiB an object
+/// The size is not a constant of the format: the entry's `u16` extent index names 65,536 extents, so a
+/// fixed 1 MiB would have capped the card at 64 GiB. The trade is granularity: past 64 GiB an object
 /// wastes up to one larger extent at its tail, and there is no sub-extent allocator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Geometry {
@@ -110,15 +87,13 @@ pub struct Geometry {
 }
 
 impl Geometry {
-    /// 1 MiB: what §8's rule picks for every card of 64 GiB or less, which is every card the product
-    /// has shipped against.
+    /// 1 MiB: what the rule picks for every card of 64 GiB or less.
     pub const DEFAULT: Geometry = Geometry { log2: MIN_EXTENT_LOG2 };
 
-    /// §8's rule: `max(1 MiB, card bytes / 65,536)`, rounded up to a power of two.
+    /// `max(1 MiB, card bytes / 65,536)`, rounded up to a power of two.
     ///
     /// `None` for a card past 128 TiB, which no SD standard defines: the alternative is a superblock
-    /// whose own extent count exceeds the index, and initialization refusing outright beats writing one
-    /// that will not mount.
+    /// whose own extent count exceeds the index.
     pub fn for_card(total_blocks: u64) -> Option<Geometry> {
         let want = total_blocks.saturating_mul(BLOCK as u64).div_ceil(MAX_EXTENTS as u64);
         let mut log2 = MIN_EXTENT_LOG2;
@@ -131,7 +106,7 @@ impl Geometry {
         Some(Geometry { log2 })
     }
 
-    /// §4's recorded field. `None` outside `20..=31`, which is the whole of what a decoder checks.
+    /// The recorded field. `None` outside `20..=31`, which is the whole of what a decoder checks.
     pub const fn from_log2(log2: u8) -> Option<Geometry> {
         if log2 < MIN_EXTENT_LOG2 || log2 > MAX_EXTENT_LOG2 {
             return None;
@@ -139,28 +114,25 @@ impl Geometry {
         Some(Geometry { log2 })
     }
 
-    /// The byte §4 stores.
+    /// The byte the superblock stores.
     pub const fn log2(self) -> u8 {
         self.log2
     }
 
-    /// One extent, in bytes.
     pub const fn extent_size(self) -> u64 {
         1 << self.log2
     }
 
-    /// Blocks in one extent.
     pub const fn extent_blocks(self) -> u64 {
         1 << (self.log2 - BLOCK.trailing_zeros() as u8)
     }
 
-    /// §6's extent count, from the card's block count — uncapped, because whether it fits the index is
+    /// The extent count from the card's block count — uncapped, because whether it fits the index is
     /// exactly what [`Superblock::decode`](super::superblock::Superblock::decode) refuses on.
     pub fn extent_count(self, total_blocks: u64) -> u64 {
         total_blocks.saturating_sub(EXTENT_AREA) / self.extent_blocks()
     }
 
-    /// Extents a payload of `bytes` needs.
     pub fn extents_for(self, bytes: u64) -> u64 {
         bytes.div_ceil(self.extent_size())
     }
@@ -171,31 +143,25 @@ pub fn catalog_gate(copy: usize) -> u64 {
     CATALOG[copy] + CATALOG_GATE_BLOCK
 }
 
-/// The first block of journal slot `slot` (§7).
+/// The first block of journal slot `slot`.
 pub fn slot_block(slot: usize) -> u64 {
     JOURNAL + SLOT_BLOCKS * slot as u64
 }
 
-/// The header block certifying journal tail slot `slot` (§7).
-///
-/// Each header occupies the first block of a program page of its own. A cut while replacing one
-/// header can therefore corrupt neither a tail slot nor another slot's header.
+/// The header block certifying journal tail slot `slot`. Each header occupies the first block of a
+/// program page of its own, so a cut while replacing one can corrupt no tail slot and no other header.
 pub fn slot_header_block(slot: usize) -> u64 {
     JOURNAL + SLOT_BLOCKS * SLOTS as u64 + SLOT_BLOCKS * slot as u64
 }
 
-/// Bytes the body of a catalog copy holding `entries` entries covers (§5.1). The store never needs
-/// the whole body at once — `commit` counts blocks as it streams them — so this is what a reader of
-/// one asks for.
+/// Bytes the body of a catalog copy holding `entries` entries covers.
 #[cfg(any(test, feature = "std"))]
 pub fn body_len(entries: u16) -> usize {
     BLOCK + entries as usize * ENTRY_STRIDE
 }
 
 /// One object's extents, in payload order: range `i` carries the payload bytes that follow range
-/// `i-1` (§5.3).
-///
-/// This type is the format's extent vocabulary and never crosses the seam.
+/// `i-1`. This type is the format's extent vocabulary and never crosses the seam.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Ranges {
     ranges: [(u16, u16); MAX_RANGES],
@@ -203,8 +169,8 @@ pub struct Ranges {
 }
 
 impl Ranges {
-    /// Appends one range, coalescing with the previous one when it is adjacent — which is what keeps
-    /// a first-fit walk over a contiguous free run inside one range instead of eight.
+    /// Appends one range, coalescing with the previous one when it is adjacent, which keeps a
+    /// first-fit walk over a contiguous free run inside one range instead of eight.
     #[must_use]
     pub fn push(&mut self, first: u16, extents: u16) -> Option<()> {
         if extents == 0 {
@@ -238,18 +204,16 @@ impl Ranges {
         self.ranges[..self.count as usize].iter().copied()
     }
 
-    /// Extents this object owns.
     pub fn extents(&self) -> u32 {
         self.iter().map(|(_, count)| count as u32).sum()
     }
 
-    /// True when one of these ranges covers `extent`.
     pub fn names(&self, extent: u16) -> bool {
         self.iter().any(|(first, count)| extent >= first && extent - first < count)
     }
 
-    /// Drops the tail beyond `extents`, and reports the extents it gave up so the caller can free
-    /// them — §5.3's "every other entry is trimmed to its payload at the commit that publishes it".
+    /// Drops the tail beyond `extents` and reports the extents it gave up, so the caller can free
+    /// them. Every entry except a reserve is trimmed to its payload at the commit that publishes it.
     pub fn trim_to(&mut self, extents: u32) -> Ranges {
         let mut freed = Ranges::default();
         let mut kept = Ranges::default();
@@ -268,12 +232,11 @@ impl Ranges {
         freed
     }
 
-    /// §6.1: the block holding payload offset `offset`, the byte inside it, and how many payload
-    /// bytes remain contiguous on the card from there.
+    /// The block holding payload offset `offset`, the byte inside it, and how many payload bytes
+    /// remain contiguous on the card from there.
     ///
-    /// The geometry is the caller's because it is the **card's**, recorded in its superblock: a
-    /// `Ranges` is extent indices and nothing else, and what an index is worth is not a property of
-    /// the entry that carries it.
+    /// The geometry is the caller's because it is the card's: a `Ranges` is extent indices and nothing
+    /// else, and what an index is worth is not a property of the entry that carries it.
     pub fn locate(&self, geometry: Geometry, offset: u64) -> Option<Located> {
         let mut start = 0u64;
         for (first, count) in self.iter() {
@@ -291,8 +254,8 @@ impl Ranges {
         None
     }
 
-    /// Decodes §5.3's eight `(u16 first, u16 count)` pairs. `range_count` live ranges, each nonzero
-    /// and inside the extent area, and the rest all zero.
+    /// Decodes eight `(u16 first, u16 count)` pairs: `range_count` live ranges, each nonzero and
+    /// inside the extent area, and the rest all zero.
     pub fn decode(field: &[u8], range_count: u8, extent_count: u32) -> Result<Self> {
         let err = |reason| DecodeError::new(Record::Entry, reason);
         if range_count == 0 || range_count as usize > MAX_RANGES {
@@ -333,9 +296,7 @@ impl Ranges {
 /// Where a payload offset lives on the card.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Located {
-    /// The block holding it.
     pub block: u64,
-    /// The byte inside that block.
     pub offset: usize,
     /// Payload bytes that follow it contiguously on the card, this range's tail included.
     pub contiguous: u64,
@@ -345,20 +306,10 @@ impl Located {
     /// Whole blocks one pass may move from here: what the caller still holds, bounded by the run the
     /// card has contiguous from this block.
     ///
-    /// **The bound is taken in `u64` and only the result narrows**, and that order is the whole point
-    /// of this function existing rather than being spelled at the call site. `contiguous` is a byte
-    /// count on the card, and card-scaled extents let it exceed a `usize` on the device, whose
-    /// pointers are 32 bits: a coalesced range of 2 TiB — 32,768 extents at the 64 MiB size §8 gives a
-    /// card of 4 TiB — is exactly `2^32` blocks, which narrows to **zero**. A zero-block write writes
-    /// an empty slice, consumes no input and advances no cursor, so the loop that called it is exactly
-    /// where it started: not a wrong answer but a silent hang, on the device only. Narrowing last
-    /// cannot produce it — the result is at most `input_len / BLOCK`, which was a `usize` already.
-    ///
-    /// No test *runner* tells the two orders apart today, because a 64-bit `usize` holds `2^32`
-    /// perfectly well — `a_run_wider_than_a_device_usize_still_advances` below discriminates them on a
-    /// 32-bit target, and nothing in CI is one. So what holds this is the argument above, that live
-    /// test waiting for a runner that can fail it, and having one implementation of the order rather
-    /// than one per call site.
+    /// The bound is taken in `u64` and only the result narrows. `contiguous` is a byte count on the
+    /// card, and card-scaled extents let it exceed a `usize` on the device: a coalesced range of 2 TiB
+    /// is exactly `2^32` blocks, which narrows to zero, and a zero-block write consumes no input and
+    /// advances no cursor — a silent hang, on the device only. Narrowing last cannot produce it.
     pub fn whole_blocks(&self, input_len: usize) -> usize {
         ((input_len / BLOCK) as u64).min(self.contiguous / BLOCK as u64) as usize
     }
@@ -368,8 +319,7 @@ impl Located {
 mod tests {
     use super::*;
 
-    /// §2's table: no two regions share a program page, and the extent area starts on a 1 MiB
-    /// boundary.
+    /// No two regions share a program page, and the extent area starts on a 1 MiB boundary.
     #[test]
     fn every_region_boundary_is_page_aligned() {
         for boundary in [SUPERBLOCK[0], SUPERBLOCK[1], CATALOG[0], CATALOG[1], JOURNAL, EXTENT_AREA] {
@@ -380,10 +330,9 @@ mod tests {
         assert_eq!(JOURNAL, CATALOG[1] + CATALOG_BLOCKS);
         assert_eq!(SLOT_BLOCKS * SLOTS as u64 * 2, 1_024);
         assert_eq!(EXTENT_AREA - (JOURNAL + SLOT_BLOCKS * SLOTS as u64 * 2), 1_984);
-        // The extent area starts at 2 MiB, and what that has to be a multiple of is the **program
-        // page**: that is what makes §6.1's page-alignment property hold at every size §8 can pick.
-        // It is not a claim that an extent is aligned to its own size — at 8 MiB extents, extent 0
-        // still starts at absolute 2 MiB — and nothing needs it to be.
+        // What the extent area's start has to be a multiple of is the program page, which is what
+        // makes page alignment hold at every extent size. It is not a claim that an extent is aligned
+        // to its own size: at 8 MiB extents, extent 0 still starts at absolute 2 MiB.
         assert_eq!(EXTENT_AREA * BLOCK as u64 % PROGRAM_PAGE as u64, 0);
         assert_eq!(catalog_gate(0), 544);
         assert_eq!(catalog_gate(1), 1_056);
@@ -391,23 +340,21 @@ mod tests {
         assert_eq!(slot_header_block(3), 1_696);
     }
 
-    /// §5.1: `512 + 1916 × 128 = 245,760` fills blocks `0..480` exactly.
+    /// `512 + 1916 × 128 = 245,760` fills blocks `0..480` exactly.
     #[test]
     fn the_entry_array_fills_its_blocks_exactly() {
         assert_eq!(ENTRY_CAPACITY, 1_916);
         assert_eq!(body_len(ENTRY_CAPACITY as u16), 245_760);
         assert_eq!(body_len(ENTRY_CAPACITY as u16), ENTRY_BLOCKS * BLOCK);
-        // §5.5 step 2's write count: one header block plus `ceil(n / 4)`.
+        // The body write count: one header block plus `ceil(n / 4)`.
         for (entries, blocks) in [(0u16, 1usize), (1, 2), (4, 2), (5, 3), (ENTRY_CAPACITY as u16, ENTRY_BLOCKS)] {
             assert_eq!(body_len(entries).div_ceil(BLOCK), blocks);
         }
     }
 
-    /// The streaming window divides §5.1's body region exactly, which is what makes a batched body write
-    /// safe at the array's widest: the block after the region is the copy's **gate**, and a window that
-    /// pads its last blocks past the live prefix therefore still stays inside blocks `0..480`. If either
-    /// of these two divisibility facts stopped holding, a commit at capacity would program the gate as
-    /// part of the body it certifies.
+    /// The streaming window divides the body region exactly, which is what makes a batched body write
+    /// safe at the array's widest: the block after the region is the copy's gate, so a window that pads
+    /// its last blocks past the live prefix still stays inside blocks `0..480`.
     #[test]
     fn a_streaming_window_divides_the_body_region() {
         assert_eq!(STREAM_WINDOW, 4_096);
@@ -423,7 +370,7 @@ mod tests {
         assert_eq!(ENTRY_BLOCKS / STREAM_BLOCKS, 60);
     }
 
-    /// §4.1's card: 62,914,560 blocks recompute to 30,718 extents, at the 1 MiB §8 gives it.
+    /// A 62,914,560-block card recomputes to 30,718 extents, at the 1 MiB it gets.
     #[test]
     fn extent_count_is_section_6s_formula() {
         let default = Geometry::DEFAULT;
@@ -433,11 +380,11 @@ mod tests {
         assert_eq!(default.extent_count(EXTENT_AREA + default.extent_blocks()), 1);
     }
 
-    /// §8's rule, over the cards it has to answer for: 1 MiB up to 64 GiB, then one doubling per
-    /// doubling of the card, and never more extents than the `u16` index can name.
+    /// 1 MiB up to 64 GiB, then one doubling per doubling of the card, and never more extents than the
+    /// `u16` index can name.
     #[test]
     fn the_extent_size_is_scaled_to_the_card() {
-        // (card blocks, the extent size §8 picks)
+        // (card blocks, the extent size the rule picks)
         let cases: [(u64, u64); 8] = [
             ((32 << 30) / 512, 1 << 20),      // a 32 GiB card: the ceiling is not in sight
             ((64 << 30) / 512, 1 << 20),      // exactly 65,536 × 1 MiB, which still fits
@@ -460,15 +407,15 @@ mod tests {
             assert_eq!(Geometry::from_log2(geometry.log2()), Some(geometry), "the recorded byte round-trips");
         }
         assert_eq!(Geometry::for_card(0), Some(Geometry::DEFAULT), "an empty card still has a geometry");
-        // The sharp edge, not the trivial one: 128 TiB exactly is the last card that fits, and one
-        // block more needs a 33rd doubling. (`u64::MAX` only proves `saturating_mul` does not panic.)
+        // The sharp edge: 128 TiB exactly is the last card that fits, and one block more needs a 33rd
+        // doubling.
         assert_eq!(Geometry::for_card(274_877_906_944).map(Geometry::log2), Some(31));
         assert_eq!(Geometry::for_card(274_877_906_945), None, "one block past 128 TiB is not expressible");
         assert_eq!(Geometry::for_card(u64::MAX), None);
     }
 
-    /// §4's field is a log2, so "a power of two" is unrepresentable-otherwise and only the range is a
-    /// rule. Below 1 MiB and above 2 GiB are the two refusals.
+    /// The recorded field is a log2, so "a power of two" is unrepresentable-otherwise and only the
+    /// range is a rule. Below 1 MiB and above 2 GiB are the two refusals.
     #[test]
     fn only_the_recorded_range_is_a_rule() {
         assert_eq!(Geometry::from_log2(19), None);
@@ -479,7 +426,7 @@ mod tests {
         assert_eq!(Geometry::DEFAULT.extent_size(), MIN_EXTENT_SIZE);
     }
 
-    /// §6.1's worked example: the route entry's range `(12, 1)`, payload offset 40,960, on a card of
+    /// The worked example: the route entry's range `(12, 1)`, payload offset 40,960, on a card of
     /// 1 MiB extents.
     #[test]
     fn addressing_matches_the_section_6_1_example() {
@@ -500,9 +447,8 @@ mod tests {
         assert!(ranges.locate(doubled, 2 << 20).is_none());
     }
 
-    /// §6.1: any payload offset that is a multiple of 16,384 maps to a page-aligned block, which is
-    /// what §7.2's payload-page flush relies on — at every extent size §8 can pick, since each one is
-    /// a multiple of the program page and the extent area starts on one.
+    /// Any payload offset that is a multiple of 16,384 maps to a page-aligned block, at every extent
+    /// size: each one is a multiple of the program page, and the extent area starts on one.
     #[test]
     fn page_aligned_payload_offsets_map_to_page_aligned_blocks() {
         for log2 in 20..=31u8 {
@@ -519,14 +465,11 @@ mod tests {
 
     /// [`Located::whole_blocks`] bounds in `u64` and narrows the result, which is the difference
     /// between a write that advances and one that does not — on the device, where a `usize` is 32 bits.
-    ///
-    /// **This test cannot fail on a 64-bit host**, and saying so is the point: the value that wraps
-    /// fits a host `usize` perfectly. What it pins is the shape — the wrapped quantity is spelled out
-    /// below, so a reader of this file can see that `contiguous / BLOCK` is a number the device cannot
-    /// hold, and a future call site that narrows first has this test's argument to answer.
+    /// This test cannot fail on a 64-bit host; what it pins is the shape, with the wrapped quantity
+    /// spelled out below.
     #[test]
     fn a_run_wider_than_a_device_usize_still_advances() {
-        // 32,768 extents of the 64 MiB size §8 gives a 4 TiB card: one coalesced range of 2 TiB.
+        // 32,768 extents of the 64 MiB size a 4 TiB card gets: one coalesced range of 2 TiB.
         let geometry = Geometry::for_card((4u64 << 40) / BLOCK as u64).unwrap();
         assert_eq!(geometry.extent_size(), 64 << 20);
         let mut ranges = Ranges::default();
@@ -537,8 +480,8 @@ mod tests {
 
         let located = ranges.locate(geometry, 0).unwrap();
         assert_eq!(located.contiguous, 2 << 40);
-        // The quantity the old expression narrowed: exactly 2^32 blocks, which is zero in a 32-bit
-        // `usize` — and a zero-block write consumes nothing and loops forever.
+        // Exactly 2^32 blocks, which is zero in a 32-bit `usize` — and a zero-block write consumes
+        // nothing and loops forever.
         assert_eq!(located.contiguous / BLOCK as u64, 1 << 32);
         assert_eq!((located.contiguous / BLOCK as u64) as u32, 0);
 

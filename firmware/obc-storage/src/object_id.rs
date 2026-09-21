@@ -4,10 +4,9 @@
 //! object becomes visible gets the same id. Only [`ObjectIdSequence::commit`] advances the sequence
 //! and hands its new reboot floor to the caller for persistence.
 
-/// The candidate and reboot-floor state machine for one immutable-object id band.
-///
-/// `LIMIT` is exclusive. Recovery observes only validated committed filenames; an inert staged
-/// file is swept by the media owner without reaching this sequence, so it cannot consume an id.
+/// The candidate and reboot-floor state machine for one immutable-object id band. `LIMIT` is
+/// exclusive. An inert staged file is swept by the media owner without reaching this sequence, so it
+/// cannot consume an id.
 pub struct ObjectIdSequence<const LIMIT: u16> {
     next: u16,
 }
@@ -42,8 +41,7 @@ impl<const LIMIT: u16> ObjectIdSequence<LIMIT> {
     }
 
     /// Advance after the reserved candidate became visible, then persist the new exclusive floor.
-    /// The caller must have obtained that candidate through [`candidate`](Self::candidate); this is
-    /// the only advancing operation, and is called only after the media commit succeeds.
+    /// This is the only advancing operation, and runs only after the media commit succeeds.
     #[inline(always)]
     pub fn commit(&mut self, persist_floor: impl FnOnce(u16)) -> u16 {
         debug_assert!(self.next < LIMIT);

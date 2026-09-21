@@ -1,21 +1,16 @@
 //! FatFs byte adapters over a microSD card.
 //!
-//! The shared format code (in `obc-route`/`obc-reader`) never touches a filesystem: it reads through a
-//! [`ByteSource`] and writes through a [`ByteSink`]. On the host those seams are backed by
-//! `std::fs`; here by an [`embedded_sdmmc`] FatFs file. Only these thin adapters are
-//! platform-specific.
-//!
-//! Both are generic over [`BlockDevice`] + [`TimeSource`], so they pull in no bus types. They borrow
-//! the [`VolumeManager`] shared (`&'a`) and hold a [`RawFile`]; the manager has interior mutability
-//! because every method takes `&self`.
+//! The shared format code never touches a filesystem: it reads through a [`ByteSource`] and writes
+//! through a [`ByteSink`]. On the host those seams are backed by `std::fs`; here by an
+//! [`embedded_sdmmc`] FatFs file. Both borrow the [`VolumeManager`] shared and hold a [`RawFile`];
+//! the manager has interior mutability because every method takes `&self`.
 
 use embedded_sdmmc::{BlockDevice, RawFile, TimeSource, VolumeManager};
 use obc_formats::io::{ByteSink, ByteSource, Error};
 
-/// A random-access [`ByteSource`] over an open FatFs file — the device backing for
-/// `obc-route`'s `RouteReader` / `RouteSummary::read`. Each
-/// [`read_at`](ByteSource::read_at) seeks the file then reads, so a route never has to be resident.
-/// The length is captured once at construction (the file doesn't grow under a reader).
+/// A random-access [`ByteSource`] over an open FatFs file: each read seeks then reads, so a route
+/// never has to be resident. The length is captured once, because the file does not grow under a
+/// reader.
 pub struct SdByteSource<
     'a,
     D: BlockDevice,
@@ -32,9 +27,8 @@ pub struct SdByteSource<
 impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: usize, const MAX_VOLUMES: usize>
     SdByteSource<'a, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>
 {
-    /// Wrap an already-open `file` (its length is `len`) for reading. The caller owns the
-    /// handle's lifetime: the source borrows the manager but not the handle, so closing the
-    /// file is the caller's job once the source is dropped.
+    /// Wrap an already-open `file` of length `len`. The source borrows the manager but not the
+    /// handle, so closing the file is the caller's job.
     pub fn new(vmgr: &'a VolumeManager<D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>, file: RawFile, len: u32) -> Self {
         SdByteSource { vmgr, file, len }
     }
@@ -44,14 +38,12 @@ impl<D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: usiz
     for SdByteSource<'_, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>
 {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
-        // The FAT seam narrows once, here, and works in `u32` below: `file_seek_from_start` takes a
-        // `u32` because a FAT32 file cannot be longer than one. That is FAT's own wall rather than
-        // the read seam's — this arm dies with FS7/8 and is widened only where the trait requires.
+        // The FAT seam narrows once, here: `file_seek_from_start` takes a `u32` because a FAT32 file
+        // cannot be longer than one.
         let offset = u32::try_from(offset).map_err(|_| Error::BadOffset)?;
-        // Prove range errors before touching the medium. Once the range is known good, a seek
-        // failure is an I/O failure (card removal, corrupt FAT chain, etc.), not malformed caller
-        // input. Callers rely on that distinction to retry an object whose validity could not be
-        // established because the medium became unreadable.
+        // Prove range errors before touching the medium. Once the range is known good, a seek failure
+        // is an I/O failure rather than malformed caller input, and callers rely on that distinction
+        // to retry an object whose validity the medium prevented them from establishing.
         let count = u32::try_from(buf.len()).map_err(|_| Error::BadOffset)?;
         let end = offset.checked_add(count).ok_or(Error::BadOffset)?;
         if end > self.len {
@@ -76,11 +68,8 @@ impl<D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: usiz
     }
 }
 
-/// A [`ByteSink`] over an open FatFs file — the device backing for the route writer's "stream the
-/// body then patch the header" flow. Writes append at the file's current offset;
-/// [`patch_at`](ByteSink::patch_at) seeks back, overwrites, and returns to the append point.
-///
-/// `patch_at` is implemented for `ByteSink` completeness and conversions that patch a header.
+/// A [`ByteSink`] over an open FatFs file: stream the body, then patch the header. Writes append at
+/// the current offset; [`patch_at`](ByteSink::patch_at) seeks back, overwrites, and returns.
 pub struct SdByteSink<
     'a,
     D: BlockDevice,
@@ -96,7 +85,6 @@ pub struct SdByteSink<
 impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: usize, const MAX_VOLUMES: usize>
     SdByteSink<'a, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>
 {
-    /// Wrap an open, writable `file`. The caller flushes/closes it when done.
     pub fn new(vmgr: &'a VolumeManager<D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>, file: RawFile) -> Self {
         SdByteSink { vmgr, file }
     }
