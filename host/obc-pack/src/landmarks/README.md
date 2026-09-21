@@ -8,7 +8,7 @@ local files only: no network, no simulator, no device.
 ```sh
 cargo build -p obc-bake --locked
 tools/obc fixtures sync assistant-inputs
-target/debug/obc-bake landmarks \
+target/debug/obc-bake landmark-content \
   --snapshot "$HOME/.cache/openbikecomputer/fixtures/by-id/assistant-wiki/manifest.json" \
   --boundary "$HOME/.cache/openbikecomputer/fixtures/by-id/assistant-wiki/regions.geojson" \
   --out .artifacts/landmarks

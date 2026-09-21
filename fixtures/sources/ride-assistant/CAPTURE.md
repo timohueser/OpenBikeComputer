@@ -29,7 +29,7 @@ and lead-image candidates with their Commons metadata. Responses land in `querie
 `classes/`, `locales/`, `articles/` and `images/`, with `manifest.json` recording every URL, byte
 count, SHA-256 and outcome. The response limit is 32 MiB.
 
-`obc-bake landmarks` makes every text, image and attribution decision afterwards, offline. Site
+`obc-bake landmark-content` makes every text, image and attribution decision afterwards, offline. Site
 eligibility comes from the exact polygon and the category policy, not from P17 country claims or a
 curated list, and the acquisition checks its category file digest against the compiler's embedded
 policy digest so the two cannot disagree.
@@ -52,9 +52,9 @@ capture checks its digest before and after selection.
 Check offline reproducibility by compiling twice into empty directories:
 
 ```sh
-target/debug/obc-bake landmarks --snapshot "$OBC_LANDMARK_CAPTURE/manifest.json" \
+target/debug/obc-bake landmark-content --snapshot "$OBC_LANDMARK_CAPTURE/manifest.json" \
   --boundary "$OBC_LANDMARK_CAPTURE/boundary.geojson" --out .artifacts/content-a
-target/debug/obc-bake landmarks --snapshot "$OBC_LANDMARK_CAPTURE/manifest.json" \
+target/debug/obc-bake landmark-content --snapshot "$OBC_LANDMARK_CAPTURE/manifest.json" \
   --boundary "$OBC_LANDMARK_CAPTURE/boundary.geojson" --out .artifacts/content-b
 diff -r .artifacts/content-a .artifacts/content-b
 ```
@@ -64,7 +64,7 @@ for each pass:
 
 ```sh
 cargo build -p obc-bake --release --locked
-target/release/obc-bake landmarks \
+target/release/obc-bake landmark-content \
   --snapshot "$OBC_LANDMARK_CAPTURE/manifest.json" \
   --boundary "$OBC_LANDMARK_CAPTURE/boundary.geojson" \
   --out .artifacts/switzerland-content
