@@ -1,23 +1,19 @@
 /**
- * The three flows, end to end against the simulated device (C4, #903).
+ * The three flows, end to end against the simulated device.
  *
- * The LM20's USB peripheral does not exist yet (#889), so this is where "it works" is decided. The
- * device on the other end is the real protocol engine over a real flat store on a simulated card: it
- * assigns the ids, enforces §3.6's compare-and-swap, answers a second transfer `busy`, refuses a
- * payload its extents cannot hold with the bytes it needed, and runs the bilateral cancel — so a
- * flow that gets any of those wrong fails here rather than on a rider's desk.
+ * The LM20's USB peripheral does not exist yet, so this is where "it works" is decided. The device on
+ * the other end is the real protocol engine over a real flat store on a simulated card: it assigns
+ * the ids, enforces the compare-and-swap, answers a second transfer `busy`, refuses a payload its
+ * extents cannot hold with the bytes it needed, and runs the bilateral cancel.
  *
  * A map is **one object**, exactly as a route and a firmware image are: one `PUT`, one stream, one
- * whole-payload CRC, one commit. There is no multi-file map upload to test — no manifest, no
- * ordering rule between files, no state that outlives a transfer — so a map's tests are the same
- * tests the other two get, on a much larger object.
+ * whole-payload CRC, one commit. There is no multi-file map upload to test, so a map's tests are the
+ * same tests the other two get, on a much larger object.
  *
- * What these tests are **not** is a substitute for hardware. Nothing here proves the LM20 enumerates,
- * that its endpoints have the sizes assumed, or that a real SD write keeps up; those wait for #889.
- * What they do prove is that the object-model half — the half that is byte-identical across BLE and
- * USB — is right, including the four failure paths that are easiest to get wrong and worst to get
- * wrong: a cancelled write, an unplug mid-transfer, a device that takes every byte and then refuses
- * them, and a card with no room for the object being pushed at it.
+ * Nothing here proves the LM20 enumerates, that its endpoints have the sizes assumed, or that a real
+ * SD write keeps up. What it does prove is the object-model half, including the four failure paths
+ * that are easiest to get wrong: a cancelled write, an unplug mid-transfer, a device that takes every
+ * byte and then refuses them, and a card with no room for the object being pushed at it.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -36,8 +32,6 @@ import { loadFlatDevice } from "../../../test-support/flat-device/load";
 import { prepareRoute } from "./route";
 import { armUpdate, sendMapBlob, sendMapBytes, sendMapFile, sendRoute, stageFirmware } from "./write";
 import type { JobContext, JobPhase } from "./progress";
-
-// --- fixtures -----------------------------------------------------------------
 
 function repoRoot(): string {
     let dir = dirname(fileURLToPath(import.meta.url));
@@ -59,8 +53,6 @@ beforeAll(async () => {
     await initConvert(readFileSync(wasm));
     await loadFlatDevice();
 });
-
-// --- a job context a test can watch -------------------------------------------
 
 interface Watched extends JobContext {
     readonly phases: JobPhase[];
@@ -103,8 +95,6 @@ async function withDevice<T>(
         expect(rig.device.faults, "the device adapter saw a reaction it did not expect").toEqual([]);
     }
 }
-
-// --- the flows ----------------------------------------------------------------
 
 describe("map upload from a file", () => {
     it("can cancel the cooperative CRC pass of a resident assembler fallback", async () => {
@@ -197,9 +187,9 @@ describe("map upload from a file", () => {
     });
 
     it("answers a map the card cannot hold with the bytes it needed", async () => {
-        // §5.2.2 retires the free-space query, so nothing asks in advance. §3.6 answers at the point
-        // of decision instead, and its context is what this upload actually needed — which is what
-        // lets the page say how much has to go rather than "not enough room".
+        // Nothing asks about free space in advance. The refusal answers at the point of decision
+        // instead, and its context is what this upload actually needed — which is what lets the page
+        // say how much has to go rather than "not enough room".
         await withDevice({ extents: 1 }, async ({ client, device }) => {
             // One extent, taken by the object below: allocation is extent-granular, so this is a real
             // card with no room rather than a byte ceiling invented for the test.
@@ -230,9 +220,9 @@ describe("map upload from a file", () => {
         expect(first.device.entries, "a half-written map is never committed").toEqual([]);
         await first.close();
 
-        // Plugging it back in is a fresh session — nothing carried over from the dead one, no
-        // resume, no repair. §3.6: any break before the commit leaves the card as if nothing had
-        // happened, and transfers restart rather than resume.
+        // Plugging it back in is a fresh session — nothing carried over from the dead one, no resume,
+        // no repair. Any break before the commit leaves the card as if nothing had happened, and
+        // transfers restart rather than resume.
         await withDevice({ packetSize: 4096 }, async ({ client, device }) => {
             const result = await sendMapFile(client, file, context());
             expect(result.payloadLength).toBe(BigInt(bytes.length));
@@ -241,7 +231,7 @@ describe("map upload from a file", () => {
     }, 30_000);
 
     it("cancels mid-send, and retries on the same link", async () => {
-        // The recovery property, on one connection: §3.8's cancel is bilateral, so the device has
+        // The recovery property, on one connection: the cancel is bilateral, so the device has
         // released its transfer slot and discarded the partial while this side reset its channel —
         // and the retry is therefore not a special path, it is the first path again.
         await withDevice({ packetSize: 4096, streamHighWaterMark: 8 * 1024 }, async ({ client, device }) => {
@@ -267,19 +257,16 @@ describe("map upload from a file", () => {
 
     it("surfaces a device checksum refusal, keeps nothing, and lets the object go again on the same link", async () => {
         // The third failure shape, and the one that is neither a cancel nor an unplug: the device
-        // took every announced byte, checked the whole-payload CRC it was promised (§3.6) and said
-        // no. Nothing about it is recoverable *inside* the flow — each of these is one object, so
-        // there is no partial to resume — so what has to be true is that the refusal reaches the
-        // caller with the device's own code, that nothing half-written is on the card, and that the
-        // channel reset which follows leaves the link ordinary rather than desynchronised.
+        // took every announced byte, checked the whole-payload CRC it was promised and said no.
+        // Nothing about it is recoverable *inside* the flow — each of these is one object, so there
+        // is no partial to resume — so what has to be true is that the refusal reaches the caller
+        // with the device's own code, that nothing half-written is on the card, and that the channel
+        // reset which follows leaves the link ordinary rather than desynchronised.
         //
         // The object is a **firmware package** rather than a map, because the device does not rehash
-        // a map that arrived over the cable: §5.2's packet CRC and its retries are the integrity
-        // boundary there, and recomputing 800 MiB on the M33 duplicated that work. Every other kind,
-        // and every kind over BLE, is verified end to end — so a package is where this refusal lives.
-        //
-        // It runs against the real device rather than a stubbed client because the retry is what
-        // proves the abandon path actually ran.
+        // a map that arrived over the cable: the packet CRC and its retries are the integrity
+        // boundary there. It runs against the real device because the retry is what proves the
+        // abandon path actually ran.
         const link = loopbackLink({ packetSize: 4096, streamHighWaterMark: 8 * 1024 });
         const device = new FlatDevice(link.device);
         void device.run();
@@ -335,8 +322,8 @@ describe("route upload", () => {
 
             const result = await sendRoute(client, prepared, context());
             expect(device.payloadOf(result.objectId)).toEqual(prepared.obcr);
-            // §3.6's display name is what a catalog listing shows, and it is the route's own name —
-            // so the row a rider reads on the device page is the row they dropped.
+                // The display name is what a catalog listing shows, and it is the route's own name —
+                // so the row a rider reads on the device page is the row they dropped.
             const listed = await client.list({ kind: ObjectKind.Route });
             expect(listed.entries.map((entry) => [entry.objectId, entry.displayName])).toEqual([
                 [result.objectId, "Vector Loop"],
@@ -358,8 +345,8 @@ describe("route upload", () => {
 describe("firmware update", () => {
     it("stages a verified container and replaces the one already on the card", async () => {
         await withDevice({}, async ({ client, device }) => {
-            // The signed (v2) container — the only shape the device installs (`OBCU_Spec.md` §1.4),
-            // and the trailer must reach it intact or it refuses the file as truncated.
+                // The signed container — the only shape the device installs — and the trailer must
+                // reach it intact or it refuses the file as truncated.
             const container = vector("update-container-v2.bin");
             const ctx = context();
             const { image, result } = await stageFirmware(client, container, ctx);
@@ -370,10 +357,10 @@ describe("firmware update", () => {
             expect(device.payloadOf(result.objectId)).toEqual(container);
             expect(ctx.phases).toEqual(["verifying", "sending"]);
 
-            // §3 has no singleton slot, so "one update package on the card" is this module's policy
-            // and the compare-and-swap on the listed revision is what makes it safe. Staging again
-            // must therefore bump the revision of the object that is there, not leave a second
-            // multi-megabyte package for the rider to find.
+                // There is no singleton slot on the wire, so "one update package on the card" is this
+                // module's policy and the compare-and-swap on the listed revision is what makes it
+                // safe. Staging again must bump the revision of the object that is there, not leave a
+                // second multi-megabyte package for the rider to find.
             const again = await stageFirmware(client, container, context());
             expect(again.result.objectId).toBe(result.objectId);
             expect(again.result.revision).toBe(2n);
@@ -388,7 +375,7 @@ describe("firmware update", () => {
             await expect(stageFirmware(client, broken, context())).rejects.toMatchObject({ code: "image-crc" });
             expect(device.entries).toEqual([]);
 
-            // …and so is an intact but *unsigned* one, which the device would refuse anyway (§1.4).
+                // …and so is an intact but *unsigned* one, which the device would refuse anyway.
             const unsigned = vector("update-container-v1.bin");
             await expect(stageFirmware(client, unsigned, context())).rejects.toMatchObject({ code: "unsigned" });
             expect(device.entries).toEqual([]);
@@ -396,8 +383,8 @@ describe("firmware update", () => {
     });
 
     it("surfaces the device's refusal to arm rather than reporting an install", async () => {
-        // §4's dev-window gap: the device's current policy answers `ARM` with `rejected`. Staging is
-        // not installing and never was, so the honest report is the refusal itself — a page that
+        // A stated dev-window gap: the device's current policy answers `ARM` with `rejected`. Staging
+        // is not installing and never was, so the honest report is the refusal itself — a page that
         // said "installing…" here would be claiming a reboot that never comes.
         await withDevice({}, async ({ client }) => {
             const container = vector("update-container-v2.bin");
@@ -422,9 +409,8 @@ describe("firmware update", () => {
  * A host link that damages the payload of one stream write, once armed.
  *
  * The wire is where a checksum failure comes from, so this is where it is injected: the record
- * framing stays intact and one payload byte does not, which is exactly the case §3.6's declared
- * whole-payload CRC exists to catch. Damaging the *client's* source instead would test the client's
- * arithmetic rather than the device's verdict.
+ * framing stays intact and one payload byte does not. Damaging the *client's* source instead would
+ * test the client's arithmetic rather than the device's verdict.
  */
 function damageOneStreamWrite(link: DeviceLink): { link: DeviceLink; arm: () => void } {
     const stream = link.stream;
