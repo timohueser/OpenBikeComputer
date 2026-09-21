@@ -1,4 +1,4 @@
-//! The app-side view of the SD-sideload firmware-update flow.
+//! The app-side view of the firmware-update flow.
 //!
 //! The scan and arm machinery runs board-side; the app posts the
 //! [`DfuAction`](crate::activity::DfuAction) one-shots and receives the answer through the pass's
@@ -31,7 +31,7 @@ pub fn clamp(s: &str) -> Version {
 pub struct DfuScanReport {
     /// The running firmware's version: what an install replaces.
     pub installed: Version,
-    /// The staged image's version, read from the validated `UPDATE.BIN` header.
+    /// The staged image's version, read from the validated package header.
     pub staged: Version,
     /// This install would arm with no rollback snapshot, which is knowable before arming from the
     /// boot-state page. An unconfirmed trial is then accepted rather than rolled back, so the
@@ -74,12 +74,12 @@ pub enum DfuFailure {
 pub enum DfuInstallError {
     /// Refused: a ride is recording, and arming ends in a reboot that would lose the live ride.
     Recording,
-    /// Refused: no SD card is mounted, so there is nothing to install from.
+    /// Refused: the store cannot be written, so the rollback reserve has nowhere to go.
     NoCard,
-    /// The arm re-scanned `UPDATE.BIN` and it failed validation, folded into the same
+    /// The arm re-scanned the staged package and it failed validation, folded into the same
     /// [`DfuScanError`] buckets the scan card shows.
     Scan(DfuScanError),
-    /// Writing the rollback snapshot to the card failed, before anything was armed.
+    /// Writing the rollback reserve failed, before anything was armed.
     SnapshotFailed,
     /// An RRAM write on the arm path failed. Either way nothing was armed and the device keeps
     /// running the old image, so all such failures share one bucket; the board's breadcrumb tells
@@ -87,21 +87,21 @@ pub enum DfuInstallError {
     StateWriteFailed,
 }
 
-/// Why the staging scan rejected `UPDATE.BIN`, phrased for the app's error card. The board folds
-/// its own finer variants into these six user-facing buckets.
+/// Why the staging scan rejected the staged package, phrased for the app's error card. The board
+/// folds its own finer variants into these six user-facing buckets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DfuScanError {
-    /// No `UPDATE.BIN` in the card root.
+    /// No update package is staged.
     NotFound,
-    /// An SD read failed, possibly transiently.
+    /// A card read failed, possibly transiently.
     Unreadable,
-    /// The file is not a valid update image: bad header, a failed CRC, or a torn copy.
+    /// The package is not a valid update image: bad header, a failed CRC, or a torn upload.
     Damaged,
     /// The image is larger than the app slot can hold.
     TooLarge,
-    /// The file resolves to too many block runs to install. The fix is to delete and re-copy it.
+    /// The package resolves to too many block runs to install. The fix is to upload it again.
     TooFragmented,
-    /// The file is intact but not trusted: no signature this firmware verifies, or one that does
+    /// The package is intact but not trusted: no signature this firmware verifies, or one that does
     /// not check out. Its own bucket rather than [`Damaged`](Self::Damaged), because "corrupt" and
     /// "not ours" are different problems with different fixes.
     Untrusted,

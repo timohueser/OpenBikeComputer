@@ -4,13 +4,8 @@
 //! depends on whether it arrived as a GATT write or a USB control frame, so the whole dispatch lives
 //! here and each transport only supplies the bytes and delivers the reply.
 
-use core::cell::RefCell;
-
 use defmt::{info, warn};
 use obc_ble::{CommandResult, CommandStatus, SetClock, StatusMessage};
-
-use crate::object_store::ObjectStore;
-use crate::SharedStore;
 
 use super::StatusBytes;
 
@@ -23,22 +18,21 @@ pub(crate) struct CommandOutcome {
 }
 
 /// Execute device control commands. Object mutations use the flat-store protocol.
-pub(crate) fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut SharedStore) -> CommandOutcome {
+pub(crate) fn run_command(data: &[u8]) -> CommandOutcome {
     let cmd = data.first().copied().unwrap_or(0);
     let mut forget_bond = false;
     let (status, detail) = match (cmd, data) {
         (obc_ble::CMD_INSTALL_FW, _) => {
-            // installFw: request the on-glass-confirmed install of the staged /UPDATE.BIN. Answer
-            // from cheaply-knowable edge state only — `busy` (a ride recording or an install already
-            // pending) and `noStaged` (a card-root existence check). The multi-second OBCU CRC scan
-            // belongs to the on-device flow, so `invalid` is never produced here: the handler accepts
-            // and the scan surfaces a bad image on glass. On `ok` it posts a request the ride loop
-            // drains into `App::open_remote_dfu_check`, and nothing more. It never posts
-            // `DfuAction::Install`, which stays the confirm screen's press: the command never waits
-            // for the human and never arms or reboots on its own. There are no silent installs.
-            let has_staged = store.borrow().update_staged(shared);
+            // installFw: request the on-glass-confirmed install of the staged update package. Answer
+            // from cheaply-knowable edge state only — `busy`, a ride recording or an install already
+            // pending. Whether a package is staged is the scan's own answer one second later, and a
+            // catalog walk at this edge would be a second truth about it. On `ok` it posts a request
+            // the ride loop drains into `App::open_remote_dfu_check`, and nothing more. It never
+            // posts `DfuAction::Install`, which stays the confirm screen's press: the command never
+            // waits for the human and never arms or reboots on its own. There are no silent
+            // installs.
             let busy = super::recording() || crate::object_store::dfu_install_pending();
-            let status = obc_ble::install_fw_reply(has_staged, busy, false);
+            let status = obc_ble::install_fw_reply(busy);
             if matches!(status, CommandStatus::Ok) {
                 crate::object_store::request_dfu_install_ble();
                 info!("link: [cmd] installFw accepted — install request posted (awaits on-glass confirm)");

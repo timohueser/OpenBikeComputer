@@ -1,8 +1,7 @@
-//! Legacy FatFs storage for the nRF54L board's staged firmware update.
+//! Legacy FatFs storage for the nRF54L board's card-resident store epoch.
 //!
-//! This owns the transport-to-[`VolumeManager`] stack that the staged updater and the
-//! card-resident store epoch still need. Routes, trips and rides are flat-store-only, and FAT
-//! remains only for `/EPOCH.OBE`, `/UPDATE.BIN` and `/ROLLBACK.BIN`.
+//! This owns the transport-to-[`VolumeManager`] stack that the store epoch and the free-space read
+//! still need. Everything else is flat-store-only, and FAT remains only for `/EPOCH.OBE`.
 //!
 //! The card is not on a SPI bus. The FLPR (VPR00) runs Nordic's sEMMC image and is the SD host
 //! controller; [`crate::semmc`] is the M33-side driver, and [`crate::flpr_mux`] decides whether the
@@ -19,14 +18,10 @@
 #[cfg(feature = "sd-bench")]
 use embassy_time::Instant;
 use embedded_sdmmc::{
-    Block, BlockCount, BlockDevice, BlockIdx, LfnBuffer, Mode, RawDirectory, RawFile, ShortFileName, TimeSource,
-    Timestamp, VolumeManager,
+    Block, BlockCount, BlockDevice, BlockIdx, Mode, RawDirectory, TimeSource, Timestamp, VolumeManager,
 };
 use obc_app::store_meta::{decode_store_epoch, encode_store_epoch, STORE_EPOCH_LEN};
-use obc_dfu::armer::{ExtentsError, ScanError, StageIo};
-use obc_formats::io::ByteSource;
 use obc_storage::shared_device::SharedBlockDevice;
-use obc_storage::SdByteSource;
 
 /// The store-epoch nonce file in the card root: the `u32` id-era name the phone reads before it
 /// pairs. It is in the root because the epoch names the whole store, so a card swap transplants the
@@ -34,20 +29,11 @@ use obc_storage::SdByteSource;
 /// rule then draws a fresh one.
 const EPOCH_FILE: &str = "EPOCH.OBE";
 
-/// The staged firmware update in the card root: 8.3-safe, no LFN. The user sideloads it, and the
-/// armer only reads it.
-const UPDATE_BIN: &str = "UPDATE.BIN";
-
-/// The armer's snapshot of the running image, in the card root beside [`UPDATE_BIN`]: a full OBCU
-/// container, truncated and reused per arm. The bootloader flashes it back if a trial boot goes
-/// unconfirmed.
-const ROLLBACK_BIN: &str = "ROLLBACK.BIN";
-
 /// The concrete SD stack for this board: the card in native 4-bit mode on the FLPR, under a
 /// [`VolumeManager`].
 type Sd = SemmcCard;
 /// What the legacy manager owns: the card by shared reference, which leaves its raw handle
-/// available to the DFU extent resolver.
+/// available to the free-space read.
 type SdShared = SharedBlockDevice<'static, Sd>;
 const SD_MAX_DIRS: usize = 4;
 const SD_MAX_FILES: usize = 16;
@@ -62,10 +48,10 @@ impl TimeSource for NullTime {
     }
 }
 
-/// The mounted legacy FAT card retained for the staged updater, store epoch, and free-space read.
+/// The mounted legacy FAT card retained for the store epoch and the free-space read.
 pub struct Storage {
     vmgr: Vmgr,
-    /// The raw card the manager's [`SdShared`] borrows — the extent path's direct read handle.
+    /// The raw card the manager's [`SdShared`] borrows — the free-space read's direct handle.
     card: &'static Sd,
     root: RawDirectory,
 }
@@ -237,14 +223,6 @@ impl BlockDevice for SemmcCard {
 }
 
 impl Storage {
-    /// Iterate `dir`'s entries with their long filenames, running `f` per entry. The iteration
-    /// error is ignored: a partial scan still yields what it read.
-    fn iter_dir_lfn(&self, dir: RawDirectory, mut f: impl FnMut(&embedded_sdmmc::DirEntry, Option<&str>)) {
-        let mut lfn_storage = [0u8; 256];
-        let mut lfn = LfnBuffer::new(&mut lfn_storage);
-        let _ = self.vmgr.iterate_dir_lfn(dir, &mut lfn, |e, long| f(e, long));
-    }
-
     /// Read the card-resident store-epoch nonce, or `None` when the file is absent, torn or
     /// foreign. The boot mint rule treats `None` as "draw a fresh nonce".
     pub fn load_card_epoch(&self) -> Option<u32> {
@@ -324,255 +302,5 @@ impl Storage {
             return None;
         }
         Some(free_clusters as u64 * sec_per_clus * bytes_per_sec)
-    }
-}
-
-impl Storage {
-    /// Whether a staged `/UPDATE.BIN` exists in the card root: presence only, through a directory
-    /// scan. The full CRC validation belongs to the on-device confirm flow.
-    pub fn has_update_bin(&self) -> bool {
-        ShortFileName::create_from_str(UPDATE_BIN).ok().and_then(|n| self.find_root_entry(&n)).is_some()
-    }
-}
-
-// The storage half of the app-side armer: locate and validate the staged `UPDATE.BIN`, and write
-// the `ROLLBACK.BIN` snapshot, both resolved to raw block extents through a bounded FAT-chain
-// walk. The decision logic is pure and host-tested in `obc_dfu::armer`; these methods are its thin
-// `StageIo` and snapshot adapters over FatFs and the raw card.
-impl Storage {
-    /// Locate an 8.3 `name` in the card root, returning the facts the extent build needs:
-    /// `(entry_block, entry_offset, byte length)`.
-    fn find_root_entry(&self, name: &ShortFileName) -> Option<(embedded_sdmmc::BlockIdx, u32, u32)> {
-        let mut found = None;
-        self.iter_dir_lfn(self.root, |e, _| {
-            if found.is_none() && !e.attributes.is_directory() && e.name == *name {
-                found = Some((e.entry_block, e.entry_offset, e.size));
-            }
-        });
-        found
-    }
-
-    /// The staging scan: find `UPDATE.BIN` in the card root, decode and validate its OBCU header,
-    /// run the full CRC-32 pass and the Ed25519 verification over the image body in one pass through
-    /// the byte source, gate the size, and resolve the whole-file extent chain, header included.
-    /// Read-only, so a failed scan costs nothing.
-    ///
-    /// The trusted key is [`obc_dfu::RELEASE_PUBKEY`], and this is the only place the firmware names
-    /// it. `obc_dfu::armer::scan` takes the key as a parameter, so tests inject their own.
-    pub fn dfu_scan_update(&mut self) -> Result<obc_dfu::StagedRef, ScanError> {
-        let name = ShortFileName::create_from_str(UPDATE_BIN).map_err(|_| ScanError::Io)?;
-        let Some((entry_block, entry_offset, len)) = self.find_root_entry(&name) else {
-            return Err(ScanError::Missing);
-        };
-        let file = self.vmgr.open_file_in_dir(self.root, UPDATE_BIN, Mode::ReadOnly).map_err(|_| ScanError::Io)?;
-        let mut stage = SdStage { vmgr: &self.vmgr, card: self.card, file, len, entry_block, entry_offset };
-        // The CRC and signature staging buffer is a stack chunk: no new resident statics, and the
-        // frame pops with the scan, verifier state included.
-        let mut chunk = [0u8; 512];
-        let result = obc_dfu::armer::scan(&mut stage, &mut chunk, &obc_dfu::RELEASE_PUBKEY);
-        let _ = self.vmgr.close_file(file);
-        result
-    }
-
-    /// Write the rollback snapshot: `installed`'s raw image, re-wrapped as a full OBCU container at
-    /// `/ROLLBACK.BIN`, then extent-resolved like the update file.
-    ///
-    /// `Ok(None)` means the slot's bytes no longer CRC-match the installed header, so a snapshot
-    /// would record a rollback the bootloader must reject. None is taken, and any stale
-    /// `ROLLBACK.BIN` is removed. Errors abort the arm.
-    pub fn dfu_write_rollback(
-        &mut self,
-        installed: &obc_dfu::ImageHeader,
-        image: &[u8],
-    ) -> Result<Option<obc_dfu::StagedRef>, ScanError> {
-        debug_assert_eq!(image.len() as u32, installed.image_len);
-        let crc = obc_dfu::crc32(image);
-        if crc != installed.image_crc32 {
-            defmt::warn!("dfu: running image doesn't match the installed record (SWD reflash?) — no rollback");
-            let _ = self.vmgr.delete_file_in_dir(self.root, ROLLBACK_BIN); // don't leave a stale snapshot
-            return Ok(None);
-        }
-
-        let file = self
-            .vmgr
-            .open_file_in_dir(self.root, ROLLBACK_BIN, Mode::ReadWriteCreateOrTruncate)
-            .map_err(|_| ScanError::Io)?;
-        // Header, then the raw image straight from the memory-mapped slot. Flush before the extent
-        // resolve: the chain must be final on card.
-        //
-        // The snapshot is an unsigned container. The device cannot re-create the release signature
-        // from slot bytes, and nothing verifies this file: the bootloader's rollback path checks it
-        // by CRC. A signed marker with no trailer behind it would be a lie in a file
-        // `obc-mkimage inspect` reads.
-        let snapshot_header = installed.unsigned();
-        let ok = self.vmgr.write(file, &snapshot_header.encode()).is_ok()
-            && self.vmgr.write(file, image).is_ok()
-            && self.vmgr.flush_file(file).is_ok();
-        let _ = self.vmgr.close_file(file);
-        if !ok {
-            defmt::warn!("dfu: rollback snapshot write failed — arm aborted");
-            let _ = self.vmgr.delete_file_in_dir(self.root, ROLLBACK_BIN);
-            return Err(ScanError::Io);
-        }
-
-        // Resolve the fresh file's chain off its directory entry, exactly like the update file.
-        let name = ShortFileName::create_from_str(ROLLBACK_BIN).map_err(|_| ScanError::Io)?;
-        let Some((entry_block, entry_offset, len)) = self.find_root_entry(&name) else {
-            return Err(ScanError::Io);
-        };
-        let mut extents = [obc_dfu::Extent::default(); obc_dfu::MAX_EXTENTS];
-        let count = resolve_extents(self.card, entry_block, entry_offset, len, &mut extents).map_err(|e| match e {
-            ExtentsError::TooFragmented { extents } => ScanError::TooFragmented { extents },
-            ExtentsError::Io => ScanError::Io,
-        })?;
-        defmt::info!(
-            "dfu: rollback snapshot written ({=u32} B raw image, {=usize} extent(s))",
-            installed.image_len,
-            count
-        );
-        obc_dfu::StagedRef::new(snapshot_header, installed.image_len, crc, &extents[..count])
-            .map(Some)
-            .ok_or(ScanError::TooFragmented { extents: count as u32 })
-    }
-}
-
-/// The armer's [`StageIo`] over the open `UPDATE.BIN`: byte reads through the manager's seek path,
-/// because a scan is one forward pass, and the whole-file extent resolve off the raw card.
-struct SdStage<'a> {
-    vmgr: &'a Vmgr,
-    card: &'static Sd,
-    file: RawFile,
-    len: u32,
-    entry_block: embedded_sdmmc::BlockIdx,
-    entry_offset: u32,
-}
-
-impl StageIo for SdStage<'_> {
-    fn stage_len(&mut self) -> Option<u32> {
-        Some(self.len)
-    }
-
-    fn read_stage(&mut self, offset: u32, buf: &mut [u8]) -> Result<(), obc_dfu::engine::IoError> {
-        SdByteSource::new(self.vmgr, self.file, self.len)
-            .read_at(offset.into(), buf)
-            .map_err(|_| obc_dfu::engine::IoError)
-    }
-
-    fn stage_extents(&mut self, out: &mut [obc_dfu::Extent; obc_dfu::MAX_EXTENTS]) -> Result<usize, ExtentsError> {
-        resolve_extents(self.card, self.entry_block, self.entry_offset, self.len, out)
-    }
-}
-
-/// Resolve one legacy FAT staging file into the bootloader's raw-block extents.
-///
-/// This is the only FAT-chain walk left: DFU's boot record needs physical runs, not a reusable
-/// random-read source. Runs go straight into the caller's fixed buffer, so no extent table stays
-/// resident.
-fn resolve_extents(
-    card: &'static Sd,
-    entry_block: embedded_sdmmc::BlockIdx,
-    entry_offset: u32,
-    len: u32,
-    out: &mut [obc_dfu::Extent],
-) -> Result<usize, ExtentsError> {
-    fn read(card: &Sd, block: &mut Block, lba: u32) -> Result<(), ExtentsError> {
-        card.read(core::slice::from_mut(block), BlockIdx(lba)).map_err(|_| ExtentsError::Io)
-    }
-    let mut block = Block::new();
-    let u16_at = |bytes: &[u8], at: usize| u16::from_le_bytes([bytes[at], bytes[at + 1]]);
-    let u32_at = |bytes: &[u8], at: usize| u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
-
-    read(card, &mut block, 0)?;
-    if u16_at(&block.contents, 510) != 0xAA55 {
-        return Err(ExtentsError::Io);
-    }
-    let part = &block.contents[446..462];
-    if (part[0] & 0x7f) != 0 || !matches!(part[4], 0x01 | 0x04 | 0x06 | 0x0b | 0x0c | 0x0e) {
-        return Err(ExtentsError::Io);
-    }
-    let part_lba = u32_at(part, 8);
-    read(card, &mut block, part_lba)?;
-    let bpb = &block.contents;
-    if u16_at(bpb, 510) != 0xAA55 || u16_at(bpb, 11) != 512 {
-        return Err(ExtentsError::Io);
-    }
-    let spc = u32::from(bpb[13]);
-    let reserved = u32::from(u16_at(bpb, 14));
-    let fats = u32::from(bpb[16]);
-    let root_entries = u32::from(u16_at(bpb, 17));
-    let total = match u16_at(bpb, 19) {
-        0 => u32_at(bpb, 32),
-        n => u32::from(n),
-    };
-    let fat_size = match u16_at(bpb, 22) {
-        0 => u32_at(bpb, 36),
-        n => u32::from(n),
-    };
-    if spc == 0 || fats == 0 || fat_size == 0 {
-        return Err(ExtentsError::Io);
-    }
-    let root_blocks = root_entries.checked_mul(32).ok_or(ExtentsError::Io)?.div_ceil(512);
-    let non_data = fats
-        .checked_mul(fat_size)
-        .and_then(|n| n.checked_add(reserved))
-        .and_then(|n| n.checked_add(root_blocks))
-        .ok_or(ExtentsError::Io)?;
-    let cluster_count = total.checked_sub(non_data).ok_or(ExtentsError::Io)? / spc;
-    if cluster_count < 4085 {
-        return Err(ExtentsError::Io);
-    }
-    let fat32 = cluster_count >= 65_525;
-    let entries_per_block = if fat32 { 128 } else { 256 };
-    let cluster_count =
-        cluster_count.min(fat_size.saturating_mul(entries_per_block).saturating_sub(2)).min(0x0fff_fff5);
-    let fat_start = part_lba.checked_add(reserved).ok_or(ExtentsError::Io)?;
-    let data_start = part_lba.checked_add(non_data).ok_or(ExtentsError::Io)?;
-
-    read(card, &mut block, entry_block.0)?;
-    let at = usize::try_from(entry_offset).map_err(|_| ExtentsError::Io)?;
-    let entry = block.contents.get(at..at.checked_add(32).ok_or(ExtentsError::Io)?).ok_or(ExtentsError::Io)?;
-    if entry[11] == 0x0f || entry[11] & 0x10 != 0 || u32_at(entry, 28) != len {
-        return Err(ExtentsError::Io);
-    }
-    let high = if fat32 { u32::from(u16_at(entry, 20)) } else { 0 };
-    let mut cluster = (high << 16) | u32::from(u16_at(entry, 26));
-    let needed = len.div_ceil(spc * Block::LEN as u32);
-    let mut count = 0usize;
-    let mut next_lba = u32::MAX;
-    let mut cached_fat_lba = u32::MAX;
-    for i in 0..needed {
-        if cluster < 2 || cluster >= 2 + cluster_count {
-            return Err(ExtentsError::Io);
-        }
-        let lba = data_start + (cluster - 2) * spc;
-        if lba == next_lba {
-            if count <= out.len() {
-                out[count - 1].blocks += spc;
-            }
-        } else {
-            count += 1;
-            if count <= out.len() {
-                out[count - 1] = obc_dfu::Extent { start_block: lba, blocks: spc };
-            }
-        }
-        next_lba = lba + spc;
-        if i + 1 == needed {
-            continue;
-        }
-        let width = if fat32 { 4 } else { 2 };
-        let byte = cluster.checked_mul(width).ok_or(ExtentsError::Io)?;
-        let fat_lba = fat_start.checked_add(byte / Block::LEN as u32).ok_or(ExtentsError::Io)?;
-        if fat_lba != cached_fat_lba {
-            read(card, &mut block, fat_lba)?;
-            cached_fat_lba = fat_lba;
-        }
-        let off = (byte % Block::LEN as u32) as usize;
-        cluster =
-            if fat32 { u32_at(&block.contents, off) & 0x0fff_ffff } else { u32::from(u16_at(&block.contents, off)) };
-    }
-    if count > out.len() {
-        Err(ExtentsError::TooFragmented { extents: count as u32 })
-    } else {
-        Ok(count)
     }
 }

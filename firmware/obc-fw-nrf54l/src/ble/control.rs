@@ -118,7 +118,7 @@ pub(crate) async fn serve_connection(
                     GattEvent::Write(e) => {
                         let handle = e.handle();
                         if handle == server.obc.command.handle {
-                            let outcome = e.with_data(|_off, data| run_command(data, store, &mut guard));
+                            let outcome = e.with_data(|_off, data| run_command(data));
                             status_msg = Some(outcome.result);
                             forget_after_ack = outcome.forget_bond;
                             info!("ble: [gatt] command write");

@@ -85,25 +85,13 @@ fn fwimage_announce_ceiling_is_container_sized_not_raw() {
     assert_eq!(TransferStatus::fwimage_announce_reject(MAX_IMAGE_LEN + 65, MAX_CONTAINER), Some(TransferStatus::Error));
 }
 
+/// The command answers from edge state only: it can act, or it is busy. Whether a package is
+/// staged, and whether it is valid, are the on-device flow's own answers a second later.
 #[test]
 fn install_fw_reply_matrix() {
-    // staged, not busy, valid
-    assert_eq!(obc_ble::install_fw_reply(true, false, false), CommandStatus::Ok);
-    // nothing on the card
-    assert_eq!(obc_ble::install_fw_reply(false, false, false), CommandStatus::NotFound);
-    // recording, or an install already pending
-    assert_eq!(obc_ble::install_fw_reply(true, true, false), CommandStatus::Busy);
-    // a cheaply-known-bad stage
-    assert_eq!(obc_ble::install_fw_reply(true, false, true), CommandStatus::Error);
-}
-
-#[test]
-fn install_fw_reply_precedence_is_busy_then_no_staged_then_invalid() {
-    // Busy wins over everything: the device cannot act now, whatever the stage holds.
-    assert_eq!(obc_ble::install_fw_reply(false, true, true), CommandStatus::Busy);
-    assert_eq!(obc_ble::install_fw_reply(true, true, true), CommandStatus::Busy);
-    // Not busy and nothing staged: no stage wins over a moot invalid flag.
-    assert_eq!(obc_ble::install_fw_reply(false, false, true), CommandStatus::NotFound);
+    assert_eq!(obc_ble::install_fw_reply(false), CommandStatus::Ok);
+    // Recording, or an install already pending.
+    assert_eq!(obc_ble::install_fw_reply(true), CommandStatus::Busy);
 }
 
 #[test]

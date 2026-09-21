@@ -4,7 +4,7 @@ OBCU (OpenBikeComputer Update) is the byte format of a **field firmware update**
 parts, all defined here and all implemented by the shared `no_std` crate `firmware/obc-dfu`, which
 the `obc-boot` bootloader links:
 
-1. **The update-image container** (§1) — the `UPDATE.BIN` file on the SD card: a
+1. **The update-image container** (§1) — the update-package object on the card: a
    fixed **64-byte header**, the raw application image, and (v2) a **signature
    trailer**.
 2. **The boot-state page** (§2) — the CRC-framed blob in a dedicated **4 KB RRAM
@@ -32,17 +32,18 @@ value `crc32("123456789") == 0xCBF43926`).
 [signature]     (sig_len bytes — v2 only; 64 for Ed25519, absent when sig_scheme = 0)
 ```
 
-The file lives at the **card root** as `UPDATE.BIN` (8.3-safe, locked). It is
-produced by the `obc-mkimage wrap` / `obc-mkimage sign` host tool and consumed by the
-app-side armer, which validates the header, the full image CRC, **and the signature**
-before staging.
+The container is one **update-package object** (kind `7`) in the flat store
+([`FLAT_Store_Format.md`](FLAT_Store_Format.md) §3.1). A client uploads it; the card carries no
+filesystem and no sideload path. It is produced by the `obc-mkimage wrap` / `obc-mkimage sign` host
+tool and consumed by the app-side armer, which validates the header, the full image CRC, **and the
+signature** before arming.
 
 Two container shapes exist, distinguished by the header's `Sig Scheme` field — **not**
 by Header Version, which stays `1` forever (§1.2):
 
 | Shape | `Sig Scheme` | Bytes | Produced by | Armer verdict |
 | :-- | :-- | :-- | :-- | :-- |
-| **v1**, unsigned | `0` | `64 + image_len` | `obc-mkimage wrap` with no seed; the device's own `ROLLBACK.BIN` snapshot | **rejected** (§1.4) |
+| **v1**, unsigned | `0` | `64 + image_len` | `obc-mkimage wrap` with no seed; the device's own rollback snapshot | **rejected** (§1.4) |
 | **v2**, Ed25519 | `1` | `64 + image_len + 64` | `obc-mkimage wrap --sign-seed` / `sign` | accepted iff the signature verifies |
 
 ### 1.1 Header (64 bytes)
@@ -292,18 +293,20 @@ Each **Extent** is 8 bytes:
 | +0 | Start Block | 4 | `uint32` | First **absolute** 512-byte SD block of the run |
 | +4 | Blocks | 4 | `uint32` | Number of 512-byte blocks in the run |
 
-**`MAX_EXTENTS` = 96.** The armer errors out past this rather than truncating the chain, and the
-decoder rejects an Extent Count above `MAX_EXTENTS`.
+**`MAX_EXTENTS` = 8.** A stored object holds at most eight extent ranges
+([`FLAT_Store_Format.md`](FLAT_Store_Format.md) §5.3) and one range is one contiguous block run, so
+eight is the whole of what an arm can ever resolve. The armer errors out past this rather than
+truncating the chain, and the decoder rejects an Extent Count above `MAX_EXTENTS`.
 
 `Len` and `Image CRC-32` deliberately duplicate the embedded header's `Image Len`
 and `Image CRC-32` (so the installer reads them without re-decoding the header) and
 **MUST match** them; decoders MUST reject a `StagedRef` where either pair disagrees
 (a diverging record was never built from one coherent image).
 
-**What the extents cover.** The chain locates the **whole staged file**: the armer resolves the
-container as-is, so the chain's byte stream begins with the file's own 64-byte OBCU header (§1.1)
-followed by the raw image. Everything past `64 + Len` — the v2 signature trailer (§1.3) and any
-trailing slack — is ignored by the installer.
+**What the extents cover.** The chain locates the **whole staged object**: the armer resolves the
+container as-is, so the chain's byte stream begins with the object's own 64-byte OBCU header (§1.1)
+followed by the raw image. Everything past `64 + Len` — the v2 signature trailer (§1.3), and the
+slack in the object's last extent — is ignored by the installer.
 `Len` / `Image CRC-32` remain **raw-image** values: the installer's verify pass reads
 the leading 64 bytes only to check they decode to exactly the `Header` recorded above,
 then CRCs the next `Len` bytes — and its flash pass writes those same `Len` bytes (the
@@ -311,14 +314,14 @@ container header is skipped, never flashed; the trailer is never even read) to t
 slot. This is normative for both the armer and the bootloader; the skip arithmetic lives once, in
 `obc-dfu`'s install engine.
 
-**The rollback snapshot is unsigned.** `ROLLBACK.BIN` — the armer's copy of the running
-image, written from the app slot before an install — is a **v1/unsigned** container
-(`Sig Scheme` = `0`). The device cannot reconstruct the original release signature from
-slot bytes alone, and nothing needs one: the snapshot never passes through the armer's
-scan (§1.4), and the bootloader's rollback path validates it by CRC like everything
-else. Marking it signed with no trailer behind it would make the file lie to
-`obc-mkimage inspect`. The `StagedRef` the armer records for the snapshot carries the
-same unsigned header, so the installer's header-equality check still matches.
+**The rollback snapshot is unsigned.** The armer's copy of the running image, written from the app
+slot into the **rollback reserve** ([`FLAT_Store_Format.md`](FLAT_Store_Format.md) §3.1, kind `8`)
+before an install, is a **v1/unsigned** container (`Sig Scheme` = `0`). The device cannot
+reconstruct the original release signature from slot bytes alone, and nothing needs one: the
+snapshot never passes through the armer's scan (§1.4), and the bootloader's rollback path validates
+it by CRC like everything else. Marking it signed with no trailer behind it would make the bytes lie
+to `obc-mkimage inspect`. The `StagedRef` the armer records for the snapshot carries the same
+unsigned header, so the installer's header-equality check still matches.
 
 ### 2.4 Decode rule and boot decision
 

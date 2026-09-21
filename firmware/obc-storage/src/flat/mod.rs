@@ -21,6 +21,8 @@ pub mod model;
 pub mod sim;
 
 #[cfg(test)]
+mod block_runs;
+#[cfg(test)]
 mod cost;
 #[cfg(test)]
 mod crash;
@@ -41,12 +43,13 @@ mod vectors;
 
 pub use device::BlockDevice;
 pub use error::{DecodeError, Reason, Record, StoreError};
+pub use layout::MAX_RANGES;
 pub use seam::{
     Allocation, DisplayName, EntryFlags, EntryMeta, Mutation, ObjectId, ObjectKind, PutSource, Revision,
     RideCheckpoint, Store, StoreId, RIDE_RESUME_LEN,
 };
 pub use source::{SealedSource, StoreSource};
-pub use store::{FlatStore, Handle, Mode, RideRecovery, SealedAllocation};
+pub use store::{BlockRun, FlatStore, Handle, Mode, RideRecovery, SealedAllocation};
 /// The four bytes at block 0 of a formatted card: what names a card image.
 pub use superblock::MAGIC as SUPERBLOCK_MAGIC;
 
