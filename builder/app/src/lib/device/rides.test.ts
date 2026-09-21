@@ -1,19 +1,18 @@
 /**
- * Web ride export, end to end against the simulated device (C5, #904).
+ * Web ride export, end to end against the simulated device.
  *
  * Two things are being decided here, and only one of them is "does the flow work".
  *
  * The first is **byte identity**: the GPX a visitor saves has to be the file the device itself would
- * have written. The pinned pair is `specs/vectors/ride-v3.bin` → `track-export.gpx`, produced
- * by the real `obc_route::track_to_gpx`, and the export path has to land on those exact bytes after
- * a full round trip through the wire's ride object — with one documented exception the wire format
- * makes unavoidable, asserted as *the only* exception rather than waved at.
+ * have written. The pinned pair is `specs/vectors/ride-v3.bin` → `track-export.gpx`, produced by the
+ * real `obc_route::track_to_gpx`, and the export path has to land on those exact bytes after a full
+ * round trip through the wire's ride object — with one documented exception the wire format makes
+ * unavoidable, asserted as *the only* exception rather than waved at.
  *
- * The second is **that nothing happened to the device**. Under protocol v4 that claim is a structural
- * one rather than a behavioural one: §5.2.2 retires the v1 `command` selector, so there is no ack, no
- * clock write and no config write on this cable at all — the only two things a peer can do to an
- * object are a `PUT` and a `REMOVE`, and {@link rideAccess} hands the export path an object that has
- * neither, at compile time *and* at runtime.
+ * The second is **that nothing happened to the device**, and that claim is structural rather than
+ * behavioural: the only two things a peer can do to an object are a `PUT` and a `REMOVE`, and
+ * {@link rideAccess} hands the export path an object that has neither, at compile time *and* at
+ * runtime.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -44,8 +43,6 @@ import {
 
 /** A card identity for the tests that only need one to compare against. */
 const CARD = "8f2c41d96b074ea3b1559c207de83466";
-
-// --- fixtures -----------------------------------------------------------------
 
 function repoRoot(): string {
     let dir = dirname(fileURLToPath(import.meta.url));
@@ -145,8 +142,6 @@ function longRide(points: number): RideObject {
     };
 }
 
-// --- a job context a test can watch --------------------------------------------
-
 interface Watched extends JobContext {
     readonly phases: JobPhase[];
     readonly last: [number, number];
@@ -183,8 +178,6 @@ function deviceWith(rides: RideObject[], options: LoopbackOptions & FlatDeviceOp
     );
     return { ...rig, entries, source: rideAccess(rig.client) };
 }
-
-// --- byte identity --------------------------------------------------------------
 
 describe("the exported GPX", () => {
     it("reproduces the native exporter byte-for-byte, pulled from the device", async () => {
@@ -264,13 +257,9 @@ describe("the v3 sample stream", () => {
     });
 });
 
-// --- the surface the export path is given -----------------------------------------
-//
-// The browser does not send a possession acknowledgement on the cable. §5.2.2 has no `command`
-// selector because an acknowledgement
-// changes no object and so has no store meaning. It keeps the BLE control surface it had; USB does
-// not carry it, and neither does anything below. What survives is the narrowing itself, which is
-// still load-bearing because §3.6 and §3.7 *are* on this cable.
+// The browser does not send a possession acknowledgement on the cable: an acknowledgement changes no
+// object and so has no store meaning. It keeps the BLE control surface it had. What survives is the
+// narrowing itself, which is still load-bearing because `PUT` and `REMOVE` *are* on this cable.
 
 describe("what the export path can reach", () => {
     it("hands the export path a device it cannot write to", async () => {
@@ -301,11 +290,9 @@ describe("what the export path can reach", () => {
     });
 });
 
-// --- honest failure --------------------------------------------------------------
-
 describe("when the export cannot finish", () => {
-    /** A host link that flips one byte on its way in, once armed — a wire error the device's
-     *  declared whole-payload CRC (§3.5) has to catch before anything is handed to a rider. */
+    /** A host link that flips one byte on its way in, once armed — a wire error the device's declared
+     *  whole-payload CRC has to catch before anything is handed to a rider. */
     function corruptible(link: DeviceLink): { link: DeviceLink; arm: () => void } {
         const stream = link.stream;
         let armed = false;
@@ -387,8 +374,8 @@ describe("when the export cannot finish", () => {
             await expect(exportRide(harness.source, harness.entries[0], ctx)).rejects.toMatchObject({
                 code: "aborted",
             });
-            // §3.8's cancel is bilateral, so the device released its transfer slot while this side
-            // reset its channel — the retry is the first path again, not a repair path.
+            // The cancel is bilateral, so the device released its transfer slot while this side reset
+            // its channel — the retry is the first path again, not a repair path.
             const again = await exportRide(harness.source, harness.entries[0], context());
             expect(again.points).toBe(30_000);
         } finally {
@@ -409,10 +396,9 @@ describe("when the export cannot finish", () => {
     });
 
     it("is refused by the device for a ride it is still recording", async () => {
-        // §3.5: a `RECORDING` entry's length and CRC are zero until the commit that ends it, so
-        // serving one would report success over an empty payload. `recordedRides` is the filter that
-        // keeps a caller away from it — this pins that the device refuses anyway, so the filter is a
-        // convenience rather than the only thing standing between a rider and an empty GPX.
+        // A `RECORDING` entry's length and CRC are zero until the commit that ends it, so serving one
+        // would report success over an empty payload. `recordedRides` is the filter that keeps a
+        // caller away from it; this pins that the device refuses anyway.
         const { device, source, close } = deviceWith([]);
         try {
             const live = device.seed({ kind: ObjectKind.Ride, displayName: "In progress", flags: EntryFlags.Recording });
@@ -458,14 +444,10 @@ describe("when the export cannot finish", () => {
     });
 });
 
-// --- what the panel shows --------------------------------------------------------
-
 describe("listing", () => {
     it("pages the whole catalog, because §3.3 drops nothing", async () => {
-        // The v1 wire capped a listing and reported `total > count`; a client's job was to surface
-        // the truncation. §3.3 pages instead — the client walks the `(ObjectId, Revision)` cursor to
-        // the end — so there is no truncated listing left to render, and a page size small enough to
-        // force three round trips must still produce every ride.
+        // The listing pages: the client walks the `(ObjectId, Revision)` cursor to the end, so a page
+        // size small enough to force three round trips must still produce every ride.
         const harness = deviceWith([], { controlCeiling: controlCeilingFor(2) });
         try {
             const ride = rideFromTrackLog(vector("track-log.obct"), TRACK_NAME, 1_783_598_400);
@@ -523,9 +505,9 @@ describe("ride identity", () => {
     });
 
     it("names the file by date then ride, taking the date from the payload", () => {
-        // §3.3's 88-byte entry is id, revision, length, CRC, kind, flags and a display name — there
-        // is no start time in it. So a caller naming a file before it has downloaded the ride gets
-        // the name alone, which is the honest half rather than a fabricated day.
+        // An 88-byte catalog entry is id, revision, length, CRC, kind, flags and a display name —
+        // there is no start time in it. So a caller naming a file before it has downloaded the ride
+        // gets the name alone, which is the honest half rather than a fabricated day.
         const entry: CatalogEntry = {
             objectId: 4n,
             revision: 1n,
