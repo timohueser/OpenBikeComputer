@@ -1,9 +1,7 @@
-//! The protocol-v4 engine against a real flat store: one behaviour per rule of
-//! `FLAT_Store_Protocol.md` §3 and §4.
+//! The engine against a real flat store: one behaviour per rule of `FLAT_Store_Protocol.md`.
 //!
 //! The card underneath is the sim-backed [`FlatStore`](obc_storage::flat::FlatStore), so a claim
-//! about the catalog here is a claim about the bytes on a card and not about a mock that agreed to
-//! be convenient.
+//! about the catalog here is a claim about the bytes on a card.
 
 #[path = "flat_engine/archive.rs"]
 mod archive;
@@ -142,7 +140,6 @@ fn a_create_streams_commits_and_answers_with_the_assigned_identity() {
     assert_eq!(entry.name.as_bytes(), b"Grimsel Loop");
     assert!(device.is_quiet(), "the engine is idle once the transfer is answered");
 
-    // And the bytes came back exactly, which is the only proof the staging path is honest.
     let wire = device.control(&client::get(2, 1, 0));
     assert_eq!(wire.payload(), bytes);
     let answer = Answer::of(wire.answer());
@@ -531,18 +528,17 @@ fn the_link_going_away_releases_everything_and_answers_nobody() {
     assert_eq!(device.free_extents(), free);
     assert!(device.entries().is_empty());
 
-    // And the client restarts from zero on the next link.
     let answer = upload(&mut device, 2, 0, 0, &bytes, ROUTE, "again");
     assert!(!answer.is_error(), "{answer:?}");
     assert_eq!(answer.u64_at(0), 1);
 }
 
-/// A device with an update path: the two hooks §4 needs, recorded.
+/// A device with an update path: both policy hooks, recorded.
 #[derive(Default)]
 struct Armer {
     reserve: u64,
     refuse: Option<u16>,
-    /// When set, §4 step 3 fails: the RRAM page did not read back.
+    /// When set, the boot handoff fails: the RRAM page did not read back.
     handoff_fails: bool,
     handed_off: Option<((ObjectId, Revision), (ObjectId, Revision))>,
 }
@@ -607,7 +603,6 @@ fn a_refused_package_changes_nothing_and_a_device_with_no_update_path_refuses_ev
     let answer = Answer::of(device.control(&client::arm(2, id, revision)).answer());
     assert_eq!(error(&answer).0, ErrorCode::Rejected.value());
 
-    // And a package that is not one.
     let (route, route_revision) = device.seed(ObjectKind::Route, &payload(64), "route");
     let wire = device.control_with(&client::arm(3, route, route_revision), &mut armer);
     expect_error(&Answer::of(wire.answer()), ErrorCode::InvalidRequest, detail::invalid_request::BAD_COMBINATION);
@@ -651,10 +646,9 @@ fn an_unknown_opcode_and_an_unknown_kind_are_unsupported() {
     let _ = UPDATE;
 }
 
-/// §4 step 3 refusing is the one window where the engine has already committed something. A cut
-/// there is survivable because the reboot that follows runs §4's reconciliation; a *refusal* reaches
-/// no reboot, and a `RESERVED` entry cannot be removed from the wire at all (§3.7) — so the engine
-/// takes its own commit back and §3.9's "an error means the mutation did not happen" holds.
+/// A refused boot handoff is the one window where the engine has already committed something. A cut
+/// there is survivable, because the next boot reconciles; a refusal reaches no reboot, and a
+/// `RESERVED` entry cannot be removed from the wire, so the engine takes its own commit back.
 #[test]
 fn a_failed_boot_handoff_takes_its_own_reserve_back() {
     let disk = formatted_card(25);
@@ -683,8 +677,8 @@ fn a_failed_boot_handoff_takes_its_own_reserve_back() {
     assert!(device.entry(reserve).is_some());
 }
 
-/// §3.8's other half: the device cancels by answering the outstanding transfer with an error and
-/// dropping it. There is no second response, because nothing on the wire asked.
+/// The device's half of the cancel: answer the outstanding transfer with an error and drop it.
+/// There is no second response, because nothing on the wire asked.
 #[test]
 fn the_device_can_cancel_the_live_transfer_itself() {
     let disk = formatted_card(26);
@@ -705,8 +699,7 @@ fn the_device_can_cancel_the_live_transfer_itself() {
     assert!(device.entries().is_empty());
     assert!(device.is_quiet());
 
-    // The stream channel dying under a control channel that did not is the same act with the other
-    // detail — unlike a link that went away entirely, which answers nobody.
+    // The stream channel dying under a live control channel is the same act with the other detail.
     let (id, _) = device.seed(ObjectKind::Route, &bytes, "served");
     device.control_upto(&client::get(0x71, id, 0), 1);
     assert!(device.cancel_live(CancelCause::LinkLost));
@@ -715,10 +708,8 @@ fn the_device_can_cancel_the_live_transfer_itself() {
     assert_eq!(device.remove_and_measure(id), 1, "the download's handle was closed");
 }
 
-/// **#1522: a transfer that stops moving is abandoned.** Nothing else bounded how long one stayed
-/// live, so a peer that wedged mid-stream held the store — and with it every consumer that withdraws
-/// heavy work while a transfer runs — until its link dropped, which for an app that is connected but
-/// no longer sending is never.
+/// A transfer that stops moving is abandoned. Nothing else bounds how long one stays live, so a
+/// peer that wedges mid-stream would hold the store until its link dropped.
 #[test]
 fn a_transfer_that_stops_moving_is_abandoned_when_its_deadline_passes() {
     let disk = formatted_card(126);
@@ -743,8 +734,8 @@ fn a_transfer_that_stops_moving_is_abandoned_when_its_deadline_passes() {
     assert!(device.live_upload().is_none(), "the transfer level is idle again — the whole point of the deadline");
     assert_eq!(device.watch_stall(1_000 + STALL_TIMEOUT_MS), Stall::Idle, "and there is nothing left to watch");
 
-    // Abandoned exactly as §3.8's device-side cancel abandons: the allocation released, the catalog
-    // untouched, and the answer owed to a peer that may yet be listening.
+    // Abandoned as the device-side cancel abandons: the allocation released, the catalog untouched,
+    // and the answer owed to a peer that may yet be listening.
     let answer = Answer::of(device.pump().answer());
     assert_eq!(answer.request, 0x80, "the answer is the stalled transfer's own");
     expect_error(&answer, ErrorCode::Cancelled, detail::cancelled::BY_DEVICE);
@@ -753,10 +744,8 @@ fn a_transfer_that_stops_moving_is_abandoned_when_its_deadline_passes() {
     assert!(device.is_quiet());
 }
 
-/// The other half of #1522's constraint: the deadline is chosen against the slowest legitimate link,
-/// so it may never kill a transfer that is merely slow. Here one record lands a millisecond inside
-/// every deadline — a pace of 1,008 bytes per 21 seconds, three orders of magnitude below the
-/// slowest real link — and the upload still commits.
+/// The deadline is chosen against the slowest legitimate link, so it may never kill a transfer that
+/// is merely slow. Here one record lands a millisecond inside every deadline and the upload commits.
 #[test]
 fn a_slow_but_progressing_transfer_is_never_abandoned() {
     let disk = formatted_card(127);
@@ -783,8 +772,7 @@ fn a_slow_but_progressing_transfer_is_never_abandoned() {
 }
 
 /// A create names no `ObjectId` until it commits, because `next_object_id` reserves nothing: a
-/// device-local commit during the upload — a ride starting — takes the id a pinned one would have
-/// used, and the client would get a `revisionConflict` naming an object it never sent.
+/// device-local commit during the upload would take the id a pinned one had used.
 #[test]
 fn a_device_local_commit_during_an_upload_does_not_steal_the_creates_identity() {
     let disk = formatted_card(27);
@@ -812,12 +800,9 @@ fn a_device_local_commit_during_an_upload_does_not_steal_the_creates_identity() 
     assert_eq!(device.entry(2).unwrap().name.as_bytes(), b"created");
 }
 
-// -- media faults ---------------------------------------------------------------------------------
-//
-// A power cut is the *less* demanding failure: after it there is no store left to ask anything of.
-// The input every error path at the seam actually takes is one operation refused with the card still
-// there, which is what `FaultOnce` produces. Each test asserts the fault fired — a probe that never
-// fired proves nothing about the path it was aiming at.
+// The input every error path at the seam takes is one operation refused with the card still there,
+// which is what `FaultOnce` produces. Each test asserts the fault fired: a probe that never fired
+// proves nothing about the path it was aiming at.
 
 /// A listing that stopped early is a media failure with nowhere to report itself, so every caller
 /// that treats one as the catalog asks `entries_ok()` — and an absent object is never made out of a
@@ -847,10 +832,10 @@ fn a_short_listing_is_a_media_failure_and_never_an_absent_object() {
     assert_eq!(device.free_extents(), 62, "no refusal left a reservation behind");
 }
 
-/// The seventh listing site, and the one furthest from a client's reach: §3.6's re-check of the
-/// expected `Revision` "immediately before the commit". A listing that stopped early there would
-/// make an absent head out of a media failure — and an absent head is exactly what a create expects,
-/// so the upload would publish over whatever the short listing failed to see.
+/// The listing site furthest from a client's reach: the re-check of the expected `Revision` just
+/// before the commit. A listing that stopped early there would make an absent head out of a media
+/// failure, and an absent head is what a create expects, so the upload would publish over whatever
+/// the short listing failed to see.
 #[test]
 fn a_short_listing_at_the_pre_commit_re_check_refuses_rather_than_publishing() {
     let disk = formatted_card(34);
@@ -878,10 +863,9 @@ fn a_short_listing_at_the_pre_commit_re_check_refuses_rather_than_publishing() {
     assert!(device.is_quiet());
 }
 
-/// Both halves of §4 failing at once: the boot handoff refuses, and so does the commit that would
-/// take the reserve back. The engine has nothing further to offer, so it answers the error and
-/// leaves a state §4 already knows how to settle — the boot page does not decode, so the next boot
-/// reads *no pending update* and the reserve is an ordinary object its reconciliation removes.
+/// Both halves failing at once: the boot handoff refuses, and so does the commit that would take
+/// the reserve back. The engine answers the error and leaves a state the next boot settles: the boot
+/// page does not decode, so the boot reads no pending update and removes the reserve.
 #[test]
 fn a_rollback_that_also_fails_leaves_a_reserve_the_next_boot_can_settle() {
     let disk = formatted_card(35);
@@ -897,8 +881,8 @@ fn a_rollback_that_also_fails_leaves_a_reserve_the_next_boot_can_settle() {
     assert!(!wire.reboot);
     expect_error(&Answer::of(wire.answer()), ErrorCode::Internal, 0);
 
-    // The reserve is still there, and a client can see it: it is an ordinary entry of kind 8 with
-    // `RESERVED` set, which `LIST` reports and `REMOVE` refuses (§3.7).
+    // The reserve is still there: an ordinary entry with `RESERVED` set, which `LIST` reports and
+    // `REMOVE` refuses.
     let listed = Answer::of(device.control(&client::list(2, Some(8))).answer());
     assert_eq!(listed.body.len(), 24 + 88, "the reserve is in the catalog");
     let reserve = u64::from_le_bytes(listed.body[24..32].try_into().unwrap());
@@ -908,8 +892,8 @@ fn a_rollback_that_also_fails_leaves_a_reserve_the_next_boot_can_settle() {
         detail::invalid_request::BAD_COMBINATION,
     );
 
-    // And the state is the one §4 calls reconcilable: a fresh mount finds the reserve, and the
-    // device-local reconciliation §5.6 keeps outside mount removes it with one commit.
+    // And the state is reconcilable: a fresh mount finds the reserve, and the device-local
+    // reconciliation outside mount removes it with one commit.
     let mut rebooted = boot(&disk);
     let orphan = rebooted.entry(reserve).expect("the next boot finds it");
     assert_eq!(orphan.kind, obc_storage::flat::ObjectKind::RollbackReserve);
@@ -917,8 +901,8 @@ fn a_rollback_that_also_fails_leaves_a_reserve_the_next_boot_can_settle() {
     assert!(rebooted.remove_and_measure(reserve) > 0, "its extents come back with it");
 }
 
-/// §2.1 gives a failed `write` two admissible answers — retry the same bytes, or abandon. The engine
-/// takes the second, always, and `cancel` is what makes it free.
+/// A failed `write` has two admissible answers: retry the same bytes, or abandon. The engine always
+/// abandons, and `cancel` is what makes that free.
 #[test]
 fn a_write_that_fails_mid_stream_abandons_the_transfer_and_releases_it() {
     let disk = formatted_card(31);
@@ -966,7 +950,6 @@ fn a_commit_that_fails_leaves_the_catalog_alone_and_still_releases_the_allocatio
     assert_eq!(device.free_extents(), free, "and the allocation was released");
     assert!(device.is_quiet());
 
-    // The client restarts from zero, onto a card that is exactly as it was.
     let answer = upload(&mut device, 2, 0, 0, &bytes, ROUTE, "committed");
     assert!(!answer.is_error(), "{answer:?}");
     assert_eq!(answer.u64_at(0), 1);
@@ -991,15 +974,8 @@ fn a_read_that_fails_mid_download_ends_it_and_closes_the_handle() {
     assert_eq!(device.remove_and_measure(id), 1, "a leaked hold would have kept the extent");
 }
 
-// ══════════════════════ the device's own view of an upload (FS7.5-c3b) ══════════════════════
-
-/// A live upload reports what it has landed, and the report ends with the transfer.
-///
-/// This is the one thing a *device* reads out of the engine that no client ever asks for: a map is
-/// hundreds of megabytes and lands over twenty minutes, and the wire's only answer to "how is it
-/// going" is the transfer's one response at the end of it. The rider's progress bar cannot wait
-/// that long, so it reads the engine directly — and this pins that the numbers it reads are the
-/// transfer's own, not a second counter that could drift from them.
+/// A live upload reports what it has landed, and the report ends with the transfer. The numbers a
+/// rider's progress bar reads are the transfer's own, not a second counter that could drift.
 #[test]
 fn a_live_upload_reports_its_progress_and_stops_when_it_ends() {
     let disk = formatted_card(90);
@@ -1030,11 +1006,8 @@ fn a_live_upload_reports_its_progress_and_stops_when_it_ends() {
     assert_eq!(device.live_upload(), None);
 }
 
-/// The terminal verdict is latched once and taken once — a commit says so, and so does a refusal.
-///
-/// Latched rather than reported live because the fact exists for exactly one call: the engine goes
-/// from *live* to *idle* inside `finish_upload`, and a device that only looks between calls would
-/// otherwise watch an upload disappear with no verdict at all.
+/// The terminal verdict is latched once and taken once, for a commit and for a refusal alike. It is
+/// latched because the fact exists for one call only, inside `finish_upload`.
 #[test]
 fn an_upload_latches_its_verdict_exactly_once() {
     let disk = formatted_card(91);
@@ -1050,8 +1023,7 @@ fn an_upload_latches_its_verdict_exactly_once() {
     );
     assert_eq!(device.take_upload_end(), None, "taking it clears it");
 
-    // A refusal latches the code its error response carried, and nothing narrower: a device turns
-    // this into one of a handful of screens and every finer fact belongs to the client that asked.
+    // A refusal latches the code its error response carried, and nothing narrower.
     let wire = device.control(&client::put(2, 0, 0, &bytes, ROUTE, "damaged"));
     assert!(wire.control.is_empty());
     let mut corrupt = bytes.clone();
@@ -1065,11 +1037,8 @@ fn an_upload_latches_its_verdict_exactly_once() {
     );
 }
 
-/// A link that goes away leaves no verdict, and neither does a cancel.
-///
-/// Both are the rider's or the peer's own doing, and a device that answered them with a card
-/// explaining what just happened would be explaining the rider's action back to them. §3.8's third
-/// form of cancel "answers nobody", and this is the device-side reading of that sentence.
+/// A link that goes away leaves no verdict, and neither does a cancel. Both are the rider's or the
+/// peer's own doing, and that form of cancel answers nobody.
 #[test]
 fn a_link_lost_and_a_cancel_leave_no_verdict_to_show() {
     let disk = formatted_card(92);
@@ -1089,19 +1058,16 @@ fn a_link_lost_and_a_cancel_leave_no_verdict_to_show() {
     assert_eq!(device.take_upload_end(), None, "a cancel is not a verdict either");
 }
 
-/// A record that is a whole multiple of the stage reaches the card in **one** write, not one per
-/// stage.
+/// A record that is a whole multiple of the stage reaches the card in one write, not one per stage.
 ///
-/// §5.2's 4,112-byte USB ceiling exists to make a full stream record exactly 4,096 payload bytes,
-/// and that is only worth anything if the engine hands those bytes over intact: a card write costs
-/// about the same whether it carries one block or a hundred (`FLAT_Store_Format.md` §5.5), so
-/// splitting at the stage would have turned the ceiling into eight commands instead of one. The
-/// count is read off the card's own write log.
+/// The 4,112-byte USB ceiling makes a full stream record exactly 4,096 payload bytes, which is only
+/// worth anything if the engine hands those bytes over intact: a card write costs about the same for
+/// one block or a hundred. The count is read off the card's own write log.
 #[test]
 fn a_record_of_whole_stages_reaches_the_card_in_one_write() {
     let disk = formatted_card(93);
-    // §5.2's own ceiling, so the record under test is the one the cable actually sends: 16 header
-    // bytes plus 4,096 payload bytes. The harness stages 1 KiB, so that is four whole stages.
+    // The cable's own ceiling: 16 header bytes plus 4,096 payload bytes. The harness stages 1 KiB,
+    // so that is four whole stages.
     let mut device = boot_on(&disk, Ceilings::for_usb(4_112).expect("§5.2's ceiling is above the floor"));
     // Two records' worth, so the one under test is an ordinary mid-transfer record: streaming the
     // whole payload would commit inside the same call and the commit's own writes would be counted.
@@ -1161,8 +1127,8 @@ fn a_ble_map_upload_never_admits_the_usb_only_stage() {
         "app-facing map progress is not proof that USB owns the upload"
     );
 
-    // An eager/refused cable frame carrying the phone's request id is ignored by the engine and
-    // still cannot satisfy the exact admission query the USB adapter uses before claiming arena.
+    // A cable frame carrying the phone's request id is ignored, and still cannot satisfy the exact
+    // admission query the USB adapter makes before it claims the arena.
     let wire = device.stream_on(Link::Usb, &client::stream(41, 0, &bytes[..4 * 1_024]));
     assert!(wire.control.is_empty() && wire.stream.is_empty());
     assert!(!device.upload_matches(Link::Usb, RequestId(41), ObjectKind::MapShard));
@@ -1187,27 +1153,17 @@ fn a_ble_map_handoff_does_not_keep_the_completed_usb_stage_admitted() {
     }
     assert!(!device.upload_matches(Link::Usb, RequestId(42), ObjectKind::MapShard));
 
-    // BLE immediately replaces the app-facing `Receiving` projection with another map. The exact
-    // cable admission still goes false, which is the edge that makes the USB task join DMA and
-    // release its arena guard instead of mistaking the phone's progress for its own.
+    // BLE replaces the app-facing `Receiving` projection with another map. The exact cable
+    // admission still goes false, which is what makes the USB task release its arena guard instead
+    // of mistaking the phone's progress for its own.
     device.control_on(Link::Ble, &client::put(43, 0, 0, &bytes, MAP, "phone map"));
     assert!(device.upload_matches(Link::Ble, RequestId(43), ObjectKind::MapShard));
     assert!(!device.upload_matches(Link::Usb, RequestId(42), ObjectKind::MapShard));
 }
 
-// ══════════════════════ two links, one engine (FS7.5-c3b) ══════════════════════
-
-/// **A link coming up does not touch the other link's transfer**, and the newcomer meets §1's
-/// one-at-a-time rule in the ordinary way.
-///
-/// This is the behaviour the first cut of c3b got wrong, and it was wrong in the way that costs the
-/// most: `LinkUp` released the live transfer and rebuilt the engine, so a phone reconnecting in a
-/// rider's pocket destroyed a cable's twenty-minute map upload — silently, with no answer to the
-/// client that was sending it — and re-pinned the stream ceiling to the radio's 245 bytes so the
-/// cable's next 4,112-byte record died as over-ceiling. Both peers were behaving perfectly.
-///
-/// The rule the code now implements: a link coming up is a **new peer on one wire**, not a new state
-/// of the device.
+/// A link coming up does not touch the other link's transfer, and the newcomer meets the
+/// one-at-a-time rule in the ordinary way: a link coming up is a new peer on one wire, not a new
+/// state of the device.
 #[test]
 fn a_link_coming_up_leaves_the_other_links_transfer_alone_and_gets_busy() {
     let disk = formatted_card(94);
@@ -1217,7 +1173,6 @@ fn a_link_coming_up_leaves_the_other_links_transfer_alone_and_gets_busy() {
     device.link_up(Link::Usb, usb);
     let bytes = body();
 
-    // The cable admits a `PUT` and streams part of it.
     let wire = device.control_on(Link::Usb, &client::put(1, 0, 0, &bytes, ROUTE, "over the cable"));
     assert!(wire.control.is_empty(), "an admitted PUT answers nothing until the last byte");
     device.stream_on(Link::Usb, &client::stream(1, 0, &bytes[..1_008]));
@@ -1230,7 +1185,7 @@ fn a_link_coming_up_leaves_the_other_links_transfer_alone_and_gets_busy() {
     assert_eq!(still.request.0, 1, "and it is the same transfer");
     assert_eq!(still.received, 1_008, "with the same bytes");
 
-    // …and the phone's own `PUT` is refused the way §1 says, naming the live transfer.
+    // …and the phone's own `PUT` is refused as busy, naming the live transfer.
     let answer =
         Answer::of(device.control_on(Link::Ble, &client::put(2, 0, 0, &bytes, ROUTE, "over the radio")).answer());
     let (code, detail, context) = error(&answer);
@@ -1249,11 +1204,8 @@ fn a_link_coming_up_leaves_the_other_links_transfer_alone_and_gets_busy() {
     assert!(!last.expect("the last stream record is answered").is_error(), "the upload committed");
 }
 
-/// **A link going away releases only what that link held.**
-///
-/// §3.8's third form of cancel answers "the transfer whose link went away", not "the transfer" — and
-/// the unscoped version of `on_link_lost` was how an unplugged cable became a reason to kill a
-/// phone's download.
+/// A link going away releases only what that link held: the cancel answers the transfer whose link
+/// went away, not the transfer.
 #[test]
 fn a_link_going_away_releases_only_its_own_transfer() {
     let disk = formatted_card(95);
@@ -1281,8 +1233,8 @@ fn a_link_going_away_releases_only_its_own_transfer() {
     assert_eq!(device.take_upload_end(), None, "a link that went away is not a verdict");
 }
 
-/// A link that is **down** is not served at all, and a stream record on the wrong wire is discarded
-/// in silence exactly as §3.8 discards one bearing an unknown `RequestId`.
+/// A link that is down is not served at all, and a stream record on the wrong wire is discarded in
+/// silence, as one bearing an unknown `RequestId` is.
 #[test]
 fn a_down_link_is_not_served_and_the_wrong_wires_stream_is_discarded() {
     let disk = formatted_card(96);
@@ -1306,15 +1258,9 @@ fn a_down_link_is_not_served_and_the_wrong_wires_stream_is_discarded() {
     assert_eq!(device.live_upload().expect("still live").received, 0, "and absorbed nothing");
 }
 
-/// **A `CANCEL` cancels the asking link's transfer, and only that one.**
-///
-/// §3.1 makes the client choose its own `RequestId`, and nothing coordinates two clients — so a
-/// phone and a cable both picking a small number is ordinary traffic, not an attack. Matching a
-/// `CANCEL` on the identifier alone therefore let one link destroy the other's transfer *and* take
-/// the cancelled error for itself: the victim died silently and its own peer was never told.
-///
-/// This was the one entry point that still matched on `RequestId` alone after the rest of the link
-/// lifecycle gained an identity, which is exactly the shape a partial fix leaves behind.
+/// A `CANCEL` cancels the asking link's transfer, and only that one. A client chooses its own
+/// `RequestId` and nothing coordinates two clients, so a phone and a cable both picking a small
+/// number is ordinary traffic.
 #[test]
 fn a_cancel_names_a_transfer_on_its_own_wire_or_it_cancels_nothing() {
     let disk = formatted_card(97);
@@ -1334,7 +1280,7 @@ fn a_cancel_names_a_transfer_on_its_own_wire_or_it_cancels_nothing() {
     let wire = device.control_on(Link::Ble, &client::cancel(9, 1));
     let answer = Answer::of(wire.answer());
     assert!(!answer.is_error(), "the CANCEL itself is well formed and is answered: {answer:?}");
-    // §3.8's answer byte: `0` cancelled, `1` no such transfer.
+    // The answer byte: `0` cancelled, `1` no such transfer.
     assert_eq!(answer.byte_at(0), 1, "§3.8's `no such transfer` — there is none of the asker's");
     assert!(wire.stream.is_empty(), "and nothing went out on the radio's stream channel");
 
@@ -1342,9 +1288,8 @@ fn a_cancel_names_a_transfer_on_its_own_wire_or_it_cancels_nothing() {
     let still = device.live_upload().expect("the cable's upload survived the radio's CANCEL");
     assert_eq!((still.request.0, still.received), (1, 1_008), "same transfer, same bytes");
 
-    // **Nothing was minted for the radio either.** A pump on the radio's own wire finds nothing
-    // owed — the failing version left a `cancelled` error there, addressed to a transfer the radio
-    // never started, which its client would have had to discard against a `RequestId` it never sent.
+    // Nothing was minted for the radio either: a pump on its own wire finds nothing owed, so no
+    // client is handed an error for a `RequestId` it never sent.
     assert!(device.pump_on(Link::Ble).control.is_empty(), "no error was owed to the asking link");
 
     let mut last = None;
@@ -1356,10 +1301,8 @@ fn a_cancel_names_a_transfer_on_its_own_wire_or_it_cancels_nothing() {
     }
     assert!(!last.expect("the last stream record is answered").is_error(), "the upload committed");
 
-    // …and the owning link can still cancel it, which is the half that must keep working. §3.8 is
-    // bilateral, so this produces **two** control records on the cable: the `CANCEL`'s own answer
-    // and the cancelled `PUT`'s `cancelled` error — which is the pair the radio wrongly received
-    // half of before this fix.
+    // …and the owning link can still cancel it. The cancel is bilateral, so this produces two
+    // control records on the cable: the `CANCEL`'s own answer and the `PUT`'s `cancelled` error.
     device.control_on(Link::Usb, &client::put(2, 0, 0, &bytes, ROUTE, "cancelled properly"));
     let wire = device.control_on(Link::Usb, &client::cancel(3, 2));
     assert_eq!(wire.control.len(), 2, "the CANCEL is answered and the transfer is refused");

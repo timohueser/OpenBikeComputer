@@ -1,12 +1,12 @@
-//! The catalog (`FLAT_Store_Format.md` §5): the header, the 128-byte entry, the gate sector, and
-//! the structural rules an entry array must satisfy.
+//! The catalog (`FLAT_Store_Format.md`): the header, the 128-byte entry, the gate sector, and the
+//! structural rules an entry array must satisfy.
 //!
-//! The catalog **is** the store. It names every object that exists, which extents each one occupies,
+//! The catalog is the store. It names every object that exists and which extents each one occupies,
 //! and nothing else — the free-extent bitmap is its complement, recomputed at mount.
 //!
-//! Gate validity is two-tiered, because selecting a copy and trusting one are different questions
-//! and the body read sits between them. [`Gate::decode`] decides **well-formed** from the 512 gate
-//! bytes alone; only a body CRC that matches [`Gate::body_crc`] makes it **valid**.
+//! Gate validity is two-tiered, because selecting a copy and trusting one are different questions and
+//! the body read sits between them. [`Gate::decode`] decides well-formed from the 512 gate bytes
+//! alone; only a body CRC that matches [`Gate::body_crc`] makes it valid.
 
 use super::error::{DecodeError, Reason, Record, Result};
 use super::layout::{Geometry, Ranges, BLOCK, ENTRY_CAPACITY, ENTRY_STRIDE};
@@ -14,14 +14,12 @@ use super::raw::{bytes16_at, crc32, is_zero, put_bytes, put_u16, put_u32, put_u6
 use super::seam::{DisplayName, EntryFlags, EntryMeta, ObjectId, ObjectKind, Revision, StoreId, NAME_CAPACITY};
 use super::FORMAT_VERSION;
 
-/// `FSCT`, the catalog header.
 pub const HEADER_MAGIC: [u8; 4] = *b"FSCT";
-/// `FSCG`, the catalog gate.
 pub const GATE_MAGIC: [u8; 4] = *b"FSCG";
 /// The gate CRC covers bytes `0..504`.
 const GATE_CRC_OFFSET: usize = 504;
-/// The 512 zero bytes that invalidate a gate (§5.4). An all-zero gate fails magic and CRC, so
-/// invalidation needs neither a sentinel value nor a read-modify-write.
+/// The 512 zero bytes that invalidate a gate. An all-zero gate fails magic and CRC, so invalidation
+/// needs neither a sentinel value nor a read-modify-write.
 pub const INVALIDATED: [u8; BLOCK] = [0u8; BLOCK];
 
 /// The catalog header: block 0 of the copy, and the first 512 bytes of the body the gate certifies.
@@ -48,8 +46,8 @@ impl Header {
         out
     }
 
-    /// Decodes the header block. The header carries no CRC of its own — it is part of the body, and
-    /// the gate is what certifies the body.
+    /// Decodes the header block. The header carries no CRC of its own: it is part of the body, and
+    /// the gate certifies the body.
     pub fn decode(bytes: &[u8], store: &StoreId) -> Result<Self> {
         let err = |reason| DecodeError::new(Record::CatalogHeader, reason);
         if bytes.len() < BLOCK {
@@ -136,7 +134,7 @@ impl Entry {
         })
     }
 
-    /// §5.3's rules about one entry in isolation: what its ranges must cover, and what `RESERVED`
+    /// The rules about one entry in isolation: what its ranges must cover, and what `RESERVED`
     /// forbids. What an extent is worth is the card's, so the covering rule takes its geometry.
     fn check(&self, geometry: Geometry) -> Result<()> {
         let err = |reason| DecodeError::new(Record::Entry, reason);
@@ -184,11 +182,8 @@ impl Gate {
         out
     }
 
-    /// Decides **well-formed** (§5.4): magic and version known, copy index equal to the physical
-    /// position, `StoreId` equal to the superblock's, gate CRC checking, entry count within
-    /// capacity. All five are properties of these 512 bytes alone, which is what lets mount take a
-    /// sequence high-water mark from two gate reads — and why no field of an ill-formed gate is ever
-    /// read.
+    /// Decides well-formed from these 512 bytes alone, which is what lets mount take a sequence
+    /// high-water mark from two gate reads — and why no field of an ill-formed gate is ever read.
     pub fn decode(bytes: &[u8], copy: usize, store: &StoreId) -> Result<Self> {
         let err = |reason| DecodeError::new(Record::Gate, reason);
         if bytes.len() < BLOCK {
@@ -226,29 +221,24 @@ impl Gate {
     }
 }
 
-/// The entry array's cross-entry rules (§5.3), checked in one forward pass over the live prefix.
-///
-/// Ordering, the retained/head pair, kind agreement per `ObjectId` and the one `RECORDING` entry are
-/// all properties of a *sequence* of entries, so they cannot live in [`Entry::decode`]. Mount runs
-/// this while it streams the body, and a commit runs it over the entries it is about to write.
+/// The entry array's cross-entry rules, checked in one forward pass over the live prefix. They are
+/// properties of a sequence of entries, so they cannot live in [`Entry::decode`]: mount runs this
+/// while it streams the body, and a commit runs it over the entries it is about to write.
 #[derive(Debug)]
 pub struct Structure {
-    /// The card's, because §5.3's covering rule is stated in extents and read in bytes.
+    /// The card's, because the covering rule is stated in extents and read in bytes.
     geometry: Geometry,
     previous: Option<(ObjectId, Revision, ObjectKind, bool)>,
-    /// Entries seen so far for the current `ObjectId`.
     revisions: u8,
     recording: u8,
     greatest_id: u64,
 }
 
 impl Structure {
-    /// A pass over the entry array of a card with this geometry.
     pub fn new(geometry: Geometry) -> Self {
         Structure { geometry, previous: None, revisions: 0, recording: 0, greatest_id: 0 }
     }
 
-    /// Accepts the next entry of the array.
     pub fn accept(&mut self, entry: &Entry) -> Result<()> {
         let err = |reason| DecodeError::new(Record::Entry, reason);
         entry.check(self.geometry)?;
@@ -324,8 +314,7 @@ mod tests {
 
     const STORE: StoreId = StoreId([0x5A; 16]);
 
-    /// A fresh pass over a card of the default 1 MiB extents, which is what every case here but the
-    /// card-scaled one below runs on.
+    /// A fresh pass over a card of the default 1 MiB extents, which every case but one below uses.
     fn fresh() -> Structure {
         Structure::new(Geometry::DEFAULT)
     }
@@ -382,8 +371,6 @@ mod tests {
         assert_eq!(Entry::decode(&bytes, 64).unwrap_err().reason, Reason::Zero);
     }
 
-    /// §5.3's covering rule: exactly `ceil(len / extent size)` extents unless the entry is recording
-    /// or reserved, in which case it may hold slack.
     #[test]
     fn ranges_must_cover_the_payload_and_only_slack_flags_may_exceed_it() {
         let extent = Geometry::DEFAULT.extent_size();
@@ -404,9 +391,8 @@ mod tests {
         assert!(fresh().accept(&reserve).is_ok());
     }
 
-    /// The same rule on a card whose extents are 2 MiB: one entry's ranges cover twice the payload,
-    /// and an array from a 1 MiB card would fail on it. The covering rule reads the card's geometry, so
-    /// this is the one §5.3 check that card-scaled extents move.
+    /// The same rule on a card whose extents are 2 MiB. This is the one structural check that
+    /// card-scaled extents move.
     #[test]
     fn the_covering_rule_is_the_cards_own_extent_size() {
         let doubled = Geometry::from_log2(21).unwrap();
@@ -436,8 +422,6 @@ mod tests {
         assert_eq!(structure.accept(&entry(2, 9, EntryFlags::NONE, 10, 1, 1)).unwrap_err().reason, Reason::Order);
     }
 
-    /// One `ObjectId` holds either one entry, or exactly two of which precisely one carries
-    /// `RETAINED` — and the retained one sorts first.
     #[test]
     fn the_retained_head_pair_is_the_only_two_entry_shape() {
         let header = Header { store: STORE, sequence: 1, next_object: 99, entry_count: 2 };

@@ -1,37 +1,30 @@
-//! Streaming GPX scanners (`no_std`): track points and waypoints.
+//! Streaming GPX scanners: track points and waypoints.
 //!
-//! [`GpxScanner`] pulls `<trkpt lat=".." lon="..">…<ele>…</ele></trkpt>` points out of
-//! a [`ByteSource`] one at a time; [`WptScanner`] does the same for top-level
-//! `<wpt>` waypoints (name, optional elevation, and the `<sym>`/`<type>` symbol the
-//! converter maps to a category). Both read the file in fixed blocks
-//! with compaction so an element that straddles a block boundary is handled
-//! transparently. RAM is O(1) (one [`SCAN_BUF`]-sized buffer per scanner) regardless
-//! of route length, so converting a hundreds-of-km GPX on-device is feasible.
+//! [`GpxScanner`] pulls `<trkpt>` points out of a [`ByteSource`] one at a time. [`WptScanner`]
+//! does the same for top-level `<wpt>` waypoints. Both read the file in fixed blocks with
+//! compaction, so an element that straddles a block boundary is handled transparently and RAM
+//! stays O(1) whatever the route length.
 //!
-//! A deliberately small hand-rolled scan, not a full XML stack: GPX elements are a
-//! regular shape and that is all the converter needs. Elevation is optional;
-//! timestamps are ignored (a route has no time). Waypoint names are taken verbatim
-//! (no entity unescaping — the phone-side importer runs a real XML parser; this path
-//! only backs the on-device GPX upload).
+//! The scan is hand-rolled, not a full XML stack, because GPX elements have a regular shape.
+//! Timestamps are ignored, and names are taken verbatim with no entity unescaping. The phone-side
+//! importer runs a real XML parser; this path only backs the on-device GPX upload.
 
 use heapless::String;
 
 use obc_formats::io::{ByteSource, Error};
 use obc_formats::obcr::WAYPOINT_NAME_CAP;
 
-/// Scan buffer size. Must comfortably exceed one `<trkpt>…</trkpt>` / `<wpt>…</wpt>`
-/// element (a few hundred bytes) so at least one whole element is always resident
-/// after a refill.
+/// Scan buffer size. It must exceed one element, a few hundred bytes, so at least one whole
+/// element is always resident after a refill.
 const SCAN_BUF: usize = 4096;
 
-/// Stored bytes of a `<wpt>`'s symbol. Real `<sym>`/`<type>` values are one or two words
-/// ("Drinking Water", "Convenience Store"); a longer one is freeform prose that no
-/// [`category_for_symbol`](crate::symbol::category_for_symbol) row could match, so truncating it
-/// here costs nothing and keeps [`RawWaypoint`] small enough for a bounded resident set.
+/// Stored bytes of a `<wpt>`'s symbol. Real `<sym>`/`<type>` values are one or two words. A
+/// longer one is freeform prose that no
+/// [`category_for_symbol`](crate::symbol::category_for_symbol) row matches, so truncation here
+/// costs nothing.
 pub const WAYPOINT_SYMBOL_CAP: usize = 32;
 
-/// One raw track point straight from the GPX: microdegree position + optional
-/// elevation in meters.
+/// One raw track point from the GPX: microdegree position and optional elevation in metres.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RawPoint {
     pub lon: i32,
@@ -39,23 +32,21 @@ pub struct RawPoint {
     pub ele: Option<f32>,
 }
 
-/// One raw `<wpt>` waypoint straight from the GPX: position, optional elevation, its `<name>`
-/// truncated to [`WAYPOINT_NAME_CAP`] bytes (on a char boundary), and its raw symbol.
+/// One raw `<wpt>` waypoint from the GPX. The `<name>` is truncated to [`WAYPOINT_NAME_CAP`]
+/// bytes on a char boundary.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawWaypoint {
     pub lon: i32,
     pub lat: i32,
     pub ele: Option<f32>,
     pub name: String<WAYPOINT_NAME_CAP>,
-    /// The waypoint's icon as the exporter wrote it — `<sym>` if non-empty, else `<type>`, else
-    /// empty. Kept verbatim (truncated to [`WAYPOINT_SYMBOL_CAP`]); the mapping onto a category
-    /// is [`category_for_symbol`](crate::symbol::category_for_symbol)'s job, not the scanner's.
+    /// The icon as the exporter wrote it: `<sym>` if non-empty, else `<type>`, else empty. It is
+    /// kept verbatim, truncated to [`WAYPOINT_SYMBOL_CAP`].
     pub symbol: String<WAYPOINT_SYMBOL_CAP>,
 }
 
-/// The shared block-buffered scan state: a window over the source that refills with
-/// compaction and locates whole `<tag …>[body</tag>]` elements. Both scanners are
-/// thin element-parsers over this core.
+/// The shared block-buffered scan state: a window over the source that refills with compaction
+/// and locates whole `<tag …>[body</tag>]` elements.
 struct ScanCore<'a> {
     src: &'a dyn ByteSource,
     buf: [u8; SCAN_BUF],
@@ -65,9 +56,8 @@ struct ScanCore<'a> {
     src_len: u64,
 }
 
-/// A located element, as index ranges into the core's buffer (valid until the next
-/// [`ScanCore::next_element`] call): the opening tag `<tag …` (attributes), and the
-/// body for a non-self-closing element.
+/// A located element, as index ranges into the core's buffer. They are valid only until the next
+/// [`ScanCore::next_element`] call.
 struct Element {
     attr: core::ops::Range<usize>,
     body: Option<core::ops::Range<usize>>,
@@ -79,9 +69,9 @@ impl<'a> ScanCore<'a> {
         ScanCore { src, buf: [0; SCAN_BUF], filled: 0, pos: 0, next_read: 0, src_len }
     }
 
-    /// Drop the consumed prefix `buf[..pos]` and read more from the source into the
-    /// freed space. Returns the number of new bytes read (0 at end of source / when the
-    /// buffer is full).
+    /// Drop the consumed prefix `buf[..pos]` and read more from the source into the freed space.
+    /// Returns the number of new bytes read, or 0 at the end of the source or when the buffer is
+    /// full.
     fn refill(&mut self) -> Result<usize, Error> {
         if self.pos > 0 {
             self.buf.copy_within(self.pos..self.filled, 0);
@@ -89,8 +79,8 @@ impl<'a> ScanCore<'a> {
             self.pos = 0;
         }
         let space = SCAN_BUF - self.filled;
-        // `src_len - next_read` is what is left of the file, which can exceed `usize` on a
-        // 32-bit host; the `min` against the buffer's free space is what makes the narrowing safe.
+        // What is left of the file can exceed `usize` on a 32-bit host. The `min` against the
+        // buffer's free space is what makes the narrowing safe.
         let n = ((self.src_len - self.next_read).min(space as u64)) as usize;
         if n == 0 {
             return Ok(0);
@@ -105,15 +95,13 @@ impl<'a> ScanCore<'a> {
         self.next_read >= self.src_len
     }
 
-    /// Locate the next whole `open`-tag element (e.g. `open = b"<trkpt"`,
-    /// `close = b"</trkpt>"`), refilling as needed, and advance past it. Returns
-    /// `None` once the source is exhausted (a trailing truncated element is dropped,
-    /// matching a truncated file's other losses).
+    /// Locate the next whole `open`-tag element, refilling as needed, and advance past it.
+    /// Returns `None` once the source is exhausted. A trailing truncated element is dropped.
     fn next_element(&mut self, open: &[u8], close: &[u8]) -> Result<Option<Element>, Error> {
         loop {
             let window = &self.buf[self.pos..self.filled];
             let Some(rel) = find(window, open) else {
-                // No start tag here. Keep a short tail (a split `open`) across the refill.
+                // No start tag here. Keep a short tail across the refill, for a split `open`.
                 if self.at_source_end() {
                     return Ok(None);
                 }
@@ -154,7 +142,7 @@ impl<'a> ScanCore<'a> {
                 }
                 continue;
             };
-            let tag_end = start + gt; // index of '>'
+            let tag_end = start + gt;
             if self.buf[tag_end - 1] == b'/' {
                 self.pos = tag_end + 1;
                 return Ok(Some(Element { attr: start..tag_end, body: None }));
@@ -177,8 +165,7 @@ impl<'a> ScanCore<'a> {
     }
 }
 
-/// A forward-only scanner over a GPX byte source's track points. Call
-/// [`next_point`](GpxScanner::next_point) until it returns `Ok(None)`.
+/// A forward-only scanner over a GPX byte source's track points.
 pub struct GpxScanner<'a> {
     core: ScanCore<'a>,
 }
@@ -188,8 +175,8 @@ impl<'a> GpxScanner<'a> {
         GpxScanner { core: ScanCore::new(src) }
     }
 
-    /// The next track point, or `None` once the source is exhausted. Malformed points
-    /// (missing lat/lon) are skipped rather than erroring.
+    /// The next track point, or `None` once the source is exhausted. A point with no lat/lon is
+    /// skipped, not an error.
     pub fn next_point(&mut self) -> Result<Option<RawPoint>, Error> {
         loop {
             let Some(el) = self.core.next_element(b"<trkpt", b"</trkpt>")? else {
@@ -204,12 +191,11 @@ impl<'a> GpxScanner<'a> {
     }
 }
 
-/// A forward-only scanner over a GPX byte source's `<wpt>` waypoints. Call
-/// [`next_waypoint`](WptScanner::next_waypoint) until it returns `Ok(None)`.
+/// A forward-only scanner over a GPX byte source's `<wpt>` waypoints.
 ///
-/// A separate scanner (not a mode of [`GpxScanner`]) because GPX carries waypoints
-/// file-level *before* the track: the converter runs this pass to completion first,
-/// then streams the track — two sequential O(1)-RAM passes, never two live buffers.
+/// It is separate from [`GpxScanner`] because GPX carries waypoints before the track. The
+/// converter runs this pass to completion, then streams the track, so the two block buffers are
+/// never resident at the same time.
 pub struct WptScanner<'a> {
     core: ScanCore<'a>,
 }
@@ -219,9 +205,8 @@ impl<'a> WptScanner<'a> {
         WptScanner { core: ScanCore::new(src) }
     }
 
-    /// The next waypoint, or `None` once the source is exhausted. Malformed waypoints
-    /// (missing lat/lon) are skipped; a missing `<name>` yields an empty name, a missing
-    /// `<sym>`/`<type>` an empty symbol.
+    /// The next waypoint, or `None` once the source is exhausted. A waypoint with no lat/lon is
+    /// skipped. A missing `<name>` or symbol gives an empty string.
     pub fn next_waypoint(&mut self) -> Result<Option<RawWaypoint>, Error> {
         loop {
             let Some(el) = self.core.next_element(b"<wpt", b"</wpt>")? else {
@@ -242,12 +227,11 @@ impl<'a> WptScanner<'a> {
     }
 }
 
-/// Degrees → microdegrees, rounded (`libm::round`, no `std`).
+/// Degrees to microdegrees, rounded.
 fn micro(deg: f64) -> i32 {
     libm::round(deg * 1e6) as i32
 }
 
-/// First index of `needle` in `hay`.
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || hay.len() < needle.len() {
         return None;
@@ -255,7 +239,7 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
-/// Parse `lat`/`lon` from an opening `<trkpt …>` / `<wpt …>` tag (order-independent).
+/// Parse `lat` and `lon` from an opening tag, in either order.
 fn parse_latlon(tag: &[u8]) -> (Option<f64>, Option<f64>) {
     let Ok(s) = core::str::from_utf8(tag) else {
         return (None, None);
@@ -263,8 +247,7 @@ fn parse_latlon(tag: &[u8]) -> (Option<f64>, Option<f64>) {
     (attr_f64(s, "lat"), attr_f64(s, "lon"))
 }
 
-/// Read a quoted attribute (`name="…"` / `name='…'`) as `f64`, matching `name` only as a
-/// whole token.
+/// Read a quoted attribute as `f64`, matching `name` only as a whole token.
 fn attr_f64(tag: &str, name: &str) -> Option<f64> {
     let mut search = tag;
     loop {
@@ -285,7 +268,6 @@ fn attr_f64(tag: &str, name: &str) -> Option<f64> {
     }
 }
 
-/// Pull `<ele>…</ele>` from an element body as `f32`, if present.
 fn parse_ele(body: &[u8]) -> Option<f32> {
     let s = core::str::from_utf8(body).ok()?;
     let start = s.find("<ele>")? + "<ele>".len();
@@ -293,16 +275,13 @@ fn parse_ele(body: &[u8]) -> Option<f32> {
     s[start..end].trim().parse().ok()
 }
 
-/// Pull `<name>…</name>` from a `<wpt>` body, trimmed and truncated to
-/// [`WAYPOINT_NAME_CAP`] bytes on a char boundary. Missing name → empty string.
 fn parse_name(body: &[u8]) -> String<WAYPOINT_NAME_CAP> {
     parse_text(body, "<name>", "</name>")
 }
 
-/// Pull the waypoint's symbol from a `<wpt>` body: `<sym>` if present and non-empty, else
-/// `<type>`, else empty. Two tags for one idea — Garmin (and the planners that copy it) write
-/// `<sym>`, RideWithGPS/Komoot write `<type>`, some exports carry both — so `<sym>` wins when it
-/// says something and `<type>` is the fallback rather than a second, competing value.
+/// The waypoint's symbol: `<sym>` if present and non-empty, else `<type>`. Exporters use one tag
+/// or the other for the same idea, and some carry both, so `<type>` is a fallback and not a
+/// second value.
 fn parse_symbol(body: &[u8]) -> String<WAYPOINT_SYMBOL_CAP> {
     let sym = parse_text(body, "<sym>", "</sym>");
     if !sym.is_empty() {
@@ -311,9 +290,8 @@ fn parse_symbol(body: &[u8]) -> String<WAYPOINT_SYMBOL_CAP> {
     parse_text(body, "<type>", "</type>")
 }
 
-/// Pull an `open`…`close` child element's text out of an element body, trimmed and truncated to
-/// `N` bytes on a char boundary (the same bounded-buffer discipline for every child tag). Missing
-/// tag, or an unterminated one → empty string.
+/// A child element's text, trimmed and truncated to `N` bytes on a char boundary. A missing or
+/// unterminated tag gives an empty string.
 fn parse_text<const N: usize>(body: &[u8], open: &str, close: &str) -> String<N> {
     let mut out = String::new();
     let Ok(s) = core::str::from_utf8(body) else {

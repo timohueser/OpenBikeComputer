@@ -1,6 +1,6 @@
-// The card's own byte layout, and nothing above the seam may name it: an LBA, an extent range and a
-// gate sector are this module's business. `seam`, `error`, `device` and `store` are the public face —
-// a board crate has to be able to name `BlockDevice`, and a consumer `Store`.
+// The card's own byte layout, and nothing above the seam may name it. `seam`, `error`, `device` and
+// `store` are the public face: a board crate has to be able to name `BlockDevice`, and a consumer
+// `Store`.
 pub(crate) mod bitmap;
 pub(crate) mod catalog;
 pub mod device;
@@ -47,11 +47,10 @@ pub use seam::{
 };
 pub use source::{SealedSource, StoreSource};
 pub use store::{FlatStore, Handle, Mode, RideRecovery, SealedAllocation};
-/// The four bytes at block 0 of a formatted card (§4): what names a card image.
+/// The four bytes at block 0 of a formatted card: what names a card image.
 pub use superblock::MAGIC as SUPERBLOCK_MAGIC;
 
-/// The format version this store implements. A card whose layout differs is a different version,
-/// which the version field of every record already names.
+/// The format version this store implements.
 pub const FORMAT_VERSION: u16 = 1;
 
 pub mod route_cleanup;
