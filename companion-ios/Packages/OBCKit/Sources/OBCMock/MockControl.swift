@@ -54,7 +54,7 @@ public final class MockControl: @unchecked Sendable {
     private var _fixtures: FixtureSet
     /// Starts above every fixture `deviceObjectID`, so a freshly assigned id cannot collide.
     private var _nextObjectID: UInt64 = 1000
-    /// Trips uploaded this session, keyed by the id the device assigned. Empty at boot: a trip
+    /// Trips uploaded this session, keyed by the id the device assigned. Empty at boot.
     private var _deviceTrips: [DeviceTrip] = []
     /// The trip-id counter, its own namespace. Any base works; the app never assumes a value.
     private var _nextTripID: UInt64 = 1
@@ -71,7 +71,7 @@ public final class MockControl: @unchecked Sendable {
     private var _cancelledRouteCatalogReadCount = 0
     /// The firmware version the phone staged this session, which a modelled reboot reconnects on.
     private var _firmwareStagedVersion: String?
-    /// What the next `installFw` request answers. After `accepted` the modelled device reboots
+    /// What the next `installFw` request answers.
     private var _firmwareInstallOutcome: FirmwareInstallResult = .accepted
     private var _supportsClockSync: Bool
     /// Every `setClock` sample the transport sent, in order.
@@ -138,6 +138,7 @@ public final class MockControl: @unchecked Sendable {
     }
 
     /// Whether the app has bonded before, which is what `MockBondStore` serves. Flip it live to
+    /// replay first-run pairing.
     public var bonded: Bool {
         get { lock.withLocked { _bonded } }
         set { lock.withLocked { _bonded = newValue } }
@@ -205,6 +206,7 @@ public final class MockControl: @unchecked Sendable {
     }
 
     /// Fail the next `listTrips()` read, one-shot. Targeted, unlike `failNextOp`, so a test can
+    /// fail `listTrips` while the same reload's `listRoutes` succeeds.
     public func failNextTripCatalog(_ error: DeviceError = .readFailed) {
         lock.withLocked { _tripCatalogFailure = error }
     }
@@ -275,6 +277,7 @@ public final class MockControl: @unchecked Sendable {
     }
 
     /// The link is unusable only when down. `.outOfRange` still serves cached fixtures, because
+    /// that state is content plus a banner, not an empty error screen.
     func requireReachable() throws {
         if connection == .disconnected { throw DeviceError.notConnected }
     }
@@ -536,7 +539,8 @@ public final class MockControl: @unchecked Sendable {
         catalogChangedMulticast.send(CatalogChange(kind: .trip))
     }
 
-    /// Simulate a device-side trip-only delete: the app's trip link clears at reconcile while the
+    /// Simulate a device-side trip-only delete: the app's trip link clears at reconcile while
+    /// the member routes stay.
     public func deviceDeletesTrip(_ id: DeviceObjectID) {
         lock.withLocked { _deviceTrips.removeAll { $0.id == id } }
         catalogChangedMulticast.send(CatalogChange(kind: .trip))
@@ -545,6 +549,7 @@ public final class MockControl: @unchecked Sendable {
     /// Begin a simulated route upload. On commit it reports a device object id, fresh or the
     /// `targetObjectID` when replacing, and the fixture set records the copy so a later reconcile
     /// keeps the badge lit. Paced over a design-scale fiction of about 37 B/m, because a real
+    /// route is only a few kB and its progress screen would flash by.
     func beginRouteUpload(_ blob: RouteBlob) -> TransferHandle {
         if connection == .disconnected { return .immediatelyFinished(.failed(.notConnected)) }
         if blob.payload.isEmpty { return .immediatelyFinished(.failed(.transferRejected)) }

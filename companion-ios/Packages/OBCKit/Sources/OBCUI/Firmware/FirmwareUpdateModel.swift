@@ -313,6 +313,7 @@ public final class FirmwareUpdateModel {
     public var includePrereleases: Bool { updateChecker?.includePrereleases ?? false }
 
     /// Flip the pre-release opt-in and re-ask straight away: the channel changed, so the cached
+    /// answer is about a question nobody asked.
     public func setIncludePrereleases(_ include: Bool) {
         updateChecker?.setIncludePrereleases(include)
         checkForUpdate(manual: true)
