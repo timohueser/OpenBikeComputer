@@ -20,8 +20,13 @@
 //! `index.json` says which tiles the archive has and who contributed to each of them. A mirror of
 //! one box carries the whole index and only its own tiles, so a tile the index names and the disk
 //! does not hold is **absent**, not an error; a tile that is on disk but broken is an error.
+//!
+//! Nothing here is mutated after [`ReferenceArchive::open`], so an archive is `Sync` and a bakery
+//! may read one from several threads. A lookup reports what it found and the caller keeps the
+//! tally — which is also the only way attribution can be honest, since only a tile that was
+//! actually decoded contributed to a container.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -30,7 +35,7 @@ use obc_formats::obct::{GRID_ORIGIN, WORLD_SIDE};
 use tiff::decoder::{Decoder, DecodingResult};
 use tiff::tags::Tag;
 
-use crate::geotiff::geo_keys;
+use crate::geotiff::{read_north_up, RasterType};
 
 /// Archive lattice step as `log2(µdeg)`: `2^6` µdeg on both axes.
 pub const STEP_LOG2: u8 = 6;
@@ -102,12 +107,6 @@ impl std::fmt::Debug for ReferenceTile {
 }
 
 impl ReferenceTile {
-    /// The height at pixel `(r, c)`, or `None` where no source pixel reached it.
-    pub fn pixel(&self, r: usize, c: usize) -> Option<i16> {
-        let value = *self.pixels.get(r * TILE_PIXELS + c)?;
-        (value != NO_PIXEL).then_some(value)
-    }
-
     /// The south-west corner of pixel `(0, 0)`, in µdeg — this tile's place on the lattice.
     pub fn origin_udeg(&self) -> (i64, i64) {
         (ORIGIN + i64::from(self.ti) * TILE_UDEG, ORIGIN + i64::from(self.tj) * TILE_UDEG)
@@ -149,7 +148,7 @@ impl ReferenceTile {
                 return Err(format!("{}: {bands} bands — an archive tile has one", name()));
             }
         }
-        expect_transform(&mut dec, ti, tj, &name)?;
+        expect_lattice(&mut dec, ti, tj, &name)?;
         if let Ok(text) = dec.get_tag_ascii_string(Tag::GdalNodata) {
             let declared = text.trim().trim_end_matches('\0').parse::<f64>().ok();
             if declared != Some(f64::from(NO_PIXEL)) {
@@ -187,57 +186,36 @@ fn ceil_div(a: i64, b: i64) -> i64 {
 
 /// Hold a tile's georeferencing to the lattice its id implies, and refuse the file by name.
 ///
-/// Every part of it is checked, because each one moves ground: a wrong scale stretches the tile, a
-/// wrong tie point slides it, `PixelIsPoint` shifts it half a pixel, and a projected raster is not
-/// on this lattice at all.
-fn expect_transform<R: std::io::Read + std::io::Seek>(
+/// [`read_north_up`] has already refused anything that is not a north-up WGS 84 grid. What is left
+/// is what an archive tile adds to that: the grid must be *this* tile's square of the lattice, and
+/// a pixel must be an **area**. Each of those moves ground rather than losing it — a wrong scale
+/// stretches the tile, a wrong tie point slides it, `PixelIsPoint` shifts it half a pixel.
+fn expect_lattice<R: std::io::Read + std::io::Seek>(
     dec: &mut Decoder<R>,
     ti: u32,
     tj: u32,
     name: &impl Fn() -> String,
 ) -> Result<(), String> {
-    let tie = dec
-        .get_tag_f64_vec(Tag::ModelTiepointTag)
-        .map_err(|_| format!("{}: no ModelTiepointTag — not a georeferenced raster", name()))?;
-    let scale = dec
-        .get_tag_f64_vec(Tag::ModelPixelScaleTag)
-        .map_err(|_| format!("{}: no ModelPixelScaleTag — not a north-up lattice raster", name()))?;
-    if tie.len() < 6 || scale.len() < 2 {
-        return Err(format!("{}: short ModelTiepointTag/ModelPixelScaleTag", name()));
-    }
-    if tie[0] != 0.0 || tie[1] != 0.0 {
-        return Err(format!("{}: ModelTiepointTag is not anchored on raster (0, 0)", name()));
+    let north_up = read_north_up(dec, name)?;
+    if north_up.raster_type != RasterType::Area {
+        return Err(format!("{}: GTRasterTypeGeoKey is point — an archive pixel is an area (1)", name()));
     }
     // A `PixelIsArea` tie point names the raster's north-west **corner**, which for tile (ti, tj) is
     // the lattice line the id puts it on.
     let step = STEP as f64 / 1e6;
-    let want_lon = (ORIGIN + i64::from(tj) * TILE_UDEG) as f64 / 1e6;
     let want_lat = (ORIGIN + (i64::from(ti) + 1) * TILE_UDEG) as f64 / 1e6;
-    for (what, actual, want) in
-        [("pixel scale (lon)", scale[0], step), ("pixel scale (lat)", scale[1], step), ("origin lon", tie[3], want_lon)]
-    {
+    let want_lon = (ORIGIN + i64::from(tj) * TILE_UDEG) as f64 / 1e6;
+    for (what, actual, want) in [
+        ("pixel scale (lon)", north_up.step_lon_deg, step),
+        ("pixel scale (lat)", north_up.step_lat_deg, step),
+        ("origin lon", north_up.tie_lon_deg, want_lon),
+        ("origin lat", north_up.tie_lat_deg, want_lat),
+    ] {
         if (actual - want).abs() > TRANSFORM_EPS {
             return Err(format!("{}: {what} {actual} — tile {ti}/{tj} is {want} on the lattice", name()));
         }
     }
-    if (tie[4] - want_lat).abs() > TRANSFORM_EPS {
-        return Err(format!("{}: origin lat {} — tile {ti}/{tj} is {want_lat} on the lattice", name(), tie[4]));
-    }
-
-    let keys = geo_keys(dec);
-    let key = |code: u16| keys.iter().find(|(k, _)| *k == code).map(|(_, v)| *v);
-    match key(1024) {
-        Some(2) | None => {}
-        Some(other) => return Err(format!("{}: GTModelTypeGeoKey {other} — the lattice is geographic", name())),
-    }
-    match key(2048) {
-        Some(4326) | None => {}
-        Some(other) => return Err(format!("{}: GeographicTypeGeoKey {other} — the lattice is WGS 84", name())),
-    }
-    match key(1025) {
-        Some(1) | None => Ok(()),
-        Some(other) => Err(format!("{}: GTRasterTypeGeoKey {other} — an archive pixel is an area (1)", name())),
-    }
+    Ok(())
 }
 
 /// An archive root, or a mirror of one: its `index.json` read, its tiles left on disk.
@@ -246,10 +224,22 @@ pub struct ReferenceArchive {
     /// Every source with a surviving pixel in a tile, best first — `index.json`'s `contributors`,
     /// which is what attribution reads.
     contributors: BTreeMap<(u32, u32), Vec<String>>,
-    /// Tiles the index names that this root does not hold. A mirror of one box is the ordinary
-    /// reason and no error; a copy that stopped half way is the reason an operator has to be told.
-    /// Distinct ids, so a tile two cells both read is counted once.
-    absent: std::cell::RefCell<BTreeSet<(u32, u32)>>,
+}
+
+/// What an archive holds for one tile id.
+///
+/// The three cases are different facts, and a caller needs all three: only a tile it actually
+/// decoded may be credited in the attribution, only a tile the index promised and the disk lacked
+/// is worth telling an operator about, and a tile no index names is simply outside the archive.
+/// Keeping them apart is also what lets [`ReferenceArchive`] stay immutable, and so `Sync`.
+pub enum TileLookup<'a> {
+    /// Decoded, with every source that contributed a pixel to it, best first.
+    Held { tile: ReferenceTile, sources: &'a [String] },
+    /// The index names it and this root does not hold it — which is what a mirror of one box looks
+    /// like, and also what a copy that stopped half way looks like.
+    Absent,
+    /// No index entry: not in the archive at all.
+    Unknown,
 }
 
 impl ReferenceArchive {
@@ -288,7 +278,7 @@ impl ReferenceArchive {
             };
             contributors.insert(key, sources);
         }
-        Ok(ReferenceArchive { root: root.to_path_buf(), contributors, absent: Default::default() })
+        Ok(ReferenceArchive { root: root.to_path_buf(), contributors })
     }
 
     /// Tiles the index names.
@@ -300,41 +290,21 @@ impl ReferenceArchive {
         self.contributors.is_empty()
     }
 
-    /// Decode tile `(ti, tj)`, or `None` when this archive does not hold it.
+    /// Look tile `(ti, tj)` up, decoding it if this archive holds it.
     ///
-    /// A tile the index names but the disk does not hold is `None`: that is what a mirror of one box
-    /// looks like, since `mirror` copies the whole index and the tiles of its box alone. A tile that
-    /// is on disk and does not hold the contract is an error naming the file.
-    pub fn tile(&self, ti: u32, tj: u32) -> Result<Option<ReferenceTile>, String> {
-        if !self.contributors.contains_key(&(ti, tj)) {
-            return Ok(None);
-        }
+    /// A tile the index names but the disk does not hold is [`TileLookup::Absent`], not an error:
+    /// that is what a mirror of one box looks like, since `mirror` copies the whole index and the
+    /// tiles of its box alone. A tile that *is* on disk and does not hold the contract **is** an
+    /// error naming the file.
+    pub fn tile(&self, ti: u32, tj: u32) -> Result<TileLookup<'_>, String> {
+        let Some(sources) = self.contributors.get(&(ti, tj)) else {
+            return Ok(TileLookup::Unknown);
+        };
         let path = self.root.join(format!("{TILE_LOG2}/{ti:04}/{tj:04}.tif"));
         if !path.is_file() {
-            self.absent.borrow_mut().insert((ti, tj));
-            return Ok(None);
+            return Ok(TileLookup::Absent);
         }
-        ReferenceTile::open(&path, ti, tj).map(Some)
-    }
-
-    /// How many distinct tiles a bake asked for that the index names and this root does not hold.
-    ///
-    /// Zero is what a mirror of the baked box should report. Anything else is a mirror that is
-    /// short of the box it was made for, which costs lifts silently — so a caller reports it.
-    pub fn absent_tiles(&self) -> usize {
-        self.absent.borrow().len()
-    }
-
-    /// Every source that contributed a pixel to a tile this window reads, sorted — the attribution
-    /// a container baked over this window must carry.
-    pub fn sources_for(&self, window: Window) -> Vec<&str> {
-        let mut keys = BTreeSet::new();
-        for id in window.tiles() {
-            for source in self.contributors.get(&id).into_iter().flatten() {
-                keys.insert(source.as_str());
-            }
-        }
-        keys.into_iter().collect()
+        Ok(TileLookup::Held { tile: ReferenceTile::open(&path, ti, tj)?, sources })
     }
 }
 
