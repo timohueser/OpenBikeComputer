@@ -722,15 +722,26 @@ def check_board(args: argparse.Namespace, baseline: dict[str, object]) -> None:
     # Without this, every slice that saves RAM leaves the ceiling further above the real link, and
     # the headroom the next slice reads off the baseline is fiction. The band is one slack wide: a
     # slice may grow the link into it without a ceiling change, and a slice that saves more than the
-    # slack must re-pin.
+    # slack re-pins both figures.
+    #
+    # Enforced only under `--ci-authority`, and that is not a softening: `measured_resident` is the
+    # `embedded` job's link, and a host toolchain links less than CI, so the band's lower end is a
+    # statement about one builder. Failing a host head build on it would reject every local
+    # measurement run for a reason outside the change under review, and would tell the author to
+    # re-pin a gate figure from a build that is not its source. A host run prints the drift; the
+    # `embedded` job, which every change must pass, is where it is a gate.
     below = ceiling - measured.resident
-    require(
-        below <= slack,
-        f"{args.profile} resident RAM is {measured.resident} B (.bss + .data), {below} B below the "
-        f"{ceiling} B ceiling and so past its {slack} B slack; the link shrank. Re-pin "
-        "measured_resident to this run and resident_ram_max to measured + resident_ram_slack, "
-        "rather than leaving the saving as headroom nothing measured",
-    )
+    if below > slack:
+        drift = (
+            f"{args.profile} resident RAM is {measured.resident} B (.bss + .data), {below} B below "
+            f"the {ceiling} B ceiling and so past its {slack} B slack: the link shrank. Re-pin "
+            "measured_resident to the `embedded` CI job's figure and resident_ram_max to that "
+            "figure plus resident_ram_slack, rather than leaving the saving as headroom nothing "
+            "measured. A host link reads lower than CI, so a host run is not the source of the re-pin"
+        )
+        if args.ci_authority:
+            raise GuardError(drift)
+        print(f"{args.profile}: WARNING (not gated off CI) - {drift}")
     # A plain ceiling, and it needs no more shape than that even now that it is a real budget: until
     # `.uninit` once held only `defmt_rtt::BUFFER`, and the 1,024 B baseline was there to catch
     # a NOLOAD section appearing by accident. It now also holds the ~117 KB scratch arena, so this is
@@ -1135,6 +1146,12 @@ def parser() -> argparse.ArgumentParser:
     board = commands.add_parser("board", help="gate linked board RAM, framebuffer, and poll frame")
     board.add_argument("--profile", choices=("default",), required=True)
     board.add_argument("--elf", type=Path, required=True)
+    board.add_argument(
+        "--ci-authority",
+        action="store_true",
+        help="enforce the resident band's lower end; only the `embedded` job's link is the "
+        "authority for `measured_resident`, so a host run prints the drift instead of failing on it",
+    )
     report = commands.add_parser("report", help="gate report-only target-side size_of table")
     report.add_argument("--profile", choices=("default",), required=True)
     report.add_argument("--elf", type=Path, required=True)

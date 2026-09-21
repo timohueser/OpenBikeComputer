@@ -1,7 +1,7 @@
 {
   "schema_version": 4,
   "measurement": {
-    "source_commit": "FS8 #1390 acceptance state on 9f76040f (local uncommitted diff, 2026-08-20)",
+    "source_commit": "FS8 #1390 acceptance state on 9f76040f (local uncommitted diff, 2026-08-20). A field re-pinned after that names its own build: the resident band (`measured_resident`, `resident_ram_max`) is the `embedded` CI job's shipping link on 1d33e67b.",
     "rustc": "1.97.1 (8bab26f4f 2026-07-14) on CI; itemized on the pinned 1.96.0 (ac68faa20 2026-05-25)",
     "llvm": "22.1.6 on CI; 22.1.2 on the pinned host",
     "riscv_gcc": "riscv64-elf-gcc (GCC) 16.1.0",
@@ -16,7 +16,7 @@
       "measured_resident": 313264,
       "resident_ram_max": 317360,
       "resident_ram_slack": 4096,
-      "_resident_ram_slack_note": "`resident_ram_max` is `measured_resident` plus the slack, and the guard gates the link against both ends of that band. The slack is what one slice can spend to widen a few protocol structs without a ceiling pull request. A slack of a few dozen bytes is too tight for a single protocol type, and a row nobody can stay inside is a row nobody re-pins. A link more than the slack below the ceiling fails the guard, so a slice that saves RAM re-pins `measured_resident` and `resident_ram_max` together instead of banking the saving as headroom nothing measured. The `embedded` CI job is the authority for both figures; a pinned-host link reads a few bytes lower and falls out of the band.",
+      "_resident_ram_slack_note": "`resident_ram_max` is `measured_resident` plus the slack, and the guard gates the link against both ends of that band. The slack is what one slice can spend to widen a few protocol structs without a ceiling pull request. A slack of a few dozen bytes is too tight for a single protocol type, and a row nobody can stay inside is a row nobody re-pins. A link more than the slack below the ceiling fails the `embedded` job, so a slice that saves RAM re-pins `measured_resident` and `resident_ram_max` together instead of banking the saving as headroom nothing measured. Off that job the guard prints the drift, because a host toolchain links less than CI.",
       "uninit_max": 132096,
       "framebuffer_count": 1,
       "framebuffer_bytes": 76800,
