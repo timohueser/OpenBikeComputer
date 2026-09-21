@@ -518,6 +518,12 @@ impl Builder {
 
     fn merge_smooth(&mut self, terrain: &mut impl SurfaceTerrain, node: &mut Node, intervals: &Intervals) {
         let g = self.geometry;
+        // A merged patch reads its corner nodes directly, so it cannot carry the clamp under the
+        // rider. Leave the rider's own neighbourhood to `leaf`; its height-error gate refuses these
+        // near nodes anyway.
+        if self.touches_own_nodes(node.y << node.log2, node.x << node.log2, 1 << node.log2) {
+            return;
+        }
         let Some((height_error, gradient_error)) = terrain.approximation(
             self.level - 1,
             (g.min_y >> node.log2) + node.y,
@@ -613,7 +619,7 @@ impl Builder {
                     if loaded & (1 << index) == 0 {
                         patches[index] = terrain
                             .patch(self.level - 1, g.min_y + y as u32, g.min_x + x as u32)
-                            .map(PreparedPatch::new);
+                            .map(|patch| PreparedPatch::new(self.clamp_own_nodes(patch, y, x)));
                         loaded |= 1 << index;
                     }
                     if let Some(patch) = patches[index] {
@@ -631,6 +637,44 @@ impl Builder {
                 near = near.max(end);
             }
         }
+    }
+
+    /// The ground under the rider is never above the rider.
+    ///
+    /// A lattice node can stand on the summit the rider is standing on, above an eye that the
+    /// altimeter put below it, and the panorama came back blocked at 19 m by the rider's own
+    /// mountain. The four lattice nodes of the cell the rider stands in are therefore clamped to
+    /// the rider's own height. The clamp is on the nodes, not on the cell: every cell that uses one
+    /// of those nodes sees the same clamped value, so the surface stays continuous and no edge of
+    /// the own cell steps. Nothing inside the own cell is then above the eye, while a cell one
+    /// posting out keeps its own far corners, so the ridge beyond the rider is still real. The cell
+    /// stays foreground: it paints the ground below the eye and a summit 40 m away is still tested
+    /// against it. Where the eye already stands on the cell top this changes nothing.
+    fn clamp_own_nodes(&self, patch: Patch, y: i32, x: i32) -> Patch {
+        if self.level != 1 {
+            return patch;
+        }
+        let (oy, ox) = (libm::floorf(self.origin_y) as i32, libm::floorf(self.origin_x) as i32);
+        let own = |ny: i32, nx: i32| (ny == oy || ny == oy + 1) && (nx == ox || nx == ox + 1);
+        if !own(y, x) && !own(y, x + 1) && !own(y + 1, x) && !own(y + 1, x + 1) {
+            return patch;
+        }
+        let ground = f32::from(self.profile.observer_elevation_m) - 2.0;
+        let cap = |height: f32, ny, nx| if own(ny, nx) { height.min(ground) } else { height };
+        let a = cap(patch.height, y, x);
+        let b = cap(patch.height + patch.east, y, x + 1);
+        let c = cap(patch.height + patch.north, y + 1, x);
+        let d = cap(patch.height + patch.east + patch.north + patch.cross, y + 1, x + 1);
+        Patch { height: a, east: b - a, north: c - a, cross: a - b - c + d }
+    }
+
+    /// Whether a node's corners include one of the clamped nodes under the rider.
+    fn touches_own_nodes(&self, y: u32, x: u32, size: u32) -> bool {
+        let spans = |origin: f32, low: u32| {
+            let node = libm::floorf(origin) as i64;
+            i64::from(low) <= node + 1 && i64::from(low + size) >= node
+        };
+        self.level == 1 && spans(self.origin_y, y) && spans(self.origin_x, x)
     }
 
     fn paint(&mut self, ray: usize, position: (i32, i32), size: f32, prepared: PreparedPatch, near: f32, far: f32) {
@@ -886,6 +930,24 @@ mod tests {
         }
     }
 
+    /// Bare ground at 0 m with one posting cell raised, to stand the observer on or beside it.
+    struct Tower {
+        cell: (u32, u32),
+        height: f32,
+    }
+    impl SurfaceTerrain for Tower {
+        fn level(&self, index: usize) -> Option<SurfaceLevel> {
+            Flat { height: 0, missing: false, patches: 0 }.level(index)
+        }
+        fn patch(&mut self, _: usize, y: u32, x: u32) -> Option<Patch> {
+            let height = if (y, x) == self.cell { self.height } else { 0.0 };
+            Some(Patch { height, east: 0.0, north: 0.0, cross: 0.0 })
+        }
+        fn max_height(&mut self, _: usize, _: u32, _: u32, _: u8) -> Option<i16> {
+            Some(self.height as i16)
+        }
+    }
+
     #[test]
     fn intersections_choose_the_first_crossing_without_cancellation() {
         assert!((intersection(1.0, -5.0, 6.0, 4.0) - 2.0).abs() < 1e-6);
@@ -898,7 +960,9 @@ mod tests {
     fn bounded_geographic_traversal_handles_cardinal_rays_and_missing_coverage() {
         let mut terrain = Flat { height: 1000, missing: false, patches: 0 };
         let mut job = std::boxed::Box::new(Builder::new(&PROFILE));
-        job.relocate(240, -300, 0);
+        // The eye stands on the plane: `eye_ground` cannot put it 1000 m under the ground, where
+        // the clamp under the rider would carve a pit into it.
+        job.relocate(240, -300, 1002);
         job.step(&mut terrain, 1);
         assert!(!job.complete());
         while !job.complete() {
@@ -906,9 +970,11 @@ mod tests {
         }
         assert!(job.panorama.has_incomplete_coverage(), "the small synthetic terrain does not cover the full range");
         assert!(terrain.patches > 0);
+        let horizon = (0..ROWS).find(|&row| job.panorama.tone(0, row) != 0).expect("the plane below the eye");
         for column in 0..COLUMNS {
             for row in 0..ROWS {
-                assert_eq!(job.panorama.tone(column, row), 1, "flat terrain at {column},{row}");
+                let painted = job.panorama.tone(column, row) != 0;
+                assert_eq!(painted, row >= horizon, "flat terrain at {column},{row}");
             }
         }
         let calls = terrain.patches;
@@ -933,6 +999,101 @@ mod tests {
             for row in 0..ROWS {
                 assert_eq!(missing.panorama.tone(column, row), 0);
             }
+        }
+    }
+
+    /// The ground under the rider never occludes. A crest lifts the corners of the cell the rider
+    /// stands in, and an eye below one of those corners saw nothing but its own mountain. Clamped,
+    /// that cell paints exactly like bare ground, wherever in the cell the rider stands. Two cells
+    /// out the same tower is ordinary terrain and paints its skyline.
+    #[test]
+    fn the_clamped_own_cell_paints_like_bare_ground_and_a_tower_two_cells_out_still_stands() {
+        let own = (1 << 19, 1 << 19);
+        let render = |cell, height, at: (i32, i32)| {
+            let mut terrain = Tower { cell, height };
+            let mut job = std::boxed::Box::new(Builder::new(&PROFILE));
+            job.relocate(at.0, at.1, 2);
+            while !job.complete() {
+                job.step(&mut terrain, 63);
+            }
+            job
+        };
+        // Mid-cell, two metres into the cell, and exactly on the lattice node.
+        for at in [(256, 256), (16, 16), (0, 0)] {
+            let plain = render(own, 0.0, at);
+            let inside = render(own, 60.0, at);
+            for column in 0..COLUMNS {
+                for row in 0..ROWS {
+                    let (tone, bare) = (inside.panorama.tone(column, row), plain.panorama.tone(column, row));
+                    assert_eq!(tone, bare, "observer at {at:?}, pixel {column},{row}");
+                }
+            }
+        }
+        // Two cells north the tower spans 85 to 142 m, so 60 m of it stands 30 degrees up.
+        let skyline = |job: &Builder| (0..ROWS).find(|&row| job.panorama.tone(0, row) != 0).unwrap_or(ROWS);
+        let plain = render(own, 0.0, (256, 256));
+        let outside = render((own.0 + 2, own.1), 60.0, (256, 256));
+        assert!(skyline(&outside) + 100 < skyline(&plain), "a tower two cells north rises over the horizon");
+    }
+
+    /// A dilated crest node row can stand 30 m over an eye the altimeter put 1.8 m north of it.
+    /// Clamping the rider's own nodes opens that row where the rider stands, and only there: one
+    /// posting out the same row is real terrain and keeps its skyline.
+    #[test]
+    fn a_lifted_node_row_under_the_rider_fills_no_column_and_leaves_the_ridge() {
+        /// Every node at or south of `crest` stands 30 m up; north of it the ground is at 0 m.
+        struct Crest {
+            crest: u32,
+        }
+        impl SurfaceTerrain for Crest {
+            fn level(&self, index: usize) -> Option<SurfaceLevel> {
+                Flat { height: 0, missing: false, patches: 0 }.level(index)
+            }
+            fn patch(&mut self, _: usize, y: u32, _: u32) -> Option<Patch> {
+                let node = |ny: u32| if ny <= self.crest { 30.0 } else { 0.0 };
+                let (south, north) = (node(y), node(y + 1));
+                Some(Patch { height: south, east: 0.0, north: north - south, cross: 0.0 })
+            }
+            fn max_height(&mut self, _: usize, _: u32, _: u32, _: u8) -> Option<i16> {
+                Some(30)
+            }
+        }
+        let mut job = std::boxed::Box::new(Builder::new(&PROFILE));
+        // 1.8 m north of the crest node row, half a posting east of its node column.
+        job.relocate(16, 256, 2);
+        let mut terrain = Crest { crest: 1 << 19 };
+        while !job.complete() {
+            job.step(&mut terrain, 63);
+        }
+        let filled = (0..COLUMNS).filter(|&column| job.panorama.tone(column, 0) != 0).count();
+        assert_eq!(filled, 0, "the ground under the rider cannot fill a column to the frame top");
+        // Due south the crest stands 28 m over the eye 57 m out, a quarter of the way up the frame.
+        let south = super::super::panorama::column_of(720);
+        let skyline = (0..ROWS).find(|&row| job.panorama.tone(south, row) != 0).expect("the ridge");
+        assert!((30..90).contains(&skyline), "the ridge beyond the clamped nodes is real, at row {skyline}");
+    }
+
+    /// A summit 40 m away lies inside the observer's own cell, so that cell has to be traversed for
+    /// its sight line to be tested at all, and must not hide it once it is.
+    #[test]
+    fn a_summit_forty_metres_away_keeps_its_label() {
+        fn label<T: SurfaceTerrain>(profile: &PeakViewProfile, terrain: &mut T) -> PeakViewPeak {
+            let mut job = std::boxed::Box::new(Builder::new(profile));
+            while !job.complete() {
+                job.step(terrain, 63);
+            }
+            job.peaks[0]
+        }
+        let mut peak = PeakViewPeak { lat: 360, elevation_m: Some(0), ..PeakViewPeak::EMPTY };
+        peak.project(0, 0);
+        assert!((38..=42).contains(&peak.distance_m), "360 microdegrees north is about 40 m");
+        let peaks = [peak];
+        let profile = PeakViewProfile { peaks: &peaks, ..PeakViewProfile::at(0, 0, 2) };
+        let mut bare = Flat { height: 0, missing: false, patches: 0 };
+        let mut lifted = Tower { cell: (1 << 19, 1 << 19), height: 60.0 };
+        for peak in [label(&profile, &mut bare), label(&profile, &mut lifted)] {
+            assert!(peak.visible, "a summit inside the own cell keeps its label");
+            assert!(peak.angle_q4 < 0, "ground 40 m away is below an eye 2 m up");
         }
     }
 
