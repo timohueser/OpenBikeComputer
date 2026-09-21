@@ -1,28 +1,7 @@
-//! The **elevation band** — the filled silhouette under a connected amber top stroke that every
-//! elevation page draws: the Statistics chart, the Route overview's profile page, and the Ride
-//! detail's recorded twin.
-//!
-//! One raster serves all three. [`ElevationBand`] owns the profile window, the elevation-to-y
-//! mapping, the column sampling, the fill, the connected top stroke, and the peak label. A screen
-//! composes its page from them in this order:
-//!
-//! 1. Build the raster from a profile, a window, and the band's rectangle.
-//! 2. Draw the base fill.
-//! 3. Draw any local overlay fill (Statistics' traveled shading is its own — see
-//!    [`fill_column`](ElevationBand::fill_column)).
-//! 4. Draw the connected top stroke.
-//! 5. Draw the peak label, where the page wants one.
-//!
-//! Live layers stay with the screen that owns them: Statistics keeps its cursor, its progress bar,
-//! and its waypoint ticks; `climb.rs` keeps its grade-striped renderer, which colours every column
-//! by local gradient over a climb-local span — a different mechanism, not a copy of this one.
-//!
-//! The received-route card's mini sparkline is a different *raster*, for a reason the device
-//! enforces: it interpolates the 64-byte min-max-normalized band the host builds once at commit
-//! time ([`obc_route::elevation_sparkline`]), because no `Profile` can exist on that path —
-//! building one costs tens of KB of stack, more than the device has. Its columns are its own; its
-//! top line is not. Both rasters stroke through [`TopStroke`], so the connected amber rule has one
-//! definition and cannot drift between the card and the overview.
+//! The elevation band: the filled silhouette under a connected top stroke that every elevation
+//! page draws. [`ElevationBand`] owns the profile window, the elevation-to-y mapping, the column
+//! sampling, the fill, the top stroke, and the peak label. Live layers, such as a cursor or
+//! waypoint ticks, stay with the screen that owns them.
 
 use core::fmt::Write;
 
@@ -37,21 +16,18 @@ use crate::screen::palette;
 use crate::settings::Units;
 
 /// Side inset (px) the over-the-peak label clamps to, so a peak at either end keeps its whole
-/// centred string inside the band.
+/// string inside the band.
 const PEAK_LABEL_INSET: i32 = 30;
 
-/// How far above the apex (px) the over-the-peak label sits — clear of the top stroke, clamped so
-/// it never rides above the band's own top edge.
+/// How far above the apex (px) the over-the-peak label sits.
 const PEAK_LABEL_LIFT: i32 = 22;
 
 /// Where a band's peak-elevation label sits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PeakLabel {
-    /// Centred over the apex, clamped inside the band's ends — the Route overview's profile page,
-    /// where the label gives the vertical scale meaning at the point it describes.
+    /// Centred over the apex, clamped inside the band's ends.
     OverPeak,
-    /// In the band's top-right corner — the Ride detail, whose band is short enough that a label
-    /// over the apex would collide with the stroke.
+    /// In the band's top-right corner, for a band too short to carry a label over the apex.
     TopRight,
 }
 
@@ -63,8 +39,7 @@ pub(crate) struct ElevationBand<'a> {
     /// Route fraction at the band's left edge, and the fraction span it covers.
     lo_frac: f32,
     span: f32,
-    /// The band's rectangle: left edge, width in columns, top row, and **inclusive** bottom row
-    /// (the baseline every column fills down to).
+    /// The band's rectangle. `bot` is inclusive: it is the baseline every column fills down to.
     x: i32,
     w: i32,
     top: i32,
@@ -76,8 +51,8 @@ pub(crate) struct ElevationBand<'a> {
 }
 
 impl<'a> ElevationBand<'a> {
-    /// The raster for `profile` seen through `win`, drawn into `area` (its height counts the
-    /// baseline row, so a band from `top` to an inclusive `bot` is `bot - top + 1` tall).
+    /// The raster for `profile` seen through `win`, drawn into `area`. The height of `area` counts
+    /// the baseline row.
     pub(crate) fn new(profile: &'a Profile, win: Window, area: Rectangle) -> Self {
         ElevationBand {
             profile,
@@ -93,8 +68,7 @@ impl<'a> ElevationBand<'a> {
         }
     }
 
-    /// The whole-route raster: the non-interactive band the two detail pages draw — no cursor, no
-    /// zoom, the full profile in `area`.
+    /// The whole-route raster: the full profile in `area`, with no cursor and no zoom.
     pub(crate) fn whole_route(profile: &'a Profile, area: Rectangle) -> Self {
         let win = profile.window(0.5, 1.0, area.size.width.max(1));
         Self::new(profile, win, area)
@@ -105,8 +79,7 @@ impl<'a> ElevationBand<'a> {
         self.lo_frac + self.span * (px as f32 / self.w as f32)
     }
 
-    /// The panel x route fraction `f` falls on — the inverse of [`frac`](Self::frac), for the
-    /// live layers a screen draws over the raster.
+    /// The panel x route fraction `f` falls on, the inverse of [`frac`](Self::frac).
     pub(crate) fn frac_to_x(&self, f: f32) -> i32 {
         self.x + ((f - self.lo_frac) / self.span * self.w as f32) as i32
     }
@@ -124,8 +97,7 @@ impl<'a> ElevationBand<'a> {
     }
 
     /// Paint one chart column of silhouette, baseline up to the profile there. A screen shades
-    /// part of the band by re-filling those columns over the base fill — Statistics' traveled
-    /// half, which is its layer, not the raster's.
+    /// part of the band by re-filling those columns over the base fill.
     pub(crate) fn fill_column(&self, cv: &mut impl Surface, px: i32, color: u16) {
         let sample = self.profile.sample(self.level, self.frac(px));
         if sample.0 > sample.1 {
@@ -155,8 +127,7 @@ impl<'a> ElevationBand<'a> {
         }
     }
 
-    /// Draw the profile's peak elevation as a small label at `place`, in the rider's units. Both
-    /// placements stay inside the band's ends.
+    /// Draw the profile's peak elevation as a label at `place`, in the rider's units.
     pub(crate) fn peak_label(&self, cv: &mut impl Surface, units: Units, place: PeakLabel) {
         if self.profile.cols().iter().all(|s| s.0 > s.1) {
             return;
@@ -176,13 +147,9 @@ impl<'a> ElevationBand<'a> {
     }
 }
 
-/// The connected top stroke, one column at a time — the rule an elevation band's top line obeys
-/// whatever produced its columns. Each column's span reaches back to the previous column's top, so
-/// a steep section stays solid instead of stair-stepping into gaps; on a flat run it is the 2 px
-/// cap. Stateful because "the previous column" is the whole rule.
-///
-/// Separate from [`ElevationBand`] because the received-route card strokes the same line over a
-/// raster the band cannot produce: different columns, one top line.
+/// The connected top stroke, one column at a time. Each column's span reaches back to the previous
+/// column's top, so a steep section stays solid instead of breaking into gaps. It is separate from
+/// [`ElevationBand`], because the received-route card strokes the same line over its own raster.
 #[derive(Default)]
 pub(crate) struct TopStroke {
     prev_top: Option<i32>,
@@ -203,7 +170,6 @@ mod tests {
     use obc_render::rect;
     use std::vec::Vec;
 
-    // The band under test: the Route overview's slot, 216 columns from x = 12.
     const X: i32 = 12;
     const W: i32 = 216;
     const TOP: i32 = 50;
@@ -213,8 +179,8 @@ mod tests {
         rect(X, TOP, W, BOT - TOP + 1)
     }
 
-    /// Build a route profile whose points climb through `eles` (metres) along a straight eastward
-    /// line — the same GPX → OBCR → `Profile` path the app itself takes.
+    /// Build a route profile through `eles` (metres) on the same GPX to OBCR to `Profile` path the
+    /// app takes.
     fn profile(eles: &[i32]) -> Profile {
         use obc_formats::io::{ByteSink, Error, SliceSource};
         #[derive(Default)]
@@ -270,9 +236,6 @@ mod tests {
         }
     }
 
-    /// The y mapping puts the route's floor on the baseline and its peak on the band's top row,
-    /// whichever way the route runs — and a flat route, where the elevation span is zero, still
-    /// maps every column onto the baseline instead of dividing by it.
     #[test]
     fn mapping_covers_rising_falling_and_flat_profiles() {
         for eles in [&[500, 600, 700, 800][..], &[800, 700, 600, 500][..]] {
@@ -282,7 +245,6 @@ mod tests {
             assert_eq!(b.ele_to_y(p.max_ele_m), TOP, "the peak sits on the band's top row ({eles:?})");
             let mid = b.ele_to_y((p.min_ele_m + p.max_ele_m) / 2);
             assert!((mid - (TOP + BOT) / 2).abs() <= 1, "the midpoint maps to the band's middle ({eles:?})");
-            // Out-of-range elevations clamp rather than escaping the band.
             assert_eq!(b.ele_to_y(p.min_ele_m - 500), BOT);
             assert_eq!(b.ele_to_y(p.max_ele_m + 500), TOP);
         }
@@ -295,8 +257,6 @@ mod tests {
         }
     }
 
-    /// A degenerate band — no columns, or a single row of height — draws nothing out of bounds and
-    /// does not divide by its own zero extent.
     #[test]
     fn degenerate_bands_stay_inside_themselves() {
         let p = profile(&[500, 900, 500]);
@@ -307,7 +267,6 @@ mod tests {
         empty.stroke(&mut probe, 2);
         assert!(probe.fills.is_empty(), "a zero-width band has no columns to paint");
 
-        // A one-row band: floor and peak both land on that row, so every column is a single pixel.
         let flatten = ElevationBand::new(&p, p.window(0.5, 1.0, W as u32), rect(X, TOP, W, 1));
         assert_eq!(flatten.ele_to_y(p.min_ele_m), TOP);
         assert_eq!(flatten.ele_to_y(p.max_ele_m), TOP);
@@ -317,12 +276,8 @@ mod tests {
         assert!(probe.fills.iter().all(|f| f.1 == TOP && f.3 == 1), "every column is the band's one row");
     }
 
-    /// The top stroke is **connected**: over a step steep enough to jump many rows in one column,
-    /// each column's stroke still spans from its neighbour's top to its own, so the line has no
-    /// gaps to fall through.
     #[test]
     fn stroke_bridges_a_steep_step() {
-        // A short flat run, a cliff, then a flat run: adjacent columns differ by tens of rows.
         let p = profile(&[400, 400, 400, 1400, 1400, 1400]);
         let b = ElevationBand::whole_route(&p, area());
         let mut probe = Probe::default();
@@ -343,12 +298,8 @@ mod tests {
         assert!(steepest > 10, "the fixture must actually be steep (largest step {steepest} px)");
     }
 
-    /// Both peak placements stay inside the band: over the apex the label is clamped away from the
-    /// ends and never rides above the band's top edge; the corner placement anchors at the band's
-    /// top-right, right-aligned.
     #[test]
     fn peak_labels_stay_within_the_band() {
-        // A peak in the very first column is where the clamp has to work.
         for eles in [&[1400, 900, 400, 300][..], &[400, 900, 1400, 900][..]] {
             let p = profile(eles);
             let b = ElevationBand::whole_route(&p, area());

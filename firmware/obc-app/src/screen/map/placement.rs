@@ -1,28 +1,20 @@
 //! Screen-space occupancy for map point marks.
 //!
 //! The reserved chrome goes in first. A mark is then accepted only when its box clears the chrome
-//! and — grown by the caller's margin — clears every mark already placed. A mark that does not fit
-//! is dropped, never moved. There are no leader lines, no alternative positions around an anchor
-//! and no second pass.
+//! and, grown by the margin of the call, clears every mark already placed. A mark that does not
+//! fit is dropped, never moved.
 //!
-//! This is occupancy only: it holds no panel and refuses nothing for reaching past one. A mark may
-//! hang over an edge, and the panel clips it. The whole unclipped box is what the tests use, so a
-//! clipped mark still holds its space.
+//! The stored box is the raw one, not the grown one, so the clear space a mark keeps is the margin
+//! of its own call. This holds marks apart from each other only: a mark may sit flush against
+//! reserved chrome, which is the ink the margin protects.
 //!
-//! The stored box is the raw one, not the grown one. The clear space a mark keeps is the margin of
-//! its own call, so two marks that use different margins are held apart by the later one. The
-//! margin holds marks apart from each other only: reserved chrome is the ink it protects, so a mark
-//! may sit flush against it.
-//!
-//! The result depends only on the order of the calls, so the caller offers its marks best first and
-//! the same camera always gives the same frame. The arithmetic is integer only, with the edges
-//! taken in `i64` so a box near `i32::MAX` cannot wrap. Nothing is allocated.
+//! A mark may hang over a panel edge, and the box keeps its whole width there. The result depends
+//! only on the order of the calls, so the caller offers its marks best first. The arithmetic is
+//! integer only, with the edges in `i64`, so a box near `i32::MAX` cannot wrap.
 
 use embedded_graphics::primitives::Rectangle;
 
-/// How many boxes one frame can hold: 6 for the chrome and 6 for the labels, with room to spare.
-/// The point icons keep their own occupancy today, so they take no slot here. The list is 384 bytes
-/// of transient stack inside the draw pass.
+/// How many boxes one frame can hold. The list is transient stack inside the draw pass.
 const MAX_PLACED: usize = 24;
 
 /// `(left, top, right, bottom)` of a box, in `i64`.
@@ -36,8 +28,8 @@ pub(crate) struct PointPlacement {
 }
 
 impl PointPlacement {
-    /// Start with the boxes that the map chrome owns. A reserved box past the capacity is dropped,
-    /// because a full list already refuses every mark.
+    /// Start with the boxes the map chrome owns. A reserved box past the capacity is dropped,
+    /// because a full list refuses every mark anyway.
     pub(crate) fn new(reserved: &[Rectangle]) -> Self {
         let mut occupied = heapless::Vec::new();
         for r in reserved {
@@ -48,12 +40,9 @@ impl PointPlacement {
         Self { reserved: occupied.len(), occupied }
     }
 
-    /// Accept `r` and keep it, or refuse it.
-    ///
-    /// An empty box, and every box once the list is full, are refused. Against another mark the
-    /// test grows `r` by `margin` pixels on every side (a negative margin counts as zero); against
-    /// reserved chrome it uses `r` itself, because the margin is there to keep marks legible beside
-    /// each other, not to push them off the chrome.
+    /// Accept `r` and keep it, or refuse it. An empty box, and every box once the list is full,
+    /// are refused. Against another mark the test grows `r` by `margin` pixels on each side, and a
+    /// negative margin counts as zero. Against reserved chrome it uses `r` itself.
     pub(crate) fn try_place(&mut self, r: Rectangle, margin: i32) -> bool {
         if self.occupied.is_full() || r.size.width == 0 || r.size.height == 0 {
             return false;

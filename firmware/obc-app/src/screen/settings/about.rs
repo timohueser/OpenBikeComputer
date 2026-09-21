@@ -1,24 +1,8 @@
-//! The About page (issue #1149) — reached from the System menu's *About* row. The device's one
-//! credits surface: the map data's OpenStreetMap attribution + ODbL notice, the terrain layer's
-//! Copernicus credit, and the firmware's own licence + source pointer.
+//! The About page: the credits for the map data, the terrain layer and the firmware.
 //!
-//! Why this page exists at all: the rendered map is a *Produced Work* under the ODbL, and the
-//! OSMF's attribution guidelines require a notice that the data came from OpenStreetMap **and**
-//! that it is available under the ODbL. For a device that is offline by design the licence half
-//! cannot be discharged with a link — the statement has to ship on the glass. Their guidelines
-//! class GPS units as mobile devices, where attribution behind one deliberate interaction (an
-//! about/info page) is acceptable; System → About is exactly that, and it matches where every
-//! other bike computer keeps its legal page.
-//!
-//! The copy is **hand-wrapped constant lines**, not runtime-wrapped text: the legal formulas are
-//! fixed strings, so pre-wrapping makes the exact on-glass layout reviewable in the source, and
-//! the tests below enforce the two properties that matter — every line fits the panel width
-//! (the never-ellipsize rule), and the Copernicus lines re-join to `obc_elevation`'s canonical
-//! [`COPERNICUS_ATTRIBUTION`] word for word.
-//!
-//! The page is taller than the panel, so it **scrolls by line**: Rotate moves the window, Back
-//! climbs out, and a right-edge scrollbar shows where you are. Press does nothing — there is
-//! nothing to select on a credits page.
+//! The rendered map is a Produced Work under the ODbL, and the device is offline, so the notice
+//! must be on the glass. The copy is hand-wrapped constant lines, so the on-glass layout is
+//! reviewable in the source. The page is taller than the panel, so it scrolls by line.
 
 use embedded_graphics::prelude::Point;
 use obc_render::{
@@ -34,27 +18,21 @@ use crate::Msg;
 
 use crate::screen::vocab::rows::ROW_X;
 
-/// Per-line vertical advance — [`Font::Label`] stacked the way the Firmware ledger stacks it.
+/// Per-line vertical advance for [`Font::Label`].
 const PITCH: i32 = 22;
-/// Gap between the title bar and the first line.
 const START_PAD: i32 = 16;
-/// Room under the last visible line's full glyph cell (a Label cell is 24 px, 2 px more than
-/// [`PITCH`]), so the bottom row never kisses the panel frame.
+/// Room under the last line. A Label cell is 24 px, which is 2 px more than [`PITCH`].
 const BOTTOM_PAD: i32 = 14;
-/// Wrapped-line budget in [`Font::Label`] characters: the panel is 240 px wide, text starts at
-/// [`ROW_X`] with the same right margin, and a Label cell is 12 px — `(240 - 2·14) / 12 = 17`.
-/// The width test below holds every content line and every caption translation to it.
+/// Line budget in [`Font::Label`] characters: `(240 - 2·14) / 12 = 17` for a 240 px panel.
 #[cfg(test)]
 const LINE_CHARS: usize = 17;
 
-/// `© OpenStreetMap contributors` + the ODbL notice + where the licence lives, pre-wrapped.
-/// The wording is the OSMF's requested credit; not translated — legal formulas stay canonical.
+/// The OSMF requested credit, pre-wrapped. Legal formulas are not translated.
 const OSM_LINES: &[&str] =
     &["\u{00a9} OpenStreetMap", "contributors", "Open Database", "License (ODbL)", "openstreetmap", ".org/copyright"];
 
-/// `obc_elevation::COPERNICUS_ATTRIBUTION`, pre-wrapped. The parity test re-joins these with single
-/// spaces and compares against the host crate's const, so the wording cannot drift and the wraps
-/// can only fall on word boundaries.
+/// `obc_elevation::COPERNICUS_ATTRIBUTION`, pre-wrapped. A test re-joins the lines with single
+/// spaces and compares them with that constant, so the wording cannot drift.
 const COPERNICUS_LINES: &[&str] = &[
     "produced using",
     "Copernicus",
@@ -70,27 +48,23 @@ const COPERNICUS_LINES: &[&str] = &[
     "rights reserved",
 ];
 
-/// The firmware's own licence and where the source lives (the GPL-3.0 §6 source pointer).
+/// The firmware licence and the source pointer it requires.
 const FIRMWARE_LINES: &[&str] = &["GPL-3.0", "github.com/", "timohueser/", "OpenBikeComputer"];
 
 /// The three credit sections: a translated caption over untranslated pre-wrapped lines.
 const SECTIONS: [(Msg, &[&str]); 3] =
     [(Msg::AboutMapData, OSM_LINES), (Msg::AboutElevation, COPERNICUS_LINES), (Msg::AboutFirmware, FIRMWARE_LINES)];
 
-/// Total virtual lines: each section is a caption + its lines, with one blank line between
-/// sections (not after the last).
+/// Total virtual lines: a caption and its lines per section, with a blank line between sections.
 const TOTAL_LINES: usize = 3 + OSM_LINES.len() + COPERNICUS_LINES.len() + FIRMWARE_LINES.len() + (SECTIONS.len() - 1);
 
-/// Lines that fit the 320 px panel below the title bar. The panel height reaches `draw` as
-/// `rx.h`, but `handle` has no canvas — so the clamp uses this constant, and the
-/// [`visible_matches_draw_geometry`](tests::visible_matches_draw_geometry) test pins it to the
-/// same formula `draw` windows with.
+/// Lines that fit the 320 px panel below the title bar. `handle` has no canvas, so its clamp uses
+/// this constant. A test pins it to the formula `draw` uses.
 const VISIBLE_LINES: usize = ((320 - LIST_TOP - START_PAD - BOTTOM_PAD) / PITCH) as usize;
 
-/// The furthest the window may scroll — the last page exactly fills the panel.
+/// The furthest the window may scroll. The last page fills the panel exactly.
 const MAX_OFFSET: usize = TOTAL_LINES.saturating_sub(VISIBLE_LINES);
 
-/// The About page. State is the first visible virtual line.
 #[derive(Debug, Default)]
 pub struct AboutScreen {
     offset: usize,
@@ -108,7 +82,7 @@ impl AboutScreen {
                 self.offset = next.clamp(0, MAX_OFFSET as i32) as usize;
                 Transition::None
             }
-            Gesture::Back => Transition::Pop, // climb back to the System menu
+            Gesture::Back => Transition::Pop,
             Gesture::Press | Gesture::Hold | Gesture::BackHold => Transition::None,
         }
     }
@@ -121,20 +95,17 @@ impl AboutScreen {
         let visible = ((h - LIST_TOP - START_PAD - BOTTOM_PAD) / PITCH).max(1) as usize;
         let start = self.offset.min(TOTAL_LINES.saturating_sub(visible));
 
-        // Walk the virtual lines (caption, texts, gap, …), drawing the `[start, start+visible)`
-        // window. A gap draws nothing; captions are the ledger's olive, content is ink.
+        // Walk the virtual lines and draw the `[start, start + visible)` window.
         let mut virt = 0usize;
         let mut shown = 0usize;
         let mut y = LIST_TOP + START_PAD;
         for (i, (caption, lines)) in SECTIONS.iter().enumerate() {
-            // The caption line.
             if virt >= start && shown < visible {
                 cv.text(rx.t(*caption), Point::new(ROW_X, y), Font::Label, TextAlign::Left, SUBTEXT);
                 y += PITCH;
                 shown += 1;
             }
             virt += 1;
-            // The section's content lines.
             for line in *lines {
                 if virt >= start && shown < visible {
                     cv.text(line, Point::new(ROW_X, y), Font::Label, TextAlign::Left, INK);
@@ -143,7 +114,6 @@ impl AboutScreen {
                 }
                 virt += 1;
             }
-            // One blank line between sections.
             if i + 1 < SECTIONS.len() {
                 if virt >= start && shown < visible {
                     y += PITCH;
@@ -153,8 +123,7 @@ impl AboutScreen {
             }
         }
 
-        // Right-edge scrollbar: a hairline track with a proportional thumb, only when there is
-        // more than one page — a static page needs no position cue.
+        // The scrollbar shows only when the page has more than one screen of lines.
         if TOTAL_LINES > visible {
             let track_top = LIST_TOP + 4;
             let track_h = h - track_top - BOTTOM_PAD;
@@ -181,7 +150,6 @@ mod tests {
         scr.handle(g, &mut cx)
     }
 
-    /// Scrolling clamps at both ends; Back pops; Press does nothing.
     #[test]
     fn scroll_clamps_and_back_pops() {
         let mut scr = AboutScreen::new();
@@ -195,9 +163,6 @@ mod tests {
         assert!(matches!(run(&mut scr, Gesture::Back), Transition::Pop));
     }
 
-    /// The Copernicus lines re-join to `obc_elevation`'s canonical attribution word for word —
-    /// the single-copy-of-the-wording rule. The credit lives in the elevation leaf this crate
-    /// already depends on, so the device text cannot drift from the one the bakery stamps.
     #[test]
     fn copernicus_wording_matches_obc_elevation() {
         let mut joined = std::string::String::new();
@@ -210,8 +175,6 @@ mod tests {
         assert_eq!(joined, obc_elevation::COPERNICUS_ATTRIBUTION);
     }
 
-    /// Every pre-wrapped content line fits the Label-width budget, and every caption does so in
-    /// all four languages — the never-ellipsize rule made testable.
     #[test]
     fn every_line_fits_the_panel() {
         for (caption, lines) in SECTIONS {
@@ -225,17 +188,12 @@ mod tests {
         }
     }
 
-    /// `handle`'s clamp constant and `draw`'s window formula describe the same 320 px panel. If
-    /// the panel geometry ever changes, this is the seam that notices.
     #[test]
     fn visible_matches_draw_geometry() {
         let h = 320;
         assert_eq!(VISIBLE_LINES, ((h - LIST_TOP - START_PAD - BOTTOM_PAD) / PITCH) as usize);
-        // The last visible line's full 24 px glyph cell stays inside the panel.
         let last_line_bottom = LIST_TOP + START_PAD + (VISIBLE_LINES as i32 - 1) * PITCH + 24;
         assert!(last_line_bottom <= h, "bottom line would clip: ends at {last_line_bottom} in a {h} px panel");
-        // Re-derive the virtual-line total the way `draw` walks it, so `TOTAL_LINES` and the walk
-        // cannot disagree — and confirm the page still scrolls (if it stopped, drop the scrollbar).
         let walked = SECTIONS.iter().map(|(_, lines)| 1 + lines.len()).sum::<usize>() + SECTIONS.len() - 1;
         assert_eq!(walked, TOTAL_LINES);
         assert!(walked > VISIBLE_LINES, "the page scrolls; if it stopped scrolling, drop the scrollbar");
