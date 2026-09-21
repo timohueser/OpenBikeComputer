@@ -391,7 +391,7 @@ struct NavFiles {
     places: ScratchId,
     /// The junctions in tree order, which is what a leaf's run of the placement plan names.
     points: ScratchId,
-    /// Every junction's packed §8.3 record, in dense order, addressed by the tree records.
+    /// Every junction's packed record, in dense order, addressed by the tree records.
     recs: ScratchId,
     /// Every kept edge's [`EdgeRef`], in emission order.
     pool: ScratchId,
@@ -1758,7 +1758,7 @@ mod tests {
         out.expect("the sweep runs at least once")
     }
 
-    /// One merge as a shard sees it: the §8 section bytes at offset 0, and what the merge reported.
+    /// One merge as a shard sees it: the nav section bytes at offset 0, and what it reported.
     struct Merged {
         section: Vec<u8>,
         stats: NavStats,

@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use obc_app::Settings;
 use obc_ports::SettingsStore;
 
-/// A file-backed settings store.
 pub struct FileSettingsStore {
     path: PathBuf,
 }
