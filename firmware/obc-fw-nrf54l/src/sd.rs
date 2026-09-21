@@ -1,28 +1,20 @@
 //! Legacy FatFs storage for the nRF54L board's staged firmware update.
 //!
-//! This owns the concrete transport → [`VolumeManager`] stack retained for the staged updater and
-//! the card-resident store epoch. Routes, trips, and rides are flat-store-only.
+//! This owns the transport-to-[`VolumeManager`] stack that the staged updater and the
+//! card-resident store epoch still need. Routes, trips and rides are flat-store-only, and FAT
+//! remains only for `/EPOCH.OBE`, `/UPDATE.BIN` and `/ROLLBACK.BIN`.
 //!
-//! The `Storage` implementation and every adapter below speak `embedded_sdmmc`'s `BlockDevice` /
-//! `TimeSource` seams. FAT remains only for `/EPOCH.OBE`, `/UPDATE.BIN`, and `/ROLLBACK.BIN` until
-//! the updater moves to the flat store.
-//!
-//! ## The transport: **native 4-bit SD over Nordic's sEMMC soft peripheral** (epic #1158)
-//!
-//! The card is not on a SPI bus. The FLPR (VPR00) runs Nordic's sEMMC image and *is* the SD host
-//! controller; [`crate::semmc`] is the M33-side driver and [`crate::flpr_mux`] decides whether the
-//! coprocessor is currently drawing the panel or clocking the card. Wiring (fixed by the soft
-//! peripheral, not by us):
+//! The card is not on a SPI bus. The FLPR (VPR00) runs Nordic's sEMMC image and is the SD host
+//! controller; [`crate::semmc`] is the M33-side driver, and [`crate::flpr_mux`] decides whether the
+//! coprocessor draws the panel or clocks the card. The soft peripheral fixes the wiring:
 //!
 //! ```text
 //!   P2.00 D3   P2.01 CLK   P2.02 D0   P2.03 D2   P2.04 D1   P2.05 CMD
 //! ```
 //!
-//! Reads run 4-bit at **32 MHz** (14.7 MB/s measured, CMD18 × 256 blocks) and writes at 21.3 MHz
-//! (8.2 MB/s, card-program-limited) — against 1.07 MB/s over the SPI transport this replaced. The
-//! only thing this file does about any of that is [`SemmcCard`]: a `BlockDevice` over
-//! [`crate::semmc::Semmc`]. Everything above it — [`Storage`], the FAT layer, the updater extent
-//! resolver, and the boot-fault rule — is transport-agnostic and did not move.
+//! Reads run 4-bit at 32 MHz and writes at 21.3 MHz, which the card's program time limits. The only
+//! part of that this file owns is [`SemmcCard`], a `BlockDevice` over [`crate::semmc::Semmc`];
+//! everything above it is transport-agnostic.
 
 #[cfg(feature = "sd-bench")]
 use embassy_time::Instant;
@@ -36,52 +28,33 @@ use obc_formats::io::ByteSource;
 use obc_storage::shared_device::SharedBlockDevice;
 use obc_storage::SdByteSource;
 
-/// The store-epoch nonce file in the **card root** (protocol v2 #632 item 5; card-resident #776):
-/// the `u32` id-era name the phone reads over the pre-pairing `protocolVersion` read. Kept in the
-/// card **root** because the epoch names the *whole* store — so the SD card is the sole home of the
-/// id-era name: a card swap
-/// transplants the store's identity (swap back restores the old era, a card written by a *different*
-/// device presents *its* epoch — its own scope, closing the foreign-card hole the retired RRAM line
-/// left open). Minted/rewritten only at boot by the mint pass; a missing/torn file reads as "no
-/// epoch" → the mint rule draws a fresh one. Codec + torn-line semantics live in `obc-app::settings`
-/// (host-tested).
+/// The store-epoch nonce file in the card root: the `u32` id-era name the phone reads before it
+/// pairs. It is in the root because the epoch names the whole store, so a card swap transplants the
+/// store's identity. It is minted at boot; a missing or torn file reads as "no epoch", and the mint
+/// rule then draws a fresh one.
 const EPOCH_FILE: &str = "EPOCH.OBE";
 
-/// The staged firmware update in the **card root** (epic #615, locked: 8.3-safe, no LFN — the
-/// same file contract the future LM20 USB-MSC epic exposes). Sideloaded by the user (or, S6, the
-/// phone); the armer only ever reads it.
+/// The staged firmware update in the card root: 8.3-safe, no LFN. The user sideloads it, and the
+/// armer only reads it.
 const UPDATE_BIN: &str = "UPDATE.BIN";
 
-/// The armer's snapshot of the **running** image (epic #615 S4, #619), in the card root next to
-/// [`UPDATE_BIN`]: a full OBCU container (64-byte header + raw image read straight out of RRAM),
-/// truncated-and-reused per arm. The bootloader flashes it back if a trial boot goes unconfirmed.
+/// The armer's snapshot of the running image, in the card root beside [`UPDATE_BIN`]: a full OBCU
+/// container, truncated and reused per arm. The bootloader flashes it back if a trial boot goes
+/// unconfirmed.
 const ROLLBACK_BIN: &str = "ROLLBACK.BIN";
 
-/// The concrete SD stack for this board: [`SemmcCard`] — the card in native 4-bit mode on the FLPR
-/// — under a 16-file/4-dir [`VolumeManager`].
-///
-/// The manager keeps the existing measured handle budget until this FAT stack is retired.
+/// The concrete SD stack for this board: the card in native 4-bit mode on the FLPR, under a
+/// [`VolumeManager`].
 type Sd = SemmcCard;
-/// What the retained legacy manager owns: the card by shared reference, leaving its raw handle
+/// What the legacy manager owns: the card by shared reference, which leaves its raw handle
 /// available to the DFU extent resolver.
 type SdShared = SharedBlockDevice<'static, Sd>;
-/// The open-handle budget (see the file-count note above) — one set of consts so the manager and
-/// the `obc-platform` wrapper aliases below can never drift apart.
 const SD_MAX_DIRS: usize = 4;
-/// This is deliberately not resized while the FAT stack awaits deletion in FS11 (#1393): its 640 B
-/// delta from the former six-handle budget is already included in the resource baseline.
-///
-/// The cost is measured, not guessed: the fork's `FileInfo` (`filesystem/files.rs`) is `RawFile`
-/// 4 · `RawVolume` 4 · `current_cluster` 8 · `current_offset` 4 · `Mode` 1 · `DirEntry` 40 ·
-/// `dirty` 1, i.e. **64 B** at `align 4` on thumbv8m. `6 → 16` is ten slots, **+640 B of `.bss`**
-/// — the manager's `open_files` array is a `heapless::Vec<FileInfo, SD_MAX_FILES>` and nothing
-/// else scales with it. Nothing on the stack changes.
 const SD_MAX_FILES: usize = 16;
 const SD_MAX_VOLUMES: usize = 1;
 type Vmgr = VolumeManager<SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
 
-/// FAT timestamps need a clock; the device has none yet, so every file gets the epoch.
-/// `pub(crate)` only because it surfaces in the adapter return types the loop names.
+/// FAT timestamps need a clock; the device has none, so every file gets the epoch.
 pub(crate) struct NullTime;
 impl TimeSource for NullTime {
     fn get_timestamp(&self) -> Timestamp {
@@ -97,30 +70,22 @@ pub struct Storage {
     root: RawDirectory,
 }
 
-/// **Bring the card up, and mount nothing on it.** Boot the sEMMC soft peripheral and identify the
-/// card (4-bit, High Speed, 32 MHz reads).
+/// Bring the card up, and mount nothing on it: boot the sEMMC soft peripheral and identify the
+/// card (4-bit, High Speed, 32 MHz reads). Boot hands the raw blocks to the flat store, and a card
+/// without a valid flat superblock is rejected; no filesystem fallback follows.
 ///
-/// Boot brings the card up once and hands its raw blocks directly to the flat store. Cards without
-/// a valid flat superblock are rejected by the boot composition; no filesystem fallback follows.
+/// Card identification is the slow part, and the ACMD41 power-up poll is bounded at 1.5 s.
+/// [`flpr_mux::bring_up_storage`](crate::flpr_mux::bring_up_storage) holds the FLPR in storage mode
+/// across the whole of it.
 ///
-/// Card identification is the slow part — the ACMD41 power-up poll is bounded at 1.5 s.
-/// [`flpr_mux::bring_up_storage`](crate::flpr_mux::bring_up_storage) is what holds the FLPR in
-/// storage mode across the whole of it (see its doc, and PR #1160's `Semmc::start` contract).
-///
-/// ## ⚠️ Synchronous on purpose — the async-fn frame trap (#677, #1108)
-///
-/// The obvious shape for this is `async fn`, and it was one for a while: `Semmc::start` yields at
-/// the card settle, the CMD8 deliver-and-abort and each ACMD41 poll. Awaited from `main`, that
-/// chain's coroutine flattens into `main`'s **task-body poll frame**, whose slot set is allocated on
-/// entry on *every* poll for the life of the program — measured **6,912 → 13,376 B** for a function
-/// that runs once at boot, and `#[inline(never)]` does not fix it (it governs the future
-/// constructor, not the coroutine body). Synchronous — the shape that ships — the same build
-/// measures **7,328 B**, which is what the resource guard pins as `task_frame_measured`.
+/// Synchronous on purpose. As an `async fn`, this chain's coroutine flattens into `main`'s
+/// task-body poll frame, whose slot set is allocated on entry on every poll for the life of the
+/// program: 6,912 to 13,376 B for a function that runs once at boot. `#[inline(never)]` does not
+/// fix it, because it governs the future constructor and not the coroutine body.
 ///
 /// It is safe to block here: bring-up runs before the app loop, the BLE stack and the USB plane
-/// exist, and the panel's anti-DC-bias COM wave is on the P3 `InterruptExecutor` (or, on `com-hw`,
-/// on TIMER + DPPI + GPIOTE), so it preempts thread mode rather than competing with it. See
-/// `Semmc::start`'s note for the full accounting.
+/// exist, and the panel's anti-DC-bias COM wave preempts thread mode rather than competing with
+/// it.
 pub fn bring_up_card() -> Result<(), obc_app::BootFault> {
     let info = match crate::flpr_mux::bring_up_storage() {
         Ok(info) => info,
@@ -137,19 +102,13 @@ pub fn bring_up_card() -> Result<(), obc_app::BootFault> {
     Ok(())
 }
 
-/// **Which fault screen a failed bring-up earns** — the honesty rule (#1163 review, P3): a fault
-/// line the rider can act on, not one catch-all.
+/// Which fault screen a failed bring-up earns. The driver can tell three classes apart, and the
+/// rider needs a line they can act on.
 ///
-/// Three classes, because the driver can genuinely tell them apart:
-///
-/// - [`SemmcError::NoCard`] is the only one that means what "NO SD CARD" says — the host came up and
-///   identification found nothing (empty socket, dead card, broken bus).
-/// - [`SemmcError::UnsupportedCard`] means a working card that is SDSC. Dropping SDSC is deliberate
-///   (byte-addressed, ≤2 GB, no map fits), but a card that worked over the retired SPI path now
-///   fails, and "NO SD CARD" would send its owner hunting for a card that is already inserted.
-/// - everything else is the storage subsystem itself — the soft peripheral that would not boot, a
-///   barrier that never echoed, a transport error during identification. None of those are evidence
-///   about whether a card is present, so they read as the honest superset.
+/// [`SemmcError::NoCard`] is the only one that means what "NO SD CARD" says.
+/// [`SemmcError::UnsupportedCard`] is a working card that is SDSC, which this firmware rejects;
+/// "NO SD CARD" would send its owner hunting for a card that is already inserted. Everything else
+/// is the storage subsystem itself, and is no evidence about whether a card is present.
 fn bring_up_fault(e: crate::semmc::SemmcError) -> obc_app::BootFault {
     use crate::semmc::SemmcError;
     match e {
@@ -168,24 +127,19 @@ fn bring_up_fault(e: crate::semmc::SemmcError) -> obc_app::BootFault {
     }
 }
 
-// ═══════════════════════════ the block device ═══════════════════════════
-
-/// **The card as an `embedded_sdmmc::BlockDevice`** — the whole transport (epic #1158).
+/// The card as an `embedded_sdmmc::BlockDevice`.
 ///
 /// A zero-sized handle: the driver state is the one [`Semmc`](crate::semmc::Semmc) in
-/// [`crate::flpr_mux`], which also decides whether the FLPR is currently drawing the panel or
-/// clocking the card. Every method here is one `flpr_mux::with_storage` call — mode ensured, driver
-/// borrowed, transfer issued — so there is exactly one place that can get the ordering wrong.
-///
-/// Blocking, like the SPI transport before it: `BlockDevice` is a synchronous trait and everything
-/// above it (FAT, extents, the object store) is built on that. The transfers are ~30× shorter now.
+/// [`crate::flpr_mux`], which also decides whether the FLPR draws the panel or clocks the card.
+/// Every method here is one `flpr_mux::with_storage` call, so exactly one place can get the
+/// ordering wrong. The calls block, because `BlockDevice` is a synchronous trait.
 #[derive(Clone, Copy)]
 pub(crate) struct SemmcCard;
 
 const BLOCK_LEN: usize = Block::LEN;
 
 /// `Block` is `#[repr(transparent)]` over `[u8; 512]`, which is what makes the byte views below
-/// sound. Pinned here because the whole bounce/fast-path split is built on it.
+/// sound.
 const _: () = assert!(core::mem::size_of::<Block>() == BLOCK_LEN);
 
 fn log_transfer_error(op: &'static str, lba: u32, blocks: usize, e: crate::semmc::SemmcError) {
@@ -283,21 +237,16 @@ impl BlockDevice for SemmcCard {
 }
 
 impl Storage {
-    /// Iterate `dir`'s entries with their long filenames, running `f` per entry. Wraps
-    /// `iterate_dir_lfn`'s [`LfnBuffer`] scratch setup (a 256-byte buffer is ample for an 8.3 dir),
-    /// so updater scans don't repeat it. The iteration error is ignored — a partial scan still
-    /// yields what it read, the same as the bare call did.
+    /// Iterate `dir`'s entries with their long filenames, running `f` per entry. The iteration
+    /// error is ignored: a partial scan still yields what it read.
     fn iter_dir_lfn(&self, dir: RawDirectory, mut f: impl FnMut(&embedded_sdmmc::DirEntry, Option<&str>)) {
         let mut lfn_storage = [0u8; 256];
         let mut lfn = LfnBuffer::new(&mut lfn_storage);
         let _ = self.vmgr.iterate_dir_lfn(dir, &mut lfn, |e, long| f(e, long));
     }
 
-    /// Read the card-resident store-epoch nonce (`/EPOCH.OBE`, protocol v2 #632 item 5 / #776), or
-    /// `None` when the file is **absent** (a fresh/foreign-formatted card) or torn/foreign — "no
-    /// epoch", which the boot mint rule ([`obc_app::store_meta::store_epoch_mint`]) treats as clause 1
-    /// (draw a fresh nonce). Never panics on malformed input (the codec is host-tested). One file
-    /// read; the card **root** is always open on a mounted card.
+    /// Read the card-resident store-epoch nonce, or `None` when the file is absent, torn or
+    /// foreign. The boot mint rule treats `None` as "draw a fresh nonce".
     pub fn load_card_epoch(&self) -> Option<u32> {
         let Ok(file) = self.vmgr.open_file_in_dir(self.root, EPOCH_FILE, Mode::ReadOnly) else {
             return None; // absent = no epoch (the mint pass draws a fresh one)
@@ -308,14 +257,10 @@ impl Storage {
         decode_store_epoch(&buf[..n])
     }
 
-    /// Overwrite the store-epoch file (truncating) with `epoch`. Called once, from the boot mint
-    /// pass, when the mint rule fires — so the write rate is negligible. Returns `true` only when
-    /// **every** step — open, write, flush, close — succeeded: a discarded flush/close error is a
-    /// torn persist, and the mint pass gates the id-marks write and the served epoch on this result
-    /// (a swallowed epoch-write failure would let a clause-2 mint go permanently undetected: old
-    /// valid epoch on card + freshly-written valid floor = steady state next boot — the exact aliasing the epoch
-    /// exists to catch). Whole persist within the call (open, write truncating, flush, close), so it
-    /// never counts against the open-file budget across an `await`.
+    /// Overwrite the store-epoch file with `epoch`. Returns `true` only when open, write, flush
+    /// and close all succeeded, because a discarded flush or close error is a torn persist and the
+    /// mint pass gates the id-marks write and the served epoch on this result. The whole persist is
+    /// inside the call, so it never holds a file handle across an `await`.
     #[must_use]
     pub fn save_card_epoch(&mut self, epoch: u32) -> bool {
         let bytes = encode_store_epoch(epoch);
@@ -331,8 +276,8 @@ impl Storage {
         let closed = self.vmgr.close_file(file).is_ok();
         let ok = wrote && flushed && closed;
         if !ok {
-            // The consequence log lives at the mint site (which knows whether this was a clause-2
-            // mint); here just name which step tore.
+            // The consequence log lives at the mint site, which knows what kind of mint this was.
+            // Here, name the step that tore.
             defmt::warn!(
                 "SD: store-epoch persist failed (write {=bool} flush {=bool} close {=bool})",
                 wrote,
@@ -343,11 +288,9 @@ impl Storage {
         ok
     }
 
-    /// Free space on the SD card in bytes (T8 item 6) — a bounded **FAT free-cluster** read: the
-    /// FAT32 FSInfo sector's cached free-cluster count × cluster size. Three single-block CMD17s (the
-    /// MBR partition entry, the volume BPB, then FSInfo) — never a full FAT walk, so it's cheap enough
-    /// to run on the System screen's on-entry request. Returns `None` unless the card is MBR + FAT32
-    /// with a valid FSInfo free count (the screen then keeps `--`).
+    /// Free space on the card in bytes: a bounded FAT free-cluster read of the FAT32 FSInfo
+    /// sector's cached count, times the cluster size. Three single-block CMD17s and never a full
+    /// FAT walk. `None` unless the card is MBR plus FAT32 with a valid FSInfo free count.
     pub fn card_free_bytes(&self) -> Option<u64> {
         use embedded_sdmmc::{Block, BlockDevice, BlockIdx};
         let read = |lba: u32, blk: &mut Block| self.card.read(core::slice::from_mut(blk), BlockIdx(lba)).ok();
@@ -355,9 +298,9 @@ impl Storage {
         let rd_u32 = |b: &[u8], o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
 
         let mut blk = Block::new();
-        // Sector 0: an MBR (partition 0 start LBA at +8 of the 446-offset entry) or, on a
-        // "superfloppy" (a BPB directly at LBA 0), the boot sector itself — detected by the FAT jump
-        // + "FAT32" type string, in which case the partition starts at LBA 0.
+        // Sector 0 is an MBR (partition 0's start LBA at +8 of the entry at 446) or, on a
+        // superfloppy with a BPB directly at LBA 0, the boot sector itself. The FAT jump and the
+        // "FAT32" type string tell them apart; a superfloppy's partition starts at LBA 0.
         read(0, &mut blk)?;
         let superfloppy = (blk.contents[0] == 0xEB || blk.contents[0] == 0xE9) && &blk.contents[82..87] == b"FAT32";
         let part_lba = if superfloppy { 0 } else { rd_u32(&blk.contents, 446 + 8) };
@@ -371,8 +314,7 @@ impl Storage {
             return None;
         }
 
-        // The FSInfo sector — the FAT's cached free-cluster count (lead sig 0x41615252 @0, struct sig
-        // 0x61417272 @484). `0xFFFFFFFF` = unknown / uncomputed.
+        // The FSInfo sector holds the FAT's cached free-cluster count. `0xFFFFFFFF` is unknown.
         read(part_lba + fsinfo_sec, &mut blk)?;
         if rd_u32(&blk.contents, 0) != 0x4161_5252 || rd_u32(&blk.contents, 484) != 0x6141_7272 {
             return None;
@@ -386,27 +328,20 @@ impl Storage {
 }
 
 impl Storage {
-    /// Whether a staged `/UPDATE.BIN` exists in the card root — the `installFw` `noStaged` cheap
-    /// existence check (spec §4.4). Presence only (a directory scan, no read): the full CRC validation
-    /// is the on-device confirm flow's, never a BLE command handler's.
+    /// Whether a staged `/UPDATE.BIN` exists in the card root: presence only, through a directory
+    /// scan. The full CRC validation belongs to the on-device confirm flow.
     pub fn has_update_bin(&self) -> bool {
         ShortFileName::create_from_str(UPDATE_BIN).ok().and_then(|n| self.find_root_entry(&n)).is_some()
     }
 }
 
-// ==================== The DFU armer plane (epic #615 S4, #619) ====================
-//
-// The storage half of the app-side armer: locate + validate the staged `UPDATE.BIN` and write
-// the `ROLLBACK.BIN` snapshot, both resolved to raw block extents through the same
-// a bounded local FAT-chain walk. The *decision logic* — the scan
-// matrix, the arm sequencing — is pure and host-tested in `obc_dfu::armer`; these methods are
-// its thin `StageIo`/snapshot adapters over FatFs + the raw card. Everything here runs inside
-// the app loop's drained request at shallow per-pass depth, in frames that pop on return —
-// its small parsing block and the `StagedRef`s never sit resident.
+// The storage half of the app-side armer: locate and validate the staged `UPDATE.BIN`, and write
+// the `ROLLBACK.BIN` snapshot, both resolved to raw block extents through a bounded FAT-chain
+// walk. The decision logic is pure and host-tested in `obc_dfu::armer`; these methods are its thin
+// `StageIo` and snapshot adapters over FatFs and the raw card.
 impl Storage {
-    /// Locate an 8.3 `name` in the card root, returning the entry facts the extent build needs:
-    /// `(entry_block, entry_offset, byte length)` — the same public `DirEntry` capture as the
-    /// root-directory scan.
+    /// Locate an 8.3 `name` in the card root, returning the facts the extent build needs:
+    /// `(entry_block, entry_offset, byte length)`.
     fn find_root_entry(&self, name: &ShortFileName) -> Option<(embedded_sdmmc::BlockIdx, u32, u32)> {
         let mut found = None;
         self.iter_dir_lfn(self.root, |e, _| {
@@ -417,16 +352,13 @@ impl Storage {
         found
     }
 
-    /// The staging scan (#619 §1, signed in #997): find `UPDATE.BIN` in the card root, decode +
-    /// validate its OBCU header, run the **full CRC-32 pass and the Ed25519 verification** over the
-    /// image body in one pass through the byte source, gate the size, and resolve the whole-file
-    /// extent chain (spec §2.3 — the header is part of the chain). Typed errors surface verbatim to
-    /// the debug link now and S5's UI later. Read-only: a failed scan costs nothing.
+    /// The staging scan: find `UPDATE.BIN` in the card root, decode and validate its OBCU header,
+    /// run the full CRC-32 pass and the Ed25519 verification over the image body in one pass through
+    /// the byte source, gate the size, and resolve the whole-file extent chain, header included.
+    /// Read-only, so a failed scan costs nothing.
     ///
-    /// The trusted key is [`obc_dfu::RELEASE_PUBKEY`] — the production key compiled into this image
-    /// (`firmware/obc-dfu/keys/obcu-release.pub`). This is the *only* place the firmware names it;
-    /// `obc_dfu::armer::scan` takes it as a parameter so tests inject their own key without any
-    /// build-flag surgery on the shipping path.
+    /// The trusted key is [`obc_dfu::RELEASE_PUBKEY`], and this is the only place the firmware names
+    /// it. `obc_dfu::armer::scan` takes the key as a parameter, so tests inject their own.
     pub fn dfu_scan_update(&mut self) -> Result<obc_dfu::StagedRef, ScanError> {
         let name = ShortFileName::create_from_str(UPDATE_BIN).map_err(|_| ScanError::Io)?;
         let Some((entry_block, entry_offset, len)) = self.find_root_entry(&name) else {
@@ -434,23 +366,20 @@ impl Storage {
         };
         let file = self.vmgr.open_file_in_dir(self.root, UPDATE_BIN, Mode::ReadOnly).map_err(|_| ScanError::Io)?;
         let mut stage = SdStage { vmgr: &self.vmgr, card: self.card, file, len, entry_block, entry_offset };
-        // The CRC/signature staging buffer matches this module's transfer idiom
-        // (`copy_with_held_magic`'s 512-byte stack chunk) — no new resident statics; the frame pops
-        // with the scan, verifier state (~200 B) included.
+        // The CRC and signature staging buffer is a stack chunk: no new resident statics, and the
+        // frame pops with the scan, verifier state included.
         let mut chunk = [0u8; 512];
         let result = obc_dfu::armer::scan(&mut stage, &mut chunk, &obc_dfu::RELEASE_PUBKEY);
         let _ = self.vmgr.close_file(file);
         result
     }
 
-    /// Write the rollback snapshot (#619 §2): `installed`'s raw image — `image`, the caller's
-    /// memory-mapped view of the app slot — re-wrapped as a full OBCU container at
-    /// `/ROLLBACK.BIN` (truncate-and-reuse), then extent-resolved exactly
-    /// like the update file (whole-file chain, spec §2.3).
+    /// Write the rollback snapshot: `installed`'s raw image, re-wrapped as a full OBCU container at
+    /// `/ROLLBACK.BIN`, then extent-resolved like the update file.
     ///
-    /// `Ok(None)` = the slot's bytes no longer CRC-match the installed header (a dev SWD reflash
-    /// since the last install) — a snapshot would record a rollback the bootloader must reject,
-    /// so none is taken and any stale `ROLLBACK.BIN` is removed. Errors abort the arm.
+    /// `Ok(None)` means the slot's bytes no longer CRC-match the installed header, so a snapshot
+    /// would record a rollback the bootloader must reject. None is taken, and any stale
+    /// `ROLLBACK.BIN` is removed. Errors abort the arm.
     pub fn dfu_write_rollback(
         &mut self,
         installed: &obc_dfu::ImageHeader,
@@ -468,15 +397,13 @@ impl Storage {
             .vmgr
             .open_file_in_dir(self.root, ROLLBACK_BIN, Mode::ReadWriteCreateOrTruncate)
             .map_err(|_| ScanError::Io)?;
-        // Header, then the raw image straight from the memory-mapped slot (embedded-sdmmc chunks
-        // the long write into blocks itself). Flush before the extent resolve — the chain must
-        // be final on card.
-        // The snapshot is an **unsigned** container (`ImageHeader::unsigned`): the device cannot
-        // re-create the release signature from slot bytes, and nothing verifies this file — it never
-        // passes through `armer::scan`, and the bootloader's rollback path checks it by CRC. Writing
-        // a signed *marker* with no trailer behind it would be a lie in a file `obc-mkimage inspect`
-        // reads. The recorded `StagedRef` below carries the same unsigned header, so the installer's
-        // header-equality check still matches the bytes on card.
+        // Header, then the raw image straight from the memory-mapped slot. Flush before the extent
+        // resolve: the chain must be final on card.
+        //
+        // The snapshot is an unsigned container. The device cannot re-create the release signature
+        // from slot bytes, and nothing verifies this file: the bootloader's rollback path checks it
+        // by CRC. A signed marker with no trailer behind it would be a lie in a file
+        // `obc-mkimage inspect` reads.
         let snapshot_header = installed.unsigned();
         let ok = self.vmgr.write(file, &snapshot_header.encode()).is_ok()
             && self.vmgr.write(file, image).is_ok()
@@ -509,9 +436,8 @@ impl Storage {
     }
 }
 
-/// The armer's [`StageIo`] over the open `UPDATE.BIN`: byte reads through the manager's seek
-/// path (a scan is one forward pass — the extent-mapped fast path matters for the bootloader's
-/// reads, not this one) and the whole-file extent resolve off the raw card.
+/// The armer's [`StageIo`] over the open `UPDATE.BIN`: byte reads through the manager's seek path,
+/// because a scan is one forward pass, and the whole-file extent resolve off the raw card.
 struct SdStage<'a> {
     vmgr: &'a Vmgr,
     card: &'static Sd,
@@ -539,9 +465,9 @@ impl StageIo for SdStage<'_> {
 
 /// Resolve one legacy FAT staging file into the bootloader's raw-block extents.
 ///
-/// This is intentionally the only FAT-chain walk left: DFU's boot record needs physical runs, not
-/// a reusable random-read source. Runs are written directly into the caller's fixed wire-cap
-/// buffer, so there is no resident extent table or broader filesystem abstraction to keep alive.
+/// This is the only FAT-chain walk left: DFU's boot record needs physical runs, not a reusable
+/// random-read source. Runs go straight into the caller's fixed buffer, so no extent table stays
+/// resident.
 fn resolve_extents(
     card: &'static Sd,
     entry_block: embedded_sdmmc::BlockIdx,

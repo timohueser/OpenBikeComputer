@@ -1,7 +1,6 @@
-//! The [`obc_dfu::engine::InstallIo`] wiring: real sEMMC block reads + RRAMC line writes behind
-//! the host-tested install engine. This file is deliberately free of *sequencing* — ordering,
-//! retries, and failure policy all live (and are unit-tested) in `obc-dfu`; everything here is
-//! a one-line adapter plus the LED heartbeat and the `rtt` throughput meter.
+//! [`obc_dfu::engine::InstallIo`] wired to real sEMMC block reads and RRAMC line writes.
+//! Ordering, retries, and failure policy all live in `obc-dfu`; this file is one-line adapters
+//! plus the LED heartbeat and the `rtt` throughput meter.
 
 use embassy_nrf::rramc::{Rramc, Unbuffered};
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
@@ -13,28 +12,21 @@ use crate::led::Led;
 use crate::semmc::BootSemmc;
 use crate::wdt::BootDog;
 
-/// Toggle the LED every this many progress chunks (~4 KB each) while verifying — the *slow*
-/// heartbeat (~1 s period at SD bulk speed; the exact rate scales with card throughput).
+/// Toggle the LED every this many progress chunks (~4 KB each) while verifying.
 const VERIFY_TOGGLE_CHUNKS: u32 = 64;
-/// Toggle every this many chunks while flashing / reading back — the *fast* heartbeat.
 const FLASH_TOGGLE_CHUNKS: u32 = 8;
 
 /// The real IO the install engine drives.
 pub struct BootIo<'a> {
-    /// The raw-block card — `None` for decisions that never stream extents (`AcceptAndClear`),
+    /// The raw-block card. `None` for decisions that never stream extents (`AcceptAndClear`),
     /// which is why `read_blocks` on `None` is unreachable rather than a real error path.
-    /// `&mut` since the sEMMC port: the transport tracks the barrier counter and bus state.
     sd: Option<&'a mut BootSemmc>,
     rram: &'a mut Rramc<'static, Unbuffered>,
     led: &'a mut Led,
-    /// The boot-chain watchdog (DR1, #729) — pet from [`progress`](InstallIo::progress), the
-    /// one callback guaranteed to fire steadily through all three passes.
     dog: &'a mut BootDog,
-    /// The panel's COM wave (`com.rs`) — polled from the same steady progress hook, so the
-    /// glass under the app's pre-painted frame keeps alternating through the whole install
-    /// (chunks land every few ms, well inside the ~8.3 ms half period).
+    /// The panel's COM wave. Chunks land every few ms, well inside the ~8.3 ms half period.
     com: &'a mut Com,
-    /// Address of the BOOT_STATE page (from the linker symbol — resolved once in `main`).
+    /// Address of the BOOT_STATE page, from the linker symbol.
     state_addr: u32,
     chunks: u32,
     #[cfg(feature = "rtt")]
@@ -69,35 +61,30 @@ impl InstallIo for BootIo<'_> {
         self.sd.as_mut().ok_or(IoError)?.read_blocks(start_block, buf).map_err(|_| IoError)
     }
 
-    /// Blocking RRAMC line writes to the app slot. The engine only ever hands us 16-byte-aligned
-    /// spans, matching `Rramc::write`'s `WRITE_SIZE`; the write path is the same idiom as the
-    /// app's `RramSettingsStore` (`obc-fw-nrf54l/src/settings.rs`) — deliberate duplication, the
-    /// crates don't share an RRAM module (same policy as the SD constants in `sd.rs`).
+    /// Blocking RRAMC line writes to the app slot. The engine only hands us 16-byte-aligned
+    /// spans, which match `Rramc::write`'s `WRITE_SIZE`.
     fn write_lines(&mut self, addr: u32, data: &[u8]) -> Result<(), IoError> {
         self.rram.write(addr, data).map_err(|_| IoError)
     }
 
-    /// Readback straight off the memory map (RRAM is XIP-readable; `Rramc::read` is exactly a
-    /// volatile-free slice copy from the absolute address).
+    /// Readback straight off the memory map; RRAM is XIP-readable.
     fn read_flash(&mut self, addr: u32, buf: &mut [u8]) -> Result<(), IoError> {
         self.rram.read(addr, buf).map_err(|_| IoError)
     }
 
     /// Persist a boot state into the BOOT_STATE page. `EncodedPage` is a whole number of RRAM
-    /// lines by construction, so this is one aligned multi-line write; stale bytes of a longer
-    /// previous blob past the new `blob_len` are outside the CRC frame and ignored by decode.
+    /// lines by construction, so this is one aligned multi-line write. Stale bytes of a longer
+    /// previous blob past the new `blob_len` are outside the CRC frame and decode ignores them.
     fn write_state(&mut self, state: &BootState) -> Result<(), IoError> {
         let page = state.encode();
         self.rram.write(self.state_addr, page.as_bytes()).map_err(|_| IoError)
     }
 
     fn progress(&mut self, phase: Phase, done: u32, total: u32) {
-        // DR1 (#729): pet the adopted/inherited watchdog every chunk (one register write per
-        // ≤4 KB — effectively free), so an install stretched past 24 s by a slow card, flash
-        // retries, or a near-max image can never be dog-reset mid-flash.
+        // Pet the watchdog every chunk (one register write per ≤4 KB), so an install stretched
+        // past 24 s by a slow card, flash retries, or a near-max image is never dog-reset.
         self.dog.pet();
-        // Keep the panel's COM wave alternating with the same cadence (one compare + at most
-        // three pin writes) — the held "Installing update" frame's anti-DC-bias contract.
+        // Keep the panel's COM wave alternating at the same cadence.
         self.com.poll();
         self.chunks += 1;
         let period = match phase {
@@ -114,9 +101,9 @@ impl InstallIo for BootIo<'_> {
     }
 }
 
-/// Per-phase wall-time + throughput over the DWT cycle counter (`rtt` builds only — the size
-/// budget is measured without it). Chunks are ≤4 KB, far inside the 32-bit counter's ~67 s wrap
-/// at 64 MHz, so accumulating per-tick `wrapping_sub` deltas into a u64 is exact.
+/// Per-phase wall time and throughput over the DWT cycle counter (`rtt` builds only). Chunks are
+/// ≤4 KB, far inside the 32-bit counter's ~67 s wrap at 64 MHz, so accumulating per-tick
+/// `wrapping_sub` deltas into a u64 is exact.
 #[cfg(feature = "rtt")]
 struct Meter {
     phase: Option<Phase>,
