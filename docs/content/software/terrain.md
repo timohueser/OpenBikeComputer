@@ -153,9 +153,11 @@ elevation angles take priority where names would overlap; labels keep at least 1
 horizontal space. A chart name that does not fit above its summit is shortened with `..`. The selected peak's name
 appears in the ledger; a name wider than the ledger scrolls there.
 
-The vertical scale is chosen once per observer from the catalogue elevation angles. Shallow
-relief receives a vertical boost up to 2.4× over the base 1.25× scale; steep views keep the base scale. Missing height metadata
-keeps the ordinary scale. Terrain and labels share the projection, while bearings, elevations,
+The window is chosen once per observer from the catalogue elevation angles. Its bottom stays 12°
+below the horizon. Its top grows upward until the highest summit and its label fit, and the
+horizontal field grows with it at the chart's aspect, so one degree is the same number of pixels on
+both axes. Missing height metadata keeps the base window, and a summit below the observer never
+moves the bottom of the frame. Terrain and labels share the projection, while bearings, elevations,
 distances and visibility stay geographic. Turning changes neither the scale nor the horizon
 position. Lighting has a fixed northwest world direction, so turning does not change the shading.
 
