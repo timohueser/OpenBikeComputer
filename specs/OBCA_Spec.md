@@ -27,12 +27,6 @@ enough to run in a browser.
 > types all go in **FS7.5b/c**. §4's assembly contract is **not** superseded — an assembler still
 > grafts cells into one file; it simply emits that one file rather than a set of them, and splices
 > the terrain raster into `OBCM_Spec.md` §1.3's region rather than shipping it beside the map.
->
-> (For history: manifest **v3** was FS7 #1389 — every record carried its member's `ObjectId` so a
-> set resolved through object identity rather than derived filenames, growing the record 56 → 64
-> bytes. **v2** was EL4 #1072 — it added the `terrain` role and made §5.3's role and tiling rules
-> count OBCM shards rather than records. Both were hard cuts under the pre-release rule; v3 shipped
-> a week before the re-scope that retired the whole idea.)
 
 This document is normative. The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are to be
 interpreted as in RFC 2119.
