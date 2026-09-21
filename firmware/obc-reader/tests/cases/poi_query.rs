@@ -51,7 +51,6 @@ fn cat_of(subtype: u8) -> u8 {
     }
 }
 
-/// Run the query over a built map and return the results.
 fn query(bytes: &[u8], cat: PoiCategory, pos: (i32, i32)) -> Vec<Poi> {
     let src = SliceSource(bytes);
     let tables = MapTables::parse(&src).unwrap();

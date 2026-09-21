@@ -18,7 +18,6 @@ use embedded_graphics::{pixelcolor::Rgb565, prelude::*, primitives::Rectangle};
 pub trait Pack {
     /// The stored pixel type: `u16` for RGB565, `u8` for the device-64 (RGB222) plane.
     type Pixel: Copy;
-    /// Pack a rendered colour into its stored representation.
     fn pack(c: Rgb565) -> Self::Pixel;
 }
 

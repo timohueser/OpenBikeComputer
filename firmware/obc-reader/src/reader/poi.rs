@@ -35,7 +35,6 @@ const POI_SCAN_WINDOW: usize = 512;
 /// `chunk_range` math serves both.
 #[derive(Debug, Clone, Copy)]
 pub struct PoiCatEntry {
-    /// Canonical category id.
     pub category_id: u8,
     /// Byte offset to this category's quadtree index.
     pub index_offset: u64,
@@ -79,7 +78,6 @@ pub struct Poi {
     pub metadata: obc_formats::obcm::PoiMetadata,
     pub lat: i32,
     pub lon: i32,
-    /// Canonical subtype id.
     pub subtype: u8,
     /// Stored name; empty means unnamed.
     pub name: heapless::String<POI_NAME_LEN>,
