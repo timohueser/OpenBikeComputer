@@ -1,10 +1,9 @@
 import XCTest
 
-/// TR6 acceptance on the simulator: the trip card in the routes list and the
-/// trip page behind it, driven through the real UI against the `trips` fixture
-/// (`-OBCFixtures trips` — one trip grouping two routes + three loose routes).
-/// The model logic is host-tested in `TripListModelTests`; this proves the
-/// wiring launch-arg → interleaved list → trip page → stage detail.
+/// The trip card in the routes list and the trip page behind it, driven through the real UI
+/// against the trips fixture: one trip grouping two routes, plus three loose routes. The model
+/// logic is host-tested in `TripListModelTests`; this proves the wiring from launch argument to
+/// interleaved list to trip page to stage detail.
 final class TripTests: XCTestCase {
     override func setUp() {
         super.setUp()
@@ -15,7 +14,7 @@ final class TripTests: XCTestCase {
     private func launch() -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments += ["-OBCScenario", "happyPath", "-OBCFixtures", "trips"]
-        // Pin the locale so the en-US stat strings assert cleanly.
+        // Pin the locale so the stat strings assert cleanly.
         app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
         return app
@@ -38,8 +37,7 @@ final class TripTests: XCTestCase {
     private let stageAID = "trip.stage.devils-lake-overnighter"
     private let stageBID = "trip.stage.cross-plains-gravel"
 
-    /// Open the trip page and wait until its stage rows are up (the drill-in the
-    /// other flows share).
+    /// Open the trip page and wait until its stage rows are up: the drill-in the other flows share.
     @MainActor
     private func openTrip(_ app: XCUIApplication) {
         waitForMain(app)
@@ -49,8 +47,8 @@ final class TripTests: XCTestCase {
         XCTAssertTrue(app.buttons[stageAID].waitForExistence(timeout: 10), "trip page did not open")
     }
 
-    /// The trip card renders in the interleaved list: named, with the summed
-    /// `N stages · …` line, and the filed routes are NOT loose rows.
+    /// The trip card renders in the interleaved list, named and with the summed stage line, and
+    /// the filed routes are not loose rows.
     @MainActor
     func testTripCardRendersInterleavedWithLooseRoutes() {
         let app = launch()
@@ -64,9 +62,8 @@ final class TripTests: XCTestCase {
         snap(app, "TR6-trip-card")
     }
 
-    /// Drill in: tapping the trip card opens the trip page with both stages and
-    /// the Upload trip action — enabled (TR8) since the connected device holds no
-    /// copy of this trip yet.
+    /// Tapping the trip card opens the trip page with both stages and the Upload trip action,
+    /// enabled because the connected device holds no copy of this trip yet.
     @MainActor
     func testDrillIntoTripPage() {
         let app = launch()
@@ -79,7 +76,7 @@ final class TripTests: XCTestCase {
         snap(app, "TR6-trip-page")
     }
 
-    /// A stage opens the ordinary route detail (E2), exactly as a top-level card.
+    /// A stage opens the ordinary route detail, exactly as a top-level card does.
     @MainActor
     func testStageTapsThroughToRouteDetail() {
         let app = launch()
@@ -92,7 +89,7 @@ final class TripTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Devil's Lake Overnighter"].waitForExistence(timeout: 5))
     }
 
-    /// Rename the trip through the overflow menu (H12 idiom).
+    /// Rename the trip through the overflow menu.
     @MainActor
     func testRenameTrip() {
         let app = launch()
@@ -114,8 +111,8 @@ final class TripTests: XCTestCase {
             "renamed trip title missing")
     }
 
-    /// Remove a stage via its swipe action — the route returns to the top level
-    /// and the trip keeps its remaining stage.
+    /// Remove a stage through its swipe action: the route returns to the top level and the trip
+    /// keeps its remaining stage.
     @MainActor
     func testRemoveStageReturnsRouteToTopLevel() {
         let app = launch()
@@ -124,7 +121,7 @@ final class TripTests: XCTestCase {
         app.buttons[stageAID].swipeLeft()
         app.buttons["Remove"].firstMatch.tap()
 
-        // Stage A is gone from the trip; stage B remains.
+        // The first stage is gone from the trip; the second remains.
         XCTAssertFalse(app.buttons[stageAID].waitForExistence(timeout: 3), "removed stage still in trip")
         XCTAssertTrue(app.buttons[stageBID].exists, "remaining stage missing")
 
@@ -135,8 +132,7 @@ final class TripTests: XCTestCase {
             "removed route did not return to the top level")
     }
 
-    /// Delete → Ungroup: the trip disappears, its routes stay in the library as
-    /// loose top-level cards.
+    /// Ungroup: the trip disappears, and its routes stay in the library as loose top-level cards.
     @MainActor
     func testDeleteTripUngroupKeepsRoutes() {
         let app = launch()
@@ -148,15 +144,15 @@ final class TripTests: XCTestCase {
         delete.tap()
         app.sheets.buttons["Ungroup"].tap()
 
-        // Popped back to the list; the trip card is gone but the routes remain.
+        // Popped back to the list: the trip card is gone but the routes remain.
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons[tripCardID].waitForExistence(timeout: 3), "trip card survived ungroup")
         XCTAssertTrue(app.staticTexts["Devil's Lake Overnighter"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Cross-Plains Gravel"].exists)
     }
 
-    /// Delete → Delete trip & routes: the trip and both member routes are gone;
-    /// the loose routes survive.
+    /// Delete trip and routes: the trip and both member routes are gone, and the loose routes
+    /// survive.
     @MainActor
     func testDeleteTripAndRoutesRemovesMembers() {
         let app = launch()
