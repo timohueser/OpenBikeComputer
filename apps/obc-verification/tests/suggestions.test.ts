@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { RequestEvent } from '@sveltejs/kit';
-import type { Actor } from '../src/lib/types.ts';
+import type { Actor, Requirement } from '../src/lib/types.ts';
 import { api } from '../src/lib/server/api.ts';
 import { store } from '../src/lib/server/store.ts';
 
@@ -49,7 +49,7 @@ test('requirement suggestions are recorded, superseded, decided once, and never 
 
     // An edit to the statement leaves the open change suggestion behind; the owner reads it before deciding.
     const edited = store().latestRevision();
-    const amended = (statement: string) => (r: { id: string }) => r.id === 'EXAMPLE-002' ? { ...r, statement } : r;
+    const amended = (statement: string) => (r: Requirement): Requirement => r.id === 'EXAMPLE-002' ? { ...r, statement } : r;
     store().saveRevision(edited.id, 'owner', edited.requirements.map(amended(`${subject.statement} It shall also keep the zoom level.`)));
     const stale = (await listed()).find((s: any) => s.id === second.id);
     assert.match(stale.stale, /EXAMPLE-002 changed after this suggestion, which read r\d+\./);

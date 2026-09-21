@@ -135,8 +135,10 @@
       await tick(); document.getElementById('requirement-title')?.focus();
     } catch (e) { fail(e); } finally { busy = false; }
   }
+  /** The suggestions panel has its own text boxes. Neither shortcut may fire from inside it. */
+  const inPanel = (event: KeyboardEvent) => !!(event.target as HTMLElement | null)?.closest('.suggestions');
   /** Ctrl/Cmd+Enter in the editor finishes this requirement and starts the next one in the same group. */
-  function editorKeys(event: KeyboardEvent) { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); create(); } }
+  function editorKeys(event: KeyboardEvent) { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !inPanel(event)) { event.preventDefault(); create(); } }
   function move(delta: number) {
     if (!requirement) return;
     const siblings = requirements.filter(r => groupName(r) === groupName(requirement));
@@ -284,7 +286,7 @@
   function reviewKeys(event: KeyboardEvent) {
     if (event.key === 'Escape' && rejecting) { rejecting = false; return; }
     if (rejecting || event.key !== 'Enter' || !(event.metaKey || event.ctrlKey)) return;
-    if ((event.target as HTMLElement | null)?.closest('input, textarea')) return;
+    if (inPanel(event) || (event.target as HTMLElement | null)?.closest('input, textarea')) return;
     if (!reviewable || busy || reviewable.conflict) return;
     event.preventDefault(); approve(reviewable);
   }
@@ -357,6 +359,6 @@
   .on-req { display: inline-flex; align-items: center; gap: 8px; margin-top: 14px; padding: 6px 10px; font-size: 12px; color: var(--slate-strong); background: var(--slate-bg); border: 1px solid var(--slate-line); border-radius: 6px; }
   .on-req button { padding: 2px 0; font-size: 12px; font-weight: 600; color: var(--slate); background: transparent; border-color: transparent; text-decoration: underline; text-underline-offset: 3px; }
   @media (max-width: 1100px) { .workbench.with-suggestions { grid-template-columns: 210px minmax(0, 1fr) 320px; } }
-  @media (max-width: 900px) { .workbench.with-suggestions { grid-template-columns: minmax(0, 1fr) 320px; } .workbench.with-suggestions aside { display: none; } }
+  @media (max-width: 900px) { .workbench.with-suggestions { grid-template-columns: 210px minmax(0, 1fr); } }
   @media (max-width: 650px) { .workbench.with-suggestions { grid-template-columns: 1fr; } }
 </style>
