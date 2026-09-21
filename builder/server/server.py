@@ -129,7 +129,7 @@ def get_palette():
 
 @app.get("/api/presets")
 def get_presets():
-    """List the shipped, bakeable style documents — since #1036 the one schema.
+    """List the shipped, bakeable style documents: the one schema.
     Each entry carries the _meta fields plus the bare packer config (directly
     submittable / CLI-usable). Skins live in presets/skins/ and are deliberately
     absent: a skin is presentation stamped onto already-baked bytes and carries no

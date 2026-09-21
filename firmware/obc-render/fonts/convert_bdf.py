@@ -16,7 +16,7 @@ embedded-graphics `StrGlyphMapping` exactly so the strip and the mapping agree:
     320 glyphs over 20 rows. Covers umlauts/accents for European route & POI names
     (ä ö ü ß é è à č š ž ł ő ű …). Matches the custom `LATIN` mapping in `font_data.rs`;
     its ASCII glyphs occupy the first 6 rows unchanged, so an `ascii` strip is a prefix
-    of the `latin` one (issue #489).
+    of the `latin` one.
 
 Unlike a font whose every glyph fills the cell, a general BDF positions each glyph by its
 `BBX` offset relative to the baseline (`FONT_ASCENT` from the cell top). This compositor

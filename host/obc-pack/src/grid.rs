@@ -429,7 +429,7 @@ impl BandTable {
         if !core.lods.is_empty() {
             return Err(format!(
                 "the core band {:?} carries LOD(s) {:?}: geometry belongs in a splittable shard, never in the one \
-                 file a volume set cannot split (OBCA §5.1)",
+                 file a volume set cannot split",
                 core.id, core.lods
             ));
         }
@@ -681,7 +681,7 @@ mod tests {
         assert_eq!((by("fine").cell_log2, by("fine").lods), (18, vec![9, 10, 11, 12, 13]));
         let net = by("network");
         assert_eq!((net.cell_log2, net.role), (18, BandRole::Core));
-        assert!(net.lods.is_empty(), "the core band carries no geometry (OBCA §5.1)");
+        assert!(net.lods.is_empty(), "the core band carries no geometry");
         assert!(net.has_nav() && net.has_poi());
         // The ladder must match the table's expectation, not the other way round.
         assert!(t.validate(13).is_err(), "a 13-LOD ladder has LOD 13 claimed past the ladder");

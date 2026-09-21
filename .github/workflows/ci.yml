@@ -131,6 +131,8 @@ jobs:
         run: python3 tools/check_screen_vocabulary.py
       - name: Prose budgets, published pages and links
         run: python3 tools/prose.py --check
+      - name: Issue numbers and dates live in the pull request, not the tree
+        run: python3 tools/check_records.py
       - name: The changelog is generated and current
         run: python3 tools/changelog.py --check
       - uses: actions/setup-python@v5

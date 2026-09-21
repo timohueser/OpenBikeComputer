@@ -13,7 +13,7 @@ The clock only draws digits and the colon, so only the first `ROWS` glyph-rows o
 are doubled (default 6 = printable ASCII 0x20..0x7F). This means a `latin`-charset source (20
 rows) yields the same ASCII-only Huge strip as an `ascii`-charset one — its ASCII glyphs sit in
 those first 6 rows unchanged — so the doubled font stays small and the `Huge` tier keeps eg's
-`mapping::ASCII` (issue #489).
+`mapping::ASCII`.
 
 Args: SRC.raw DST.raw CELL_W CELL_H [ROWS]  (the source cell size; the strip is 16*CELL_W wide).
 """
