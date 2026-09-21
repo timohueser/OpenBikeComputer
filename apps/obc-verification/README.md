@@ -107,6 +107,23 @@ do not affect a proposal. After a decision, the view stays on the requirement; t
 review** button opens the next one. While a proposal is on screen, Ctrl+Enter (or ⌘+Enter)
 approves it and Escape closes the feedback box.
 
+### Review suggestions
+
+An agent can suggest a new requirement, or a change to one. It cannot write a requirement. The
+**Suggestions** button in the heading shows the number of open suggestions and opens a panel beside
+the editor, so the panel stays visible while you write. The panel lists new requirements first,
+then changes to requirements. Select the title of an item to read the suggested statement and the
+reason; a change also shows the current statement, and a warning if the requirement changed after
+the suggestion. The requirement ID goes to that requirement. The sidebar marks a requirement that
+has an open change suggestion, and the requirement itself shows a line that opens the panel.
+
+Write the requirement yourself, then tick the item. The tick records your acknowledgment and
+changes nothing else: no draft, no statement, and no coverage. A ticked item stays in place, struck
+through, until you load the page again, and then it is under **Decided**. The panel is ordered by
+the moment the agent wrote each suggestion, so nothing moves when you decide. The cross dismisses an
+item and asks for feedback, which the agent reads with `obc req suggestions --decided`. A
+suggestion for a requirement you deleted can only be dismissed.
+
 ### When a requirement changes
 
 A change to the statement, the tests, or the plan itself keeps the criteria, evidence, and gaps,
@@ -139,6 +156,9 @@ The disposable database starts with accepted plans and proposals that revise the
   evidence, and save the revision.
 - **SYS-030**: a demo addition to the requirement statement, saved by the owner. Its proposal
   records the added zoom obligation as a gap. Its plan also cites a manual procedure.
+- **Suggestions**: one suggested new requirement and one suggested change to SYS-030. Open the
+  panel with the **Suggestions** button, read them, and tick or dismiss them. Neither changes the
+  draft.
 - **Releases → v0.0.0-coverage-demo**: the candidate retains the earlier snapshot and simulated
   passing results. Later edits do not change its evidence.
 
@@ -435,7 +455,7 @@ require an administrator session; writes also require the exact configured brows
 
 Use `Authorization: Bearer TOKEN` with the dedicated agent token. The token can read
 `GET /api/bootstrap`, `/api/revisions`, `/api/revisions/ID`, `/api/catalog`, `/api/candidates`,
-`/api/candidates/ID`, and `/api/coverage-proposals`. These responses use the same definitions as the owner interface.
+`/api/candidates/ID`, `/api/coverage-proposals`, and `/api/requirement-suggestions`. These responses use the same definitions as the owner interface.
 Download a retained attachment with `GET /api/files/ID`.
 
 ### Propose coverage
@@ -553,6 +573,51 @@ a round of approvals is one revision. `POST /api/coverage-proposals/ID` with
 Approval rechecks the requirement, its tests, the current coverage plan, and the catalogue.
 Changes to that requirement require a refreshed proposal; other requirements can be approved
 sequentially. After an approval, prepare a new candidate to use the saved coverage snapshot.
+
+### Suggest a requirement
+
+An agent never writes or edits a requirement. When a change needs a requirement that does not
+exist, or a requirement no longer describes the product, the agent suggests it. The owner reads
+the suggestion, writes or edits the requirement by hand, and then ticks the suggestion off.
+Acceptance is an acknowledgment only. It never changes the draft.
+
+Send `POST /api/requirement-suggestions` with:
+
+```json
+{
+  "baseRevision": 7,
+  "requirementId": "SYS-030",
+  "sourceSha": "EXACT_40_CHARACTER_COMMIT_SHA",
+  "title": "Say what happens without a fix",
+  "statement": "The user shall be able to exit pan/zoom mode with one action. Without a position fix, the map shall follow the last known position and show that the fix is missing.",
+  "group": "Map display on device",
+  "reason": "The return action only recenters when a fix is present. The statement does not say what happens without one, so criterion 1 cannot be tested for that case."
+}
+```
+
+Leave out `requirementId` to suggest a new requirement; `group` says where it belongs. A change
+carries the full replacement title and statement, not a patch. Keep `reason` to two or three
+sentences: the observation behind the suggestion. `baseRevision` must be the current revision.
+`sourceSha` is optional: give the commit you read, so the owner knows what you looked at.
+`obc req suggest` always fills it in.
+
+A suggestion that is identical, and that names the same revision and commit, is reused. A new
+change for the same requirement replaces the open one, which stays in history as superseded. Send
+the same change again against the current revision after the owner edited the requirement: that
+replaces the record too, and the stale warning goes. Two different new requirements stand beside
+each other, because they have no requirement in common; the same new requirement, read again
+against a later revision, replaces itself.
+
+Read the decisions with `GET /api/requirement-suggestions`. An open suggestion for a requirement
+that changed after the suggestion carries `stale`; one for a deleted requirement carries `missing`.
+`POST /api/requirement-suggestions/<id>` with `{ "accept": true }` or
+`{ "accept": false, "feedback": "…" }` records the owner's decision. Only an owner can decide, and
+only once. An agent cannot decide.
+
+From a terminal or an agent session, `obc req suggest suggestion.json` validates the suggestion,
+fills in the base revision and the commit, and submits it. Use `--check` first. `obc req
+suggestions` lists what is open, and `obc req suggestions --decided` shows the owner's answer with
+the feedback.
 
 The agent token cannot write requirement prose, upload files, record manual outcomes, or publish.
 Owner writes require a session and the exact configured browser origin.
