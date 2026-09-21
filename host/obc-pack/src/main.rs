@@ -1,26 +1,19 @@
-//! `obc-pack` CLI — flags in, [`obc_pack::pipeline::pack`] out.
+//! The `obc-pack` CLI: flags in, [`obc_pack::pipeline::pack`] out.
 //!
-//! The pipeline itself (`.osm.pbf` → `.obcm`: ingest → bbox → land → per-LOD
-//! simplify + quadtree → serialize) lives in the library, because the desktop app
-//! (#906) links the packer rather than spawning it and the two must not be able to
-//! diverge. This file owns the command line and nothing else.
+//! The pipeline itself lives in the library, because the desktop app links the packer rather than
+//! spawning it and the two must not be able to diverge. This file owns the command line and nothing
+//! else.
 //!
-//! Positional CLI: `<pbf...> <config.json> <out.obcm>`, plus `--bbox W,S,E,N`
-//! (crop the sources to a box during ingest — see [`obc_pack::ingest`]),
-//! `--chunk-size`, `--no-land`, `--terrain <path>` (baked OBCT tiles — a `.obcd`
-//! container or a directory of them — to integrate the OBCM §8.3 per-direction
-//! ascent from; omit it and every adjacency entry gets `0`), `--dump-pois` (print
-//! the classified POI list for eyeballing), and `--dump-hours` (print each POI's
-//! parsed weekly schedule). A run refuses a region wider than
-//! [`REGION_LIMIT_KM2`] and names the size it measured; `--allow-large` packs it
-//! anyway. It
-//! prints one stage string per phase ("Merging", "Pass 0/1/2", "Calculating BBox",
-//! "Generating land", "Building Quadtree", "Serializing", "Writing") so the web
-//! builder UI can show progress — it matches these prefixes, and their order here
-//! is the order it expects. `obc-pack schema` prints the config's JSON Schema
-//! envelope — the web builder serves it so the editor's capability always matches
-//! the binary that packs. `schema --catalog` prints the cell-catalog schema, and
-//! `obc-pack catalog <cell-tree>` writes the root plus digest-pinned satellites.
+//! Positional CLI: `<pbf...> <config.json> <out.obcm>`, plus `--bbox W,S,E,N` to crop the sources
+//! during ingest, `--chunk-size`, `--no-land`, `--terrain <path>` for baked OBCT tiles to integrate
+//! the per-direction ascent from, `--dump-pois` and `--dump-hours`. A run refuses a region wider
+//! than [`REGION_LIMIT_KM2`] and names the size it measured; `--allow-large` packs it anyway.
+//!
+//! It prints one stage string per phase, and the web builder UI matches those prefixes in this
+//! order. `obc-pack schema` prints the config's JSON Schema envelope, which the web builder serves
+//! so the editor's capability always matches the binary that packs; `schema --catalog` prints the
+//! cell-catalog schema, and `obc-pack catalog <cell-tree>` writes the root plus digest-pinned
+//! satellites.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -41,9 +34,9 @@ struct Args {
 
 /// The widest region one run packs without `--allow-large`, in km².
 ///
-/// About 100 km by 100 km. A region of that size packs in a few minutes; a whole
-/// country takes tens of minutes, and waiting that long for a map nobody asked
-/// for is worse than a refusal that says how big the region is.
+/// About 100 km by 100 km. A region of that size packs in a few minutes; a whole country takes tens
+/// of minutes, and waiting that long for a map nobody asked for is worse than a refusal that says
+/// how big the region is.
 const REGION_LIMIT_KM2: f64 = 10_000.0;
 
 fn parse_args() -> Result<Args, String> {
@@ -53,8 +46,8 @@ fn parse_args() -> Result<Args, String> {
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
-            // Validated here, before any file is opened: a malformed or inside-out
-            // box must fail with a sentence, not with an empty map an hour later.
+            // Validated here, before any file is opened: a malformed or inside-out box must fail
+            // with a sentence, not with an empty map an hour later.
             "--bbox" => opts.bbox = Some(Bbox::parse(&it.next().ok_or("--bbox needs W,S,E,N in degrees")?)?),
             "--chunk-size" => {
                 opts.chunk_size = Some(it.next().and_then(|s| s.parse().ok()).ok_or("--chunk-size needs a number")?);
