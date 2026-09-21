@@ -395,10 +395,12 @@ impl MapIcons {
                 let (x, y) = vp.to_screen(mark.position.0, mark.position.1);
                 let radius = mark.kind.radius();
                 // A glyph draws whole or not at all: a clipped one reads as a different symbol.
-                if x - radius < 0 || x + radius > vp.w as i32 || y - radius < 0 || y + radius > vp.h as i32 {
+                if x - radius < 0 || x + radius >= vp.w as i32 || y - radius < 0 || y + radius >= vp.h as i32 {
                     continue;
                 }
-                if !place.try_place(rect(x - radius, y - radius, 2 * radius, 2 * radius), margin) {
+                // The glyph inks the whole square from `-radius` to `+radius`, both ends.
+                let side = 2 * radius + 1;
+                if !place.try_place(rect(x - radius, y - radius, side, side), margin) {
                     continue;
                 }
                 let _ = placed.push((Point::new(x, y), mark.kind));
@@ -547,6 +549,7 @@ fn draw_glyph(cv: &mut impl Surface, p: Point, kind: Kind) {
 mod tests {
     use super::*;
     use core::cell::Cell;
+    use embedded_graphics::primitives::Rectangle;
     use obc_formats::io::{ByteSource, Error, SliceSource};
     use obc_reader::{MapCache, MapTables};
     use obcm_testkit::{build_poi_map, PoiSpec};
@@ -604,9 +607,20 @@ mod tests {
         Viewport::new(240.0, 320.0, 8_000_000, 46_000_000, obc_render::zoom_for_mpp(3.0))
     }
 
-    /// Two square marks of half-width `r` and `qr`, centred at `p` and `q`, hold `margin` px apart.
-    fn apart(p: Point, r: i32, q: Point, qr: i32, margin: i32) -> bool {
-        (p.x - q.x).abs() >= r + qr + margin || (p.y - q.y).abs() >= r + qr + margin
+    /// The box a glyph of half-width `r` inks, centred at `p`, as `placements` offers it.
+    fn glyph_box(p: Point, r: i32) -> Rectangle {
+        rect(p.x - r, p.y - r, 2 * r + 1, 2 * r + 1)
+    }
+
+    /// `a`, grown by `margin` on each side, shares a pixel with `b`.
+    fn touches(a: Rectangle, margin: i32, b: Rectangle) -> bool {
+        let edges = |r: Rectangle, m: i32| {
+            let (l, t) = (r.top_left.x - m, r.top_left.y - m);
+            (l, t, l + r.size.width as i32 + 2 * m, t + r.size.height as i32 + 2 * m)
+        };
+        let (al, at, ar, ab) = edges(a, margin);
+        let (bl, bt, br, bb) = edges(b, 0);
+        al < br && bl < ar && at < bb && bt < ab
     }
 
     #[test]
@@ -684,11 +698,17 @@ mod tests {
         assert!(!placed.is_empty() && placed.len() <= DRAW_LIMIT);
         assert_eq!(placed, icons.placements(&vp, &mut PointPlacement::new(&frame)));
         for (i, (p, kind)) in placed.iter().enumerate() {
-            let radius = kind.radius();
-            assert!(p.y - radius >= 31 && p.y + radius <= 269, "the glyph clears the header and the panel");
-            assert!(apart(*p, radius, Point::new(120, 160), 12, 0), "the glyph clears the rider box");
+            let b = glyph_box(*p, kind.radius());
+            assert!(b.top_left.x >= 0 && b.top_left.y >= 0, "the glyph draws whole");
             assert!(
-                placed[..i].iter().all(|(q, other)| apart(*p, radius, *q, other.radius(), 2)),
+                b.top_left.x + b.size.width as i32 <= 240 && b.top_left.y + b.size.height as i32 <= 320,
+                "the glyph draws whole"
+            );
+            for r in frame {
+                assert!(!touches(b, 0, r), "the glyph clears the reserved chrome");
+            }
+            assert!(
+                placed[..i].iter().all(|(q, other)| !touches(b, 2, glyph_box(*q, other.radius()))),
                 "the glyphs hold the margin apart"
             );
         }
@@ -760,6 +780,31 @@ mod tests {
             DRAW_LIMIT,
             "one category may fill all free slots"
         );
+    }
+
+    /// A waypoint diamond comes in as reserved chrome, because it inks over the glyphs. The mark it
+    /// covers is dropped, not moved, and the marks beside it are untouched.
+    #[test]
+    fn a_reserved_waypoint_diamond_drops_the_glyph_over_it() {
+        let vp = view();
+        let mut icons = MapIcons::new();
+        for i in 0..6 {
+            icons.retain(Mark {
+                id: i as u64 + 1,
+                position: vp.to_map(40.0 + i as f32 * 32.0, 160.0),
+                elevation: 1000,
+                kind: Kind::Water,
+            });
+        }
+        let free = icons.placements(&vp, &mut PointPlacement::new(&[]));
+        assert!(free.len() > 1, "the marks are placed with nothing reserved");
+        let covered = free[0].0;
+        // The box `label_reserved` gives a diamond, centred on the mark it covers.
+        let r = 4;
+        let diamond = rect(covered.x - r, covered.y - r, 2 * r + 1, 2 * r + 1);
+        let held = icons.placements(&vp, &mut PointPlacement::new(&[diamond]));
+        assert!(!held.iter().any(|(p, _)| *p == covered), "the glyph over the diamond is dropped");
+        assert_eq!(held.len(), free.len() - 1, "and only that one");
     }
 
     #[test]

@@ -917,6 +917,16 @@ expect = "Map"
 args = ["--clock", "2025-06-29T14:40", "--center", "7849401,48114690", "--zoom", "1.49"]
 boot = false
 
+# The map icons, at 5 m/px over Monaco's harbour: haloed service glyphs with the chrome and the
+# panel edges the shared point placer holds them off. The Freiburg and Grimsel cameras hold no
+# icon, so this is the one frame that pins icon placement.
+[[frame]]
+name = "map-icons"
+map = "{monaco}"
+expect = "Map"
+args = ["--clock", "2025-06-29T14:40", "--center", "7416969,43730798", "--zoom", "20"]
+boot = false
+
 [[frame]]
 name = "statistics"
 map = "{grimsel}"

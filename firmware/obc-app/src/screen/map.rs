@@ -459,7 +459,8 @@ pub(crate) fn label_reserved(
         let (x, y) = vp.to_screen(wp.lon, wp.lat);
         if waypoint_diamond(x, y, vp.w as i32, vp.h as i32).is_some() {
             let r = WAYPOINT_DIAMOND_R;
-            let _ = boxes.push(rect(x - r, y - r, 2 * r, 2 * r));
+            // The vertices are at `-r` and `+r`, both ends, so the ink is `2r + 1` wide.
+            let _ = boxes.push(rect(x - r, y - r, 2 * r + 1, 2 * r + 1));
         }
     }
     boxes
@@ -1607,6 +1608,29 @@ mod tests {
             let reserved = back_to_you_box(240.0, 320.0, &vp, fix).expect("…and reserves a box for it");
             assert_inside(drawn_box(&buf), reserved, &std::format!("the marker at ({dx}, {dy})"));
         }
+    }
+
+    /// The waypoint diamonds ink over the point marks, so each one the frame draws holds a box.
+    #[test]
+    fn a_waypoint_diamond_holds_the_pixels_it_draws_against_the_point_marks() {
+        use obc_render::Canvas;
+        let vp = Viewport::new(240.0, 320.0, 0, 0, 1.0);
+        let at = |x: f32, y: f32| {
+            let (lon, lat) = vp.to_map(x, y);
+            WptEntry { lon, lat, ..wp(0, "Brunnen") }
+        };
+        let (on, off) = (at(120.0, 200.0), at(120.0, -400.0));
+
+        let reserved = label_reserved(&vp, None, &[on.clone(), off], &[]);
+        assert_eq!(reserved.len(), 1, "only a diamond the frame draws reserves a box");
+        let mut buf = Buf::new(240, 320);
+        draw_waypoint_diamonds(&mut Canvas::new(&mut buf, &shade), &vp, &[on], 240, 320);
+        assert_inside(drawn_box(&buf), reserved[0], "the waypoint diamond");
+
+        // A mark may sit flush against reserved chrome, so the box alone decides.
+        let mut place = PointPlacement::new(&reserved);
+        assert!(!place.try_place(rect(90, 192, 60, 16), 0), "a name over the diamond is refused");
+        assert!(place.try_place(rect(90, 100, 60, 16), 0), "one clear of it is placed");
     }
 
     /// A [`Fix`] that lands on the given screen point of `vp`.
