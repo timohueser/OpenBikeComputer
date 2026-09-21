@@ -403,8 +403,13 @@ class RcloneSeam(ArchiveCase):
         "sha256": {"0100/0200": "aa" * 32},
     }
 
-    def record(self, argv, env):
+    #: What `rclone lsf` answers: an empty line means R2 holds no index yet.
+    LSF = "index.json\n"
+
+    def record(self, argv, env, capture=False):
         self.calls.append((argv, env))
+        if argv[0] == "lsf":
+            return self.LSF
         if argv[0] == "copyto":  # the mirror reads the index it just pulled
             Path(argv[2]).write_text((self.archive / "index.json").read_text(encoding="utf-8"), encoding="utf-8")
         if "--include" in argv:  # the publish pulls the index that is already on R2
@@ -418,8 +423,9 @@ class RcloneSeam(ArchiveCase):
         """Nothing is deleted, and the index that goes up names R2's tiles as well as ours."""
 
         self.assertEqual(ingest.main(["publish", "--archive", str(self.archive)]), 0)
-        upload, fetch, publish = (argv for argv, _ in self.calls)
+        upload, listing, fetch, publish = (argv for argv, _ in self.calls)
         self.assertEqual([argv[0] for argv in (upload, fetch, publish)], ["copy", "copy", "copy"])
+        self.assertEqual(listing[0], "lsf")
         self.assertNotIn("--delete", [word for argv, _ in self.calls for word in argv])
 
         self.assertEqual(upload[1:3], [str(self.archive), "OBCR2:maps/obc/reference/v1"])
@@ -434,6 +440,14 @@ class RcloneSeam(ArchiveCase):
         self.assertEqual(sorted(self.uploaded["sources"]), ["ch", "es"])
         self.assertEqual(sorted(self.uploaded["sha256"]), sorted(self.uploaded["tiles"]))
         self.assertEqual(self.uploaded["sha256"][mine], self.index()["sha256"][mine])
+
+    def test_a_first_publish_does_not_fetch_an_index_that_is_not_there(self):
+        """An empty `lsf` is how an empty bucket is told from one with an index in it."""
+
+        self.LSF = ""
+        self.assertEqual(ingest.main(["publish", "--archive", str(self.archive)]), 0)
+        self.assertEqual([argv[0] for argv, _ in self.calls], ["copy", "lsf", "copy"])
+        self.assertEqual(self.uploaded["tiles"], self.index()["tiles"])
 
     def test_this_archive_wins_a_tile_r2_also_holds(self):
         mine = next(iter(self.index()["tiles"]))
@@ -461,9 +475,19 @@ class RcloneSeam(ArchiveCase):
         self.assertEqual(ingest.main(["mirror", "--archive", str(target), "--bbox", bbox]), 0)
         copyto, copy = (argv for argv, _ in self.calls)
         self.assertEqual(copyto[1], "OBCR2:maps/obc/reference/v1/index.json")
+        # The box needs its own tile and the ring around it; only the one is in the index.
+        self.assertGreaterEqual(len(ingest.box_tiles(ingest.parse_bbox(bbox))), 9)
         self.assertEqual(self.listing, [f"16/{next(iter(self.index()['tiles']))}.tif"])
         wanted = Path(copy[copy.index("--files-from") + 1])
         self.assertFalse(wanted.exists())  # the listing is temporary, not archive content
+
+    def test_the_mirror_halo_is_one_tile_on_every_side(self):
+        tile = next(iter(self.index()["tiles"]))
+        ti, tj = (int(part) for part in tile.split("/"))
+        needed = ingest.box_tiles(ingest.parse_bbox(bbox_of(self.inputs / "tower.tif")))
+        for di in (-1, 0, 1):
+            for dj in (-1, 0, 1):
+                self.assertIn(ingest.tile_id(ti + di, tj + dj), needed)
 
 
 if __name__ == "__main__":

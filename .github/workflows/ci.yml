@@ -286,6 +286,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            tools/requirements-test.txt
+            tools/requirements-coverage.txt
+            tools/requirements-bake.txt
       - name: Install Python test reporter
         run: pip install -r tools/requirements-test.txt
       - name: firmware resource/dependency tool unit tests

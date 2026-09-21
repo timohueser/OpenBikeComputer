@@ -106,7 +106,7 @@ It needs `rasterio`, `pyproj` and `numpy` (`tools/requirements-bake.txt`, or
 | `index` | Rebuilds `index.json` from the manifests in `sources/`. |
 | `check` | Opens every tile and holds it against the contract — size, dtype, nodata, CRS, the exact transform, the digest — and refuses a tile the index does not name. |
 | `publish` | `rclone copy` of the archive to `<bucket>/reference/v1/`: tiles and manifests first, then the index, which goes up as the merge of the index already on R2 with this archive's. Additive and idempotent: a publish never deletes. |
-| `mirror` | `rclone copy` of the index plus the tiles one box needs, into a local directory. This is what a bakery run does before `obc-dem bake --reference`. |
+| `mirror` | `rclone copy` of the index plus the tiles one box needs, into a local directory. The box is padded by one tile on every side, because the baker's node halo reads over a cell edge. It prints how many of the needed tiles the archive does not hold. This is what a bakery run does before `obc-dem bake --reference`. |
 
 ### What the shared tail does
 
@@ -278,4 +278,6 @@ python3 host/obc-dem/reference/ingest.py mirror --archive ref/ --bbox 8.30,46.75
 obc-dem bake --reference ref/ …
 ```
 
-`mirror` pulls `index.json` first, then the tiles the box needs and nothing else.
+`mirror` pulls `index.json` first, then the tiles of the box and its one-tile halo, and nothing else. A
+tile the archive does not hold is counted and named in the summary, not an error: a box that reaches
+past the coverage is normal.
