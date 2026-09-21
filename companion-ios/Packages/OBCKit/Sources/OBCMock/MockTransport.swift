@@ -80,9 +80,7 @@ public struct MockTransport: DeviceTransport {
 
     public func writeConfig(_ config: DeviceConfig) async throws {
         try await preludeThrowing()
-        var stored = config
-
-        control.setConfig(stored)
+        control.setConfig(config)
     }
 
     public func readDiagnostics() async throws -> Data {
