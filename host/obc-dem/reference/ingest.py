@@ -11,8 +11,9 @@ offline tool that runs once per source release. The baker knows the tiles only, 
     python3 ingest.py publish --archive ref/
 
 A source adapter has one job: give the shared tail rasters that cover the box, in any CRS
-and any dtype. The tail reprojects each one onto the lattice with `Resampling.max`, so a
-rock tower one source pixel wide survives the 7 m step, and writes whole tiles.
+and any dtype. The tail pools each one onto the lattice by the contract's rule — a lattice
+pixel keeps the maximum of the source pixels whose centres lie in it — so a rock tower one
+source pixel wide survives the 7 m step, and writes whole tiles.
 """
 
 import argparse
@@ -32,7 +33,8 @@ import numpy as np
 import rasterio
 from rasterio.crs import CRS
 from rasterio.transform import Affine
-from rasterio.warp import Resampling, reproject, transform_bounds
+from rasterio.warp import transform_bounds
+from pyproj import Transformer
 
 # ── the lattice ─────────────────────────────────────────────────────────────
 # All lattice arithmetic is exact integer microdegrees. Degrees appear only in the
@@ -50,11 +52,11 @@ WORLD = (-180 * DEGREE, -90 * DEGREE, 180 * DEGREE, 90 * DEGREE)
 
 WGS84 = CRS.from_epsg(4326)
 
-# Absence during the warp. Every real height is far above it, so `Resampling.max` over a
-# footprint of voids returns a void, and over a mixed footprint returns the real maximum,
-# whether or not the driver masks the nodata itself.
+# Absence while pooling. Every real height is far above it, so a lattice pixel that no
+# source pixel centre reached still reads as absent after the maximum.
 VOID = -1e30
 NOT_A_HEIGHT = 1e6  # a magnitude no orthometric height reaches
+POOL_BLOCK = 256  # source rows per coordinate transform
 
 # Priority, finest and best-maintained national product first. A tile a source earlier in
 # this list holds is never replaced by a source later in it. Keys with no adapter yet are
@@ -106,14 +108,19 @@ class Window:
                 yield ti, tj
 
 
-def covering_window(bounds: tuple[float, float, float, float]) -> Window:
-    """The smallest lattice window that covers a degree box."""
+def covering_window(bounds: tuple[float, float, float, float], pad: int = 0) -> Window:
+    """The smallest lattice window that covers a degree box, with `pad` pixels of margin.
+
+    An ingest pads by one pixel. The pooling below drops any centre that lands outside the
+    window, and a reprojected boundary is an approximation of a curve, so the margin is
+    what makes that drop a safety net rather than a way to lose an edge pixel.
+    """
 
     west, south, east, north = bounds
-    col0 = pixel_index(int(np.floor(west * DEGREE)))
-    col1 = pixel_index(int(np.ceil(east * DEGREE)) - 1) + 1
-    row0 = pixel_index(int(np.floor(south * DEGREE)))
-    row1 = pixel_index(int(np.ceil(north * DEGREE)) - 1) + 1
+    col0 = pixel_index(int(np.floor(west * DEGREE))) - pad
+    col1 = pixel_index(int(np.ceil(east * DEGREE)) - 1) + 1 + pad
+    row0 = pixel_index(int(np.floor(south * DEGREE))) - pad
+    row1 = pixel_index(int(np.ceil(north * DEGREE)) - 1) + 1 + pad
     return Window(row0, col0, max(row1 - row0, 1), max(col1 - col0, 1))
 
 
@@ -232,6 +239,22 @@ def priority_rank(key: str) -> int:
 # ── the shared tail ─────────────────────────────────────────────────────────
 
 
+def source_xy(transform: Affine, rows, cols):
+    """Source-CRS coordinates of pixel centres. Rotation and shear fall out of the affine."""
+
+    return (transform.c + transform.a * cols + transform.b * rows,
+            transform.f + transform.d * cols + transform.e * rows)
+
+
+def source_envelope(transform: Affine, width: int, height: int):
+    """The axis-aligned box of a raster's four corners, in its own CRS."""
+
+    cols = np.array([0.0, width, 0.0, width])
+    rows = np.array([0.0, 0.0, height, height])
+    x, y = source_xy(transform, rows, cols)
+    return float(x.min()), float(y.min()), float(x.max()), float(y.max())
+
+
 def read_source(path: Path):
     """One raster as float32 heights with voids marked, plus its CRS, transform and box.
 
@@ -248,33 +271,42 @@ def read_source(path: Path):
         if src.nodata is not None and np.isfinite(src.nodata):
             void |= values == np.float32(src.nodata)
         values[void] = VOID
-        bounds = transform_bounds(src.crs, WGS84, *src.bounds)
+        envelope = source_envelope(src.transform, src.width, src.height)
+        bounds = transform_bounds(src.crs, WGS84, *envelope)
         return values, src.transform, src.crs, bounds
 
 
-def warp_to_lattice(values, src_transform, src_crs, window: Window):
-    """Max-pool a source raster onto the lattice window that covers it.
+def pool_onto_lattice(values, src_transform, src_crs, window: Window):
+    """The contract's pooling rule, done directly.
 
-    The destination transform is the lattice itself, so no pixel is ever resampled twice
-    and the archive needs no `calculate_default_transform`. `Resampling.max` takes the
-    maximum of the source pixels under each destination pixel; where the source is coarser
-    than the lattice it repeats the one pixel it finds, which is what a max over a single
-    pixel means.
+    Every source pixel goes to the one lattice pixel that contains its centre, and a
+    lattice pixel keeps the maximum of the pixels that reached it. `Resampling.max` cannot
+    do this: it pools by area overlap, so a source pixel that merely touches a lattice
+    pixel raises it. Over an alpine box that read 39 % of the pixels too high, and a
+    one-pixel tower reached two to four archive pixels instead of one.
+
+    A centre is a point, so a rotated or sheared source needs no special case, and a source
+    coarser than the lattice simply reaches fewer lattice pixels: the pooling never invents
+    ground where no centre landed.
     """
 
-    destination = np.full((window.rows, window.cols), VOID, dtype="float32")
-    reproject(
-        source=values,
-        destination=destination,
-        src_transform=src_transform,
-        src_crs=src_crs,
-        src_nodata=VOID,
-        dst_transform=window.transform,
-        dst_crs=WGS84,
-        dst_nodata=VOID,
-        resampling=Resampling.max,
-    )
-    return destination
+    dest = np.full(window.rows * window.cols, VOID, dtype="float32")
+    to_wgs84 = Transformer.from_crs(src_crs, WGS84, always_xy=True)
+    top = window.row0 + window.rows
+    for start in range(0, values.shape[0], POOL_BLOCK):
+        band = values[start:start + POOL_BLOCK]
+        rows, cols = np.nonzero(band > VOID / 2)
+        if rows.size == 0:
+            continue
+        x, y = source_xy(src_transform, rows + start + 0.5, cols + 0.5)
+        lon, lat = to_wgs84.transform(x, y)
+        row = pixel_index(np.floor(lat * DEGREE).astype("int64"))
+        col = pixel_index(np.floor(lon * DEGREE).astype("int64"))
+        inside = ((row >= window.row0) & (row < top)
+                  & (col >= window.col0) & (col < window.col0 + window.cols))
+        flat = (top - 1 - row[inside]) * window.cols + (col[inside] - window.col0)
+        np.maximum.at(dest, flat, band[rows[inside], cols[inside]])
+    return dest.reshape(window.rows, window.cols)
 
 
 def to_int16(values):
@@ -346,11 +378,11 @@ def ingest_raster(path: Path, source: Source, root: Path, owner: dict[str, str])
 
     values, src_transform, src_crs, bounds = read_source(path)
     check_world(bounds, str(path))
-    window = covering_window(bounds)
-    warped = to_int16(warp_to_lattice(values, src_transform, src_crs, window))
+    window = covering_window(bounds, pad=1)
+    pooled = to_int16(pool_onto_lattice(values, src_transform, src_crs, window))
     touched = []
     for ti, tj in window.tiles():
-        tile = cut_tile(window, warped, ti, tj)
+        tile = cut_tile(window, pooled, ti, tj)
         if tile is None or not (tile != NODATA).any():
             continue
         held = owner.get(tile_id(ti, tj))
