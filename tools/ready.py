@@ -1,21 +1,15 @@
 #!/usr/bin/env python3
 """`obc ready` — the gates a change selects, before a push.
 
-The rule table below maps the changed paths to gates. Every gate prints `run` or `skip` with one
-reason, so the plan shows what it leaves out as plainly as what it does. That is the budget rule:
-a pre-flight that runs everything is not a pre-flight.
-
-`obc test affected` executes the declared suites of `testing/suites.toml`. A gate whose work is
-one of those suites is therefore skipped, and the line names the suite that does it. Nothing runs
-twice — the snapshot sweep least of all.
+The rule table below maps the changed paths to gates, and every gate prints `run` or `skip` with one
+reason. A gate whose work is a declared suite of `testing/suites.toml` is skipped, and its line
+names the suite that does it, so nothing runs twice.
 
 A foundation input or the test policy selects the graph as a whole. That run is CI's, so the plan
-does not repeat it here: it keeps the selected suites that build nothing, gives each one a line,
-and names every other suite as left to CI. A check that costs a fraction of a second then stays
-visible instead of hiding behind an expensive one.
+keeps only the selected suites that build nothing and names every other suite as left to CI.
 
-The format gate writes. When it rewrites a file, the tree is no longer the tree that was about to
-be pushed, so the command names the files and stops instead of printing the skeleton.
+The format gate writes. When it rewrites a file, the tree is no longer the tree that was about to be
+pushed, so the command names the files and stops.
 
 The gates run in the order below: the static checks first, the compiling and rendering gates last.
 """
@@ -146,8 +140,8 @@ def builds_nothing(command: str) -> bool:
     may start a build, so every executable the command names must be a known free one.
     """
 
-    # `punctuation_chars` makes the lexer cut a separator out of the word it is glued to, so
-    # `a.py; cargo build` reports both executables and not one.
+    # `punctuation_chars` makes the lexer cut a separator out of the word it is glued to, so a
+    # command with no space before its separator reports both executables and not one.
     lexer = shlex.shlex(command.replace("\n", " ; "), posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     lexer.commenters = ""
@@ -228,8 +222,8 @@ def plan(
             bool(content),
         )
     )
-    # The licence script is called directly, not through `obc licenses --check`: the task adds
-    # no setup, and this is the command `ci.licenses` declares.
+    # The licence script is called directly and not through its `obc` task: the task adds no
+    # setup, and this is the command CI declares.
     gates.append(
         Gate(
             "tools/licenses/gen-third-party.sh --check",
@@ -273,8 +267,8 @@ def plan(
             for gate in gates
         ]
     # The affected run is CI's, so this plan keeps only what builds nothing. A gate that runs
-    # repeats a selected suite, so it speaks for that suite and the suite gets no second line.
-    # A gate its own rule already skipped speaks for nothing, and the suite keeps its line.
+    # repeats a selected suite, so it speaks for that suite and the suite gets no second line. A
+    # gate its own rule already skipped speaks for nothing, and the suite keeps its line.
     spoken, kept = set(), []
     for gate in gates:
         if gate.run and gate.covered_by in identifiers:

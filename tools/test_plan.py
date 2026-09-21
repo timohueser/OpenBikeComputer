@@ -27,7 +27,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import test_exceptions
 
-# ─────────────────────────────────────────────────────────── the job table ──
 # One row per CI job.  `roots` and `packages` say which Cargo packages a job
 # compiles; nothing else in this file restates Cargo.
 
@@ -151,7 +150,6 @@ WHOLESALE = (WHOLE_GRAPH, POLICY_CHANGED, FOUNDATION_CHANGED)
 class PlanError(Exception):
     """The plan or its inputs are invalid."""
 
-# ────────────────────────────────────────────────────────────── Cargo graph ──
 
 @dataclass(frozen=True)
 class Package:
@@ -271,7 +269,6 @@ def package_jobs(graph: CargoGraph, package: str) -> list[str]:
         if product_root in job.roots or package in job.packages
     )
 
-# ─────────────────────────────────────────────────────── declared documents ──
 
 @dataclass
 class Unit:
@@ -352,7 +349,6 @@ def build_units(graph: CargoGraph, document: Mapping[str, Any]) -> list[Unit]:
         )
     return units
 
-# ──────────────────────────────────────────────────────────────── selection ──
 
 @dataclass
 class Plan:
@@ -640,7 +636,6 @@ def render_text(plan: Plan) -> str:
         lines.extend(f"  - {error}" for error in plan.errors)
     return "\n".join(lines)
 
-# ─────────────────────────────────────────────────────────────── execution ──
 
 def cargo_filter(
     graph: CargoGraph,
@@ -745,7 +740,6 @@ def reproduced(units: Sequence[Unit], gates: Sequence[str]) -> list[Unit]:
         if unit.jobs and not unit.ci_only and set(unit.jobs).issubset(claimed)
     ]
 
-# ─────────────────────────────────────────────────────────────── validation ──
 
 def _command_errors(root: Path, unit: Unit, graph: CargoGraph) -> list[str]:
     """Reject a command whose executable, working directory or package does not exist."""
@@ -938,7 +932,6 @@ AUDITED_PATHS = (
     "docs/index.md",
 )
 
-# ──────────────────────────────────────────────────────────────── commands ──
 
 def load(root: Path) -> tuple[CargoGraph, dict[str, Any], list[Unit]]:
     document = load_document(root)
