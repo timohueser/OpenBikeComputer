@@ -39,7 +39,7 @@ describe("decodeRouteHeader", () => {
     });
 
     it("reads a waypoint-free route the same way", () => {
-        // §1: the waypoint section is reached by an explicit offset and never by the ride path —
+        // The waypoint section is reached by an explicit offset and never by the ride path —
         // the two fixtures are the same ride, so every stat must match.
         const withWaypoints = decodeRouteHeader(vector("route-waypoints.obcr"));
         const plain = decodeRouteHeader(vector("route-plain.obcr"));

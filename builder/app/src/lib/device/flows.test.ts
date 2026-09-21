@@ -291,8 +291,8 @@ describe("map upload from a file", () => {
     }, 30_000);
 
     it("refuses a second transfer while one is running", async () => {
-        // Three surfaces share one client and one device; §1 allows exactly one transfer at a time,
-        // and the answer has to be a clean error rather than two interleaved objects.
+        // Three surfaces share one client and one device, which allows exactly one transfer at a
+        // time, and the answer has to be a clean error rather than two interleaved objects.
         await withDevice({ packetSize: 4096, streamHighWaterMark: 8 * 1024 }, async ({ client }) => {
             const file = new File([syntheticBytes(1024 * 1024)], "one.obcm");
             const running = sendMapFile(client, file, context());
