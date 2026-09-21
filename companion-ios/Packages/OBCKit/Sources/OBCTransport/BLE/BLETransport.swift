@@ -115,7 +115,6 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     public var state: AsyncStream<ConnectionState> { stateMulticast.stream() }
     public var battery: AsyncStream<Int> {
         // Drop the not-yet-known seed: subscribers get the first real reading, never a 0%.
-        // (read at discovery + BAS notifies), never a fabricated 0%.
         let source = batteryMulticast.stream()
         return AsyncStream { continuation in
             let pump = Task {

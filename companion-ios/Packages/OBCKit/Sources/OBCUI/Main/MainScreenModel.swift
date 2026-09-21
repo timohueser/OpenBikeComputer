@@ -173,8 +173,6 @@ public final class MainScreenModel {
             for await state in transport.state {
                 guard let self else { return }
                 connection = state
-                // A regained link (never the stream's replayed first value):
-                // re-read the lists — the reconnect is what makes the badges
                 // A regained link, never the stream's replayed first value: re-read the lists
                 // and run the desired-name reconcile for a config write that never landed.
                 if state == .connected, let was = previous, was != .connected {
@@ -737,7 +735,6 @@ public final class MainScreenModel {
     public func deleteTripAndRoutes(_ id: TripID) {
         guard let trip = trip(id) else { return }
         let stages = trip.stageIDs
-        // Device-side cascade (composed here — the protocol trip delete is
         // The protocol trip delete does not cascade, so compose it here. Best-effort: a failed
         // command leaves an orphan the reconcile heals.
         if let scope = connectedScope {
