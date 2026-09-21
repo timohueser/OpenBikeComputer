@@ -1,44 +1,38 @@
-//! Protocol v4's bytes: the control frame, the nine request bodies, the response bodies, the
+//! The protocol's bytes: the control frame, the nine request bodies, the response bodies, the
 //! stream frame and the error body.
 //!
-//! `FLAT_Store_Protocol.md` §3 is the sole authority and every offset below is transcribed from its
-//! tables. Decoding is **total**: an input is either a typed message or a typed [`Refusal`] carrying
-//! the contract's own code and detail, and nothing here panics on hostile bytes. Encoding writes
-//! exact bytes into a caller-provided slice and reports the length — this crate allocates nothing,
-//! on the device or on the host.
+//! `FLAT_Store_Protocol.md` is the sole authority and every offset below is transcribed from its
+//! tables. Decoding is total: an input is either a typed message or a typed [`Refusal`], and
+//! nothing here panics on hostile bytes. Encoding writes into a caller-provided slice and reports
+//! the length; nothing is allocated.
 //!
-//! The codec holds no state and knows no policy. It does not decide whether a `PUT` may replace a
-//! ride, whether a listing is stale, or what a kind's validator thinks; those are
-//! [`super::engine`]'s, and the split is what lets the same bytes be produced by a fixture producer
-//! that never calls this code.
+//! The codec holds no state and knows no policy. Those are [`super::engine`]'s.
 
 use super::ids::{DisplayName, EntryMeta, ObjectId, ObjectKind, Revision, StoreId, NAME_CAPACITY};
 
 use super::store::{ArchiveResult, ArchiveSource};
 
-/// The wire major this module implements. It is a transport fact (§4), never negotiated.
+/// The wire major this module implements. It is never negotiated.
 pub const WIRE_MAJOR: u8 = 4;
 
 /// The four bytes every control frame opens with.
 pub const MAGIC: [u8; 4] = *b"OBC4";
 
-/// The control frame header, §3.1.
 pub const HEADER_LEN: usize = 16;
 
-/// The stream frame, §3.8. A stream record is this followed by exactly `payload length` bytes.
+/// A stream record is this frame followed by exactly its payload bytes.
 pub const STREAM_HEADER_LEN: usize = 16;
 
-/// An error response payload, §3.9. Exactly this, never more and never less.
+/// An error response payload is exactly this, never more and never less.
 pub const ERROR_BODY_LEN: usize = 16;
 
-/// `StoreId` plus commit sequence, ahead of a `LIST` page's entries (§3.3).
+/// `StoreId` plus commit sequence, ahead of a `LIST` page's entries.
 pub const LIST_PREFIX_LEN: usize = 24;
 
-/// One `LIST` entry (§3.3).
 pub const LIST_ENTRY_LEN: usize = 88;
 
 /// The smallest control record that can carry this protocol: a header plus a single-entry `LIST`
-/// page (§5.1). A link below this floor is refused rather than truncated.
+/// page. A link below this floor is refused rather than truncated.
 pub const CONTROL_FLOOR: usize = HEADER_LEN + LIST_PREFIX_LEN + LIST_ENTRY_LEN;
 
 const LIST_BODY_LEN: usize = 32;
@@ -51,11 +45,10 @@ const ARM_BODY_LEN: usize = 16;
 const FORMAT_BODY_LEN: usize = 32;
 const ARCHIVE_BODY_LEN: usize = 44;
 
-/// A client-chosen transfer identifier (§3.1). Nonzero: a zero one is unanswerable.
+/// A client-chosen transfer identifier. Nonzero: a zero one is unanswerable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RequestId(pub u32);
 
-/// §3.2's opcode table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Opcode {
@@ -71,7 +64,7 @@ pub enum Opcode {
 }
 
 impl Opcode {
-    /// Decodes §3.2's byte. Anything else is `unsupported`.
+    /// Anything else is `unsupported`.
     pub fn decode(value: u8) -> Option<Self> {
         Some(match value {
             0x01 => Opcode::List,
@@ -87,7 +80,6 @@ impl Opcode {
         })
     }
 
-    /// The byte §3.2 registers.
     pub fn value(self) -> u8 {
         self as u8
     }
@@ -108,9 +100,8 @@ impl Opcode {
     }
 }
 
-/// §3.1's flag bits.
+/// The control frame's flag bits.
 pub mod flags {
-    /// A successful response.
     pub const RESPONSE: u16 = 1 << 0;
     /// An error response; its payload is exactly one 16-byte error body.
     pub const ERROR: u16 = 1 << 1;
@@ -118,7 +109,7 @@ pub mod flags {
     pub const MORE: u16 = 1 << 2;
 }
 
-/// §3.9's code table. Code `0` is invalid.
+/// The error code table. Code `0` is invalid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum ErrorCode {
@@ -139,12 +130,10 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    /// The `u16` §3.9 registers.
     pub fn value(self) -> u16 {
         self as u16
     }
 
-    /// Decodes §3.9's code, for a client and for the fixtures.
     pub fn decode(value: u16) -> Option<Self> {
         Some(match value {
             1 => ErrorCode::Unsupported,
@@ -166,72 +155,65 @@ impl ErrorCode {
     }
 }
 
-/// §3.9's code-scoped details. `0` means no narrower fact.
+/// Code-scoped details. `0` means no narrower fact.
 pub mod detail {
-    /// `unsupported`.
     pub mod unsupported {
         pub const OPCODE: u16 = 1;
         pub const KIND: u16 = 2;
         pub const WIRE_MAJOR: u16 = 3;
     }
-    /// `invalidFrame`.
     pub mod invalid_frame {
         pub const MAGIC: u16 = 1;
         pub const LENGTH: u16 = 2;
         pub const TRUNCATED: u16 = 3;
         pub const TRAILING: u16 = 4;
     }
-    /// `invalidRequest`.
     pub mod invalid_request {
         pub const RESERVED_BITS: u16 = 1;
         pub const UNKNOWN_ENUM: u16 = 2;
         pub const BAD_COMBINATION: u16 = 3;
         pub const STREAM_OFFSET: u16 = 4;
     }
-    /// `notFound`.
     pub mod not_found {
         pub const OBJECT: u16 = 1;
         pub const REVISION: u16 = 2;
     }
-    /// `revisionConflict`; context is the current head `Revision`.
+    /// Context is the current head `Revision`.
     pub mod revision_conflict {
         pub const HEAD_DIFFERS: u16 = 1;
         pub const HEAD_ABSENT: u16 = 2;
     }
-    /// `noSpace`; context is the bytes required.
+    /// Context is the bytes required.
     pub mod no_space {
         pub const EXTENTS: u16 = 1;
         pub const CATALOG_FULL: u16 = 2;
         pub const TOO_FRAGMENTED: u16 = 3;
     }
-    /// `checksumFailure`; context is the declared payload CRC.
+    /// Context is the declared payload CRC.
     pub mod checksum_failure {
         pub const PAYLOAD: u16 = 1;
     }
-    /// `mediaIo`.
     pub mod media_io {
         pub const READ: u16 = 1;
         pub const WRITE: u16 = 2;
         pub const SYNC: u16 = 3;
     }
-    /// `busy`; context is the `RequestId` of the live transfer.
+    /// Context is the `RequestId` of the live transfer.
     pub mod busy {
         pub const TRANSFER: u16 = 1;
-        /// The store's open-object table is full — every hold row is taken by a reader that has not
-        /// closed yet. Names no request and carries no context, unlike [`TRANSFER`].
+        /// Every hold row is taken by a reader that has not closed yet. It names no request and
+        /// carries no context, unlike [`TRANSFER`].
         pub const HOLDS: u16 = 2;
     }
-    /// `cancelled`.
     pub mod cancelled {
         pub const BY_CLIENT: u16 = 1;
         pub const BY_DEVICE: u16 = 2;
         pub const LINK_LOST: u16 = 3;
     }
-    /// `catalogChanged`; context is the current commit sequence.
+    /// Context is the current commit sequence.
     pub mod catalog_changed {
         pub const LISTING: u16 = 1;
     }
-    /// `readOnly`.
     pub mod read_only {
         pub const CATALOG_UNREADABLE: u16 = 1;
         pub const REVISION_SPACE_EXHAUSTED: u16 = 2;
@@ -239,7 +221,7 @@ pub mod detail {
     }
 }
 
-/// One refusal, exactly as §3.9's body carries it.
+/// One refusal, exactly as the error body carries it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Refusal {
     pub code: ErrorCode,
@@ -248,22 +230,18 @@ pub struct Refusal {
 }
 
 impl Refusal {
-    /// A refusal with no narrower fact and no context.
     pub const fn plain(code: ErrorCode) -> Self {
         Refusal { code, detail: 0, context: 0 }
     }
 
-    /// A refusal with a detail and no context.
     pub const fn new(code: ErrorCode, detail: u16) -> Self {
         Refusal { code, detail, context: 0 }
     }
 
-    /// A refusal with a detail and the code's context.
     pub const fn with_context(code: ErrorCode, detail: u16, context: u64) -> Self {
         Refusal { code, detail, context }
     }
 
-    /// The 16 bytes of §3.9's body.
     pub fn encode(&self) -> [u8; ERROR_BODY_LEN] {
         let mut body = [0u8; ERROR_BODY_LEN];
         body[0..2].copy_from_slice(&self.code.value().to_le_bytes());
@@ -272,7 +250,7 @@ impl Refusal {
         body
     }
 
-    /// Decodes §3.9's body. Code `0`, an unknown code or a nonzero tail is a malformed body.
+    /// Code `0`, an unknown code or a nonzero tail is a malformed body.
     pub fn decode(body: &[u8]) -> Option<Self> {
         if body.len() != ERROR_BODY_LEN || body[12..] != [0; 4] {
             return None;
@@ -310,21 +288,19 @@ fn is_zero(bytes: &[u8]) -> bool {
 /// Why a control record produced no message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlError {
-    /// There is no `RequestId` to echo — the record is shorter than a header, or its `RequestId` is
-    /// zero (§3.1). A receiver emits nothing and closes that record stream.
+    /// There is no `RequestId` to echo: the record is shorter than a header, or its `RequestId` is
+    /// zero. A receiver sends nothing and closes that record stream.
     Unanswerable,
     /// The request is refused, and this is the body of the error response it gets.
     Refused { request: RequestId, refusal: Refusal },
 }
 
-/// §3.1's header, as a decoded request carries it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Header {
     pub opcode: Opcode,
     pub request: RequestId,
 }
 
-/// One decoded request. There are nine and there is no generic forwarding path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Request {
     List(ListRequest),
@@ -338,7 +314,7 @@ pub enum Request {
     ArchiveRide(ArchiveSource),
 }
 
-/// §3.3's cursor: the **pair**, plus the commit sequence the page was told.
+/// The `LIST` cursor: the entry key, plus the commit sequence the page was told.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ListCursor {
     pub id: ObjectId,
@@ -346,7 +322,6 @@ pub struct ListCursor {
     pub sequence: u64,
 }
 
-/// §3.3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ListRequest {
     /// `None` lists every kind.
@@ -355,21 +330,19 @@ pub struct ListRequest {
     pub cursor: Option<ListCursor>,
 }
 
-/// §3.4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatusRequest {
     pub id: ObjectId,
     pub revision: Revision,
 }
 
-/// §3.5. `Revision::HEAD` takes the current head.
+/// `Revision::HEAD` takes the current head.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GetRequest {
     pub id: ObjectId,
     pub revision: Revision,
 }
 
-/// §3.6.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PutRequest {
     /// `ObjectId::NONE` creates a new object.
@@ -379,43 +352,39 @@ pub struct PutRequest {
     pub payload_len: u64,
     pub payload_crc: u32,
     pub kind: ObjectKind,
-    /// Leave the displaced revision `RETAINED`.
     pub name: DisplayName,
 }
 
-/// §3.7.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RemoveRequest {
     pub id: ObjectId,
     pub expected: Revision,
 }
 
-/// §3.8.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CancelRequest {
     pub transfer: RequestId,
 }
 
-/// §4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArmRequest {
     pub package: ObjectId,
     pub expected: Revision,
 }
 
-/// §3.10. The current identity is the destructive confirmation; a client sends zero only when
-/// `LIST` cannot report one. The replacement is client-minted, nonzero, and becomes durable before
-/// the response is sent.
+/// The current identity is the destructive confirmation; a client sends zero only when `LIST`
+/// cannot report one. The replacement is client-minted, nonzero, and becomes durable before the
+/// response is sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FormatRequest {
     pub expected: StoreId,
     pub replacement: StoreId,
 }
 
-/// Decodes one whole control record: §3.1's header and the opcode's body.
+/// Decodes one whole control record: the header and the opcode's body.
 ///
-/// Total. The two failures are §3.1's unanswerable record and a typed refusal to be sent back under
-/// the request's own `RequestId`.
+/// Total. The two failures are an unanswerable record and a typed refusal to be sent back under the
+/// request's own `RequestId`.
 pub fn decode_request(record: &[u8]) -> Result<(Header, Request), ControlError> {
     if record.len() < HEADER_LEN {
         return Err(ControlError::Unanswerable);
@@ -435,7 +404,7 @@ pub fn decode_request(record: &[u8]) -> Result<(Header, Request), ControlError> 
     let Some(opcode) = Opcode::decode(record[5]) else {
         return refuse(Refusal::new(ErrorCode::Unsupported, detail::unsupported::OPCODE));
     };
-    // "Requests carry no flags", and the reserved half-word is zero.
+    // Requests carry no flags, and the reserved half-word is zero.
     if u16_at(record, 6) != 0 || u16_at(record, 10) != 0 {
         return refuse(reserved_bits());
     }
@@ -489,8 +458,7 @@ fn decode_list(body: &[u8]) -> Result<ListRequest, Refusal> {
         0 => None,
         value => match ObjectKind::decode(value) {
             Some(kind) => Some(kind),
-            // A filter naming a kind this major does not register is `unsupported`, exactly as an
-            // unknown opcode is: the client asked for something the device has no table for.
+            // A filter naming an unregistered kind is `unsupported`, as an unknown opcode is.
             None => return Err(Refusal::new(ErrorCode::Unsupported, detail::unsupported::KIND)),
         },
     };
@@ -501,7 +469,7 @@ fn decode_list(body: &[u8]) -> Result<ListRequest, Refusal> {
     let cursor =
         ListCursor { id: ObjectId(u64_at(body, 8)), revision: Revision(u64_at(body, 16)), sequence: u64_at(body, 24) };
     if flags & 1 == 0 {
-        // "zero unless the cursor bit is set" — three fields, one rule.
+        // Three fields, one rule: zero unless the cursor bit is set.
         if (cursor.id.0, cursor.revision.0, cursor.sequence) != (0, 0, 0) {
             return Err(bad_combination());
         }
@@ -512,8 +480,7 @@ fn decode_list(body: &[u8]) -> Result<ListRequest, Refusal> {
 
 fn decode_status(body: &[u8]) -> Result<StatusRequest, Refusal> {
     let id = ObjectId(u64_at(body, 0));
-    // §3.4: "A STATUS naming ObjectId zero is invalidRequest; the identity of the store comes from
-    // LIST."
+    // A `STATUS` naming object zero is `invalidRequest`; the store's identity comes from `LIST`.
     if !id.is_some() {
         return Err(bad_combination());
     }
@@ -527,7 +494,7 @@ fn decode_get(body: &[u8]) -> Result<GetRequest, Refusal> {
 fn decode_put(body: &[u8]) -> Result<PutRequest, Refusal> {
     let id = ObjectId(u64_at(body, 0));
     let expected = Revision(u64_at(body, 8));
-    // §3.6: "Zero is not a wildcard in either field."
+    // Zero is not a wildcard in either field.
     if id.is_some() != (expected.0 != 0) {
         return Err(bad_combination());
     }
@@ -542,10 +509,8 @@ fn decode_put(body: &[u8]) -> Result<PutRequest, Refusal> {
     Ok(PutRequest { id, expected, payload_len: u64_at(body, 16), payload_crc: u32_at(body, 24), kind, name })
 }
 
-/// §3.3 and §3.6 carry the same 49-byte name field: a length byte, then 48 bytes whose unused tail
-/// is zero. The store keeps whatever bytes it is given, so the one rule this enforces beyond the
-/// spec's table is that the name is the UTF-8 the field says it is — a menu has nothing else to do
-/// with bytes that are not.
+/// `LIST` and `PUT` carry the same 49-byte name field: a length byte, then 48 bytes whose unused
+/// tail is zero. Beyond the field's own rules this enforces one thing: the name is valid UTF-8.
 fn decode_name(len: u8, field: &[u8]) -> Result<DisplayName, Refusal> {
     let len = len as usize;
     if len > NAME_CAPACITY {
@@ -583,8 +548,8 @@ fn decode_format(body: &[u8]) -> Result<FormatRequest, Refusal> {
     Ok(FormatRequest { expected: StoreId(expected), replacement: StoreId(replacement) })
 }
 
-/// Writes §3.1's header into `out` and returns the whole record's length, or `None` when the
-/// caller's buffer cannot hold the frame.
+/// Writes the header into `out` and returns the whole record's length, or `None` when the caller's
+/// buffer cannot hold the frame.
 fn write_header(out: &mut [u8], opcode: Opcode, flags: u16, payload: usize, request: RequestId) -> Option<usize> {
     let total = HEADER_LEN + payload;
     if out.len() < total || payload > u16::MAX as usize {
@@ -600,17 +565,17 @@ fn write_header(out: &mut [u8], opcode: Opcode, flags: u16, payload: usize, requ
     Some(total)
 }
 
-/// An error response: §3.1's header with `response|error`, and exactly one §3.9 body.
+/// An error response: the header with `response|error`, and exactly one error body.
 pub fn encode_error(out: &mut [u8], opcode: Opcode, request: RequestId, refusal: &Refusal) -> Option<usize> {
     let total = write_header(out, opcode, flags::RESPONSE | flags::ERROR, ERROR_BODY_LEN, request)?;
     out[HEADER_LEN..total].copy_from_slice(&refusal.encode());
     Some(total)
 }
 
-/// §3.3's page: the 24-byte prefix, then the entries the caller pushes.
+/// A `LIST` page: the 24-byte prefix, then the entries the caller pushes.
 ///
 /// The ceiling is remembered rather than taken from the caller's buffer, so a driver hands the same
-/// buffer to every channel and the page still stops where §5.1's control ceiling does.
+/// buffer to every channel and the page still stops at the link's control ceiling.
 pub struct ListWriter {
     ceiling: usize,
     filled: usize,
@@ -618,7 +583,7 @@ pub struct ListWriter {
 
 impl ListWriter {
     /// Starts a page bounded by `ceiling` bytes of `out`. Fails when that cannot hold a header, the
-    /// prefix and one entry — the §5.1 floor.
+    /// prefix and one entry.
     pub fn start(out: &mut [u8], ceiling: usize, store: StoreId, sequence: u64) -> Option<Self> {
         let ceiling = ceiling.min(out.len());
         if ceiling < CONTROL_FLOOR {
@@ -630,7 +595,6 @@ impl ListWriter {
         Some(ListWriter { ceiling, filled: LIST_PREFIX_LEN })
     }
 
-    /// How many entries still fit under the ceiling.
     pub fn room(&self) -> usize {
         (self.ceiling - HEADER_LEN - self.filled) / LIST_ENTRY_LEN
     }
@@ -655,14 +619,13 @@ impl ListWriter {
         true
     }
 
-    /// Seals the page. `more` sets §3.1's bit, which is valid on nothing else.
+    /// Seals the page. `more` sets the flag bit, which is valid on nothing else.
     pub fn finish(self, out: &mut [u8], request: RequestId, more: bool) -> Option<usize> {
         let flags = flags::RESPONSE | if more { flags::MORE } else { 0 };
         write_header(out, Opcode::List, flags, self.filled, request)
     }
 }
 
-/// §3.4's three states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ObjectState {
@@ -671,7 +634,6 @@ pub enum ObjectState {
     Superseded = 2,
 }
 
-/// §3.4's response.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatusResponse {
     pub state: ObjectState,
@@ -682,13 +644,11 @@ pub struct StatusResponse {
 }
 
 impl StatusResponse {
-    /// The answer for an `ObjectId` no entry names.
     pub fn absent() -> Self {
         StatusResponse { state: ObjectState::Absent, revision: Revision(0), payload_len: 0, payload_crc: 0 }
     }
 }
 
-/// Writes §3.4's 24-byte response.
 pub fn encode_status(out: &mut [u8], request: RequestId, answer: &StatusResponse) -> Option<usize> {
     let total = write_header(out, Opcode::Status, flags::RESPONSE, 24, request)?;
     let body = &mut out[HEADER_LEN..total];
@@ -700,7 +660,7 @@ pub fn encode_status(out: &mut [u8], request: RequestId, answer: &StatusResponse
     Some(total)
 }
 
-/// Writes §3.5's 24-byte response, sent once the last payload byte is on the transport.
+/// Sent once the last payload byte is on the transport.
 pub fn encode_get(out: &mut [u8], request: RequestId, served: Revision, payload_len: u64, crc: u32) -> Option<usize> {
     let total = write_header(out, Opcode::Get, flags::RESPONSE, 24, request)?;
     let body = &mut out[HEADER_LEN..total];
@@ -711,7 +671,6 @@ pub fn encode_get(out: &mut [u8], request: RequestId, served: Revision, payload_
     Some(total)
 }
 
-/// Writes §3.6's 32-byte response.
 pub fn encode_put(
     out: &mut [u8],
     request: RequestId,
@@ -730,21 +689,21 @@ pub fn encode_put(
     Some(total)
 }
 
-/// Writes §3.7's 8-byte response: the new catalog commit sequence.
+/// The response body is the new catalog commit sequence.
 pub fn encode_remove(out: &mut [u8], request: RequestId, sequence: u64) -> Option<usize> {
     let total = write_header(out, Opcode::Remove, flags::RESPONSE, 8, request)?;
     out[HEADER_LEN..total].copy_from_slice(&sequence.to_le_bytes());
     Some(total)
 }
 
-/// Writes §3.8's 1-byte response: `0` cancelled, `1` no such transfer.
+/// The response body is `0` cancelled, `1` no such transfer.
 pub fn encode_cancel(out: &mut [u8], request: RequestId, cancelled: bool) -> Option<usize> {
     let total = write_header(out, Opcode::Cancel, flags::RESPONSE, 1, request)?;
     out[HEADER_LEN] = u8::from(!cancelled);
     Some(total)
 }
 
-/// Writes §4's 16-byte response: the rollback reserve's `ObjectId` and the new commit sequence.
+/// The response body is the rollback reserve's `ObjectId` and the new commit sequence.
 pub fn encode_arm(out: &mut [u8], request: RequestId, reserve: ObjectId, sequence: u64) -> Option<usize> {
     let total = write_header(out, Opcode::Arm, flags::RESPONSE, 16, request)?;
     let body = &mut out[HEADER_LEN..total];
@@ -753,14 +712,14 @@ pub fn encode_arm(out: &mut [u8], request: RequestId, reserve: ObjectId, sequenc
     Some(total)
 }
 
-/// Writes §3.10's 16-byte response: the identity of the newly initialized empty store.
+/// The response body is the identity of the newly initialized empty store.
 pub fn encode_format(out: &mut [u8], request: RequestId, store: StoreId) -> Option<usize> {
     let total = write_header(out, Opcode::Format, flags::RESPONSE, 16, request)?;
     out[HEADER_LEN..total].copy_from_slice(&store.0);
     Some(total)
 }
 
-/// Writes the archive proof result. Zero timestamp means the countdown has not started.
+/// A zero timestamp means the retention countdown has not started.
 pub fn encode_archive(out: &mut [u8], request: RequestId, result: ArchiveResult) -> Option<usize> {
     let total = write_header(out, Opcode::ArchiveRide, flags::RESPONSE, 16, request)?;
     let body = &mut out[HEADER_LEN..total];
@@ -770,7 +729,7 @@ pub fn encode_archive(out: &mut [u8], request: RequestId, result: ArchiveResult)
     Some(total)
 }
 
-/// §3.8's stream frame. A stream record is this immediately followed by exactly `len` payload bytes.
+/// A stream record is this frame immediately followed by exactly `len` payload bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamFrame {
     pub transfer: RequestId,
@@ -778,12 +737,11 @@ pub struct StreamFrame {
     pub len: u16,
 }
 
-/// Reassembles §3.8 stream records from a byte-oriented transport.
+/// Reassembles stream records from a byte-oriented transport.
 ///
-/// BLE's L2CAP binding is exposed by CoreBluetooth as `InputStream` / `OutputStream`: one logical
-/// write may be accepted in several pieces, so an adapter cannot treat an SDU boundary as a record
-/// boundary. The record's own 16-byte header is the framing authority. This type keeps only the
-/// cursor; the adapter supplies its already-budgeted record buffer.
+/// One logical L2CAP write may be accepted in several pieces, so an adapter cannot treat an SDU
+/// boundary as a record boundary. The record's own 16-byte header is the framing authority. This
+/// type keeps only the cursor; the adapter supplies the record buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamRecordAssembler {
     filled: usize,
@@ -804,9 +762,9 @@ impl StreamRecordAssembler {
 
     /// Copy as much of `input` as belongs to the current record into `record`.
     ///
-    /// Returns the number of input bytes consumed and whether the record is complete. Bytes after a
-    /// complete record are deliberately left to the caller, which can release the record to its
-    /// consumer, reset this cursor, and continue with the same transport chunk.
+    /// Returns the input bytes consumed and whether the record is complete. Bytes after a complete
+    /// record are left to the caller, which releases the record, resets this cursor, and continues
+    /// with the same transport chunk.
     pub fn push(&mut self, record: &mut [u8], input: &[u8]) -> (usize, StreamAssembly) {
         if record.len() < STREAM_HEADER_LEN {
             return (0, StreamAssembly::TooLarge(STREAM_HEADER_LEN));
@@ -848,7 +806,6 @@ impl Default for StreamRecordAssembler {
 }
 
 impl StreamFrame {
-    /// The 16 header bytes.
     pub fn encode(&self) -> [u8; STREAM_HEADER_LEN] {
         let mut frame = [0u8; STREAM_HEADER_LEN];
         frame[0..4].copy_from_slice(&self.transfer.0.to_le_bytes());
@@ -859,9 +816,9 @@ impl StreamFrame {
 
     /// Splits one stream record into its frame and its payload.
     ///
-    /// `None` is §3.8's "a zero length, a length disagreeing with the record" and a nonzero reserved
-    /// field: a record this cannot split names no offset, so the caller has nothing to answer with
-    /// beyond terminating the transfer it claims to belong to.
+    /// `None` is a zero length, a length disagreeing with the record, or a nonzero reserved field.
+    /// Such a record names no offset, so the caller can only terminate the transfer it claims to
+    /// belong to.
     pub fn split(record: &[u8]) -> Option<(StreamFrame, &[u8])> {
         if record.len() < STREAM_HEADER_LEN || u16_at(record, 14) != 0 {
             return None;
@@ -893,7 +850,7 @@ mod tests {
     use super::super::ids::EntryFlags;
     use super::*;
 
-    /// §3.11's `PUT` creating the route, byte for byte.
+    /// The specification's own `PUT` vector, byte for byte.
     const PUT_VECTOR: [u8; 100] = {
         let mut frame = [0u8; 100];
         frame[0] = 0x4F;
@@ -1193,8 +1150,7 @@ mod tests {
         assert_eq!(u16_at(&out, 6), flags::RESPONSE | flags::MORE);
         assert_eq!(u16_at(&out, 8) as usize, LIST_PREFIX_LEN + 2 * LIST_ENTRY_LEN);
 
-        // A ceiling one byte under the §5.1 floor cannot carry a page at all, and neither can a
-        // buffer that short.
+        // A ceiling one byte under the floor cannot carry a page, and neither can a short buffer.
         assert!(ListWriter::start(&mut out, CONTROL_FLOOR - 1, StoreId([0; 16]), 0).is_none());
         let mut small = [0u8; CONTROL_FLOOR - 1];
         assert!(ListWriter::start(&mut small, 244, StoreId([0; 16]), 0).is_none());

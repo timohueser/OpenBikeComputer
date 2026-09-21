@@ -1,6 +1,4 @@
-//! The list-object codecs: byte layout pinned by hand (offsets spelled out, not via the encoder),
-//! round-trips, name truncation, and the forward-compatibility rules (unknown version rejected,
-//! longer `entry_len` stepped over).
+//! The list-object codecs, with the byte offsets spelled out by hand, not taken from the encoder.
 
 use obc_ble::{ListHeader, RideListEntry, RouteListEntry, TripListEntry};
 
@@ -19,7 +17,7 @@ fn route_entry() -> RouteListEntry<'static> {
 
 #[test]
 fn header_layout_and_roundtrip() {
-    // version 2 · entry_len (routeList 76) · count LE · total LE — count < total, so truncated.
+    // version · entry_len · count LE · total LE
     let b = ListHeader { count: 3, total: 5 }.encode(RouteListEntry::ENTRY_LEN as u8);
     assert_eq!(b, [2, 76, 3, 0, 5, 0]);
 
@@ -33,18 +31,17 @@ fn header_layout_and_roundtrip() {
     assert_eq!(ListHeader::entry_offset(2, entry_len), 6 + 2 * 76);
     assert_eq!(ListHeader::object_len(3, entry_len), 6 + 3 * 76);
 
-    // An untruncated header (count == total).
     let full = ListHeader { count: 2, total: 2 }.encode(RideListEntry::ENTRY_LEN as u8);
     assert!(!ListHeader::decode(&full).unwrap().0.is_truncated());
 }
 
 #[test]
 fn header_rejects_unknown_version_and_short_entries() {
-    assert!(ListHeader::decode(&[1, 76, 0, 0, 0, 0]).is_err()); // version 1 (dead) rejected
-    assert!(ListHeader::decode(&[2, 44, 0, 0, 0, 0]).is_err()); // entry_len below the smallest list entry
-    assert!(ListHeader::decode(&[2, 76, 0, 0, 0]).is_err()); // truncated (5 bytes)
+    assert!(ListHeader::decode(&[1, 76, 0, 0, 0, 0]).is_err()); // unknown version
+    assert!(ListHeader::decode(&[2, 44, 0, 0, 0, 0]).is_err()); // entry_len below the smallest entry
+    assert!(ListHeader::decode(&[2, 76, 0, 0, 0]).is_err()); // truncated
 
-    // A *longer* future entry is legal: readers step by the header's entry_len.
+    // A longer entry is legal: readers step by the header's entry_len.
     let (_, entry_len) = ListHeader::decode(&[2, 90, 1, 0, 1, 0]).unwrap();
     assert_eq!(entry_len, 90);
 }
@@ -64,7 +61,7 @@ fn route_entry_layout() {
     assert_eq!(b[22], 11);
     assert_eq!(&b[23..34], b"Vector Loop");
     assert!(b[34..72].iter().all(|&x| x == 0)); // name padding + the reserved tail byte
-    assert_eq!(&b[72..76], &0x1F66_C051u32.to_le_bytes()); // content crc32 (unchanged, offset 72)
+    assert_eq!(&b[72..76], &0x1F66_C051u32.to_le_bytes()); // content crc32
 }
 
 #[test]
@@ -73,14 +70,12 @@ fn route_entry_roundtrip_and_truncation() {
     let d = RouteListEntry::decode(&b).unwrap();
     assert_eq!(d, route_entry());
 
-    // A 60-byte name truncates to the 48-byte cap at encode; the decode reports the stored prefix.
     let long = [b'x'; 60];
     let e = RouteListEntry { name: &long, ..route_entry() };
     let b = e.encode();
     assert_eq!(b[22], 48);
     assert_eq!(RouteListEntry::decode(&b).unwrap().name.len(), 48);
 
-    // The unknown-CRC sentinel round-trips.
     let unknown = RouteListEntry { crc32: RouteListEntry::CRC_UNKNOWN, ..route_entry() };
     assert_eq!(RouteListEntry::decode(&unknown.encode()).unwrap().crc32, 0);
 }
@@ -124,8 +119,8 @@ fn trip_entry() -> TripListEntry<'static> {
 
 #[test]
 fn trip_entry_layout() {
-    // Offsets by hand (spec §7.4): id, reserved, byte_len, total_distance, total_ascent, stage_count,
-    // reserved, name_len, name[48] zero-padded, 3 reserved bytes, then the content crc32.
+    // Offsets by hand: id, reserved, byte_len, total_distance, total_ascent, stage_count, reserved,
+    // name_len, name[48] zero-padded, 3 reserved bytes, then the content crc32.
     let b = trip_entry().encode();
     assert_eq!(b.len(), TripListEntry::ENTRY_LEN);
     assert_eq!(TripListEntry::ENTRY_LEN, 76, "tripList mirrors routeList's v2 core (76 B); it has no expiry tail");
@@ -147,15 +142,13 @@ fn trip_entry_roundtrip_and_truncation() {
     let b = trip_entry().encode();
     assert_eq!(TripListEntry::decode(&b).unwrap(), trip_entry());
 
-    // A 60-byte name truncates to the 48-byte cap at encode; decode reports the stored prefix.
     let long = [b'x'; 60];
     let e = TripListEntry { name: &long, ..trip_entry() };
     let b = e.encode();
     assert_eq!(b[20], 48);
     assert_eq!(TripListEntry::decode(&b).unwrap().name.len(), 48);
 
-    // The unknown-CRC sentinel round-trips; a dangling-heavy trip's stage_count can exceed its
-    // resolvable stages (totals summed over fewer than stage_count).
+    // stage_count can exceed the stages the totals drew from.
     let unknown = TripListEntry { crc32: TripListEntry::CRC_UNKNOWN, stage_count: 5, ..trip_entry() };
     let encoded = unknown.encode();
     let d = TripListEntry::decode(&encoded).unwrap();
@@ -165,8 +158,7 @@ fn trip_entry_roundtrip_and_truncation() {
 
 #[test]
 fn whole_object_walk() {
-    // Build a 2-entry routeList object exactly as the board does (header + packed entries), then
-    // walk it as the app will: header first, entries stepped by the announced entry_len.
+    // Build the object as the board does, then walk it as the app does.
     let entries = [route_entry(), RouteListEntry { object_id: 8, name: b"B", ..route_entry() }];
     let mut obj = Vec::new();
     let count = entries.len() as u16;
@@ -184,7 +176,6 @@ fn whole_object_walk() {
         let d = RouteListEntry::decode(slot).unwrap();
         assert_eq!(&d, expected);
     }
-    // A count that overruns the buffer is rejected by the bounds-checked walk, not a panic: an
-    // entry past the last real one returns None rather than slicing off the end.
+    // An entry past the last real one returns None instead of slicing off the end.
     assert!(ListHeader::entry_slice(&obj, entries.len(), entry_len).is_none());
 }

@@ -1,13 +1,9 @@
-//! The reference model, host-only: what the card *should* hold, computed without touching one.
+//! The reference model, host-only: what the card should hold, computed without touching one.
 //!
-//! `FLAT_Store_Format.md` §5.3 is what makes this worth having: "the byte image of the catalog is a
-//! function of the store's state, which is what lets the FS3 reference model compare bytes rather
-//! than sets". So the oracle is not "the same entries somehow" — it is the exact 512 + `n` × 128
-//! bytes, the exact commit sequence, the exact `ObjectId` cursor and the exact free-extent count.
-//!
-//! The model applies a batch the way §5.5 says a commit does and nothing else: no media, no gates, no
-//! ordering. A crash matrix reboots a torn card, mounts it, and requires the result to equal this
-//! model either before the batch or after it.
+//! The byte image of the catalog is a function of the store's state, so the oracle is the exact
+//! `512 + n × 128` bytes, the exact commit sequence, the exact `ObjectId` cursor and the exact
+//! free-extent count. A crash matrix reboots a torn card, mounts it, and requires the result to equal
+//! this model either before the batch or after it.
 
 use std::vec::Vec;
 
@@ -17,15 +13,13 @@ use super::layout::{body_len, Geometry, BLOCK};
 use super::seam::{EntryFlags, EntryMeta, ObjectId, Revision, StoreId};
 use super::store::FlatStore;
 
-/// One entry mutation, as the model sees it: the entry to write — extents included, because the model
-/// compares bytes — or the key to remove.
+/// One entry mutation, as the model sees it: the entry to write, extents included, or the key to remove.
 #[derive(Debug, Clone)]
 pub enum Change {
     Put(Entry),
     Remove((ObjectId, Revision)),
 }
 
-/// The store's logical state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Model {
     pub store: StoreId,
@@ -36,10 +30,10 @@ pub struct Model {
     pub next_object: u64,
     pub entries: Vec<Entry>,
     pub extents: u32,
-    /// The card's extent size (§4). §8 gives every card of 64 GiB or less the 1 MiB default, so a
-    /// scenario only sets this when it is modelling a bigger one.
+    /// The card's extent size. Every card of 64 GiB or less gets the 1 MiB default, so a scenario
+    /// only sets this when it is modelling a bigger one.
     pub geometry: Geometry,
-    /// What §7.3 must recover: the ride's flushed length and its length at the newest slot. `None`
+    /// What a mount must recover: the ride's flushed length and its length at the newest slot. `None`
     /// when no entry is recording.
     pub ride: Option<(u64, u64)>,
 }
@@ -48,23 +42,22 @@ pub struct Model {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
     pub sequence: u64,
-    /// The mark §5.5 step 2 continues from, which a fallback mount leaves above `sequence`.
+    /// The mark the next commit continues from, which a fallback mount leaves above `sequence`.
     pub high_water: u64,
     pub next_object: u64,
     pub entries: Vec<EntryMeta>,
     pub free_extents: u32,
     /// The serving copy's body bytes, exactly `512 + n × 128` of them.
     pub body: Vec<u8>,
-    /// Every readable object's payload, read back through the seam and hashed. The catalog states a
-    /// length and a CRC for each; this is whether the bytes on the card agree, which is the one thing
-    /// a byte-image comparison of the *catalog* cannot see.
+    /// Every readable object's payload, read back through the seam and hashed — the one thing a
+    /// byte-image comparison of the catalog cannot see.
     pub payloads: Vec<(ObjectId, Revision, u32)>,
     /// The recovered ride, as `(flushed, payload length)`.
     pub ride: Option<(u64, u64)>,
 }
 
 impl Model {
-    /// The card §8 leaves behind: commit sequence `1`, next `ObjectId` `1`, no entries.
+    /// The card initialization leaves behind: commit sequence `1`, next `ObjectId` `1`, no entries.
     pub fn empty(store: StoreId, extents: u32) -> Self {
         Model {
             store,
@@ -78,8 +71,8 @@ impl Model {
         }
     }
 
-    /// §5.5: one batch, applied atomically. The entry array stays sorted by `(ObjectId, Revision)`,
-    /// the cursor never rewinds, and the sequence is one past the high-water mark.
+    /// One batch, applied atomically. The entry array stays sorted by `(ObjectId, Revision)`, the
+    /// cursor never rewinds, and the sequence is one past the high-water mark.
     pub fn apply(&mut self, changes: &[Change]) -> &mut Self {
         for change in changes {
             match change {
@@ -133,8 +126,7 @@ impl Model {
     }
 
     /// Entries whose payload a reader can ask for, and the CRC the catalog claims for each. A reserve
-    /// has no bytes the store wrote, and a recording ride's length is zero until the commit that ends
-    /// it, so neither is readable.
+    /// has no bytes the store wrote, and a recording ride's length is zero until it ends.
     pub fn payloads(&self) -> Vec<(ObjectId, Revision, u32)> {
         self.entries
             .iter()
@@ -158,17 +150,15 @@ impl Model {
     }
 }
 
-/// What a mounted store observably is, read back through the seam and off the card.
-///
-/// The body comes from the copy the store says it is serving, so a commit that wrote the wrong copy
-/// or left the wrong one selected shows up as a byte difference rather than as a passing test.
+/// What a mounted store observably is, read back through the seam. The body comes from the copy the
+/// store says it is serving, so a commit that wrote the wrong copy shows up as a byte difference.
 pub fn snapshot<D: BlockDevice>(store: &mut FlatStore<D>) -> Option<Snapshot> {
     use super::seam::Store;
     if !store.mode().readable() {
         return None;
     }
     let entries: Vec<EntryMeta> = store.entries().collect();
-    // §2's listing has no way to report a read failure, so the harness asks the store whether the
+    // The listing has no way to report a read failure, so the harness asks the store whether the
     // iterator it just drained was complete instead of accepting a short list as the truth.
     assert!(store.entries_ok(), "the entry listing was truncated by a media failure");
     let want = body_len(store.entry_count());
@@ -181,8 +171,7 @@ pub fn snapshot<D: BlockDevice>(store: &mut FlatStore<D>) -> Option<Snapshot> {
     }
     body.truncate(want);
 
-    // Every readable payload, read back through the seam and hashed. This is what proves the bytes the
-    // catalog describes are on the card.
+    // Every readable payload, hashed: this proves the bytes the catalog describes are on the card.
     let mut payloads = Vec::new();
     for meta in &entries {
         if meta.payload_len == 0 || meta.flags.has(EntryFlags::RESERVED) {

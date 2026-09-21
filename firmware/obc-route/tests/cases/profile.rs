@@ -1,15 +1,14 @@
-//! Elevation-profile tests: convert a synthetic GPX, build the profile from the
-//! reader, and check it captures the route's shape — the peak, the y-range, and a
-//! gap-free band — independent of how sparsely the route samples the columns.
+//! Elevation-profile tests: convert a synthetic GPX, build the profile from the reader, and check
+//! that it captures the route's shape (the peak, the y-range, a gap-free band) whatever the
+//! sampling density of the route.
 
 use obc_formats::io::SliceSource;
 use obc_route::{RouteIndex, RouteReader, PROFILE_COLS};
 
 use crate::common::convert;
 
-/// Densely scan one pyramid `level` across `[lo, hi]` and return its `(min, max)`
-/// elevation envelope — for asserting the downsample keeps extremes (it's min/max, not
-/// averaging) using only the public [`Profile::sample`] API.
+/// Densely scan one pyramid `level` across `[lo, hi]` and return its `(min, max)` envelope, using
+/// only the public [`Profile::sample`] API.
 fn level_envelope(p: &obc_route::Profile, level: usize, lo: f32, hi: f32) -> (i16, i16) {
     let (mut mn, mut mx) = (i16::MAX, i16::MIN);
     for i in 0..=512 {
@@ -22,7 +21,7 @@ fn level_envelope(p: &obc_route::Profile, level: usize, lo: f32, hi: f32) -> (i1
 }
 
 /// A zigzag (so no point decimates away) that climbs 200→300 m then falls back to
-/// 200 m — a single clean peak at the route's midpoint by distance.
+/// 200 m, a single clean peak at the route's midpoint by distance.
 const PEAKED: &str = r#"<?xml version="1.0"?>
 <gpx><trk><trkseg>
   <trkpt lat="48.0000" lon="7.8000"><ele>200.0</ele></trkpt>
@@ -40,12 +39,10 @@ fn profile_captures_peak_and_range() {
     let r = RouteReader::new(&ridx, &src);
     let p = r.elevation_profile();
 
-    // Y-range mirrors the route header.
     assert_eq!((p.min_ele_m, p.max_ele_m), (r.min_ele_m, r.max_ele_m));
     assert_eq!((p.min_ele_m, p.max_ele_m), (200, 300));
 
-    // The 300 m peak survives and lands near the middle (distance ~0.5). Expressed in
-    // terms of PROFILE_COLS so it tracks the base-resolution knob.
+    // Expressed in PROFILE_COLS, so the bound tracks the base-resolution knob.
     assert_eq!(p.peak_ele_m(), 300);
     assert!(
         (PROFILE_COLS * 3 / 8..=PROFILE_COLS * 5 / 8).contains(&p.peak_col),
@@ -54,9 +51,7 @@ fn profile_captures_peak_and_range() {
     );
     assert!((0.375..=0.625).contains(&p.peak_frac()), "peak_frac {} not near 0.5", p.peak_frac());
 
-    // Scrubbing: the ends are below the peak, the peak fraction reads the peak, and the
-    // midpoint sits high on the climb (the exact peak column drifts with base resolution,
-    // so don't pin it to 0.5 — read it at peak_frac instead).
+    // The exact peak column drifts with the base resolution, so read it at peak_frac, not at 0.5.
     assert!(p.at(0.0).1 < 300, "start should be below the peak");
     assert!(p.at(1.0).1 < 300, "end should be below the peak");
     assert_eq!(p.at(p.peak_frac()).1, 300, "the peak fraction should read the peak");
@@ -88,14 +83,11 @@ fn profile_ascent_to_tracks_where_the_climb_happens() {
     let r = RouteReader::new(&ridx, &src);
     let p = r.elevation_profile();
 
-    // Endpoints pin to 0 and the exact route total (clamped past the end).
     assert_eq!(p.ascent_to(0.0), 0);
     assert_eq!(p.ascent_to(1.0), r.total_ascent_m);
     assert_eq!(p.ascent_to(1.5), r.total_ascent_m);
 
-    // PEAKED climbs 200→300 then descends — so by the peak essentially all of the route's
-    // ascent is already done. (The old per-chunk interpolation spread the climb uniformly
-    // over distance and reported only ~half here, leaving a phantom "to climb" at the top.)
+    // PEAKED climbs and then descends, so essentially all of the ascent is done by the peak.
     let peak_frac = p.peak_col as f32 / (PROFILE_COLS - 1) as f32;
     assert!(
         p.ascent_to(peak_frac) as f32 > 0.9 * r.total_ascent_m as f32,
@@ -131,16 +123,14 @@ fn flat_route_has_flat_gap_free_band() {
     }
 }
 
-/// Pyramid depth (length of the profile's per-level column table) — a structural constant;
-/// only the base width (`PROFILE_COLS`) is the tunable knob, not the number of levels.
+/// Pyramid depth. A structural constant: only the base width (`PROFILE_COLS`) is tunable, not the
+/// number of levels.
 const PYRAMID_LEVELS: usize = 4;
 
 #[test]
 fn pyramid_downsample_keeps_extremes() {
-    // The coarse levels are min/max merges, not averages — so *every* level, however coarse, still
-    // spans the route's full 200..300 m envelope, with the peak's max and the valley's min intact.
-    // (Which level a full-route `window` reads depends on the base width, but this property holds
-    // at every level regardless; see `window_full_route_spans_everything` for the window mechanics.)
+    // The coarse levels are min/max merges, not averages, so every level still spans the full
+    // 200..300 m envelope.
     let bytes = convert("Peaked Ridge", PEAKED);
     let src = SliceSource(&bytes);
     let ridx = RouteIndex::read(&src).unwrap();
@@ -189,9 +179,8 @@ fn window_zoom_narrows_span_and_chooses_finer_levels() {
     assert_eq!(p.window(0.5, 8.0, 216).level, 0);
 }
 
-/// A route with **no `<ele>` anywhere** (planner GPX). The converter stores flat 0 m elevation
-/// and a 0..0 header range, so the profile's `(min, max)` is `(0, 0)` and the band must still be
-/// gap-free via `fill_gaps`'s header fallback — the only path that exercises the fallback.
+/// A route with no `<ele>` anywhere. The converter stores 0 m elevation and a 0..0 header range,
+/// so the band must stay gap-free through `fill_gaps`'s header fallback, the only path that uses it.
 const NO_ELE: &str = r#"<?xml version="1.0"?>
 <gpx><trk><trkseg>
   <trkpt lat="48.0000" lon="7.8000"/>
@@ -208,13 +197,11 @@ fn no_elevation_route_has_unknown_band() {
     assert_eq!((r.min_ele_m, r.max_ele_m), (0, 0), "no <ele> → 0..0 header range");
     let p = r.elevation_profile();
 
-    // The whole band is the flat 0 m fallback, with no sentinel (min > max) holes.
     assert_eq!((p.min_ele_m, p.max_ele_m), (0, 0));
     assert_eq!(p.peak_ele_m(), i16::MIN);
     for (i, &(mn, mx)) in p.cols().iter().enumerate() {
         assert!(mn > mx, "column {i} has no measured elevation");
     }
-    // No climb anywhere, so "to climb" is 0 across the whole route.
     assert_eq!(p.ascent_to(0.0), 0);
     assert_eq!(p.ascent_to(1.0), 0);
 }
@@ -227,8 +214,7 @@ fn window_clamps_to_route_ends() {
     let r = RouteReader::new(&ridx, &src);
     let p = r.elevation_profile();
 
-    // Centre at the very start/end: the fixed-width span slides flush against the edge
-    // instead of running off it.
+    // At the very start or end, the fixed-width span slides flush against the edge.
     let start = p.window(0.0, 4.0, 216);
     assert_eq!(start.lo_frac, 0.0);
     assert!((start.hi_frac - 0.25).abs() < 1e-4);
@@ -237,19 +223,16 @@ fn window_clamps_to_route_ends() {
     assert!((end.lo_frac - 0.75).abs() < 1e-4);
 }
 
-/// The received-route card's mini sparkline (#682): a min–max-normalized `u8` band whose peak
-/// pins to 255 at the route's high point (~mid on the zigzag) and whose ends read low.
+/// The received-route card's mini sparkline: a min-max normalized `u8` band.
 #[test]
 fn sparkline_normalizes_and_peaks_mid() {
     use obc_route::{elevation_sparkline, SPARKLINE_BUCKETS};
     let bytes = convert("Peaked Ridge", PEAKED);
     let spark = elevation_sparkline(&SliceSource(&bytes)).expect("a route with elevation has a band");
     assert_eq!(spark.len(), SPARKLINE_BUCKETS);
-    // The 300 m peak normalizes to the ceiling; the 200 m ends normalize to the floor.
     assert_eq!(*spark.iter().max().unwrap(), 255, "the peak pins to 255");
     assert_eq!(spark[0], 0, "the start sits at the min");
     assert_eq!(spark[SPARKLINE_BUCKETS - 1], 0, "the end sits at the min");
-    // The peak lands near the middle bucket, not at an edge.
     let peak_b = spark.iter().position(|&v| v == 255).unwrap();
     assert!(
         (SPARKLINE_BUCKETS * 3 / 8..=SPARKLINE_BUCKETS * 5 / 8).contains(&peak_b),

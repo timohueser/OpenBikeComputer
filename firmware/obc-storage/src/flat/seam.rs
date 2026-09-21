@@ -1,9 +1,8 @@
-//! The store seam: `FLAT_Store_Protocol.md` §2's five operations, the two members beside them, and
-//! the whole vocabulary they speak.
+//! The store seam: the five operations, the two members beside them, and the whole vocabulary they
+//! speak (`FLAT_Store_Protocol.md`).
 //!
-//! Nothing here names a block, an extent, an LBA, a path or a filename. [`EntryMeta`] is the
-//! metadata half of a catalog entry and [`Allocation`] is an opaque token that stands for reserved
-//! extents; neither carries one, which is what makes that sentence true rather than aspirational.
+//! Nothing here names a block, an extent, an LBA, a path or a filename. [`EntryMeta`] is the metadata
+//! half of a catalog entry and [`Allocation`] is an opaque token that stands for reserved extents.
 
 use super::error::{Reason, Record, Result, StoreError};
 
@@ -27,7 +26,7 @@ impl ObjectId {
     pub const NONE: ObjectId = ObjectId(0);
 }
 
-/// `FLAT_Store_Format.md` §3.1, the sole authority for these values.
+/// `FLAT_Store_Format.md` is the sole authority for these values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum ObjectKind {
@@ -43,9 +42,7 @@ pub enum ObjectKind {
 }
 
 impl ObjectKind {
-    /// Decodes §3.1's `u16`. Kind `0` is never encoded and no other value is registered, so
-    /// anything else is corruption rather than a kind from the future: there is no format version
-    /// in which this table grew without the version field saying so.
+    /// Kind `0` is never encoded and no other value is registered, so anything else is corruption.
     pub fn decode(value: u16) -> Result<Self> {
         Ok(match value {
             1 => ObjectKind::Route,
@@ -62,12 +59,11 @@ impl ObjectKind {
     }
 }
 
-/// §5.3's entry flags. Bits `4..15` are zero.
+/// The entry flags. Bits `4..15` are zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct EntryFlags(u16);
 
 impl EntryFlags {
-    /// No flag.
     pub const NONE: EntryFlags = EntryFlags(0);
     /// The active ride. Payload length and CRC are the values of the last commit; the ride journal
     /// is authoritative for what is beyond them.
@@ -97,18 +93,16 @@ impl EntryFlags {
         self.0
     }
 
-    /// True when every flag of `other` is set here.
     pub fn has(self, other: EntryFlags) -> bool {
         self.0 & other.0 == other.0
     }
 
-    /// True when this entry owns more extents than its payload needs (§5.3).
+    /// True when this entry owns more extents than its payload needs.
     pub fn holds_slack(self) -> bool {
         self.has(EntryFlags::RECORDING) || self.has(EntryFlags::RESERVED)
     }
 }
 
-/// Bytes a display name may occupy (§5.3).
 pub const NAME_CAPACITY: usize = 48;
 
 /// What a menu shows: UTF-8, at most 48 bytes, and the store does not normalise, trim or case-fold
@@ -176,7 +170,6 @@ impl DisplayName {
     }
 }
 
-/// The metadata half of a catalog entry, and nothing else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EntryMeta {
     /// UTC seconds when the current route payload was added; zero means unknown.
@@ -191,7 +184,6 @@ pub struct EntryMeta {
 }
 
 impl EntryMeta {
-    /// The `(ObjectId, Revision)` pair the catalog is keyed by.
     pub fn key(&self) -> (ObjectId, Revision) {
         (self.id, self.revision)
     }
@@ -207,19 +199,16 @@ pub struct Allocation {
 }
 
 impl Allocation {
-    /// The byte length reserved. The only thing an `Allocation` exposes.
     pub fn reserved_bytes(&self) -> u64 {
         self.reserved
     }
 
-    /// Bytes appended so far. Producer adapters use this as the final payload length when they
-    /// publish an oversized reservation.
+    /// Bytes appended so far, which is the final payload length of an oversized reservation.
     pub fn written_bytes(&self) -> u64 {
         self.written
     }
 }
 
-/// Where a `Put`'s extents come from.
 #[derive(Debug)]
 pub enum PutSource {
     /// Publish the extents of a freshly written allocation, consuming it.
@@ -231,14 +220,18 @@ pub enum PutSource {
 /// One entry mutation. A commit applies a batch of them atomically.
 #[derive(Debug)]
 pub enum Mutation {
-    /// Publish a revision.
-    Put { meta: EntryMeta, source: PutSource },
+    Put {
+        meta: EntryMeta,
+        source: PutSource,
+    },
     /// Remove one entry. Its extents are free at the gate.
-    Remove { id: ObjectId, revision: Revision },
+    Remove {
+        id: ObjectId,
+        revision: Revision,
+    },
 }
 
 impl Mutation {
-    /// The catalog key this mutation addresses.
     pub fn key(&self) -> (ObjectId, Revision) {
         match self {
             Mutation::Put { meta, .. } => meta.key(),
@@ -250,19 +243,17 @@ impl Mutation {
 /// Fixed opaque recorder state carried by every logical ride checkpoint.
 pub const RIDE_RESUME_LEN: usize = 96;
 
-/// One ride checkpoint: the bytes appended since the last successful checkpoint, the running
-/// payload CRC, and the recorder's fixed resume image. Storage reconstructs the next full tail-slot
-/// snapshot from the previous durable slot plus `append`; the recorder never keeps that snapshot in
-/// RAM. Storage CRC-protects `resume` but never interprets it.
+/// One ride checkpoint: the bytes appended since the last successful one, the running payload CRC,
+/// and the recorder's fixed resume image. Storage reconstructs the next full tail-slot snapshot from
+/// the previous durable slot plus `append`, and CRC-protects `resume` without interpreting it.
 #[derive(Debug, Clone, Copy)]
 pub struct RideCheckpoint<'a> {
     /// The entry carrying `RECORDING`; the store rejects a checkpoint naming anything else.
     pub id: ObjectId,
     pub revision: Revision,
     /// Bytes after the previous successful logical checkpoint, oldest first. A successful call
-    /// consumes the whole slice. After an error the caller must retry these exact bytes before it
-    /// appends more, recomputes the resume image, or appends terminal/footer bytes; this is what
-    /// keeps a gated rollover repair idempotent. Discard may instead remove the `RECORDING` entry.
+    /// consumes the whole slice; after an error the caller must retry these exact bytes before it
+    /// appends more, which is what keeps a gated rollover repair idempotent.
     pub append: &'a [u8],
     /// CRC-32 of the whole ride payload after `append`.
     pub payload_crc: u32,
@@ -270,49 +261,34 @@ pub struct RideCheckpoint<'a> {
     pub resume: &'a [u8; RIDE_RESUME_LEN],
 }
 
-/// The card, as everything above it sees it.
-///
-/// **Every operation takes `&self`, the mutators included** (#1256, the owner ruling of 2026-08-18).
-/// A store is shared, not owned: the board holds a source over the mounted map for the life of the
-/// image while an upload commits and a ride journals, and `&mut` on the write half made that
-/// un-expressible. The resident state that moves lives behind cells — see
-/// [`store`](super::store)'s aliasing rules for which, and
-/// [`source`](super::source) for what the consumer side gives up in exchange.
+/// The card, as everything above it sees it. Every operation takes `&self`, the mutators included,
+/// because a store is shared, not owned — see [`store`](super::store)'s aliasing rules.
 pub trait Store {
     type Handle;
 
-    /// Reserve space for `bytes`. RAM state until a commit names it; released by
-    /// [`cancel`](super::store::FlatStore::cancel) and by the next mount, which rebuilds the free
-    /// map from the catalog and cannot see it. **Dropping an `Allocation` releases nothing** — it is
-    /// `Copy`, and the row it names lives in the store.
+    /// Reserve space for `bytes`. RAM state until a commit names it. Dropping an `Allocation`
+    /// releases nothing: it is `Copy`, and the row it names lives in the store.
     fn allocate(&self, bytes: u64) -> core::result::Result<Allocation, StoreError>;
 
     /// Append to an allocation. Writes are sequential and the total may not exceed the reservation.
-    ///
-    /// The `&mut` that is left is the caller's own token, not the store's: the cursor `Allocation`
-    /// carries has to advance with the row's.
+    /// The `&mut` is the caller's own token: the cursor `Allocation` carries advances with the row's.
     fn write(&self, allocation: &mut Allocation, bytes: &[u8]) -> core::result::Result<(), StoreError>;
 
     /// Apply `mutations` atomically and return the new catalog commit sequence. The one durable
     /// transition: it makes new bytes visible and old bytes free in the same instant.
     fn commit(&self, mutations: &[Mutation]) -> core::result::Result<u64, StoreError>;
 
-    /// Resolve an object. `revision` of `None` takes the head; `Some(r)` takes exactly that
-    /// revision, which is how a retained previous revision is reached.
+    /// Resolve an object. `revision` of `None` takes the head; `Some(r)` reaches a retained one.
     fn open(&self, id: ObjectId, revision: Option<Revision>) -> core::result::Result<Self::Handle, StoreError>;
 
     /// Random access inside an open object. Returns bytes read, short only at end of payload.
     fn read(&self, handle: &Self::Handle, offset: u64, buf: &mut [u8]) -> core::result::Result<usize, StoreError>;
 
-    // Beside the five, and not object operations.
-
     /// Read-only catalog view. LIST, every menu, and the free-space answer come from here.
-    /// It mutates nothing and names nothing below the seam, so it is not a sixth verb.
     fn entries(&self) -> impl Iterator<Item = EntryMeta> + '_;
 
-    /// The ride exception, and the only way bytes become durable without a commit. Performs both
-    /// halves of `FLAT_Store_Format.md` §7.2: gate each whole 16 KiB prefix in a tail slot before
-    /// copying it to the recording entry's extents, then gate the remainder when one exists.
+    /// The ride exception, and the only way bytes become durable without a commit. It gates each
+    /// whole 16 KiB prefix in a tail slot before copying it to the recording entry's extents.
     fn journal(&self, checkpoint: RideCheckpoint) -> core::result::Result<(), StoreError>;
 }
 

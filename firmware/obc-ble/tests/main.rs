@@ -1,5 +1,4 @@
-//! `obc-ble`'s integration tests. One binary; each module below was a
-//! top-level `tests/*.rs` file and keeps its own name, helpers and assertions.
+//! `obc-ble`'s integration tests: one binary, one module per area.
 
 #[path = "cases/dfu.rs"]
 mod dfu;

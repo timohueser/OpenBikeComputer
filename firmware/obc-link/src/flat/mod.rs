@@ -1,22 +1,14 @@
-//! Protocol v4: the wire the flat store speaks, and the one engine that speaks it.
+//! The wire the flat store speaks, and the one engine that speaks it.
 //!
-//! [`FLAT_Store_Protocol.md`] is the normative contract — §2 is the store seam, §3 is what crosses
-//! the link, §4 is the firmware update, §5 binds §3 to BLE and USB — and
-//! [`FLAT_Store_Format.md`] is what the card holds. Nothing in this module is negotiated: the §3
-//! application major and each binding version are fixed facts, every message is a fixed layout, and there is no Hello, no capability page
-//! and no minor.
+//! [`FLAT_Store_Protocol.md`] is the normative contract and [`FLAT_Store_Format.md`] is what the
+//! card holds. Nothing here is negotiated: every version is a fixed fact and every message is a
+//! fixed layout.
+//!
+//! [`ids`] is the vocabulary, [`wire`] is the bytes, [`store`] is the seam declared from the side
+//! that consumes it, and [`engine`] sits on both.
 //!
 //! [`FLAT_Store_Protocol.md`]: ../../../../specs/FLAT_Store_Protocol.md
 //! [`FLAT_Store_Format.md`]: ../../../../specs/FLAT_Store_Format.md
-//!
-//! ## Reading order
-//!
-//! [`ids`] is the vocabulary — three identities, the kind table, the entry flags. [`wire`] is §3's
-//! bytes and nothing else: total decoding, exact encoding, no state and no policy. [`store`] is §2
-//! declared from the side that consumes it, because the dependency runs downward and a foundation
-//! crate may not name a platform adapter. [`engine`] sits on both: one transfer at a time, no
-//! resume, no session, and the catalog as the only durable record of a result.
-//!
 pub mod engine;
 pub mod ids;
 pub mod records;

@@ -1,5 +1,5 @@
 //! The loop the fixtures close: the files on disk are what the producer emits, the codec agrees
-//! with those bytes in both directions, and every refusal lands where §3.9 says it does.
+//! with those bytes in both directions, and every refusal carries its stated code and detail.
 
 use std::string::String;
 use std::vec::Vec;
@@ -80,7 +80,7 @@ fn the_codec_decodes_every_positive_request_vector() {
     }
 }
 
-/// §5.7's route entry, as a `LIST` page carries it.
+/// The route entry, as a `LIST` page carries it.
 fn route_entry() -> EntryMeta {
     EntryMeta {
         id: ObjectId(ROUTE_ID),
@@ -93,7 +93,7 @@ fn route_entry() -> EntryMeta {
     }
 }
 
-/// §5.7's recording ride.
+/// The recording ride.
 fn ride_entry() -> EntryMeta {
     EntryMeta {
         id: ObjectId(RIDE_ID),
@@ -192,7 +192,7 @@ fn every_error_vector_is_what_the_codec_encodes_for_that_refusal() {
         let written = encode_error(&mut out, opcode, request, &refusal).unwrap();
         assert_eq!(hex(&out[..written]), hex(&fixture.bytes), "{} is not what the codec produces", fixture.name);
     }
-    // Every code §3.9 registers has a vector, and none has two.
+    // Every registered code has a vector, and none has two.
     let mut codes: Vec<u16> = fixtures()
         .iter()
         .filter(|fixture| fixture.category == Category::Error)

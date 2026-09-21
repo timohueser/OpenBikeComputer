@@ -1,8 +1,7 @@
 //! Little-endian primitives over a slice whose length the caller has already checked.
 //!
-//! `FLAT_Store_Format.md` §0: "Integers are unsigned little-endian ... Byte offsets are zero-based."
-//! Every record in this format is fixed-size, so each decoder checks its one length precondition
-//! once and then indexes directly; that is why none of these is fallible.
+//! Every record in this format is fixed-size, so each decoder checks its one length precondition once
+//! and then indexes directly. That is why none of these is fallible.
 
 pub fn u16_at(bytes: &[u8], off: usize) -> u16 {
     u16::from_le_bytes([bytes[off], bytes[off + 1]])
@@ -40,8 +39,8 @@ pub fn put_bytes(out: &mut [u8], off: usize, value: &[u8]) {
     out[off..off + value.len()].copy_from_slice(value);
 }
 
-/// True when every byte of `bytes[off..off + len]` is zero — §0's "reserved fields inside a record
-/// are written as zero and MUST be zero when read".
+/// True when every byte of `bytes[off..off + len]` is zero. Reserved fields inside a record are
+/// written as zero and must be zero when read.
 pub fn is_zero(bytes: &[u8], off: usize, len: usize) -> bool {
     bytes[off..off + len].iter().all(|&byte| byte == 0)
 }
