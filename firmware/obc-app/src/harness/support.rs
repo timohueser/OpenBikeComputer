@@ -16,7 +16,7 @@ use obc_app::navigator::{NavigatorEffect, NavigatorOutcome, PlannerWork};
 use obc_app::{App, Dirty};
 use obc_ports::{Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource, RideClock, Sensors};
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, PoiCategory, Reader, SliceSource};
-use obc_route::{RouteReader, Waypoints, WptEntry};
+use obc_route::{RouteIndex, RouteReader, Waypoints, WptEntry};
 
 /// A `w`×`h` `Rgb888` buffer implementing `DrawTarget`, with clipped writes.
 pub struct Buf {
@@ -295,6 +295,14 @@ pub fn render_120(app: &mut App, bytes: &[u8]) -> Buf {
         Rgb888::new(r, g, b)
     });
     buf
+}
+
+/// The resident waypoint table of an `.obcr`, through the production window loader — the table a
+/// real import hands the app, as opposed to the synthetic [`wpts`] one.
+pub fn wpts_from_obcr(bytes: &[u8]) -> Waypoints {
+    let src = SliceSource(bytes);
+    let index = RouteIndex::read(&src).expect("a converted .obcr parses");
+    RouteReader::new(&index, &src).load_waypoints(0)
 }
 
 /// A synthetic waypoint table from `(distance, name)` pairs: every entry on the line, uncategorised.
