@@ -111,7 +111,7 @@ describe("parseRoot", () => {
         expect(() => parseRoot(mutated(edit))).toThrow(CatalogFormatError);
     });
 
-    describe("the band table (OBCA §1.2 partition, §5.1 roles)", () => {
+    describe("the band table (OBCA partition and roles)", () => {
         it.each<[string, (d: LooseDoc) => void]>([
             ["a LOD in two bands", (d) => d.schema.bands[1].lods.push(0)],
             ["a LOD in no band", (d) => (d.schema.bands[0].lods = [])],

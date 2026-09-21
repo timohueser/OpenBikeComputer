@@ -1094,9 +1094,7 @@ impl<'s> ByteSpill<'s> {
     /// Append one record; the offset it starts at is how it is found again.
     fn push(&mut self, rec: &[u8]) -> Result<u32> {
         let at = u32::try_from(self.at).map_err(|_| {
-            Error::Capacity(
-                "the merged quadtree record bytes pass 4 GiB, which no OBCM section can hold (OBCA §5.7)".into(),
-            )
+            Error::Capacity("the merged quadtree record bytes pass 4 GiB, which no OBCM section can hold".into())
         })?;
         if self.buf.len() + rec.len() > self.cap {
             self.flush()?;

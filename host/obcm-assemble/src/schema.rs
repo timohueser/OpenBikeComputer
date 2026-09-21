@@ -221,7 +221,7 @@ impl Schema {
         let core = cores[0];
         if !core.lods.is_empty() {
             return Err(format!(
-                "the core band {:?} carries LOD(s) {:?}: geometry belongs in a splittable shard (OBCA §5.1)",
+                "the core band {:?} carries LOD(s) {:?}: geometry belongs in a splittable shard",
                 core.id, core.lods
             ));
         }

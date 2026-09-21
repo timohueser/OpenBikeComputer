@@ -137,10 +137,10 @@ MEMORY
 PROVIDE(__settings_base = ORIGIN(SETTINGS));
 /* Base of the carved boot-state page: the armer's write target. */
 PROVIDE(__boot_state_base = ORIGIN(BOOT_STATE));
-/* Base of the blob-stage carve (#1158) — where the armer copies the sEMMC image for the
+/* Base of the blob-stage carve, where the armer copies the sEMMC image for the
    bootloader's Install/Rollback card bring-up (OBCU_Spec.md §3). */
 PROVIDE(__semmc_stage_base = ORIGIN(SEMMC_STAGE));
-/* Base of the app slot (#619) — where the armer's rollback snapshot reads the running image
+/* Base of the app slot, where the armer's rollback snapshot reads the running image
    from (memory-mapped; RRAM is XIP-readable). The linker map stays the only address authority. */
 PROVIDE(__app_slot_base = ORIGIN(FLASH));
 ",

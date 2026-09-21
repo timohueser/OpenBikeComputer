@@ -164,7 +164,7 @@ impl CellStoreOutcome {
             s,
             "cell-store guard: FAILED — {} problem(s).\n\nA cell store is lockstep: every cell in an assembly must \
              share one OBCM version and one schema revision, because assembly copies chunk bytes between files and \
-             that is only meaningful within one revision (OBCA_Spec.md §5, §6.3). Re-bake the store:\n\n    \
+             that is only meaningful within one revision. Re-bake the store:\n\n    \
              obc-bake bake --out <tree> --base-url <url> --force <region…>\n",
             self.problems.len()
         );

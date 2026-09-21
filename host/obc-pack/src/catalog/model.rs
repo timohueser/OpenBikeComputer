@@ -48,7 +48,7 @@ pub struct Catalog {
     pub source: Option<SourceEntry>,
     /// The catalog's **single** schema. Not an array: the hosted store carries the
     /// 14-LOD bikepacking ladder and nothing else, because a second schema would make
-    /// the whole planet-shaped cell store exist twice (§3, epic #1016 D2).
+    /// the whole planet-shaped cell store exist twice.
     pub schema: SchemaEntry,
     /// Every skin offered, sorted by `id`. Inlined rather than referenced: one is
     /// ≈ 2 KB and a builder needs all of them at once to draw a picker.
@@ -162,7 +162,7 @@ pub struct LodEntry {
 }
 
 /// Which file of a volume set a band's content assembles into
-/// (`OBCA_Spec.md` §5.1).
+/// (`OBCA_Spec.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum BandRole {
@@ -264,11 +264,11 @@ pub struct SkinStyle {
     pub priority: u8,
     /// How the line is stroked: `solid`, `dashed` or `ticked`. Polygons ignore it.
     pub line_style: LineStyle,
-    /// Style-record flag bit 4 (#1095): the weight is used verbatim on screen, off the zoom width
+    /// Style-record flag bit 4: the weight is used verbatim on screen, off the zoom width
     /// ramp. Defaulted so a catalog written before the bit existed still parses.
     #[serde(default)]
     pub fixed_width: bool,
-    /// Style-record flag bit 5 (#1095): part of the suppressible terrain layer.
+    /// Style-record flag bit 5: part of the suppressible terrain layer.
     #[serde(default)]
     pub terrain_layer: bool,
     /// Optional RGB565 secondary color; `null` when the style has none.

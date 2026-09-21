@@ -28,7 +28,7 @@
       ]
     },
     "schema": {
-      "description": "The catalog's **single** schema. Not an array: the hosted store carries the 14-LOD bikepacking ladder and nothing else, because a second schema would make the whole planet-shaped cell store exist twice (§3, epic #1016 D2).",
+      "description": "The catalog's **single** schema. Not an array: the hosted store carries the 14-LOD bikepacking ladder and nothing else, because a second schema would make the whole planet-shaped cell store exist twice.",
       "$ref": "#/$defs/SchemaEntry"
     },
     "skins": {
@@ -305,7 +305,7 @@
       ]
     },
     "BandRole": {
-      "description": "Which file of a volume set a band's content assembles into (`OBCA_Spec.md` §5.1).",
+      "description": "Which file of a volume set a band's content assembles into (`OBCA_Spec.md`).",
       "oneOf": [
         {
           "description": "The one unsplittable file: nav graph, POIs, style table. Carries no LOD, because its headroom under `4 GiB − 1` is the design's hard limit.",
@@ -466,12 +466,12 @@
           "$ref": "#/$defs/line_style"
         },
         "fixed_width": {
-          "description": "Style-record flag bit 4 (#1095): the weight is used verbatim on screen, off the zoom width ramp. Defaulted so a catalog written before the bit existed still parses.",
+          "description": "Style-record flag bit 4: the weight is used verbatim on screen, off the zoom width ramp. Defaulted so a catalog written before the bit existed still parses.",
           "type": "boolean",
           "default": false
         },
         "terrain_layer": {
-          "description": "Style-record flag bit 5 (#1095): part of the suppressible terrain layer.",
+          "description": "Style-record flag bit 5: part of the suppressible terrain layer.",
           "type": "boolean",
           "default": false
         },
