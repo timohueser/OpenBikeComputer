@@ -210,15 +210,20 @@ baker streams the squares of one cell at a time.
 Coverage can stop at any sample, so a national model that stops at a border is not a problem.
 A cell with no finer coverage is identical to a cell baked without one.
 
-The bakery re-bakes only the cells an archive change reaches. Each terrain cell records the
-digests of the archive squares its own rule reads, so a new release of the Swiss model re-bakes
-the Swiss cells and leaves the other countries alone. A change of finer model changes baked
-heights, so it is a new terrain revision, and a new terrain revision also re-bakes the navigation
-graph, whose climbs are integrated from the same surface.
+The bakery re-bakes only the cells an archive change reaches. For each terrain cell it keeps a
+private record of the digests of the archive squares that cell's rule reads, beside the cell in
+its own build tree. A new release of the Swiss model therefore re-bakes the Swiss cells and leaves
+the other countries alone. The record is not in the published cell: a rider downloads elevation,
+not the bakery's bookkeeping.
+
+A change of finer model changes baked heights, so it is a new terrain revision. The new revision
+is a re-stamp, not a re-bake: only the cells the changed squares reach are rasterised again. A new
+terrain revision also re-bakes the navigation graph, whose climbs are integrated from the same
+surface.
 
 Each finer model keeps its own attribution, which must travel with the map. Each terrain cell
-records which models its lifts came from, and the catalog lists each of those models once. See
-[Attribution](#attribution).
+records which models its lifts were read from, and the catalog lists each of those models once.
+See [Attribution](#attribution).
 
 ## One sampling truth
 

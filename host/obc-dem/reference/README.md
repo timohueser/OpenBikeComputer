@@ -305,10 +305,12 @@ cell its lifts on one side of that tile's edge only.
 The two bakers answer a short mirror differently, because they publish differently:
 
 - `obc-dem bake` **warns** and names the tiles. A one-box bake is a thing an operator is looking at.
-- `obc-bake terrain` **refuses** the cell, naming it, the count and the first missing id. It
-  publishes objects a rider downloads, and a cell lifted on one side of a coverage edge has a step
-  in its contours and its route profile that no ground has. `--allow-short-reference` publishes it
-  anyway and puts the same text in the run's warnings.
+- `obc-bake terrain` **refuses the run**, naming how many cells are short, the first missing tile,
+  and the `--bbox` that covers every short cell's window — already padded to the windows, so it is
+  a copy-pasteable `mirror` command. It publishes objects a rider downloads, and a cell lifted on
+  one side of a coverage edge has a step in its contours and its route profile that no ground has.
+  `--allow-short-reference` publishes them anyway and puts the same text in the run's warnings.
+  The verdict is recorded per cell, so a later run reaches it again without re-rasterising.
 
 Either way the cell's skip key records the tiles the bake could read, so completing the mirror
 re-bakes exactly the short cells and nothing else.
