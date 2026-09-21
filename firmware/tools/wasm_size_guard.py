@@ -23,6 +23,9 @@ force a bump on every refactor. Raising one is a deliberate edit with a reason i
 
 from __future__ import annotations
 
+GOVERNS = ['apps/obc-web-convert/**', 'apps/obc-web-assemble/**', 'apps/obc-skin-preview/**', 'host/obcm-assemble/**']
+RULE = 'A wasm bridge stays inside its recorded gzip and raw size budgets.'
+
 import argparse
 import gzip
 import sys

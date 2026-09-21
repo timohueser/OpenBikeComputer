@@ -1,6 +1,0 @@
-default: .bss 304,024 B + .data 5,808 B = 309,832 B linked resident; .uninit 132,096 B; flash 1,720,440 B
-default: scratch arena 131,072 B inside .uninit 132,096 B
-default: largest guarded poll frame 9,776 B
-default: residual main stack 49,592 B; largest task body 4,032 B; boot-chain ceiling 16,688 B
-default: deep-ride high-water 37,016 B (2026-08-20 (FS8 recovery -> finish -> fresh-start lifecycle; 37,016 / 37,568 B; delta rerun pending)); residual clears it by 12,576 B (floor 8,704 B)
-default: resource guards passed

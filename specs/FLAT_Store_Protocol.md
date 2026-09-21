@@ -34,15 +34,13 @@ Stated once, because most of what follows is short for these reasons and does no
   the result, and §3.4 is how a client reads it after a break. There is no `Unknown` to reconcile.
 - **No resume, no checkpoints, no prefix-CRC exchange.** A broken transfer is discarded whole; the
   worst case is re-sending a whole map over USB, about twenty minutes, which is cheaper than the
-  machinery resume needs. (Since OBCM v14 / #1420 that really is one object, so a late break costs
-  the whole map rather than one shard of it — accepted, inside the same twenty minutes.)
+  machinery resume needs.
 - **No sessions.** The `RequestId` of the transfer's own request is the identifier.
 - **No Hello, no capability discovery, no wire minor.** The major is a transport fact and every
   message fits every link.
 - **No metadata envelopes, no schema registry, no draft parts.** An object is bytes, a kind, a name
-  and a CRC — a map included, since OBCM v14 / #1420 made it one object with its terrain inside it
-  (`OBCM_Spec.md` §1.3). The clause that used to stand here, "a map set is a manifest object naming
-  shards by `ObjectId`", is retired with `OBCA_Spec.md` §5.
+  and a CRC — a map included, since a map is one object with its terrain inside it
+  (`OBCM_Spec.md` §1.3).
 - **No fault frames on the stream channel.** A transfer has one outcome and it is the answer to its
   own request.
 
@@ -239,8 +237,8 @@ handle, which is the accounting change FS7.5c lands.) An implementation carries 
    or across another seam call, carve-out or not.
 2. **`close` on an object another reader still holds is a runtime refusal, not a teardown.** The
    reader refcount §6.2 already requires is what decides it: such a `close` spends a count and returns,
-   and the extents come back only when the last reader lets go. What the exclusive write half used to
-   guarantee at compile time is therefore still guaranteed — *refused*, never *silent*.
+   and the extents come back only when the last reader lets go. The guarantee is kept at runtime —
+   *refused*, never *silent*.
 
 The `&mut` on `write`'s allocation is the caller's own token and stays: an `Allocation` carries a
 cursor that has to advance with the store's row. Mount and initialization are constructors and are

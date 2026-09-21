@@ -516,6 +516,33 @@ ios-companion *args:
     device="$(ios_phone "${1:-}")"
     ios_install OBCCompanion Release com.openbikecomputer.companion "$device"
 
+# What governs these files: contracts, guards, suites, coverage, frames, budgets. Args: PATH...
+[group('docs')]
+governs *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    cd "$OBC_ROOT"
+    _run python3 "$OBC_TOOLS/governs.py" "$@"
+
+# Prose budgets, published-page and link rules. Args: [--check|--update|--report]
+[group('docs')]
+prose *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    cd "$OBC_ROOT"
+    _run python3 "$OBC_TOOLS/prose.py" "$@"
+
+# Regenerate CHANGELOG.md from merged pull requests. Args: [--check|--update]
+[group('docs')]
+changelog *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    cd "$OBC_ROOT"
+    _run python3 "$OBC_TOOLS/changelog.py" "${@:---update}"
+
 # Inspect documentation ownership or review source-related prose. Args: [status|check|review]
 [group('docs')]
 docs *args:

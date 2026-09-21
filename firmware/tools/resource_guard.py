@@ -8,6 +8,9 @@ tools rather than an ELF Python package so a fresh checkout needs only the selec
 
 from __future__ import annotations
 
+GOVERNS = ['firmware/obc-fw-nrf54l/**', 'firmware/obc-boot/**', 'firmware/tools/resource_baseline.json']
+RULE = 'A release image fits the recorded resource baseline: RAM, frames, boot chain and bootloader flash.'
+
 import argparse
 import json
 import re

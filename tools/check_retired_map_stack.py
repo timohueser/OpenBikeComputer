@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+GOVERNS = ['**']
+RULE = 'A deleted map-distribution API or version marker stays deleted.'
+
 import os
 import re
 from pathlib import Path

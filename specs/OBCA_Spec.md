@@ -27,12 +27,6 @@ enough to run in a browser.
 > types all go in **FS7.5b/c**. §4's assembly contract is **not** superseded — an assembler still
 > grafts cells into one file; it simply emits that one file rather than a set of them, and splices
 > the terrain raster into `OBCM_Spec.md` §1.3's region rather than shipping it beside the map.
->
-> (For history: manifest **v3** was FS7 #1389 — every record carried its member's `ObjectId` so a
-> set resolved through object identity rather than derived filenames, growing the record 56 → 64
-> bytes. **v2** was EL4 #1072 — it added the `terrain` role and made §5.3's role and tiling rules
-> count OBCM shards rather than records. Both were hard cuts under the pre-release rule; v3 shipped
-> a week before the re-scope that retired the whole idea.)
 
 This document is normative. The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are to be
 interpreted as in RFC 2119.
@@ -195,72 +189,16 @@ The largest cell size in the table, `S_MAX = 2^20`, is the assembly bbox's align
 (§2.1).
 
 The current 14-rung ladder keeps its semantic overview tiers through 20 m/px in `mid`, and puts the
-ordinary 16 m/px-and-closer geometry in `fine`. The measured densities below predate that expanded
-ladder and semantic generalisation; they remain historical sizing evidence rather than current
-byte-exact forecasts.
+ordinary 16 m/px-and-closer geometry in `fine`.
 
-**Measured density**, in MiB per 1000 km² of covered ground — a latitude-free unit, unlike bytes
-per square degree. Three whole-extract bakes at this schema: `switzerland` (41 285 km²),
-`austria` (83 879 km²), `freiburg-regbez` (9 357 km², the densest, an upper bound rather than a
-German average — the Rhine plain carries more road and more building than the Alps do):
+Cell size scales inversely with band density, so a fully covered cell of every band costs about the
+same to fetch. That fetch-unit uniformity is what sets the band boundaries, and it is a property of
+one download rather than one file.
 
-| Band | switzerland | austria | freiburg-regbez | one cell: fully covered / CH p90 / CH max |
-| :-- | --: | --: | --: | :-- |
-| `coarse` — LOD 0–4 | 0.45 | 0.54 | 0.65 | 4.2 / 2.9 / 3.9 MiB |
-| `mid` — LOD 5,6 | 2.32 | 2.34 | 3.05 | 5.4 / 5.9 / 9.5 MiB |
-| `fine` — LOD 7,8 | 7.66 | 6.73 | 9.54 | 4.4 / 5.5 / 12.1 MiB |
-| `network` — nav + POI | 6.30 | 3.80 | 7.06 | 3.7 / 5.3 / 19.5 MiB |
-| **whole map** | **16.7** | **13.4** | **20.3** | |
-
-> **Why these boundaries.** ⚠️ **Half of this justification is superseded** (OBCM v14, #1420): the
-> `4 GiB − 1` file ceiling every "must fit one file" clause below appeals to is gone, and with it
-> the core-versus-shard split those clauses were protecting. **What survives is fetch-unit
-> uniformity**, which is about the size of one *download*, not one file — that is the property the
-> band boundaries are actually set by, and it is unaffected. Read the rest as the reasoning that
-> produced the v1 table rather than as a live constraint; the table itself stands, because the sizes
-> it names are still the sizes.
->
-> **No ladder LOD lives in the core file.** The core carries the nav
-> graph, the POIs and the style table and nothing else (§5.1), because it is the one file of a set
-> that cannot be split by bbox — so every byte that *can* scale horizontally is kept out of it. The
-> band boundaries are therefore set by two properties that really are about geometry: the size of
-> one fetch, and the size of the single coarse shard.
->
-> **Fetch-unit uniformity.** Cell size scales inversely with band density, so a fully covered cell
-> of every band is 3.7–5.4 MiB and one fetch costs about the same wherever it comes from. That is
-> what keeps the 30 m/px tier (LOD 5) in `mid`: a `2^20` cell carrying it as well measures
-> **10.4–11.7 MiB** fully covered, two and a half times every other band's object. The boundary is
-> not a knife edge from the other side — moving LOD 4 down into `mid` would add only 1.1–1.4 MiB to
-> a `2^19` cell — so `coarse` ending where it does is the cheap end of a shallow optimum, chosen
-> rather than forced.
->
-> **The coarse shard is one file spanning the whole assembly** (§5.1), which is what keeps a
-> zoomed-out viewport a single-file read. Its band's content must therefore stay small enough that
-> even a *continental* assembly's coarse layer fits `4 GiB − 1`: at 0.47–0.61 MiB per 1000 km²
-> (DACH-weighted, and sparser ground is cheaper) that is **≈ 6.7–8.8 M km²** — EU-27 would be a
-> 1.9–2.5 GiB single coarse
-> shard, geographic Europe 4.6–6.1 GiB and would have to split. Adding LOD 3 roughly doubles the band
-> and pulls that ceiling down to ≈ 2.9–3.6 M km², *below* EU-27, giving up the single-file zoomed-out
-> read exactly where it matters most.
->
-> **Why the fine band is `2^18` rather than `2^19`:** the worst measured single cell is then ~12 MiB
-> of geometry (Zürich) instead of the ~33 MiB a `2^19` fine band produces. Note the p90 and max
-> columns: per-cell bytes run 30–45 % above the average in populated bands and 4–5× above it in the
-> worst urban cell, so a shard planner MUST size on the distribution, never on the mean. (The
-> *fully covered* column is `cell area × density`; the p90 and max columns are the measured per-cell
-> distribution over Switzerland, which includes partially covered cells and so sits below it at the
-> coarse sizes, where few whole cells exist.)
->
-> These densities are measured on **whole-extract bakes**, not on cells, and a producer SHOULD still
-> budget **+5–15 %** over the figures above. That margin is deliberate slack rather than an expected
-> cost: P2 measured a real scoped bake (`freiburg-regbez + switzerland`, 314 cells) at **0–4 %
-> *smaller*** than these figures, band for band. The cutter runs the packer's `merge_fills` /
-> `merge_lines` passes once over the whole ingest and cuts the *merged* set, so the cross-cell union
-> loss this margin was first attributed to never happens; the ~3 KB of fixed per-cell overhead is
-> ~0.1 % at country scale; and the vertices clipping adds at a cell edge are outweighed by the
-> sub-pixel cull running on *clipped* geometry. The margin stays because §5.7 requires the
-> pre-download projection to be an **upper bound** on real cell bytes, and a budget that is never
-> exceeded is doing its job.
+Per-cell bytes run well above a band's average in populated bands, and several times above it in
+the worst urban cell, so a shard planner MUST size on the distribution and never on the mean. A
+producer SHOULD budget 5–15 % over any density figure it works from, because §5.7 requires the
+pre-download projection to be an **upper bound** on real cell bytes.
 
 ---
 
@@ -1089,8 +1027,8 @@ That clemency is about reading a card that has aged: a rider deleted the raster 
 hand copy was truncated, a read glitched, a later OBCT version arrived. It is **not** a licence for a
 *writer* to publish a manifest whose terrain record does not describe the file it ships beside it —
 a writer MUST verify the record like any other, and a device receiving a set over the wire MUST
-refuse a manifest whose terrain record disagrees with the raster it just took
-([`obc-ble-interface-spec.md` §4.1](obc-ble-interface-spec.md) rule 7). The asymmetry is between
+refuse a manifest whose terrain record disagrees with the raster it just took. The asymmetry is
+between
 *reading an old card* and *accepting a new upload*, not between terrain and everything else.
 
 A device MAY defer the SHA-256 check (hashing gigabytes is minutes of work on a microcontroller,
@@ -1238,11 +1176,9 @@ Therefore:
 - A producer SHOULD warn above **seven eighths of that wall**, and the refusal MUST name the
   coverage as the thing to reduce. The warning is a *proportion* — "you are close" — rather than a
   size, for the same reason the refusal is a reference, and stating it that way is what let it
-  follow the wall up when §5.2 went, without a rewrite. (It was ⅞ of `4 GiB − 1`, ≈ 3.5 GiB, and it
-  named the **navigation graph** as the reason, because after this section's split the core was nav
-  plus POIs and nothing else. One file has no such split: the whole selection is in it, so coverage
-  is the only lever and the graph is no longer a distinguishing explanation.) At the current ceiling
-  the proportion is ≈ 56 GiB, which no v1-scale selection reaches — a producer's warning is a
+  follow the wall up when §5.2 went, without a rewrite. One file has no split: the whole selection is
+  in it, so coverage is the only lever. At the current ceiling the proportion is ≈ 56 GiB, which no
+  v1-scale selection reaches — a producer's warning is a
   backstop on the *format's* limit, and the size a rider actually runs out of is card space, which
   the consumer bullet above owns.
 - A consumer MUST apply the schema's own cell-bake budget (§1.5's +5–15 %, measured headroom rather
@@ -1253,38 +1189,6 @@ Therefore:
   coarse or geometry shard further; there are no roles left to split.)
 - §4.8's verify then re-checks every file's actual size against the ceiling, so the pre-download
   projection is bounded on both ends: refused before the fetch, and re-asserted before the write.
-
-> **The two figures above were `4 GiB − 1 B` and `≈ 3.5 GiB` before OBCM v14.** They were not
-> arbitrary: a byte offset was a bare `uint32`, so a file stopped at 4 GiB, and FAT32 — the card
-> format the firmware's FAT stack wrote — capped a file at exactly the same number. Two independent
-> walls landing on one value is why sets exist at all (§5.5), and why so much of this section reads
-> as though 4 GiB were a law of nature.
->
-> Both of those causes are gone. v14 scales offsets (§1.1), moving the format's own wall to
-> `2^32 × U`, and the flat store replaced FAT. The number did not move at first, because a third
-> wall was behind them the whole time: the read seam. `ByteSource` was `uint32`, so 4 GiB stayed
-> where a file stopped — because nothing could read past it rather than because nothing could
-> address or store it.
->
-> **That third wall is now gone too**, so the *reading* wall finally moved: `ByteSource` addresses
-> 64 bits, the smaller of the two walls in the rule above is §1.1's interior, and a reader reaches
-> 64 GiB.
->
-> **A fourth wall outlived the other three, and it is gone too.** §5.2's `Bytes` was a `uint32` of
-> bytes in the OBCS manifest and widened with nothing, so `4 GiB − 1` remained where a *written*
-> file stopped even after the read seam moved. It was tempting to read the third wall's removal as
-> freeing the single file, and that was exactly the error: the fast path had a manifest too.
->
-> FS7.5b2 deleted the set machinery, and the field went with it. So the count is now **four walls,
-> four causes retired, none live**: FAT is gone, the format's own `uint32` is gone, the read seam is
-> gone, and the manifest is gone. What a producer may write and what a reader may open are the same
-> number again — §1.1's interior, 64 GiB at `U = 16`. The ⅞ warn was written as a proportion rather
-> than as "≈ 3.5 GiB" for exactly this day, and it followed the wall up without a rewrite.
->
-> Statements elsewhere in this document that name `4 GiB − 1` describe the **pre-v14** design and
-> the reasoning that produced the split. As *history* they are stale; as a *number* they still
-> happen to be right, for a reason none of them gives. §5.7 is the normative statement, and §5.2's
-> `Bytes` is the field that currently makes it so.
 
 **The terrain shard is the easiest file of the set to project, and it is projected the same way.**
 Its size is `32 + 4 · rows · cols + present · T² · 512` — a header, a directory over the assembly

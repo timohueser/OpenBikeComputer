@@ -111,3 +111,5 @@ builder/app/public/data/
 target/
 fixtures/build/
 
+# repowise local index and session cache — never committed.
+/.repowise/

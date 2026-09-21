@@ -20,6 +20,9 @@ must yield a parsed label, and the totals must clear a floor that matches the de
 
 from __future__ import annotations
 
+GOVERNS = ['firmware/obc-app/src/screen/**/*.rs']
+RULE = 'A setting has one home: a drawer row or a settings screen, never both.'
+
 import re
 import sys
 from pathlib import Path

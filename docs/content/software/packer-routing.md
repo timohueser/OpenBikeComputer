@@ -469,19 +469,18 @@ Read failures and unavailable coverage remain distinct from an empty result.
 
 ### Building the navigation graph
 
-The packer always builds the navigation graph.
-It keeps OSM node IDs for routable ways.
-Shared node IDs form junctions.
-The packer splits ways at junctions and removes duplicate edges.
-It removes small disconnected components with the configured threshold.
+The packer always builds the navigation graph. Shared OSM node IDs form junctions; the packer
+splits ways there, removes duplicate edges, and drops disconnected components below the
+configured threshold. The legality filter rejects private access, motor roads and bicycle
+prohibitions, then classifies each accepted edge by highway and surface into one `way_kind`
+byte. The serializer writes tiled nodes, adjacency records, edge geometry and snap anchors,
+densifying long geometry so each record fits its chunk. See
+[OBCM section 8](src:specs/OBCM_Spec.md) for the normative tables.
 
-The legality filter rejects private access, motor roads, and bicycle prohibitions.
-It classifies each accepted edge by highway and surface.
-The packed `way_kind` byte contains both classes.
-See [OBCM section 8](src:specs/OBCM_Spec.md) for the normative tables and layout.
-
-The serializer writes tiled nodes, adjacency records, edge geometry, and snap anchors.
-It densifies and splits long geometry so each record fits its chunk.
+An assembled map keeps **one** navigation graph. The assembler copies each surviving edge
+geometry record unchanged, then rebuilds identities, adjacency and the spatial indexes.
+Pruning runs a local union-find per cell, joined through boundary nodes rather than over the
+whole map. See [`nav.rs`](src:host/obcm-assemble/src/nav.rs).
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">

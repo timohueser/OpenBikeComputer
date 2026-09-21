@@ -27,7 +27,7 @@ The goal for this codebase is to make this a robust and extendable open source m
 | `specs/` | Normative binary, wire, and vector contracts. |
 | `fixtures/` | Scenario registry, input provenance, and fixture builders. |
 | `docs/` | Public conceptual documentation and blog source. |
-| `ops/`, `hardware/`, `tools/` | Operations runbooks, hardware design, and repository tooling. |
+| `hardware/`, `tools/` | Hardware design and repository tooling. |
 
 The root Cargo workspace contains the shared `firmware/`, `host/`, and `apps/` crates. Keep
 device-reachable dependencies in `firmware/`; keep host policy and native-heavy dependencies out
@@ -51,11 +51,9 @@ Use the nearest README for surface-specific setup. `companion-ios/CLAUDE.md` is 
   ```
 
 - Use `obc test fixtures -p <crate>` only for captured external data. For non-Rust work, run the
-  affected surface's native focused command. Select whole suites, never individual test
-  functions.
-- For a change spanning packages, let the plan choose: `obc test affected --base origin/develop`
-  (add `--dry-run` to see the plan first). It is the same selection CI runs, and it prints one
-  reason per suite.
+  affected surface's native focused command. Select whole suites, never individual test functions.
+- For a change spanning packages, `obc test affected --base origin/develop` is the same selection
+  CI runs; `--dry-run` shows the plan first.
 - Run `obc test full` or `obc check full` only for cross-cutting changes, such as workspace or
   feature-resolution changes, shared contracts, foundational crates, CI/tooling, or releases.
 - Run `obc suites check` after changing test sources, validation commands, workflows, the plan
@@ -82,6 +80,34 @@ Codex, or other — and only the owner can raise them:
 - Do not mirror the full CI suite locally before a push. Run the affected suites; CI is the gate.
 - Reviews get one round by default. A re-review covers only the delta. Small pre-approved
   errands land on green CI without a further round.
+
+## What gets recorded where
+
+Every durable artifact answers one question. If it answers two, it is in the wrong place.
+
+| Kind | Answers | Lives in | Lifetime |
+| --- | --- | --- | --- |
+| Contract | what must the bytes be? | `specs/` | until the format dies |
+| Guide | how does the product work, and why? | `docs/content/`, listed in `nav.json` | current only; rewritten, never appended |
+| Rule | what must we not break? | the guard that enforces it, with `GOVERNS` and `RULE` | until retired |
+| Requirement | what must it do for a rider? | the verification console | until the behavior changes |
+| Record | what happened, measured how? | `CHANGELOG.md` and the pull request | append-only; never read to do work |
+
+**A record never lives inside a contract, guide, rule or requirement.** A measurement, a
+version delta or a note about what a change did to a number goes in the pull request. The
+changelog is generated from merged pull request titles; do not write it by hand.
+
+Before changing a file, ask what reaches it:
+
+```sh
+obc governs firmware/obc-app/src/screen/map.rs
+```
+
+It joins the suites, contracts, guards, coverage components, snapshot frames, layering and
+prose budgets that name the path. Nothing in it is authored, so it cannot drift from CI.
+
+`obc prose --check` budgets guide pages, READMEs, guard docstrings and these policy files:
+an over-budget file must not grow. Run `obc prose --update` when one shrinks.
 
 ## Documentation
 
@@ -110,15 +136,10 @@ plans. Agents propose plans, and suggest requirements. Read the console with the
 credential; never write with an owner session, and never invent a requirement or claim a test is
 linked.
 
-To look up a requirement, run `obc req SYS-003` (`--json` for the raw record). It prints the
-statement, the coverage state, and the criteria numbered 1..n, so "criterion 2 of SYS-003" is the
-second one in that listing. `obc req` with no arguments lists the rest: `list` with filters,
-`proposal SYS-003`, `tests <query>` to search the CI catalogue, `changed --since rN` for the
-requirements a revision added or reworded, `propose plan.json` to validate a coverage plan and
-submit it, `suggest suggestion.json` to suggest a requirement or a change to one, and
-`suggestions` (`--decided`) for the suggestions that wait and the ones the owner answered. Always
-`propose --check` or `suggest --check` first; it catches what a reviewer would send back. The
-agent token is stored at `~/.config/openbikecomputer/verification-agent.token`.
+`obc req SYS-003` prints a requirement, its coverage state and its criteria numbered 1..n; bare
+`obc req` lists every other subcommand. Always `propose --check` before `propose`, and
+`suggest --check` before `suggest`. The agent token is at
+`~/.config/openbikecomputer/verification-agent.token`.
 
 - **When you implement or test behavior that a requirement describes**, say so in the pull
   request in one line: `Requirements: SYS-012, SYS-030` or `Requirements: none`. List a
@@ -136,17 +157,5 @@ agent token is stored at `~/.config/openbikecomputer/verification-agent.token`.
 - **Alert the owner** when requested behavior contradicts a requirement, or when a test cited as
   evidence was deleted or hollowed out. The console does not block development; the alert is the
   duty.
-
-### Occasional requirements check
-
-Run this when asked, or when a milestone lands, not per pull request. It takes one session.
-
-1. Read the current revision and every plan from the console. Read `git log --since` the last
-   check (the previous check's report names its end commit).
-2. For each requirement touched by those commits, answer three questions: does the prose still
-   describe the product; does the plan still name the right tests, with no cited test removed or
-   emptied; is there new user-visible behavior that no requirement covers.
-3. Report the findings as a short list grouped by those three questions, name the end commit,
-   and propose plan updates for the second group. Requirement prose changes are for the owner.
 
 See [the application README](apps/obc-verification/README.md) for the API and release flow.

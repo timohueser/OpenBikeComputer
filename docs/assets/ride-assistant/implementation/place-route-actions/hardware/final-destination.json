@@ -1,7 +1,0 @@
-{
-  "phase": "destination",
-  "input": "92.024252 [INFO ] input: Step 1 on VisitReview (obc_fw_nrf54l obc-fw-nrf54l/src/ride.rs:2702)",
-  "frame": "93.494758 [INFO ] map frame: render 353819 us + push 37277 us | lod 10 | feat 251/375 | chunks 8 | map-cache 0 hit / 8 miss (obc_fw_nrf54l obc-fw-nrf54l/src/ride.rs:3276)",
-  "seconds": 1.470506,
-  "completed": true
-}

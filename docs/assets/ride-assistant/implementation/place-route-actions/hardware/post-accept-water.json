@@ -1,7 +1,0 @@
-{
-  "phase": "water",
-  "input": "142.632184 [INFO ] input: Press on FindPlace (obc_fw_nrf54l obc-fw-nrf54l/src/ride.rs:2704)",
-  "frame": "147.220005 [INFO ] map frame: render 422998 us + push 43211 us | lod 11 | feat 408/614 | chunks 9 | map-cache 0 hit / 9 miss (obc_fw_nrf54l obc-fw-nrf54l/src/ride.rs:3276)",
-  "seconds": 4.587821,
-  "completed": true
-}
