@@ -220,16 +220,15 @@ fn browser_card_allocates_written_pages_only() {
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
 fn native_map_snapshot_is_independent_of_later_source_edits() {
-    use super::NativeMapInput;
     use std::io::{Seek, SeekFrom, Write};
     let bytes = include_bytes!("../../../../apps/obc-sim/assets/grimsel-demo.obcm");
     let mut original = tempfile::tempfile().unwrap();
     original.write_all(bytes).unwrap();
-    let snapshot = NativeMapInput::snapshot(original.try_clone().unwrap()).unwrap();
+    let snapshot = super::snapshot(original.try_clone().unwrap()).unwrap();
     original.seek(SeekFrom::Start(0)).unwrap();
     original.write_all(b"invalid").unwrap();
     let owner = HostStore::memory().unwrap();
-    let map = FlatMap::from_file_in(&owner, snapshot.file.into_inner()).unwrap();
+    let map = FlatMap::from_file_in(&owner, snapshot.into_file()).unwrap();
     let mut stored = vec![0; bytes.len()];
     map.source().read_at(0, &mut stored).unwrap();
     assert_eq!(stored, bytes);

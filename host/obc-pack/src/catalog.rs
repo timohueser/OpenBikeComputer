@@ -249,6 +249,7 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
                 cell_log2: store.doc.cell_log2,
                 terrain_revision: store.doc.revision,
                 attribution: store.doc.attribution.clone(),
+                references: (!store.references.is_empty()).then(|| store.references.clone()),
                 cell_index: TerrainIndexRef {
                     cell_count: store.cells.len() as u32,
                     known_empty_count: inclusive_run_count(
@@ -358,6 +359,16 @@ pub fn license_txt(root: &Catalog) -> String {
             "\nThe terrain artifacts (*.obcd) are a separate artifact class,\n{attribution}.\n",
             attribution = terrain.attribution,
         ));
+        // §13.5 covers every listed reference exactly as it covers the dataset's own credit: a
+        // crest baked from a national model carries that model's notice too.
+        for reference in terrain.references.iter().flatten() {
+            text.push_str(&format!(
+                "Summit heights in them come from {product}: {attribution}\n({licence}).\n",
+                product = reference.product,
+                attribution = reference.attribution,
+                licence = reference.licence,
+            ));
+        }
     }
     text
 }

@@ -79,7 +79,7 @@ fn a_real_glo30_tile_decodes_bakes_and_reads_back_at_surveyed_elevations() {
     // A 2^16 cell keeps the fixture a few hundred KB while the *posting* — the thing that decides
     // the heights — stays the real v1 one.
     let params = BakeParams { posting_log2: V1_POSTING_LOG2, cell_log2: 16, bbox };
-    let report = bake_shard(&mosaic, params, std::io::BufWriter::new(file), |_, _, _, _, _| {}).unwrap();
+    let report = bake_shard(&mosaic, params, None, std::io::BufWriter::new(file), |_| {}).unwrap();
     println!("{report:?}");
     assert_eq!(report.samples_nodata, 0, "the Alps are not water and this tile has no voids");
 

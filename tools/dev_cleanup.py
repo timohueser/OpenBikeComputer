@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import os
 import shutil
 import subprocess
@@ -20,6 +21,10 @@ STANDALONE_TARGETS = (
     Path("firmware/obc-boot/target"),
     Path("apps/obc-desktop/target"),
 )
+# Per-profile directories whose entries cargo recreates on demand. Cargo never removes
+# superseded entries itself, so every dependency bump, feature set, and toolchain update
+# leaves a generation behind.
+ARTIFACT_DIRS = ("deps", "examples", "build", "incremental", ".fingerprint")
 
 
 class CleanupError(RuntimeError):
@@ -117,22 +122,14 @@ def directory_sizes(paths: list[Path]) -> dict[Path, int]:
         return sizes
 
 
-def shallow_activity(path: Path, depth: int = 1) -> float:
-    """Latest namespace activity without recursively stat-ing an entire build tree."""
+def shallow_activity(path: Path) -> float:
+    """Latest activity of a path and its direct children, without walking a whole tree."""
     candidates = [path]
-    if depth >= 1 and path.is_dir():
+    if path.is_dir():
         try:
-            children = list(path.iterdir())
+            candidates.extend(path.iterdir())
         except OSError:
-            children = []
-        candidates.extend(children)
-        if depth >= 2:
-            for child in children:
-                if child.is_dir() and not child.is_symlink():
-                    try:
-                        candidates.extend(child.iterdir())
-                    except OSError:
-                        pass
+            pass
     newest = 0.0
     for candidate in candidates:
         try:
@@ -153,6 +150,56 @@ def format_size(size: int) -> str:
 
 def candidate_targets(root: Path) -> list[Path]:
     return [root / "target", *(root / relative for relative in STANDALONE_TARGETS)]
+
+
+def profile_dirs(target: Path) -> list[Path]:
+    """Cargo profile directories: target/<profile> and target/<triple>/<profile>."""
+    result: list[Path] = []
+    for child in sorted(target.iterdir()):
+        if child.is_symlink() or not child.is_dir():
+            continue
+        if (child / ".cargo-lock").exists():
+            result.append(child)
+            continue
+        result.extend(
+            grandchild
+            for grandchild in sorted(child.iterdir())
+            if not grandchild.is_symlink() and (grandchild / ".cargo-lock").exists()
+        )
+    return result
+
+
+def stale_artifacts(target: Path, cutoff: float) -> dict[Path, list[Path]]:
+    """Artifacts cargo has not rewritten since the cutoff, grouped by profile directory.
+
+    A no-op build touches nothing, so an entry's activity is its last compile. Cargo
+    rebuilds whatever is missing, so removing an entry costs compile time, never
+    correctness: a removed dependency recompiles and its dependents follow.
+    """
+    result: dict[Path, list[Path]] = {}
+    for profile in profile_dirs(target):
+        stale: list[Path] = []
+        for entry in profile.iterdir():
+            if entry.name in ARTIFACT_DIRS and entry.is_dir():
+                stale.extend(child for child in entry.iterdir() if shallow_activity(child) <= cutoff)
+            elif entry.is_file() and entry.name != ".cargo-lock" and shallow_activity(entry) <= cutoff:
+                stale.append(entry)
+        if stale:
+            result[profile] = sorted(stale)
+    return result
+
+
+def remove_stale_artifacts(profile: Path, entries: list[Path], cutoff: float) -> bool:
+    """Remove entries under one profile directory; False when a running build holds its lock."""
+    with open(profile / ".cargo-lock", "a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return False
+        for entry in entries:
+            if shallow_activity(entry) <= cutoff:
+                remove_path(entry)
+        return True
 
 
 def worktree_activity_time(worktree: Worktree, commit_time: int | None) -> int | None:
@@ -251,7 +298,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--include-builds",
         action="store_true",
-        help="also make old target directories in retained worktrees eligible",
+        help="also remove build artifacts cargo has not rewritten within --days (the next build recompiles what it still needs)",
     )
     result.add_argument("--repo", type=Path, help=argparse.SUPPRESS)
     return result
@@ -318,7 +365,6 @@ def main(argv: list[str] | None = None) -> int:
         if target.is_dir()
     ]
     target_sizes = directory_sizes(all_targets)
-    target_activity = {target: shallow_activity(target, depth=2) for target in all_targets}
     for decision in decisions:
         size = sum(target_sizes.get(path, 0) for path in candidate_targets(decision.worktree.path))
         marker = "REMOVE" if decision.eligible else "keep"
@@ -327,23 +373,23 @@ def main(argv: list[str] | None = None) -> int:
             eligible_worktrees.append(decision.worktree)
             reclaimable += size
 
-    old_builds: list[Path] = []
-    print("\nRetained build artifacts")
+    cutoff = now - args.days * SECONDS_PER_DAY
+    sweeps: list[dict[Path, list[Path]]] = []
+    print("\nBuild artifacts")
     for decision in decisions:
-        if decision.eligible or not decision.worktree.path.exists():
+        if decision.eligible:
             continue
         for target in candidate_targets(decision.worktree.path):
             if not target.is_dir():
                 continue
-            size = target_sizes[target]
-            modified = target_activity[target]
-            age = int(max(0, (now - modified) // SECONDS_PER_DAY))
-            eligible = args.include_builds and age >= args.days
-            marker = "REMOVE" if eligible else "keep"
-            suffix = "eligible" if eligible else ("pass --include-builds" if not args.include_builds else "recent")
-            print(f"  {marker:6} {format_size(size):>10}  {target} — {age}d, {suffix}")
-            if eligible:
-                old_builds.append(target)
+            stale = stale_artifacts(target, cutoff)
+            entries = [entry for profile_entries in stale.values() for entry in profile_entries]
+            size = sum(directory_sizes(entries).values())
+            marker = "SWEEP" if args.include_builds else "keep"
+            suffix = "" if args.include_builds else ", pass --include-builds"
+            print(f"  {marker:6} {format_size(size):>10}  {target} — {len(entries)} artifacts older than {args.days}d{suffix}")
+            if args.include_builds:
+                sweeps.append(stale)
                 reclaimable += size
 
     scratch = temp_candidates(now, args.days, excluded={worktree.path for worktree in worktrees})
@@ -371,8 +417,10 @@ def main(argv: list[str] | None = None) -> int:
         if status.returncode or status.stdout or head.returncode or head.stdout.strip() != worktree.head or not still_merged:
             print(f"error: {worktree.path} changed after planning; refusing to remove it", file=sys.stderr)
             return 1
-    for target in old_builds:
-        remove_path(target)
+    for stale in sweeps:
+        for profile, entries in stale.items():
+            if not remove_stale_artifacts(profile, entries, cutoff):
+                print(f"skipped {profile}: a build holds its lock")
     for path in scratch:
         remove_path(path)
     for worktree in eligible_worktrees:

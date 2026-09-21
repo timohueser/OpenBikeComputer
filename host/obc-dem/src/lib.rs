@@ -40,9 +40,20 @@
 //! 4. **Rows are flipped once, on ingest** (`OBCT_Spec.md` §2), so no downstream step has to decide
 //!    which way is north.
 //!
-//! [`bake::bake_cell`] is therefore a pure function of `(mosaic, cell)` and nothing else — which is
-//! why a cell baked inside a wide shard is byte-identical to the same cell baked on its own, and
-//! why the tests can pin a digest.
+//! [`bake::bake_cell`] is therefore a pure function of `(mosaic, cell, lift map)` and nothing else,
+//! and a [`crest::LiftMap`] is itself a pure function of the cell and the two DEMs — which is why a
+//! cell baked inside a wide shard is byte-identical to the same cell baked on its own, and why the
+//! tests can pin a digest.
+//!
+//! ## The reference archive
+//!
+//! `bake --reference <archive root>` raises the samples at crest nodes to a finer national DTM
+//! (`OBCT_Spec.md` §9). That reference is **not** a directory of arbitrary GeoTIFFs: it is the
+//! archive [`reference`] describes — max-pooled whole metres on a `2^6` µdeg lattice, in `2^16` µdeg
+//! tiles, written by `reference/ingest.py`. A bake streams the hundred tiles one cell's rule reads,
+//! one decoded tile in memory at a time, so a country-sized reference costs the same memory as a
+//! one-box one. A mirror of the box is enough; a cell with no coverage is byte-identical to a cell
+//! baked without a reference.
 //!
 //! ## Attribution is a licence obligation
 //!
@@ -56,11 +67,16 @@
 #[cfg(feature = "geotiff")]
 pub mod bake;
 pub mod container;
+/// The §9 lift rule. On the `geotiff` feature because it reads the reference archive's GeoTIFF
+/// tiles; nothing in the wasm-reachable half ([`container`], [`surface`]) knows about a lift.
+#[cfg(feature = "geotiff")]
 pub mod crest;
 #[cfg(feature = "fetch")]
 pub mod fetch;
 #[cfg(feature = "geotiff")]
 pub mod geotiff;
+#[cfg(feature = "geotiff")]
+pub mod reference;
 pub mod surface;
 
 /// A geographic box in integer microdegrees — the unit every OBC coordinate is in, so the box that

@@ -1,6 +1,11 @@
 # Not a workspace member: these binaries reach into `firmware/` and `host/` at once and exist only
 # to answer questions about the panorama, so keeping them out of the workspace keeps the real
 # build honest. Build with `cargo build --release` inside this directory.
+
+# Its own resolve root, the way `obc-boot` and `obc-desktop` are: the root workspace neither lists
+# nor excludes this directory, so without this table Cargo refuses to build here at all.
+[workspace]
+
 [package]
 name = "pano"
 version = "0.1.0"

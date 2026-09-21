@@ -132,12 +132,14 @@ an over-budget file must not grow. Run `obc prose --update` when one shrinks.
 The [verification console](https://releases.openbikecomputer.com) holds the system requirements
 (`SYS-nnn`), and for each one a coverage plan: acceptance criteria, the tests that are evidence
 for each criterion, and the gaps that remain. The owner writes requirement prose and approves
-plans. Agents propose plans. Read the console with the agent credential; never write with an
-owner session, and never invent a requirement or claim a test is linked.
+plans. Agents propose plans, and suggest requirements. Read the console with the agent
+credential; never write with an owner session, and never invent a requirement or claim a test is
+linked.
 
 `obc req SYS-003` prints a requirement, its coverage state and its criteria numbered 1..n; bare
-`obc req` lists every other subcommand. Always `propose --check` before `propose`. The agent token
-is at `~/.config/openbikecomputer/verification-agent.token`.
+`obc req` lists every other subcommand. Always `propose --check` before `propose`, and
+`suggest --check` before `suggest`. The agent token is at
+`~/.config/openbikecomputer/verification-agent.token`.
 
 - **When you implement or test behavior that a requirement describes**, say so in the pull
   request in one line: `Requirements: SYS-012, SYS-030` or `Requirements: none`. List a
@@ -147,8 +149,13 @@ is at `~/.config/openbikecomputer/verification-agent.token`.
   `POST /api/coverage-proposals` (see the README) after the change lands: new criteria for new
   behavior, evidence for tests you added, a gap where a test is still missing. Proposing never
   approves.
-- **Alert the owner** when requested behavior contradicts a requirement, when a change needs a
-  requirement that does not exist, or when a test cited as evidence was deleted or hollowed out.
-  The console does not block development; the alert is the duty.
+- **When a change needs a requirement that does not exist, or a requirement no longer describes
+  the product**, suggest it with `obc req suggest`: the proposed title and statement, and the
+  reason in two or three sentences. A suggestion is never a requirement; the owner writes the
+  requirement by hand and ticks the suggestion off. Read the decision and any feedback with
+  `obc req suggestions --decided`.
+- **Alert the owner** when requested behavior contradicts a requirement, or when a test cited as
+  evidence was deleted or hollowed out. The console does not block development; the alert is the
+  duty.
 
 See [the application README](apps/obc-verification/README.md) for the API and release flow.

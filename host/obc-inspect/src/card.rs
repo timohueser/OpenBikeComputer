@@ -1,13 +1,39 @@
 //! A card image: the flat store mounted over the file, exactly as the device mounts a card.
 
-use obc_formats::io::ByteSource;
-use obc_storage::flat::{FlatStore, Store};
+use obc_file_source::FileSource;
+use obc_formats::io::{ByteSource, Error};
+use obc_storage::flat::{BlockDevice, FlatStore, Store};
 
 use crate::report::{bytes, Report};
-use crate::source::FileSource;
+
+/// The file's bytes addressed in 512-byte blocks — what a card image is. The store takes its
+/// device by value, the shape every card in this tree has, and the caller keeps the file. Writes
+/// are refused rather than absent, because this tool reports what is there and changes nothing.
+struct CardDevice<'a>(&'a FileSource);
+
+impl BlockDevice for CardDevice<'_> {
+    type Error = Error;
+
+    fn block_count(&self) -> Result<u64, Error> {
+        Ok(self.0.len() / 512)
+    }
+
+    fn read(&self, lba: u64, buf: &mut [u8]) -> Result<(), Error> {
+        let offset = lba.checked_mul(512).ok_or(Error::BadOffset)?;
+        self.0.read_at(offset, buf)
+    }
+
+    fn write(&self, _lba: u64, _buf: &[u8]) -> Result<(), Error> {
+        Err(Error::Io)
+    }
+
+    fn sync(&self) -> Result<(), Error> {
+        Err(Error::Io)
+    }
+}
 
 pub fn report(source: &FileSource) -> Result<Report, String> {
-    let store = FlatStore::mount(source);
+    let store = FlatStore::mount(CardDevice(source));
     let mut out = Report::new();
     out.put("bytes", bytes(source.len()));
 

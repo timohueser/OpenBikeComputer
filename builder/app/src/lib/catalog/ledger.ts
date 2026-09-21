@@ -7,7 +7,7 @@
 // fits the rider's card — which the device answers when the bytes arrive
 // (`lib/device/write.ts`), not the catalog beforehand.
 
-import type { BandRole, Catalog, RegionEntry } from "./manifest";
+import type { BandRole, Catalog, ReferenceEntry, RegionEntry } from "./manifest";
 import type { CellIndexDocument } from "./satellites";
 import type { SelectionResolution } from "./selection";
 
@@ -66,6 +66,9 @@ export interface TerrainLedger {
     /** The catalog's source credit, verbatim (§13.5). A consumer that displays
      *  terrain MUST show this and MUST NOT hard-code it. */
     attribution: string;
+    /** The finer models the raster's summit heights came from (§13.1). §13.5
+     *  covers each of them too, so they are shown where `attribution` is. */
+    references: ReferenceEntry[];
 }
 
 export interface Ledger {
@@ -176,6 +179,7 @@ export function ledgerFor(
               missingCount: resolution.terrain.missing.length,
               bytes: resolution.terrain.bytes,
               attribution: catalog.terrain.attribution,
+              references: catalog.terrain.references,
           }
         : null;
     return {
@@ -230,6 +234,7 @@ export function ledgerForRegion(catalog: Catalog, entry: RegionEntry): Ledger {
                   missingCount: 0,
                   bytes: entry.terrain.bytes,
                   attribution: catalog.terrain.attribution,
+                  references: catalog.terrain.references,
               }
             : null;
     return {

@@ -13,6 +13,8 @@ description = "The bakery: bake the curated region list into a catalog tree and 
 # (`obc_pack::net`), so the bakery adds no second HTTP client or second manifest
 # writer to the tree.
 obc-pack = { path = "../obc-pack" }
+# The shared file adapter the verifier reads an artifact through, never resident.
+obc-file-source = { path = "../obc-file-source" }
 # Verification opens the artifact with the *real* reader — the same crate the
 # device runs — rather than sniffing the header. `alloc` is for `MapCache::new_boxed`:
 # the cache is ~277 KB and must not be built on the stack.

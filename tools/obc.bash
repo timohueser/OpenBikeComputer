@@ -79,12 +79,14 @@ _obc() {
   task="${COMP_WORDS[1]:-}"
 
   if (( COMP_CWORD == 1 )); then
-    _obc_reply < <(compgen -W "$(_obc_tasks)" -- "$cur")
+    _obc_reply < <(compgen -W "help $(_obc_tasks)" -- "$cur")
     return
   fi
 
   idx="$(_obc_posidx)"
   case "$task" in
+    help)
+      (( idx == 0 )) && _obc_reply < <(compgen -W "$(_obc_tasks)" -- "$cur") ;;
     sim)
       case "$idx" in
         0) compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -W "$(_obc_fixture_ids scenarios) $(_obc_maps)" -- "$cur"; compgen -f -X '!*.obcm' -- "$cur") ;;

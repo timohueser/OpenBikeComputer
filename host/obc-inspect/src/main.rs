@@ -10,15 +10,14 @@ mod obcr;
 mod obct;
 mod report;
 mod settings;
-mod source;
 
 use std::path::Path;
 use std::process::ExitCode;
 
+use obc_file_source::FileSource;
 use obc_formats::io::ByteSource;
 
 use report::Report;
-use source::FileSource;
 
 const USAGE: &str = "usage: obc inspect <file> [--json]";
 

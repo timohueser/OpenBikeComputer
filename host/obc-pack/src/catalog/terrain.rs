@@ -1,5 +1,6 @@
 //! Terrain-store traversal, validation, and lookup.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -9,7 +10,7 @@ use obc_formats::obct;
 use crate::grid::CellId;
 
 use super::coverage::{inclusive_run_count, CoverageIndex, IndexedCoverage};
-use super::model::{TerrainCellEntry, TerrainEmptyRun};
+use super::model::{ReferenceEntry, TerrainCellEntry, TerrainEmptyRun};
 use super::validate::{parse_strict_id, validate_id, validate_timestamp};
 use super::{
     content_addressed_rel_path, file_name, hash_file, rel_url_path, sorted_entries, PinnedArtifact, CELLS_DIR,
@@ -38,6 +39,11 @@ pub(super) struct TerrainDoc {
     /// `obc_elevation::COPERNICUS_ATTRIBUTION` here; this crate never hard-codes it, because
     /// a generic producer publishing another dataset owes a different notice.
     pub(super) attribution: String,
+    /// Every reference model the bake's archive can credit. The published block names the
+    /// ones a cell actually used, which the sidecars say — an archive holds sources whose
+    /// tiles no published cell read, and a map does not owe those a notice.
+    #[serde(default)]
+    pub(super) references: Vec<ReferenceEntry>,
 }
 
 /// The facts a terrain cell's bytes cannot state. `dataset_version` is per cell as well
@@ -49,6 +55,9 @@ struct TerrainCellSidecar {
     terrain_revision: u32,
     dataset_version: String,
     built_at: String,
+    /// Keys of the reference models this cell's crest lifts are derived from (§13.1).
+    #[serde(default)]
+    reference_sources: Vec<String>,
 }
 
 /// Local, un-published state behind the published all-`NODATA` runs.
@@ -65,6 +74,9 @@ pub(super) struct TerrainStore {
     pub(super) cells: Vec<TerrainCellEntry>,
     pub(super) known_empty: Vec<TerrainEmptyRun>,
     pub(super) pinned_artifacts: Vec<PinnedArtifact>,
+    /// The credits the published block carries: one entry per reference model a published cell
+    /// used, in `key` order. Empty when the store has no crest lifts.
+    pub(super) references: Vec<ReferenceEntry>,
 }
 
 pub(super) type TerrainIndex<'a> = CoverageIndex<'a, TerrainCellEntry>;
@@ -112,6 +124,24 @@ pub(super) fn read_terrain(tree: &Path, base_url: &str) -> Result<Option<Terrain
     if doc.revision == 0 {
         return Err(format!("{}: `revision` starts at 1 — a terrain store has no revision zero", at()));
     }
+    // A reference entry is three licence obligations and a key. Checked here, where the file can be
+    // named, rather than left to a consumer: a blank credit reads as authoritative and shows a
+    // rider nothing, and a generic producer's hand-written `terrain.json` is the likely source.
+    for reference in &doc.references {
+        validate_id(&reference.key).map_err(|e| format!("{}: reference key {e}", at()))?;
+        for (field, value) in
+            [("product", &reference.product), ("attribution", &reference.attribution), ("licence", &reference.licence)]
+        {
+            if value.trim().is_empty() {
+                return Err(format!(
+                    "{}: reference `{}` has an empty `{field}`. Every field of a listed reference is part of the \
+                     credit §13.5 requires a consumer to display.",
+                    at(),
+                    reference.key
+                ));
+            }
+        }
+    }
     // One call validates both ranges *and* the pairing: a cell smaller than one tile,
     // or one whose block would outrun the directory's `uint32` offsets, is not a
     // terrain store OBCT can express.
@@ -127,6 +157,7 @@ pub(super) fn read_terrain(tree: &Path, base_url: &str) -> Result<Option<Terrain
     let known_empty = read_terrain_known_empty(&dir.join(KNOWN_EMPTY_STATE_NAME), &doc)?;
     let mut cells = Vec::new();
     let mut pinned_artifacts = Vec::new();
+    let mut used = BTreeSet::new();
     let mut surface = None;
     if dir.is_dir() {
         for i_dir in sorted_entries(&dir)? {
@@ -140,11 +171,30 @@ pub(super) fn read_terrain(tree: &Path, base_url: &str) -> Result<Option<Terrain
                     i_dir.display()
                 ));
             }
-            let row = read_terrain_row(&i_dir, &name, &doc, tree, base_url, &mut cells, &mut pinned_artifacts)?;
+            let mut sink = RowSink { cells: &mut cells, pinned_artifacts: &mut pinned_artifacts, used: &mut used };
+            let row = read_terrain_row(&i_dir, &name, &doc, tree, base_url, &mut sink)?;
             check_surface_encoding(&mut surface, row, &i_dir)?;
         }
     }
     cells.sort_by(|a, b| a.id.cmp(&b.id));
+
+    // §13.5's obligation is per source a cell actually read, so the published list is the sidecars'
+    // keys resolved against what the tree can credit. A key `terrain.json` cannot resolve is a
+    // refusal rather than an omission: the map would ship derived national elevation with no notice.
+    let references: Vec<ReferenceEntry> = used
+        .iter()
+        .map(|key| {
+            doc.references.iter().find(|entry| &entry.key == key).cloned().ok_or_else(|| {
+                format!(
+                    "{}: terrain cells credit reference source `{key}`, which `{TERRAIN_DOC}` does not declare. \
+                     Those cells are derived from it and cannot be published without its notice (OBCC_Spec.md \
+                     §13.5). Re-run `obc-bake terrain --reference <mirror>` against the archive they were baked \
+                     from, which is where the wording lives.",
+                    dir.display()
+                )
+            })
+        })
+        .collect::<Result<_, String>>()?;
 
     // The same rule §8 states for a band: a square is an artifact or it is empty, never
     // both. A catalog that said both would leave a consumer to pick one.
@@ -165,7 +215,15 @@ pub(super) fn read_terrain(tree: &Path, base_url: &str) -> Result<Option<Terrain
             at()
         ));
     }
-    Ok(Some(TerrainStore { doc, cells, known_empty, pinned_artifacts }))
+    Ok(Some(TerrainStore { doc, cells, known_empty, pinned_artifacts, references }))
+}
+
+/// What one row of the walk appends to: the published entries, their pins, and the reference source
+/// keys the row's cells credit.
+struct RowSink<'a> {
+    cells: &'a mut Vec<TerrainCellEntry>,
+    pinned_artifacts: &'a mut Vec<PinnedArtifact>,
+    used: &'a mut BTreeSet<String>,
 }
 
 fn read_terrain_row(
@@ -174,8 +232,7 @@ fn read_terrain_row(
     doc: &TerrainDoc,
     tree: &Path,
     base_url: &str,
-    out: &mut Vec<TerrainCellEntry>,
-    pinned_artifacts: &mut Vec<PinnedArtifact>,
+    sink: &mut RowSink<'_>,
 ) -> Result<Option<bool>, String> {
     let mut sidecars: Vec<String> = Vec::new();
     let mut artifacts: Vec<(String, PathBuf)> = Vec::new();
@@ -210,6 +267,7 @@ fn read_terrain_row(
         let sidecar: TerrainCellSidecar =
             serde_json::from_str(&sidecar_text).map_err(|e| format!("{}: {e}", sidecar_path.display()))?;
         validate_timestamp(&sidecar.built_at).map_err(|e| format!("{}: built_at {e}", sidecar_path.display()))?;
+        sink.used.extend(sidecar.reference_sources.iter().cloned());
         sidecars.retain(|s| s != &j_text);
 
         // §13.2's lockstep, per cell. Two of the four keys are in the bytes and checked
@@ -275,14 +333,14 @@ fn read_terrain_row(
             .map_err(|_| format!("{}: terrain cell is outside the tree root", path.display()))?;
         let rel_path = rel_url_path(rel)?;
         let published_rel_path = content_addressed_rel_path(&rel_path, &sha256);
-        out.push(TerrainCellEntry {
+        sink.cells.push(TerrainCellEntry {
             id: id.to_string(),
             bytes,
             sha256: sha256.clone(),
             url: format!("{base_url}/{published_rel_path}"),
             built_at: sidecar.built_at,
         });
-        pinned_artifacts.push(PinnedArtifact { rel_path, published_rel_path, bytes, sha256 });
+        sink.pinned_artifacts.push(PinnedArtifact { rel_path, published_rel_path, bytes, sha256 });
     }
 
     if let Some(orphan) = sidecars.first() {
@@ -390,7 +448,7 @@ struct ObctHeader {
 }
 
 fn read_obct_header(path: &Path) -> Result<ObctHeader, String> {
-    let source = crate::terrain::FileSource::open(path)?;
+    let source = crate::terrain::open_obct(path)?;
     let reader = obc_elevation::TerrainReader::parse(&source)
         .map_err(|e| format!("{}: not a usable OBCT artifact ({e:?})", path.display()))?;
     let header = reader.header();
