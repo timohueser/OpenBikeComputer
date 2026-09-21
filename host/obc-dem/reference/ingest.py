@@ -58,6 +58,12 @@ WGS84 = CRS.from_epsg(4326)
 VOID = -1e30
 POOL_BLOCK = 256  # source rows per coordinate transform
 
+# A microdegree of tolerance, in microdegrees: 1e-12 degrees, far below a micrometre on the
+# ground and far above the rounding error of a transform or a projection. It is what makes a
+# coordinate that is mathematically on a lattice line land on the side the half-open square
+# says, rather than on the side the last floating-point bit says.
+SNAP = 1e-6
+
 # The range a real orthometric height is in. A value outside it is a sentinel that the
 # source did not declare — −9999 is the common one — and not ground.
 PLAUSIBLE_M = (-500.0, 9000.0)
@@ -75,6 +81,18 @@ def pixel_index(udeg: int) -> int:
     """The lattice index of the pixel that contains a microdegree coordinate."""
 
     return (udeg - GRID_ORIGIN) // STEP
+
+
+def udeg_floor(degrees: float) -> int:
+    """The microdegree a coordinate is in."""
+
+    return int(np.floor(degrees * DEGREE + SNAP))
+
+
+def udeg_ceil(degrees: float) -> int:
+    """The first microdegree at or after a coordinate."""
+
+    return int(np.ceil(degrees * DEGREE - SNAP))
 
 
 def tile_index(pixel: int) -> int:
@@ -121,10 +139,10 @@ def covering_window(bounds: tuple[float, float, float, float], pad: int = 0) -> 
     """
 
     west, south, east, north = bounds
-    col0 = pixel_index(int(np.floor(west * DEGREE))) - pad
-    col1 = pixel_index(int(np.ceil(east * DEGREE)) - 1) + 1 + pad
-    row0 = pixel_index(int(np.floor(south * DEGREE))) - pad
-    row1 = pixel_index(int(np.ceil(north * DEGREE)) - 1) + 1 + pad
+    col0 = pixel_index(udeg_floor(west)) - pad
+    col1 = pixel_index(udeg_ceil(east) - 1) + 1 + pad
+    row0 = pixel_index(udeg_floor(south)) - pad
+    row1 = pixel_index(udeg_ceil(north) - 1) + 1 + pad
     return Window(row0, col0, max(row1 - row0, 1), max(col1 - col0, 1))
 
 
@@ -150,8 +168,7 @@ def check_world(bounds: tuple[float, float, float, float], what: str) -> None:
             f"{what}: {west},{south},{east},{north} is empty or crosses the antimeridian; "
             "the archive lattice does not wrap, so split the box at ±180°"
         )
-    box = (int(np.floor(west * DEGREE)), int(np.floor(south * DEGREE)),
-           int(np.ceil(east * DEGREE)), int(np.ceil(north * DEGREE)))
+    box = (udeg_floor(west), udeg_floor(south), udeg_ceil(east), udeg_ceil(north))
     if box[0] < WORLD[0] or box[1] < WORLD[1] or box[2] > WORLD[2] or box[3] > WORLD[3]:
         raise Refuse(f"{what}: {west},{south},{east},{north} reaches outside the world box")
 
@@ -306,6 +323,33 @@ def read_source(path: Path):
         return values, src.transform, src.crs, bounds, float(void.mean())
 
 
+def lattice_indices(transform: Affine, src_crs, rows, cols, to_wgs84):
+    """The lattice row and column of each source pixel centre.
+
+    A source that is already in degrees can be placed exactly: twice a pixel centre in
+    microdegrees is a whole number when twice the transform's terms are, so a centre that
+    sits on a lattice line falls on the side the half-open square says and not on the side
+    the last floating-point bit says. That case is common — a national product in EPSG:4326
+    on a round step — and it is the one a projection cannot round-trip.
+
+    Every other CRS goes through the projection, and `SNAP` does the same job there.
+    """
+
+    if src_crs == WGS84:
+        terms = [transform.a * DEGREE, transform.b * DEGREE, 2 * transform.c * DEGREE,
+                 transform.d * DEGREE, transform.e * DEGREE, 2 * transform.f * DEGREE]
+        if all(abs(term - round(term)) < SNAP for term in terms):
+            a, b, twice_c, d, e, twice_f = (round(term) for term in terms)
+            odd_col, odd_row = 2 * cols + 1, 2 * rows + 1
+            twice_lon = twice_c + a * odd_col + b * odd_row
+            twice_lat = twice_f + d * odd_col + e * odd_row
+            return pixel_index(twice_lat // 2), pixel_index(twice_lon // 2)
+    x, y = source_xy(transform, rows + 0.5, cols + 0.5)
+    lon, lat = to_wgs84.transform(x, y)
+    return (pixel_index(np.floor(lat * DEGREE + SNAP).astype("int64")),
+            pixel_index(np.floor(lon * DEGREE + SNAP).astype("int64")))
+
+
 def pool_onto_lattice(values, src_transform, src_crs, window: Window):
     """The contract's pooling rule, done directly.
 
@@ -324,20 +368,19 @@ def pool_onto_lattice(values, src_transform, src_crs, window: Window):
     dest = np.full(window.rows * window.cols, VOID, dtype="float32")
     to_wgs84 = Transformer.from_crs(src_crs, WGS84, always_xy=True)
     top = window.row0 + window.rows
+    dropped = 0
     for start in range(0, values.shape[0], POOL_BLOCK):
         band = values[start:start + POOL_BLOCK]
         rows, cols = np.nonzero(band > VOID / 2)
         if rows.size == 0:
             continue
-        x, y = source_xy(src_transform, rows + start + 0.5, cols + 0.5)
-        lon, lat = to_wgs84.transform(x, y)
-        row = pixel_index(np.floor(lat * DEGREE).astype("int64"))
-        col = pixel_index(np.floor(lon * DEGREE).astype("int64"))
+        row, col = lattice_indices(src_transform, src_crs, rows + start, cols, to_wgs84)
         inside = ((row >= window.row0) & (row < top)
                   & (col >= window.col0) & (col < window.col0 + window.cols))
+        dropped += int(rows.size - inside.sum())
         flat = (top - 1 - row[inside]) * window.cols + (col[inside] - window.col0)
         np.maximum.at(dest, flat, band[rows[inside], cols[inside]])
-    return dest.reshape(window.rows, window.cols)
+    return dest.reshape(window.rows, window.cols), dropped
 
 
 def to_int16(values):
@@ -422,13 +465,15 @@ def merge_tiles(existing, incoming, held: set[str], key: str):
 def ingest_raster(path: Path, source: Source, root: Path, held: dict[str, set[str]]):
     """Pool one raster onto the lattice and fold it into the archive's tiles.
 
-    Returns the tiles it wrote and the fraction of the source raster that was void.
+    Returns the tiles it wrote, the fraction of the source raster that was void, and the
+    number of pixel centres that fell outside the window, which should be none.
     """
 
     values, src_transform, src_crs, bounds, voided = read_source(path)
     check_world(bounds, str(path))
     window = covering_window(bounds, pad=1)
-    pooled = to_int16(pool_onto_lattice(values, src_transform, src_crs, window))
+    lattice, dropped = pool_onto_lattice(values, src_transform, src_crs, window)
+    pooled = to_int16(lattice)
     touched = []
     for ti, tj in window.tiles():
         tile = cut_tile(window, pooled, ti, tj)
@@ -451,7 +496,7 @@ def ingest_raster(path: Path, source: Source, root: Path, held: dict[str, set[st
         write_tile(out, ti, tj, tile)
         contributors.add(source.key)
         touched.append(tile_id(ti, tj))
-    return touched, voided
+    return touched, voided, dropped
 
 
 def local_rasters(directory: Path, bbox) -> list[Path]:
@@ -686,6 +731,8 @@ def box_tiles(bbox, halo: int = 1) -> list[str]:
     """
 
     window = covering_window(bbox)
+    # The core is the tiles the box's own pixels are in — a box on tile lines is exactly its
+    # own tiles, not one more — and the ring goes around that.
     rows = range(max(tile_index(window.row0) - halo, 0), tile_index(window.row0 + window.rows - 1) + halo + 1)
     cols = range(max(tile_index(window.col0) - halo, 0), tile_index(window.col0 + window.cols - 1) + halo + 1)
     return [tile_id(ti, tj) for ti in rows for tj in cols]
@@ -714,9 +761,11 @@ def command_ingest(args) -> int:
     manifests = load_manifests(root)
     held = contributors(manifests)
     touched: set[str] = set()
+    outside = 0
     for i, path in enumerate(rasters, 1):
-        written, voided = ingest_raster(path, source, root, held)
+        written, voided, dropped = ingest_raster(path, source, root, held)
         touched.update(written)
+        outside += dropped
         print(f"  [{i}/{len(rasters)}] {path.name}: {len(written)} tile(s), {voided:.1%} void")
 
     mine = sorted(tile for tile, keys in held.items() if source.key in keys)
@@ -740,6 +789,7 @@ def command_ingest(args) -> int:
     index = rebuild_index(root)
     total = sum(tile_path(root, *(int(p) for p in tile.split("/"))).stat().st_size for tile in index["tiles"])
     print(f"{root}: {len(index['tiles'])} tile(s), {total} bytes, {len(touched)} written this run")
+    print(f"  {outside} source pixel centre(s) fell outside their lattice window")
     print(f"Attribution: {source.attribution} ({source.licence})")
     return 0
 
@@ -875,8 +925,13 @@ def command_mirror(args) -> int:
         run_rclone(mirror_plan(root, remote, listing), remote.env)
     finally:
         listing.unlink(missing_ok=True)
-    print(f"mirrored {len(wanted)} of the {len(needed)} tile(s) the box and its halo need into {root}; "
-          f"the archive does not hold {len(needed) - len(wanted)}")
+    missing = [tile for tile in needed if tile not in index.get("tiles", {})]
+    if missing:
+        shown = ", ".join(missing[:20])
+        more = f", and {len(missing) - 20} more" if len(missing) > 20 else ""
+        print(f"  the archive does not hold {len(missing)} of the {len(needed)} tile(s) the box and "
+              f"its halo need: {shown}{more}")
+    print(f"mirrored {len(wanted)} tile(s) into {root}")
     return 0
 
 
