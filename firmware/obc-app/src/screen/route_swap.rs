@@ -1,14 +1,11 @@
-//! The "route already active" prompt — shown when a new route is picked mid-ride. Loading a route
-//! while tracking is ambiguous: keep recording and re-navigate, or save and begin fresh. **Swap
-//! route** (press) keeps the session and only changes the navigated route; **Finish & new** (hold-
-//! guarded) finalises the current track (the host's Save) and starts a new session; **Cancel** (back)
-//! returns. Reached from [`RouteMenuScreen`](super::RouteMenuScreen) when a session is active and a
-//! *different* route is chosen — or **host-pushed** by
-//! the pass's fact stage when a route arrives over BLE
-//! mid-ride (epic #447, P4): the [`received`](RouteSwapScreen::received) constructor retitles the
-//! same screen ("ROUTE RECEIVED", named subtitle) and arms the popups' 30 s auto-close (timeout =
-//! Cancel — advisory, the route is in the menu either way). Parameterized, not forked: the
-//! keep-session vs. save-and-restart semantics are identical in both roles.
+//! The "route already active" prompt, shown when a new route is picked mid-ride. Loading a route
+//! while tracking is ambiguous: keep recording and re-navigate, or save and begin fresh. Swap
+//! route keeps the session and changes only the navigated route, Finish & new saves the current
+//! track and starts a new session, and Cancel returns.
+//!
+//! The same screen serves the route that arrives over BLE mid-ride: the `received` constructor
+//! retitles it and arms the auto-close of the popups. The two roles have identical semantics, so
+//! the screen is parameterized instead of forked.
 
 use embedded_graphics::prelude::Point;
 use obc_render::{
@@ -27,60 +24,52 @@ use super::vocab::chrome::{title_frame, TITLE_BAR_H};
 use super::vocab::rows::{GuardedRowsGeometry, MenuItem};
 use super::{palette, Ctx, MapScreen, Render, Screen, ScreenTick, Transition};
 
-/// Per-row guard flags (only *Finish & new* is destructive). The labels are looked up per language
-/// at draw time (see [`RouteSwapScreen::draw`]) — the old `const ITEMS` couldn't stay const.
+/// Per-row guard flags. Only Finish & new is destructive.
 const GUARDS: [bool; 3] = [false, true, false];
 
 const SWAP: usize = 0;
 const FINISH_NEW: usize = 1;
 const CANCEL: usize = 2;
 
-/// The prompt. Carries the route the rider picked (`pending`) plus the highlighted option.
-/// `pending` is `None` once a live catalog rescan (#450) removed the picked route from under the
-/// prompt — Swap / Finish & new then cancel out instead of navigating whatever slid into its index.
+/// The prompt. `pending` is `None` when a catalog rescan removed the picked route from below the
+/// prompt, and both actions then cancel instead of navigating the route that took its index.
 #[derive(Debug)]
 pub struct RouteSwapScreen {
     pending: Option<usize>,
     actions: ActionRows,
-    /// `Some(opened_ms)` when this prompt was **host-pushed** for a route received over BLE
-    /// (epic #447, P4): retitled and auto-closing after
-    /// [`UPLOAD_POPUP_TIMEOUT_MS`](super::UPLOAD_POPUP_TIMEOUT_MS). `None` for the manual,
-    /// menu-opened prompt, which never times out.
+    /// `Some(opened_ms)` for the host-pushed prompt, which auto-closes. `None` for the manual
+    /// prompt, which waits for the rider.
     received_ms: Option<u32>,
 }
 
 impl RouteSwapScreen {
-    /// The manual prompt — the rider picked `pending` from the Route menu mid-ride.
+    /// The manual prompt: the rider picked `pending` from the Route menu mid-ride.
     pub fn new(pending: usize) -> Self {
         RouteSwapScreen { pending: Some(pending), actions: ActionRows::new(0), received_ms: None }
     }
 
-    /// The host-pushed variant for a route **received over BLE** mid-ride (P4), opened at
-    /// `now_ms` (the auto-close anchor). Same options, same semantics — only the framing and the
-    /// timeout differ.
+    /// The host-pushed prompt for a route that arrived over BLE mid-ride, opened at `now_ms`.
+    /// Only the framing and the timeout differ from the manual prompt.
     pub fn received(pending: usize, now_ms: u32) -> Self {
         RouteSwapScreen { pending: Some(pending), actions: ActionRows::new(0), received_ms: Some(now_ms) }
     }
 
-    /// Whether this is the host-pushed received-route popup (vs. the manual menu prompt) — the
-    /// distinction the app's popup rules key on (auto-close, passkey replacement).
+    /// True for the host-pushed popup, which the app's popup rules treat differently.
     pub(crate) fn is_received(&self) -> bool {
         self.received_ms.is_some()
     }
 
-    /// Re-point the picked route after a live catalog rescan (#450): follow its identity to the
-    /// new index, or mark it vanished (`None`) so a later fire can't swap onto the wrong route.
+    /// Re-point the picked route after a catalog rescan: follow its identity to the new index, or
+    /// mark it vanished, so a later fire cannot swap onto the wrong route.
     pub(crate) fn remap_routes(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
         self.pending = self.pending.and_then(remap);
     }
 
-    /// Whether the received-popup auto-close deadline has passed. Always `false` for the manual
-    /// prompt — it waits for the rider.
+    /// Always `false` for the manual prompt, which waits for the rider.
     pub(crate) fn expired(&self, now_ms: u32) -> bool {
         self.received_ms.is_some_and(|t| popup_expired(t, now_ms))
     }
 
-    /// The received-popup's residual auto-close wake; idle for the manual prompt.
     pub(crate) fn tick_timers(&mut self, now_ms: u32) -> ScreenTick {
         match self.received_ms {
             Some(t) => popup_tick(t, now_ms),
@@ -88,25 +77,22 @@ impl RouteSwapScreen {
         }
     }
 
-    /// True when the highlighted option needs a hold: its row fills with the live hold progress in
-    /// `draw`, so [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) reports a charging
-    /// hold as worth repainting here.
+    /// True when the highlighted row fills for a hold, which makes the app repaint that fill.
     pub fn selection_is_guarded(&self) -> bool {
         self.actions.selection_is_guarded(&GUARDS)
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match self.actions.handle(g, &GUARDS) {
-            // Swap only: keep the session (nothing named to Recorder), just re-navigate.
+            // Swap keeps the session: nothing is named to Recorder.
             CardEvent::Activate(SWAP) => self.swap_route(cx),
             CardEvent::Activate(FINISH_NEW) => {
-                // The picked route vanished under the prompt (rescan): cancel — don't finalise
-                // the ride for a swap that can no longer happen.
+                // The picked route vanished, so do not finalise the ride for a swap that cannot
+                // happen any more.
                 if self.pending.is_none() {
                     return Transition::Pop;
                 }
-                // Save the current ride, then begin a fresh session on the picked route. Recorder
-                // opens the new one only once the store has answered for the old one.
+                // Recorder opens the new session only after the store answered for the old one.
                 cx.recorder.save_and_restart();
                 self.swap_route(cx)
             }
@@ -115,9 +101,8 @@ impl RouteSwapScreen {
         }
     }
 
-    /// Point navigation at the picked route and drop onto the riding Map. A vanished/out-of-range
-    /// pick (a rescan removed it) cancels instead — indexing by position here is exactly the
-    /// "silently navigate a shifted route" bug the identity remap exists to prevent.
+    /// Point navigation at the picked route and drop onto the riding Map. A pick that vanished or
+    /// is out of range cancels, so the screen never navigates the route that took its index.
     fn swap_route(&self, cx: &mut Ctx) -> Transition {
         let Some(i) = self.pending.filter(|&i| i < cx.routes.len()) else {
             return Transition::Pop;
@@ -132,10 +117,8 @@ impl RouteSwapScreen {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
 
-        // Opaque full-screen prompt (not an overlay): a one-line explanation and three options.
-        // The received variant renames the frame and puts the *arriving route's name* in the
-        // subtitle slot (the rider didn't pick it, so the screen must say what landed); the
-        // manual prompt explains the state instead — the rider just picked the route themselves.
+        // The received prompt puts the name of the arriving route in the subtitle, because the
+        // rider did not pick it. The manual prompt explains the state instead.
         let title =
             if self.is_received() { rx.t(Msg::RouteSwapReceivedTitle) } else { rx.t(Msg::RouteSwapActiveTitle) };
         title_frame(cv, w, h, title, "");
@@ -156,15 +139,12 @@ impl RouteSwapScreen {
         }
         cv.text(&sub, Point::new(w / 2, TITLE_BAR_H + 16), Font::Label, TextAlign::Center, SUBTEXT);
 
-        // The picked / received route's stats line, directly under the subtitle — the same helper
-        // the idle received card uses, so the whole card family reads identically (#682). No
-        // sparkline here: three option rows + subtitle already fill the card (locked, idle-only).
         if let Some(route) = self.pending.and_then(|i| rx.routes.get(i)) {
             let stats = super::route_received::route_stats(route);
             cv.text(&stats, Point::new(w / 2, TITLE_BAR_H + 38), Font::Label, TextAlign::Center, SUBTEXT);
         }
 
-        // Guarded rows fill amber (not warning-red — this confirms a save, it isn't destructive).
+        // The guarded row fills amber, not warning red: it confirms a save, not a deletion.
         let geo = GuardedRowsGeometry::card(w, TITLE_BAR_H + 64);
         let items = [
             MenuItem { label: rx.t(Msg::RouteSwapSwap), guard: GUARDS[0] },
