@@ -43,6 +43,33 @@ const SUBSAMPLES: u32 = 32;
 /// Nodes the scan reaches beyond the map's own range, which is the 2-ring the rule reads: the
 /// convexity test needs a node's four neighbours, and the dilation needs their own selection.
 const HALO: i64 = 2;
+/// A lift past this is worth an operator's attention. There is no ceiling on a lift — where the
+/// source lost a rock wall, the reference is the better measurement and a clamp would put the error
+/// back — but a reference with a spike in it looks exactly like a cliff, and the two have to be
+/// told apart by someone. 200 m is twice the error the rule was built to correct.
+pub const REPORT_M: i16 = 200;
+
+/// What the rule did over a run, for the operator's summary. A reference with a spike in it shows
+/// up here rather than in a drawn panorama.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LiftTally {
+    /// Nodes lifted at all.
+    pub nodes: u64,
+    /// The largest lift, in whole metres, and the node it is at, in µdeg.
+    pub max_m: i16,
+    pub max_at: (i32, i32),
+    /// Nodes lifted by more than [`REPORT_M`].
+    pub over_report: u64,
+}
+
+impl LiftTally {
+    /// Two tallies as one: the counts add, and the larger maximum keeps its position.
+    pub fn join(self, other: Self) -> Self {
+        let (max_m, max_at) =
+            if other.max_m > self.max_m { (other.max_m, other.max_at) } else { (self.max_m, self.max_at) };
+        Self { nodes: self.nodes + other.nodes, over_report: self.over_report + other.over_report, max_m, max_at }
+    }
+}
 
 /// One cell's lifts in whole metres, over the nodes it owns and its inclusive high edge.
 ///
@@ -58,7 +85,7 @@ pub struct LiftMap {
     stride: usize,
     /// Lift in whole metres per node, row-major, never negative.
     lifts: Vec<i16>,
-    lifted: usize,
+    tally: LiftTally,
 }
 
 impl LiftMap {
@@ -137,11 +164,12 @@ impl LiftMap {
         let core = select(&node_max, &over, &scan);
         let stride = (side + 1) as usize;
         let mut lifts = vec![0i16; stride * stride];
-        let mut lifted = 0usize;
+        let mut tally = LiftTally::default();
         for y in 0..=side {
             for x in 0..=side {
                 let top = node_max[scan.at(y, x)];
-                let here = native((origin_y + y * step) as i32, (origin_x + x * step) as i32);
+                let (lat, lon) = ((origin_y + y * step) as i32, (origin_x + x * step) as i32);
+                let here = native(lat, lon);
                 if here == NODATA || !top.is_finite() || !dilated(&core, &scan, y, x) {
                     continue;
                 }
@@ -153,10 +181,20 @@ impl LiftMap {
                     continue;
                 }
                 lifts[y as usize * stride + x as usize] = lift;
-                lifted += 1;
+                // The tally counts the nodes this cell *owns*, not its inclusive high edge: the
+                // edge is the next cell's node 0 and is tallied there, so a run's count is one per
+                // written sample rather than two per seam.
+                if y == side || x == side {
+                    continue;
+                }
+                tally.nodes += 1;
+                tally.over_report += u64::from(lift > REPORT_M);
+                if lift > tally.max_m {
+                    (tally.max_m, tally.max_at) = (lift, (lat, lon));
+                }
             }
         }
-        (lifted > 0).then_some(LiftMap { origin_y, origin_x, step, stride, lifts, lifted })
+        (tally.nodes > 0).then_some(LiftMap { origin_y, origin_x, step, stride, lifts, tally })
     }
 
     /// The native sampler with this map's lifts added. `NODATA` passes through — a lift describes a
@@ -183,9 +221,9 @@ impl LiftMap {
         self.lifts[y * self.stride + x]
     }
 
-    /// Nodes this map lifts at all — the number §9's rule selected.
-    pub fn lifted(&self) -> usize {
-        self.lifted
+    /// What the rule did in this cell.
+    pub fn tally(&self) -> LiftTally {
+        self.tally
     }
 }
 
@@ -334,7 +372,14 @@ mod tests {
         assert_eq!(at(1, 1), 0, "a planar slope four nodes away is left alone");
         assert_eq!(at(14, 14), 0, "and so is one on the far side");
         assert!(at(8, 9) > 0, "the one-node extension reaches the tip's neighbour");
-        assert!(map.lifted() < 40, "the rule stays local to the tower, lifted {}", map.lifted());
+
+        // The tally is what an operator sees: how much, how many, and where the worst of it is.
+        let tally = map.tally();
+        assert!(tally.nodes < 40, "the rule stays local to the tower, lifted {}", tally.nodes);
+        assert_eq!(tally.max_m, at(8, 8), "the largest lift is the tip's");
+        assert_eq!(tally.max_at, node(0, 0, 9, 16, 8, 8), "and it is reported at the tip");
+        assert_eq!(tally.over_report, 0, "a 120 m tower is not worth an operator's attention");
+        assert_eq!(LiftTally::default().join(tally), tally, "joining an empty tally changes nothing");
     }
 
     /// `apply` adds the lift to the native height, leaves a hole a hole, and leaves a coordinate
