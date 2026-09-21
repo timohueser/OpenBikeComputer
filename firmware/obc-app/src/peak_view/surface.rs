@@ -10,6 +10,8 @@ const DRAW_RAYS: usize = SECTOR + 2;
 // Fill the quarter-degree bearings between the picture's 3/8-degree samples only near named peaks.
 const RAYS: usize = DRAW_RAYS + SECTOR;
 const _: () = assert!(COLUMNS.is_multiple_of(SECTOR) && SECTORS == 64 && RAYS <= u32::BITS as usize);
+// A cutoff row is `0..=ROWS`, which is what the host test build records it in.
+const _: () = assert!(ROWS <= u8::MAX as usize);
 const CURVATURE: f32 = 0.87 / (2.0 * 6_371_000.0);
 const INVERSE_CURVATURE: f32 = -1.0 / (2.0 * CURVATURE);
 const NO_DEPTH: u16 = u16::MAX;
@@ -108,6 +110,15 @@ pub struct Builder {
     north: [f32; RAYS],
     east: [f32; RAYS],
     cutoff: [usize; RAYS],
+    /// The first column of the sector [`finish_sector`](Self::finish_sector) last completed, and
+    /// the skyline row of each of its columns. The drawn tones cannot answer this — a sunlit face
+    /// and the sky share tone 0 — and the photo regression test measures the drawn skyline.
+    ///
+    /// Host test builds only, and one sector wide rather than the whole circle: a `Builder` lives
+    /// in the device's panorama arena, which has about 1.5 KiB spare, and 960 rows of it would be
+    /// most of that spent on a test.
+    #[cfg(any(test, feature = "external-fixtures"))]
+    sector_skyline: (u16, [u8; SECTOR]),
     depth: [[u16; ROWS]; DRAW_RAYS],
     tones: [[u8; ROWS]; DRAW_RAYS],
     thresholds: [f32; ROWS],
@@ -216,6 +227,24 @@ impl Builder {
     pub fn complete(&self) -> bool {
         self.finished == u64::MAX
     }
+
+    /// Every sector [`step`](Self::step) has finished so far, one bit per sector.
+    #[cfg(any(test, feature = "external-fixtures"))]
+    pub fn finished_sectors(&self) -> u64 {
+        self.finished
+    }
+
+    /// The sector [`step`](Self::step) finished last: its first panorama column, and the topmost
+    /// row terrain reached in each of its columns — [`ROWS`] where a column is all sky. Column
+    /// zero points north and each one is `360 / COLUMNS` degrees wide.
+    ///
+    /// It holds one sector only, and the next one to finish overwrites it. A caller that wants the
+    /// whole circle steps with a budget of one and reads this whenever
+    /// [`finished_sectors`](Self::finished_sectors) changes.
+    #[cfg(any(test, feature = "external-fixtures"))]
+    pub fn last_sector_skyline(&self) -> (usize, [u8; SECTOR]) {
+        (usize::from(self.sector_skyline.0), self.sector_skyline.1)
+    }
     pub fn progress(&self) -> u8 {
         (self.panorama.finished.count_ones() * 100 / SECTORS as u32) as u8
     }
@@ -283,7 +312,14 @@ impl Builder {
             self.depth[2..].fill([NO_DEPTH; ROWS]);
             self.tones[2..].fill([0; ROWS]);
         }
+        let halo = self.reuse_halo.then(|| [self.cutoff[SECTOR], self.cutoff[SECTOR + 1]]);
         self.cutoff.fill(ROWS);
+        // The two reused bearings keep their skyline as well as their pixels. Their rays are out of
+        // the mask below, so nothing would fill it again.
+        if let Some([first, second]) = halo {
+            self.cutoff[0] = first;
+            self.cutoff[1] = second;
+        }
         self.ray_mask = if self.labels_only { 0 } else { (1 << DRAW_RAYS) - 1 };
         for ray in 0..RAYS {
             let (bearing_q8, catalogue) = if self.labels_only {
@@ -796,6 +832,13 @@ impl Builder {
     }
 
     fn finish_sector(&mut self) {
+        #[cfg(any(test, feature = "external-fixtures"))]
+        {
+            self.sector_skyline.0 = self.sector as u16;
+            for ray in 1..=SECTOR {
+                self.sector_skyline.1[ray - 1] = self.cutoff[ray] as u8;
+            }
+        }
         for ray in 1..=SECTOR {
             for row in 0..ROWS {
                 let depth = self.depth[ray][row];

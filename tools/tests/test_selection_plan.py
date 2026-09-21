@@ -131,6 +131,22 @@ class SelectionTests(unittest.TestCase):
         # The deleted file may have been a rendering input, so "whole graph" includes the sweep.
         self.assertIn("ci.ui-snapshots", selected)
 
+    def test_many_unowned_deletions_share_one_reason(self) -> None:
+        # A reason per path multiplies by every package and every declared suite. The `ci`
+        # gate reads the whole plan from one environment variable, which the shell refuses
+        # to start with past 128 KiB, so a branch that deletes a directory must not grow it.
+        gone = {f"scratch/tool/src/bin/b{index}.rs" for index in range(40)}
+        emptied = self.plan_for(*sorted(gone), deleted=gone)
+        self.assertFalse(emptied.errors)
+        whole = {
+            reason
+            for item in emptied.selected
+            for reason in item.reasons
+            if reason.startswith(plan.WHOLE_GRAPH)
+        }
+        self.assertEqual(len(whole), 1)
+        self.assertIn("40 deleted paths", whole.pop())
+
     def test_a_rename_selects_the_owner_it_left_and_the_owner_it_joined(self) -> None:
         moved = self.plan_for("crates/leaf/src/moved.rs", "crates/core/src/moved.rs", deleted={"crates/leaf/src/moved.rs"})
         self.assertFalse(moved.errors)
@@ -493,7 +509,7 @@ class ShippedPlanTests(unittest.TestCase):
                 sweep = next(item for item in chosen.units if item.id == "ci.ui-snapshots")
                 self.assertEqual(sweep.selected, selected)
 
-    def test_the_captured_fixture_tier_is_the_five_carved_targets(self) -> None:
+    def test_the_captured_fixture_tier_is_the_six_carved_targets(self) -> None:
         self.assertEqual(
             sorted(
                 f"{name}:{target}"
@@ -501,6 +517,7 @@ class ShippedPlanTests(unittest.TestCase):
                 for target in item.fixture_targets
             ),
             [
+                "obc-app:peak_view_photos",
                 "obc-dem:assets",
                 "obc-host-core:altitude_fusion",
                 "obc-reader:poi_fixtures",

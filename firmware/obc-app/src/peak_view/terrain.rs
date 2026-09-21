@@ -34,13 +34,6 @@ impl<'a> Terrain<'a> {
         self.cache.failed()
     }
 
-    /// The bilinear surface at a position. Inside [`eye_ground`](Self::eye_ground) it is the lower
-    /// end of the plausibility band; outside it, only the `scratch/peak-view` harness reads it.
-    pub fn ground_height(&mut self, lat: i32, lon: i32) -> Option<f32> {
-        let (p, fy, fx) = self.patch_at(lat, lon)?;
-        Some(bilinear(p, fy, fx))
-    }
-
     /// The height a rider standing here is standing **on**, which the bilinear surface is not.
     ///
     /// A lattice node can stand on a summit the posting cannot resolve, and the bilinear value

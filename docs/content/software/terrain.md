@@ -230,6 +230,10 @@ Each finer model keeps its own attribution, which must travel with the map. Each
 records which models its lifts were read from, and the catalog lists each of those models once.
 See [Attribution](#attribution).
 
+Six photographs of the Engelberg mountains measure the result. Each one records the skyline the
+owner saw from a known position, and a test draws the panorama there and compares the two. See
+[the fixture package](src:fixtures/sources/peak-view/photos/README.md).
+
 ## One sampling truth
 
 The packer samples OBCT tiles to calculate navigation-edge ascent.
