@@ -29,7 +29,7 @@ use crate::screen::vocab::marquee::{fit, Fitted};
 /// budget, so a name refused for space gives way to the next one rather than to nothing.
 const MAX_CANDIDATES: usize = 16;
 /// Labels drawn in one frame. One constant for every scale.
-const MAX_LABELS: usize = 6;
+pub(crate) const MAX_LABELS: usize = 6;
 /// The face the names are drawn in: one tier below the chrome a name sits among, because the name
 /// annotates a place the rider already sees. Every metric below follows from this.
 const LABEL_FONT: Font = Font::Caption;
@@ -604,7 +604,7 @@ mod tests {
         .expect("the fixture camera yields a bar")
         .ink();
         let pill = crate::screen::map::chip_band_box(w, h);
-        let chrome = crate::screen::map::label_reserved(&vp, None, &[pill, bar]);
+        let chrome = crate::screen::map::label_reserved(&vp, None, &[], &[pill, bar]);
         let mut place = PointPlacement::new(&chrome);
 
         // The city has to land beside that box, or the test pins nothing: a repack of the fixture
