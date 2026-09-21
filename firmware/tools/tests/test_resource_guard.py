@@ -667,7 +667,7 @@ class ModuleFrameGateTests(unittest.TestCase):
             self._run(8_192, match="absent_module")
 
     def test_a_scoped_needle_reaches_trait_impl_symbols(self):
-        """The #1386 hole: a needle spelled as a Rust path must gate trait methods too.
+        """A needle spelled as a Rust path must gate trait methods too.
 
         Before canonicalisation this needle matched nothing in a disassembly of only trait impls —
         the guard read as "stale" rather than as "everything passed", which is the one saving grace,

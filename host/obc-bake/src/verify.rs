@@ -459,7 +459,7 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
         let summed: u64 = region.bytes_by_band.values().sum();
         if summed != region.bytes {
             problem(
-                format!("region `{}`: bytes_by_band sums to {summed} but bytes is {} — the per-file projection of OBCA_Spec.md §5.7 is arithmetic over exactly these numbers", region.id, region.bytes),
+                format!("region `{}`: bytes_by_band sums to {summed} but bytes is {} — the per-file projection of `OBCA_Spec.md` is arithmetic over exactly these numbers", region.id, region.bytes),
                 &mut report.problems,
             );
         }

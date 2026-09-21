@@ -556,7 +556,7 @@ The root's `RegionEntry.terrain` prices that selection:
 | `bytes` | integer | Sum of the real `bytes` of the downloadable ones. |
 
 These bytes are **not** part of `bytes` or `bytes_by_band`, which are the OBCM
-per-file projection (OBCA §5.7). A rider may take the map without the raster or the
+per-file projection (OBCA §4). A rider may take the map without the raster or the
 raster without the map, so a consumer MUST present the two prices separately.
 
 ### 13.4 The one coupling, stated and guarded

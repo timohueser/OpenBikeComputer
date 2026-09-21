@@ -454,7 +454,7 @@ fn check_band_table(bands: &[BandDoc], lod_count: usize, path: &Path) -> Result<
                 if !lods.is_empty() {
                     return Err(format!(
                         "{}: the `core` band `{}` carries LOD(s) {lods:?}. The core file is the one file of a volume \
-                         set that cannot be split by bbox, so no geometry may live in it (OBCA_Spec.md §5.1) — its \
+                         set that cannot be split by bbox, so no geometry may live in it — its \
                          headroom under 4 GiB is the design's hard limit.",
                         at(),
                         band.id
