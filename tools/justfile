@@ -866,6 +866,17 @@ req *args:
     source "{{lib}}"; obc_init
     _run python3 "$OBC_TOOLS/req.py" "$@"
 
+# The raw log of one red job is about a megabyte; this prints each failed step's last lines.
+#   obc ci            obc ci --pr N            obc ci RUN_ID
+# Print the failures of a CI run: this branch's latest, a PR's, or one by id. Args: [RUN] [--pr N] [--branch B] [--lines N]
+[group('agent')]
+ci *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    cd "$OBC_ROOT"
+    _run python3 "$OBC_TOOLS/ci_log.py" "$@"
+
 # The routes and the granularity policy live in docs/testing.md.
 # Inspect the test selection plan from any directory. Args: check | select --base REF | run | gates | cargo-filter --tier TIER | validate-filters
 [group('agent')]
