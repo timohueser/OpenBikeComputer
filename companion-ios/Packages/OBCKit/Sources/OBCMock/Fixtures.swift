@@ -3,19 +3,17 @@ import Foundation
 import OBCDomain
 import OBCTransport
 
-/// A loaded fixture set — the domain objects the mock serves. Value type so the
-/// live `MockControl` can copy-mutate it (delete a route, rename, add a ride) under
-/// its lock. Built by decoding editable JSON in `OBCMock/Fixtures/` (`default`,
-/// `empty`, `large`), or the tiny `builtIn` fallback if a file is missing.
+/// A loaded fixture set: the domain objects the mock serves. A value type, so the live
+/// `MockControl` can copy-mutate it under its lock. Built by decoding editable JSON in
+/// `OBCMock/Fixtures/`, or the tiny `builtIn` fallback if a file is missing.
 public struct FixtureSet: Sendable {
     public var deviceInfo: DeviceInfo
     public var config: DeviceConfig
     public var battery: Int
     public var routes: [RouteEntry]
     public var rides: [RideEntry]
-    /// Trips grouping some of `routes` (TR6) — seeded into the library as phone
-    /// records (a trip is app metadata; the device knows nothing of it until an
-    /// upload). Empty in every fixture set but the trips demo.
+    /// Trips grouping some of `routes`, seeded into the library as phone records. A trip is app
+    /// metadata; the device knows nothing of it until an upload.
     public var trips: [TripEntry]
     public var diagnostics: Data
 
@@ -32,17 +30,16 @@ public struct FixtureSet: Sendable {
     }
 }
 
-/// A fixture trip — the app-side grouping of member routes by their **library**
-/// id, in ride order (TR6). Seeded into the mock run's `LibraryStore` as a
-/// `TripRecord`; carries no device link (a trip lands on the device only via
-/// TR8's whole-trip upload). `order` fixes its `addedAt` so it interleaves with
-/// the loose route cards deterministically.
+/// A fixture trip: the app-side grouping of member routes by their library id, in ride order.
+/// Seeded into the mock run's `LibraryStore`, and carrying no device link, because a trip lands on
+/// the device only through a whole-trip upload. `order` fixes its `addedAt`, so it interleaves
+/// with the loose route cards deterministically.
 public struct TripEntry: Sendable {
     public var id: TripID
     public var name: String
     public var stageIDs: [RouteID]
-    /// Seconds subtracted from the seed base date (bigger = older) — the trip's
-    /// slot in the newest-first list among the seeded routes.
+    /// Seconds subtracted from the seed base date; bigger is older. It fixes the trip's slot in
+    /// the newest-first list.
     public var order: Double
 
     public init(id: TripID, name: String, stageIDs: [RouteID], order: Double = 0) {
@@ -52,22 +49,20 @@ public struct TripEntry: Sendable {
         self.order = order
     }
 
-    /// The library record this fixture seeds — a phone-local trip (no device link).
+    /// The library record this fixture seeds: a phone-local trip with no device link.
     public func record(base: Date) -> TripRecord {
         TripRecord(id: id, name: name, stageIDs: stageIDs, addedAt: base.addingTimeInterval(-order))
     }
 }
 
-/// A fixture route — a **library-saved planned route** (the app's Planned list is
-/// library-first, #289): the list `summary` (with a normalized preview), the
-/// parsed geometry (`points` + `waypoints`), the detail-screen elevation data,
-/// and the declared upload payload size (payload bytes are synthesized on demand,
-/// see `blob()`, so a multi-MB library stays cheap to hold).
+/// A fixture route: a library-saved planned route, because the Planned list is library-first. It
+/// carries the list summary with a normalized preview, the parsed geometry, the detail-screen
+/// elevation data, and the declared upload payload size. Payload bytes are synthesized on demand,
+/// so a multi-MB library stays cheap to hold.
 ///
-/// `deviceObjectID` marks the routes the device also holds a copy of: they show
-/// the C1 "on device" badge, and `MockTransport.listRoutes()` serves exactly this
-/// subset — as `RouteCatalogEntry` values keyed by that id — the way the real
-/// device's protocol-v4 route catalog would.
+/// `deviceObjectID` marks the routes the device also holds a copy of: they show the "on device"
+/// badge, and `MockTransport.listRoutes()` serves exactly that subset, the way the real device's
+/// catalog would.
 public struct RouteEntry: Sendable {
     public var summary: RouteSummary
     public var points: [RoutePoint]
@@ -75,14 +70,13 @@ public struct RouteEntry: Sendable {
     public var elevationProfile: [Double]
     public var maxGradePercent: Double?
     public var payloadByteCount: Int
-    /// The device object id this route is stored under on the (mock) device, or
-    /// `nil` when it lives only in the phone's library.
+    /// The device object id this route is stored under on the mock device, or nil when it lives
+    /// only in the phone's library.
     public var deviceObjectID: DeviceObjectID?
-    /// The whole-object CRC-32 the (mock) device reports for this copy in its
-    /// protocol-v4 route catalog — the proof half of the app's identity-verified
-    /// badge (#770). `nil` = "derive it from the fixture geometry" (what a seeded
-    /// copy's committed CRC is); a real upload pins the committed payload's CRC
-    /// here so a re-listed copy proves against the same fingerprint.
+    /// The whole-object CRC-32 the mock device reports for this copy, the proof half of the app's
+    /// identity-verified badge. Nil means derive it from the fixture geometry, which is what a
+    /// seeded copy's committed CRC is; a real upload pins the committed payload's CRC here, so a
+    /// re-listed copy proves against the same fingerprint.
     public var crc32: UInt32?
 
     public init(
@@ -110,7 +104,7 @@ public struct RouteEntry: Sendable {
         RouteBlob(summary: summary, waypoints: waypoints, payload: MockPayload.make(count: payloadByteCount))
     }
 
-    /// What the device serves for this route (E2 detail / list reconcile).
+    /// What the device serves for this route.
     public func detail() -> RouteDetail {
         RouteDetail(
             summary: summary, waypoints: waypoints,
@@ -118,14 +112,11 @@ public struct RouteEntry: Sendable {
         )
     }
 
-    /// The library record this fixture seeds (B1S) — what the composition root
-    /// writes into the mock run's `InMemoryLibraryStore` so scenarios boot with a
-    /// populated, library-first Planned list. `addedAt` fixes the list order
-    /// (newest first, so pass descending dates for stable fixture order).
-    /// `scope` is the mock device's (serial, StoreId) identity (#769): a fixture
-    /// the device holds seeds a fully scoped `deviceLink` — passing `nil`
-    /// (an identity-less mock) seeds no link at all, mirroring how a v1 flat
-    /// link decodes to no link.
+    /// The library record this fixture seeds: what the composition root writes into the mock run's
+    /// store, so scenarios boot with a populated, library-first Planned list. `addedAt` fixes the
+    /// list order, newest first, so pass descending dates for a stable fixture order. `scope` is
+    /// the mock device's identity: a fixture the device holds seeds a fully scoped `deviceLink`,
+    /// and passing nil seeds no link at all.
     public func record(addedAt: Date, scope: LibraryScope? = nil) -> PlannedRouteRecord {
         let link: DeviceRouteLink? =
             if let deviceObjectID, let scope {
@@ -144,10 +135,9 @@ public struct RouteEntry: Sendable {
     }
 }
 
-/// A fixture ride: the enumerable `summary`, its tracklog (E3 + the B7 download
-/// payload), and its declared download size (used to pace `downloadRides`
-/// progress — a fiction independent of the payload; the mock's realism is
-/// timing + faults, not byte counts).
+/// A fixture ride: the enumerable summary, its tracklog, and its declared download size. The size
+/// paces `downloadRides` progress and is a fiction independent of the payload, because the mock's
+/// realism is timing and faults, not byte counts.
 public struct RideEntry: Sendable {
     public var summary: RideSummary
     public var points: [RidePoint]
@@ -167,13 +157,13 @@ public struct RideEntry: Sendable {
         self.downloadByteCount = downloadByteCount ?? max(1, Int(summary.distanceMeters) * 20)
     }
 
-    /// What `rideDetail(_:)` serves for this ride (E3).
+    /// What `rideDetail(_:)` serves for this ride.
     public func detail() -> RideDetail {
         RideDetail(summary: summary, elevationProfile: elevationProfile)
     }
 
-    /// The canonical full ride — what `downloadRides` encodes into the payload
-    /// (via `RideObjectCodec`), so a sync exercises the real decode path.
+    /// The canonical full ride, which `downloadRides` encodes into the payload, so a sync
+    /// exercises the real decode path.
     public func ride() -> Ride {
         Ride(summary: summary, points: points)
     }
@@ -205,10 +195,8 @@ extension FixtureSet {
     /// Stable full store identity for built-in mock data.
     public static let defaultStoreID = "1111111111111111111111110bc00001"
 
-    /// The OBCM map-format version every mock device reports unless a fixture
-    /// overrides it (E1 / #911) — what the reference firmware's reader reads
-    /// (`obc_formats::obcm::VERSION`). A mock device is a device, so it states
-    /// one rather than serving the pre-E1 short read by default.
+    /// The map-format version every mock device reports unless a fixture overrides it. A mock
+    /// device is a device, so it states one rather than serving a short read by default.
     public static let defaultObcmVersion: UInt8 = 14
 
     /// Minimal safety net when no JSON is present (keeps the mock alive without resources).
