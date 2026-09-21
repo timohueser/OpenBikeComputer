@@ -246,12 +246,15 @@ async function requirementSuggestions(event: RequestEvent, parts: string[]): Pro
   const actor = event.locals.actor!;
   if (parts.length === 1 && event.request.method === 'GET') {
     const revision = store().latestRevision();
-    const revisions = store().revisions();
-    return json(store().list<RequirementSuggestion>('requirement-suggestion').map(s => {
-      if (s.status !== 'open' || !s.requirementId) return s;
-      const stale = suggestionStale(s, revisions);
-      return { ...s, ...(revision.requirements.some(r => r.id === s.requirementId) ? {} : { missing: true }), ...(stale ? { stale } : {}) };
-    }));
+    const revisions = new Map(store().revisions().map(r => [r.id, r]));
+    // Newest first, by the moment the agent wrote it. A decision writes a new record, and the item must not move.
+    return json(store().list<RequirementSuggestion>('requirement-suggestion')
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map(s => {
+        if (s.status !== 'open' || !s.requirementId) return s;
+        const stale = suggestionStale(s, revisions.get(s.baseRevision), revision);
+        return { ...s, ...(revision.requirements.some(r => r.id === s.requirementId) ? {} : { missing: true }), ...(stale ? { stale } : {}) };
+      }));
   }
   assert(event.request.method === 'POST', 'Method not allowed.', 405);
   const data = await body(event);
@@ -267,10 +270,12 @@ async function requirementSuggestions(event: RequestEvent, parts: string[]): Pro
     const reason = text(data.reason, 'Reason', 2000);
     const sourceSha = data.sourceSha === undefined || data.sourceSha === null ? undefined : commitSha(data.sourceSha);
     const open = store().list<RequirementSuggestion>('requirement-suggestion').filter(s => s.status === 'open');
-    const identical = open.find(s => (s.requirementId ?? '') === (requirementId ?? '') && s.title === title && s.statement === statement && (s.group ?? '') === (group ?? '') && s.reason === reason);
+    const same = (s: RequirementSuggestion) => (s.requirementId ?? '') === (requirementId ?? '') && s.title === title && s.statement === statement && (s.group ?? '') === (group ?? '') && s.reason === reason;
+    const identical = open.find(s => same(s) && s.baseRevision === baseRevision && s.sourceSha === sourceSha);
     if (identical) return json(identical);
-    // One open suggestion per requirement. A new requirement has no such subject, so those stand beside each other.
-    const replaced = requirementId ? open.filter(s => s.requirementId === requirementId) : [];
+    // One open suggestion per requirement. A new requirement has no such subject, so the same text,
+    // read again against a newer revision, replaces itself and nothing else.
+    const replaced = open.filter(s => requirementId ? s.requirementId === requirementId : same(s));
     const suggestion: RequirementSuggestion = { id: store().id(), baseRevision, ...(requirementId ? { requirementId } : {}), title, statement,
       ...(group ? { group } : {}), reason, ...(sourceSha ? { sourceSha } : {}), author: actor.name,
       ...(actor.agentToken ? { agentToken: actor.agentToken } : {}), createdAt: new Date().toISOString(), status: 'open',
@@ -286,13 +291,12 @@ async function requirementSuggestions(event: RequestEvent, parts: string[]): Pro
   const feedback = data.feedback === undefined || data.feedback === '' ? undefined : text(data.feedback, 'Feedback', 5000);
   return json(store().decideRequirementSuggestion(identifier(parts[1]), actor.name, data.accept, feedback));
 }
-/** The revision that changed the requirement's title or statement after the suggestion was written. */
-function suggestionStale(suggestion: RequirementSuggestion, revisions: Revision[]): string | undefined {
-  const since = revisions.filter(r => r.id >= suggestion.baseRevision).sort((a, b) => a.id - b.id);
-  const before = since[0]?.id === suggestion.baseRevision ? since[0].requirements.find(r => r.id === suggestion.requirementId) : undefined;
-  if (!before) return `${suggestion.requirementId} was suggested against r${suggestion.baseRevision}, which is no longer kept. Read the current statement before deciding.`;
-  const changed = since.find(r => { const now = r.requirements.find(x => x.id === suggestion.requirementId); return now && (now.statement !== before.statement || now.title !== before.title); });
-  return changed && `${suggestion.requirementId} changed in r${changed.id}, after this suggestion. Read the current statement before deciding.`;
+/** The title or the statement the agent read is not the one the owner has now. A change that was put back is not stale. */
+function suggestionStale(suggestion: RequirementSuggestion, base: Revision | undefined, current: Revision): string | undefined {
+  const before = base?.requirements.find(r => r.id === suggestion.requirementId);
+  const now = current.requirements.find(r => r.id === suggestion.requirementId);
+  if (!before || !now || (before.statement === now.statement && before.title === now.title)) return;
+  return `${suggestion.requirementId} changed after this suggestion, which read r${suggestion.baseRevision}. Read the current statement before deciding.`;
 }
 async function ci(event: RequestEvent, parts: string[]): Promise<Response> {
   if (parts[0] === 'catalog' && event.request.method === 'POST') {
