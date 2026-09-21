@@ -10,6 +10,7 @@ serves raw float32 over WMS and the GeoTIFF has to be assembled from it.
 
 import math
 import os
+import re
 import urllib.parse
 from pathlib import Path
 
@@ -81,6 +82,28 @@ def output_size(box, resolution_m: float, what: str, epsg=None) -> tuple[int, in
     return pixels(span_x / resolution_m, what), pixels(span_y / resolution_m, what)
 
 
+def envelope_of(describe: str, axes, what: str):
+    """The `gml:lowerCorner`/`upperCorner` of a `DescribeCoverage` answer, on the row's axes.
+
+    The corners are in the order `axisLabels` states, which is the coverage's and not
+    necessarily the row's, so each axis is looked up by its label.
+    """
+
+    labels = re.search(r'axisLabels="([^"]+)"', describe)
+    lower = re.search(r"<gml:lowerCorner>([^<]+)<", describe)
+    upper = re.search(r"<gml:upperCorner>([^<]+)<", describe)
+    if not (labels and lower and upper):
+        raise Refuse(redact(f"{what}: no envelope in the answer: {describe[:200]}"))
+    order = labels.group(1).split()
+    try:
+        lo = dict(zip(order, (float(v) for v in lower.group(1).split())))
+        hi = dict(zip(order, (float(v) for v in upper.group(1).split())))
+        ax, ay = axes
+        return lo[ax], lo[ay], hi[ax], hi[ay]
+    except (KeyError, ValueError) as exc:
+        raise Refuse(f"{what}: the envelope's axes {order} are not the row's {list(axes)}") from exc
+
+
 def projected_box(box, epsg: int):
     """A WGS84 box as the service's own grid: the enclosing rectangle, and its span.
 
@@ -130,27 +153,36 @@ class TiledService(Source):
             name = f"{self.key}_{box[0]:.5f}_{box[1]:.5f}_{box[2]:.5f}_{box[3]:.5f}.tif"
             path = workdir / name
             if not path.exists():
+                body = self.request(box)
+                if body is None:
+                    print(f"  fetch [{i}/{len(boxes)}] {box[0]:.4f},{box[1]:.4f} → "
+                          f"{box[2]:.4f},{box[3]:.4f}: outside the coverage")
+                    continue
                 # A half-written file in the cache would look complete to the next run, so
                 # the bytes land beside the name and are moved onto it at the end.
                 part = path.with_name(name + ".part")
-                part.write_bytes(self.request(box))
+                part.write_bytes(body)
                 os.replace(part, path)
             print(f"  fetch [{i}/{len(boxes)}] {box[0]:.4f},{box[1]:.4f} → {box[2]:.4f},{box[3]:.4f}")
             paths.append(path)
         return paths
 
-    def request(self, box) -> bytes:
-        """One raster, asked for as the protocol states it and as the portal lets it be.
+    def request(self, box) -> bytes | None:
+        """One raster, asked for as the protocol states it and as the portal lets it be, or
+        `None` for a box the service holds nothing of.
 
         A portal behind an account reads its key out of the query, so the credential is
         appended here rather than inside every protocol's `url`: the request a keyed WCS
         sends is the request the keyless one sends, plus one parameter.
         """
 
+        url = self.url(box)
+        if url is None:
+            return None
         credential = self.credential.query() if self.credential else ""
-        return raster_bytes(self.url(box) + credential, f"{self.key} {box}")
+        return raster_bytes(url + credential, f"{self.key} {box}")
 
-    def url(self, box) -> str:
+    def url(self, box) -> str | None:
         raise NotImplementedError
 
 
@@ -182,19 +214,50 @@ class Wcs20Source(TiledService):
 
     The axis labels are the coverage's own: `x`/`y` or `E`/`N` on a projected grid,
     `long`/`lat` on a geographic one, and a server refuses a label it does not know.
+
+    A subset outside the coverage's envelope is refused as `InvalidSubsetting`, not answered
+    void, so `fetch` reads the envelope out of `DescribeCoverage` once and every request is
+    clipped to it. A country box then runs past the state's border without a refusal, and a
+    box wholly outside is not asked for at all.
     """
 
     def __init__(self, *args, url, coverage, epsg, axes, scale=True, **kw):
         super().__init__(*args, **kw)
         self.service, self.coverage, self.epsg, self.axes = url, coverage, epsg, axes
         self.scale = scale
+        #: `(lo_x, lo_y, hi_x, hi_y)` on the coverage's own grid, or `None` before `fetch`.
+        self.envelope = None
 
-    def url(self, box) -> str:
+    def fetch(self, bbox, workdir) -> list[Path]:
+        if self.envelope is None:
+            self.envelope = self.describe()
+        return super().fetch(bbox, workdir)
+
+    def describe(self):
+        """The coverage's envelope, as `DescribeCoverage` states it, on the row's axes."""
+
+        what = f"{self.key} DescribeCoverage"
+        body = http_get(f"{self.service}?service=WCS&version=2.0.1&request=DescribeCoverage"
+                        f"&coverageId={self.coverage}", what=what).decode("utf-8", "replace")
+        return envelope_of(body, self.axes, what)
+
+    def url(self, box) -> str | None:
         if self.epsg == 4326:
             lo_x, lo_y, hi_x, hi_y = box
         else:
             (lo_x, lo_y, hi_x, hi_y), _ = projected_box(box, self.epsg)
         px, py = output_size(box, self.resolution_m, f"{self.key} {box}", self.epsg)
+        if self.envelope is not None:
+            ex0, ey0, ex1, ey1 = self.envelope
+            clip = (max(lo_x, ex0), max(lo_y, ey0), min(hi_x, ex1), min(hi_y, ey1))
+            if clip[0] >= clip[2] or clip[1] >= clip[3]:
+                return None
+            # The output size shrinks with the box, so the step the server answers at stays
+            # the product's own: a request that kept its size over a smaller box is finer
+            # than the product, which is a resample.
+            px = max(1, round(px * (clip[2] - clip[0]) / (hi_x - lo_x)))
+            py = max(1, round(py * (clip[3] - clip[1]) / (hi_y - lo_y)))
+            lo_x, lo_y, hi_x, hi_y = clip
         ax, ay = self.axes
         query = (f"{self.service}?service=WCS&version=2.0.1&request=GetCoverage"
                  f"&coverageId={self.coverage}"

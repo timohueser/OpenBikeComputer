@@ -189,6 +189,37 @@ class Requests(unittest.TestCase):
             self.assertLessEqual(float(subsets["y"][0]), y)
             self.assertGreaterEqual(float(subsets["y"][1]), y)
 
+    def test_a_wcs_20_request_is_clipped_to_the_coverage_envelope(self):
+        """A subset outside the envelope is an `InvalidSubsetting` refusal, so a box that
+        runs past the state's edge is clipped, and one wholly outside is not asked for."""
+
+        source = ingest.SOURCES["de-bw"]
+        box = split("de-bw")[0]
+        (lo_x, lo_y, hi_x, hi_y), _ = ingest.sources.protocols.projected_box(box, source.epsg)
+        self.addCleanup(setattr, source, "envelope", None)
+
+        source.envelope = (hi_x + 1000, lo_y, hi_x + 2000, hi_y)
+        self.assertIsNone(source.url(box))
+
+        mid_x = (lo_x + hi_x) / 2
+        source.envelope = (mid_x, lo_y - 1000, hi_x + 1000, hi_y + 1000)
+        _, values = query(source.url(box))
+        subsets = {part.split("(")[0]: [float(v) for v in part.split("(")[1].rstrip(")").split(",")]
+                   for part in values["subset"]}
+        self.assertEqual(subsets["E"], [mid_x, hi_x])
+        self.assertEqual(subsets["N"], [lo_y, hi_y])
+
+    def test_the_envelope_is_read_on_the_rows_axes_whatever_order_the_server_states(self):
+        describe = ('<gml:Envelope srsName="…" axisLabels="N E"><gml:lowerCorner>5263999.5 387999.5'
+                    '</gml:lowerCorner><gml:upperCorner>5520000.5 611000.5</gml:upperCorner>')
+        envelope_of = ingest.sources.protocols.envelope_of
+        self.assertEqual(envelope_of(describe, ("E", "N"), "de-bw"),
+                         (387999.5, 5263999.5, 611000.5, 5520000.5))
+        with self.assertRaises(ingest.Refuse):
+            envelope_of(describe, ("x", "y"), "de-bw")
+        with self.assertRaises(ingest.Refuse):
+            envelope_of("<ExceptionReport/>", ("E", "N"), "de-bw")
+
     def test_the_wcs_10_request_states_a_bbox_with_a_width_and_a_height(self):
         """Norway and Denmark answer WCS 1.0.0, which sizes its grid differently from
         2.0.1 and names a format with the server's own word rather than a media type."""
