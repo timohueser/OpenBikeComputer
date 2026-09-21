@@ -1,10 +1,7 @@
 //! Neutral byte I/O traits and little-endian primitive codecs.
 
-/// Errors crossing the random-access byte seam.
-///
-/// This type intentionally preserves the variants historically exposed by `obc-reader` and
-/// `obc-route`. Medium-specific errors are collapsed to [`Error::Io`]; format-specific parsers
-/// remain responsible for adding their own context.
+/// Errors crossing the random-access byte seam. Medium-specific errors collapse to [`Error::Io`];
+/// format-specific parsers add their own context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     /// A byte range lies outside the source or an offset computation overflowed.
@@ -45,12 +42,9 @@ pub trait ByteSource {
 
 /// A sequential byte sink with a single random patch for streamed writers.
 ///
-/// The offset here is **still `u32`, and stays so on purpose.** Unlike [`ByteSource`], this sink
-/// is not a general read interface — its only users are the OBCR route/track/trip writers, whose
-/// format addresses its own structures with `uint32` fields (`OBCR_Spec.md`). A patch offset past
-/// 4 GiB would be one no route file can name, so widening it would buy a width nothing can spend.
-/// Map bytes are never written through this seam: the packer and the assembler write files
-/// directly, in `u64` throughout.
+/// The offset here is `u32` on purpose: the only users are the OBCR route, track and trip writers,
+/// whose format addresses its own structures with `uint32` fields, so a patch offset past 4 GiB is
+/// one no route file can name. Map bytes are never written through this seam.
 pub trait ByteSink {
     /// Append `buf` at the current write position.
     fn write(&mut self, buf: &[u8]) -> Result<(), Error>;
@@ -63,9 +57,9 @@ pub struct SliceSource<'a>(pub &'a [u8]);
 
 impl ByteSource for SliceSource<'_> {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
-        // The narrowing is the *host's*, not the seam's: a slice lives in the address space, so on
-        // wasm32 and on the MCU an offset past `usize` names a byte no in-memory source can hold.
-        // Refuse it; a wrapping cast would read some other byte and call it a success.
+        // The narrowing is the host's, not the seam's: a slice lives in the address space, so an
+        // offset past `usize` names a byte no in-memory source can hold. A wrapping cast would
+        // read some other byte and call it a success.
         let start = usize::try_from(offset).map_err(|_| Error::BadOffset)?;
         let end = start.checked_add(buf.len()).ok_or(Error::BadOffset)?;
         let bytes = self.0.get(start..end).ok_or(Error::BadOffset)?;
@@ -74,29 +68,25 @@ impl ByteSource for SliceSource<'_> {
     }
 
     fn len(&self) -> u64 {
-        // Exact, with no saturation to fail closed against: `u64` covers every `usize` this can be
-        // built from. The `min(u32::MAX)` clamp that used to live here died with the u32 seam.
+        // Exact: `u64` covers every `usize` an in-memory source can be built from.
         self.0.len() as u64
     }
 }
 
-/// A [`ByteSource`] over a **window** of another one: the bytes `offset..offset + len`, re-based so
+/// A [`ByteSource`] over a window of another one: the bytes `offset..offset + len`, re-based so
 /// the window's first byte is byte `0`.
 ///
-/// The one thing an embedded container needs and nothing else provides. OBCM v14 §1.3 puts a whole
-/// OBCT terrain container inside the map file, and every offset *inside* that container is relative
-/// to its own first byte — so a consumer needs a source whose zero is the container's zero, not the
-/// map's. Copying the region would need somewhere to copy it to; the whole point of splicing it in
-/// was that there is no such place on a 512 KB part.
+/// An OBCM file can hold a whole OBCT terrain container, and every offset inside that container is
+/// relative to its own first byte, so a consumer needs a source whose zero is the container's
+/// zero. Copying the region would need somewhere to copy it to, and on a 512 KB part there is no
+/// such place.
 ///
-/// **The window is the truth, not a hint.** A read that starts inside and runs past the end is
-/// [`Error::BadOffset`], exactly as it is at the end of a whole file — a container that asks for
-/// bytes past its region is malformed, and serving it the map's next section would hand a terrain
-/// parse a plausible-looking answer built out of somebody else's bytes.
+/// The window is the truth, not a hint: a read that starts inside and runs past the end is
+/// [`Error::BadOffset`], because serving the map's next section would hand a terrain parse a
+/// plausible answer built out of somebody else's bytes.
 ///
-/// [`new`](WindowSource::new) is the only constructor and it refuses a window that does not fit
-/// inside `inner`, so a badly-formed §1.3 pointer is caught once, where the region is resolved,
-/// rather than per read.
+/// [`new`](WindowSource::new) is the only constructor and refuses a window that does not fit
+/// inside `inner`, so a bad region pointer is caught once, where the region is resolved.
 pub struct WindowSource<'a> {
     inner: &'a dyn ByteSource,
     offset: u64,
@@ -104,8 +94,7 @@ pub struct WindowSource<'a> {
 }
 
 impl<'a> WindowSource<'a> {
-    /// The window `offset..offset + len` of `inner`, or `None` when that range is not wholly inside
-    /// it.
+    /// The window `offset..offset + len` of `inner`, or `None` when it is not wholly inside it.
     pub fn new(inner: &'a dyn ByteSource, offset: u64, len: u64) -> Option<WindowSource<'a>> {
         let end = offset.checked_add(len)?;
         (end <= inner.len()).then_some(WindowSource { inner, offset, len })
@@ -123,7 +112,7 @@ impl ByteSource for WindowSource<'_> {
         if end > self.len {
             return Err(Error::BadOffset);
         }
-        // Cannot overflow: `new` proved `self.offset + self.len <= inner.len()`, and `end <= len`.
+        // Cannot overflow: `new` proved `self.offset + self.len <= inner.len()`.
         self.inner.read_at(self.offset + offset, buf)
     }
 
@@ -187,77 +176,56 @@ pub fn checked_put_u32(b: &mut [u8], o: usize, v: u32) -> Result<(), DecodeError
     Ok(())
 }
 
-/// Read a little-endian `i16` after caller-side validation.
-///
-/// Panics for an invalid range; new primitive decoders should use the checked family
-/// ([`checked_rd_u16`] and friends), growing it by the missing width if there isn't one yet.
+/// Read a little-endian `i16` after caller-side validation. Panics for an invalid range; new
+/// decoders should use the checked family ([`checked_rd_u16`] and friends).
 #[inline]
 pub fn rd_i16(d: &[u8], o: usize) -> i16 {
     i16::from_le_bytes([d[o], d[o + 1]])
 }
 
-/// Read a little-endian `u16` after caller-side validation.
-///
-/// Panics for an invalid range; new primitive decoders should use [`checked_rd_u16`].
+/// Read a little-endian `u16` after caller-side validation. Panics for an invalid range.
 #[inline]
 pub fn rd_u16(d: &[u8], o: usize) -> u16 {
     u16::from_le_bytes([d[o], d[o + 1]])
 }
 
-/// Read a little-endian `i32` after caller-side validation.
-///
-/// Panics for an invalid range; new primitive decoders should use [`checked_rd_i32`].
+/// Read a little-endian `i32` after caller-side validation. Panics for an invalid range.
 #[inline]
 pub fn rd_i32(d: &[u8], o: usize) -> i32 {
     i32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]])
 }
 
-/// Read a little-endian `u32` after caller-side validation.
-///
-/// Panics for an invalid range; new primitive decoders should use [`checked_rd_u32`].
+/// Read a little-endian `u32` after caller-side validation. Panics for an invalid range.
 #[inline]
 pub fn rd_u32(d: &[u8], o: usize) -> u32 {
     u32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]])
 }
 
-/// Read a little-endian `f32` after caller-side validation.
-///
-/// Panics for an invalid range; new primitive decoders should use the checked family
-/// ([`checked_rd_u16`] and friends), growing it by the missing width if there isn't one yet.
+/// Read a little-endian `f32` after caller-side validation. Panics for an invalid range.
 #[inline]
 pub fn rd_f32(d: &[u8], o: usize) -> f32 {
     f32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]])
 }
 
-/// Write a little-endian `i16` after caller-side validation.
-///
-/// Panics for an invalid range; new primitive encoders should use the checked family
-/// ([`checked_put_u32`] and friends), growing it by the missing width if there isn't one yet.
+/// Write a little-endian `i16` after caller-side validation. Panics for an invalid range.
 #[inline]
 pub fn put_i16(b: &mut [u8], o: usize, v: i16) {
     b[o..o + 2].copy_from_slice(&v.to_le_bytes());
 }
 
-/// Write a little-endian `u16` after caller-side validation.
-///
-/// Panics for an invalid range; new primitive encoders should use the checked family
-/// ([`checked_put_u32`] and friends), growing it by the missing width if there isn't one yet.
+/// Write a little-endian `u16` after caller-side validation. Panics for an invalid range.
 #[inline]
 pub fn put_u16(b: &mut [u8], o: usize, v: u16) {
     b[o..o + 2].copy_from_slice(&v.to_le_bytes());
 }
 
-/// Write a little-endian `i32` after caller-side validation.
-///
-/// Panics for an invalid range; new primitive encoders should use [`checked_put_i32`].
+/// Write a little-endian `i32` after caller-side validation. Panics for an invalid range.
 #[inline]
 pub fn put_i32(b: &mut [u8], o: usize, v: i32) {
     b[o..o + 4].copy_from_slice(&v.to_le_bytes());
 }
 
-/// Write a little-endian `u32` after caller-side validation.
-///
-/// Panics for an invalid range; new primitive encoders should use [`checked_put_u32`].
+/// Write a little-endian `u32` after caller-side validation. Panics for an invalid range.
 #[inline]
 pub fn put_u32(b: &mut [u8], o: usize, v: u32) {
     b[o..o + 4].copy_from_slice(&v.to_le_bytes());
@@ -281,8 +249,8 @@ mod tests {
         assert_eq!(rd_u32(&bytes, 8), 0x89AB_CDEF);
     }
 
-    /// The window re-bases, and it re-bases *only* — the bytes it serves are the inner source's,
-    /// shifted, and the length it reports is the window's.
+    /// The window re-bases and only re-bases: the bytes it serves are the inner source's, shifted,
+    /// and the length it reports is the window's.
     #[test]
     fn a_window_serves_its_region_from_byte_zero() {
         let whole: [u8; 16] = core::array::from_fn(|i| i as u8);
@@ -298,9 +266,8 @@ mod tests {
         assert_eq!(one, [11]);
     }
 
-    /// The end of a window is as hard as the end of a file. A straddling read must not be served
-    /// out of the bytes that happen to follow the region — that is the whole reason this type
-    /// exists rather than an offset added at each call site.
+    /// The end of a window is as hard as the end of a file: a straddling read must not be served
+    /// out of the bytes that follow the region.
     #[test]
     fn a_window_refuses_reads_past_its_end_rather_than_running_on() {
         let whole: [u8; 16] = core::array::from_fn(|i| i as u8);
@@ -313,9 +280,8 @@ mod tests {
         assert_eq!(window.read_at(u64::MAX, &mut out), Err(Error::BadOffset), "an offset that wraps");
     }
 
-    /// A region that does not fit is refused **once**, where it is resolved. A §1.3 pointer past
-    /// the file's end is a malformed header, and a window built over it would fail every read
-    /// instead of the header failing to parse.
+    /// A region that does not fit is refused once, where it is resolved, rather than failing every
+    /// read later.
     #[test]
     fn a_window_outside_its_source_is_refused_at_construction() {
         let whole = [0u8; 16];

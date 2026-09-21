@@ -235,7 +235,6 @@ impl SensorHub {
     }
 }
 
-
 /// The board's high-priority I²C sensor task's handle into the hub: it publishes each coherent
 /// datapoint, pulsing the shared event, and awaits the ride loop's rate and power latches.
 #[derive(Clone, Copy)]
@@ -281,7 +280,6 @@ impl SensorTaskLink<'_> {
     }
 }
 
-
 /// The heart-rate, power and cadence injector. Both the board's BLE central manager and the
 /// `debug-uart` injection path hold one over the same hub, so the app's `Sensors` wiring is
 /// identical whichever is feeding: last-writer-wins. Each dispatch pulses the shared event.
@@ -306,7 +304,6 @@ impl SampleInjector<'_> {
     }
 }
 
-
 /// The ride loop's control handle: the GPS rate and power latches the sensor task awaits. Only
 /// the newest value of each matters.
 #[derive(Clone, Copy)]
@@ -323,7 +320,6 @@ impl SensorControl<'_> {
         self.0.sensor_demand.signal(p);
     }
 }
-
 
 /// The ride loop's consumer handle: the app-facing `*Source` drains, the boot presence drain, and
 /// the single event wake the loop selects on. The `*Source` accessors return handles bound to the
@@ -406,27 +402,13 @@ macro_rules! impl_mailbox_source {
     };
 }
 
-impl_mailbox_source!(
-    BaroAltimeter, f32, AltimeterSource, f32
-);
-impl_mailbox_source!(
-    SensorTemp, f32, TemperatureSource, f32
-);
-impl_mailbox_source!(
-    GpsClock, GpsTime, ClockSource, GpsTime
-);
-impl_mailbox_source!(
-    MagCompass, f32, CompassSource, f32
-);
-impl_mailbox_source!(
-    SensorHr, u16, HeartRateSource, u16
-);
-impl_mailbox_source!(
-    SensorPower, u16, PowerSource, u16
-);
-impl_mailbox_source!(
-    SensorCadence, u8, CadenceSource, u8
-);
+impl_mailbox_source!(BaroAltimeter, f32, AltimeterSource, f32);
+impl_mailbox_source!(SensorTemp, f32, TemperatureSource, f32);
+impl_mailbox_source!(GpsClock, GpsTime, ClockSource, GpsTime);
+impl_mailbox_source!(MagCompass, f32, CompassSource, f32);
+impl_mailbox_source!(SensorHr, u16, HeartRateSource, u16);
+impl_mailbox_source!(SensorPower, u16, PowerSource, u16);
+impl_mailbox_source!(SensorCadence, u8, CadenceSource, u8);
 
 #[cfg(test)]
 mod tests {
