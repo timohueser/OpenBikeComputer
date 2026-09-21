@@ -1,33 +1,30 @@
-//! Synthetic staged `UPDATE.BIN` for the sim's DFU snapshots (epic #615 S5, #620).
+//! A synthetic staged `UPDATE.BIN` for the sim's DFU snapshots.
 //!
-//! The scan/arm runs board-side on the device; the app only ever sees the *result*
-//! (the pass's fact stage). To drive the confirm /
-//! error screens headlessly the sim fakes that result — but faithfully: it builds a valid in-memory
-//! OBCU container with `obc-dfu`'s encoder and runs the **real** [`armer::scan`] over it (header
-//! decode + full CRC-32 + Ed25519 signature verify + extent resolve), exactly the validation the
-//! board's `run_scan` performs, then maps the answer into the app-native [`DfuScanReport`] /
-//! [`DfuScanError`].
+//! The scan and the arm run board-side on the device, and the app sees only the result. To drive
+//! the confirm and error screens headlessly the sim builds a valid in-memory OBCU container with
+//! `obc-dfu`'s encoder and runs the real [`armer::scan`] over it, which is the validation the
+//! board performs, then maps the answer into the app-native types.
 
 use obc_app::{DfuScanError, DfuScanReport};
 use obc_dfu::armer::{self, ExtentsError, ScanError, StageIo};
 use obc_dfu::engine::IoError;
 use obc_dfu::{Extent, ImageHeader, StagedRef, HEADER_LEN, MAX_EXTENTS};
 
-/// The sim's stand-in "running" firmware version — what an install would replace. The `same`
-/// flavour stages this exact string so the confirm screen's same-version warning renders.
+/// The sim's stand-in running firmware version, which an install would replace. The `same` flavour
+/// stages this exact string, so the confirm screen's same-version warning renders.
 pub const SIM_INSTALLED_VERSION: &str = "v0.9.0-0-gsim0000";
 
-/// The staged version an install would apply (a newer build than [`SIM_INSTALLED_VERSION`]).
+/// The staged version an install would apply: a newer build than [`SIM_INSTALLED_VERSION`].
 const SIM_STAGED_VERSION: &str = "v1.0.0-2-gnew1234";
 
 /// Which confirm-screen shape a `--dfu scan=...` snapshot renders.
 #[derive(Debug, Clone, Copy)]
 pub enum DfuScanKind {
-    /// A newer version with a rollback available — no warnings.
+    /// A newer version with a rollback available, so no warnings.
     Normal,
-    /// The installed version restaged — the same-version warning.
+    /// The installed version restaged, which raises the same-version warning.
     Same,
-    /// A first install (no rollback snapshot) — the no-undo warning.
+    /// A first install, with no rollback snapshot, which raises the no-undo warning.
     First,
 }
 
@@ -58,10 +55,9 @@ struct SliceStage {
 }
 
 impl SliceStage {
-    /// Encode a valid **signed** (OBCU v2) container tagged `version` over a small dummy body. It is
-    /// signed with the committed *test* key, and [`sim_scan`] verifies against that same key — the
-    /// sim exercises the real signature path without ever needing the release seed (which does not
-    /// exist in this repo).
+    /// Encode a valid signed container tagged `version` over a small dummy body. It is signed with
+    /// the committed test key, which [`sim_scan`] verifies against, so the sim exercises the real
+    /// signature path without the release seed.
     fn build(version: &str) -> Self {
         let body = vec![0xA5u8; 4096];
         let header = ImageHeader::new(&body, version).signed();
@@ -85,18 +81,16 @@ impl StageIo for SliceStage {
     }
 
     fn stage_extents(&mut self, out: &mut [Extent; MAX_EXTENTS]) -> Result<usize, ExtentsError> {
-        // One contiguous run over the whole synthetic file — a freshly-copied file's FAT shape.
+        // One contiguous run over the whole synthetic file, which is a fresh copy's FAT shape.
         out[0] = Extent { start_block: 0, blocks: (self.bytes.len() as u32).div_ceil(512) };
         Ok(1)
     }
 }
 
-/// Run the real `obc-dfu` scan over a synthetic OBCU blob tagged `staged_version` (==
-/// [`SIM_INSTALLED_VERSION`] flags the same-version warning; `first_install` drives the no-undo
-/// warning) and return the app-native [`DfuScanReport`] **paired with** the validated
-/// [`StagedRef`] — the same pair the board's `run_scan` hands back (DR6, #734): the report is what
-/// the app renders, the ref is what the confirm's arm carries instead of re-scanning. Keeping both
-/// on one scan here mirrors the board's carry seam rather than forking a second validation path.
+/// Run the real `obc-dfu` scan over a synthetic OBCU blob tagged `staged_version` and answer the
+/// app-native [`DfuScanReport`] paired with the validated [`StagedRef`], which is the pair the
+/// board's own scan hands back. The report is what the app renders, and the ref is what the
+/// confirm's arm carries instead of re-scanning.
 pub fn sim_scan(staged_version: &str, first_install: bool) -> Result<(DfuScanReport, StagedRef), DfuScanError> {
     let mut stage = SliceStage::build(staged_version);
     let mut chunk = [0u8; 512];
@@ -105,13 +99,13 @@ pub fn sim_scan(staged_version: &str, first_install: bool) -> Result<(DfuScanRep
     Ok((report, staged))
 }
 
-/// The report half of [`sim_scan`] — what the snapshot renderers drive the confirm/error screens
-/// with (the carried ref has no on-screen effect in the sim; the board arms, the sim doesn't).
+/// The report half of [`sim_scan`], which is what the snapshot renderers drive the confirm and
+/// error screens with. The carried ref has no on-screen effect in the sim.
 pub fn sim_scan_report(staged_version: &str, first_install: bool) -> Result<DfuScanReport, DfuScanError> {
     sim_scan(staged_version, first_install).map(|(report, _)| report)
 }
 
-/// The board's `obc_dfu::ScanError` → app `DfuScanError` fold, mirrored here for the sim.
+/// The board's fold from `obc_dfu::ScanError` to `DfuScanError`, mirrored here for the sim.
 fn map_scan_error(e: ScanError) -> DfuScanError {
     match e {
         ScanError::Missing => DfuScanError::NotFound,
@@ -129,16 +123,15 @@ mod tests {
 
     #[test]
     fn sim_scan_pairs_the_report_with_the_carried_ref() {
-        // DR6 (#734): one scan yields both the app report and the StagedRef the board's arm would
-        // carry — the same pairing `run_scan` returns. The ref describes exactly the image the
-        // report shows (the confirm's arm reuses it instead of re-reading UPDATE.BIN).
+        // One scan yields both the app report and the staged ref the board's arm would carry. The
+        // ref describes the image the report shows, so the arm reuses it instead of re-reading.
         let (report, staged) = sim_scan(SIM_STAGED_VERSION, false).expect("the synthetic blob scans");
         assert_eq!(report.staged.as_str(), SIM_STAGED_VERSION);
         assert_eq!(staged.header.fw_version_str(), report.staged.as_str(), "ref and report describe one image");
         assert_eq!(staged.len, 4096, "the ref carries the whole validated body length");
         assert!(staged.extent_count() >= 1, "the ref locates the staged bytes for the arm");
 
-        // The report-only helper stays a thin projection of the paired scan (no divergent path).
+        // The report-only helper stays a thin projection of the paired scan.
         assert_eq!(sim_scan_report(SIM_STAGED_VERSION, false), Ok(report));
     }
 }

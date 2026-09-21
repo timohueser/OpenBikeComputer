@@ -1,14 +1,12 @@
-//! The iPhone host's device core: one [`Host`] owns the whole device — the card, the map, the
-//! stores, the app, the planner, the RGBA frame — and advances it one display-link frame at a time.
+//! The iPhone host's device core: one [`Host`] owns the whole device and advances it one
+//! display-link frame at a time.
 //!
-//! **Swift owns the loop; Rust owns the truth.** Per [`tick`](Host::tick): the queued button edges
-//! reach the app's own gesture recognizer, one bounded Peak View step runs, one `App::run_pass`
-//! decides, the shared executor serves it, and the frame is rendered only when the app says
-//! something changed.
+//! Swift owns the loop. Each [`tick`](Host::tick) sends the queued button edges to the app's own
+//! gesture recognizer, runs one bounded Peak View step, runs one `App::run_pass`, lets the shared
+//! executor serve it, and renders the frame only when the app says something changed.
 //!
 //! The card is persistent and this host never creates it: [`import_map`] does, with no host open.
-//! Everything here is target-independent and tested natively; [`ffi`] is the C ABI over it and the
-//! Swift shell is separate.
+//! Everything here is target-independent and tested natively; [`ffi`] is the C ABI over it.
 
 pub mod ffi;
 mod sensors;
@@ -32,13 +30,13 @@ use obc_route::{ElevationSource, NullElevation};
 use obc_storage::flat::StoreError;
 use std::path::Path;
 
-/// The panel resolution — the one [`obc_display`] frame authority, not re-declared literals.
+/// The panel resolution, from the one [`obc_display`] frame authority.
 pub const FRAME_W: u32 = obc_display::ls021::FRAME_W as u32;
 pub const FRAME_H: u32 = obc_display::ls021::FRAME_H as u32;
 
 /// What the phone honestly is. It has a card and a settings file, so detours and persisted
-/// settings are real; it is not a BLE peripheral, carries no staged firmware, and reports no free
-/// space, so the screens behind those hide instead of offering a control that answers nothing.
+/// settings are real. It is not a BLE peripheral, carries no staged firmware and reports no free
+/// space, so the screens behind those hide rather than offer a control that answers nothing.
 const SUPPORT: PlatformSupport = PlatformSupport {
     detour: true,
     settings_persistence: true,
@@ -85,9 +83,9 @@ pub fn card_state(card: &Path) -> Result<CardState, String> {
 
 /// Put `obcm` on the card at `card`, creating the card when it does not exist yet.
 ///
-/// The only place a card is created, and it runs with **no [`Host`] open**: the map is the one
-/// object a running device cannot have replaced underneath it, so the shell closes the host,
-/// imports, and opens again.
+/// The only place a card is created, and it runs with no [`Host`] open: the map is the one object a
+/// running device cannot have replaced underneath it, so the shell closes the host, imports, and
+/// opens again.
 pub fn import_map(card: &Path, obcm: &Path) -> Result<(), String> {
     let owner = if card.exists() { HostStore::open_file(card) } else { HostStore::create_file(card) }
         .map_err(|error| format!("card {}: {error}", card.display()))?;
@@ -101,7 +99,7 @@ pub fn import_map(card: &Path, obcm: &Path) -> Result<(), String> {
     imported.map(|_| ()).map_err(|error| format!("import {}: {error}", obcm.display()))
 }
 
-/// A card that carries no map yet — the one map error that is a state rather than a failure.
+/// A card that carries no map yet: the one map error that is a state rather than a failure.
 fn missing_map(error: &MapError) -> bool {
     matches!(error, MapError::Storage(StoreError::NotFound))
 }
@@ -113,11 +111,11 @@ fn open_card(card: &Path) -> Result<HostStore, String> {
 /// The whole device, over one persistent card.
 pub struct Host {
     map: FlatMap,
-    /// The shared app (~136 KB). Heap-allocated: a by-value `App` temporary is exactly the kind of
-    /// silent stack trap the iOS main thread's 1 MiB budget cannot absorb.
+    /// The shared app, heap-allocated: a by-value `App` temporary is the kind of silent stack trap
+    /// the iOS main thread's budget cannot absorb.
     app: Box<App>,
-    /// The render path's per-frame scratch (~90 KB), lent to each render call. Boxed for the same
-    /// reason as the app.
+    /// The render path's per-frame scratch, lent to each render call. Boxed for the same reason as
+    /// the app.
     scratch: Box<obc_render::RenderScratch>,
     routes: FlatRouteStore,
     rides: FlatRideStore,
@@ -129,23 +127,23 @@ pub struct Host {
     /// The shared typed executor: the next pass's outcomes and facts, and the in-flight route plan.
     host: HostLoop,
     /// The resident active-route parse, opened once per frame and lent to both the pass and the
-    /// render (so the map opens without a per-frame `RouteIndex` reparse).
+    /// render, so the map opens without a per-frame `RouteIndex` reparse.
     session: ActiveRouteSession,
     frame: RgbaFrame,
     photo: obc_host_core::photo::Preparer,
     /// The cooperative panorama build, when the card map carries surface terrain.
     peaks: Option<obc_host_core::peak_view::Runtime>,
     elevation: Box<dyn ElevationSource>,
-    /// First frame rendered — the shell's readiness signal.
+    /// First frame rendered: the shell's readiness signal.
     ready: bool,
 }
 
 impl Host {
-    /// Open the device over an existing card. Never creates the card and never imports: a card
-    /// without a map is an error the shell answers by asking for one ([`import_map`]).
+    /// Open the device over an existing card. It never creates the card and never imports: a card
+    /// without a map is an error the shell answers by asking for one.
     ///
-    /// `settings` is the settings file (the device's RRAM stand-in) and `exports` the directory a
-    /// committed ride's GPX is written into.
+    /// `settings` is the settings file, standing in for the device's RRAM, and `exports` is the
+    /// directory a committed ride's GPX is written into.
     pub fn open(card: &Path, settings: &Path, exports: &Path) -> Result<Box<Self>, String> {
         let owner = open_card(card)?;
         let map = FlatMap::open_only_in(&owner).map_err(|error| format!("card map: {error}"))?;
@@ -176,7 +174,7 @@ impl Host {
         app.set_map_nav_graph(map.tables().has_nav_graph());
         app.set_routes_with_ids(routes.catalog(), routes.ids());
         app.set_rides(rides.catalog());
-        // The phone runs the settings a rider runs: whatever was saved, else the defaults.
+        // The phone runs the settings a rider runs: whatever was saved, or the defaults.
         app.set_settings(boot_settings);
         tracks.offer_recovery(&mut app);
 
@@ -206,17 +204,17 @@ impl Host {
     }
 
     /// One button edge from the shell's touch areas. Held state in, edges out: pressing and holding
-    /// queues exactly one Down, and the hold itself is the recognizer's to time.
+    /// queues one Down, and the recognizer times the hold.
     pub fn push_button(&mut self, button: Button, down: bool) {
         self.input.set_button(button, down);
     }
 
-    /// Advance one display-link frame; `true` when the frame buffer changed (only then does the
-    /// shell need to blit). `now_ms` is the shell's monotonic clock since open.
+    /// Advance one display-link frame, and answer whether the frame buffer changed. `now_ms` is the
+    /// shell's monotonic clock since open.
     pub fn tick(&mut self, now_ms: f64) -> bool {
         let now = now_ms.max(0.0) as u32;
-        // Recognition runs every tick, also with no queued edge: that is how a held Select or Back
-        // fires its hold. A chord resolves inside `recognize`, above the screen stack.
+        // Recognition runs every tick, also with no queued edge, because that is how a held Select
+        // or Back fires its hold. A chord resolves inside `recognize`, above the screen stack.
         let gestures = self.app.recognize(InputClock(now), &mut self.input);
         match &mut self.peaks {
             Some(peaks) => peaks.update(&mut self.app, &self.map.reader()),
@@ -242,8 +240,7 @@ impl Host {
             )
         };
         // A single-loop host has no second recognizer to cancel, so it consumes the hold-cancel
-        // latch the pass may have armed rather than leaving it set for a plane that does not exist
-        // — the same rule `App::handle_input` applies for the hosts that still go through it.
+        // latch the pass may have armed rather than leaving it set for a plane that does not exist.
         let _ = self.app.take_hold_cancel();
         {
             let mut platform = PhonePlatform { settings: &mut self.settings };
@@ -263,9 +260,9 @@ impl Host {
         // The map-referenced altimeter's terrain read, drained once per frame behind the pass.
         self.app.sample_terrain(&mut *self.elevation);
 
-        // `plan.next_wake_ms` and `plan.immediate` are deliberately ignored: the display link paces
-        // the loop, and its next frame is already the "come straight back" an immediate wake asks
-        // for. Render on demand otherwise — the same signal the firmware gates its repaints on.
+        // `plan.next_wake_ms` and `plan.immediate` are ignored: the display link paces the loop,
+        // and its next frame is already what an immediate wake asks for. Otherwise the render is on
+        // demand, from the same signal the firmware gates its repaints on.
         if plan.render.map || plan.render.overlay || !self.ready || self.app.photo_pending() {
             self.session.sync(&self.app, &mut self.routes);
             let route = frame::active_route(&self.session, &self.routes);
@@ -301,17 +298,17 @@ impl Host {
         Ok(id)
     }
 
-    /// The rendered RGBA frame ([`FRAME_W`]`×`[`FRAME_H`]`×4` bytes), for the shell's `CGImage`.
+    /// The rendered RGBA frame, for the shell's `CGImage`.
     pub fn frame(&self) -> &[u8] {
         self.frame.as_rgba()
     }
 
-    /// The current (input-receiving) screen's variant name, e.g. `"Map"`, `"Menu"`, `"PeakView"`.
+    /// The current input-receiving screen's variant name.
     pub fn screen(&self) -> &'static str {
         self.app.top_screen().name()
     }
 
-    /// Whether a ride is open — the shell keeps the screen awake while it is.
+    /// Whether a ride is open. The shell keeps the screen awake while it is.
     pub fn recording(&self) -> bool {
         self.app.recording()
     }

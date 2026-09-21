@@ -29,11 +29,9 @@ RETIRED = [
     re.compile(r"--" + r"v2\b"),
     re.compile(r"\bcatalog" + r"Root\b"),
     re.compile(r"maps\.openbikecomputer\." + r"org/catalog\.json"),
-    # The volume set (#1420 FS7.5b2 producers, FS7.5c3b readers). A map is one OBCM file: no
-    # manifest, no shards, no roles, no archive to bundle several files into, and no 32-slot sink
-    # to write them through. The reader side went with the USB cutover — `obc-formats/src/obcs.rs`,
-    # the board's set machinery, `SetPart` and the three wire kinds — so both halves are listed now
-    # and neither may come back.
+    # The volume set. A map is one OBCM file: no manifest, no shards, no roles, no archive to
+    # bundle several files into, and no slotted sink to write them through. Both the producer and
+    # the reader spellings are listed, and neither may come back.
     re.compile(r"\bsendAssembled" + r"SetFile\b"),
     re.compile(r"\babandonAssembled" + r"Set\b"),
     re.compile(r"\bopenShard" + r"Sink\b"),
@@ -41,7 +39,7 @@ RETIRED = [
     re.compile(r"\bstore" + r"Zip\b"),
     re.compile(r"\bzip" + r"Layout\b"),
     re.compile(r"\bforce_" + r"split\b"),
-    # The reader side, retired by FS7.5-c3b with the USB v4 cutover.
+    # The reader side.
     re.compile(r"\bobc_formats::" + r"obcs\b"),
     re.compile(r"\bSet" + r"Part\b"),
     re.compile(r"\bset_shard_" + r"begin\b"),
@@ -49,30 +47,22 @@ RETIRED = [
     re.compile(r"\bvalidate_committed_" + r"manifest\b"),
     re.compile(r"\bsweep_aborted_" + r"sets\b"),
     re.compile(r"\bSD_SET_MAX_" + r"SHARDS\b"),
-    # The v1 USB selector envelope, retired by FS7.5-c3b: the control bulk pair is wholly v4, and
-    # the non-object surface is one EP0 vendor request (`FLAT_Store_Protocol.md` §5.2.1).
+    # The old USB selector envelope. The control bulk pair carries the whole protocol, and the
+    # non-object surface is one vendor request.
     re.compile(r"\bCARD_FREE_" + r"READ\b"),
     re.compile(r"\bDEVICE_INFO_" + r"READ\b"),
     re.compile(r"\bIDENTITY_" + r"READ\b"),
 ]
 
-# Spellings deliberately **not** listed, so the next reader does not add them: `transferControl`,
-# `mapSet` and `terrainShard` are wire names this repo still explains in prose — the retirement note
-# in `specs/vectors/README.md`, the BLE interface spec's no-reuse table, the docs' companion-link
-# page — and a guard that banned the word would ban the explanation with it. What may not come back
-# is the *code*, and the identifiers above are what the code was called.
+# Some wire names are deliberately not listed, because this repository still explains them in
+# prose, and a guard that banned the word would ban the explanation with it. What may not come back
+# is the code, and the identifiers above are what the code was called.
 
 
-# **One file is exempt, and the reason is what the file is.** `firmware/tools/resource_baseline.json`
-# is a *measurement log*: every `_resident_note_*` records what a past slice moved and why, and
-# several of them name the very symbols this guard bans because those symbols are what was measured.
-# Rewriting those notes to dodge a grep would be falsifying the record — the whole point of keeping
-# them is that a reader can reconstruct how the board's RAM got where it is. The guard exists to stop
-# the *code* coming back; a note saying "`SD_SET_MAX_SHARDS` cost this many bytes, and here is when it
-# stopped" is the opposite of that code coming back.
-#
-# Deliberately one path and not a glob: the exemption should be uncomfortable enough to notice if
-# someone tries to widen it.
+# One file is exempt. `firmware/tools/resource_baseline.json` is a measurement log whose notes name
+# the very symbols this guard bans, because those symbols are what was measured. Rewriting them to
+# dodge a grep would falsify the record. It is one path and not a glob, so widening the exemption is
+# uncomfortable enough to notice.
 EXEMPT = {Path("firmware/tools/resource_baseline.json")}
 
 

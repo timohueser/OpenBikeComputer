@@ -1,20 +1,13 @@
 #!/usr/bin/env python3
 """Digest-pinned catalog fixtures on loopback, for the two journeys that drive a real catalog UI.
 
-Two documents sets, one server:
+Two document sets, one server. `schema_examples()` is the desktop launch smoke's catalog and
+publishes no cell bytes, because that journey stops at region selection. `web_assemble()` is the
+builder browser journey's catalog, where every artifact is real, so a region download from it
+assembles the checked-in cells into the checked-in map.
 
-* `schema_examples()` — the desktop launch smoke's catalog. The three schema example documents
-  with the producer's fine band kept and every other band emptied. It publishes no cell bytes,
-  because that journey stops at region selection.
-* `web_assemble()` — the builder browser journey's catalog, over
-  `apps/obc-web-assemble/tests/fixture/`. Same document shapes, but every artifact is real: the
-  five cells, the three terrain squares, the schema and the skin the bridge fixture was cut with.
-  A region download from it assembles the checked-in cells into the checked-in
-  `expected/map.obcm`.
-
-Every `bytes` / `sha256` / `url` is regenerated from the bytes this module serves. The schema
-example's fine cells share ids with the bridge fixture's (`18/1204/1052`, `18/1204/1053`) but not
-bytes, so nothing here copies a digest from a document — it is always computed from what is served.
+Every `bytes`, `sha256` and `url` is computed from the bytes this module serves, never copied from
+a document.
 
 Run it as a server for a browser test:
 
@@ -70,7 +63,7 @@ def _document(objects: dict[str, bytes], path: str, document: object) -> dict:
     return pin(objects, path, json.dumps(document).encode())
 
 
-# --- The desktop launch smoke's catalog ---------------------------------------------------------
+# The desktop launch smoke's catalog.
 
 
 def schema_examples() -> dict[str, bytes]:
@@ -104,13 +97,11 @@ def schema_examples() -> dict[str, bytes]:
     return objects
 
 
-# --- The builder browser journey's catalog ------------------------------------------------------
-
-# The bridge fixture's own cut (`apps/obc-web-assemble/examples/fixture.rs`, `CONFIG`) numbers its
-# feature types 1-based in config order. A hosted catalog names the feature types and the schema
-# assigns the ids, so the assignment has to be restated here — it is the same table, spelled the way
-# OBCC §4 spells it. The ids are what reach the cells' chunk bytes; the names are what the skin
-# resolves against.
+# The builder browser journey's catalog.
+#
+# The bridge fixture's own cut numbers its feature types in config order. A hosted catalog names the
+# feature types and the schema assigns the ids, so the assignment is restated here in the catalog's
+# own spelling. The ids reach the cells' chunk bytes; the names are what the skin resolves against.
 FEATURE_TYPES = {
     1: "natural.water",
     2: "highway.primary",
@@ -268,7 +259,6 @@ def web_assemble() -> dict[str, bytes]:
 CATALOGS = {"schema-examples": schema_examples, "web-assemble": web_assemble}
 
 
-# --- The server ---------------------------------------------------------------------------------
 
 
 class CatalogServer(ThreadingHTTPServer):
@@ -325,8 +315,8 @@ class _Handler(BaseHTTPRequestHandler):
         body, kind, name = server.objects.get(path), "object", path
         if body is None:
             static = server.static_file(path)
-            # The served *file* names the type: a request for "/" is an index.html, and answering it
-            # as an octet-stream makes the browser download the app instead of running it.
+            # The served file names the type: a request for the root is an index.html, and
+            # answering it as an octet-stream makes the browser download the app.
             if static:
                 body, kind, name = static.read_bytes(), "static", static.name
         status = 200 if body is not None else 404

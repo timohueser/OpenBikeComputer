@@ -1,43 +1,19 @@
-//! `obc-web-assemble` — the hosted builder's **assembly bridge** (epic #1016, P4b).
-//!
-//! The cell catalog's whole promise is that any selection is an *assembly*, not a bake. This is what
-//! makes that true without a backend: [`obcm-assemble`](../obcm_assemble/index.html), the OBCA
-//! engine, compiled to wasm and driven from a browser tab. The cells the builder downloaded go in;
-//! one `.obcm` — geometry, nav graph, POIs and the spliced §1.3 raster — comes out, byte-for-byte
+//! The hosted builder's assembly bridge: the OBCA engine compiled to wasm and driven from a
+//! browser tab. The cells the builder downloaded go in, and one `.obcm` comes out, byte-for-byte
 //! identical to what the native CLI produces from the same inputs.
 //!
-//! Deliberately not a framework host like [`obc-web-demo`](../obc_web_demo/index.html): no frame
-//! loop, no canvas, no state beyond the buffers an assembly is holding.
+//! Nothing here names a file. What crosses is a digest, a length and sometimes the bytes; only the
+//! caller knows whether that becomes `MAP.OBCM` on a card or a save dialog's suggestion.
 //!
-//! | export | contract |
-//! | :-- | :-- |
-//! | `new Assembler(schemaJson, skinJson, optionsJson?)` | an empty assembly, waiting for cells |
-//! | `.addCell(id, band, partial, bytes)` | hand over one downloaded cell; `bytes` crosses **once** |
-//! | `.addCellByKey(id, band, partial, byteLength, key)` | …or leave the bytes outside wasm and read them on demand (#1116 B2) |
-//! | `.addKnownEmpty(id, band)` | one selected square the catalog asserts is canonically empty |
-//! | `.setTerrain(postingLog2, cellLog2)` / `.addTerrainCell(id, sha256, bytes)` | the raster (EL4) |
-//! | `.run(onProgress?, onRead?, sink?, scratch?)` | assemble; returns the summary JSON, throws a typed error |
-//! | `.fileSha256` / `.fileByteLength` | the finished map's identity |
-//! | `.hasFile` / `.takeFile()` | the bytes, when the run buffered them; a sink means the host has them already |
-//! | `.warnings()` | what OBCA says a producer SHOULD report rather than refuse |
-//! | `.releaseCells()` | drop the input buffers once the output is taken |
-//! | `obc_assemble_estimate(networkBandBytes, totalCellBytes, terrainBytes, mergeBudgetBytes, inputOnDisk, outputSunk, budgetBytes?)` | can this selection be assembled in a tab at all — **before** the download |
-//!
-//! **Nothing here names a file.** The engine names nothing and this bridge names nothing: what
-//! crosses is a digest, a length and (sometimes) the bytes. Whether that becomes `MAP.OBCM` on a
-//! card or a save dialog's suggestion is the caller's decision, and it is the only party that knows.
-//!
-//! `.run()` **blocks** for the whole assembly — ~20 s at country scale — so it belongs in a **Web
-//! Worker**, not on the main thread. That contract, and what a cancel button has to do given it, is
-//! written down in `builder/app/src/lib/assemble/bridge.ts`.
+//! `.run()` blocks for the whole assembly, about 20 s at country scale, so it belongs in a Web
+//! Worker. `builder/app/src/lib/assemble/bridge.ts` holds that contract and what a cancel button
+//! must do.
 //!
 //! A failure crosses to JS as a thrown `Error` whose `message` is the engine's own and whose `code`
-//! ([`ErrorCode`]) is the stable identifier a caller branches on. The three that matter are kept
-//! apart on purpose: `input` is a selection to fix, `capacity` is coverage to reduce, and `verify`
-//! is a defect in the assembler — nothing was handed on, and nothing should be.
+//! ([`ErrorCode`]) is the stable identifier a caller branches on.
 //!
-//! The driver ([`driver`]) and the memory model ([`estimate`]) are target-independent and unit-tested
-//! natively by the workspace `cargo test`; only the bindgen shim below is wasm-specific.
+//! The driver ([`driver`]) and the memory model ([`estimate`]) are target-independent and tested
+//! natively; only the bindgen shim below is wasm-specific.
 
 pub mod driver;
 pub mod estimate;
@@ -62,9 +38,7 @@ mod web {
         Outcome, Phase, ScratchWrites, SealedMap, SourceCell, TerrainCellBytes, TerrainLattice, Wiring,
     };
 
-    /// Module start (wasm-bindgen runs this during instantiation): surface Rust panics in the console
-    /// instead of an opaque `unreachable` trap. Nothing else — there is no state to build, so
-    /// instantiation stays as cheap as the download.
+    /// Module start: surface Rust panics in the console instead of an opaque `unreachable` trap.
     #[wasm_bindgen(start)]
     pub fn start() {
         console_error_panic_hook::set_once();
@@ -80,16 +54,15 @@ mod web {
     /// progress, abort, and the sunk map's identity.
     struct JsHooks {
         on_progress: Option<js_sys::Function>,
-        /// `sealed(sha256, byteLength)` — the sink's report, carrying an identity because the host
-        /// wrote the bytes itself and never saw them (#1116 D1).
+        /// `sealed(sha256, byteLength)`: the sink's report, which carries an identity because the
+        /// host wrote the bytes itself and never saw them.
         on_sealed: Option<js_sys::Function>,
-        /// `Date.now()` is wall clock and can step backwards (NTP, a suspended tab). The engine
-        /// subtracts consecutive readings, so a step back would underflow a `u64`; clamping here
-        /// keeps the seam monotonic at the cost of a phase timing that reads as zero.
+        /// `Date.now()` is wall clock and can step backwards, for example after an NTP correction.
+        /// The engine subtracts consecutive readings, so a step back would underflow a `u64`.
+        /// Clamping keeps the seam monotonic at the cost of a phase timing that reads as zero.
         last_us: u64,
-        /// Whether the throwing-callback warning has already been printed. A progress callback fires
-        /// a hundred times a run and a broken one throws every time; one line is a bug report, a
-        /// hundred is a reason to stop reading the console.
+        /// Whether the throwing-callback warning was printed. A broken progress callback throws a
+        /// hundred times a run, and one line is enough.
         warned: bool,
     }
 
@@ -102,10 +75,8 @@ mod web {
 
         fn progress(&mut self, phase: Phase, fraction: f64) -> bool {
             let Some(f) = &self.on_progress else { return false };
-            // A callback that throws does not abort the run: it is a defect in the caller's own
-            // reporting code, and losing a half-hour assembly to a typo in a progress bar would be
-            // the worse failure. Abort by *returning* true. It is not swallowed either — silence
-            // would leave a dead progress bar looking like a hung assembler.
+            // A callback that throws does not abort the run: losing a long assembly to a typo in a
+            // progress bar is the worse failure. A caller aborts by returning true.
             match f.call2(&JsValue::NULL, &JsValue::from_str(phase.as_str()), &JsValue::from_f64(fraction)) {
                 Ok(v) => v.is_truthy(),
                 Err(e) => {
@@ -122,11 +93,10 @@ mod web {
             }
         }
 
-        /// Tell JS what the map the host's own sink wrote turned out to be (#1116 D1).
+        /// Tell JS what the map the host's own sink wrote turned out to be.
         ///
-        /// Nothing crosses but two scalars — the bytes were never here. A throw fails the run as
-        /// `io`: the file exists, the caller does not know which bytes are in it, and a map reported
-        /// as finished whose identity nobody recorded is worse than a run that says it failed.
+        /// A throw fails the run as `io`: the file exists, and a map reported as finished whose
+        /// identity nobody recorded is worse than a run that says it failed.
         fn map_sealed(&mut self, map: SealedMap) -> Result<(), String> {
             let Some(f) = &self.on_sealed else { return Ok(()) };
             let SealedMap { sha256, byte_length } = map;
@@ -140,13 +110,11 @@ mod web {
         }
     }
 
-    /// The browser's [`MapWrites`]: one OPFS `FileSystemSyncAccessHandle` on the far side of four JS
-    /// calls (#1116 D1).
+    /// The browser's [`MapWrites`]: one OPFS `FileSystemSyncAccessHandle` behind four JS calls.
     ///
-    /// The mirror of [`JsReads`], and cheap for the same reason: `write` hands the host a view that
-    /// *is* the engine's buffer and `readAt` hands it one that *is* the destination, so bytes move
-    /// between linear memory and the file in one step with nothing copied on the JS side. What
-    /// crosses per call is an offset and one freshly-made view object.
+    /// `write` hands the host a view that is the engine's buffer, and `readAt` hands it one that is
+    /// the destination, so bytes move between linear memory and the file with no copy on the JS
+    /// side.
     struct JsSink {
         create: js_sys::Function,
         write: js_sys::Function,
@@ -155,8 +123,8 @@ mod web {
     }
 
     impl JsSink {
-        /// Read the four methods off the object a caller passed. Missing or non-callable is a
-        /// half-wired host and is refused before a byte is written.
+        /// Read the four methods off the object a caller passed. A missing or non-callable one is
+        /// refused before a byte is written.
         fn from_object(obj: &js_sys::Object) -> Result<JsSink, AssembleFailure> {
             let method = |name: &str| -> Result<js_sys::Function, AssembleFailure> {
                 let v = js_sys::Reflect::get(obj, &JsValue::from_str(name)).map_err(|_| AssembleFailure {
@@ -195,18 +163,17 @@ mod web {
         }
 
         fn write(&self, bytes: &[u8]) -> Result<(), String> {
-            // SAFETY: the same contract as `JsReads::read` — the view aliases linear memory and is
+            // SAFETY: the same contract as `JsReads::read`. The view aliases linear memory and is
             // made, passed and dropped inside one synchronous JS call that only reads from it. No
-            // Rust allocation can run in between, and the callback is documented not to re-enter
-            // the assembler or to keep the view.
+            // Rust allocation can run in between, and the callback must not re-enter the assembler
+            // or keep the view.
             let src = unsafe { js_sys::Uint8Array::view(bytes) };
             JsSink::taken(self.write.call1(&JsValue::NULL, &src), "write")
         }
 
         fn read_at(&self, offset: u64, into: &mut [u8]) -> Result<(), String> {
-            // SAFETY: as in `JsReads::read` — a per-call view, filled and dropped inside the call.
-            // A sunk map's offset can pass 4 GiB since the read seam widened; `f64` carries it
-            // exactly to 2^53, far past the 64 GiB interior §1.1 lets a file reach.
+            // SAFETY: as in `JsReads::read`, a per-call view, filled and dropped inside the call.
+            // A sunk map's offset can pass 4 GiB, and `f64` carries it exactly to 2^53.
             let dest = unsafe { js_sys::Uint8Array::view_mut_raw(into.as_mut_ptr(), into.len()) };
             JsSink::taken(self.read_at.call2(&JsValue::NULL, &JsValue::from_f64(offset as f64), &dest), "readAt")
         }
@@ -216,9 +183,9 @@ mod web {
         }
     }
 
-    /// The browser's [`ScratchWrites`] (#1116 D2): five JS methods over a pool of OPFS sync access
-    /// handles, crossed exactly the way [`JsSink`] crosses. `create` and `len` answer with a
-    /// number (`-1` is the refusal); the other three answer truthy-or-failed like the sink's.
+    /// The browser's [`ScratchWrites`]: five JS methods over a pool of OPFS sync access handles,
+    /// crossed the way [`JsSink`] crosses. `create` and `len` answer with a number, where `-1` is
+    /// the refusal; the other three answer truthy or failed.
     struct JsScratch {
         create: js_sys::Function,
         append: js_sys::Function,
@@ -278,17 +245,16 @@ mod web {
         }
 
         fn append(&self, id: u32, bytes: &[u8]) -> Result<(), String> {
-            // SAFETY: the same contract as `JsSink::write` — a per-call view over linear memory,
+            // SAFETY: the same contract as `JsSink::write`: a per-call view over linear memory,
             // made, read and dropped inside one synchronous JS call.
             let src = unsafe { js_sys::Uint8Array::view(bytes) };
             JsScratch::taken(self.append.call2(&JsValue::NULL, &JsValue::from_f64(id as f64), &src), "append")
         }
 
         fn read_at(&self, id: u32, offset: u64, into: &mut [u8]) -> Result<(), String> {
-            // SAFETY: as in `JsSink::read_at` — a per-call view, filled and dropped inside the call.
+            // SAFETY: as in `JsSink::read_at`, a per-call view, filled and dropped inside the call.
             let dest = unsafe { js_sys::Uint8Array::view_mut_raw(into.as_mut_ptr(), into.len()) };
-            // A spill offset can pass 4 GiB (that is the point of `u64` in the seam); `f64` carries
-            // it exactly to 2^53, far past any spill a 4 GiB address space could produce.
+            // A spill offset can pass 4 GiB, and `f64` carries it exactly to 2^53.
             JsScratch::taken(
                 self.read_at.call3(
                     &JsValue::NULL,
@@ -310,27 +276,22 @@ mod web {
     }
 
     /// The browser's [`CellReads`]: one JS call per cache miss, filling a view over wasm's own
-    /// linear memory (#1116 B2).
+    /// linear memory.
     ///
-    /// The view is the reason this is cheap. `FileSystemSyncAccessHandle.read(buffer, {at})` takes
-    /// any `ArrayBufferView`, so handing it one that *is* the destination block means the bytes go
-    /// from the file into the wasm heap in one step — no intermediate `ArrayBuffer`, nothing copied
-    /// on the JS side, nothing copied back. What crosses per call is a slot number, an offset and
-    /// one freshly-made view object.
+    /// `FileSystemSyncAccessHandle.read(buffer, {at})` takes any `ArrayBufferView`, so a view that
+    /// is the destination block moves the bytes from the file into the wasm heap in one step.
     struct JsReads {
-        /// `read(slot, offset, dest) -> boolean`. Falsy means the read failed; see
-        /// `builder/app/src/lib/assemble/bridge.ts` for the contract as callers see it.
+        /// `read(slot, offset, dest) -> boolean`. Falsy means the read failed.
         on_read: js_sys::Function,
     }
 
     impl CellReads for JsReads {
         fn read(&self, slot: usize, offset: u64, buf: &mut [u8]) -> Result<(), String> {
-            // SAFETY: `view_mut_raw` aliases linear memory and is invalidated by anything that grows
-            // it. This one is made, passed, and dropped inside a single synchronous JS call that
-            // does nothing but fill it — no Rust allocation can run in between, and the callback is
-            // documented not to re-enter the assembler. It is deliberately built per call rather
-            // than cached for exactly that reason: a stored view would be detached by the next heap
-            // growth, and the reads it served would silently return nothing.
+            // SAFETY: `view_mut_raw` aliases linear memory and anything that grows the heap
+            // invalidates it. This one is made, passed and dropped inside a single synchronous JS
+            // call that only fills it, so no Rust allocation can run in between. It is built per
+            // call: a stored view would be detached by the next heap growth, and the reads it
+            // served would silently return nothing.
             let dest = unsafe { js_sys::Uint8Array::view_mut_raw(buf.as_mut_ptr(), buf.len()) };
             let taken = self.on_read.call3(
                 &JsValue::NULL,
@@ -348,7 +309,7 @@ mod web {
 
     /// One assembly: cells in, one map out.
     ///
-    /// The lifecycle is fixed — construct, `addCell` for every downloaded cell, `run`, then take the
+    /// The lifecycle is fixed: construct, `addCell` for every downloaded cell, `run`, then take the
     /// file. Cells may be handed over as they finish downloading; nothing is parsed until `run`.
     #[wasm_bindgen]
     pub struct Assembler {
@@ -356,32 +317,28 @@ mod web {
         skin_json: String,
         options: BridgeOptions,
         cells: Vec<CellBytes>,
-        /// Cells the host keeps outside wasm memory and serves on demand (#1116 B2). A cell's
-        /// **slot** — what `run`'s read callback is given — is its index here, which is what
-        /// [`Assembler::add_cell_by_key`] returns.
+        /// Cells the host keeps outside wasm memory and serves on demand. A cell's slot, which
+        /// `run`'s read callback is given, is its index here.
         source_cells: Vec<SourceCell>,
         known_empty: Vec<KnownEmptyCell>,
         /// The catalog's terrain lattice, once the caller declares one. `None` leaves the map's
-        /// §1.3 region empty — a complete map with flat profiles (`OBCC_Spec.md` §13).
+        /// terrain region empty, which is a complete map with flat profiles.
         terrain: Option<TerrainLattice>,
         terrain_cells: Vec<TerrainCellBytes>,
-        /// What the finished run produced, once there is one.
         outcome: Option<Outcome>,
-        /// Whether the bytes have already been moved out to JS. An emptied buffer is
-        /// indistinguishable from a legitimately empty one, and the difference decides between
-        /// handing back an unusable file and saying why — see [`Assembler::take_file`].
+        /// Whether the bytes were already moved out to JS. An emptied buffer looks the same as a
+        /// legitimately empty one, and [`Assembler::take_file`] must tell them apart.
         taken: bool,
     }
 
     #[wasm_bindgen]
     impl Assembler {
-        /// Start an assembly at a schema and a skin (OBCC §4 / §5 documents, as JSON text).
+        /// Start an assembly at a schema and a skin, as JSON text.
         ///
         /// `options_json` is an optional object: `{acceptHoles, acceptPartial, readBlockBytes,
         /// mergeBudgetBytes}`, every field optional. Unknown keys are ignored, so a newer builder
-        /// can talk to an older module. There is deliberately **no** `skipVerify`: OBCA §4.8 makes
-        /// the read-back a precondition of writing a map, and this bridge exists to hand bytes to a
-        /// device.
+        /// can talk to an older module. There is no `skipVerify`: the read-back is a precondition
+        /// of writing a map.
         #[wasm_bindgen(constructor)]
         pub fn new(schema_json: String, skin_json: String, options_json: Option<String>) -> Result<Assembler, JsValue> {
             let options = BridgeOptions::parse(options_json.as_deref().unwrap_or(""))
@@ -400,28 +357,24 @@ mod web {
             })
         }
 
-        /// Hand over one downloaded cell: its catalog identity, its OBCA §3.7 `partial` flag, and its
+        /// Hand over one downloaded cell: its catalog identity, its `partial` flag, and its
         /// verified bytes.
         ///
-        /// `bytes` crosses the boundary exactly once — wasm-bindgen copies the `Uint8Array` into
-        /// linear memory and this takes ownership of that copy, so nothing is buffered twice. The JS
-        /// side may drop its own reference immediately.
+        /// `bytes` crosses the boundary once. wasm-bindgen copies the `Uint8Array` into linear
+        /// memory and this takes ownership of that copy, so the JS side may drop its reference.
         #[wasm_bindgen(js_name = addCell)]
         pub fn add_cell(&mut self, id: String, band: String, partial: bool, bytes: Vec<u8>) {
             self.cells.push(CellBytes { id, band, partial, bytes });
         }
 
-        /// Hand over one downloaded cell **by reference**: the same identity and `partial` flag as
-        /// [`Assembler::add_cell`], the length the catalog published, and an opaque key the host's
-        /// own read callback resolves. The bytes never enter wasm memory (#1116 B2).
+        /// Hand over one downloaded cell by reference: the identity and `partial` flag
+        /// [`Assembler::add_cell`] takes, the length the catalog published, and an opaque key the
+        /// host's read callback resolves. The bytes never enter wasm memory.
         ///
-        /// Returns the cell's **slot** — the first argument `run`'s `on_read` is called with. Slots
-        /// are handed out in call order from `0`; the return value exists so a host never has to
-        /// assume that.
+        /// Returns the cell's slot, which is the first argument `run`'s `on_read` is called with.
         ///
-        /// The catalog's byte count is not a hint: it is what the engine reads as the cell's length,
-        /// so a read past it is refused here rather than left to whatever the host would return. A
-        /// wrong one surfaces as a format error at open, exactly as a truncated download does.
+        /// The catalog's byte count is what the engine reads as the cell's length, so a read past it
+        /// is refused here. A wrong one surfaces as a format error at open.
         ///
         /// Passing any of these without an `on_read` in [`Assembler::run`] fails the run as
         /// `internal` before a byte is read.
@@ -438,21 +391,19 @@ mod web {
             (self.source_cells.len() - 1) as u32
         }
 
-        /// Add one selected, canonical zero-byte cell. It affects the output
-        /// bbox and coverage checks but has no buffer to transfer or graft.
+        /// Add one selected, canonical zero-byte cell. It affects the output bbox and the coverage
+        /// checks but has no buffer to transfer or graft.
         #[wasm_bindgen(js_name = addKnownEmpty)]
         pub fn add_known_empty(&mut self, id: String, band: String) {
             self.known_empty.push(KnownEmptyCell { id, band });
         }
 
-        /// Declare the catalog's terrain lattice (`OBCC_Spec.md` §13.1's `posting_log2` /
-        /// `cell_log2`). Calling it is what gives the map a §1.3 terrain region at all; a catalog
-        /// with no terrain block simply never calls it, and the map assembles with the pair at
-        /// `(0, 0)`.
+        /// Declare the catalog's terrain lattice. Calling it is what gives the map a terrain region
+        /// at all; a catalog with no terrain block never calls it, and the map assembles with the
+        /// pair at `(0, 0)`.
         ///
-        /// Declaring the lattice with **no** cells is legal and meaningful: it writes a region that
-        /// is all directory, which says "this ground is canonically void" (open ocean, outside the
-        /// dataset's coverage) rather than "the raster failed to arrive".
+        /// Declaring the lattice with no cells is legal: it writes a region that is all directory,
+        /// which says the ground is canonically void and not that the raster failed to arrive.
         #[wasm_bindgen(js_name = setTerrain)]
         pub fn set_terrain(&mut self, posting_log2: u8, cell_log2: u8) {
             self.terrain = Some(TerrainLattice { posting_log2, cell_log2 });
@@ -461,9 +412,8 @@ mod web {
         /// Hand over one downloaded terrain cell: its id on the terrain grid, the `sha256` the
         /// pinned terrain index published, and the whole `.obcd` object.
         ///
-        /// A **known-empty** square is not handed over at all — it has no object, and an absent
-        /// cell reads identically to an all-`NODATA` one (`OBCT_Spec.md` §4.3), which is exactly
-        /// why the catalog publishes ocean as a row run rather than as megabytes of sentinel.
+        /// A known-empty square is not handed over at all. It has no object, and an absent cell
+        /// reads the same as an all-`NODATA` one.
         #[wasm_bindgen(js_name = addTerrainCell)]
         pub fn add_terrain_cell(&mut self, id: String, sha256: String, bytes: Vec<u8>) {
             self.terrain_cells.push(TerrainCellBytes { id, sha256, bytes });
@@ -481,69 +431,44 @@ mod web {
             self.terrain_cells.len()
         }
 
-        /// Assemble, and return the summary as JSON — the same document `obcm-assemble --json`
+        /// Assemble, and return the summary as JSON: the same document `obcm-assemble --json`
         /// prints. The bytes are then taken with [`Assembler::take_file`], unless a `sink` wrote
         /// them, in which case the host already has them.
         ///
-        /// **This blocks.** A country-scale assembly is ~20 s of straight-line compute, so calling it
-        /// on the main thread freezes the tab for the duration; run it in a Web Worker and post
-        /// progress out. See `bridge.ts` for the full contract, cancellation included.
+        /// This blocks. A country-scale assembly is about 20 s of straight-line compute, so run it
+        /// in a Web Worker and post progress out.
         ///
-        /// `on_progress(phase, fraction)` is called at every phase boundary and about a hundred times
-        /// over the write and the §4.8 read-back; `phase` is one of `open`/`poi`/`nav`/`plan`/
-        /// `write`/`verify`/`done` and `fraction` is **overall** completion, weighted by the measured
-        /// phase split. Returning a truthy value asks for an abort, honoured at the next write or
-        /// verify read — see [`crate::driver`] for the granularity. A callback that *throws* is
-        /// warned about once and otherwise ignored; it never cancels the run.
+        /// `on_progress(phase, fraction)` is called at every phase boundary and about a hundred
+        /// times over the write and the read-back. `fraction` is overall completion, weighted by the
+        /// measured phase split. A truthy return asks for an abort, honoured at the next write or
+        /// verify read. A callback that throws is warned about once and never cancels the run.
         ///
-        /// `on_read(slot, offset, dest) -> boolean` is how the bytes of every cell added with
-        /// [`Assembler::add_cell_by_key`] are fetched (#1116 B2), and it must be present if any
-        /// were. It is called synchronously from inside the run — which is exactly what makes a
-        /// `FileSystemSyncAccessHandle` usable, since those exist only in a dedicated worker and
-        /// only synchronously — and it must **fill `dest` completely** and return `true`. Anything
-        /// falsy, or a throw, fails the run as `io` naming the cell; a short read is a failure, not
-        /// a partial success.
+        /// `on_read(slot, offset, dest) -> boolean` fetches the bytes of every cell added with
+        /// [`Assembler::add_cell_by_key`], and must be present if any were. It is called
+        /// synchronously from inside the run, which is what makes a `FileSystemSyncAccessHandle`
+        /// usable, and it must fill `dest` completely and return `true`. A falsy return or a throw
+        /// fails the run as `io` naming the cell.
         ///
-        /// `dest` is a view straight onto wasm's linear memory and is valid **only for the duration
-        /// of the call**. Fill it and return; do not keep it, do not hand it to anything
-        /// asynchronous, and do not call back into the assembler from inside it.
+        /// `dest` is a view straight onto wasm's linear memory and is valid only for the duration of
+        /// the call. Fill it and return. Do not keep it, do not hand it to anything asynchronous,
+        /// and do not call back into the assembler from inside it.
         ///
-        /// Small reads use the bounded input cache with 4 KiB default windows. Host call count
-        /// depends on source locality; bulk reads bypass the cache (see [`crate::driver`]).
+        /// `sink` is the output's version of `on_read`: an object with `create()`, `write(bytes)`,
+        /// `readAt(offset, into)`, `seal()` and `sealed(sha256, byteLength)`. In the browser those
+        /// are one OPFS `FileSystemSyncAccessHandle` opened in the worker before the run. With one,
+        /// the map is never in wasm memory, which is the only shape a country-scale map has.
         ///
-        /// `sink` is the output's version of `on_read` (#1116 D1), and the one that decides whether
-        /// a country-scale map can be assembled in a tab at all: an object with `create()`,
-        /// `write(bytes)`, `readAt(offset, into)`, `seal()` and `sealed(sha256, byteLength)`. In the
-        /// browser those are one OPFS `FileSystemSyncAccessHandle`, opened in the worker before the
-        /// run.
+        /// The four byte-moving methods return `true` for success. `bytes` and `into` obey the same
+        /// view rule as `dest`. A `sealed` that throws also fails the run as `io`, because the file
+        /// exists and the caller does not know which bytes are in it.
         ///
-        /// With one, **the map is never in wasm memory**: `write` forwards straight to the host, the
-        /// §4.8 read-back reads the host's file back (through a block cache, like the input's), and
-        /// `sealed` reports the finished file's identity. A DACH map is a single ~9 GiB object —
-        /// larger than this address space — so a sink is not an optimisation there, it is the only
-        /// shape in which the selection exists.
+        /// `scratch` is where the engine's spill goes instead of into wasm memory: an object with
+        /// `create()` (a non-negative id, or `-1` to refuse), `append(id, bytes)`,
+        /// `readAt(id, offset, into)`, `len(id)` (the byte count, or `-1`) and `remove(id)`. In the
+        /// browser those are a pool of OPFS sync access handles opened before the run. A browser
+        /// that can wire this should, because the spill is the merge's edge stream.
         ///
-        /// The four byte-moving methods return `true` for success; anything falsy, or a throw, fails
-        /// the run as `io`. `bytes` and `into` are views straight onto wasm's linear memory, valid
-        /// **only for the duration of the call** — the same rule as `on_read`'s `dest`. A `sealed`
-        /// that throws fails the run as `io` too: the file exists and the caller does not know which
-        /// bytes are in it.
-        ///
-        /// `scratch` is the third seam's host side (#1116 D2): where the engine's *spill* — the
-        /// sorted passes' working files, not the map's input or output — goes instead of into wasm
-        /// memory. An object with `create()` (returns a non-negative id, or `-1` to refuse),
-        /// `append(id, bytes)`, `readAt(id, offset, into)`, `len(id)` (returns the byte count, or
-        /// `-1`), and `remove(id)`. In the browser those are a pool of OPFS sync access handles
-        /// opened in the worker before the run — from D3 on the spill is the merge's *edge stream*,
-        /// which at country scale is larger than the arrays it replaced, so a browser that can wire
-        /// this must. Without one the spill stays in linear memory, which is honest but is the
-        /// residency the spill exists to remove.
-        ///
-        /// The same view rule as the sink's applies to `bytes` and `into`; a falsy return or a
-        /// throw fails the run as `io` naming the working area, never as a broken input or a §4.8
-        /// defect.
-        ///
-        /// Throws an `Error` carrying `code` + `message` on failure; see [`crate::ErrorCode`].
+        /// Throws an `Error` carrying `code` and `message` on failure; see [`crate::ErrorCode`].
         pub fn run(
             &mut self,
             on_progress: Option<js_sys::Function>,
@@ -591,42 +516,32 @@ mod web {
             Ok(summary)
         }
 
-        /// The finished map's lowercase-hex SHA-256 — the same digest the summary carries, and the
-        /// one a `sealed` callback was already told. Empty before a successful `run`.
+        /// The finished map's lowercase-hex SHA-256. Empty before a successful `run`.
         #[wasm_bindgen(getter, js_name = fileSha256)]
         pub fn file_sha256(&self) -> String {
             self.outcome.as_ref().map(|o| o.sha256.clone()).unwrap_or_default()
         }
 
-        /// The finished map's size, readable without moving the bytes — so a caller can plan a
-        /// transfer before it pays for one, and so it stays true after [`Assembler::take_file`] has
-        /// emptied the buffer. `0` before a successful `run`.
+        /// The finished map's size, readable without moving the bytes, and still true after
+        /// [`Assembler::take_file`] empties the buffer. `0` before a successful `run`.
         ///
-        /// A `f64` rather than a `usize`: a sunk map may be larger than this address space, and
-        /// `f64` names every byte of the 64 GiB interior exactly.
+        /// `f64` rather than `usize`: a sunk map can be larger than this address space.
         #[wasm_bindgen(getter, js_name = fileByteLength)]
         pub fn file_byte_length(&self) -> f64 {
             self.outcome.as_ref().map_or(0.0, |o| o.byte_length as f64)
         }
 
         /// Whether the bytes are here to take. `false` after a run with a `sink`, which wrote them
-        /// to the host's own storage and never held them — the file exists, it is simply not this
-        /// module's to hand over.
+        /// to the host's own storage and never held them.
         #[wasm_bindgen(getter, js_name = hasFile)]
         pub fn has_file(&self) -> bool {
             self.outcome.as_ref().is_some_and(|o| o.bytes.is_some()) && !self.taken
         }
 
-        /// Move the map's bytes out to JS, **freeing the wasm-side copy**.
+        /// Move the map's bytes out to JS, freeing the wasm-side copy.
         ///
-        /// A second call **throws** `internal`. It used to return an empty array, which is the worse
-        /// answer: the natural retry shape — take, upload, catch, take again — would then write a
-        /// 0-byte map to a card and report success, while `fileByteLength` still claimed the
-        /// original size. A file that silently becomes empty is a corrupt map; a thrown error is a
-        /// bug the caller can see.
-        ///
-        /// Throws for a run that used a `sink` too, for the same reason: there is nothing here, and
-        /// answering with an empty array would say there was.
+        /// A second call throws `internal`, and so does a run that used a `sink`. An empty array
+        /// would let the natural retry shape write a 0-byte map to a card and report success.
         #[wasm_bindgen(js_name = takeFile)]
         pub fn take_file(&mut self) -> Result<Vec<u8>, JsValue> {
             if self.taken {
@@ -650,9 +565,8 @@ mod web {
             Ok(bytes)
         }
 
-        /// Everything OBCA says a producer SHOULD *report* rather than refuse: §5.7's size warning,
-        /// §4.5.2's dropped duplicate POIs, `OBCM_Spec.md` §8.3's degree-cap truncations.
-        /// An assembly with warnings is still a legal map; ignoring them ships the same bytes.
+        /// What a producer reports rather than refuses: the size warning, dropped duplicate POIs,
+        /// degree-cap truncations. An assembly with warnings is still a legal map.
         pub fn warnings(&self) -> js_sys::Array {
             match &self.outcome {
                 Some(o) => o.warnings.iter().map(|w| JsValue::from_str(w)).collect(),
@@ -660,8 +574,8 @@ mod web {
             }
         }
 
-        /// Drop the input cell buffers. Automatic on `run`; exposed for the caller that abandons an
-        /// assembly it was still feeding.
+        /// Drop the input cell buffers. Automatic on `run`, and exposed for the caller that
+        /// abandons an assembly it was still feeding.
         #[wasm_bindgen(js_name = releaseCells)]
         pub fn release_cells(&mut self) {
             self.cells = Vec::new();
@@ -671,29 +585,21 @@ mod web {
         }
     }
 
-    /// Project the peak memory of assembling a selection, **before** downloading it: pass the
-    /// catalog's own byte totals for the selected cells (`network` band alone, every band, and the
-    /// terrain squares' share) plus the run's residency mode, and get `{engineBytes, inputBytes,
-    /// outputBytes, peakBytes, budgetBytes, ceilingBytes, fits, headroomBytes}`.
+    /// Project the peak memory of assembling a selection, before downloading it. Pass the
+    /// catalog's byte totals for the selected cells plus the run's residency mode, and get
+    /// `{engineBytes, inputBytes, outputBytes, peakBytes, budgetBytes, ceilingBytes, fits,
+    /// headroomBytes}`.
     ///
-    /// The mode is the run's two escapes, and the caller must state what this run will actually
-    /// have: `input_on_disk` only when the cells will stream from OPFS (a writable store with room
-    /// **and** a passing sync-read probe), `output_sunk` only when a `sink` will be wired into
-    /// [`Assembler::run`]. See [`crate::estimate::Residency`].
+    /// The caller must state what this run will actually have: `input_on_disk` only when the cells
+    /// will stream from OPFS, `output_sunk` only when a `sink` will be wired into
+    /// [`Assembler::run`].
     ///
-    /// This complements OBCA §5.7's file-size ledger rather than repeating it: §5.7 prices the
-    /// *output* against the per-file wall, this prices the *run* against wasm32's 4 GiB address
-    /// space. A selection can pass one and fail the other. See [`crate::estimate`] for the model
-    /// and where its constants were measured.
+    /// This prices the run against wasm32's 4 GiB address space, where the file-size ledger prices
+    /// the output against the per-file wall. A selection can pass one and fail the other.
     ///
-    /// The two numbers used to be 4 GiB apiece and it was always a **coincidence**. This budget is
-    /// wasm32's address space and is still 4 GiB; the file wall is `obcm_assemble::FILE_CEILING`,
-    /// the 64 GiB interior an `Offset Scale` of 4 addresses, and it is now sixteen times larger.
-    ///
-    /// `budget_bytes` overrides the number `fits` is judged against. The default is a **desktop**
-    /// judgement ([`crate::PRACTICAL_BUDGET`], 3 GiB); a caller that knows it is on a phone should
-    /// pass what that device will actually grant. Anything non-finite or non-positive falls back to
-    /// the default rather than refusing everything.
+    /// `budget_bytes` overrides the number `fits` is judged against. The default is a desktop
+    /// judgement ([`crate::PRACTICAL_BUDGET`]); a caller on a phone should pass what that device
+    /// will grant. A non-finite or non-positive value falls back to the default.
     #[wasm_bindgen]
     pub fn obc_assemble_estimate(
         network_band_bytes: f64,
@@ -724,23 +630,21 @@ mod web {
         obj
     }
 
-    /// `Reflect::set` on a fresh plain object — which cannot fail (only frozen/exotic targets can),
-    /// so the result is ignored for the same reason it is in [`to_js`].
+    /// `Reflect::set` on a fresh plain object, which cannot fail, so the result is ignored.
     fn set(obj: &js_sys::Object, key: &str, value: &JsValue) {
         let _ = js_sys::Reflect::set(obj, &JsValue::from_str(key), value);
     }
 
-    /// Build the JS exception: a real `Error` instance (so it carries a stack and survives
-    /// `instanceof Error`), renamed, with the stable code hung off it as a plain property.
+    /// Build the JS exception as a real `Error` instance, so it carries a stack and survives
+    /// `instanceof Error`, with the stable code hung off it as a plain property.
     ///
-    /// A `#[wasm_bindgen]` struct would also cross the boundary, but it would not *be* an `Error` —
+    /// A `#[wasm_bindgen]` struct would cross the boundary too, but it would not be an `Error`, so
     /// `catch (e) { e.message }` and every logger that formats errors would come up empty.
     fn to_js(f: AssembleFailure) -> JsValue {
         let err = js_sys::Error::new(&f.message);
         err.set_name("ObcAssembleError");
-        // `Reflect::set` only fails on a frozen/exotic target; `err` is a fresh object, so this
-        // cannot. Ignored rather than unwrapped so a surprise here still throws a usable Error (with
-        // a message) instead of trapping the module.
+        // `Reflect::set` only fails on a frozen target, and `err` is fresh. Ignored rather than
+        // unwrapped, so a surprise here still throws a usable Error instead of trapping the module.
         let _ = js_sys::Reflect::set(&err, &JsValue::from_str("code"), &JsValue::from_str(f.code.as_str()));
         err.into()
     }

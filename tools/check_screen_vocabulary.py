@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 """Fail when a shared screen-drawing helper is defined outside `screen/vocab/`.
 
-`firmware/obc-app/src/screen/mod.rs` is the navigation engine: the `screens!` table, `Caps`, the
-contexts, `Transition`, and the ride-session entry points. The drawing vocabulary every screen
-composes its page from lives one module per concept under `firmware/obc-app/src/screen/vocab/`.
-Nothing enforces that split at compile time — a helper re-grown next to the table, or a screen
-quietly re-declaring one it could have imported, would build fine — so this guard keeps it
-honest: each landmark definition below exists exactly once in `screen/vocab/`, and nowhere else
-under `screen/`, and each retired helper name stays retired.
+`screen/mod.rs` is the navigation engine, and the drawing vocabulary lives one module per concept
+under `screen/vocab/`. Nothing enforces that split at compile time, so each landmark definition
+below must exist once in `screen/vocab/` and nowhere else under `screen/`, and each retired helper
+name must stay retired.
 """
 
 from __future__ import annotations
@@ -42,9 +39,8 @@ LANDMARKS = [
     "elevation_short",
 ]
 
-# Quantity formatters that existed twice, or under a name that said nothing about the quantity.
-# Each one is a shape a screen must import from `vocab/fmt.rs`, never re-declare next to its draw
-# code — that is how two screens came to round the same number differently.
+# Quantity formatters a screen must import from `vocab/fmt.rs` and never re-declare next to its
+# draw code, which is how two screens come to round the same number differently.
 RETIRED_FORMATTERS = [
     "fmt_km",
     "fmt_dist_short",
@@ -69,14 +65,12 @@ RETIRED_FORMATTERS = [
     "write_distance",
 ]
 
-# Constants that tune a shared mechanism. Each was copied verbatim into a second screen before the
-# mechanism was unified; a re-declaration is how that drift comes back.
+# Constants that tune a shared mechanism. A re-declaration is how the drift comes back.
 CONSTANTS = ["SPIN_DPS", "SPIN_FRAME_MS", "PAGE_FLIP_MS"]
 
-# Spellings that only appear when a screen has re-grown a raster the vocabulary owns. `prev_top` is
-# the state of the elevation band's connected top stroke, which `vocab/band.rs` owns as
-# `TopStroke`. The received card's mini sparkline builds its own columns but strokes through that
-# same rule, so no screen under `screen/` keeps this state and the ban needs no exemptions.
+# Spellings that appear only when a screen has re-grown a raster the vocabulary owns. `prev_top` is
+# the elevation band's connected top stroke, which `vocab/band.rs` owns. No screen under `screen/`
+# keeps this state, so the ban needs no exemptions.
 RETIRED = ["prev_top"]
 
 
