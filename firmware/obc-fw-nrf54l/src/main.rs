@@ -52,8 +52,8 @@ mod ls021_flpr;
 // task is spawned onto the same executor.
 mod input_plane;
 mod map_plane;
-mod ride;
 mod panel_power;
+mod ride;
 mod settings;
 // The app-side DFU armer over `obc_dfu::armer`: stage scan, rollback snapshot, the boot-state
 // page write, the status stream, and the ride loop's trial confirm.

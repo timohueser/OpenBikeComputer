@@ -131,7 +131,6 @@ impl ObjectStore {
         self.settings = shared.settings.load().unwrap_or_default();
     }
 
-
     /// The current settings (the config read + the advertised-name source).
     pub fn settings(&self) -> &Settings {
         &self.settings
