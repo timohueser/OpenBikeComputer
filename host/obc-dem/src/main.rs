@@ -36,7 +36,7 @@ fn main() -> ExitCode {
 
 const USAGE: &str = "\
 usage:
-  obc-dem surface <input.obcd> <output.obcd>
+  obc-dem surface <input.obcd> <output.obcd> [--reference <dir>]
   obc-dem fetch --bbox <min_lat,min_lon,max_lat,max_lon> --out <dir>
   obc-dem bake  --sources <dir> --bbox <min_lat,min_lon,max_lat,max_lon>
                 (--out <dir> | --shard <file.obcd>)
@@ -53,21 +53,51 @@ usage:
   cell 2^19 µdeg (1024^2 samples, a 2 MiB block). Both are OBCT header data, so
   a different pairing is a re-bake, not a format change.
 
+  --reference <dir>  a finer DEM, as WGS84 GeoTIFFs, for OBCT section 9 crest
+                     planes. Where it covers the box, summits and ridge crests
+                     the 2^9 lattice loses are restored for Peak View only; the
+                     native heights every other consumer reads never change.
+                     Cells it does not cover come out byte-identical to a run
+                     without it, so national LiDAR may stop at a border.
+
 `fetch` downloads Copernicus GLO-30 tiles from the AWS Open Data mirror; `bake`
 never touches the network.";
 
 fn surface(args: &[String]) -> Result<(), String> {
-    let [input, output] = args else {
-        return Err("surface: expected input.obcd output.obcd".into());
-    };
+    let (mut input, mut output, mut reference) = (None::<String>, None::<String>, None::<PathBuf>);
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--reference" => reference = Some(next_value(&mut it, "--reference")?.into()),
+            other if other.starts_with("--") => return Err(format!("unexpected argument `{other}`\n\n{USAGE}")),
+            other if input.is_none() => input = Some(other.to_string()),
+            other if output.is_none() => output = Some(other.to_string()),
+            other => return Err(format!("unexpected argument `{other}`\n\n{USAGE}")),
+        }
+    }
+    let (input, output) = (input.ok_or("surface: missing input.obcd")?, output.ok_or("surface: missing output.obcd")?);
     if input == output {
         return Err("surface: input and output must differ".into());
     }
-    let bytes = std::fs::read(input).map_err(|e| format!("{input}: {e}"))?;
-    let file = std::fs::File::create(output).map_err(|e| format!("{output}: {e}"))?;
-    obc_dem::surface::convert(&bytes, std::io::BufWriter::new(file))?;
-    let size = std::fs::metadata(output).map_err(|e| e.to_string())?.len();
+    let mosaic = match &reference {
+        Some(dir) => {
+            let mosaic = DemMosaic::open_dir(dir)?;
+            println!("{} reference tile(s) from {}", mosaic.len(), dir.display());
+            Some(mosaic)
+        }
+        None => None,
+    };
+    let bytes = std::fs::read(&input).map_err(|e| format!("{input}: {e}"))?;
+    let file = std::fs::File::create(&output).map_err(|e| format!("{output}: {e}"))?;
+    let sampler = mosaic.as_ref().map(|dem| move |lat: f64, lon: f64| dem.height(lat, lon));
+    let sampler = sampler.as_ref().map(|f| f as &dyn Fn(f64, f64) -> Option<f64>);
+    obc_dem::surface::convert_with_reference(&bytes, std::io::BufWriter::new(file), sampler)?;
+    let size = std::fs::metadata(&output).map_err(|e| e.to_string())?.len();
     println!("{output}: {size} bytes (source {} bytes)", bytes.len());
+    if reference.is_some() {
+        println!("\nThe reference DEM keeps its own attribution, which must travel with this container.");
+        println!("host/obc-dem/reference/README.md holds the wording for each source.");
+    }
     Ok(())
 }
 

@@ -5,9 +5,9 @@ pub(super) static GORNERGRAT: PeakViewProfile<'static> = PeakViewProfile {
     observer_lon: 7785400,
     observer_elevation_m: 3095,
     default_heading_q4: 940,
-    fov_q4: 305,
-    vertical_centre_q4: 34,
-    vertical_span_q4: 225,
+    fov_q4: 240,
+    vertical_centre_q4: 63,
+    vertical_span_q4: 222,
     peaks: &[
         PeakViewPeak {
             source: obc_formats::obcm::SourceId(1),
@@ -232,9 +232,9 @@ pub(super) static SCHEIDEGG: PeakViewProfile<'static> = PeakViewProfile {
     observer_lon: 7961000,
     observer_elevation_m: 2056,
     default_heading_q4: 565,
-    fov_q4: 373,
-    vertical_centre_q4: 76,
-    vertical_span_q4: 276,
+    fov_q4: 240,
+    vertical_centre_q4: 63,
+    vertical_span_q4: 222,
     peaks: &[
         PeakViewPeak {
             source: obc_formats::obcm::SourceId(19),
@@ -399,9 +399,9 @@ pub(super) static GLOCKNER: PeakViewProfile<'static> = PeakViewProfile {
     observer_lon: 12753000,
     observer_elevation_m: 2402,
     default_heading_q4: 1000,
-    fov_q4: 342,
-    vertical_centre_q4: 64,
-    vertical_span_q4: 253,
+    fov_q4: 240,
+    vertical_centre_q4: 63,
+    vertical_span_q4: 222,
     peaks: &[
         PeakViewPeak {
             source: obc_formats::obcm::SourceId(32),

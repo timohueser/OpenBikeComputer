@@ -133,9 +133,9 @@
         "score": 103800
       }
     ],
-    "fov_q4": 305,
-    "vertical_centre_q4": 34,
-    "vertical_span_q4": 225
+    "fov_q4": 240,
+    "vertical_centre_q4": 63,
+    "vertical_span_q4": 222
   },
   {
     "key": "scheidegg",
@@ -236,9 +236,9 @@
         "score": 9239
       }
     ],
-    "fov_q4": 373,
-    "vertical_centre_q4": 76,
-    "vertical_span_q4": 276
+    "fov_q4": 240,
+    "vertical_centre_q4": 63,
+    "vertical_span_q4": 222
   },
   {
     "key": "glockner",
@@ -332,8 +332,8 @@
         "score": 6735
       }
     ],
-    "fov_q4": 342,
-    "vertical_centre_q4": 64,
-    "vertical_span_q4": 253
+    "fov_q4": 240,
+    "vertical_centre_q4": 63,
+    "vertical_span_q4": 222
   }
 ]

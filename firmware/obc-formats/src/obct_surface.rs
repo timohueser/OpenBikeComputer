@@ -5,6 +5,11 @@ use super::cell_samples_log2;
 pub const SURFACE_VERSION: u8 = 3;
 pub const SURFACE_FLAG: u8 = 1;
 pub const CELL_INDEX_FLAG: u8 = 2;
+/// Flag bit 2: the container carries the §9 crest directory and its blocks.
+pub const CREST_FLAG: u8 = 4;
+/// A crest byte is a lift in this many metres (spec §9.2). Unsigned: the panorama surface is
+/// never below the native one, which is what keeps §8.2's maxima sound for a reader that skips it.
+pub const CREST_QUANTUM: i32 = 2;
 pub const MAX_GROUP_BYTES: u32 = 256;
 pub const MAX_LEAF_LOG2: u8 = 2;
 pub const MAX_SURFACE_LEVELS: usize = super::MAX_CELL_TILES_LOG2 as usize + 1;
@@ -61,6 +66,98 @@ impl CellIndexLayout {
             return None;
         }
         Some(offset + (y * cols + x) * 2)
+    }
+}
+
+/// One `uint32` per geographic cell, then the crest blocks those entries point at (spec §9.1).
+/// Absent as a whole when [`CREST_FLAG`] is clear, and per cell when an entry is zero — national
+/// LiDAR coverage stops at borders, so a container routinely carries blocks for some cells only.
+#[derive(Clone, Copy, Debug)]
+pub struct CrestDirectory {
+    pub offset: u32,
+    pub bytes: u32,
+    slots: u32,
+}
+
+impl CrestDirectory {
+    /// `after` is the first free byte: [`CellIndexLayout::end`], or the end of the cell directory
+    /// when flag bit 1 is clear.
+    pub fn new(rows: u16, cols: u16, after: u32) -> Option<Self> {
+        if rows == 0 || cols == 0 {
+            return None;
+        }
+        let slots = u32::from(rows).checked_mul(u32::from(cols))?;
+        let offset = align_block(after)?;
+        let bytes = slots.checked_mul(4)?;
+        align_block(offset.checked_add(bytes)?)?;
+        Some(Self { offset, bytes, slots })
+    }
+
+    /// End of the padded directory, and the first possible crest-block offset.
+    pub fn end(self) -> u32 {
+        align_block(self.offset + self.bytes).expect("validated crest directory")
+    }
+
+    /// Absolute container offset of one entry, in the cell directory's row-major order.
+    pub fn entry_offset(self, slot: u32) -> Option<u32> {
+        (slot < self.slots).then(|| self.offset + slot * 4)
+    }
+}
+
+/// A crest block: one unsigned lift byte per sample, for every [`SurfaceLayout`] level (§9.2).
+/// The renderer changes level with distance, so a lift that stopped at the native level would
+/// step where a ridge crosses that boundary. The quarter-per-level series converges, so carrying
+/// them all costs four thirds of the native plane rather than a multiple of it.
+#[derive(Clone, Copy, Debug)]
+pub struct CrestLayout {
+    surface: SurfaceLayout,
+}
+
+impl CrestLayout {
+    pub fn new(surface: SurfaceLayout) -> Self {
+        Self { surface }
+    }
+
+    pub fn level_count(self) -> usize {
+        self.surface.level_count()
+    }
+
+    /// Offset of a level's plane relative to the crest block, with its byte length.
+    pub fn plane(self, index: usize) -> Option<(u32, u32)> {
+        let mut offset = 0u32;
+        for i in 0..=index {
+            let level = self.surface.level(i)?;
+            let bytes = 1u32.checked_shl(2 * u32::from(level.samples_log2))?;
+            if i == index {
+                return Some((offset, bytes));
+            }
+            offset = align_block(offset.checked_add(bytes)?)?;
+        }
+        None
+    }
+
+    fn checked_block_bytes(self) -> Option<u32> {
+        let (offset, bytes) = self.plane(self.level_count() - 1)?;
+        align_block(offset.checked_add(bytes)?)
+    }
+
+    pub fn block_bytes(self) -> u32 {
+        self.checked_block_bytes().expect("a crest block is smaller than its surface cell")
+    }
+
+    /// Offset of one sample's lift byte relative to the crest block. The plane keeps §2's 16×16
+    /// tile order, at one byte per sample rather than two.
+    pub fn sample_offset(self, index: usize, y: u32, x: u32) -> Option<u32> {
+        let level = self.surface.level(index)?;
+        let side = 1u32.checked_shl(u32::from(level.samples_log2))?;
+        if y >= side || x >= side {
+            return None;
+        }
+        let (plane, _) = self.plane(index)?;
+        let tiles_log2 = level.samples_log2 - super::TILE_LOG2 as u8;
+        let tile = ((y >> super::TILE_LOG2) << tiles_log2) + (x >> super::TILE_LOG2);
+        let within = (y & 15) * super::TILE_SAMPLES as u32 + (x & 15);
+        Some(plane + tile * (super::TILE_SAMPLES * super::TILE_SAMPLES) as u32 + within)
     }
 }
 
@@ -185,6 +282,65 @@ fn align_block(bytes: u32) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_crest_block_carries_every_level_and_costs_four_thirds_of_the_native_plane() {
+        let surface = SurfaceLayout::new(9, 19).unwrap();
+        let crest = CrestLayout::new(surface);
+        assert_eq!(crest.level_count(), 7);
+        let (_, native_plane) = crest.plane(0).unwrap();
+        assert_eq!(native_plane, 1 << 20, "one byte per native sample");
+        let mut end = 0;
+        let mut total = 0;
+        for i in 0..crest.level_count() {
+            let (offset, bytes) = crest.plane(i).unwrap();
+            assert_eq!(offset, (end + 511) & !511, "each plane starts on a block boundary");
+            assert_eq!(bytes, native_plane >> (2 * i), "a level holds a quarter of its predecessor");
+            total += bytes;
+            end = offset + bytes;
+        }
+        assert_eq!(total, 1_398_016);
+        assert!(crest.block_bytes() < surface.cell_bytes());
+        assert_eq!(crest.plane(crest.level_count()), None);
+    }
+
+    #[test]
+    fn crest_samples_keep_the_tile_order_at_one_byte_each() {
+        let crest = CrestLayout::new(SurfaceLayout::new(9, 19).unwrap());
+        let side = 1u32 << 10;
+        assert_eq!(crest.sample_offset(0, 0, 0), Some(0));
+        assert_eq!(crest.sample_offset(0, 0, 1), Some(1));
+        assert_eq!(crest.sample_offset(0, 1, 0), Some(16), "rows advance latitude inside a tile");
+        assert_eq!(crest.sample_offset(0, 0, 16), Some(256), "the next tile east");
+        assert_eq!(crest.sample_offset(0, 16, 0), Some(256 * (side / 16)), "the next tile north");
+        assert_eq!(crest.sample_offset(0, side, 0), None);
+        assert_eq!(crest.sample_offset(0, 0, side), None);
+        // Every sample of every level lands exactly once inside its own plane.
+        let small = CrestLayout::new(SurfaceLayout::new(12, 16).unwrap());
+        let (plane, bytes) = small.plane(0).unwrap();
+        let mut seen = std::collections::BTreeSet::new();
+        for y in 0..1u32 << 4 {
+            for x in 0..1u32 << 4 {
+                let at = small.sample_offset(0, y, x).unwrap();
+                assert!((plane..plane + bytes).contains(&at));
+                assert!(seen.insert(at));
+            }
+        }
+        assert_eq!(seen.len(), 256);
+    }
+
+    #[test]
+    fn the_crest_directory_follows_the_cell_index_and_pads_to_a_block() {
+        let index = CellIndexLayout::new(3, 5, 32).unwrap();
+        let crest = CrestDirectory::new(3, 5, index.end()).unwrap();
+        assert_eq!(crest.offset, index.end());
+        assert_eq!(crest.bytes, 15 * 4);
+        assert_eq!(crest.end(), crest.offset + 512);
+        assert_eq!(crest.entry_offset(0), Some(crest.offset));
+        assert_eq!(crest.entry_offset(14), Some(crest.offset + 56));
+        assert_eq!(crest.entry_offset(15), None, "one entry per cell, no more");
+        assert!(CrestDirectory::new(0, 5, 512).is_none());
+    }
 
     #[test]
     fn derived_postings_do_not_restrict_legal_native_cells() {

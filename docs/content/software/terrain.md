@@ -120,7 +120,10 @@ background. Static dots show that work remains. Turning toward an unfinished vie
 view priority. Completed views reuse the panorama in RAM. In Live, movement above 20 m starts another
 panorama after the current job finishes. Browse keeps its observer position. Leaving Peak View cancels generation and releases the arena.
 
-The normal view spans 90°; steep relief can make it wider. Live follows the compass and leaves the peak ledger empty. Select enters Browse on the visible
+The normal view spans 60° and starts 12° below the horizon. Lower angles show only the ground at
+the wheel. A summit above the window opens the frame upwards and makes the view wider by the same
+ratio, because the horizontal and the vertical scale must stay equal. Equal scales keep the drawn
+shape of a summit correct. Live follows the compass and leaves the peak ledger empty. Select enters Browse on the visible
 peak with the highest elevation angle. A step to the right enters Browse on the leftmost visible
 peak; a step to the left starts on the rightmost. Each further step selects the next visible peak
 in that direction without moving the view. If there is no next peak, the view turns by 15° and
@@ -161,10 +164,8 @@ segments. Missing terrain at the observer or a storage read failure makes the
 view unavailable. Absent geographic cells are skipped without traversing their individual samples.
 
 At the standard posting and cell size, an indexed cell occupies 3,149,824 bytes instead of
-2,097,152 bytes. The assembler enforces a 10% limit on growth of the **complete map**, including
-summit data and alignment. It rejects a map that exceeds this limit before writing it. Terrain
-itself grows about 50.2%, so terrain-heavy sparse selections can exceed the complete-map budget.
-The limit does not guarantee that every selection can include the surface index.
+2,097,152 bytes. Terrain itself grows about 50.2%, so a terrain-heavy selection makes the
+complete map measurably larger.
 
 The normal map bakery writes indexed terrain and named summit records directly. Re-bake all
 published terrain and geometry cells before publication. Catalog generation rejects mixed native

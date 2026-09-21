@@ -1,0 +1,74 @@
+# Ground-truth photographs for Peak View, with the numbers the harness needs to reproduce each
+# frame. The owner took all of them near Engelberg, Switzerland, and gave the positions; the EXIF
+# was stripped in transit, so the lens and the capture time are not recorded in the files.
+#
+# `ground_m` is swissALTI3D (2 m) at the position, which is the best figure available and the one
+# the comparison treats as truth. `heading_deg` and `pitch_deg` come from `tools/sidebyside.py
+# refine`: the landmark bearings give the hint and the photo's own skyline settles the two free
+# numbers against the LiDAR. `lens_mm` is the 35 mm equivalent. `sky_floor` is the one knob in
+# `fit.sky_mask` that has to be set per photo.
+
+[[photo]]
+file = "hahnen.jpg"
+lat = 46.80966
+lon = 8.42112
+ground_m = 1022.6
+subject = "Hahnen (2606 m) from the Brunni side, the first defect the owner reported"
+
+[[photo]]
+file = "rigidalstock-from-brunni.jpg"
+lat = 46.80966
+lon = 8.42112
+ground_m = 1022.6
+subject = "Rigidalstock ridge, same position as hahnen.jpg"
+
+[[photo]]
+file = "urnerstaffel.jpg"
+lat = 46.86881
+lon = 8.44342
+ground_m = 1697.0
+subject = "Urnerstaffel, looking south-east"
+
+[[photo]]
+file = "rigidalstock-below-titlis.jpg"
+lat = 46.85212
+lon = 8.41904
+ground_m = 2564.4
+heading_deg = 191.25
+pitch_deg = -2.84
+lens_mm = 26
+sky_floor = 0.95
+subject = "Below the Rigidalstock summit, south to the Titlis massif and down the Engelberg valley"
+
+[[photo]]
+file = "rigidalstock-below-west.jpg"
+lat = 46.85212
+lon = 8.41904
+ground_m = 2564.4
+heading_deg = 222.25
+pitch_deg = -0.26
+lens_mm = 26
+sky_floor = 0.95
+subject = "Below the summit, west-south-west over Engelberg to the Bernese Alps"
+
+[[photo]]
+file = "rigidalstock-top-south.jpg"
+lat = 46.85227
+lon = 8.41959
+ground_m = 2591.4
+heading_deg = 146.25
+pitch_deg = -2.18
+lens_mm = 26
+sky_floor = 0.95
+subject = "On the summit, south-east along the ridge to the Spannort and Schlossberg glaciers"
+
+[[photo]]
+file = "rigidalstock-top-north.jpg"
+lat = 46.85227
+lon = 8.41959
+ground_m = 2591.4
+heading_deg = 305.75
+pitch_deg = -0.36
+lens_mm = 26
+sky_floor = 0.72
+subject = "On the summit, north-west past the Stanserhorn to the Pilatus and the Mittelland"
