@@ -947,7 +947,7 @@ fn nav_two_node_map() -> (Vec<u8>, usize) {
     let mut bytes = base[..nav_off].to_vec();
 
     // One edge, polyline (lat, lon): (100,200) → (500,500) → (900,800), 1234 m, kind 0x2A.
-    // It is the first record of the first pool chunk ⇒ §8.4 wire id `(0 << 5) | 0`.
+    // It is the first record of the first pool chunk, so the wire id is `(0 << 5) | 0`.
     let edge = pack_nav_edge_record(1234, NAV_TEST_KIND, &[(100, 200), (500, 500), (900, 800)]);
     assert_eq!(edge.len(), NAV_EDGE_FIXED_LEN + 2 * 4, "3-point record: 15-byte head + two delta pairs");
     let edge_id = nav_edge_id(0, 0).expect("chunk 0, ordinal 0");
@@ -1084,7 +1084,7 @@ fn populated_nav_section_round_trips_with_record_layout() {
     // Every padding byte is 0xFF, so the whole tail reads as the degree sentinel.
     assert!(bytes[chunk_off + 60..chunk_off + 512].iter().all(|&b| b == 0xFF), "0xFF padding ends the records");
 
-    // Edge record bytes (§8.4) at pool offset 0: length, pt_count, way_kind, anchor, deltas (23 B).
+    // Edge record bytes at pool offset 0: length, pt_count, way_kind, anchor, deltas.
     let e = &bytes[edge_pool_offset..edge_pool_offset + 23];
     assert_eq!(u32::from_le_bytes(e[0..4].try_into().unwrap()), 1234, "length_m");
     assert_eq!(u16::from_le_bytes(e[4..6].try_into().unwrap()), 3, "pt_count");

@@ -201,7 +201,7 @@ pub struct NavNeighbor {
     pub ascent_m: u16,
 }
 
-/// One exact position along a §8.4 edge polyline. `segment` names the forward `a → b` segment and
+/// One exact position along an edge polyline. `segment` names the forward `a → b` segment and
 /// `fraction` is its 0..=65535 interpolation parameter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NavEdgePosition {
