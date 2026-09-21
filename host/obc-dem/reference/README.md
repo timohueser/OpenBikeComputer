@@ -82,7 +82,7 @@ It needs `rasterio`, `pyproj` and `numpy` (`tools/requirements-bake.txt`, or
 | `ingest <key>` | The source adapter obtains rasters for the box; the shared tail writes tiles. `--input <dir>` takes hand-fetched rasters instead of the service. `--work <dir>` is where fetched rasters are cached, so a second run of the same box downloads nothing. |
 | `index` | Rebuilds `index.json` from the manifests in `sources/`. |
 | `check` | Opens every tile and holds it against the contract — size, dtype, nodata, CRS, the exact transform, the digest — and refuses a tile the index does not name. |
-| `publish` | `rclone sync` of the archive to `<bucket>/reference/v1/`, tiles and manifests first and `index.json` last. Idempotent. |
+| `publish` | `rclone copy` of the archive to `<bucket>/reference/v1/`: tiles and manifests first, then the index, which goes up as the merge of the index already on R2 with this archive's. Additive and idempotent: a publish never deletes. |
 | `mirror` | `rclone copy` of the index plus the tiles one box needs, into a local directory. This is what a bakery run does before `obc-dem bake --reference`. |
 
 ### What the shared tail does
@@ -219,8 +219,15 @@ set -a; . tools/obc.local; set +a
 python3 host/obc-dem/reference/ingest.py publish --archive /tmp/cp4-work/archive
 ```
 
-`publish` is `rclone sync`, so the local archive is the whole truth: a tile that is not in the local
-directory is deleted from R2. Publish from a full archive, not from a box.
+`publish` only ever adds. Every call is `rclone copy`, so an archive of one box cannot delete another
+region's tiles. Because of that, the index it uploads is not the local one: `publish` copies the
+tiles, pulls the `index.json` that is already on R2, merges its `tiles`, `sha256` and `sources`
+entries with this archive's — this archive wins each tile it holds, because its bytes are the ones
+just uploaded — and uploads the merged index last. A publish of the Engelberg box therefore leaves
+every other region visible.
+
+A tile that must leave R2 is a deliberate step by hand: remove the object, then publish a full
+archive again.
 
 A bakery run mirrors before it bakes:
 
