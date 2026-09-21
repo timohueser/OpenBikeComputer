@@ -1,125 +1,95 @@
-//! Emit `$OUT_DIR/memory.x` (the linker's region map) and pass the bin link args
-//! (`--nmagic`, cortex-m-rt's `link.x`, defmt's interned-string section). Re-link
-//! if the source region map changes. Mirrors embassy-nrf's `nrf54l15-app` example build.rs.
+//! Emit `$OUT_DIR/memory.x` (the linker's region map) and pass the bin link args, and build the
+//! FLPR display blob.
 //!
-//! ⚠️ **Never commit a `memory.x` in the crate root.** cortex-m-rt's `link.x` does `INCLUDE
-//! memory.x`, and the linker resolves that from its **CWD (the crate root) first** — ahead of the
-//! `-L $OUT_DIR` search path. So a `memory.x` committed in the crate root would **shadow** the
-//! carved copy this script writes to `$OUT_DIR`, and the FLPR carve would silently never apply (the
-//! M33 stack would start at the full-256 KB top and grow down *through* the FLPR image — issue #165:
-//! it corrupted the blob on the first deep render). The *only* `memory.x` the linker can find is the
-//! carved one we emit here.
+//! Never commit a `memory.x` in the crate root. cortex-m-rt's `link.x` does `INCLUDE memory.x`, and
+//! the linker resolves that from its CWD, the crate root, before the `-L $OUT_DIR` search path. A
+//! `memory.x` in the crate root would shadow the carved copy this script writes, the coprocessor
+//! carve would silently never apply, and the M33 stack would grow down through the FLPR image.
 //!
-//! The LS021 map/ride `main.rs` (the real app on the LS021 panel, issue #165 / #173) runs the FLPR
-//! on every build, so this script always (1) emits a *carved* `memory.x` that reserves the top of
-//! SRAM for the FLPR image + the cross-core handshake, and (2) cross-compiles the freestanding FLPR
-//! C blob with a RISC-V gcc into `$OUT_DIR/flpr.bin` for the M33 binary to `include_bytes!`. See
-//! `firmware/docs/ls021-flpr.md`.
+//! This script emits a carved `memory.x` that reserves the top of SRAM for the coprocessor images
+//! and the cross-core handshake, and cross-compiles the freestanding FLPR C blob with a RISC-V gcc
+//! into `$OUT_DIR/flpr.bin` for the M33 binary to `include_bytes!`.
 //!
-//! It is also the **single source of the M33↔FLPR cross-core contract** (issue #346): every
-//! constant both cores and both linker scripts must agree on — the shared addresses, the layout
-//! magic / status stamps, the command codes, the span cap — lives once in [`contract`] below and is
-//! *emitted* into `$OUT_DIR` as `flpr_contract.rs` (include!'d by `ls021_flpr.rs`),
-//! `flpr_contract.h` (included by `src/flpr/flpr_scan.c`), the carved `memory.x`, and the
-//! FLPR's generated `flpr.ld` — so a one-sided edit is impossible by construction.
+//! It is also the single source of the M33-to-FLPR cross-core contract: every constant both cores
+//! and both linker scripts must agree on lives once in [`contract`] below and is emitted into
+//! `$OUT_DIR` as `flpr_contract.rs`, `flpr_contract.h`, the carved `memory.x` and the FLPR's
+//! generated `flpr.ld`, so a one-sided edit is impossible by construction.
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// **The M33↔FLPR cross-core contract — the single definition site** (issue #346). Everything here
-/// is emitted into the generated Rust/C/linker artifacts; nothing below may be redefined by hand in
-/// `ls021_flpr.rs`, `flpr_scan.c`, or a linker script. The *struct layout* (the 96-byte
-/// control block) stays hand-mirrored in the `.rs`/`.c` (guarded by the twin size asserts + the
-/// boot magic); with the span cap single-sourced here the two sides can no longer disagree on the
-/// array length.
+/// The M33-to-FLPR cross-core contract, and the single definition site. Everything here is emitted
+/// into the generated Rust, C and linker artifacts; nothing below may be redefined by hand. The
+/// 96-byte control block's struct layout stays hand-mirrored in the `.rs` and `.c`, guarded by the
+/// twin size asserts and the boot magic.
 mod contract {
-    /// M33 SRAM base — the fixed origin the carve is measured from.
+    /// M33 SRAM base: the fixed origin the carve is measured from.
     pub const SRAM_BASE: usize = 0x2000_0000;
-    /// Top of the carve — NOT the physical 512 KB top (0x2008_0000): the datasheet reserves the
-    /// last ~704 B for the VPR saved context (0x2007_FD40) + ProtectedRAM/KMU (0x2007_FF00), and
-    /// BLE's CRACEN/KMU path may use ProtectedRAM — so the whole top 4 KB page is left unmapped
-    /// rather than shared with them.
+    /// Top of the carve, which is not the physical SRAM top: the datasheet reserves the last 704 B
+    /// for the VPR saved context and ProtectedRAM/KMU, and the BLE CRACEN path may use
+    /// ProtectedRAM, so the whole top 4 KB page is left unmapped rather than shared with them.
     pub const SRAM_TOP: usize = 0x2007_F000;
     /// FLPR execution base: the M33 copies the display blob here and points `INITPC` at it.
-    /// Everything from here up is the FLPR's (image + stack up to [`CONTROL_ADDR`], then the SHARED
-    /// page). **4 KB** for the image + stack: the scan blob is ~820 B with a shallow leaf-call stack
-    /// (no recursion, no .bss), so 4 KB is still generous — shrunk from 8 KB when the on-glass stack
-    /// margin ran out (#347: the M33's residual main stack is `RAM top − statics`, and the
-    /// deep-render peak needs every KB this carve doesn't).
-    ///
-    /// Since epic #1158 this is **no longer** the bottom of the carved region — the sEMMC carve
-    /// ([`SEMMC_RAM_BASE`]) sits immediately below it, and *that* is where the M33's `RAM` ends.
+    /// Everything from here up is the FLPR's — the image and stack up to [`CONTROL_ADDR`], then the
+    /// SHARED page. 4 KB for the image and stack: the scan blob is about 820 B with a shallow
+    /// leaf-call stack, so 4 KB is generous. The sEMMC carve ([`SEMMC_RAM_BASE`]) sits immediately
+    /// below it, and that is where the M33's `RAM` ends.
     pub const FLPR_RAM_BASE: usize = 0x2007_D000;
 
-    // ── The sEMMC soft-peripheral carve (epic #1158) ────────────────────────────────────────────
-    //
     // The same FLPR (VPR00) is time-multiplexed between two resident images: the display scan blob
-    // above, and Nordic's sEMMC soft peripheral — the SD host controller the card is driven through
-    // since the SPI transport was deleted. Both images stay resident and a mode switch only reboots
-    // the hart at the other `INITPC` (29 µs storage-ward / 138 µs display-ward, measured), so this
-    // carve is **permanent**: storage reads happen mid-render, which rules out funding it from the
-    // #1146 scratch arena.
+    // above, and Nordic's sEMMC soft peripheral, which is the SD host controller. Both images stay
+    // resident and a mode switch only reboots the hart at the other `INITPC`, so this carve is
+    // permanent: storage reads happen mid-render, which rules out funding it from the scratch arena.
     //
-    // The sizes are the image's own (`softperipheral_metadata_t`, decoded in
-    // `vendor/semmc/README.md`) and `assert_semmc_blob_metadata` re-derives them from the vendored
-    // bytes at build time, so a blob update that changes the footprint fails the build.
+    // The sizes are the image's own, and `assert_semmc_blob_metadata` re-derives them from the
+    // vendored bytes at build time, so a blob update that changes the footprint fails the build.
 
-    /// Code region the host reserves + zeroes before copying the image in (metadata
-    /// `fw_code_size` × 16). The vendored image is 13,636 B; the tail is zero-init.
+    /// Code region the host reserves and zeroes before copying the image in. The vendored image is
+    /// 13,636 B; the tail is zero-init.
     pub const SEMMC_CODE_BYTES: usize = 15_360;
-    /// The firmware's own exec/data RAM, immediately above the code region (metadata
-    /// `fw_shared_ram_addr_offset` — the VRI's offset *within* the firmware's RAM region).
+    /// The firmware's own exec/data RAM, immediately above the code region.
     pub const SEMMC_EXEC_DATA_BYTES: usize = 1_536;
-    /// The virtual register interface (metadata `fw_shared_ram_size` × 16) — the 140-byte
-    /// `NRF_SP_EMMC_Type` register block the M33 drives the peripheral through, in a 512 B page.
+    /// The virtual register interface: the 140-byte `NRF_SP_EMMC_Type` register block the M33
+    /// drives the peripheral through, in a 512 B page.
     pub const SEMMC_VRI_BYTES: usize = 512;
     /// VRI offset from the carve base = code + exec/data.
     pub const SEMMC_VRI_OFFSET: usize = SEMMC_CODE_BYTES + SEMMC_EXEC_DATA_BYTES;
     /// Everything the image actually occupies: code + exec/data + VRI.
     pub const SEMMC_IMAGE_BYTES: usize = SEMMC_VRI_OFFSET + SEMMC_VRI_BYTES;
-    // ── The RRAM blob-stage carve (#1158, OBCU_Spec.md §3) ─────────────────────────────────────
-    //
-    // The armer copies the vendored sEMMC image (plus a 16 B CRC-framed header line) into this
-    // flash carve before every arm, so the 32 KB bootloader — which cannot afford to embed the
-    // image, and must not read it out of the app slot it is about to rewrite — can boot the card
-    // through it on the Install/Rollback paths. The length is `obc_dfu::blobstage::STAGE_LEN`,
-    // the one definition the armer, the bootloader and the spec share; the base is BOOT_STATE
-    // minus that length, i.e. the carve is taken off the *top* of the app slot, and nothing else
-    // (app base, BOOT_STATE, SETTINGS) moves. `obc-boot/memory.x` mirrors these by hand — the
-    // existing keep-the-two-maps-in-agreement convention.
+    // The armer copies the vendored sEMMC image, plus a CRC-framed header line, into this flash
+    // carve before every arm, so the 32 KB bootloader — which cannot afford to embed the image, and
+    // must not read it out of the app slot it is about to rewrite — can boot the card through it.
+    // The length is `obc_dfu::blobstage::STAGE_LEN`, the one definition the armer, the bootloader
+    // and the spec share. The carve is taken off the top of the app slot, so nothing else moves.
+    // `obc-boot/memory.x` mirrors these by hand.
 
-    /// The DFU boot-state handoff page (#617) — named here because the stage carve sits against it.
+    /// The DFU boot-state handoff page, named here because the stage carve sits against it.
     pub const BOOT_STATE_BASE: usize = 0x001F_B000;
     /// The blob-stage carve's length — the shared `obc-dfu` constant.
     pub const SEMMC_STAGE_LEN: usize = obc_dfu::blobstage::STAGE_LEN;
     /// The blob-stage carve's base: directly below the BOOT_STATE page.
     pub const SEMMC_STAGE_BASE: usize = BOOT_STATE_BASE - SEMMC_STAGE_LEN;
-    /// The app slot's base — linked at 0x8000, above the 32 KB bootloader (#617).
+    /// The app slot's base, above the 32 KB bootloader.
     pub const APP_SLOT_BASE: usize = 0x0000_8000;
 
-    /// The reserved carve, [`SEMMC_IMAGE_BYTES`] rounded **up to 4 KiB**.
+    /// The reserved carve, [`SEMMC_IMAGE_BYTES`] rounded up to 4 KiB.
     ///
-    /// Why round: the bench placed the image in a `#[repr(C, align(4096))]` static and every
-    /// on-glass number was measured at that alignment, and the carve has to end exactly at
-    /// [`FLPR_RAM_BASE`] (it is the region directly below it) — so with a 4 KiB-aligned base the
-    /// length is necessarily a 4 KiB multiple. 17,408 B rounds to 20,480, i.e. **2,560 B of slack**
-    /// is the price of the alignment. If Nordic ever documents a weaker alignment requirement for
-    /// `INITPC` / the image base, dropping to a 512 B round would hand those bytes back to the M33
-    /// stack; until then this is deliberate, not an oversight.
+    /// The carve has to end exactly at [`FLPR_RAM_BASE`], so with a 4 KiB-aligned base the length is
+    /// necessarily a 4 KiB multiple, and the rounding costs 2,560 B of slack. If Nordic ever
+    /// documents a weaker alignment requirement for the image base, a 512 B round would hand those
+    /// bytes back to the M33 stack.
     pub const SEMMC_CARVE_BYTES: usize = SEMMC_IMAGE_BYTES.div_ceil(4096) * 4096;
     /// sEMMC execution base: the M33 copies the image here and points `INITPC` at it in storage
-    /// mode. This is the bottom of the coprocessor carve and therefore the **top of the M33's
-    /// linked `RAM` region**.
+    /// mode. This is the bottom of the coprocessor carve, and therefore the top of the M33's linked
+    /// `RAM` region.
     pub const SEMMC_RAM_BASE: usize = FLPR_RAM_BASE - SEMMC_CARVE_BYTES;
-    /// The SHARED handshake page base = the control block's address (both cores reach it by this
-    /// hardcoded address, never via a linker) = the top of the FLPR's stack.
+    /// The SHARED handshake page base, which is the control block's address. Both cores reach it by
+    /// this hardcoded address and never through a linker. It is also the top of the FLPR's stack.
     pub const CONTROL_ADDR: usize = 0x2007_E000;
-    /// Dirty-row span-list cap — the `spans[]` length on **both** sides of the contract.
+    /// Dirty-row span-list cap: the `spans[]` length on both sides of the contract.
     pub const MAX_DIRTY_SPANS: usize = 16;
-    /// Control-block layout/version tag — the FLPR refuses to act otherwise. **v2** (issue #347):
-    /// the ping-pong `buf[2]` descriptors left the block; `fb_addr` (the resident framebuffer the
-    /// FLPR scans directly) took their place.
+    /// Control-block layout and version tag. The FLPR refuses to act on any other value.
     pub const LAYOUT_MAGIC: u32 = 0xF1C0_0002;
     /// FLPR boot confirmation stamp.
     pub const FLPR_ALIVE: u32 = 0x0000_A11E;
@@ -129,25 +99,23 @@ mod contract {
     pub const CMD_RUN_FRAME: u32 = 0x0000_0002;
 }
 
-/// The carved `memory.x` for the FLPR builds, generated from [`contract`]: the M33 keeps SRAM below
-/// [`contract::SEMMC_RAM_BASE`] (480 KB on the LM20); above it sit the sEMMC soft-peripheral image
-/// (20 KB, #1158), the FLPR display blob's 4 KB image/stack + the 4 KB SHARED handshake page, and
-/// the top 4 KB stays unmapped (the VPR-context/ProtectedRAM reservation — see
-/// [`contract::SRAM_TOP`]). The M33 reaches both coprocessor regions only by hardcoded address
-/// (`memcpy` + the handshake word / the VRI), never via the linker, so shrinking `RAM` is all
-/// that's needed here. It *also*
-/// carves the RRAM tail (epic #615 S2, #617; #1158 for the stage carve): the app is linked at
-/// **0x8000** — the 32 KB below belong to the `obc-boot` bootloader (`firmware/obc-boot`, its own
-/// static `memory.x` — keep the two maps in agreement) — and the top of RRAM holds, in order, the
-/// `SEMMC_STAGE` blob carve (the armer→bootloader handoff of the sEMMC image, #1158), the named
-/// `BOOT_STATE` page (the obc-dfu handoff page, #617) and the `SETTINGS` page (#193):
+/// The carved `memory.x`, generated from [`contract`]: the M33 keeps the SRAM below
+/// [`contract::SEMMC_RAM_BASE`], and above it sit the sEMMC soft-peripheral image, the FLPR display
+/// blob's image and stack, the SHARED handshake page, and the unmapped top page. The M33 reaches
+/// both coprocessor regions only by hardcoded address, never through the linker, so shrinking `RAM`
+/// is all that is needed.
+///
+/// It also carves the RRAM tail. The app is linked at 0x8000 — the 32 KB below belong to the
+/// `obc-boot` bootloader, which has its own static `memory.x`, so keep the two maps in agreement —
+/// and the top of RRAM holds, in order, the `SEMMC_STAGE` blob carve, the `BOOT_STATE` page and the
+/// `SETTINGS` page:
 ///
 /// ```text
 ///   0x0000_0000  obc-boot           32 KB
 ///   0x0000_8000  app slot         1976 KB   (FLASH below)
-///   0x001F_6000  SEMMC_STAGE        20 KB   (staged sEMMC blob — OBCU_Spec.md §3)
+///   0x001F_6000  SEMMC_STAGE        20 KB
 ///   0x001F_B000  BOOT_STATE page     4 KB
-///   0x001F_C000  SETTINGS page       4 KB   (top of the LM20's 2036 KB RRAM)
+///   0x001F_C000  SETTINGS page       4 KB
 /// ```
 fn flpr_memory_x() -> String {
     use contract::*;
@@ -165,9 +133,9 @@ MEMORY
          FLPR_RAM {FLPR_RAM_BASE:#010X} .. {CONTROL_ADDR:#010X}  ({flpr_kb}K)   FLPR display image + stack (INITPC = {FLPR_RAM_BASE:#010X})
          SHARED   {CONTROL_ADDR:#010X} .. {SRAM_TOP:#010X}  ({shared_kb}K)   cross-core handshake page */
 }}
-/* Base of the carved settings page (#193). */
+/* Base of the carved settings page. */
 PROVIDE(__settings_base = ORIGIN(SETTINGS));
-/* Base of the carved boot-state page (#617) — the armer's write target (S4). */
+/* Base of the carved boot-state page: the armer's write target. */
 PROVIDE(__boot_state_base = ORIGIN(BOOT_STATE));
 /* Base of the blob-stage carve (#1158) — where the armer copies the sEMMC image for the
    bootloader's Install/Rollback card bring-up (OBCU_Spec.md §3). */
@@ -190,19 +158,10 @@ fn main() {
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
 
-    // The FLPR drives the panel on every build (issue #173), so the memory carve + the RISC-V blob
-    // are always emitted below. Cargo sets CARGO_FEATURE_<NAME> for the build script when a feature
-    // is enabled — used for the `ble`/`has_nav` gate below.
+    // Cargo sets CARGO_FEATURE_<NAME> for the build script when a feature is enabled.
 
-    // The map plane compiles into **every** build (issue #270): map + BLE coexist in one image — the
-    // `ble` build streams the map *and* serves the companion link, both driving the shared SD +
-    // settings store, so the old text-only BLE status UI is retired. The budget assert in main.rs
-    // is the binding check.
-
-    // The on-device POI router (epic #116, R4) rides **every** build on the LM20 — `has_nav` was
-    // a 256 KB-L15-DK gate (the NavScratch/NavTileCache statics didn't fit beside the BLE stack
-    // there) and is now unconditionally on; the cfg stays so the `#[cfg(has_nav)]` sites need no
-    // churn, but no build shape turns it off any more.
+    // The on-device POI router rides every build. The cfg stays so the `#[cfg(has_nav)]` sites need
+    // no churn, but no build shape turns it off.
     println!("cargo:rustc-check-cfg=cfg(has_nav)");
     println!("cargo:rustc-cfg=has_nav");
 
@@ -216,17 +175,16 @@ fn main() {
 
     build_flpr_blob(&manifest, &out);
 
-    // `-arg-bins` (not `-arg`) so these only apply to the firmware binary, never to
-    // build scripts / proc-macros built for the host.
+    // `-arg-bins`, not `-arg`, so these apply only to the firmware binary and never to build
+    // scripts or proc-macros built for the host.
     println!("cargo:rustc-link-arg-bins=--nmagic");
     println!("cargo:rustc-link-arg-bins=-Tlink.x"); // cortex-m-rt; pulls in our memory.x
     println!("cargo:rustc-link-arg-bins=-Tdefmt.x"); // defmt's interned-string section
 }
 
-/// Emit `OBC_FW_GIT` — the short commit hash — for the DIS **Firmware Revision** string (A4,
-/// #272: `env!("CARGO_PKG_VERSION") + "+" + OBC_FW_GIT`). Falls back to `unknown` when git isn't
-/// reachable (a source tarball / a checkout with no `.git`), so the string is always well-formed.
-/// Re-runs when `HEAD` moves so a rebuild reflects the current commit.
+/// Emit `OBC_FW_GIT`, the short commit hash, for the device-information Firmware Revision string.
+/// It falls back to `unknown` when git is not reachable, so the string is always well-formed, and
+/// re-runs when `HEAD` moves.
 fn emit_fw_git() {
     let hash = Command::new("git")
         .args(["rev-parse", "--short=7", "HEAD"])
@@ -238,39 +196,33 @@ fn emit_fw_git() {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "unknown".to_owned());
     println!("cargo:rustc-env=OBC_FW_GIT={hash}");
-    // The repo root is two levels up from this crate; HEAD moving = a checkout / new commit.
+    // The repo root is two levels up from this crate.
     println!("cargo:rerun-if-changed=../../.git/HEAD");
 }
 
-/// Emit the [`contract`] into `$OUT_DIR` for both languages: `flpr_contract.rs` (include!'d at the
-/// top of `ls021_flpr.rs`'s memory-map section) and `flpr_contract.h` (included by
-/// `src/flpr/flpr_scan.c` via the `-I $OUT_DIR` the blob compile passes).
+/// Emit the [`contract`] into `$OUT_DIR` for both languages: `flpr_contract.rs`, include!'d by
+/// `ls021_flpr.rs`, and `flpr_contract.h`, included by `src/flpr/flpr_scan.c`.
 fn emit_flpr_contract(out: &Path) {
     use contract::*;
     let rs = format!(
         "\
-// Generated by build.rs from its `contract` module — the single source of the M33↔FLPR
-// cross-core contract (issue #346). DO NOT EDIT; change build.rs instead.
+// Generated by build.rs from its `contract` module, the single source of the M33-to-FLPR
+// cross-core contract. DO NOT EDIT; change build.rs instead.
 const FLPR_RAM_BASE: usize = {FLPR_RAM_BASE:#010X};
 const CONTROL_ADDR: usize = {CONTROL_ADDR:#010X};
-/// The M33's carved RAM size (`SEMMC_RAM_BASE − SRAM_BASE` — the SRAM below the **lowest**
-/// coprocessor carve, which since #1158 is the sEMMC image's, not the display FLPR's) — pub(crate)
-/// for main.rs's RAM-budget assert, so the budget can't fork from the carve.
-pub(crate) const M33_RAM_BYTES: usize = {M33_RAM_BYTES};
 const MAX_DIRTY_SPANS: usize = {MAX_DIRTY_SPANS};
 const LAYOUT_MAGIC: u32 = {LAYOUT_MAGIC:#010X};
 const FLPR_ALIVE: u32 = {FLPR_ALIVE:#010X};
 const FLPR_BADMAG: u32 = {FLPR_BADMAG:#010X};
 const CMD_RUN_FRAME: u32 = {CMD_RUN_FRAME:#010X};
 ",
-        M33_RAM_BYTES = SEMMC_RAM_BASE - SRAM_BASE,
     );
     fs::write(out.join("flpr_contract.rs"), rs).unwrap();
 
     let h = format!(
         "\
-/* Generated by build.rs from its `contract` module — the single source of the M33<->FLPR
- * cross-core contract (issue #346). DO NOT EDIT; change build.rs instead. */
+/* Generated by build.rs from its `contract` module, the single source of the M33<->FLPR
+ * cross-core contract. DO NOT EDIT; change build.rs instead. */
 #ifndef FLPR_CONTRACT_H
 #define FLPR_CONTRACT_H
 #define FLPR_CONTROL_ADDR {CONTROL_ADDR:#010X}u
@@ -290,11 +242,10 @@ const CMD_RUN_FRAME: u32 = {CMD_RUN_FRAME:#010X};
 /// metadata header.
 const SEMMC_BLOB: &str = "vendor/semmc/semmc_firmware_v0.1.1.bin";
 
-/// Emit the sEMMC half of [`contract`] into `$OUT_DIR/semmc_contract.rs` (include!'d by
-/// `src/semmc.rs`), after checking the constants against the vendored image's own metadata header.
-/// Same single-definition discipline as [`emit_flpr_contract`]: the carve, the `memory.x` RAM
-/// shrink, and the driver's VRI base all come from one place, and that place is now *also* pinned
-/// to the blob's declared footprint.
+/// Emit the sEMMC half of [`contract`] into `$OUT_DIR/semmc_contract.rs`, after checking the
+/// constants against the vendored image's own metadata header. The carve, the `memory.x` RAM shrink
+/// and the driver's VRI base all come from one place, and that place is pinned to the blob's
+/// declared footprint.
 fn emit_semmc_contract(manifest: &Path, out: &Path) {
     use contract::*;
     let blob = manifest.join(SEMMC_BLOB);
@@ -302,9 +253,8 @@ fn emit_semmc_contract(manifest: &Path, out: &Path) {
     let bytes =
         fs::read(&blob).unwrap_or_else(|e| panic!("cannot read the vendored sEMMC image {}: {e}", blob.display()));
     assert_semmc_blob_metadata(&bytes);
-    // The armer must be able to stage this exact image for the bootloader (#1158): header line +
-    // blob must fit the RRAM stage carve. The shared runtime validator agreeing is the same check
-    // the arm path will make on the device — a blob update that outgrows the carve fails here.
+    // The armer must be able to stage this exact image for the bootloader: the header line plus the
+    // blob must fit the RRAM stage carve. This is the same check the arm path makes on the device.
     assert!(
         bytes.len() + obc_dfu::blobstage::STAGE_HEADER_LEN <= SEMMC_STAGE_LEN,
         "sEMMC image ({} B) + stage header does not fit the {SEMMC_STAGE_LEN} B SEMMC_STAGE carve",
@@ -318,8 +268,8 @@ fn emit_semmc_contract(manifest: &Path, out: &Path) {
 
     let rs = format!(
         "\
-// Generated by build.rs from its `contract` module — the single source of the sEMMC carve
-// (epic #1158), cross-checked against the vendored image's metadata header. DO NOT EDIT.
+// Generated by build.rs from its `contract` module, cross-checked against the vendored image's
+// metadata header. DO NOT EDIT.
 /// Carve base — the M33 copies the image here and points `VPR00.INITPC` at it.
 const SEMMC_RAM_BASE: usize = {SEMMC_RAM_BASE:#010X};
 /// Code region: reserved + zeroed before the (shorter) image is copied in.
@@ -337,11 +287,10 @@ const SEMMC_CARVE_BYTES: usize = {SEMMC_CARVE_BYTES};
     fs::write(out.join("semmc_contract.rs"), rs).unwrap();
 }
 
-/// Decode the vendored image's `softperipheral_metadata_t` (nrfxlib
-/// `softperipheral/include/softperipheral_meta.h`, header version 2 — the first 32 B of the image)
-/// and assert every field the carve is derived from. A Nordic blob update that grows the code
-/// region, moves the VRI, or switches to a self-booting layout then fails **here**, loudly, instead
-/// of running the FLPR off the end of its carve on glass.
+/// Decode the vendored image's `softperipheral_metadata_t` (header version 2, the first 32 B of the
+/// image) and assert every field the carve is derived from. A Nordic blob update that grows the
+/// code region, moves the VRI, or switches to a self-booting layout then fails here, loudly,
+/// instead of running the FLPR off the end of its carve on glass.
 fn assert_semmc_blob_metadata(bytes: &[u8]) {
     use contract::*;
     assert!(bytes.len() >= 32, "sEMMC image is {} B — too short to carry a metadata header", bytes.len());
@@ -352,14 +301,12 @@ fn assert_semmc_blob_metadata(bytes: &[u8]) {
     assert_eq!((w0 >> 16) & 0xF, 2, "sEMMC image: unexpected metadata header version");
     assert_eq!((w0 >> 20) & 0xFF, 1, "sEMMC image: comm id is not REGIF — this driver speaks the register interface");
     assert_eq!(w0 >> 31, 0, "sEMMC image declares self_boot — the host must NOT copy it to RAM any more");
-    // The platform word, pinned to what the shipped v0.1.1 image actually declares:
-    // `softperiph_id` 0xE33C and platform.raw 0x2208 = series 54 / platform L / **device 8**, which
-    // in the v2 metadata's device enum is `DEVICE_15` — the nRF54L15, not the LM20 (16) this crate
-    // targets. That mismatch is real and deliberate to record: the image lives under nrfxlib's
-    // `nrf54l/` directory, and it is glass-verified working on the LM20 (#1145, 2026-08-05/06), so
-    // the declared device is narrower than the silicon it runs on. Asserting *what is* rather than
-    // what we would like means a future image built for a different part — or a different soft
-    // peripheral entirely — fails here instead of being copied into the carve and run.
+    // The platform word, pinned to what the shipped image declares: `softperiph_id` 0xE33C and
+    // platform.raw 0x2208, which is series 54, platform L, device 8, and the v2 metadata's device
+    // enum reads that as the nRF54L15, not the LM20 this crate targets. The mismatch is real: the
+    // image lives under nrfxlib's `nrf54l/` directory and is glass-verified on the LM20, so the
+    // declared device is narrower than the silicon it runs on. Asserting what is, rather than what
+    // we would like, makes a future image for a different part fail here.
     assert_eq!(w1, 0x2208_E33C, "sEMMC image: unexpected soft-peripheral id / platform word");
     assert!(
         bytes.len() <= SEMMC_CODE_BYTES,
@@ -380,18 +327,17 @@ fn assert_semmc_blob_metadata(bytes: &[u8]) {
     assert_eq!((w6 & 0xFFFF) as usize * 16, SEMMC_VRI_BYTES, "sEMMC image changed the VRI size");
 }
 
-/// The FLPR's linker script, generated from [`contract`] so the image base / stack top can't fork
-/// from the carve (`memory.x`) or the M33's `INITPC`. The FLPR executes from on-chip SRAM at the
-/// *M33-visible* address (no remap); the M33 copies the image to `FLPR_RAM_BASE` and points
-/// `VPR00.INITPC` there, so the entry (`_start`, in `.text.start`) is KEPT first. The stack grows
-/// down from the top of `FLPR_RAM` — the boundary with the SHARED handshake page (`CONTROL_ADDR`),
-/// which is *not* linked on either side (both cores reach it by hardcoded address). Freestanding:
-/// no libgcc/newlib, no init/fini arrays.
+/// The FLPR's linker script, generated from [`contract`] so the image base and stack top cannot
+/// fork from the carve or the M33's `INITPC`. The FLPR executes from on-chip SRAM at the M33-visible
+/// address, with no remap: the M33 copies the image to `FLPR_RAM_BASE` and points `VPR00.INITPC`
+/// there, so the entry `_start` is KEPT first. The stack grows down from the top of `FLPR_RAM`, the
+/// boundary with the SHARED handshake page, which is not linked on either side. Freestanding: no
+/// libgcc or newlib, and no init or fini arrays.
 fn flpr_linker_script() -> String {
     use contract::*;
     format!(
         "\
-/* Generated by build.rs from its `contract` module (issue #346). DO NOT EDIT. */
+/* Generated by build.rs from its `contract` module. DO NOT EDIT. */
 MEMORY
 {{
     FLPR_RAM (rwx) : ORIGIN = {FLPR_RAM_BASE:#010X}, LENGTH = {flpr_kb}K
@@ -430,9 +376,8 @@ SECTIONS
 }
 
 /// Cross-compile `src/flpr/{start.S,flpr_scan.c}` against the generated `flpr.ld` into a raw
-/// `$OUT_DIR/flpr.bin` the M33 embeds. Freestanding (`-nostdlib -nostartfiles`, integer ops only)
-/// so the RV32E core needs no libgcc/newlib multilib — any `rv32emc`-capable GNU gcc works
-/// (`brew install riscv64-elf-gcc`, the xPack `riscv-none-elf-gcc`, etc.). `-I $OUT_DIR` puts the
+/// `$OUT_DIR/flpr.bin` the M33 embeds. Freestanding and integer-only, so the RV32E core needs no
+/// libgcc or newlib multilib and any `rv32emc`-capable GNU gcc works. `-I $OUT_DIR` puts the
 /// generated `flpr_contract.h` on the include path.
 fn build_flpr_blob(manifest: &Path, out: &Path) {
     let flpr_dir = manifest.join("src/flpr");
@@ -473,8 +418,8 @@ fn build_flpr_blob(manifest: &Path, out: &Path) {
     run(Command::new(&objcopy).arg("-O").arg("binary").arg(&elf).arg(&bin), &objcopy);
 }
 
-/// Locate a RISC-V gcc: `RISCV_GCC` override, else the common bare-metal triples. The blob
-/// only needs the compiler's `rv32emc` *code-gen* (no multilib libraries are linked).
+/// Locate a RISC-V gcc: the `RISCV_GCC` override, else the common bare-metal triples. The blob
+/// needs only the compiler's `rv32emc` code generation.
 fn find_riscv_gcc() -> String {
     if let Some(g) = env::var_os("RISCV_GCC") {
         return g.to_string_lossy().into_owned();

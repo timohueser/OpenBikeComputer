@@ -1,171 +1,86 @@
-//! **Flat store bench** — the whole of `obc_storage::flat` on the real card (FS4, #1386).
+//! Flat store bench: the whole of `obc_storage::flat` on the real card.
 //!
 //!     cargo run --release --bin flat_store_bench
 //!
-//! `FLAT_Store_Format.md` states five figures the board is the only place to check: a first boot
-//! "well under a second", a mount "about 100 ms", a commit "about 15–20 ms at a few hundred
-//! entries", a read path that is arithmetic rather than a chain walk, and a resident cost of the
-//! 8 KiB free bitmap plus the ride tail. This binary produces a measured number for each of them
-//! against a card in the slot, in the shape #1375 and #1379 established for OBC2: RTT-driven,
-//! destructive, self-reporting, and never shipped — the app image does not link it.
+//! `FLAT_Store_Format.md` states five figures that only the board can check: a first boot "well
+//! under a second", a mount "about 100 ms", a commit "about 15-20 ms at a few hundred entries", a
+//! read path that is arithmetic rather than a chain walk, and a resident cost of the 8 KiB free
+//! bitmap plus the ride tail. This binary measures each of them against a card in the slot. It is
+//! RTT-driven, self-reporting, and never shipped: the app image does not link it.
 //!
 //! It brings up only the sEMMC card: no display, no app, no BLE, no sensors. The store owns the
-//! **raw card from LBA 0** — there is no partition table and no filesystem — so a run destroys
-//! whatever was on it, including a FAT volume. It refuses to touch a card that already carries a
-//! flat store under someone else's `StoreId`.
+//! raw card from LBA 0, with no partition table and no filesystem, so a run DESTROYS whatever was
+//! on it, a FAT volume included. It refuses to touch a card that already carries a flat store
+//! under someone else's `StoreId`.
 //!
-//! ## What it measures, in the order it runs
+//! Phase one initializes a card and measures the mount, the commit ladder, the ride journal, the
+//! read path and the resident cost, and it leaves a ride recording. Phase two runs after a
+//! `probe-rs reset`: it recovers that ride through the store's own [`FlatStore::recovered_ride`],
+//! finishes it, and compares the published object byte for byte with the bytes the recorder
+//! generated. Every timed figure is reported through [`report_split`], which separates the card's
+//! write half, its read half and the M33's residue.
 //!
-//! Phase one, on a card this bench may destroy:
-//!
-//! 1. **Initialization (§8).** Two superblocks, one gate, sixteen slot headers, one empty catalog.
-//! 2. **Mount (§5.6)**, at four catalog shapes: empty, [`LADDER_MID`] entries, [`LADDER_TOP`]
-//!    entries, and with a ride recording (which is the only shape that reads the journal).
-//! 3. **The commit ladder (§5.5).** One create per step, and at 0, [`LADDER_MID`] and
-//!    [`LADDER_TOP`] entries a create/remove pair repeated [`COMMIT_SAMPLES`] times, so the reported
-//!    figure carries a spread rather than being one observation. Also [`measure_opens`]: what §5.3's
-//!    lookup costs twelve times over, which is a rendered set coming up.
-//! 4. **The ride journal (§7.2).** One checkpoint per ten exact 20-byte ride-v3 samples, timed,
-//!    including more than one turn of the 16-slot ring and a 16 KiB payload-page rollover.
-//! 5. **The read path (§6.1)** into a multi-GiB object: one sequential sweep and three random
-//!    passes, each with the **read amplification** — device blocks read over payload blocks
-//!    required — which is the flat store's version of #1379's read-ratio check.
-//! 6. **Resident cost** as an exact build-time decomposition (see [`RESIDENT`]), plus the stack
-//!    high-water the whole run reached.
-//!
-//! Every timed figure is reported through [`report_split`]: the card's write half, its read half and
-//! the M33's residue, measured *inside* the block-device adapter. A commit is not one number — at 300
-//! entries it writes 79 blocks and reads 156, and attributing the reads to the program cycle is how
-//! the first round of this bench got its headline wrong.
-//!
-//! Phase two, after `probe-rs reset`, on the ride phase one left recording:
-//!
-//! 7. **Recovery (§7.3)**, through the store's own [`FlatStore::recovered_ride`] — not a
-//!    reimplementation of it — followed by more samples, a ride-v3 footer, and §7.2's final commit.
-//!    The finished object is read through the ordinary path and compared byte-for-byte with the
-//!    exact sample/footer bytes the recorder generated. A second short ride gives a side-by-side
-//!    I/O census showing that finish cost is independent of the recorded prefix length.
-//!
-//! ## What it does NOT prove — read this before quoting the results
-//!
-//! A `probe-rs reset` is a **CPU reset, not a power cut**. The card keeps its supply and never sees
-//! the mid-page interruption §1's fault model is about, so nothing here says anything about tearing;
-//! that is FS1's rig (#1383). What the reset loop validates is that a mount reconstructs the catalog
-//! and the ride from the card alone, which is a different claim and the one this bench is for.
-//!
-//! ## Bring-up
+//! A `probe-rs reset` is a CPU reset, not a power cut. The card keeps its supply and never sees
+//! the mid-page interruption the fault model is about, so nothing here says anything about
+//! tearing. What the reset loop proves is that a mount reconstructs the catalog and the ride from
+//! the card alone.
 //!
 //! `semmc.rs` is pulled in by path and has no `crate::` dependencies, so this binary owns its own
 //! host instance and never touches the display mux. The M33 must be at CK128 and `VPR00` bound.
 //!
-//! # Serial map ingest — the board-acceptance path (FS7.5)
+//! # Serial map ingest
 //!
-//! A board session needs a **real packed map** on a real flat store, and on this rig there is no
-//! transport that can put one there: USB was still protocol v2, BLE v4's phone client is not ready,
-//! and the host has no card reader. So this bench carries one, in the only place the
-//! bench-separation rule allows it — here, in a binary the app image never links.
+//! A board session needs a real packed map on a real flat store, and this rig has no transport
+//! that can put one there. So the bench carries one, in a binary the app image never links. It
+//! dies when a host can `PUT` a map over USB v4: the first board session that does that deletes
+//! this mode, `tools/bench_ingest.py`, and their tests.
 //!
-//! **It dies when a host can `PUT` a map over USB v4** — `obc-usb-host` or the builder — because
-//! that is the moment its whole purpose is served; same rule as every other piece of scaffolding
-//! here. FS7.5-c3b (#1420) put the *device* half of that path in the shipping image and the builder's
-//! v4 client beside it, so the trigger is armed rather than fired: nobody has yet sent a map to a
-//! board over v4. The first board session that does is what deletes this mode, `tools/bench_ingest.py`
-//! and their tests — not a later cleanup pass.
+//! It is a mode, not a phase. Before any measurement runs, the bench advertises on the DK's VCOM
+//! UART for [`INGEST_WINDOW_MS`]. If a host answers, it ingests objects until the host stops and
+//! then parks, because the destructive suite would wipe the map that was just written. With
+//! nothing on the other end the window expires and the bench is what it was.
 //!
-//! It is a **mode, not a phase**: before any measurement runs, the bench advertises on the DK's
-//! VCOM UART for [`INGEST_WINDOW_MS`]. If a host answers, it ingests objects until the host stops
-//! and then parks — the destructive measurement suite never runs, which is the point (it would wipe
-//! the map that was just written). With nothing on the other end the window expires and the bench is
-//! exactly what it was.
-//!
-//! ## The wire, in full
-//!
-//! Little-endian, CRC-32/IEEE, four frames. `OBCI` in both directions.
+//! The wire is little-endian, CRC-32/IEEE, `OBCI` in both directions:
 //!
 //! | Frame | Dir | Bytes | Layout |
 //! | :-- | :-- | --: | :-- |
 //! | READY | D→H | 14 | magic, version, `'R'`, chunk size `u32`, CRC over `0..10` |
 //! | GONE | D→H | 14 | magic, version, `'G'`, reason `u32` ([`gone`]), CRC over `0..10` |
-//! | HEADER | H→D | 72 | magic, version, `'H'`, kind (§3.1), name len, payload len `u64`, payload CRC `u32`, 48-byte zero-padded name, CRC over `0..68` |
+//! | HEADER | H→D | 72 | magic, version, `'H'`, kind, name len, payload len `u64`, payload CRC `u32`, 48-byte zero-padded name, CRC over `0..68` |
 //! | STATUS | D→H | 2 | `0x06` ACK / `0x15` NAK, then a reason byte ([`reason`]) |
 //! | RESULT | D→H | 42 | magic, version, `'D'`/`'E'`, reason, pad, `ObjectId` `u64`, `Revision` `u64`, payload len `u64`, device-computed CRC `u32`, entry count `u16`, CRC over `0..38` |
 //!
-//! GONE is READY's shape with another tag, so a host blocked waiting for a READY decodes it with the
-//! code it already has. Every path out of the ingest sends one, including the path into the
-//! destructive measurement run — a host that arrived a second late learns that from the device
-//! rather than from a timeout it has to attribute itself.
+//! GONE is READY's shape with another tag, so a host blocked on a READY decodes it with the code
+//! it already has, and every path out of the ingest sends one. The payload is `ceil(len / chunk)`
+//! chunks, every one full but the last, so no chunk carries a length field. Each chunk is acked
+//! after it is in the reservation, which is what paces the host: this cable has no flow control.
+//! The device compares its own folded CRC with the header's before it commits, which is the last
+//! moment it can still `cancel` and give the extents back.
 //!
-//! READY repeats about twice a second, and **only after the line has been quiet** for one interval,
-//! so an advertisement can never land on top of a host's burst. A STATUS answers the HEADER and
-//! every chunk; a RESULT closes the object out after the last one, so exactly one frame ends a
-//! transfer and the host never has to guess which. The payload is `ceil(len / chunk)` chunks — every
-//! one full but the last, both sides computing the same lengths, so no chunk carries a length field.
-//! Each chunk is acked *after* it is in the reservation, which is what paces the host: there is no
-//! flow control on this cable and none is gambled on. The device folds its own CRC as it goes and
-//! compares it with the header's **before** committing, which is the last moment it still holds the
-//! `Allocation`: a mismatch, a link fault or a refused chunk all `cancel`, so the attempt publishes
-//! nothing, gives its extents back, and the next HEADER is a fresh put with a new `ObjectId`.
+//! # A baud mismatch looks like a QUIET line, not a loud one
 //!
-//! **One failure is not like the others.** A refused *commit* has already taken the `Allocation` by
-//! value, and §5.5 clears the reservation row only once its gate write lands — so those extents stay
-//! held with nothing left to cancel them, and only a remount frees them. `MAX_RESERVATIONS` is 2, so
-//! a session that carried on would wedge on its third object. The device therefore **ends the
-//! session** after a commit refusal and says so on both the wire and RTT: reset, and the mount
-//! reclaims.
+//! The host transmits only after it decodes a valid READY, so at a mismatched baud it decodes
+//! nothing, sends nothing, and stays silent. This device then sees an idle line, ends the window
+//! [`Advertised::Quiet`], and runs phase one, which wipes the card. So if RTT says `nobody
+//! answered` while the host says it is still waiting, suspect `--baud` first: that pair of
+//! symptoms is the only signature there is. [`Advertised::Erroring`] is the other shape, bytes
+//! arriving that this device cannot frame, and the bench refuses to measure after one.
 //!
-//! ## When it refuses to fall through
-//!
-//! A window that ends with the UARTE reporting errors is **not** a quiet line, and the bench will not
-//! run the measurements after one. Something is transmitting bytes this device cannot decode — a
-//! baud mismatch is by far the likeliest — which means a host is probably at the other end believing
-//! it is sending a map, and phase one would destroy the card it is aimed at. The RTT log names the
-//! configured baud so the mismatch is one line to spot.
-//!
-//! ## The board session
+//! # The board session
 //!
 //! ```text
-//! # 1. the host waits for the device (start it first — it blocks on READY)
+//! # start the host first: it blocks on READY
 //! python3 tools/bench_ingest.py --port /dev/cu.usbmodem*133 \
 //!     --file "$(python3 tools/fixtures.py resolve monaco-upahead | awk '/^map/ {print $2}')" \
 //!     --kind map --name monaco.obcm
 //!
-//! # 2. Stop an existing RTT session with Ctrl-C, then flash + run the bench.
-//! cd firmware/obc-fw-nrf54l
-//! cargo run --release --bin flat_store_bench
+//! # then stop any RTT session and flash the bench
+//! cd firmware/obc-fw-nrf54l && cargo run --release --bin flat_store_bench
 //! ```
 //!
-//! The shared board runner verifies each flash with double buffering disabled. From the
-//! repository root, use `obc board download <elf>`, `obc board reset`, and `obc rtt <elf>` to
-//! program and attach separately. The board README describes connection diagnostics.
-//!
-//! `sim-monaco`'s `monaco.obcm` is 718,336 bytes, which at [`INGEST_BAUD`]'s 115,200 8N1 is **about
-//! 63 s** on the wire (10 bits a byte, plus ~2 ms of USB turnaround per 8 KiB chunk). Raising
-//! [`INGEST_BAUD`] to `Baudrate::Baud1m` takes that to about 7.5 s and needs `--baud 1000000` on the
-//! host; 115,200 is the default because it is the rate this rig's VCOM is *proven* at, and a board
-//! session is not the place to find out that a J-Link CDC will not do a megabaud.
-//!
-//! ## A baud mismatch looks like a QUIET line, not a loud one
-//!
-//! Worth stating plainly, because the intuition is wrong and the consequence is a wiped card. The
-//! host transmits **only after it has decoded a valid READY** — so at a mismatched baud it decodes
-//! nothing, sends nothing, and stays silent. This device therefore sees an idle line, ends the
-//! window [`Advertised::Quiet`], sends a GONE the host cannot decode either, and runs phase one.
-//! Nothing errors, and nothing warns.
-//!
-//! **So: if RTT says `nobody answered` while the host says it is still waiting, suspect `--baud`
-//! first.** That pair of symptoms is the signature, and it is the only one there is.
-//!
-//! [`Advertised::Erroring`] covers the other shape — bytes actually arriving that this device cannot
-//! frame — which in practice means a second talker on the tty (a stray `screen` or `minicom` at
-//! another rate), a cable on its way out, or electrical noise. Real, worth refusing the destructive
-//! run over, but *not* the baud case.
-//!
-//! When the host reports no device, the [`TAG_GONE`] frame it printed says which of four unrelated
-//! things happened — the window closed and the destructive run is starting, the session ended, a
-//! commit refusal is holding extents, or the line was erroring. **Only when no GONE arrives at all**
-//! and RTT shows the bench advertising is it the J-Link VCOM wedge, whose one fix is a physical
-//! power-cycle of the DK. (Two cases never reach the wire at all: a mismatched baud, above, and a
-//! foreign `StoreId` — `run` refuses that before the ingest is offered, and only RTT says so.)
+//! At [`INGEST_BAUD`]'s 115,200 8N1 a 718 KiB map takes about 63 s on the wire. Raising
+//! [`INGEST_BAUD`] to `Baudrate::Baud1m` takes that to about 7.5 s and needs `--baud 1000000` on
+//! the host; 115,200 is the rate this rig's VCOM is proven at.
 #![no_std]
 #![no_main]
 
@@ -188,8 +103,8 @@ use obc_storage::flat::{
     PutSource, Revision, RideCheckpoint, RideRecovery, Store as _, StoreId,
 };
 
-// The critical-section impl comes from linking nrf-mpsl (the default `ble` feature set); MPSL is
-// never initialised here, and its impl works from reset — the same arrangement the OBC2 benches use.
+// The critical-section impl comes from linking nrf-mpsl. MPSL is never initialised here, and its
+// implementation works from reset.
 use nrf_mpsl as _;
 use {defmt_rtt as _, panic_probe as _};
 
@@ -205,69 +120,60 @@ unsafe fn VPR00() {
     semmc::on_vpr00_irq();
 }
 
-// The DK's VCOM, for the serial ingest below. `board.rs` owns the same nets for the app's debug
-// link; this binary links none of it, so it binds its own — the same arrangement as `VPR00` above.
+// The DK's VCOM, for the serial ingest below. This binary links none of `board.rs`, which owns
+// the same nets for the app's debug link, so it binds its own interrupt, like `VPR00` above.
 embassy_nrf::bind_interrupts!(struct UartIrqs {
     SERIAL20 => uarte::InterruptHandler<embassy_nrf::peripherals::SERIAL20>;
 });
 
-// ── the format constants this bench needs ───────────────────────────────────────────────────────
-//
-// `obc_storage::flat::layout` is `pub(crate)` — an LBA, an extent and a program page are the store's
-// business and nothing above the seam may name them. A bench sits beside the store rather than above
-// it, so it restates the four it needs from `FLAT_Store_Format.md` §2, §6, §7.1 and §9 rather than
-// widening the seam for instrumentation. Each one is checked against the store's own behaviour by the
-// measurements below: a wrong constant here shows up as an allocation the store refuses or a
-// checkpoint that flushes a different number of pages than this bench predicted.
+// The format constants this bench needs. `obc_storage::flat::layout` is `pub(crate)`, and a bench
+// sits beside the store rather than above it, so it restates the few it needs instead of widening
+// the seam for instrumentation. A wrong constant here shows up as an allocation the store refuses
+// or a checkpoint that flushes a different number of pages than this bench predicted.
 
-/// One extent (§6).
 const EXTENT_SIZE: u64 = 1 << 20;
-/// The extent area begins here, in blocks (§6).
+/// Where the extent area begins, in blocks.
 const EXTENT_AREA: u64 = 4_096;
-/// The media program page, and the granule §7.2 flushes ride payload in (§1, §2).
+/// The media program page, and the granule ride payload is flushed in.
 const PROGRAM_PAGE: usize = 16_384;
 /// Bytes held by the shipping recorder: sixteen in-flight samples plus the fixed final footer.
-/// The store owns the durable 16 KiB tail snapshot and reconstructs it media-to-media; the recorder
-/// lends only the bytes appended since its last successful logical checkpoint.
+/// The store owns the durable 16 KiB tail snapshot and reconstructs it media-to-media; the
+/// recorder lends only the bytes appended since its last successful logical checkpoint.
 const RIDE_DELTA_CAPACITY: usize = 16 * SAMPLE_LEN + FOOTER_LEN;
-/// The resident free bitmap (§9). Named here only to decompose the footprint report.
+/// The resident free bitmap. Named here only to decompose the footprint report.
 const FREE_BITMAP: usize = 8 * 1_024;
 
-// ── the plan figures this bench is checking ─────────────────────────────────────────────────────
-
-/// §5.6: "boot is about 100 ms".
+/// The plan figure: "boot is about 100 ms".
 const PLAN_BOOT_US: u64 = 100_000;
-/// §5.5: "about 15–20 ms at a few hundred entries". The upper end, so a pass is unambiguous.
+/// The plan figure: "about 15-20 ms at a few hundred entries". The upper end, so a pass is clear.
 const PLAN_COMMIT_US: u64 = 20_000;
-/// §8's initialization: "well under 1 s" (#1386).
+/// The plan figure for initialization: "well under 1 s".
 const PLAN_INIT_US: u64 = 1_000_000;
-// ── the bench's own shape ───────────────────────────────────────────────────────────────────────
 
-/// The bench's StoreId. A real initialization draws 128 CSPRNG bits (§4); a fixed value here makes a
+/// The bench's StoreId. A real initialization draws 128 CSPRNG bits; a fixed value here makes a
 /// store from an earlier run recognisable as this bench's rather than a live one's.
 const BENCH_STORE: StoreId =
     StoreId([0xF5, 0x04, 0xF1, 0xA7, 0x5B, 0xE2, 0x11, 0x30, 0x9C, 0x64, 0xAD, 0x77, 0x02, 0xEE, 0x38, 0x41]);
 
-/// Flip to `true` for one flash to wipe a card that carries **another** store's `StoreId`, or to
+/// Flip to `true` for one flash to wipe a card that carries another store's `StoreId`, or to
 /// force phase one over this bench's own recorded ride instead of recovering it.
 const FORCE_REINIT: bool = false;
 /// Explicit build-time maintenance mode. Unlike `FORCE_REINIT`, this stops
 /// immediately after initialization instead of running the destructive corpus.
 const RESET_ONLY: bool = cfg!(feature = "flat-store-reset");
 
-/// Where the commit ladder reports its middle figure — §5.5's "a few hundred entries".
+/// Where the commit ladder reports its middle figure: a few hundred entries.
 const LADDER_MID: u16 = 300;
 /// Where it stops. One commit runs with the catalog holding exactly this many entries.
 const LADDER_TOP: u16 = 1_024;
-/// One ladder object's payload. One block, so the object costs the minimum §6 can allocate — one
-/// extent — and the ladder's card cost is `LADDER_TOP` MiB rather than its payload.
+/// One ladder object's payload. One block, so the object costs the minimum one extent, and the
+/// ladder's card cost is `LADDER_TOP` MiB rather than its payload.
 const LADDER_PAYLOAD: usize = 512;
 
-/// Samples taken at each reported catalog size. Three is enough to show whether a figure is stable;
-/// the same commit moved ten per cent between two runs of the first round of this bench.
+/// Samples taken at each reported catalog size. Three is enough to show whether a figure is
+/// stable; the same commit moved ten per cent between two runs of this bench's first round.
 const COMMIT_SAMPLES: usize = 3;
 
-/// The ride reserve §9 budgets: 32 MiB.
 const RIDE_RESERVE: u64 = 32 * EXTENT_SIZE;
 /// The shipping recorder checkpoints every ten seconds. At the minimum one-second fix cadence that
 /// is ten exact ride-v3 records, not an arbitrary byte-growth surrogate.
@@ -282,9 +188,9 @@ const RIDE_NAME: &str = "fs8-ride";
 const SHORT_NAME: &str = "fs8-short";
 
 /// What phase one's ride adds up to, from the constants it recorded with. Phase two anchors every
-/// expectation here and never on what recovery reported — see the comment in [`phase_two`].
+/// expectation here and never on what recovery reported.
 const RIDE_LEN: u64 = RIDE_CHECKPOINTS * CHECKPOINT_SAMPLE_BYTES as u64;
-/// Payload bytes §7.2 will have flushed into the ride's own extents at that point.
+/// Payload bytes the journal will have flushed into the ride's own extents at that point.
 const RIDE_FLUSHED: u64 = RIDE_LEN / PROGRAM_PAGE as u64 * PROGRAM_PAGE as u64;
 /// And what is left in the newest journal slot: deliberately not zero.
 const RIDE_TAIL_LEN: u32 = (RIDE_LEN - RIDE_FLUSHED) as u32;
@@ -295,19 +201,15 @@ const FINAL_POINTS: u32 = RIDE_POINTS + CONTINUATION_SAMPLES;
 const FINAL_SAMPLE_BYTES: u64 = FINAL_POINTS as u64 * SAMPLE_LEN as u64;
 const FINAL_RIDE_LEN: u64 = FINAL_SAMPLE_BYTES + FOOTER_LEN as u64;
 
-/// The read-path object, if the card has room for it. `FLAT_Store_Format.md` §6.1's addressing is
-/// arithmetic over 1 MiB extents, and only an object spanning thousands of them exercises it.
+/// The read-path object, if the card has room for it. Addressing is arithmetic over 1 MiB
+/// extents, and only an object spanning thousands of them exercises it.
 const BIG_TARGET: u64 = 2 * 1_024 * EXTENT_SIZE;
 /// Below this the bench scales the object down and says so rather than skipping the read path.
 const BIG_MINIMUM: u64 = 64 * EXTENT_SIZE;
 /// One `Store::write` / `Store::read` call's span. 64 blocks per device command.
 const CHUNK: usize = 32 * 1_024;
-/// Random reads per pass.
 const RANDOM_READS: u32 = 512;
-/// One random read's length.
 const RANDOM_LEN: usize = 4_096;
-
-// ── the card ────────────────────────────────────────────────────────────────────────────────────
 
 /// The one sEMMC host. Single-threaded and never re-entered, which is what makes the `&mut` sound.
 static mut SEMMC: Semmc = Semmc::new();
@@ -316,13 +218,13 @@ static mut SEMMC: Semmc = Semmc::new();
 #[repr(C, align(4))]
 struct Aligned<const N: usize>([u8; N]);
 
-/// The misaligned-span bounce. The store hands the card `[u8; 512]` locals and a 4,096-byte pad out
-/// of rodata, neither of which carries an alignment attribute, so every buffer the driver would
-/// refuse comes through here.
+/// The misaligned-span bounce. The store hands the card `[u8; 512]` locals and a 4,096-byte pad
+/// out of rodata, neither of which carries an alignment attribute, so every buffer the driver
+/// would refuse comes through here.
 static mut BOUNCE: Aligned<4_096> = Aligned([0; 4_096]);
 
-/// What the card was asked to do. `reads` and `writes` are calls; the `_blocks` fields are what those
-/// calls covered, which is what makes an amplification ratio computable rather than inferred.
+/// What the card was asked to do. `reads` and `writes` are calls; the `_blocks` fields are what
+/// those calls covered, which is what makes an amplification ratio computable rather than inferred.
 #[derive(Clone, Copy, Default)]
 struct Counters {
     reads: u32,
@@ -345,14 +247,14 @@ fn counters() -> Counters {
     unsafe { *core::ptr::addr_of!(COUNTERS) }
 }
 
-/// Zeroes the counters. Named for what a caller does with it: arm, run one thing, read the counters.
+/// Zeroes the counters. Named for what a caller does with it: arm, run one thing, read them.
 fn arm() {
     // SAFETY: as above.
     unsafe { *core::ptr::addr_of_mut!(COUNTERS) = Counters::default() };
 }
 
-/// The [`BlockDevice`] over the sEMMC host: zero-sized, because all the state is in [`SEMMC`], which
-/// is what lets the counters be read while a [`FlatStore`] owns the device by value.
+/// The [`BlockDevice`] over the sEMMC host. Zero-sized, because all the state is in [`SEMMC`],
+/// which is what lets the counters be read while a [`FlatStore`] owns the device by value.
 #[derive(Clone, Copy)]
 struct Card;
 
@@ -385,8 +287,7 @@ impl BlockDevice for Card {
         let start = Card::lba(lba)?;
         let blocks = (buf.len() / BLOCK_BYTES) as u32;
         // The stopwatch is around the driver call and nothing else. An interval measured above the
-        // seam is the card *and* the M33, and the two have different fixes: attributing one to the
-        // other is exactly the error this bench's first round made.
+        // seam is the card and the M33 together, and the two have different fixes.
         let started = Instant::now();
         let outcome = Card::with(|sd| {
             if (buf.as_ptr() as usize).is_multiple_of(4) {
@@ -440,28 +341,21 @@ impl BlockDevice for Card {
         outcome
     }
 
-    /// **The one thing this transport gets for free.**
+    /// The one thing this transport gets for free.
     ///
-    /// `Semmc::write_blocks` does not return until CMD13 says the card has left `prg` — the program
-    /// cycle *is* its completion signal — so every write is already durable by the time the store's
-    /// next statement runs. There is nothing left for a sync to do, and it costs nothing.
-    ///
-    /// This matters for reading §5.5's commit budget, which calls the three synchronizations the
-    /// dominant term: on this card they are free and the commit's whole cost is its block writes. A
-    /// transport with a write-back cache would move that cost back here, and the numbers this bench
-    /// reports for a commit would move with it. The syncs are counted so the report can say so.
+    /// `Semmc::write_blocks` does not return until CMD13 says the card has left `prg`, so every
+    /// write is already durable by the time the store's next statement runs and a sync has
+    /// nothing left to do. The commit budget calls the three synchronizations the dominant term;
+    /// on this card they are free, so the syncs are counted and the report can say so.
     fn sync(&self) -> Result<(), SemmcError> {
         Card::count(|c| c.syncs += 1);
         Ok(())
     }
 }
 
-// ── the payloads ────────────────────────────────────────────────────────────────────────────────
-
 /// The repeating pattern the read-path object is made of, and the buffer every `Store::write` of it
 /// comes from.
 static mut PATTERN: Aligned<CHUNK> = Aligned([0; CHUNK]);
-/// Where a read comes back for the byte comparison.
 static mut READBACK: Aligned<CHUNK> = Aligned([0; CHUNK]);
 /// The recording caller's bounded append buffer. The durable tail snapshot remains store-owned.
 static mut RIDE_DELTA: Aligned<RIDE_DELTA_CAPACITY> = Aligned([0; RIDE_DELTA_CAPACITY]);
@@ -565,7 +459,7 @@ async fn main(_spawner: Spawner) {
         card.high_speed,
         card.read_clk_hz
     );
-    // §6's extent count, from the card's block count. The store computes the same thing from the
+    // The extent count, from the card's block count. The store computes the same thing from the
     // superblock; a mismatch would show up as an allocation it refuses.
     let extents = ((u64::from(card.blocks).saturating_sub(EXTENT_AREA)) / (EXTENT_SIZE / 512)).min(65_536);
     info!("CARD  §6 extent area: {=u64} extents of 1 MiB ({=u64} MiB addressable)", extents, extents);
@@ -577,10 +471,10 @@ async fn main(_spawner: Spawner) {
 
 /// The whole run, in a plain function rather than in the async `main`.
 ///
-/// Deliberate, and the #1379 lesson restated: an async fn's locals are permanent poll-frame slots,
-/// and this one places stores whose type is ten kilobytes. In an ordinary call the same locals are
-/// scoped to the frame and come back at return — which is what makes the stack figure this bench
-/// prints a measurement of the store's peak rather than of the executor's permanent reservation.
+/// An async fn's locals are permanent poll-frame slots, and this one places stores whose type is
+/// ten kilobytes. In an ordinary call the same locals are scoped to the frame and come back at
+/// return, which is what makes the printed stack figure a measurement of the store's peak rather
+/// than of the executor's permanent reservation.
 #[inline(never)]
 fn run(p: embassy_nrf::Peripherals) {
     report_footprint();
@@ -600,8 +494,8 @@ fn run(p: embassy_nrf::Peripherals) {
         return;
     }
     // Before anything destructive: offer the ingest. A session that took it does not get the
-    // measurement run afterwards — phase one would allocate the whole card out from under the object
-    // it just accepted, which is a card wiped between "map ingested" and the rider seeing it.
+    // measurement run afterwards, which would allocate the whole card out from under the object it
+    // just accepted.
     match ingest_offer(p, &boot) {
         Offer::Ingested => {
             info!("INGEST session over — the measurement run is deliberately SKIPPED so the ingested objects survive");
@@ -625,8 +519,6 @@ fn run(p: embassy_nrf::Peripherals) {
     phase_one();
 }
 
-// ── phase one ───────────────────────────────────────────────────────────────────────────────────
-
 fn phase_one() {
     info!("PHASE one: initialize, then measure boot, commit, ride and read on a card built from scratch");
 
@@ -634,8 +526,8 @@ fn phase_one() {
 
     measure_boot("BOOT  empty catalog", Some(PLAN_BOOT_US));
 
-    // How much of the card the three phases may take. The ladder is one extent per object; the ride
-    // takes §9's 32 MiB reserve; the read-path object takes whatever is left, up to 2 GiB.
+    // How much of the card the three phases may take. The ladder is one extent per object, the
+    // ride takes the 32 MiB reserve, and the read-path object takes what is left, up to 2 GiB.
     let ladder_top = if u32::from(LADDER_TOP) + 64 <= extents / 2 {
         LADDER_TOP
     } else {
@@ -664,12 +556,13 @@ fn phase_one() {
     info!("PHASE one done. `probe-rs reset` to run phase two: the ride recovers from the card alone.");
 }
 
-/// §8: two superblocks invalidated, gate B invalidated, sixteen slot headers invalidated, one empty
-/// catalog body, its gate, then both superblocks — five synchronization points, and the mount that
-/// follows is part of what `initialize` returns. Hands back the free extents the card came up with.
+/// Initialization: two superblocks invalidated, gate B invalidated, sixteen slot headers
+/// invalidated, one empty catalog body, its gate, then both superblocks, which is five
+/// synchronization points. The mount that follows is part of what this returns, along with the
+/// free extents the card came up with.
 ///
-/// It is a function of its own so the store it builds goes out of scope with it: a boot figure has to
-/// be a mount's own cost, and a store left standing here would sit on the stack for the whole run.
+/// It is a function of its own so the store it builds goes out of scope with it: a boot figure has
+/// to be a mount's own cost, and a store left standing here would sit on the stack for the run.
 #[inline(never)]
 fn initialize() -> Option<u32> {
     arm();
@@ -697,8 +590,6 @@ fn initialize() -> Option<u32> {
     Some(store.free_extents())
 }
 
-// ── 2 and 3: mount, and the commit ladder ───────────────────────────────────────────────────────
-
 /// What one mount found, and what it cost.
 struct Boot {
     mode: Mode,
@@ -710,15 +601,15 @@ struct Boot {
     recovered: Option<RideRecovery>,
 }
 
-/// One mount, timed, with the entry the journal half of §5.6 keys on.
+/// One mount, timed, with the entry the journal half of the mount keys on.
 ///
-/// The store is dropped before this returns: a boot figure is what a mount costs, and holding one of
-/// these open would put a second ten-kilobyte store beside whichever one the caller already has.
+/// The store is dropped before this returns: a boot figure is what a mount costs, and holding one
+/// open would put a second ten-kilobyte store beside whichever one the caller already has.
 ///
-/// `plan` is a parameter and a mount that recovered a ride is reported against **no** budget,
-/// because §5.6's ~100 ms is scoped to its own sentence: "on a card with no ride in progress a mount
-/// reads at most 3 blocks plus the live catalog prefix". A mount that reads sixteen slot headers and
-/// CRCs a 16 KiB slot is doing more than that figure covers, and the spec states no figure for it.
+/// `plan` is a parameter because a mount that recovered a ride is reported against no budget. The
+/// ~100 ms figure is scoped to a card with no ride in progress, where a mount reads at most three
+/// blocks plus the live catalog prefix. A mount that reads sixteen slot headers and CRCs a 16 KiB
+/// slot does more than that figure covers, and the format states no figure for it.
 #[inline(never)]
 fn measure_boot(label: &str, plan: Option<u64>) -> Boot {
     arm();
@@ -776,11 +667,11 @@ fn measure_boot(label: &str, plan: Option<u64>) -> Boot {
     boot
 }
 
-/// §5.5's commit, from an empty catalog to [`LADDER_TOP`] entries, one create per step.
+/// The commit ladder, from an empty catalog to [`LADDER_TOP`] entries, one create per step.
 ///
-/// Every step is `allocate` → `write` → `commit`, which is the whole publication path; only the
-/// commit is on the clock, because it is the one §5.5 puts a figure on. Returns the free extents
-/// left behind.
+/// Every step is `allocate`, `write`, `commit`, which is the whole publication path. Only the
+/// commit is on the clock, because it is the step the format puts a figure on. Returns the free
+/// extents left behind.
 fn ladder(top: u16) -> u32 {
     let store = FlatStore::mount(Card);
     let mut total = 0u64;
@@ -789,9 +680,9 @@ fn ladder(top: u16) -> u32 {
     let mut publish_total = 0u64;
     for _ in 0..=top {
         let entries = store.entry_count();
-        // At a reported catalog size the figure is **sampled**, not taken once: the same commit moved
-        // ten per cent between two runs of this bench, so one observation is an anecdote rather than
-        // a cost. The ladder's own commit below still feeds the aggregate.
+        // At a reported catalog size the figure is sampled, not taken once: the same commit moved
+        // ten per cent between two runs of this bench, so one observation is an anecdote rather
+        // than a cost. The ladder's own commit below still feeds the aggregate.
         if entries == 0 || entries == LADDER_MID || entries == top {
             sample_commits(&store, entries);
             if entries > 0 {
@@ -825,14 +716,14 @@ fn ladder(top: u16) -> u32 {
     store.free_extents()
 }
 
-/// One timed commit: what it cost, what the card did, and **which catalog copy it landed on**.
+/// One timed commit: what it cost, what the card did, and which catalog copy it landed on.
 struct Commit {
     elapsed: u64,
     counted: Counters,
-    /// §5.5 writes the copy that is not being served and then serves it, so the copies strictly
-    /// alternate from initialization — which serves copy 0 at sequence 1. A commit that produced
-    /// sequence `s` therefore wrote copy `1 - (s % 2)`, and that survives any number of mounts in
-    /// between because a mount serves whichever copy carries the greater sequence.
+    /// A commit writes the copy that is not being served and then serves it, so the copies
+    /// strictly alternate from initialization, which serves copy 0 at sequence 1. A commit that
+    /// produced sequence `s` therefore wrote copy `1 - (s % 2)`, and that survives any number of
+    /// mounts in between, because a mount serves whichever copy carries the greater sequence.
     copy: usize,
     id: ObjectId,
 }
@@ -842,8 +733,7 @@ fn copy_of(sequence: u64) -> usize {
     1 - (sequence % 2) as usize
 }
 
-/// One create: allocate, write the payload, commit. Only the commit is on the clock, because it is
-/// the step §5.5 puts a figure on.
+/// One create: allocate, write the payload, commit. Only the commit is on the clock.
 fn create_once(store: &FlatStore<Card>) -> Option<Commit> {
     let entries = store.entry_count();
     let payload = [0x5Au8; LADDER_PAYLOAD];
@@ -902,21 +792,14 @@ fn remove_once(store: &FlatStore<Card>, id: ObjectId) -> Option<Commit> {
     Some(Commit { elapsed, counted, copy: copy_of(sequence), id })
 }
 
-/// §5.5's figure at one catalog size, sampled [`COMMIT_SAMPLES`] times **per catalog copy**.
+/// The commit figure at one catalog size, sampled [`COMMIT_SAMPLES`] times per catalog copy.
 ///
-/// The shape of this is the whole point, and the first version of it was confounded. §5.5 alternates
-/// copies, so a create-then-remove sample sends every create to one copy and every remove to the
-/// other: the 22% gap that appeared between the two was a *copy* difference wearing a mutation-kind
-/// costume. Two creates in a row fix it — they land on the two copies with everything else equal —
-/// and the two removals that undo them do the same, so each sample yields four figures:
-///
-/// | | copy A | copy B |
-/// | create | first  | second |
-/// | remove | third  | fourth |
-///
-/// Four commits per sample keeps the parity, so every sample repeats the same assignment. The entry
-/// count moves by one between the paired commits, which changes no block count at any size this
-/// bench reports (`1 + ceil(n/4) + 2` is flat across `n` and `n+1` at 0, 300 and 1024).
+/// The shape of this is the whole point. Commits alternate copies, so a create-then-remove sample
+/// sends every create to one copy and every remove to the other, and the gap that appears between
+/// the two is a copy difference wearing a mutation-kind costume. Two creates in a row land on the
+/// two copies with everything else equal, and the two removals that undo them do the same, so each
+/// sample yields four figures and every sample repeats the same assignment. The entry count moves
+/// by one between the paired commits, which changes no block count at any size this bench reports.
 fn sample_commits(store: &FlatStore<Card>, entries: u16) {
     let mut creates = [[0u64; COMMIT_SAMPLES]; 2];
     let mut removes = [[0u64; COMMIT_SAMPLES]; 2];
@@ -934,8 +817,8 @@ fn sample_commits(store: &FlatStore<Card>, entries: u16) {
             removes[commit.copy][index] = commit.elapsed;
         }
     }
-    // §5.5: `ceil(n/4) + 3` block writes — the body's `1 + ceil(n/4)` blocks (header included), the
-    // gate invalidation and the gate itself — and three synchronizations.
+    // The format's commit: `ceil(n/4) + 3` block writes, which are the body's `1 + ceil(n/4)`
+    // blocks (header included), the gate invalidation and the gate itself, plus three syncs.
     let predicted = 1 + (u32::from(entries) + 1).div_ceil(4) + 2;
     let mut cross = 0u64;
     for copy in 0..2 {
@@ -952,7 +835,7 @@ fn sample_commits(store: &FlatStore<Card>, entries: u16) {
             entries, copy, mean, median, least, greatest
         );
     }
-    // The figure a device actually pays: §5.5 alternates, so consecutive commits pay one copy each.
+    // The figure a device actually pays: commits alternate, so consecutive ones pay one copy each.
     let cross = cross / 2;
     info!(
         "COMMIT at {=u16} entries: CROSS-COPY create mean {=u64} us — this is the figure to quote, because §5.5 alternates and no caller gets to pick the cheaper copy",
@@ -965,12 +848,12 @@ fn sample_commits(store: &FlatStore<Card>, entries: u16) {
     verdict("COMMIT", cross, PLAN_COMMIT_US);
 }
 
-/// What `open` costs — §5.3's binary search over the live prefix, then the hold row.
+/// What `open` costs: a binary search over the live prefix, then the hold row.
 ///
 /// Twelve of them, because [`MAX_OPEN_OBJECTS`] is sized for the eleven map shards a rendered set
-/// mounts plus one transfer: this is the figure a renderer pays to bring a set up. The same search is
-/// `find`, which every commit's `resolve` runs once per mutation — so it is also half of why the
-/// commit figures above carry the read time they do.
+/// mounts plus one transfer, so this is the figure a renderer pays to bring a set up. The same
+/// search is `find`, which every commit's `resolve` runs once per mutation, so it is also half of
+/// why the commit figures above carry the read time they do.
 fn measure_opens(store: &FlatStore<Card>, entries: u16) {
     let mut ids = [ObjectId::NONE; MAX_OPEN_OBJECTS];
     let step = (entries as usize / MAX_OPEN_OBJECTS).max(1);
@@ -1008,11 +891,8 @@ fn measure_opens(store: &FlatStore<Card>, entries: u16) {
     }
 }
 
-// ── 4: the ride journal ─────────────────────────────────────────────────────────────────────────
-
-/// §7.2's write half: start a ride, then one checkpoint per ten encoded samples, timed.
-///
-/// The ride is left **recording** on purpose. It is what phase two recovers.
+/// The ride journal's write half: start a ride, then one checkpoint per ten encoded samples,
+/// timed. The ride is left recording on purpose, because it is what phase two recovers.
 fn ride() {
     let store = FlatStore::mount(Card);
     let id = store.next_object_id();
@@ -1024,8 +904,8 @@ fn ride() {
             return;
         }
     };
-    // §5.3: a `RECORDING` entry holds slack — it owns more extents than its payload needs — which is
-    // the one thing that lets a ride grow without a commit per page.
+    // A `RECORDING` entry holds slack: it owns more extents than its payload needs, which is the
+    // one thing that lets a ride grow without a commit per page.
     let meta = EntryMeta {
         added_at_utc: 0,
         id,
@@ -1141,9 +1021,7 @@ fn ride() {
     );
 }
 
-// ── 5: the read path ────────────────────────────────────────────────────────────────────────────
-
-/// §6.1 over a multi-GiB object: write it, sweep it, then hit it at random.
+/// The read path over a multi-GiB object: write it, sweep it, then hit it at random.
 fn read_path(bytes: u64) {
     let store = FlatStore::mount(Card);
     // SAFETY: sole borrows of the two payload slots.
@@ -1166,10 +1044,9 @@ fn read_path(bytes: u64) {
         }
     };
 
-    // The write, with the CRC fold on its own clock. The board enables obc-crc's slicing-by-8
-    // implementation so this is also the acceptance measurement for the upload pipeline's CRC
-    // worker; compact consumers such as the bootloader retain the single-table implementation.
-    // rolling it into the write's rate would report the M33 rather than the card.
+    // The write, with the CRC fold on its own clock: rolling it into the write's rate would report
+    // the M33 rather than the card. The board enables obc-crc's slicing-by-8 implementation, so
+    // this is also the acceptance measurement for the upload pipeline's CRC worker.
     arm();
     let mut digest = Crc32::new();
     let mut written = 0u64;
@@ -1329,16 +1206,13 @@ fn random_pass(store: &FlatStore<Card>, handle: &Handle, bytes: u64, skew: u64, 
     amplification("READ  random", &counted, blocks, elapsed);
 }
 
-/// #1379's read-ratio check, in the shape a flat store makes it mean something.
+/// The read-ratio check, in the shape a flat store makes it mean something.
 ///
-/// OBC2's figure was **device reads per block**, and 1.00 was the diagnosis: the FAT layer's cache
-/// could never hand the card more than one block, so a scan paid a command per 512 bytes. Here that
-/// number is a batching figure and nothing more — the store issues one command per contiguous run,
-/// so it is well under 1.00 by design and says only how long the runs were.
-///
-/// The claim §6.1 actually makes is the other ratio: **blocks read per block the payload occupies**.
-/// There is no chain to walk and no indirection block to fetch, so a read that does not amplify is
-/// exactly 1.00, and anything above it would be the store reading something it did not need.
+/// Device reads per block is only a batching figure here: the store issues one command per
+/// contiguous run, so it is well under 1.00 by design and says only how long the runs were. The
+/// claim worth checking is the other ratio, blocks read per block the payload occupies. There is
+/// no chain to walk and no indirection block to fetch, so a read that does not amplify is exactly
+/// 1.00, and anything above it is the store reading something it did not need.
 fn amplification(label: &str, counted: &Counters, required: u64, elapsed: u64) {
     let ratio = u64::from(counted.read_blocks) * 100 / required.max(1);
     info!(
@@ -1361,12 +1235,10 @@ fn amplification(label: &str, counted: &Counters, required: u64, elapsed: u64) {
     }
 }
 
-// ── 6: resident cost ────────────────────────────────────────────────────────────────────────────
-
-/// The resident total used by this bench. §9 normatively fixes the 8 KiB free bitmap and each
-/// *card-resident* slot's 16 KiB payload, but it does not state a 42 KiB combined RAM budget. The
-/// caller addend below is therefore the shipping recorder's bounded append buffer, reported as
-/// a fact rather than compared with a plan figure that the format does not contain.
+/// The resident total used by this bench. The format fixes the 8 KiB free bitmap and each
+/// card-resident slot's 16 KiB payload, but states no combined RAM budget, so the caller addend
+/// below, the shipping recorder's bounded append buffer, is reported as a fact rather than against
+/// a plan figure that does not exist.
 const RESIDENT: usize = core::mem::size_of::<FlatStore<Card>>() + RIDE_DELTA_CAPACITY;
 
 const _: () = assert!(core::mem::size_of::<FlatStore<Card>>() > FREE_BITMAP);
@@ -1390,8 +1262,6 @@ fn report_footprint() {
     );
 }
 
-// ── 7: phase two, the recovery half ─────────────────────────────────────────────────────────────
-
 /// Everything recorded before reset must come back from the card alone. Recording then continues,
 /// appends the footer as final bytes, and one commit publishes that exact byte string.
 fn phase_two(boot: &Boot) {
@@ -1402,11 +1272,10 @@ fn phase_two(boot: &Boot) {
         return;
     };
 
-    // **Every expectation below is anchored on the constants phase one wrote with, not on anything
-    // the store just said.** Deriving the expected length from `checkpoint_sequence` — as the first
-    // round of this bench did — makes the check self-fulfilling: a store that silently selected the
-    // prior logical sequence would hand back a shorter ride and a CRC over that shorter ride, and
-    // both would "match". §7.4's loss cap is exactly the claim that would go unchecked.
+    // Every expectation below is anchored on the constants phase one wrote with, not on anything
+    // the store just said. Deriving the expected length from `checkpoint_sequence` makes the check
+    // self-fulfilling: a store that silently selected the prior logical sequence would hand back a
+    // shorter ride and a CRC over that shorter ride, and both would match.
     let mut digest = Crc32::new();
     for offset in 0..RIDE_LEN {
         digest.update(&[sample_byte(offset)]);
@@ -1496,8 +1365,8 @@ fn ride_end(entry: &EntryMeta, recovered: RideRecovery) -> Option<FinishCensus> 
     let readback = unsafe { &mut (*core::ptr::addr_of_mut!(READBACK)).0 };
 
     // Continue from the recovered checksum rather than re-hashing the prefix. This is the board's
-    // reset path: durable tail bytes remain store-owned, and only new sample/footer bytes occupy the
-    // recorder's bounded append buffer before the final checkpoint.
+    // reset path: durable tail bytes stay store-owned, and only new sample and footer bytes occupy
+    // the recorder's bounded append buffer before the final checkpoint.
     let mut digest = Crc32::from_checksum(recovered.payload_crc);
     let mut held = 0;
     for point in RIDE_POINTS..FINAL_POINTS {
@@ -1565,7 +1434,7 @@ fn ride_end(entry: &EntryMeta, recovered: RideRecovery) -> Option<FinishCensus> 
     );
     report_split("FINISH long", census.elapsed, &census.counters);
 
-    // This is the GET claim: open the now-ordinary object and compare every served byte to the same
+    // The GET claim: open the now-ordinary object and compare every served byte with the same
     // production encoders used above. There is no finish-time conversion oracle in the middle.
     match store.open(entry.id, None) {
         Ok(handle) => {
@@ -1622,7 +1491,7 @@ fn ride_end(entry: &EntryMeta, recovered: RideRecovery) -> Option<FinishCensus> 
     }
 
     // The read-path object phase one published, spot-checked rather than swept: the sweep is phase
-    // one's measurement, and what phase two is asking is only whether it survived the reset.
+    // one's measurement, and phase two asks only whether it survived the reset.
     let big = store.entries().find(|entry| entry.kind == ObjectKind::MapShard);
     if let Some(meta) = big {
         spot_check(&store, &meta);
@@ -1723,8 +1592,8 @@ fn report_finish_census(short: FinishCensus, long: FinishCensus) {
         long.counters.write_blocks,
         long.counters.syncs
     );
-    // One additional catalog row can move a streamed catalog prefix across one block boundary; no
-    // operation is allowed to scale with the ride's recorded prefix. Both final tails fit one block.
+    // One additional catalog row can move a streamed catalog prefix across one block boundary. No
+    // operation may scale with the ride's recorded prefix, and both final tails fit one block.
     let bounded = short.counters.read_blocks.abs_diff(long.counters.read_blocks) <= 1
         && short.counters.write_blocks.abs_diff(long.counters.write_blocks) <= 1
         && short.counters.syncs == long.counters.syncs;
@@ -1771,10 +1640,8 @@ fn spot_check(store: &FlatStore<Card>, meta: &EntryMeta) {
     store.close(handle);
 }
 
-// ── the serial map ingest ───────────────────────────────────────────────────────────────────────
-//
-// The wire is documented in full at the top of this file. What follows is only what the code needs
-// said beside it.
+// The serial map ingest. The wire is documented in full at the top of this file; what follows is
+// only what the code needs said beside it.
 
 /// The magic every framed message carries, in both directions.
 const INGEST_MAGIC: [u8; 4] = *b"OBCI";
@@ -1785,23 +1652,23 @@ const TAG_READY: u8 = b'R';
 const TAG_HEADER: u8 = b'H';
 const TAG_DONE: u8 = b'D';
 const TAG_FAIL: u8 = b'E';
-/// The device is about to stop listening. Same 14-byte shape as READY, so a host waiting for one
-/// reads it with the code it already has — and finds out *why* nothing is coming instead of
-/// timing out into a diagnosis it has to guess at.
+/// The device is about to stop listening. The same 14-byte shape as READY, so a host waiting for
+/// one reads it with the code it already has, and learns why nothing is coming instead of timing
+/// out into a diagnosis it has to guess at.
 const TAG_GONE: u8 = b'G';
 
 /// Why the device stopped listening — the payload of a [`TAG_GONE`] frame.
 mod gone {
-    /// The advertising window closed and the **destructive measurement run is starting**. A host
-    /// that reads this has seconds, not minutes, to stop the operator.
+    /// The advertising window closed and the destructive measurement run is starting. A host that
+    /// reads this has seconds, not minutes, to stop the operator.
     pub const WINDOW_CLOSED: u32 = 1;
     /// The session ended because the host went quiet after its last object. Nothing is wrong.
     pub const SESSION_OVER: u32 = 2;
     /// A commit was refused and its extents are held until a remount. Reset before retrying.
     pub const RESERVATION_HELD: u32 = 3;
     /// Bytes arrived that the device could not frame, so the measurements were refused. Something
-    /// else is on the tty. (A host at the wrong baud is *not* this — it would be silent, and it
-    /// could not decode this frame either.)
+    /// else is on the tty. A host at the wrong baud is not this: it would be silent, and it could
+    /// not decode this frame either.
     pub const LINE_ERRORING: u32 = 4;
 }
 /// The two status bytes, ASCII ACK and NAK.
@@ -1812,40 +1679,38 @@ const STATUS_NAK: u8 = 0x15;
 const HEADER_BYTES: usize = 72;
 const RESULT_BYTES: usize = 42;
 const READY_BYTES: usize = 14;
-/// `DisplayName`'s capacity (§5.3), restated here rather than re-exported: a bench states the
-/// format constants it needs beside itself, and `DisplayName::new` is still what enforces it.
+/// `DisplayName`'s capacity, restated here rather than re-exported. `DisplayName::new` is still
+/// what enforces it.
 const INGEST_NAME_CAP: usize = 48;
 
-/// Payload bytes one chunk carries — the unit the host is paced in, and the size of the one buffer
+/// Payload bytes one chunk carries: the unit the host is paced in, and the size of the one buffer
 /// the payload ever occupies on this device.
 ///
-/// 8 KiB is chosen against the *ack*, not the card: at [`INGEST_BAUD`] a chunk is 711 ms of wire
-/// time against ~2 ms of USB turnaround, so the pacing costs a third of a per cent, and halving the
-/// chunk would double that for nothing. It is also 16 blocks, so a chunk is a whole number of device
-/// write commands with no staging carry between them.
+/// 8 KiB is chosen against the ack, not the card: at [`INGEST_BAUD`] a chunk is 711 ms of wire
+/// time against ~2 ms of USB turnaround, so the pacing costs a third of a per cent. It is also 16
+/// blocks, so a chunk is a whole number of device write commands with no staging carry.
 const INGEST_CHUNK: usize = 8 * 1_024;
 
-// One chunk is one EasyDMA transfer, and the driver refuses a longer one at runtime rather than at
-// build time. Here it is a build failure instead.
+// One chunk is one EasyDMA transfer, and the driver refuses a longer one at runtime. Here it is a
+// build failure instead.
 const _: () = assert!(INGEST_CHUNK <= embassy_nrf::EASY_DMA_SIZE, "a chunk is one EasyDMA transfer");
 
 /// The VCOM's line rate.
 ///
-/// 115,200 is the rate this rig is **proven** at, and the ingest is a board-session tool: a
-/// transfer that takes a minute and works beats one that takes seven seconds and might not. Raising
-/// this to `Baudrate::Baud1m` is a one-line change (and `--baud 1000000` on the host) once a session
-/// has spare time to establish that this J-Link's CDC will carry it.
+/// 115,200 is the rate this rig is proven at, and the ingest is a board-session tool: a transfer
+/// that takes a minute and works beats one that takes seven seconds and might not. Raising this to
+/// `Baudrate::Baud1m` is a one-line change, with `--baud 1000000` on the host.
 const INGEST_BAUD: Baudrate = Baudrate::Baud115200;
-/// The same rate as a number, for the diagnostics. A host that disagrees with this is the single
-/// most likely reason a window ends [`Advertised::Erroring`], so the message names it.
+/// The same rate as a number, for the diagnostics. A host that disagrees with it is the likeliest
+/// reason a window ends [`Advertised::Erroring`], so the message names it.
 const INGEST_BAUD_HZ: u32 = 115_200;
 
 /// How long the bench advertises before falling through to the measurement run.
 const INGEST_WINDOW_MS: u64 = 10_000;
 /// The advertising cadence, and the quiet period one READY requires before it may be sent.
 const INGEST_READY_MS: u64 = 500;
-/// A chunk's deadline. Generous: at [`INGEST_BAUD`] a chunk is 711 ms, and the only thing this
-/// number is protecting against is a host that went away mid-transfer.
+/// A chunk's deadline. Generous: the only thing it protects against is a host that went away
+/// mid-transfer.
 const INGEST_CHUNK_MS: u64 = 20_000;
 
 /// Why the device refused. The host prints these by name; the numbers are the wire.
@@ -1855,7 +1720,7 @@ mod reason {
     pub const VERSION: u8 = 1;
     /// The header's own CRC did not check.
     pub const HEADER_CRC: u8 = 2;
-    /// `kind` is not one of `FLAT_Store_Format.md` §3.1's.
+    /// `kind` is not one the format defines.
     pub const KIND: u8 = 3;
     /// The name is longer than `DisplayName`'s 48 bytes, or is not UTF-8.
     pub const NAME: u8 = 4;
@@ -1863,13 +1728,13 @@ mod reason {
     pub const EMPTY: u8 = 5;
     /// The card did not come up writable, and is not in a state initialization may repair.
     pub const NOT_WRITABLE: u8 = 6;
-    /// §6 refused the reservation — the payload does not fit the free extents.
+    /// The reservation was refused: the payload does not fit the free extents.
     pub const ALLOCATE: u8 = 7;
     /// A chunk would not go into the reservation.
     pub const WRITE: u8 = 8;
     /// The bytes that arrived are not the bytes the header described. Nothing was committed.
     pub const PAYLOAD_CRC: u8 = 9;
-    /// §5.5 refused the publishing commit.
+    /// The publishing commit was refused.
     pub const COMMIT: u8 = 10;
     /// The cable: a timeout or a UARTE error.
     pub const LINK: u8 = 11;
@@ -1877,11 +1742,10 @@ mod reason {
 
 /// Why a read did not deliver its bytes.
 ///
-/// The two are **not** interchangeable, and collapsing them is the bug this enum exists to prevent:
-/// a timeout means the line is quiet, and an error means something is driving it that this device
-/// cannot decode — a baud mismatch, a DTR glitch, a cable on its way out. Reading the second as the
-/// first is how a screaming line becomes "nobody answered", and "nobody answered" is how this
-/// binary starts wiping the card.
+/// The two are not interchangeable, and collapsing them is the bug this enum exists to prevent: a
+/// timeout means the line is quiet, and an error means something is driving it that this device
+/// cannot decode. Reading the second as the first turns a screaming line into "nobody answered",
+/// and "nobody answered" is how this binary starts wiping the card.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Link {
     Timeout,
@@ -1894,26 +1758,23 @@ enum Advertised {
     Answered,
     /// The window expired with the line quiet. The only outcome that lets the measurements run.
     Quiet,
-    /// The window ended with the UARTE reporting errors: bytes are arriving that this device cannot
-    /// decode. Something is on the other end, so the measurement run — which would wipe the card —
-    /// must not follow.
+    /// The window ended with the UARTE reporting errors: bytes are arriving that this device
+    /// cannot decode. Something is on the other end, so the measurement run, which would wipe the
+    /// card, must not follow.
     Erroring,
 }
 
 /// Consecutive UARTE errors that end a window as [`Advertised::Erroring`].
 ///
-/// One error is line noise on a cable being plugged in. Thirty-two in a row is something *else*
-/// driving this tty at a rate or framing the device is not configured for — a `screen` or `minicom`
-/// left open at another baud, a second talker, a cable degrading.
-///
-/// **Not** a `bench_ingest.py` baud mismatch: that host never transmits at all, because it only
-/// sends after decoding a valid READY. See the module docs — a mismatched baud is a *silent* line,
-/// and it ends the window [`Advertised::Quiet`].
+/// One error is line noise on a cable being plugged in. Thirty-two in a row is something else
+/// driving this tty at a rate or framing the device is not configured for: a `screen` or `minicom`
+/// left open at another baud, a second talker, a cable degrading. It is not a `bench_ingest.py`
+/// baud mismatch, because that host never transmits at all; a mismatched baud is a silent line and
+/// ends the window [`Advertised::Quiet`].
 const INGEST_UART_FAULT_LIMIT: u32 = 32;
 
-/// The one payload buffer. A chunk is 8 KiB and lives here, in `.bss`, exactly as the read path's
-/// buffers do: a map-sized temporary is what this bench's own docs were written to warn about, and
-/// so is a chunk-sized one on a poll frame.
+/// The one payload buffer. A chunk is 8 KiB and lives here in `.bss`, exactly as the read path's
+/// buffers do: a chunk-sized temporary on a poll frame is what this bench's own docs warn about.
 static mut INGEST_BUF: Aligned<INGEST_CHUNK> = Aligned([0; INGEST_CHUNK]);
 
 /// How the offer ended. Three outcomes, and only one of them lets the measurements run.
@@ -1929,8 +1790,7 @@ enum Offer {
 /// Advertise on the VCOM, and run the ingest if a host answers.
 ///
 /// The UARTE is built here and dropped here, so a bench run that nobody answered leaves the
-/// peripheral exactly as it found it and the measurements that follow are the measurements this
-/// bench has always made.
+/// peripheral exactly as it found it.
 #[inline(never)]
 fn ingest_offer(p: embassy_nrf::Peripherals, boot: &Boot) -> Offer {
     let mut config = uarte::Config::default();
@@ -1951,20 +1811,19 @@ fn ingest_offer(p: embassy_nrf::Peripherals, boot: &Boot) -> Offer {
             // arrived late reads it instead of timing out and blaming the cable.
             ingest_gone(&mut tx, gone::WINDOW_CLOSED);
             info!("INGEST nobody answered — running the measurements");
-            // The one symptom pair that has no other signature, said where the operator is looking.
-            // `bench_ingest.py` transmits only after decoding a READY, so at the wrong baud it never
-            // sends a byte and this device sees an idle cable — exactly what it sees when no host is
-            // there at all. If the host claims to be waiting, this line is the evidence.
+            // The one symptom pair that has no other signature, said where the operator is
+            // looking. `bench_ingest.py` transmits only after decoding a READY, so at the wrong
+            // baud it never sends a byte and this device sees an idle cable, exactly what it sees
+            // when no host is there at all.
             info!(
                 "INGEST if a host says it is still waiting, that is a BAUD MISMATCH, not a dead cable — this build is at {=u32} baud (a mismatched host is silent, never noisy)",
                 INGEST_BAUD_HZ
             );
             Offer::Declined
         }
-        // Bytes are arriving that this device cannot frame. That is not `bench_ingest.py` at the
-        // wrong rate — that host would be silent — but a second talker on the tty, or a cable going.
-        // Either way the line is not idle, and running phase one on the strength of a line we
-        // demonstrably cannot read would be guessing with the card.
+        // Bytes are arriving that this device cannot frame: a second talker on the tty, or a cable
+        // going. Either way the line is not idle, and running phase one on the strength of a line
+        // we demonstrably cannot read would be guessing with the card.
         Advertised::Erroring => {
             ingest_gone(&mut tx, gone::LINE_ERRORING);
             error!(
@@ -1983,15 +1842,14 @@ fn ingest_offer(p: embassy_nrf::Peripherals, boot: &Boot) -> Offer {
 
 /// Advertise until a host's magic arrives, or until `window_ms` has passed.
 ///
-/// The magic is matched **one byte at a time**, and a READY only goes out after a whole
-/// [`INGEST_READY_MS`] of silence. Both are the same precaution: this cable has no flow control, so
-/// the device must never be transmitting while the host is mid-burst, and it must never drop a
-/// partly-matched magic on the floor because its own advertising timer came due.
+/// The magic is matched one byte at a time, and a READY only goes out after a whole
+/// [`INGEST_READY_MS`] of silence. Both are the same precaution: this cable has no flow control,
+/// so the device must never transmit while the host is mid-burst, and must never drop a
+/// partly-matched magic because its own advertising timer came due.
 ///
-/// A UARTE **error** is handled as its own case and not as silence. It returns from
-/// [`ingest_read`] immediately rather than after [`INGEST_READY_MS`], so treating it as a quiet
-/// interval would advertise at whatever rate the errors arrive — hundreds of READY frames a second,
-/// straight into the burst that is causing them — and then end the window claiming nobody was there.
+/// A UARTE error is its own case, not silence. [`ingest_read`] returns from it immediately, so
+/// treating it as a quiet interval would advertise at whatever rate the errors arrive, straight
+/// into the burst that is causing them, and then end the window claiming nobody was there.
 fn ingest_wait(tx: &mut UarteTx<'_>, rx: &mut UarteRx<'_>, window_ms: u64) -> Advertised {
     let ready = ingest_ready_frame();
     let deadline = Instant::now() + Duration::from_millis(window_ms);
@@ -2015,7 +1873,7 @@ fn ingest_wait(tx: &mut UarteTx<'_>, rx: &mut UarteRx<'_>, window_ms: u64) -> Ad
                 }
             }
             Err(Link::Timeout) => {
-                // The line has been quiet for an interval, so this is the safe moment to talk — and
+                // The line has been quiet for an interval, so this is the safe moment to talk, and
                 // any half-matched magic is stale, because a host sends its header in one write.
                 faults = 0;
                 matched = 0;
@@ -2025,8 +1883,8 @@ fn ingest_wait(tx: &mut UarteTx<'_>, rx: &mut UarteRx<'_>, window_ms: u64) -> Ad
                 let _ = tx.blocking_write(&ready);
             }
             Err(Link::Uart) => {
-                // NOT an advertising opportunity. Say so once, then either wait the line out or give
-                // up on it — but never conclude from this that the cable is idle.
+                // NOT an advertising opportunity. Say so once, then either wait the line out or
+                // give up on it, but never conclude from this that the cable is idle.
                 matched = 0;
                 faults += 1;
                 if !complained {
@@ -2046,8 +1904,8 @@ fn ingest_wait(tx: &mut UarteTx<'_>, rx: &mut UarteRx<'_>, window_ms: u64) -> Ad
 
 /// One ingest session: bring the store up, then take objects until the host stops sending them.
 ///
-/// The store is mounted **once** for the whole session and lives in this frame, which is why this is
-/// its own out-of-line call — the same reason [`initialize`] and [`ladder`] are.
+/// The store is mounted once for the whole session and lives in this frame, which is why this is
+/// its own out-of-line call, for the same reason [`initialize`] and [`ladder`] are.
 #[inline(never)]
 fn ingest_session(tx: &mut UarteTx<'_>, rx: &mut UarteRx<'_>, boot: &Boot) {
     let store = if boot.mode.writable() {
@@ -2176,7 +2034,7 @@ fn ingest_object(tx: &mut UarteTx<'_>, rx: &mut UarteRx<'_>, store: &FlatStore<C
     ingest_status(tx, STATUS_ACK, reason::NONE);
 
     // SAFETY: sole borrow of the chunk slot; the session is single-threaded and nothing else reads
-    // it. Same discipline as PATTERN / READBACK / RIDE_DELTA above.
+    // it.
     let buf = unsafe { &mut (*core::ptr::addr_of_mut!(INGEST_BUF)).0 };
     let mut digest = Crc32::new();
     let mut received = 0u64;
@@ -2211,12 +2069,12 @@ fn ingest_object(tx: &mut UarteTx<'_>, rx: &mut UarteRx<'_>, store: &FlatStore<C
         got_crc
     );
 
-    // Past the last chunk's ack the object closes with a RESULT rather than a STATUS — one frame,
-    // whichever way it went, so the host never has to guess which of the two is coming next.
+    // Past the last chunk's ack the object closes with a RESULT rather than a STATUS, so exactly
+    // one frame ends a transfer whichever way it went.
     //
-    // The CRC is checked before the commit, not after: a mismatch must publish nothing, and `cancel`
-    // is what hands the extents back so the next attempt can have them. This is the last point at
-    // which that is still possible — the commit below takes the `Allocation` by value.
+    // The CRC is checked before the commit, not after: a mismatch must publish nothing, and
+    // `cancel` is what hands the extents back. This is the last point at which that is still
+    // possible, because the commit below takes the `Allocation` by value.
     if got_crc != want_crc {
         error!(
             "INGEST the payload CRC is 0x{=u32:08x}, not the 0x{=u32:08x} the header promised — NOT committing",
@@ -2243,14 +2101,12 @@ fn ingest_object(tx: &mut UarteTx<'_>, rx: &mut UarteRx<'_>, store: &FlatStore<C
     let commit_us = us(started);
     let sequence = match outcome {
         Ok(sequence) => sequence,
-        // **This is the one failure that does not clean up after itself, and the session ends here.**
-        //
-        // `Mutation::Put` took the `Allocation` by value, and §5.5 clears the reservation row only
-        // after the gate write lands — so a refused commit leaves the row occupied and its extents
-        // spoken for, with no `Allocation` left anywhere to `cancel`. Only a remount frees them.
+        // This is the one failure that does not clean up after itself, so the session ends here.
+        // `Mutation::Put` took the `Allocation` by value, and the reservation row is cleared only
+        // after the gate write lands, so a refused commit leaves the row occupied and its extents
+        // spoken for, with no `Allocation` left anywhere to cancel. Only a remount frees them, and
         // `MAX_RESERVATIONS` is 2, so a session that looped here would wedge on its third object
-        // with a `NoSpace` that has nothing to do with the card being full. Stopping is honest:
-        // the operator resets, the mount reclaims, and the next attempt starts clean.
+        // with a `NoSpace` that has nothing to do with the card being full.
         Err(error) => {
             error!("INGEST §5.5 refused the publishing commit ({})", defmt::Debug2Format(&error));
             error!(
@@ -2315,9 +2171,9 @@ fn short_frame(tag: u8, value: u32) -> [u8; READY_BYTES] {
 
 /// Tell whoever is listening that this device has stopped, and why.
 ///
-/// Sent on every path out of the ingest, because the alternative is a host that waits out its whole
-/// timeout and then has to guess between four unrelated causes — one of which is "the card is being
-/// wiped right now".
+/// Sent on every path out of the ingest, because the alternative is a host that waits out its
+/// whole timeout and then has to guess between four unrelated causes, one of which is "the card is
+/// being wiped right now".
 fn ingest_gone(tx: &mut UarteTx<'_>, why: u32) {
     let _ = tx.blocking_write(&short_frame(TAG_GONE, why));
 }
@@ -2356,11 +2212,10 @@ fn ingest_result(
 
 /// Fill `buf` from the VCOM, or give up after `timeout_ms`.
 ///
-/// **Deliberately not an `async fn`, and deliberately not on the executor.** This binary's whole
-/// shape is the #1379 lesson — an async fn's locals are permanent poll-frame slots, and the caller
-/// above holds a ten-kilobyte store — so the read is driven by polling the driver's future on *this*
-/// stack against a plain deadline. The future is a local of this frame and nothing outlives the
-/// call; dropping it on the timeout is what stops the DMA, which is the driver's own contract.
+/// Deliberately not an `async fn`, and not on the executor: an async fn's locals are permanent
+/// poll-frame slots, and the caller above holds a ten-kilobyte store. The driver's future is a
+/// local of this frame and nothing outlives the call, and dropping it on the timeout is what stops
+/// the DMA, which is the driver's own contract.
 fn ingest_read(rx: &mut UarteRx<'_>, buf: &mut [u8], timeout_ms: u64) -> Result<(), Link> {
     if buf.is_empty() {
         return Ok(());
@@ -2389,16 +2244,13 @@ fn ingest_link_failed(what: &str, fault: Link) {
     }
 }
 
-// ── verdicts and helpers ────────────────────────────────────────────────────────────────────────
-
-/// Where a measured interval went: the card's write half, its read half, and what was left over for
-/// the M33.
+/// Where a measured interval went: the card's write half, its read half, and what was left over
+/// for the M33.
 ///
 /// Every figure this bench reports carries this line, because the halves have different causes and
-/// different fixes. A commit that spends 79 blocks of writing and 156 blocks of *reading* is not one
-/// figure — the reads are `merge` streaming the live prefix twice plus `find`'s binary search, and
-/// dividing the total by the blocks written attributes all of it to the program cycle. That is the
-/// error the first round of this bench made, and this function is the fix.
+/// different fixes. A commit that spends 79 blocks of writing and 156 blocks of reading is not one
+/// figure: the reads are `merge` streaming the live prefix twice plus `find`'s binary search, and
+/// dividing the total by the blocks written attributes all of it to the program cycle.
 fn report_split(label: &str, elapsed: u64, counted: &Counters) {
     info!(
         "{=str}: {=u64} us WRITE {=u64} us ({=u32} calls / {=u32} blocks = {=u64} us per block) · READ {=u64} us ({=u32} / {=u32} = {=u64} us per block) · M33 {=u64} us",
@@ -2419,9 +2271,9 @@ fn report_split(label: &str, elapsed: u64, counted: &Counters) {
 /// The mean, median, least and greatest of a sample set, so a single-sample figure is never quoted
 /// as if it were the cost.
 ///
-/// The median earns its place here: this card produces occasional multi-second commits (1.2 s and
-/// 3.3 s have both been seen mid-ladder, presumably its own housekeeping), and one of those inside a
-/// three-sample set moves the mean by more than every effect this bench is trying to measure.
+/// The median earns its place: this card produces occasional multi-second commits (1.2 s and 3.3 s
+/// have both been seen mid-ladder), and one of those inside a three-sample set moves the mean by
+/// more than every effect this bench is trying to measure.
 fn spread(samples: &[u64]) -> (u64, u64, u64, u64) {
     let mean = samples.iter().sum::<u64>() / samples.len() as u64;
     let mut sorted = [0u64; COMMIT_SAMPLES];
@@ -2431,8 +2283,8 @@ fn spread(samples: &[u64]) -> (u64, u64, u64, u64) {
     (mean, median, sorted[0], sorted[samples.len() - 1])
 }
 
-/// One measured figure against its plan figure, in the form #1386 asks for: within plan, or a miss,
-/// and past 2× a miss that goes back to the epic.
+/// One measured figure against its plan figure: within plan, a miss, or past 2x a miss that goes
+/// back to the epic.
 fn verdict(label: &str, measured: u64, plan: u64) {
     let ratio = measured * 100 / plan.max(1);
     if measured <= plan {
@@ -2468,13 +2320,9 @@ fn park() -> ! {
     }
 }
 
-// ── the stack meter ─────────────────────────────────────────────────────────────────────────────
-
 /// Stack high-water: paint the free stack with a sentinel at boot, then find the lowest word that
-/// is still painted. The scan must run bottom-up to the first non-painted word — a frame does not
-/// write every word it covers, so a top-down scan under-reports by whole buffers.
-///
-/// The same measurement `main.rs` makes, restated here because this binary links none of it.
+/// is still painted. The scan must run bottom-up to the first non-painted word, because a frame
+/// does not write every word it covers and a top-down scan under-reports by whole buffers.
 mod stackmeter {
     const PAINT: u32 = 0xC0DE_DEAD;
 

@@ -1,44 +1,30 @@
-//! The app-side DFU **armer driver** (epic #615 S4, #619) — the board half of `obc_dfu::armer`.
+//! The app-side DFU armer driver: the board half of `obc_dfu::armer`.
 //!
-//! The pure decision core (scan matrix, snapshot-before-page-write sequencing, generation bump,
-//! trial confirm) lives host-tested in `obc_dfu::armer`; this module wires it to the real device:
-//! [`sd::Storage`]'s stage/rollback adapters, [`RramSettingsStore`]'s boot-state page, the
-//! watchdog pets between the long SD phases, the `D`-line status stream for the debug-link
-//! harness, and the final `SCB::sys_reset()` into the bootloader.
+//! The pure decision core lives host-tested in `obc_dfu::armer`; this module wires it to the real
+//! device: [`sd::Storage`]'s stage and rollback adapters, [`RramSettingsStore`]'s boot-state page,
+//! the watchdog pets between the long SD phases, the `D`-line status stream, and the final
+//! `SCB::sys_reset()` into the bootloader.
 //!
-//! ## The arm sequence (order normative — issue #619 §3)
+//! The arm sequence is normative in this order:
 //!
-//! 1. **Scan + validate** `UPDATE.BIN` (header decode, full CRC-32 pass, size gate, whole-file
-//!    extent chain — `OBCU_Spec.md` §2.3). Read-only; any failure costs nothing. In the normal
-//!    Scan→confirm→Install flow this pass already ran at the confirm's [`run_scan`], and its
-//!    [`StagedRef`] is carried into the arm (DR6, #734) — this step re-scans only when an Install
-//!    arrives with no carried ref (the `dfu-install` debug path).
-//! 2. **Snapshot the rollback**: the running image, read memory-mapped out of the app slot
-//!    (`__app_slot_base`, RRAM is XIP-readable), re-wrapped as `/ROLLBACK.BIN` and
-//!    extent-resolved the same way. Skipped on a first install (`installed: None`) or when the
-//!    slot no longer matches the installed record (SWD reflash) — the arm then carries
-//!    `rollback: None` and the trial-accept path applies.
-//! 3. **Compose + write `Armed`** (generation = old page's + 1) to the BOOT_STATE page — one
-//!    CRC-framed blob, whole 16-byte RRAMC lines, no torn intermediate.
-//! 4. A **brief beat** (flush the status lines to the host), then `SCB::sys_reset()`.
+//! 1. Scan and validate `UPDATE.BIN`: header decode, full CRC-32 pass, size gate, whole-file extent
+//!    chain. Read-only, so a failure costs nothing. In the normal scan, confirm, install flow this
+//!    pass already ran at [`run_scan`] and its [`StagedRef`] is carried in.
+//! 2. Snapshot the rollback: the running image, read memory-mapped out of the app slot, re-wrapped
+//!    as `/ROLLBACK.BIN` and extent-resolved the same way. Skipped on a first install, or when the
+//!    slot no longer matches the installed record.
+//! 3. Compose and write `Armed` (generation is the old page's plus 1) to the BOOT_STATE page: one
+//!    CRC-framed blob in whole 16-byte RRAMC lines, with no torn intermediate.
+//! 4. A brief beat to flush the status lines to the host, then `SCB::sys_reset()`.
 //!
-//! Power loss: before step 3's write, nothing happened (the snapshot file is inert without the
-//! record); after it, the install proceeds on the next boot exactly as if the reset had run —
-//! `Armed` is idempotent (epic invariant 2). That's why nothing else sits between 3 and 4.
+//! Power loss before step 3's write leaves nothing done, because the snapshot file is inert without
+//! the record. After it, the install proceeds on the next boot exactly as if the reset had run,
+//! because `Armed` is idempotent. That is why nothing else sits between 3 and 4.
 //!
-//! ## Stack discipline
-//!
-//! The heavy work is one sync `#[inline(never)]` call ([`arm_update`]) at the ride loop's
-//! shallow drained-request depth: the ~850 B `StagedRef`s, the ~1.7 KB decoded `BootState`, and
-//! `sd.rs`'s small staging resolver state all lives in frames that pop on return — nothing new
-//! is resident, and nothing large is held across an `.await` (the loop only awaits the beat,
-//! holding a few words). CRC/copy staging stays on `sd.rs`'s existing 512-byte-chunk idiom.
-//!
-//! The carried scan ref (DR6, #734) parks in an `Option<StagedRef>` **ride-loop local**, not on
-//! this sync call stack: it lives in the loop task's future storage (a static task arena), so it
-//! never deepens `arm_update`'s frame. The arm still holds exactly one `StagedRef` at a time — the
-//! parameter, copied in place of the old locally-scanned one — so the hot-stack footprint is
-//! unchanged from the re-scan version; only the task future grows by the parked ~850 B.
+//! The heavy work is one sync `#[inline(never)]` call ([`arm_update`]) at the ride loop's shallow
+//! drained-request depth, so the `StagedRef`s and the decoded `BootState` live in frames that pop
+//! on return. Nothing large is held across an `await`. The carried scan ref parks in a ride-loop
+//! local, in the loop task's own future storage, so it never deepens `arm_update`'s frame.
 
 use core::fmt::Write;
 
@@ -49,8 +35,8 @@ use obc_dfu::{BootState, ImageHeader, StagedRef};
 use crate::sd;
 use crate::settings::RramSettingsStore;
 
-/// Base of the app slot — the `__app_slot_base` linker symbol (`ORIGIN(FLASH)`, provided by
-/// build.rs's memory.x), read at runtime like `__settings_base` so no address is hard-coded.
+/// Base of the app slot, from the `__app_slot_base` linker symbol, read at runtime like
+/// `__settings_base` so no address is hard-coded.
 fn app_slot_base() -> *const u8 {
     extern "C" {
         static __app_slot_base: u8;
@@ -58,27 +44,21 @@ fn app_slot_base() -> *const u8 {
     core::ptr::addr_of!(__app_slot_base)
 }
 
-/// One DFU status line: always to RTT, and (debug-uart builds) queued for the VCOM `D`-line
-/// stream the on-glass gate watches. ASCII only — it rides a serial console.
+/// One DFU status line: always to RTT, and on debug-uart builds queued for the VCOM `D`-line
+/// stream the on-glass gate watches. ASCII only, because it rides a serial console.
 pub(crate) fn status(line: &str) {
     defmt::info!("dfu: {=str}", line);
     #[cfg(feature = "debug-uart")]
     obc_platform::debug_link::dfu_status(line);
 }
 
-/// Capture the running image's OBCU version for the identity strings (#996, epic #773 U1) — called
-/// **once**, from `main`, as soon as the settings store exists and long before the BLE/USB planes
-/// are spawned.
+/// Capture the running image's OBCU version for the identity strings. Called once, from `main`, as
+/// soon as the settings store exists and long before the BLE and USB planes are spawned. The
+/// boot-state page is the only place the device learns what it is, and to read it once at boot is
+/// what keeps `firmware_revision()` non-blocking on the BLE and USB paths.
 ///
-/// The boot-state page is the only place the device learns what it actually *is*: the version an
-/// image was wrapped with lives in its OBCU header, and a confirmed install records that header
-/// here. This is the same page (and the same `read_boot_state` call) the confirm screen reads;
-/// reading it once at boot rather than per identity read is what keeps `firmware_revision()`
-/// non-blocking on the BLE and USB paths, and it loses nothing — the running image cannot change
-/// under a running app.
-///
-/// `#[inline(never)]`: the decoded [`BootState`] is a ~1.7 KB temporary, and it must live in this
-/// frame (which pops) rather than in `main`'s, per the crate's stack discipline.
+/// `#[inline(never)]`: the decoded [`BootState`] is a 1.7 KB temporary and must live in this frame,
+/// which pops, rather than in `main`'s.
 #[inline(never)]
 pub(crate) fn seed_firmware_revision(settings: &mut RramSettingsStore) {
     let running = settings.read_boot_state().running_image();
@@ -86,7 +66,6 @@ pub(crate) fn seed_firmware_revision(settings: &mut RramSettingsStore) {
     defmt::info!("dfu: running image is {=str}", crate::link::identity::firmware_revision().as_str());
 }
 
-/// What a successful arm wrote — the drain's status-line material.
 struct ArmReport {
     generation: u32,
     rollback: Rollback,
@@ -95,7 +74,7 @@ struct ArmReport {
     extent_count: usize,
 }
 
-/// Why an arm failed (the boot-state page is untouched in every case — see `obc_dfu::armer`).
+/// Why an arm failed. The boot-state page is untouched in every case.
 enum ArmFailure {
     Scan(ScanError),
     Snapshot(ScanError),
@@ -103,8 +82,8 @@ enum ArmFailure {
     StateWrite,
 }
 
-/// The board's [`armer::ArmIo`]: the rollback snapshot over [`sd::Storage`] + the boot-state
-/// page write over [`RramSettingsStore`], with a watchdog pet after the long snapshot phase.
+/// The board's [`armer::ArmIo`]: the rollback snapshot over [`sd::Storage`] and the boot-state page
+/// write over [`RramSettingsStore`], with a watchdog pet after the long snapshot phase.
 struct BoardArmIo<'a> {
     storage: &'a mut sd::Storage,
     settings: &'a mut RramSettingsStore,
@@ -114,7 +93,7 @@ struct BoardArmIo<'a> {
 impl armer::ArmIo for BoardArmIo<'_> {
     fn snapshot(&mut self, installed: &ImageHeader) -> Result<Option<StagedRef>, ScanError> {
         // Gate the length before mapping the slot: the header came off a CRC-valid page, but a
-        // foreign/garbage length must never build an out-of-slot slice.
+        // foreign length must never build an out-of-slot slice.
         if installed.image_len == 0 || installed.image_len > obc_dfu::MAX_IMAGE_LEN {
             defmt::warn!("dfu: installed record has an implausible image_len — treating as no rollback");
             return Ok(None);
@@ -123,8 +102,8 @@ impl armer::ArmIo for BoardArmIo<'_> {
         // the slot's capacity above; nothing writes program RRAM while the app runs.
         let image = unsafe { core::slice::from_raw_parts(app_slot_base(), installed.image_len as usize) };
         let result = self.storage.dfu_write_rollback(installed, image);
-        // The snapshot is the arm's longest SD stretch (an image-sized write) — feed the dog
-        // before the page write + reset tail.
+        // The snapshot is the arm's longest SD stretch, so feed the dog before the page write and
+        // the reset tail.
         if let Some(h) = self.wdt.as_mut() {
             h.pet();
         }
@@ -132,9 +111,8 @@ impl armer::ArmIo for BoardArmIo<'_> {
     }
 
     fn stage_boot_blob(&mut self) -> Result<(), obc_dfu::engine::IoError> {
-        // The sEMMC image the bootloader boots the card through (#1158, OBCU_Spec.md §3) — the
-        // same bytes this firmware's own storage bring-up copies to the FLPR carve. Idempotent:
-        // the store skips the write when the carve already stages exactly these bytes.
+        // The sEMMC image the bootloader boots the card through: the same bytes this firmware's
+        // own storage bring-up copies to the FLPR carve.
         if self.settings.stage_semmc_blob(crate::semmc::firmware_image()) {
             Ok(())
         } else {
@@ -151,17 +129,14 @@ impl armer::ArmIo for BoardArmIo<'_> {
     }
 }
 
-/// The whole arm as **one sync, popped frame** (see the module's stack note): (carry-or-scan) →
-/// read the old page → snapshot → compose → write. Returns the report for the status lines; the
-/// caller owns the beat + reset.
+/// The whole arm as one sync, popped frame: carry or scan, read the old page, snapshot, compose,
+/// write. Returns the report for the status lines; the caller owns the beat and the reset.
 ///
-/// `cached` is the [`StagedRef`] the confirm's preceding scan already validated (DR6, #734) —
-/// present in the normal Scan→confirm→Install flow, so the arm drops straight to the snapshot with
-/// no second full read + CRC of `UPDATE.BIN`. It's absent only for an Install that arrives without
-/// a preceding Scan (the `dfu-install` debug path, or a hypothetical UI that skips the confirm);
-/// the re-scan fallback keeps the action total. A stale carried ref is safe: the bootloader's
-/// verify-before-erase re-reads and re-CRCs the raw extents post-reboot regardless, so a mismatch
-/// costs at worst a `StageRejected` next boot — this is not a TOCTOU re-validation point.
+/// `cached` is the [`StagedRef`] the confirm's preceding scan already validated, so the arm drops
+/// straight to the snapshot with no second full read and CRC of `UPDATE.BIN`. It is absent only for
+/// an install that arrives with no preceding scan. A stale carried ref is safe: the bootloader
+/// re-reads and re-CRCs the raw extents before it erases, so a mismatch costs at worst a
+/// `StageRejected` next boot. This is not a re-validation point.
 #[inline(never)]
 fn arm_update(
     storage: &mut sd::Storage,
@@ -170,12 +145,12 @@ fn arm_update(
     cached: Option<StagedRef>,
 ) -> Result<ArmReport, ArmFailure> {
     let staged = match cached {
-        // The confirm's scan already read + CRC'd the whole image — carry that verdict.
+        // The confirm's scan already read and CRC'd the whole image; carry that verdict.
         Some(staged) => staged,
-        // Fallback: an Install with no preceding Scan. Read + CRC the stage now.
+        // Fallback: an install with no preceding scan. Read and CRC the stage now.
         None => {
             let staged = storage.dfu_scan_update().map_err(ArmFailure::Scan)?;
-            // The CRC pass over a ~900 KB stage takes seconds — pet between it and the snapshot.
+            // The CRC pass over a 900 KB stage takes seconds; pet before the snapshot.
             if let Some(h) = wdt.as_mut() {
                 h.pet();
             }
@@ -186,8 +161,8 @@ fn arm_update(
     let _ = staged_version.push_str(staged.header.fw_version_str());
     let (staged_len, extent_count) = (staged.len, staged.extent_count());
 
-    // Read + decode the old page FIRST (the generation bump is old + 1), then hand the pure
-    // sequencer the IO — it snapshots before it writes, host-asserted in obc-dfu's tests.
+    // Read and decode the old page first, because the generation bump is old plus 1. Then hand the
+    // pure sequencer the IO: it snapshots before it writes.
     let current = settings.read_boot_state();
     let mut io = BoardArmIo { storage, settings, wdt };
     let ticket = armer::arm(&mut io, &current, staged).map_err(|e| match e {
@@ -198,7 +173,7 @@ fn arm_update(
     Ok(ArmReport { generation: ticket.generation, rollback: ticket.rollback, staged_version, staged_len, extent_count })
 }
 
-/// Format-and-push one status line (96-byte cap, truncating — matching the stream's own cap).
+/// Format and push one status line, truncating at the stream's own 96-byte cap.
 macro_rules! statusf {
     ($($arg:tt)*) => {{
         let mut s: heapless::String<96> = heapless::String::new();
@@ -207,23 +182,21 @@ macro_rules! statusf {
     }};
 }
 
-/// Run a drained install request end to end (issue #619 §6): status lines per phase, the sync
-/// [`arm_update`] under the caller's storage/settings access, then — on success — a brief beat
-/// so the `D`-lines flush to the host, and `SCB::sys_reset()` straight into the bootloader.
+/// Run a drained install request end to end: status lines per phase, the sync [`arm_update`] under
+/// the caller's storage and settings access, then, on success, a brief beat so the `D`-lines flush
+/// to the host, and `SCB::sys_reset()` into the bootloader.
 ///
-/// Returns only on failure (the state page is then untouched; the device keeps riding): the typed
-/// [`DfuInstallError`](obc_app::DfuInstallError) the caller hands to
-/// the pass's fact stage so the "Preparing
-/// update..." spinner is replaced by the error card instead of hanging (issue #755). On success the
-/// call diverges into the reset, so the `Ok` arm has no return value.
+/// Returns only on failure, with the state page untouched and the device still riding. The typed
+/// [`DfuInstallError`](obc_app::DfuInstallError) goes to the pass's fact stage, so the spinner is
+/// replaced by an error card instead of hanging. On success the call diverges into the reset.
 pub(crate) async fn run_install(
     storage: &mut sd::Storage,
     settings: &mut RramSettingsStore,
     wdt: &mut Option<wdt::WatchdogHandle>,
     cached: Option<StagedRef>,
 ) -> Option<obc_app::DfuInstallError> {
-    // The RTT/`D`-line record shows which path armed: the normal confirm carries the scan's ref
-    // (one CRC pass, done back at the Scan), the fallback re-reads here.
+    // The record shows which path armed: the normal confirm carries the scan's ref, and the
+    // fallback re-reads here.
     if cached.is_some() {
         statusf!("arming from the scan's validated image (running {})", env!("OBC_FW_GIT"));
     } else {
@@ -240,19 +213,16 @@ pub(crate) async fn run_install(
                 }
             }
             statusf!("armed gen={} -- rebooting into the bootloader", report.generation);
-            // The armer's breadcrumb for the next boot's outcome reconcile (best-effort — a
-            // failed or torn write only costs the verdict card its precision, never the install:
-            // a power cut anywhere past the page write is exactly the armed-install path).
+            // The armer's breadcrumb for the next boot's outcome reconcile. Best-effort: a torn
+            // write costs the verdict card its precision, never the install.
             let marker = obc_app::dfu::ArmMarker { generation: report.generation, staged: report.staged_version };
             settings.write_arm_marker(&marker);
-            // The beat: nothing else may run between here and the reset except this flush
-            // (issue #619 §3).
+            // The beat: nothing else may run between here and the reset except this flush.
             embassy_time::Timer::after_millis(400).await;
             cortex_m::peripheral::SCB::sys_reset();
         }
-        // Each failure keeps its `D`-line breadcrumb *and* returns the app-facing bucket so the
-        // caller can swap the spinner for the error card (issue #755). The re-scan bucket reuses the
-        // scan fold; the snapshot IO error and the boot-state write failure get their own reasons.
+        // Each failure keeps its `D`-line breadcrumb and returns the app-facing bucket, so the
+        // caller can swap the spinner for the error card.
         Err(ArmFailure::Scan(e)) => {
             report_scan_error("scan", e);
             Some(obc_app::DfuInstallError::Scan(map_scan_error(e)))
@@ -261,9 +231,8 @@ pub(crate) async fn run_install(
             report_scan_error("rollback snapshot", e);
             Some(obc_app::DfuInstallError::SnapshotFailed)
         }
-        // The blob stage and the page write are both RRAM writes with the same user story
-        // ("could not prepare the update, nothing changed"), so they share the app bucket; the
-        // `D`-line breadcrumb keeps them apart for diagnostics.
+        // The blob stage and the page write are both RRAM writes with the same user story, so they
+        // share one app bucket; the `D`-line breadcrumb keeps them apart for diagnostics.
         Err(ArmFailure::BlobStage) => {
             status("install failed: sEMMC blob stage write failed -- nothing armed");
             Some(obc_app::DfuInstallError::StateWriteFailed)
@@ -275,46 +244,39 @@ pub(crate) async fn run_install(
     }
 }
 
-/// The **scan-only** phase (epic #615 S5, #620) — the UI's read-only "Checking card..." step,
-/// posted as [`DfuAction::Scan`](obc_app::DfuAction) by the System settings screen. Validates
-/// `UPDATE.BIN` exactly as the arm's first step does (header, full CRC-32, extents) but touches
-/// nothing, and reads the boot-state page for the pre-arm no-rollback fact, returning the
-/// app-native [`DfuScanReport`](obc_app::DfuScanReport) the confirm screen shows — or a mapped
-/// [`DfuScanError`](obc_app::DfuScanError) for the error card. The board answers the app through
-/// the pass's fact stage; a failed scan, like the
-/// arm's, costs nothing.
+/// The scan-only phase: the UI's read-only "Checking card" step. Validates `UPDATE.BIN` exactly as
+/// the arm's first step does, but touches nothing, and reads the boot-state page for the pre-arm
+/// no-rollback fact. Returns the report the confirm screen shows, or a mapped
+/// [`DfuScanError`](obc_app::DfuScanError) for the error card.
 ///
-/// Returns the [`StagedRef`] alongside the report so the caller can park it next to its pending-DFU
-/// state and hand it straight to the confirm's [`run_install`] — the confirm then arms without a
-/// second full read + CRC pass over the ~900 KB `UPDATE.BIN` (DR6, #734). The ref is the *only*
-/// thing the arm needs from the scan; the report is what the app renders.
+/// The [`StagedRef`] comes back beside the report, so the caller can park it and hand it to
+/// [`run_install`]; the confirm then arms with no second full read and CRC pass over the 900 KB
+/// `UPDATE.BIN`.
 pub(crate) fn run_scan(
     storage: &mut sd::Storage,
     settings: &mut RramSettingsStore,
     wdt: &mut Option<wdt::WatchdogHandle>,
 ) -> Result<(obc_app::DfuScanReport, StagedRef), obc_app::DfuScanError> {
     let staged = storage.dfu_scan_update().map_err(map_scan_error)?;
-    // The full CRC pass over a ~900 KB stage takes seconds — feed the dog before returning.
+    // The full CRC pass over a 900 KB stage takes seconds; feed the dog before returning.
     if let Some(h) = wdt.as_mut() {
         h.pet();
     }
-    // The no-rollback fact is knowable pre-arm from the boot-state page: `Idle { installed: None }`
-    // (a dev-flashed device, spec §2.4) — and, defensively, any non-`Idle` page — arms without a
-    // rollback, so an unconfirmed trial is accepted rather than rolled back. (The running-mismatch
-    // no-rollback case needs the slot CRC, too heavy pre-confirm, so it isn't surfaced — see the PR.)
+    // The no-rollback fact is knowable before the arm from the boot-state page: `Idle` with no
+    // installed record, and defensively any non-`Idle` page, arms with no rollback, so an
+    // unconfirmed trial is accepted rather than rolled back. The running-mismatch case needs the
+    // slot CRC, which is too heavy before the confirm, so it is not surfaced.
     let installed = match settings.read_boot_state() {
         BootState::Idle { installed, .. } => installed,
         _ => None,
     };
     let mut staged_version: heapless::String<32> = heapless::String::new();
     let _ = staged_version.push_str(staged.header.fw_version_str());
-    // The installed side of the confirm screen — and its same-version equality check — must speak
-    // the same dialect as the staged side: the OBCU version string, with the build's git hash as the
-    // dev-device fallback. That is exactly the rule `link::identity` publishes over DIS / USB
-    // (#996), so the assembler is shared rather than repeated: what the glass says the device is
-    // running and what a host reads over the wire cannot drift apart. The record read here is the
-    // *live* page, though, not identity's boot snapshot — a confirm screen must show what the page
-    // says now.
+    // The installed side of the confirm screen, and its same-version equality check, must speak
+    // the same dialect as the staged side: the OBCU version string, with the build's git hash as
+    // the dev-device fallback. That is the rule `link::identity` publishes over DIS and USB, so the
+    // assembler is shared and cannot drift. The record read here is the live page, not identity's
+    // boot snapshot, because a confirm screen must show what the page says now.
     let installed_version = obc_app::dfu::clamp(crate::link::identity::revision_from(installed.as_ref()).as_str());
     Ok((
         obc_app::DfuScanReport {
@@ -326,9 +288,8 @@ pub(crate) fn run_scan(
     ))
 }
 
-/// Fold `obc_dfu`'s finer [`ScanError`] variants into the six user-facing
-/// [`DfuScanError`](obc_app::DfuScanError) buckets the app's error card shows (issue #620 §2,
-/// `Untrusted` added with OBCU v2 in #997).
+/// Fold `obc_dfu`'s finer [`ScanError`] variants into the user-facing
+/// [`DfuScanError`](obc_app::DfuScanError) buckets the app's error card shows.
 fn map_scan_error(e: ScanError) -> obc_app::DfuScanError {
     use obc_app::DfuScanError as U;
     match e {
@@ -337,12 +298,12 @@ fn map_scan_error(e: ScanError) -> obc_app::DfuScanError {
         ScanError::BadHeader | ScanError::BadCrc | ScanError::Truncated => U::Damaged,
         ScanError::Oversize => U::TooLarge,
         ScanError::TooFragmented { .. } => U::TooFragmented,
-        // Intact but not ours: an unsigned/v1 container or a signature that doesn't verify.
+        // Intact but not ours: an unsigned container, or a signature that does not verify.
         ScanError::Unsigned | ScanError::BadSignature => U::Untrusted,
     }
 }
 
-/// One typed error, phrased for the harness (S5 reuses `ScanError::describe` verbatim).
+/// One typed error, phrased for the harness.
 fn report_scan_error(phase: &str, e: ScanError) {
     match e {
         ScanError::TooFragmented { extents } => {
@@ -352,51 +313,39 @@ fn report_scan_error(phase: &str, e: ScanError) {
     }
 }
 
-/// The trial confirm (issue #619 §4), called once by the ride loop at the health anchor (first
-/// frame presented + SD mounted): `Trial { installed, .. }` ⇒ write `Idle { installed }` and
-/// return the confirmed header (the S5 toast's version); anything else is a silent no-op. The
-/// hardware watchdog (#349) already converts a wedged boot into the reset that triggers S3's
-/// rollback — there is deliberately no second timer here.
+/// The trial confirm, called once by the ride loop at the health anchor (first frame presented and
+/// SD mounted). A `Trial` record becomes `Idle { installed }` and returns the confirmed header;
+/// anything else is a silent no-op. The hardware watchdog already turns a wedged boot into the
+/// reset that triggers the rollback, so there is deliberately no second timer here.
 pub(crate) fn confirm_trial(settings: &mut RramSettingsStore) -> Option<ImageHeader> {
     let current = settings.read_boot_state();
     let (next, installed) = armer::confirm_trial(&current)?;
     if settings.write_boot_state(&next) {
         defmt::info!("dfu: trial confirmed — running {=str} is now the installed image", installed.fw_version_str());
-        // The arm's verdict is delivered (the success toast) — retire its breadcrumb.
+        // The arm's verdict is delivered, so retire its breadcrumb.
         settings.clear_arm_marker();
         Some(installed)
     } else {
-        // The trial record stands; an unconfirmed trial rolls back next boot — safe, loud.
+        // The trial record stands; an unconfirmed trial rolls back next boot.
         defmt::error!("dfu: trial-confirm page write failed — next boot will roll back");
         None
     }
 }
 
-/// The **boot-outcome reconcile**: called once per boot, before the ride loop runs, to turn the
-/// boot-state page + the armer's breadcrumb ([`ArmMarker`](obc_app::dfu::ArmMarker)) into the
-/// one-time post-update verdict the UI shows.
+/// The boot-outcome reconcile: called once per boot, before the ride loop runs, to turn the
+/// boot-state page and the armer's breadcrumb into the one-time post-update verdict the UI shows.
 ///
-/// The decision itself is the pure, host-tested [`obc_dfu::verdict`] — it reads the boot state's
-/// recorded [`LastOutcome`](obc_dfu::LastOutcome), **never** version strings (killing the
-/// same-version misreport, DR2 #730). This function is the IO + card mapping around it:
-///
-/// - [`TrialInProgress`](obc_dfu::Verdict::TrialInProgress) — this IS the trial boot; the
-///   health-anchor confirm owns the verdict (and the marker). Nothing to do.
-/// - [`Verdict::None`](obc_dfu::Verdict::None) — a plain boot; nothing happened, nothing shows.
-/// - [`Confirmed`](obc_dfu::Verdict::Confirmed) — the staged image is now running (accepted after an
-///   unconfirmed first-install trial). Clear the marker, show the success toast.
-/// - [`Reverted`](obc_dfu::Verdict::Reverted) — the staged image is not running (rejected before the
-///   erase, or its trial rolled back). Clear the marker, show the failure card.
-/// - [`NotStarted`](obc_dfu::Verdict::NotStarted) — an `Armed` record survived into the app: the
-///   bootloader never consumed it (stale or missing). Downgrade the stray arm to `Idle` so it can't
-///   fire by surprise later (the rollback snapshot's header is carried into `installed`, mirroring
-///   the engine's reject path), clear the marker, and show the not-started card.
+/// The decision itself is the pure, host-tested [`obc_dfu::verdict`], which reads the boot state's
+/// recorded [`LastOutcome`](obc_dfu::LastOutcome) and never version strings. This function is the
+/// IO and card mapping around it. A `TrialInProgress` verdict means this is the trial boot and the
+/// health-anchor confirm owns the verdict. `NotStarted` means an `Armed` record survived into the
+/// app, so the stray arm is downgraded to `Idle` and cannot fire by surprise later.
 pub(crate) fn reconcile_boot_outcome(
     facts: &mut obc_app::device_core::ExternalFacts,
     settings: &mut RramSettingsStore,
 ) {
     use obc_app::device_core::UpdateResult;
-    // There is one boot per boot, so the one-shot slot is free and this cannot be refused; a
+    // There is one boot per boot, so the one-shot slot is free and this cannot be refused. A
     // rejection would mean a second verdict was minted, which is a producer bug worth naming.
     let mut report = |result: UpdateResult| {
         if facts.note_update_result(result).is_err() {
@@ -410,7 +359,7 @@ pub(crate) fn reconcile_boot_outcome(
         obc_dfu::Verdict::TrialInProgress | obc_dfu::Verdict::None => {}
         obc_dfu::Verdict::Confirmed => {
             settings.clear_arm_marker();
-            // Confirmed is only returned with a marker present (see `verdict`), so `staged` is set.
+            // Confirmed is only returned with a marker present, so `staged` is set.
             let staged = marker.as_ref().map(|m| m.staged.as_str()).unwrap_or("");
             defmt::info!("dfu: staged {=str} accepted after an unconfirmed trial", staged);
             report(UpdateResult::Confirmed(obc_app::dfu::clamp(staged)));
@@ -418,8 +367,8 @@ pub(crate) fn reconcile_boot_outcome(
         obc_dfu::Verdict::Reverted => {
             settings.clear_arm_marker();
             let staged = marker.as_ref().map(|m| m.staged.as_str());
-            // RTT is the only forensics channel on glass — name the staged version when the marker
-            // carries one (Reverted is only returned with a marker present, but stay total).
+            // RTT is the only forensics channel on glass, so name the staged version when the
+            // marker carries one.
             match staged {
                 Some(v) => defmt::warn!("dfu: staged {=str} is not the running image — rejected or rolled back", v),
                 None => defmt::warn!("dfu: staged update is not the running image — rejected or rolled back"),
@@ -431,8 +380,8 @@ pub(crate) fn reconcile_boot_outcome(
         }
         obc_dfu::Verdict::NotStarted => {
             defmt::warn!("dfu: Armed record survived into the app — bootloader never ran the install");
-            // Downgrade the stray arm + name the staged version from the Armed record (the marker
-            // may be absent here — `verdict` returns NotStarted for `Armed` regardless of a marker).
+            // Downgrade the stray arm and name the staged version from the `Armed` record; the
+            // marker may be absent here.
             let (installed, staged) = match &state {
                 BootState::Armed { update, rollback, .. } => (rollback.map(|r| r.header), Some(update.header)),
                 _ => (None, None),
