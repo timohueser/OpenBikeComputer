@@ -1,14 +1,9 @@
-//! The **quick drawer over a real host** (#1515 D2): the chord plane, the drawer owner, and the
-//! four controls, driven through raw button edges and DeviceCore passes rather than by calling
-//! `handle` on a screen.
-//!
-//! Everything here is a property of the *composition* — that the squeeze reaches the app at all,
-//! that the sheet lands over whatever the rider was on without popping it, that the BLE toggle
-//! reaches the persistence handshake, that the brightness the host would drive follows the editor.
-//! The drawer's own page logic is unit-tested beside it in `screen/quick_drawer.rs`.
-//!
-//! The **contextual** sheet is here for the same reason, and D4a's nested value editor with it: a
-//! commit that reaches the persistence handshake is a property of the App, not of the sheet.
+//! The quick drawer over a real host: the chord plane, the drawer owner, and the four controls,
+//! driven through raw button edges and DeviceCore passes rather than by calling `handle` on a
+//! screen. Everything here is a property of the composition: that the squeeze reaches the app at
+//! all, that the sheet lands over whatever the rider was on without popping it, that a toggle
+//! reaches the persistence handshake. The drawer's own page logic is unit-tested beside it in
+//! `screen/quick_drawer.rs`. The contextual sheet is here for the same reason.
 
 use super::support::{build_min_obcm, down, quiet_pass, render_120, up, Frames};
 use crate::screen::{MapTransfer, BRIGHTNESS_MAX};
@@ -27,8 +22,8 @@ fn chord(app: &mut App, frames: &mut Frames, a: Button, b: Button, ms: u32) -> u
     for (dt, ev) in squeeze(a, b) {
         frames.frame(app, ms + dt, &[ev], None, None);
     }
-    // Settle the sheet's own open so a following gesture is not eaten by the animation — read off
-    // the drawer's constant, so retuning it cannot leave this helper acting mid-slide.
+    // Settle the sheet's own open so a following gesture is not eaten by the animation. The
+    // drawer's constant is read, so retuning it cannot leave this helper acting mid-slide.
     let settled = crate::screen::QUICK_OPEN_MS + 140;
     frames.idle(app, ms + settled);
     ms + settled + 100
@@ -44,7 +39,7 @@ fn drawer_up(app: &App) -> bool {
     matches!(app.top_screen(), Screen::QuickDrawer(_))
 }
 
-/// An app on `[Home, Map]` whose platform **has** a panel light — the simulator's shape, and the
+/// An app on `[Home, Map]` whose platform has a panel light — the simulator's shape, and the
 /// four-icon arrangement every test below but one is about.
 fn lit() -> App {
     let mut app = App::new(AppState::new(0, 0, 1.0));
@@ -52,8 +47,8 @@ fn lit() -> App {
     app
 }
 
-/// The squeeze opens the sheet **over** the screen the rider was on — the base is still there, so
-/// closing puts them back where they were without a navigation — and the same squeeze closes it.
+/// The squeeze opens the sheet over the screen the rider was on, so closing puts them back without
+/// a navigation, and the same squeeze closes it.
 #[test]
 fn the_quick_chord_opens_the_sheet_over_the_base_and_closes_it_again() {
     let mut app = lit(); // [Home, Map]
@@ -76,8 +71,8 @@ fn the_quick_chord_opens_the_sheet_over_the_base_and_closes_it_again() {
     assert!(matches!(app.top_screen(), Screen::Map(_)));
 }
 
-/// **The suppression set.** A genuinely blocking modal owns the device: no squeeze opens a sheet
-/// over a pairing passkey, a running map transfer, or the terminal install card.
+/// A genuinely blocking modal owns the device: no squeeze opens a sheet over a pairing passkey, a
+/// running map transfer, or the terminal install card.
 #[test]
 fn a_blocking_modal_refuses_the_chord() {
     // The passkey card, host-pushed by the BLE seam.
@@ -99,22 +94,22 @@ fn a_blocking_modal_refuses_the_chord() {
     assert!(matches!(app.top_screen(), Screen::MapTransfer(_)), "bytes are landing — no sheet over that");
 
     // The terminal "Installing update" card, the last frame before the warm reset. Driven through
-    // the domain's own landing seam, which is what actually puts the card up — `dfu_request` only
-    // states the intent, and a pass alone never lands it.
+    // the domain's own landing seam, which is what puts the card up: `dfu_request` only states the
+    // intent, and a pass alone never lands it.
     let mut app = lit();
     let mut f = Frames::new();
     app.post_dfu_landing(crate::card_scheduler::DfuLanding::InstallBegan);
     quiet_pass(&mut app, 100);
-    // Required, not assumed: a setup that stops reaching the card would otherwise retire this case
-    // silently, and the case is the whole point of the third `blocking()` row.
+    // Required, not assumed: a setup that stopped reaching the card would retire this case
+    // silently.
     assert!(matches!(app.top_screen(), Screen::DfuInstalling(_)), "the install card is up");
     chord(&mut app, &mut f, Button::Up, Button::Select, 1_000);
     assert!(matches!(app.top_screen(), Screen::DfuInstalling(_)), "nothing opens over the install card");
 }
 
-/// The **contextual** chord reaches the app as one chord: over the riding Map it opens the ride
-/// sheet and leaks neither a step nor a Back-tap onto the map under it (a leaked Back mid-ride
-/// would have swapped the view to Statistics, which is what makes this checkable at all).
+/// The contextual chord reaches the app as one chord: over the riding Map it opens the ride sheet
+/// and leaks neither a step nor a Back-tap onto the map under it (a leaked Back mid-ride would swap
+/// the view to Statistics, which is what makes this checkable at all).
 #[test]
 fn the_context_chord_opens_the_ride_sheet_and_leaks_nothing() {
     let mut app = lit();
@@ -128,22 +123,18 @@ fn the_context_chord_opens_the_ride_sheet_and_leaks_nothing() {
     assert_eq!(app.debug_stack_len(), depth);
 }
 
-/// **The route-plan sheet reaches the plan and the save** (#1515 D4d), through a real chord and
-/// real passes: the bike-type row is the only writer of `Settings::bike_profile_idx` left in the
-/// tree, so this is the whole loop from the squeeze to the value the host reads at `nav_begin`.
-///
-/// Three things at once, because they are one property: the commit writes the field and leaves the
-/// pass owing a settings persist (a drawer is not a settings subtree, so nothing is debounced); the
-/// sheet closes onto the confirm card rather than navigating anywhere; and the *Create route* press
-/// after it records the plan request while the settings hold the profile that was just committed —
-/// which is what the host drains and plans with.
+/// The route-plan sheet reaches the plan and the save, through a real chord and real passes. Three
+/// things at once, because they are one property: the commit writes `Settings::bike_profile_idx`
+/// and leaves the pass owing a settings persist, because a drawer is not a settings subtree; the
+/// sheet closes onto the confirm card rather than navigating; and the plan request afterwards is
+/// recorded while the settings hold the profile that was just committed.
 #[test]
 fn the_route_plan_sheet_reaches_the_plan_and_the_save() {
     let mut app = lit();
     let mut f = Frames::new();
     app.test_mount_store();
 
-    // A map with four §8.6 profiles, and a fix — the confirm card routes from where the rider is.
+    // A map with four profiles, and a fix — the confirm card routes from where the rider is.
     let bytes = super::support::build_min_obcm_profiles(0, &["Road", "Gravel", "MTB", "Touring"]);
     let src = obc_reader::SliceSource(&bytes);
     let tables = obc_reader::MapTables::parse(&src).expect("valid fixture");
@@ -175,8 +166,8 @@ fn the_route_plan_sheet_reaches_the_plan_and_the_save() {
     let _ = ms;
 }
 
-/// **Mutual exclusion**, at the one door: with the quick sheet up, the reserved squeezes do not
-/// stack a second overlay on it.
+/// Mutual exclusion at the one door: with the quick sheet up, the reserved squeezes do not stack a
+/// second overlay on it.
 #[test]
 fn no_squeeze_stacks_a_second_sheet() {
     let mut app = lit();
@@ -191,8 +182,8 @@ fn no_squeeze_stacks_a_second_sheet() {
     }
 }
 
-/// The BLE icon flips the real radio row **and** reaches the persistence handshake — the same
-/// before/after `==` a settings screen's edit arms, with no new path.
+/// The BLE icon flips the real radio row and reaches the persistence handshake, on the same path a
+/// settings screen's edit arms.
 #[test]
 fn the_bluetooth_icon_toggles_and_persists() {
     let mut app = lit();
@@ -207,8 +198,8 @@ fn the_bluetooth_icon_toggles_and_persists() {
     assert!(!quiet_pass(&mut app, ms).effects.settings.is_empty());
 }
 
-/// The brightness the host would drive follows the editor live, sticks on Select, and falls back
-/// to the committed row on Back — the port's preview/commit/revert contract, seen from the app.
+/// The brightness the host would drive follows the editor live, sticks on Select, and falls back to
+/// the committed row on Back — the port's preview/commit/revert contract, seen from the app.
 #[test]
 fn the_driven_brightness_previews_commits_and_reverts() {
     let mut app = lit();
@@ -232,9 +223,9 @@ fn the_driven_brightness_previews_commits_and_reverts() {
     assert!(!quiet_pass(&mut app, ms).effects.settings.is_empty(), "a committed level is persisted");
 }
 
-/// **Both arrangements of the root row.** A platform with a panel light offers four controls and
-/// opens on brightness; one without offers three and opens on the radio — and every remaining
-/// control still reaches the page it names, which is the part an index shift would break.
+/// Both arrangements of the root row. A platform with a panel light offers four controls and opens
+/// on brightness; one without offers three and opens on the radio — and every remaining control
+/// still reaches the page it names, which is the part an index shift would break.
 #[test]
 fn a_platform_without_a_panel_light_drops_the_brightness_control() {
     // Lit: four controls, and the first press opens the editor.
@@ -274,17 +265,11 @@ fn a_platform_without_a_panel_light_drops_the_brightness_control() {
     assert!(matches!(app.top_screen(), Screen::Settings(_)), "the middle control is the gear");
 }
 
-/// A host-pushed modal **takes the sheet with it**, so the panel stops showing an uncommitted
-/// preview the rider can no longer reach — and, since #1515 D3, cannot be walked back into either.
-///
-/// The map-transfer card is the worst case on purpose: it also refuses the chord, so a preview held
-/// behind it would stand for the length of a multi-minute upload with no way for the rider to end
-/// it.
-///
-/// **The second half changed in D3.** D2 buried the sheet under the card and gave it back when the
-/// card cleared. That left the sheet reachable by dismissing a card — the rider ends a map transfer
-/// and lands inside a brightness editor they opened minutes ago. A drawer is transient chrome now:
-/// the card closes it, and the transfer ends on the map.
+/// A host-pushed modal takes the sheet with it, so the panel stops showing an uncommitted preview
+/// the rider can no longer reach. The map-transfer card is the worst case on purpose: it also
+/// refuses the chord, so a preview held behind it would stand for the length of a multi-minute
+/// upload with no way for the rider to end it. A drawer is transient chrome: the card closes it,
+/// and the transfer ends on the map.
 #[test]
 fn a_modal_over_the_editor_closes_the_sheet_and_reverts_the_preview() {
     let mut app = lit();
@@ -326,7 +311,7 @@ fn power_off_needs_the_completed_hold() {
     assert!(app.power_off_requested(), "only the completed hold asks the host to switch off");
 }
 
-/// The settings icon **replaces** the sheet, so a Back out of central settings lands on the base
+/// The settings icon replaces the sheet, so a Back out of central settings lands on the base
 /// screen — not back inside a drawer the rider has finished with.
 #[test]
 fn central_settings_replaces_the_sheet_and_back_lands_on_the_base() {
@@ -345,13 +330,10 @@ fn central_settings_replaces_the_sheet_and_back_lands_on_the_base() {
     assert_eq!(app.debug_stack_len(), depth);
 }
 
-/// **The per-screen dim, in pixels** (#1559). A sheet over a *map* base leaves it exactly as it
-/// was — the map reads fine at full colour, and dimming it would mean re-rendering it. A sheet over
-/// a *menu* base still recesses it through the dim LUT, because that second draw is a handful of
-/// rules and glyphs.
-///
-/// The mutant: flip `Caps::map()`'s `recess` back to `true` and the first half fails; drop the
-/// `caps().recess` read in `render_map` and the second half does.
+/// The per-screen dim, in pixels. A sheet over a map base leaves it exactly as it was — the map
+/// reads fine at full colour, and dimming it would mean re-rendering it. A sheet over a menu base
+/// still recesses it through the dim LUT, because that second draw is a handful of rules and
+/// glyphs.
 #[test]
 fn a_sheet_recesses_a_menu_base_and_leaves_a_map_base_alone() {
     use embedded_graphics::pixelcolor::Rgb888;
@@ -364,7 +346,6 @@ fn a_sheet_recesses_a_menu_base_and_leaves_a_map_base_alone() {
     // The sheet's own parchment, which is never recessed: it is the thing in front.
     let parchment = Rgb888::new(247, 243, 239);
 
-    // --- a map base: untouched ---------------------------------------------------------------
     let mut app = lit(); // [Home, Map] over the flat blue backdrop
     let mut f = Frames::new();
     let before = render_120(&mut app, &bytes);
@@ -380,7 +361,6 @@ fn a_sheet_recesses_a_menu_base_and_leaves_a_map_base_alone() {
     let after = render_120(&mut app, &bytes);
     assert_eq!(after.count(plain_blue), before.count(plain_blue), "closing restores the base exactly");
 
-    // --- a menu base: recessed ---------------------------------------------------------------
     let mut app = lit();
     let mut f = Frames::new();
     let _ = app.ui.stack.push(Screen::Menu(crate::screen::MenuScreen::new())); // a chrome base

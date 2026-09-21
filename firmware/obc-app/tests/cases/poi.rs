@@ -1,12 +1,10 @@
-//! Integration tests for the on-device POIs browser (#425): the Menu → category → list navigation,
-//! the lazy static snapshot (populates from a `Reader` in the pre-draw `prepare` pass — #803 moved
-//! it out of `draw` — then stays frozen), the empty-category and no-fix states, and that the
-//! reader-build seam ([`App::base_needs_reader`]) reports correctly for the POI list vs the frozen
-//! snapshot.
+//! Integration tests for the on-device POIs browser: the Menu → category → list navigation, the
+//! lazy static snapshot (populated from a `Reader` in the pre-draw `prepare` pass, then frozen),
+//! the empty-category and no-fix states, and the reader-build seam
+//! ([`App::base_needs_reader`]).
 //!
-//! Screens are driven through the real gesture path (`App::apply_gesture`), then a frame is rendered
-//! with `App::render_frame` (which always passes `Some(reader)`, like the sim); its pre-draw
-//! `prepare` pass fills the snapshot, and `draw` then consumes it read-only.
+//! Screens are driven through the real gesture path, then a frame is rendered with
+//! `App::render_frame`, which always passes `Some(reader)` like the sim.
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::screen::Screen;
@@ -18,15 +16,14 @@ use obcm_testkit::{build_poi_map, build_poi_map_with_hours, PoiSpec};
 
 use crate::common::Buf;
 
-/// The fixture map bbox `(min_lon, min_lat, max_lon, max_lat)` — a 1°×1° square near 43° N, matching
-/// the reader's POI query tests.
+/// The fixture map bbox `(min_lon, min_lat, max_lon, max_lat)`: a 1°×1° square near 43° N.
 const BBOX: (i32, i32, i32, i32) = (7_000_000, 43_000_000, 8_000_000, 44_000_000);
 /// The query point (lon, lat µdeg) all fixtures center on.
 const POS: (i32, i32) = (7_500_000, 43_500_000);
 
-/// A v6 map with Water and Campsite POIs near [`POS`], and an empty Accommodation category. Water
-/// has three named points at increasing distance; Campsite has one unnamed point (so the fallback
-/// label shows).
+/// A map with Water and Campsite POIs near [`POS`], and an empty Accommodation category. Water has
+/// three named points at increasing distance; Campsite has one unnamed point, for the fallback
+/// label.
 fn fixture() -> Vec<u8> {
     let water = vec![
         PoiSpec { lat: 43_500_500, lon: 7_500_000, subtype: 1, name: "Fountain North".into(), payload: 0xFFFF }, // due north, nearest
@@ -89,11 +86,9 @@ fn lazy_snapshot_populates_on_first_draw() {
     app.state.user_fix = Some(Fix::at(POS.1, POS.0)); // (lat, lon) — a stationary fix at POS
 
     open_poi_list(&mut app, 0); // Water
-                                // Before any draw, the POI list still needs the Reader (its query runs at draw).
     assert!(app.base_needs_reader(), "the POI list needs the Reader until it has snapshotted");
 
     let _ = render(&mut app, &bytes); // the first draw takes the snapshot
-                                      // After the snapshot the seam reports the Reader is no longer needed (frozen list draws alone).
     assert!(!app.base_needs_reader(), "once snapshotted the POI list draws without the Reader");
     assert_eq!(app.poi_snapshot_len(), 3, "all three Water POIs snapshotted (nearest-16, only 3 exist)");
 }
@@ -178,7 +173,6 @@ fn hours_fixture() -> Vec<u8> {
     build_poi_map_with_hours(BBOX, 512, &[(1, water)], &[all_week])
 }
 
-/// Pressing a POI in the list opens the detail screen; back returns to the list.
 #[test]
 fn press_opens_detail_and_back_returns() {
     let bytes = hours_fixture();
@@ -196,7 +190,6 @@ fn press_opens_detail_and_back_returns() {
     assert!(matches!(app.top_screen(), Screen::PoiList(_)), "back returns to the POI list");
 }
 
-/// Pressing before any snapshot exists (no draw yet) is a no-op — nothing to open.
 #[test]
 fn press_without_snapshot_is_noop() {
     let bytes = hours_fixture();
@@ -222,7 +215,6 @@ fn detail_resolves_hours_on_first_draw() {
     app.apply_gesture(Gesture::Press); // open the detail for the nearest (Shop North, ref 0)
     assert!(matches!(app.top_screen(), Screen::PoiDetail(_)));
 
-    // Before the detail's first draw its hours read is pending — the seam keeps the Reader built.
     assert!(app.base_needs_reader(), "the detail needs the Reader until it resolves its hours");
     let _ = render(&mut app, &bytes); // the first detail draw resolves the schedule
     assert!(!app.base_needs_reader(), "once resolved the detail draws without the Reader");

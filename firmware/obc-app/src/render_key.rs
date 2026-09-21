@@ -1,48 +1,28 @@
-//! **Render keys** — the exact facts the visible screens draw, compared once at the pass boundary.
+//! Render keys: the exact facts the visible screens draw, compared once at the pass boundary.
 //!
-//! The repaint rule does not change (`dirty.rs`: over-redraw is safe, under-redraw is a bug). What
-//! changes is who states it. A screen row declares its [`RenderKeyKind`](crate::screen::RenderKeyKind)
-//! in the `screens!` table beside its other capabilities; [`App::render_key`] reads the visible
-//! stack and answers with the exact values those kinds name. [`App::run_pass`](crate::App::run_pass)
-//! builds that answer **before** its stages and again **after** them, both on its own stack, and
-//! dirties the map when the two differ.
-//!
-//! ## Exact, never hashed
+//! A screen row declares its [`RenderKeyKind`](crate::screen::RenderKeyKind) in the `screens!`
+//! table. [`App::render_key`] reads the visible stack and answers with the exact values those kinds
+//! name; [`App::run_pass`](crate::App::run_pass) builds that answer before its stages and again
+//! after them, and dirties the map when the two differ.
 //!
 //! Every field is a value, not a digest: floats are stored as [`f32::to_bits`], so `-0.0` and `NaN`
-//! compare by their exact representation rather than by IEEE equality. A hash would trade a missed
-//! redraw — the one failure mode the dirty contract calls a bug — for a few bytes of stack.
+//! compare by their exact representation. A hash would trade a missed redraw, the one failure the
+//! dirty contract calls a bug, for a few bytes of stack.
 //!
-//! ## What a key can and cannot see
-//!
-//! The comparison is stack-local and spans one pass, so it detects exactly the mutations that
-//! happen **inside** that pass: the fix and the sensors (stage 3), the card sweep and the screen
-//! ticks (stage 4), and every domain's own advance (stages 5–13). A host seam that mutates
-//! `App` *between* two passes — `set_sensor_status`, `set_sensor_scan_hits`,
-//! `set_map_transfer`, the catalog feeds — has already moved the fact by the time the next pass
-//! builds its *before* key, so both keys agree and the difference is invisible. Those seams keep an
-//! explicit dirty request, and each says so at its call site. They become key-covered when the seam
-//! moves into [`ExternalFacts`](crate::device_core::ExternalFacts) and is consumed at stage 2.
-//!
-//! One mutation is invisible for the opposite reason, and needs no cover at all: the pre-draw
-//! [`prepare_base`](crate::ui_runtime::UiRuntime::prepare_base) acquisition runs *inside* the map
-//! render, ahead of the draw. What it resolves — the corridor snapshot, the POI list's and the POI
-//! detail's one-shot reads, the `Next: <category>` distillation — is drawn by the very frame that
-//! produced it, so the cache and the glass never disagree and no key could see the landing anyway.
-//! What a key must name is the **request**: the query runs only during a render, so a request armed
-//! inside a pass that nothing else moved would otherwise never run at all
-//! ([`StatsKey::next_ahead`], #1538).
-//!
-//! The alternative — keeping the previous pass's key resident in `App` — is what this design
-//! refuses: it would put a second copy of the visible state next to the state itself, which is the
-//! multiplicity the manual mirrors already were.
+//! The comparison is stack-local and spans one pass, so it sees only the mutations inside that
+//! pass. A host seam that mutates `App` between two passes has already moved the fact before the
+//! next pass builds its first key, so each such seam keeps an explicit dirty request and says so at
+//! its call site. The pre-draw [`prepare_base`](crate::ui_runtime::UiRuntime::prepare_base)
+//! acquisition is invisible for the opposite reason: it runs inside the map render, so what it
+//! resolves is drawn by the frame that produced it. What a key names there is the request, because
+//! the query runs only during a render.
 
 use crate::screen::{RenderKeyKind, Screen, ScreenRow, MAX_DEPTH};
 use crate::App;
 
 /// The shape of the visible screen stack: every row from the lowest opaque screen to the top, by
-/// variant. A navigation, a card landing and a card dismissal all move this, so a screen transition
-/// dirties the map without any screen having to remember to say so.
+/// variant. A navigation, a card landing and a card dismissal all move it, so a screen transition
+/// dirties the map without any screen having to say so.
 pub(crate) type ShapeKey = heapless::Vec<ScreenRow, MAX_DEPTH>;
 
 /// One GPS fix, exactly as the riding views draw it: position, course and speed. The camera derives
@@ -74,16 +54,13 @@ pub(crate) struct HomeKey {
     battery_pct: u8,
     ble_link: crate::ble::BleLink,
     ble_paired: bool,
-    /// The screensaver backdrop's seed — Home's whole animation state besides its minute ticker,
-    /// which reports its own change through [`ScreenTick`](crate::screen::ScreenTick).
+    /// The screensaver backdrop's seed: Home's whole animation state besides its minute ticker.
     backdrop_seed: u32,
 }
 
-/// A map base: the camera, the fix that drives it, the pan HUD, the route-relative chrome (the
-/// warning chip, the waypoint chip, the drawn route line), and the low-battery cue.
-///
-/// Catalog and table indices are narrowed to `u32`: a route slot and a waypoint row are bounded by
-/// their catalogs' own low caps, so the narrowing is lossless on every target this runs on.
+/// A map base: the camera, the fix that drives it, the pan HUD, the route-relative chrome and the
+/// low-battery cue. Catalog and table indices are narrowed to `u32`, which is lossless because a
+/// route slot and a waypoint row are bounded by their catalogs' own low caps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MapKey {
     cam_lon: i32,
@@ -102,8 +79,8 @@ pub(crate) struct MapKey {
     next_waypoint: Option<u32>,
     no_fix: bool,
     tracking: bool,
-    /// Whether the top-left low-battery glyph is up — the one thing a map base draws off the gauge.
-    /// The *cue*, not the level, so the 30 s poll only repaints the crossing.
+    /// Whether the top-left low-battery glyph is up. It is the cue, not the level, so the 30 s
+    /// poll only repaints the crossing.
     low_battery: bool,
 }
 
@@ -118,24 +95,17 @@ pub(crate) struct StatsKey {
     no_fix: bool,
     active_climb: Option<u32>,
     next_waypoint: Option<u32>,
-    /// The displayed heart-rate / power / cadence values, each `None` unless its field is on the
-    /// grid — the same economy the per-quantity guards spelled out by hand.
+    /// The displayed heart-rate, power and cadence values, each `None` unless its field is on the
+    /// grid, so an unconfigured sensor forces no render at its notification rate.
     live: (Option<u16>, Option<u16>, Option<u8>),
     /// The refresh the [`NextAhead`](crate::next_ahead::NextAhead) cache behind the six
-    /// `Next: <category>` tiles is asking for: which category is being re-taken, and the progress
-    /// it is anchored at. `None` — nothing outstanding — is the settled state, the same fact
-    /// [`UpAheadKey::corridor`] carries for the list's own snapshot: what a row or a tile names is
-    /// not final until the request behind it has landed.
+    /// `Next: <category>` tiles asks for: which category is being re-taken, and the progress it is
+    /// anchored at. `None` is the settled state.
     ///
-    /// It is the **request**, not the six cached entries, because the two move in different places
-    /// (#1538). The scheduler arms a request *inside* the pass; the answer is distilled in
-    /// [`prepare_base`](crate::ui_runtime::UiRuntime::prepare_base), which runs at the top of the
-    /// map render, ahead of the draw — so a landing is drawn by the very frame that produced it,
-    /// and no key can, or need, see it. An arming is the half a stack-local comparison *does* see,
-    /// and must act on: the query runs only during a render, so a render-on-demand host that stays
-    /// clean here never runs it at all. With two `Next:` tiles placed, the round-robin arms the
-    /// second category on a pass where nothing else moved, and that tile stayed `--` until
-    /// unrelated dirt happened to repaint the grid.
+    /// It is the request, not the six cached entries, because the answer is distilled inside the
+    /// map render and drawn by the frame that produced it. The arming is the half a stack-local
+    /// comparison does see, and must act on: the query runs only during a render, so a
+    /// render-on-demand host that stays clean here never runs it at all.
     next_ahead: Option<(obc_reader::PoiCategory, u32)>,
 }
 
@@ -149,11 +119,10 @@ pub(crate) struct ClimbKey {
 
 /// The Sensors settings pages: the saved sensors' per-slot status.
 ///
-/// The **scan list is deliberately absent**. Both it and the status above are fed by host seams
-/// that run between two passes, so neither edge is visible to a stack-local comparison; each seam
-/// asks for its own repaint, and copying a few hundred bytes of names and addresses into a key that
-/// can never differ would be cost without cover. The status is here because it is free — a `Copy`
-/// array the screens already hold — and because it is what the row declares it draws.
+/// The scan list is deliberately absent. Both it and the status are fed by host seams that run
+/// between two passes, so neither edge is visible to a stack-local comparison and each seam asks
+/// for its own repaint. The status is here because it is free, and because it is what the row
+/// declares it draws.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SensorsKey {
     status: [crate::sensors::SensorStatus; crate::settings::SENSOR_SLOTS],
@@ -161,11 +130,7 @@ pub(crate) struct SensorsKey {
 
 /// The Up-ahead timeline: the live progress every row's distance-to-go is measured from, the route
 /// length the ascent figures are taken over, and the corridor snapshot the rows are merged from.
-///
-/// This one exists because deleting the next-waypoint dirty site would otherwise have left the
-/// timeline frozen: that site fired on a waypoint *crossing*, which is the coarsest possible
-/// approximation of "the distances moved". Naming progress itself is both smaller and correct —
-/// every row's figure now refreshes with the fix that changed it.
+/// Naming progress itself refreshes every row's figure with the fix that changed it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct UpAheadKey {
     progress_m: u32,
@@ -181,22 +146,20 @@ pub(crate) struct DrawerKey {
     page: u8,
     selected: u8,
     staged: u8,
-    /// The committed brightness the editor marks while the rider browses alternatives — the one
-    /// brightness value the quick drawer draws.
+    /// The committed brightness the editor marks while the rider browses alternatives.
     committed: u8,
-    /// Which of the sheet's rows are live, as a bitmask — the contextual drawer's equivalent of
-    /// `committed`, and the only other base-derived fact a drawer draws. It is the *cue*, not the
-    /// route/graph/off-route values behind it, so a rider drifting off the route redraws the sheet
-    /// once and a moving map under it still costs nothing. For the quick drawer this byte records
-    /// whether Bluetooth is enabled.
+    /// Which of the sheet's rows are live, as a bitmask: the contextual drawer's equivalent of
+    /// `committed`. It is the cue, not the values behind it, so a rider drifting off the route
+    /// redraws the sheet once and a moving map under it still costs nothing. For the quick drawer
+    /// this byte records whether Bluetooth is enabled.
     enabled: u8,
 }
 
 /// One pass's answer: the visible stack's shape, plus the exact facts each declared kind names.
 ///
 /// A kind's slot is `Some` exactly when some visible row declares it. Kinds are facts about the
-/// *device*, not about a screen instance, so two visible rows declaring the same kind fill the same
-/// slot with the same value — there is nothing to reconcile.
+/// device, not about a screen instance, so two visible rows declaring the same kind fill the same
+/// slot with the same value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RenderKey {
     shape: ShapeKey,
@@ -216,12 +179,12 @@ const _: () =
 impl App {
     /// The exact facts the currently visible screens draw.
     ///
-    /// Reads DeviceCore state and mutates nothing — [`run_pass`](App::run_pass) calls it twice per
+    /// It reads DeviceCore state and mutates nothing: [`run_pass`](App::run_pass) calls it twice per
     /// pass, so a side effect here would be applied twice and once out of order.
     ///
-    /// `#[inline(never)]`: the two calls are the same walk over the same stack, and letting the
-    /// optimiser paste it into the ride loop's own frame twice buys nothing and costs both flash and
-    /// the deepest stack frame on the board.
+    /// It must stay `#[inline(never)]`: the two calls are the same walk over the same stack, and
+    /// pasting it into the ride loop's own frame twice costs flash and the deepest stack frame on
+    /// the board.
     #[inline(never)]
     pub(crate) fn render_key(&self) -> RenderKey {
         let mut key = RenderKey {
@@ -282,7 +245,7 @@ impl App {
             Screen::ContextDrawer(d) => {
                 // The contextual sheet's five facts: its page, the cursor, the value the nested
                 // editor has staged, the value already committed underneath, and which rows are
-                // live. D4a is what gave `page`/`staged`/`committed` something to say here.
+                // live.
                 let (page, selected, staged, committed, enabled) = d.key(&crate::screen::ContextFacts {
                     state: &self.state,
                     navigation: self.navigator.route_state(),
@@ -411,22 +374,15 @@ mod tests {
         );
     }
 
-    /// The quiet case, and the whole economy: a device nothing happened to answers the same key
-    /// twice, so the pass asks for no repaint.
     #[test]
     fn an_unchanged_device_answers_the_same_key() {
         let app = App::new(AppState::new(0, 0, 1.0));
         assert_eq!(app.render_key(), app.render_key(), "reading the key must not change it");
     }
 
-    /// A navigation moves the shape, so no screen has to remember to dirty the map on the way in or
-    /// out.
-    ///
-    /// The **same-kind** move is the one that needs the shape: swapping the Map for the Detour
-    /// chooser leaves every declared fact identical (both rows declare
-    /// [`Map`](RenderKeyKind::Map), and the facts are the device's, not the screen's), so the
-    /// identity of the row is the only thing that moved. Delete the `shape.push` and this half
-    /// fails.
+    /// The same-kind move is the one that needs the shape: swapping the Map for the Detour chooser
+    /// leaves every declared fact identical, because both rows declare [`Map`](RenderKeyKind::Map)
+    /// and the facts are the device's, so the identity of the row is all that moved.
     #[test]
     fn a_screen_transition_moves_the_key() {
         let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
@@ -446,8 +402,6 @@ mod tests {
         assert_ne!(app.render_key(), on_map, "…and the shape is what tells the two frames apart");
     }
 
-    /// **Exact, never hashed, and never IEEE.** A float goes into the key as its bit pattern, so a
-    /// zoom that changed to a value comparing `==` under IEEE rules still repaints.
     #[test]
     fn floats_are_compared_by_their_exact_bits() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
@@ -460,8 +414,6 @@ mod tests {
         assert_ne!(negative_zero, before);
     }
 
-    /// Home draws the gauge as a *level*; a map base draws only the low-battery cue. The economy the
-    /// per-screen declaration buys over the old base-screen class gate, in one comparison.
     #[test]
     fn the_battery_level_is_in_homes_key_and_in_no_other() {
         let mut home = App::new_idle(AppState::new(0, 0, 1.0));
@@ -475,8 +427,6 @@ mod tests {
         assert_eq!(map.render_key(), before, "a level a map base never draws costs it no render");
     }
 
-    // ---- The frozen base: a drawer's key shadows every other kind --------------------------
-
     /// A helper: `[Home, Map]` with the quick drawer squeezed open on top.
     fn map_under_a_drawer() -> App {
         let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
@@ -484,9 +434,8 @@ mod tests {
         app
     }
 
-    /// **The key names drawer facts and nothing else.** Every base slot is empty while a drawer is
-    /// visible — that is what "the base is frozen" *is*, expressed once, in the only place the
-    /// repaint decision is made.
+    /// Every base slot is empty while a drawer is visible: that is what "the base is frozen" is,
+    /// said once, in the only place the repaint decision is made.
     #[test]
     fn a_drawer_on_top_leaves_every_base_fact_out_of_the_key() {
         let app = map_under_a_drawer();
@@ -501,8 +450,6 @@ mod tests {
         assert_eq!(key.shape.len(), 2, "Map + the sheet above it");
     }
 
-    /// **Nothing under the drawer can dirty the frame.** The camera, the fix behind it, and the
-    /// battery all move; the key does not.
     #[test]
     fn moving_the_camera_under_a_drawer_does_not_move_the_key() {
         let mut app = map_under_a_drawer();
@@ -515,9 +462,6 @@ mod tests {
         assert_eq!(app.render_key(), quiet, "a moving map under a sheet asks for no repaint");
     }
 
-    /// **Closing costs exactly one invalidation.** The key moves once — the shape lost a row and
-    /// the base facts came back — and then settles, so the base is not re-rendered frame after
-    /// frame afterwards.
     #[test]
     fn closing_a_drawer_invalidates_the_base_exactly_once() {
         let mut app = map_under_a_drawer();
@@ -531,8 +475,6 @@ mod tests {
         assert_eq!(app.render_key(), uncovered, "exactly one: the next frame asks for nothing");
     }
 
-    // ---- The same three properties for the **contextual** drawer ---------------------------
-
     /// `[Home, Map]` with the ride context sheet squeezed open on top.
     fn map_under_the_context_sheet() -> App {
         let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
@@ -540,8 +482,8 @@ mod tests {
         app
     }
 
-    /// **The context sheet shadows the base too.** The kind is declared on the row, not on the
-    /// drawer's identity, so the frozen base is one rule and not two.
+    /// The kind is declared on the row, not on the drawer's identity, so the frozen base is one
+    /// rule and not two.
     #[test]
     fn a_context_sheet_leaves_every_base_fact_out_of_the_key() {
         let app = map_under_the_context_sheet();
@@ -552,9 +494,8 @@ mod tests {
         assert_eq!(key.shape.len(), 2, "Map + the sheet above it");
     }
 
-    /// **Nothing under the context sheet dirties the frame** — and, unlike the quick drawer, this
-    /// one draws a fact derived from the base, so the case is worth its own assertion: the camera,
-    /// the fix and the battery all move while the rows' availability does not.
+    /// Unlike the quick drawer, this sheet draws a fact derived from the base, so the case is
+    /// worth its own assertion.
     #[test]
     fn moving_the_camera_under_the_context_sheet_does_not_move_the_key() {
         let mut app = map_under_the_context_sheet();
@@ -567,8 +508,7 @@ mod tests {
         assert_eq!(app.render_key(), quiet, "a moving map under a sheet asks for no repaint");
     }
 
-    /// …but a row **going inert** is a pixel the sheet draws, so that one does move the key. The
-    /// cue, not the values behind it: the same economy the map base's low-battery glyph gets.
+    /// A row going inert is a pixel the sheet draws, so that one does move the key.
     #[test]
     fn a_row_going_inert_under_the_sheet_moves_the_key() {
         let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
@@ -583,15 +523,10 @@ mod tests {
         assert_eq!(app.render_key(), live, "…and back on route is the same sheet again");
     }
 
-    /// …and the twin on the **map display** sheet (#1515 D4c), where the moving fact is a switch's
-    /// own bit rather than a row's availability.
-    ///
-    /// This is the whole argument for `DrawerKey` gaining no field for it. All three switches are
-    /// device-only — no BLE adopt writes them — so under an open sheet only the rider can move one,
-    /// and only the selected row's. Every state change is therefore accompanied by a `committed`
-    /// change and every cursor move by a `selected` change, which the two existing bytes already
-    /// carry. The mutant is a `key` that reports 0 for a switch row: the flip below would move
-    /// nothing and the slider would sit still until the sheet closed.
+    /// The twin on the map display sheet, where the moving fact is a switch's own bit rather than
+    /// a row's availability. `DrawerKey` needs no field for it: the three switches are device-only,
+    /// so every state change comes with a `committed` change and every cursor move with a
+    /// `selected` change, which the two existing bytes already carry.
     #[test]
     fn a_flip_under_the_sheet_moves_only_the_drawer_key() {
         let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
@@ -604,7 +539,6 @@ mod tests {
         assert_eq!(quiet.drawer.map(|d| d.enabled), Some(0b1111), "all display rows are always live");
         assert_eq!(quiet.drawer.map(|d| d.committed), Some(1), "the selected row reads its own bit");
 
-        // The base moving under the sheet is not a pixel either sheet draws.
         app.state.cam_lon += 5_000;
         app.state.user_fix = Some(obc_ports::Fix::at(1_000, 2_000));
         assert_eq!(app.render_key(), quiet, "a moving map under the display sheet asks for no repaint");
@@ -615,7 +549,6 @@ mod tests {
         assert_ne!(flipped, quiet, "the slider moved — the sheet must redraw");
         assert_eq!(flipped.drawer.map(|d| d.committed), Some(0));
 
-        // …and the close is exactly one invalidation, with the map back in the key.
         assert!(app.apply_chord(crate::input::Chord::Context), "the same chord closes it");
         let uncovered = app.render_key();
         assert_ne!(uncovered, flipped);
@@ -623,7 +556,6 @@ mod tests {
         assert_eq!(app.render_key(), uncovered, "exactly one: the next frame asks for nothing");
     }
 
-    /// **Closing the context sheet costs exactly one invalidation**, like closing the quick one.
     #[test]
     fn closing_the_context_sheet_invalidates_the_base_exactly_once() {
         let mut app = map_under_the_context_sheet();
@@ -636,9 +568,9 @@ mod tests {
         assert_eq!(app.render_key(), uncovered, "exactly one: the next frame asks for nothing");
     }
 
-    /// **The nested editor's own three facts** (#1515 D4a): the page, the value staged on it and
-    /// the value committed underneath are three separate reasons to repaint, and the base under the
-    /// sheet is still frozen through all of them.
+    /// The nested editor's own three facts: the page, the value staged on it and the value
+    /// committed underneath are three separate reasons to repaint, and the base under the sheet
+    /// stays frozen through all of them.
     #[test]
     fn the_nested_editor_puts_its_page_staged_and_committed_value_in_the_key() {
         let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
@@ -667,40 +599,30 @@ mod tests {
         let staged = app.render_key();
         assert_ne!(staged, opened, "the staged choice is what the editor draws");
 
-        // The committed value is the *other* half: change it underneath without touching the
-        // cursor, and the tick moves — so the key has to say so.
         let with_staged = app.render_key();
         app.state.up_ahead_filter = obc_reader::PoiCategorySet::only(obc_reader::PoiCategory::Pharmacy);
         assert_ne!(app.render_key(), with_staged, "the committed mark is a pixel the sheet draws");
 
-        // …and nothing under the sheet is, still.
         let quiet = app.render_key();
         app.state.cam_lon += 5_000;
         app.navigator.route_state_mut().progress_m += 900;
         assert_eq!(app.render_key(), quiet, "a moving base under an open editor asks for no repaint");
     }
 
-    /// …and the twin on the **route-plan** sheet (#1515 D4d), where the moving fact comes from
-    /// outside the app entirely: the host loading a map changes how many routing profiles exist,
-    /// and therefore whether the sheet's one row is live and which profile it marks.
-    ///
-    /// The confirm card under it is `RenderKeyKind::Static`, so there is no base fact in the key to
-    /// begin with; the whole question is that the two things the sheet *does* draw — `enabled` and
-    /// `committed` — still move when a `set_nav_profiles` lands under it, and that the close is one
-    /// invalidation.
+    /// The twin on the route-plan sheet, where the moving fact comes from outside the app: the
+    /// host loading a map changes how many routing profiles exist, and so whether the sheet's one
+    /// row is live and which profile it marks.
     #[test]
     fn a_map_load_under_the_sheet_moves_the_row_and_nothing_else() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // [Home]
         let _ = app.ui.stack.push(crate::harness::support::selected_place());
         assert!(app.apply_chord(crate::input::Chord::Context), "the confirm card declares a context");
 
-        // No map yet: the row is inert, and the frame holds no base fact of any kind.
         let inert = app.render_key();
         assert_eq!(inert.drawer.map(|d| d.enabled), Some(0), "with no map the row has no choice to offer");
         assert!(inert.map.is_none() && inert.home.is_none());
 
-        // The host loads a map under the open sheet — through the real mirror, from a real parsed
-        // §8.6 table. That is a pixel the *sheet* draws.
+        // The host loads a map under the open sheet, through the real parse path.
         let bytes = crate::harness::support::build_min_obcm_profiles(0, &["Road", "Gravel", "MTB", "Touring"]);
         let src = obc_reader::SliceSource(&bytes);
         let tables = obc_reader::MapTables::parse(&src).expect("valid fixture");
@@ -709,20 +631,17 @@ mod tests {
         assert_ne!(live, inert, "the row went live — the sheet must redraw");
         assert_eq!(live.drawer.map(|d| d.enabled), Some(1));
 
-        // The committed mark is the other half: a stale index resolved to profile 0 while the map
-        // was empty and resolves to itself now, which moves `committed` on its own.
+        // A stale index resolved to profile 0 while the map was empty and resolves to itself now.
         app.set_settings(crate::settings::Settings { bike_profile_idx: 2, ..Default::default() });
         let marked = app.render_key();
         assert_ne!(marked, live, "the tick moved to the profile the router will use");
         assert_eq!(marked.drawer.map(|d| d.committed), Some(2));
 
-        // …and the base under the sheet is still nothing at all.
         let quiet = app.render_key();
         app.state.cam_lon += 5_000;
         app.state.device.battery_pct = 9;
         assert_eq!(app.render_key(), quiet, "a moving base under the route-plan sheet asks for no repaint");
 
-        // The close is exactly one invalidation.
         assert!(app.apply_chord(crate::input::Chord::Context), "the same chord closes it");
         let uncovered = app.render_key();
         assert_ne!(uncovered, quiet);
@@ -730,8 +649,8 @@ mod tests {
         assert_eq!(app.render_key(), uncovered, "exactly one: the next frame asks for nothing");
     }
 
-    /// The two sheets are **different frames**: the shape carries which drawer is up, so swapping
-    /// one for the other repaints even though both fill the same key slot.
+    /// The two sheets are different frames: the shape carries which drawer is up, so swapping one
+    /// for the other repaints even though both fill the same key slot.
     #[test]
     fn the_two_sheets_are_told_apart_by_the_shape() {
         let mut app = map_under_the_context_sheet();
@@ -740,8 +659,8 @@ mod tests {
         assert_ne!(app.render_key(), context, "a different sheet is a different frame");
     }
 
-    /// …but the map base *does* draw the low-battery glyph, so the pass must see the threshold
-    /// crossing. Both ways: the cue appearing and the cue clearing on a charge.
+    /// The map base does draw the low-battery glyph, so the pass must see the threshold crossing,
+    /// both on the way down and on a charge back over it.
     #[test]
     fn the_low_battery_cue_moves_the_map_key_in_both_directions() {
         let mut map = App::new(AppState::new(0, 0, 1.0)); // [Home, Map] — a map base

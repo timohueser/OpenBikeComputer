@@ -1,10 +1,8 @@
-//! Integration tests for the App-owned **route-corridor snapshot** (epic #946, U2): the frozen
-//! snapshot's take/freeze/re-take semantics and the **host reader seam** — that
-//! [`App::base_needs_reader`] asks the board to build the streamed-map `Reader` exactly until the
-//! one query lands, then stops.
+//! Integration tests for the App-owned route-corridor snapshot: the frozen snapshot's
+//! take/freeze/re-take semantics, and the host reader seam — that [`App::base_needs_reader`] asks
+//! the board to build the streamed-map `Reader` exactly until the one query lands, then stops.
 //!
-//! No screen exists yet (U3 draws the list), so the request is armed through the App façade
-//! ([`App::arm_corridor`]) the way U3's screen entry will. Frames go through the real
+//! The request is armed through the App façade ([`App::arm_corridor`]). Frames go through the real
 //! [`App::render_frame`] path, whose pre-draw `prepare` boundary is where the query runs.
 
 use embedded_graphics::pixelcolor::Rgb888;
@@ -81,7 +79,7 @@ fn render_with_route(app: &mut App, map: &[u8], obcr: &[u8]) {
     });
 }
 
-/// Render one frame with the map `Reader` but **no** route — the frame the host produces before a
+/// Render one frame with the map `Reader` but no route — the frame the host produces before a
 /// route is opened. The corridor query has nothing to project onto and must simply retry later.
 fn render_without_route(app: &mut App, map: &[u8]) {
     let cache = MapCache::new();
@@ -110,7 +108,7 @@ impl obc_formats::io::ByteSource for FailingSource<'_> {
     }
 }
 
-/// Render one frame whose map `Reader` streams from a **failing** source. The tables are parsed off
+/// Render one frame whose map `Reader` streams from a failing source. The tables are parsed off
 /// a clean source first (the host parses once per map load, not per frame), so the failure is
 /// exactly the one that matters here: the corridor query's own reads.
 fn render_with_failing_map(app: &mut App, map: &[u8], obcr: &[u8]) {
@@ -132,8 +130,8 @@ fn render_with_failing_map(app: &mut App, map: &[u8], obcr: &[u8]) {
     });
 }
 
-/// **The host seam.** An idle App asks for no `Reader`; arming a corridor request makes it ask;
-/// the frame that takes the snapshot satisfies it; every frame after that is quiet again.
+/// The host seam. An idle App asks for no `Reader`; arming a corridor request makes it ask; the
+/// frame that takes the snapshot satisfies it; every frame after that is quiet again.
 #[test]
 fn the_reader_is_built_only_until_the_snapshot_lands() {
     let (map, obcr) = (map_bytes(), route_bytes());
@@ -173,11 +171,10 @@ fn a_frame_without_a_route_retries_rather_than_settling() {
     assert_eq!(app.corridor_snapshot_len(), 4);
 }
 
-/// **A failing query settles, it does not retry.** A corrupt POI section or a card that has stopped
+/// A failing query settles, it does not retry. A corrupt POI section or a card that has stopped
 /// answering is the one case where retrying would be worst: the query's most expensive form would
-/// re-run on **every** rendered frame with the `Reader` kept built — exactly the per-frame SD work
-/// the #115/#425 discipline forbids. So an errored take settles on an empty list, like
-/// `PoiScratch` does, and only an explicit re-entry retries.
+/// re-run on every rendered frame with the `Reader` kept built. So an errored take settles on an
+/// empty list, like `PoiScratch` does, and only an explicit re-entry retries.
 #[test]
 fn an_erroring_source_settles_after_one_attempt() {
     let (map, obcr) = (map_bytes(), route_bytes());
@@ -204,9 +201,9 @@ fn an_erroring_source_settles_after_one_attempt() {
     assert!(!app.base_needs_reader());
 }
 
-/// **The frozen contract (#115).** Once taken, the snapshot does not move: neither more frames nor
-/// a fix that has ridden on re-query it. Only an explicit re-arm (a filter change) or an
-/// `invalidate` (screen re-entry) takes a fresh one.
+/// The frozen contract. Once taken, the snapshot does not move: neither more frames nor a fix that
+/// has ridden on re-query it. Only an explicit re-arm (a filter change) or an `invalidate` (screen
+/// re-entry) takes a fresh one.
 #[test]
 fn the_snapshot_is_frozen_until_refiltered_or_invalidated() {
     let (map, obcr) = (map_bytes(), route_bytes());
@@ -241,8 +238,8 @@ fn the_snapshot_is_frozen_until_refiltered_or_invalidated() {
     assert_eq!(app.corridor_snapshot_len(), 0);
 }
 
-/// The **progress anchor** is part of the key: arming at a later anchor re-queries and drops what
-/// the rider has already passed, while the rows stay ordered by along-route distance and carry the
+/// The progress anchor is part of the key: arming at a later anchor re-queries and drops what the
+/// rider has already passed, while the rows stay ordered by along-route distance and carry the
 /// distance still to go.
 #[test]
 fn the_progress_anchor_windows_the_snapshot() {

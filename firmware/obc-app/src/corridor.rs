@@ -19,17 +19,12 @@ pub struct CorridorKey {
     pub anchor_m: u32,
 }
 
-/// What the Up-ahead timeline is currently **scoped to**: the rider's live category filter (app
-/// state, reset on entry) and their persisted source preference (a settings row). Together they
-/// decide which tables the list may walk and whether a corridor snapshot is wanted at all, so they
-/// travel as one value — the pair cannot be passed apart and cannot drift.
-///
-/// Neither half lives on [`WhatsNextScreen`](crate::screen::WhatsNextScreen) any more (#1515 D4a): both
-/// are edited from the context sheet *above* that screen, so a copy frozen inside it would be a
-/// copy the rider's edit could not reach.
+/// What the Up-ahead timeline is currently scoped to: the rider's live category filter (app state,
+/// reset on entry) and their persisted source preference (a settings row). Together they decide
+/// which tables the list may walk and whether a corridor snapshot is wanted at all, so they travel
+/// as one value that cannot be passed apart and cannot drift.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UpAheadScope {
-    /// The categories the list shows ("Everything" is [`PoiCategorySet::ALL`]).
     pub filter: PoiCategorySet,
     /// Which of the two source tables may feed the list — and, under
     /// [`WaypointsOnly`](crate::settings::UpAheadSource::WaypointsOnly), whether any snapshot is
@@ -37,9 +32,8 @@ pub struct UpAheadScope {
     pub source: crate::settings::UpAheadSource,
 }
 
-/// The [`App`](crate::App)-owned corridor snapshot. **One** buffer, shared by whatever screen is
-/// showing the Up-ahead list — never owned by a [`Screen`](crate::screen::Screen) variant (see the
-/// module docs).
+/// The [`App`](crate::App)-owned corridor snapshot. One buffer, shared by whatever screen is
+/// showing the Up-ahead list, and never owned by a [`Screen`](crate::screen::Screen) variant.
 pub struct CorridorScratch {
     query: Option<PlaceQuery>,
     generation: u32,
@@ -60,7 +54,6 @@ pub struct CorridorScratch {
 }
 
 impl CorridorScratch {
-    /// An empty, disarmed scratch — nothing wanted, nothing taken.
     pub const fn new() -> Self {
         CorridorScratch {
             want: None,
@@ -76,7 +69,7 @@ impl CorridorScratch {
     }
 
     /// Ask for a snapshot of `key`. Idempotent: re-arming the key already held changes nothing (so a
-    /// screen may call this every frame without re-querying), while a **different** key drops the
+    /// screen may call this every frame without re-querying), while a different key drops the
     /// stale rows immediately so no screen can draw a list that no longer matches its filter.
     pub fn arm(&mut self, key: CorridorKey) {
         if self.want != Some(key) {
@@ -131,7 +124,6 @@ impl CorridorScratch {
         self.invalidate();
     }
 
-    /// The key currently armed, if any.
     #[inline]
     pub fn armed(&self) -> Option<CorridorKey> {
         self.want
@@ -159,13 +151,11 @@ impl CorridorScratch {
         &self.pois
     }
 
-    /// Number of entries in the held snapshot.
     #[inline]
     pub fn len(&self) -> usize {
         self.pois.len()
     }
 
-    /// No entries held (either not queried yet, or nothing is up ahead).
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.pois.is_empty()
@@ -254,8 +244,8 @@ mod tests {
         CorridorKey { hours_filter: obc_reader::reader::places::HoursFilter::HideClosed, filter, anchor_m }
     }
 
-    /// A fresh scratch wants nothing, so the reader seam stays quiet — the normal case, where no
-    /// Up-ahead screen is up and the corridor query costs literally nothing.
+    /// A fresh scratch wants nothing, so the reader seam stays quiet. That is the normal case: no
+    /// Up-ahead screen is up and the corridor query costs nothing.
     #[test]
     fn disarmed_scratch_is_never_pending() {
         let s = CorridorScratch::new();
@@ -278,8 +268,8 @@ mod tests {
         assert!(!s.pending(), "re-arming the held key is a no-op");
     }
 
-    /// A different **filter** re-arms, and so does a different **anchor**: the key is the pair.
-    /// Either change drops the stale rows immediately.
+    /// A different filter re-arms, and so does a different anchor: the key is the pair, and either
+    /// change drops the stale rows immediately.
     #[test]
     fn a_changed_key_invalidates_both_ways() {
         let mut s = CorridorScratch::new();

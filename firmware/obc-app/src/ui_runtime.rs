@@ -1,20 +1,9 @@
 //! [`UiRuntime`] — the UI-plane component behind the [`App`](crate::App) façade.
 //!
-//! Owns the screen stack and everything scheduled around it: the fused input plane, the map-plane
-//! clock, the accumulated repaint demand (full-frame + region) and its render-clip/next-wake
-//! bookkeeping, hold cancellation, and the idle-return policy. Every **host-pushed card** is the
-//! [`CardScheduler`]'s: this component keeps one, feeds it the cross-component facts a sweep needs,
-//! and lends it the stack through the single [`run_card_sweep`](UiRuntime::run_card_sweep) door.
-//!
-//! `App` stays the orchestrator: gestures still apply through [`App::apply_gesture`] (they need
-//! the full [`Ctx`](crate::screen::Ctx) over settings/activity/catalogs) and
-//! [`App::advance_animations`] still sequences the per-pass sweeps, but every stack/dirty/timer
-//! mutation lands in this component. Cross-component facts a rule needs (is a ride tracking? does
-//! this durable id still resolve?) arrive as parameters — this component never reaches back into
-//! the others.
-//!
-//! [`App::apply_gesture`]: crate::App::apply_gesture
-//! [`App::advance_animations`]: crate::App::advance_animations
+//! It owns the screen stack and everything scheduled around it: the fused input plane, the
+//! map-plane clock, the accumulated repaint demand, hold cancellation and the idle-return policy.
+//! `App` stays the orchestrator, but every stack, dirty and timer mutation lands here. Facts the
+//! other components hold arrive as parameters; this component never reaches back into them.
 
 use embedded_graphics::primitives::Rectangle;
 
@@ -32,102 +21,64 @@ use crate::screen::vocab::marquee::Marquee;
 use crate::screen::{self, BaseContent, HomeScreen, MapScreen, PoiScratch, ReaderNeed, Screen, Stack};
 use crate::settings::{DateTime, Settings};
 
-/// The UI-plane state + policy component. See the module docs; field-level invariants are on
-/// each field (they are `App`'s former fields, moved verbatim).
 pub(crate) struct UiRuntime {
     /// The screen stack (root = Home). The top screen receives input; drawing starts from the
     /// topmost opaque screen so overlays composite over the map.
     pub(crate) stack: Stack,
 
     /// The input + overlay plane: gesture recognizer, long-press hint overlay, live hold-progress.
-    /// Split off `App` so the firmware can run it on a *separate, high-priority* executor that
-    /// preempts the map render. `App` keeps this one for the [`handle_input`](App::handle_input)
-    /// path; the two-plane firmware drives its own and feeds gestures back through
-    /// [`apply_gesture`](App::apply_gesture).
+    /// The firmware runs its own on a separate high-priority executor that preempts the map render
+    /// and feeds gestures back through [`apply_gesture`](App::apply_gesture); `App` keeps this one
+    /// for the [`handle_input`](App::handle_input) path.
     pub(crate) input: InputPlane,
-    /// Millis at the last [`handle_input`](App::handle_input) /
-    /// [`advance_animations`](App::advance_animations) — the **map plane's** clock, distinct from
-    /// the input plane's own clock.
+    /// Millis at the last input or animation pass: the map plane's clock, which is distinct from
+    /// the input plane's own.
     pub(crate) now_ms: u32,
-    /// Accumulated **map-plane** repaint demand since the last [`take_dirty`](App::take_dirty),
-    /// drained once per frame. Starts `true` so the host's first frame paints. (The overlay flag
-    /// isn't accumulated here — it's derived from the live hold-bulge state at drain time.)
+    /// Accumulated map-plane repaint demand since the last drain. It starts `true`, so the host's
+    /// first frame paints.
     pub(crate) map_dirty: bool,
-    /// Accumulated **region-scoped** repaint demand (#500 follow-up): the union of every
-    /// region-carrying screen-tick change since the last drain — the nav-planning spinner's
-    /// needle disc. Kept apart from [`map_dirty`](App::map_dirty) so the two can't blur: any
-    /// full-frame demand (every other `map_dirty = true` site) overrides this at
-    /// [`take_dirty`](App::take_dirty), and region ticks never set `map_dirty` — see the drain
-    /// for the fold.
+    /// Accumulated region-scoped repaint demand: the union of every region-carrying screen-tick
+    /// change since the last drain. It stays apart from [`map_dirty`](App::map_dirty), which
+    /// overrides any region at drain time.
     pub(crate) region_dirty: Option<Rectangle>,
-    /// Panel size (device px) of the last rendered frame, recorded by
-    /// [`render_map_timed`](App::render_map_timed) — what
-    /// [`advance_animations`](App::advance_animations) hands the screen ticks so a reported
-    /// [`ScreenTick::region`](screen::ScreenTick::region) is sized to the real panel. `(0, 0)`
-    /// until the first frame; region reporting abstains (full repaint) until then. Narrowed to
-    /// `i16` per dimension (#802's resident-RAM offset, the #810 u16-repack precedent): a panel
-    /// dimension is a few hundred pixels, bounded far below `i16::MAX`, and this pairs the four
-    /// bytes saved against the component boundaries' new tail padding.
+    /// Panel size (device px) of the last rendered frame, so a reported
+    /// [`ScreenTick::region`](screen::ScreenTick::region) is sized to the real panel. `(0, 0)` until
+    /// the first frame; region reporting abstains until then.
     pub(crate) frame_size: (i16, i16),
-    /// One-shot clip for the **next** [`render_map_timed`](App::render_map_timed): the host that
-    /// drained a region-scoped [`Dirty`](crate::Dirty) sets it via
-    /// [`set_render_clip`](App::set_render_clip) so the frame's `Canvas` rejects whole primitives
-    /// outside the region — the draw-call machinery (glyph decode, scanline iterators) a
-    /// pixel-level framebuffer clip can't skip. Taken (cleared) by the render, so a host that
-    /// never sets it — the sim, the tests — always draws full frames.
+    /// One-shot clip for the next render: the frame's `Canvas` rejects whole primitives outside
+    /// the region, which is draw-call work a pixel-level framebuffer clip cannot skip. The render
+    /// takes it, so a host that never sets it always draws full frames.
     pub(crate) render_clip: Option<Rectangle>,
-    /// Whether the host's render target **keeps the last frame** between renders — declared once at
-    /// composition through [`set_resident_frame`](App::set_resident_frame), and living here beside
-    /// the other two facts about the host's plumbing ([`frame_size`](Self::frame_size),
-    /// [`render_clip`](Self::render_clip)).
+    /// Whether the host's render target keeps the last frame between renders.
     ///
-    /// A resident target is the precondition for a *partial* repaint. It is what lets the frozen
-    /// base's pixels stand while a sheet grows over them (#1559). `false` until a host says
-    /// otherwise, so one that composes each frame from nothing — the snapshot sweep, a one-shot
-    /// capture — gets every screen drawn every time, which is always correct.
+    /// A resident target is the precondition for a partial repaint: it lets the frozen base's
+    /// pixels stand while a sheet grows over them. `false` until a host says otherwise, so a host
+    /// that composes each frame from nothing gets every screen drawn every time.
     pub(crate) resident_frame: bool,
     /// The soonest timed-redraw deadline across the visible stack, in millis from the last
-    /// [`advance_animations`](App::advance_animations) — the min-fold of each screen's
-    /// [`ScreenTick::next_wake_ms`](screen::ScreenTick::next_wake_ms), stored there and read back by
-    /// [`ms_until_next_wake`](App::ms_until_next_wake). `None` when nothing is time-animating.
+    /// animation pass. `None` when nothing is time-animating.
     pub(crate) next_wake_ms: Option<u32>,
-    /// The one scrolling name of the frame (see [`marquee`](screen::vocab::marquee)): adopted
-    /// from each frame's draw by the render, stepped here beside the screen ticks.
+    /// The one scrolling name of the frame, adopted from each frame's draw and stepped here.
     pub(crate) marquee: Marquee,
-    /// Map-plane millis of the last **user input** — any recognised gesture (see
-    /// [`apply_gesture`](App::apply_gesture)), plus a per-tick refresh while a hold charges (a
-    /// gesture in progress counts as activity). Drives the **idle-return** timeout
-    /// ([`apply_idle_return`](App::apply_idle_return)): after
-    /// [`idle_return`](crate::settings::Settings::idle_return) millis of silence the UI navigates
-    /// itself back to where it belongs. Deliberately advanced **only** on input — a GPS fix, a BLE
-    /// event, or a timed repaint must not reset it. Seeded to `0` (the boot origin), so the idle
-    /// clock runs from power-on until the first touch.
+    /// Map-plane millis of the last user input, which drives the idle-return timeout. It advances
+    /// only on input: a GPS fix, a BLE event or a timed repaint must not reset it. Seeded to `0`,
+    /// so the idle clock runs from power-on until the first touch.
     pub(crate) last_input_ms: u32,
-    /// Whether idle time is currently accumulating. A screen/circumstance for which no idle return
-    /// is eligible suspends the clock; the first eligible pass after that suspension starts a fresh
-    /// full window. This keeps a long modal operation from donating its elapsed time to the ordinary
-    /// screen that replaces it.
+    /// Whether idle time is accumulating. A screen for which no idle return is eligible suspends
+    /// the clock, so a long modal operation cannot donate its elapsed time to the ordinary screen
+    /// that replaces it.
     pub(crate) idle_return_timing: bool,
-    /// Host-supplied Select hold-progress (0.0–1.0) for the in-screen confirm fills (the factory
-    /// Reset bar; [`RideControl`](crate::screen::RideControl) confirm rows). `None` on the
-    /// single-loop hosts (the render reads `App`'s own [`InputPlane`]); the **two-plane firmware**
-    /// feeds live progress in each frame via [`set_hold_progress`](App::set_hold_progress), since
-    /// its holds live on a separate plane `App`'s own never sees.
+    /// Host-supplied Select hold-progress (0.0-1.0) for the in-screen confirm fills. `None` on the
+    /// single-loop hosts; the two-plane firmware feeds it each frame, because its holds live on a
+    /// plane `App`'s own never sees.
     pub(crate) hold_progress_override: Option<f32>,
-    /// Set by [`apply_gesture`](App::apply_gesture) whenever a gesture **changed the screen
-    /// stack**: any hold charging at that moment was aimed at a screen that is no longer the
-    /// top, so it must be cancelled rather than delivered to whatever replaced it (a hold aimed
-    /// at a popup's "Finish & new" must never land on the Route menu's hold-to-delete footer —
-    /// issue #480). [`handle_input`](App::handle_input) drains it inline (cancelling `input`'s
-    /// holds and dropping stray `Hold`/`BackHold`s later in the same batch); the two-plane
-    /// firmware drains it via [`take_hold_cancel`](App::take_hold_cancel) and cancels its own
-    /// input plane's recogniser.
+    /// Set whenever a gesture changed the screen stack: a hold charging at that moment was aimed
+    /// at a screen that is no longer the top, so it must be cancelled and never delivered to
+    /// whatever replaced it.
     pub(crate) hold_cancel_pending: bool,
-    /// The single POI-list snapshot buffer (issue #425), threaded into the draw context as
-    /// [`Render::poi_scratch`]. Held once here rather than per-screen so the ~800 B doesn't multiply
-    /// across the screen-stack union (see [`PoiScratch`](crate::screen::PoiScratch)). Filled lazily
-    /// by the POI list screen's first draw; invalidated in [`apply_gesture`](App::apply_gesture)
-    /// when a POI list opens, so re-entering a category re-queries.
+    /// The single POI-list snapshot buffer, held once here so the ~800 B does not multiply across
+    /// the screen-stack union. It is filled lazily by the POI list screen's first draw, and
+    /// invalidated when a POI list opens so re-entering a category re-queries.
     pub(crate) poi_scratch: screen::PoiScratch,
     pub(crate) find: crate::find_place::FindState,
     pub(crate) landmarks: crate::landmarks::Landmarks,
@@ -136,32 +87,24 @@ pub(crate) struct UiRuntime {
     /// as [`map_icons`](Self::map_icons): a `Screen` variant is a slot in a `.bss` union.
     pub(crate) settlements: crate::settlements::SettlementCache,
     pub(crate) ahead: crate::whats_next::AheadState,
-    /// The single route-corridor snapshot buffer (epic #946, U2) — the map POIs near the route
-    /// ahead, frozen on take. Held once here for the same reason as
-    /// [`poi_scratch`](UiRuntime::poi_scratch): it must not multiply across the screen-stack union
-    /// (see [`CorridorScratch`](crate::corridor::CorridorScratch)). Disarmed until a screen asks
-    /// for it, so a device that never opens the Up-ahead list never runs the query.
+    /// The single route-corridor snapshot buffer: the map POIs near the route ahead, frozen on
+    /// take. Held once here for the same reason as [`poi_scratch`](UiRuntime::poi_scratch), and
+    /// disarmed until a screen asks for it.
     pub(crate) corridor_scratch: CorridorScratch,
-    /// The per-category **"next ahead" cache** (epic #946, U5) — the distilled map-POI half of the
-    /// six `Next: <category>` stat tiles, harvested out of [`corridor_scratch`](Self::corridor_scratch)
-    /// on its own progress-keyed refresh policy. App-owned for the same #425 reason as the two
-    /// snapshots above (a `Screen` variant is a slot in a `.bss` union), and quiet — asking for
-    /// nothing — unless such a tile is on the grid while the Statistics screen is up.
+    /// The per-category "next ahead" cache for the six `Next: <category>` stat tiles, harvested
+    /// out of [`corridor_scratch`](Self::corridor_scratch). App-owned for the same reason as the
+    /// two snapshots above, and it asks for nothing unless such a tile is on the drawn grid.
     pub(crate) next_ahead: NextAhead,
-    /// Every host-pushed modal card: the named pending slots, the policy table, and the one sweep
-    /// that lands them (see [`CardScheduler`]). Held here because the stack is here — the scheduler
-    /// borrows it for the length of [`run_card_sweep`](UiRuntime::run_card_sweep) and never longer.
+    /// Every host-pushed modal card. It is held here because the stack is here: the scheduler
+    /// borrows the stack for the length of [`run_card_sweep`](UiRuntime::run_card_sweep) and never
+    /// longer.
     pub(crate) cards: CardScheduler,
-    /// The per-slot BLE **sensor status** (BLE sensors epic #707, SE7): HR / power / cadence
-    /// connection phase + battery + live tick, fed each pass by the host through
-    /// [`set_sensor_status`](App::set_sensor_status) and drawn only by the Sensors settings screen.
-    /// Held off [`AppState`] like [`ble_passkey`](App::ble_passkey) so feeding it never gates a map
-    /// redraw on a non-sensor screen; the Sensors screen's repaint is gated on an actual change to a
-    /// slot while it is up.
+    /// The per-slot BLE sensor status, fed each pass by the host and drawn only by the Sensors
+    /// settings screen. It is held off [`AppState`], so feeding it never gates a map redraw on a
+    /// non-sensor screen.
     pub(crate) sensor_status: [crate::sensors::SensorStatus; crate::settings::SENSOR_SLOTS],
-    /// The live **sensor scan hits** (SE7): the sensors discovered while the scan-list screen runs a
-    /// scan, fed by the host through [`set_sensor_scan_hits`](App::set_sensor_scan_hits). Empty
-    /// outside a scan; replaced wholesale each pass while one runs.
+    /// The sensors discovered while the scan-list screen runs a scan. Empty outside a scan, and
+    /// replaced wholesale each pass while one runs.
     pub(crate) sensor_scan_hits: crate::sensors::SensorScanHits,
 }
 
@@ -169,15 +112,14 @@ impl UiRuntime {
     define_placement_constructors!(
         /// The boot state: the Home root on the stack, first frame dirty, nothing pending.
         pub(crate) fn new();
-        /// Initialize `slot` **in place** to the [`new`](UiRuntime::new) state — the placement path
-        /// the firmware boots through (the screen stack and POI scratch are KB-scale; nothing here
-        /// may form a by-value `UiRuntime` on the stack).
+        /// Initialize `slot` in place to the [`new`](UiRuntime::new) state. The screen stack and
+        /// the POI scratch are KB-scale, so nothing here may form a by-value `UiRuntime` on the
+        /// stack.
         pub(crate) unsafe fn init_in_place;
         fields {
             stack: Stack::new(),
             input: InputPlane::new(),
             now_ms: 0,
-            // Force the host's first frame: nothing has been drawn yet, so the map is dirty.
             map_dirty: true,
             region_dirty: None,
             resident_frame: false,
@@ -208,15 +150,10 @@ impl UiRuntime {
         }
     );
 
-    /// Advance the map-plane clock to `now_ms` and poll each visible screen's timers
-    /// ([`Screen::tick_timers`]) in one pass: any time-driven repaint that fired dirties the map —
-    /// so a screen surfaces its own timed-refresh rather than the host re-rendering on a blind
-    /// heartbeat — and the soonest residual deadline is stored for
-    /// [`App::ms_until_next_wake`](crate::App::ms_until_next_wake). Cheap: a clock comparison per
-    /// polled screen, from `first` — which is the base, except while the base is frozen under a
-    /// sheet (below). The card sweep and the idle-return sweep are sequenced by
-    /// [`App::advance_animations`](crate::App::advance_animations) right after this, and neither
-    /// is gated on any of it.
+    /// Advance the map-plane clock to `now_ms` and poll each visible screen's timers in one pass.
+    /// A time-driven repaint that fired dirties the map, and the soonest residual deadline is
+    /// stored for [`App::ms_until_next_wake`](crate::App::ms_until_next_wake). Polling starts at
+    /// the base, except while the base is frozen under a sheet.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn advance_timers(
         &mut self,
@@ -238,9 +175,7 @@ impl UiRuntime {
             .chain(core::iter::once(self.marquee.tick(self.now_ms)));
         for tick in ticks {
             // A change that promises a containing region accumulates apart from the full-frame
-            // demand (#500 follow-up): `take_dirty` folds the two — any `map_dirty` overrides
-            // every region, so a region-clipped repaint happens only when region ticks were the
-            // *sole* dirt since the last drain.
+            // demand; `take_dirty` folds the two.
             if tick.changed {
                 match tick.region {
                     Some(r) => self.region_dirty = Some(self.region_dirty.map_or(r, |acc| union_rect(acc, r))),
@@ -252,42 +187,32 @@ impl UiRuntime {
         self.next_wake_ms = next_wake;
     }
 
-    /// The [`BaseContent`] of the base (lowest *opaque*) screen — the single declared fact the
-    /// live-data / map-I/O / indicator gates read instead of open-coding a `matches!` on the enum.
-    /// The base is the lowest opaque drawn screen, so an overlay over a riding view still reports the
-    /// riding view's content.
+    /// The [`BaseContent`] of the lowest opaque screen: the declared fact the live-data, map-I/O
+    /// and indicator gates read instead of open-coding a `matches!` on the enum. An overlay over a
+    /// riding view still reports the riding view's content.
     fn base_content(&self) -> BaseContent {
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         self.stack.get(base).map(|s| s.caps().base).unwrap_or(BaseContent::Chrome)
     }
 
-    /// Whether the base (lowest opaque) screen draws the **map** — any [`BaseContent::Map`] screen.
-    /// A render-on-demand host polls this to skip the whole map pipeline on a non-map frame: don't
-    /// build the `Reader` (an SD style-table parse + its stack spike), pass `None` to
-    /// [`render_map_timed`](App::render_map_timed), and a menu / Home redraw draws only its own
-    /// chrome with zero map I/O.
+    /// Whether the base screen draws the map. A render-on-demand host polls this to skip the whole
+    /// map pipeline on a non-map frame, including the `Reader` build and its stack spike.
     pub(crate) fn base_draws_map(&self) -> bool {
         self.base_content() == BaseContent::Map
     }
 
-    /// Whether an overlay sheet covers the base (lowest opaque) screen — **the frozen base**. One
-    /// predicate, read by the timer sweep above (a frozen base does not tick) and by the render
-    /// (a frozen base's rows stand, so its draw is skipped). Its key was already shadowed by the
-    /// drawer's own; this is the same fact seen from the two places that act on it.
+    /// Whether an overlay sheet covers the base screen. A frozen base does not tick, and its rows
+    /// on the panel stand, so its draw is skipped.
     pub(crate) fn base_frozen(&self) -> bool {
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         self.stack.iter().skip(base + 1).any(|s| s.is_overlay())
     }
 
-    /// Whether this frame draws the **sheet and nothing else** (#1559): the frozen base's rows on
-    /// the panel are already right, so its draw is skipped and an open step costs the sheet alone.
-    ///
-    /// Three things are excluded, and each is declared by the thing it is about. A host that
-    /// composes every frame from nothing never claims a
-    /// [resident frame](App::set_resident_frame) and draws the base as always. A base that
-    /// **recesses** takes its second draw, because the recess *is* that draw. And a sheet that is
-    /// not purely *covering* this frame asks for the base itself ([`Screen::needs_base`]) — a page
-    /// slide travels through the margin either side of it.
+    /// Whether this frame draws the sheet and nothing else: the frozen base's rows are already
+    /// right, so an open step costs the sheet alone. Three things exclude it, and each is declared
+    /// by the thing it is about. A host that composes every frame from nothing never claims a
+    /// resident frame. A base that recesses takes its second draw, because the recess is that draw.
+    /// A sheet that is not purely covering asks for the base itself ([`Screen::needs_base`]).
     pub(crate) fn sheet_only(&self) -> bool {
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         self.resident_frame
@@ -303,33 +228,19 @@ impl UiRuntime {
         }
     }
 
-    /// Whether the frame needs the streamed-map [`Reader`] built and passed to
-    /// [`render_map_timed`](App::render_map_timed) — a superset of [`base_draws_map`](App::base_draws_map).
-    /// Chosen from the base screen's declared [`ReaderNeed`]: map-base screens always need it; the
-    /// **POI list** screen (issue #425) does too, but only until it has taken its one-shot snapshot; and
-    /// the **POI detail** screen (issue #444) does until it has resolved its one hours read. Both
-    /// take their one-shot read in the pre-draw [`prepare`](crate::screen::Screen::prepare) pass off
-    /// the `Reader`, so a render-on-demand host (the board's two-plane loop) must build the `Reader`
-    /// on the frame each one-shot read is taken. Once the list's
-    /// [`poi_snapshot_pending`](App::poi_snapshot_pending) is false — or the detail's schedule cache
-    /// has resolved — the screen draws from its frozen state with no `Reader`, so the host skips the
-    /// build again.
-    ///
-    /// The sim's `render_frame` always passes `Some(reader)`, so it never consults this — only the
-    /// board host does, keeping its per-frame `Reader` build (and stack spike) off every non-map,
-    /// already-resolved frame.
+    /// Whether the frame needs the streamed-map [`Reader`] built and passed to the render: a
+    /// superset of [`base_draws_map`](App::base_draws_map). The POI list and POI detail screens
+    /// need it only until their one-shot read lands in [`prepare`](crate::screen::Screen::prepare),
+    /// after which the host skips the build again.
     pub(crate) fn base_needs_reader(&self) -> bool {
-        // The route-corridor snapshot (epic #946, U2) is armed by a screen but owned by the App, so
-        // its need is a **request**, not a `ReaderNeed` row: a screen that wants an Up-ahead list
-        // keeps the `Reader` built until the one query lands, then stops asking — the same one-shot
-        // energy pattern as the two POI rows below. Disarmed (the normal state) this is free.
+        // The route-corridor snapshot is armed by a screen but owned by the App, so its need is a
+        // request and not a `ReaderNeed` row. Disarmed, which is the normal state, this is free.
         if self.corridor_scratch.pending() {
             return true;
         }
-        // **A frame that does not draw the base needs nothing the base reads** (#1569). The
-        // sheet-only open skips that draw, and on the board building the `Reader` for it is an SD
-        // style-table parse the frame then throws away — measured at about 45 ms of an 80 ms open
-        // step, which is the difference between six steps of a 440 ms slide and eleven.
+        // A frame that does not draw the base needs nothing the base reads. On the board that
+        // build is an SD style-table parse the frame then throws away: about 45 ms of an 80 ms
+        // open step.
         let rebuilding_photo = self
             .stack
             .iter()
@@ -351,12 +262,10 @@ impl UiRuntime {
         }
     }
 
-    /// Run the base (lowest-opaque) screen's pre-draw acquisition (#803): hand it the frame's
-    /// `Reader`, streamed route, and fix so it resolves reader-backed state (POI snapshot / hours,
-    /// or Skip-ahead geometry) into immutable prepared state before the draw loop. Called by
-    /// [`render_map_timed`](App::render_map_timed) ahead of building the draw context, so `Render`
-    /// carries the POI scratch read-only and draw stays side-effect-free.
-    #[allow(clippy::too_many_arguments)] // the per-frame prepare snapshot, one value per field
+    /// Run the base screen's pre-draw acquisition: hand it the frame's `Reader`, streamed route
+    /// and fix, so it resolves reader-backed state into immutable prepared state before the draw
+    /// loop. `Render` then carries the POI scratch read-only and draw stays side-effect-free.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_base(
         &mut self,
         reader: Option<&Reader>,
@@ -368,20 +277,15 @@ impl UiRuntime {
         detour_preview: &[(i32, i32)],
         place_local: Option<(u8, u16)>,
     ) {
-        // The App-owned corridor snapshot (epic #946, U2) resolves first: it belongs to no single
-        // screen (U3's list and U5's stat fields both read it), so it runs at the boundary rather
-        // than inside one screen's `prepare`. A no-op unless a screen armed it.
+        // The corridor snapshot belongs to no single screen, so it resolves at this boundary and
+        // not inside one screen's `prepare`. A no-op unless a screen armed it.
         if !self.find.owns_pages() && !self.stack.iter().any(|s| matches!(s, Screen::WhatsNext(_))) {
             self.corridor_scratch.prepare(reader, route, place_local);
         }
-        // …and if the snapshot that just landed is the one the `Next: <category>` cache asked for
-        // (U5), distil it here — the one place a fresh snapshot is guaranteed to exist. A no-op
-        // whenever the scratch is serving a screen instead: `harvest` only takes its own key.
-        //
-        // This runs ahead of the draw, so the tile drawn by *this* frame already names the entry
-        // this landing wrote — which is why no render key names the cached entries, only the
-        // request (`StatsKey::next_ahead`). Move the distillation into a pass stage and that stops
-        // being true: the key would then have to name what the six slots hold.
+        // If the snapshot that just landed is the one the `Next: <category>` cache asked for,
+        // distil it here, the one place a fresh snapshot is sure to exist. This runs ahead of the
+        // draw, so the tile this frame draws already names the entry the landing wrote. That is
+        // why no render key names the cached entries, only the request.
         if let Some(key) = self.next_ahead.request() {
             if self.corridor_scratch.holds(key) {
                 self.next_ahead.harvest(key, self.corridor_scratch.entries());
@@ -431,16 +335,10 @@ impl UiRuntime {
         }
     }
 
-    /// Re-decide what the `Next: <category>` tiles need (epic #946, U5) and re-point the corridor
-    /// scratch at it. Called once per pass from
-    /// [`advance_animations`](crate::App::advance_animations) — the one hook every host runs — with
-    /// the facts the policy needs: the rider's field selection, the active route, and matched
-    /// progress. Everything else (the triggers, the round-robin, the one-category-per-query rule)
-    /// lives in [`NextAhead::reconcile`](crate::next_ahead::NextAhead).
-    ///
-    /// The tiles only exist on the Statistics grid, so the request is scoped to that screen being
-    /// the one drawn: elsewhere the cache asks for nothing, the scratch disarms, and the reader seam
-    /// is as quiet as before this feature existed.
+    /// Re-decide what the `Next: <category>` tiles need and re-point the corridor scratch at it.
+    /// Called once per pass with the facts the policy needs; the policy itself lives in
+    /// [`NextAhead::reconcile`](crate::next_ahead::NextAhead). The request is scoped to the
+    /// Statistics screen being drawn, so elsewhere the reader seam stays quiet.
     pub(crate) fn reconcile_next_ahead(
         &mut self,
         settings: &Settings,
@@ -458,28 +356,22 @@ impl UiRuntime {
         self.reconcile_corridor(scope);
     }
 
-    /// Whether the **Statistics** screen — the only place a `Next: <category>` tile draws — is the
-    /// base (lowest opaque) screen this pass. Deliberately not "is anywhere on the stack": a tile
-    /// behind a menu isn't being read, and the query it would keep warm costs a card spin-up.
+    /// Whether the Statistics screen, the only place a `Next: <category>` tile draws, is the base
+    /// screen this pass. Deliberately not "anywhere on the stack": a tile behind a menu is not
+    /// being read, and the query it would keep warm costs a card spin-up.
     fn stats_grid_shown(&self) -> bool {
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         matches!(self.stack.get(base), Some(Screen::Statistics(_)))
     }
 
-    /// Whether the given POI list screen still needs a `Reader` at draw — its category's snapshot
-    /// hasn't been taken into the shared scratch yet. Drives [`base_needs_reader`](App::base_needs_reader).
+    /// Whether the given POI list screen still needs a `Reader` at draw.
     pub(crate) fn poi_snapshot_pending(&self, screen: &crate::screen::PoiListScreen) -> bool {
         screen.pending(&self.poi_scratch)
     }
 
-    /// Feed the host's per-slot **sensor status** ([`SensorStatus`](crate::sensors::SensorStatus)) —
-    /// the central manager's HR / power / cadence connection phase + battery + live tick, distilled to
-    /// app vocabulary and pushed each pass (the board's `ble::sensors` snapshot, or the sim's fake
-    /// manager). Stored app-side like [`set_ble_status`](App::set_ble_status); no radio type crosses
-    /// the seam. Up to [`SENSOR_SLOTS`](crate::settings::SENSOR_SLOTS) slots are copied (extra ignored).
-    ///
-    /// A change **while the Sensors screen is up** dirties the map so the status lines repaint; on any
-    /// other screen the status isn't drawn, so an update — fed every pass — repaints nothing.
+    /// Feed the host's per-slot sensor status, pushed each pass and stored app-side, so no radio
+    /// type crosses the seam. A change while the Sensors screen is up dirties the map; on any other
+    /// screen the status is not drawn, so an update repaints nothing.
     pub(crate) fn set_sensor_status(&mut self, status: &[crate::sensors::SensorStatus]) {
         let mut next = self.sensor_status;
         for (dst, src) in next.iter_mut().zip(status) {
@@ -493,11 +385,9 @@ impl UiRuntime {
         }
     }
 
-    /// Feed the host's live **sensor scan hits** ([`SensorScanHit`](crate::sensors::SensorScanHit)) —
-    /// the sensors discovered while the scan-list screen runs a scan. Replaces the resident list
-    /// wholesale (up to [`SCAN_HITS_MAX`](crate::sensors::SCAN_HITS_MAX)); an empty slice clears it
-    /// (the host feeds `&[]` when no scan is active). A change while the scan screen is up dirties the
-    /// map so a freshly-found sensor appears without waiting for another input.
+    /// Feed the live sensor scan hits, replacing the resident list wholesale; an empty slice
+    /// clears it. A change while the scan screen is up dirties the map, so a freshly-found sensor
+    /// appears without waiting for another input.
     pub(crate) fn set_sensor_scan_hits(&mut self, hits: &[crate::sensors::SensorScanHit]) {
         let changed =
             self.sensor_scan_hits.len() != hits.len() || self.sensor_scan_hits.iter().zip(hits).any(|(a, b)| a != b);
@@ -513,56 +403,42 @@ impl UiRuntime {
         }
     }
 
-    /// Whether the Sensors settings screen (its row list or a scan list) is the top screen — gates the
-    /// sensor-seam repaint so a status/scan-hit update dirties the map only where it's drawn.
     fn sensors_screen_up(&self) -> bool {
         matches!(self.stack.last(), Some(Screen::Sensors(_) | Screen::SensorScan(_)))
     }
 
-    /// Whether the base (lowest opaque) screen draws the connected indicator — Home, or any framed
-    /// screen with a title bar (a menu / list / prompt): everything whose base is
-    /// [`BaseContent::Chrome`] rather than a full-screen riding view. Gates
-    /// [`set_ble_status`](App::set_ble_status)'s repaint so a link change never re-renders the map
-    /// on the Map / Statistics / Climb screens, which deliberately omit the glyph.
+    /// Whether the base screen draws the connected indicator: everything whose base is
+    /// [`BaseContent::Chrome`]. It gates the BLE-status repaint, so a link change never re-renders
+    /// the map on the Map, Statistics or Climb screens, which omit the glyph.
     pub(crate) fn indicator_visible(&self) -> bool {
         self.base_content() == BaseContent::Chrome
     }
 
-    /// Whether a hold gesture is charging right now — either button down, its long-press not yet
-    /// fired. Reads the host-fed Select progress ([`set_hold_progress`](App::set_hold_progress), the
-    /// two-plane firmware) and `App`'s own input plane (the single-loop hosts). Gates the host-pushed
-    /// passkey card's open/close so it never lands mid-hold.
+    /// Whether a hold gesture is charging right now. It reads the host-fed Select progress and
+    /// `App`'s own input plane, and gates the passkey card so it never lands mid-hold.
     pub(crate) fn hold_charging(&self) -> bool {
         self.hold_progress_override.is_some_and(|p| p > 0.0)
             || self.input.select_hold_progress() > 0.0
             || self.input.back_hold_progress() > 0.0
     }
 
-    /// Whether the **passkey card** is on the stack (epic #447) — the modal-priority query, distinct
-    /// from the desired passkey *level* the scheduler holds: while a hold charges the level can be
-    /// set with no card up yet. A stack read, never a mutation.
+    /// Whether the passkey card is on the stack, which is distinct from the desired passkey level
+    /// the scheduler holds: while a hold charges the level can be set with no card up yet.
     pub(crate) fn passkey_card_up(&self) -> bool {
         self.stack.iter().any(|s| matches!(s, Screen::Passkey(_)))
     }
 
-    /// Whether the **map-transfer card** is on the stack (issue #927) — the `render ⊥ usb` half of
-    /// [`App::usb_stage_precondition`](crate::App::usb_stage_precondition), reached through
-    /// [`App::map_transfer_card_up`](crate::App::map_transfer_card_up).
     pub(crate) fn map_transfer_card_up(&self) -> bool {
         self.stack.iter().any(|s| matches!(s, Screen::MapTransfer(_)))
     }
 
-    /// **The scheduler's one door onto the stack.** Runs a
-    /// [`CardScheduler::sweep`](crate::card_scheduler::CardScheduler::sweep) with the
-    /// cross-component facts it needs. Called once per
-    /// [`advance_animations`](crate::App::advance_animations) pass and again whenever a host fact is
-    /// posted, so an arriving card lands in the same frame unless a rule defers it.
+    /// The scheduler's one door onto the stack. It runs a sweep with the cross-component facts the
+    /// scheduler needs, once per animation pass and again whenever a host fact is posted, so an
+    /// arriving card lands in the same frame unless a rule defers it.
     ///
-    /// **Not covered by a render key, and deliberately so.** The scheduler already answers "did
-    /// anything visible move" exactly, once per sweep, at the one door onto the stack — and it
-    /// sweeps both inside the pass and from host seams that run between two passes, where a
-    /// stack-local key comparison sees nothing. A revision counter beside this bool would be a
-    /// second copy of the same answer, resident, and would replace no site.
+    /// It is deliberately not covered by a render key. The scheduler already answers "did anything
+    /// visible move" at this one door, including for host seams that run between two passes, where
+    /// a stack-local key comparison sees nothing.
     pub(crate) fn run_card_sweep(&mut self, catalogs: &CatalogState, tracking: bool) {
         let ctx = CardCtx { now_ms: self.now_ms, hold_charging: self.hold_charging(), catalogs, tracking };
         if self.cards.sweep(&mut self.stack, &ctx) {
@@ -570,19 +446,16 @@ impl UiRuntime {
         }
     }
 
-    /// Whether the top (input-receiving) screen is one of the settings screens — the gate
-    /// `SettingsMachine` uses to hold a pending save until exit.
-    /// Reads the [`ScreenKind`](crate::screen::ScreenKind) each screen declares in its `screens!`
-    /// table row, so a new settings screen can't be forgotten here.
+    /// Whether the top screen is one of the settings screens: the gate `SettingsMachine` uses to
+    /// hold a pending save until exit. It reads the kind each screen declares in its `screens!`
+    /// row, so a new settings screen cannot be forgotten here.
     pub(crate) fn top_is_settings(&self) -> bool {
         self.stack.last().is_some_and(|s| s.kind().is_settings())
     }
 
-    /// Millis until the idle-return timeout expires, or `None` when no return is pending — the
-    /// mechanism is off ([`Never`](crate::settings::IdleReturn::Never)), a modal exemption is up, or
-    /// we're already at the target screen (Home when idle, a ride view while tracking), so no idle
-    /// wake is owed. At least `1` while pending, so a due return has already fired this pass and the
-    /// wake is strictly future.
+    /// Millis until the idle-return timeout expires, or `None` when no return is pending. At least
+    /// `1` while pending, so a due return has already fired this pass and the wake is strictly in
+    /// the future.
     pub(crate) fn idle_return_remaining_ms(&self, settings: &Settings, tracking: bool) -> Option<u32> {
         let timeout = settings.idle_return.timeout_ms()?;
         if !self.idle_return_pending(tracking) {
@@ -595,10 +468,8 @@ impl UiRuntime {
         Some(timeout.saturating_sub(elapsed).max(1))
     }
 
-    /// Whether an idle return would actually *move* somewhere — false when a modal exemption is up,
-    /// or we're already where the timeout would land (the Home root when not tracking, a deliberate
-    /// ride view while tracking). Gates both the idle wake and the sweep so an already-arrived
-    /// device arms no needless wake and re-checks nothing each tick.
+    /// Whether an idle return would actually move somewhere. It gates both the idle wake and the
+    /// sweep, so an already-arrived device arms no needless wake.
     fn idle_return_pending(&self, tracking: bool) -> bool {
         if self.idle_return_exempt() {
             return false;
@@ -606,60 +477,39 @@ impl UiRuntime {
         if tracking {
             !self.is_ride_view()
         } else {
-            // Not tracking: any overlay above the Home root would return to Home — **except** a
-            // browse-exempt view (the route-less browse Map, Menu → Map). Riding with the map open
-            // without recording is a deliberate view, not idleness, so it's exempt (the declared
-            // `browse_exempt` capability) just like a ride view is mid-ride.
+            // Not tracking: any overlay above the Home root returns to Home, except a
+            // browse-exempt view. Riding with the map open without recording is a deliberate view,
+            // not idleness.
             self.stack.len() > 1 && !self.stack.last().is_some_and(|s| s.caps().browse_exempt)
         }
     }
 
-    /// Whether the current top screen is **exempt** from the idle-return timeout — the modal cards
-    /// that must stay put until dismissed (the BLE passkey card, the route-received / -updated /
-    /// -swap / trip-received popups, the #504 sensor/storage warning card), the route-planning spinner (a
-    /// multi-second wait that isn't idleness), and the whole SD-sideload update flow (a card/wait the
-    /// rider is acting on — never yank it Home mid-flow). Reads the top screen's declared
-    /// [`idle_exempt`](crate::screen::Caps::idle_exempt) capability, so a new modal card can't be
-    /// forgotten here. While one is up, no idle return fires and no idle wake is armed.
+    /// Whether the top screen is exempt from the idle-return timeout: the modal cards that stay
+    /// put until dismissed, the route-planning spinner, and the SD-sideload update flow. It reads
+    /// the declared [`idle_exempt`](crate::screen::Caps::idle_exempt) capability, so a new modal
+    /// card cannot be forgotten here.
     fn idle_return_exempt(&self) -> bool {
         self.stack.last().is_some_and(|s| s.caps().idle_exempt)
     }
 
-    /// Whether the current top screen is one of the **deliberate ride views** that must never time
-    /// out while a ride is being tracked — the Map (the ride base), Statistics, Climb, and the
-    /// Paused / Ride-control page. A rider sitting on any of these is watching live ride data, not
-    /// lost in a menu. Every *other* screen (menus, lists, settings, route overview) returns to the
-    /// Map on the idle timeout when tracking. Reads the top screen's declared
-    /// [`ride_view`](crate::screen::Caps::ride_view) capability.
+    /// Whether the top screen is a deliberate ride view that must never time out while a ride is
+    /// tracked. Every other screen returns to the Map on the idle timeout when tracking. It reads
+    /// the declared [`ride_view`](crate::screen::Caps::ride_view) capability.
     fn is_ride_view(&self) -> bool {
         self.stack.last().is_some_and(|s| s.caps().ride_view)
     }
 
-    /// Navigate "back to where it belongs" once the idle-return timeout ([`idle_return`]) has
-    /// elapsed with no user input — the app-level counterpart to the popups' timeout-dismiss sweep,
-    /// run once per [`advance_animations`](App::advance_animations) pass.
-    ///
-    /// - **Not tracking a ride:** from any screen *except* the route-less browse Map (Menu → Map, a
-    ///   deliberate view — see [`idle_return_pending`](App::idle_return_pending)), clear every
-    ///   overlay back to the Home root and reseed the screensaver backdrop (as a manual return does).
-    /// - **Tracking a ride:** a menu / list / settings / overview screen returns to the Map (the
-    ///   ride base). The deliberate ride views ([`is_ride_view`](App::is_ride_view)) stay put.
-    ///
-    /// Never fires while the timeout is disabled ([`Never`]), a modal exemption is up
-    /// ([`idle_return_exempt`](App::idle_return_exempt)), a hold is charging (a gesture in progress
-    /// is activity — deferred a tick, like the popup sweeps), or we're already at the target screen.
-    ///
-    /// [`idle_return`]: crate::settings::Settings::idle_return
-    /// [`Never`]: crate::settings::IdleReturn::Never
+    /// Navigate back to where it belongs once the idle-return timeout has elapsed with no user
+    /// input, once per animation pass. Not tracking, it clears every overlay back to the Home root
+    /// and reseeds the screensaver. Tracking, a menu, list, settings or overview screen returns to
+    /// the Map, while the deliberate ride views stay put.
     pub(crate) fn apply_idle_return(&mut self, settings: &Settings, tracking: bool) {
         let Some(timeout) = settings.idle_return.timeout_ms() else {
             self.idle_return_timing = false;
             return;
         };
-        // No return is eligible while already at the destination/deliberate view or while an
-        // idle-exempt modal is up. Suspend rather than merely ignoring the expired absolute
-        // deadline: when a long plan/upload/update wait later reveals an ordinary screen, that
-        // screen receives a fresh full window instead of being swept away immediately.
+        // Suspend the clock rather than ignore an expired deadline: when a long plan, upload or
+        // update wait later reveals an ordinary screen, that screen gets a fresh full window.
         if !self.idle_return_pending(tracking) {
             self.idle_return_timing = false;
             return;
@@ -679,15 +529,12 @@ impl UiRuntime {
             return;
         }
         // Past the deadline: consume it so the return fires once, not every pass hereafter. The
-        // repaint needs no request: the return moves the visible stack, which is the shape half of
-        // the pass's render key, and the Home reseed below moves Home's own key.
+        // repaint needs no request, because the return moves the visible stack.
         self.last_input_ms = self.now_ms;
         if tracking {
-            // Mid-ride, on a non-ride screen: return to the Map (the ride base).
-            self.stack.truncate(1); // drop back toward the root…
-            let _ = self.stack.push(Screen::Map(MapScreen::new())); // …then land on the Map
+            self.stack.truncate(1);
+            let _ = self.stack.push(Screen::Map(MapScreen::new()));
         } else {
-            // Not tracking: clear to the Home root and reseed the screensaver (as a manual return does).
             self.stack.truncate(1);
             if let Some(Screen::Home(home)) = self.stack.first_mut() {
                 home.reseed(self.now_ms);
@@ -695,39 +542,29 @@ impl UiRuntime {
         }
     }
 
-    /// Drain the repaint demand accumulated since the last call, resetting to [`Dirty::CLEAN`]. The
-    /// host calls this **once per frame** after [`tick`](App::tick) +
-    /// [`handle_input`](App::handle_input), then renders each plane only when its flag is set — the
-    /// render-on-demand loop.
+    /// Drain the repaint demand accumulated since the last call, resetting to [`Dirty::CLEAN`].
+    /// The host calls this once per frame and then renders each plane only when its flag is set.
     ///
-    /// [`map`](Dirty::map) accumulates every map-affecting mutation since the last drain.
-    /// [`overlay`](Dirty::overlay) is left `false` here: it is a *level* comparison, not an
+    /// [`overlay`](Dirty::overlay) is left `false` here: it is a level comparison, not an
     /// accumulator, and [`App::take_dirty`](crate::App::take_dirty) owns the one converter that
-    /// makes it (see `OverlayKey`).
-    ///
-    /// [`region`](Dirty::region) carries the accumulated region-scoped tick demand — but only when
-    /// no full-frame demand joined it since the last drain: a set `map_dirty` covers any region, so
-    /// the region folds away and the host full-repaints (over-redraw is safe; under-redraw is a bug).
+    /// makes it. [`region`](Dirty::region) survives only when no full-frame demand joined it, since
+    /// over-redraw is safe and under-redraw is a bug.
     pub(crate) fn take_dirty(&mut self) -> Dirty {
         let full = core::mem::take(&mut self.map_dirty);
         let region = self.region_dirty.take();
         Dirty { map: full || region.is_some(), overlay: false, region: if full { None } else { region } }
     }
 
-    /// Drain the pending hold-cancel edge (see `hold_cancel_pending`): `true` when a gesture
-    /// changed the screen stack since the last drain, i.e. any hold charging on the host's input
-    /// plane is aimed at a vanished target and must be cancelled
-    /// ([`InputPlane::cancel_holds`](crate::InputPlane::cancel_holds)). The two-plane firmware
-    /// checks this after each drained gesture; [`handle_input`](App::handle_input) consumes it
-    /// itself, so single-loop hosts never see it.
+    /// Drain the pending hold-cancel edge: `true` when a gesture changed the screen stack, so any
+    /// hold charging on the host's input plane is aimed at a vanished target and must be cancelled.
+    /// [`handle_input`](App::handle_input) consumes it itself, so single-loop hosts never see it.
     pub(crate) fn take_hold_cancel(&mut self) -> bool {
         core::mem::take(&mut self.hold_cancel_pending)
     }
 }
 
-/// The bounding union of two rects — how `advance_animations` folds multiple region-scoped tick
-/// changes into one containing dirty region (embedded-graphics 0.8 has `intersection` but no
-/// union). Both operands are screen regions, so non-empty by construction.
+/// The bounding union of two rects. Both operands are screen regions, so non-empty by
+/// construction (embedded-graphics 0.8 has `intersection` but no union).
 fn union_rect(a: Rectangle, b: Rectangle) -> Rectangle {
     use embedded_graphics::prelude::{Point, Size};
     let x0 = a.top_left.x.min(b.top_left.x);
@@ -739,9 +576,8 @@ fn union_rect(a: Rectangle, b: Rectangle) -> Rectangle {
 
 #[cfg(test)]
 impl UiRuntime {
-    /// Assert the [`new`](UiRuntime::new) boot state, field by field — including the Home root the
-    /// shared post block seeds. The destructure is exhaustive, so a field added to the plan must
-    /// state its boot value here too.
+    /// Assert the [`new`](UiRuntime::new) boot state, field by field. The destructure is
+    /// exhaustive, so a field added to the plan must state its boot value here too.
     pub(crate) fn assert_boot_state(&self) {
         let UiRuntime {
             stack,
@@ -805,8 +641,6 @@ impl UiRuntime {
 mod tests {
     use super::*;
 
-    /// The placement path must land exactly the state the by-value path builds — Home seeded by
-    /// the one shared post block included.
     #[test]
     fn init_in_place_matches_new() {
         UiRuntime::new().assert_boot_state();
