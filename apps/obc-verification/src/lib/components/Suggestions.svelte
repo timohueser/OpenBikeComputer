@@ -24,6 +24,12 @@
   $: decided = suggestions.filter(s => (s.status === 'accepted' || s.status === 'dismissed') && !done[s.id]);
   function subject(suggestion: RequirementSuggestionReview) { return requirements.find(r => r.id === suggestion.requirementId); }
   function toggle(id: string) { expanded = expanded === id ? '' : id; }
+  /** Who wrote it and when, after the link or the group. Svelte trims separators written as markup. */
+  function meta(suggestion: RequirementSuggestionReview) {
+    const parts = [suggestion.author, day(suggestion.createdAt)];
+    if (!suggestion.requirementId && suggestion.group) parts.unshift(suggestion.group);
+    return (suggestion.requirementId ? ' · ' : '') + parts.join(' · ');
+  }
   async function accept(suggestion: RequirementSuggestionReview) {
     if (busy || done[suggestion.id]) return;
     if (await ondecide(suggestion.id, true)) done = { ...done, [suggestion.id]: true };
@@ -48,10 +54,7 @@
             <input type="checkbox" checked={!!done[s.id]} disabled={busy || done[s.id] || s.missing} aria-label={`Done: ${s.title}`} on:change={() => accept(s)} />
             <div>
               <button class="title" on:click={() => toggle(s.id)} aria-expanded={expanded === s.id}>{s.title}</button>
-              <div class="sub">
-                {#if s.requirementId}<a href="#requirement" on:click|preventDefault={() => onselect(s.requirementId ?? '')}>{s.requirementId}{current ? ` · ${current.title}` : ''}</a> ·
-                {:else if s.group}{s.group} · {/if}{s.author} · {day(s.createdAt)}{#if s.sourceSha} · commit <code>{s.sourceSha.slice(0, 10)}</code>{/if}{#if s.requirementId} · against r{s.baseRevision}{/if}
-              </div>
+              <div class="sub">{#if s.requirementId}<a href="#requirement" on:click|preventDefault={() => onselect(s.requirementId ?? '')}>{s.requirementId}{current ? ` · ${current.title}` : ''}</a>{/if}{meta(s)}{#if s.sourceSha}{' · commit '}<code>{s.sourceSha.slice(0, 10)}</code>{/if}{#if s.requirementId}{` · against r${s.baseRevision}`}{/if}</div>
               {#if expanded === s.id}
                 <div class="body">
                   {#if s.missing}<p class="stale">{s.requirementId} is no longer in r{revisionId}. You can only dismiss this suggestion.</p>{/if}
