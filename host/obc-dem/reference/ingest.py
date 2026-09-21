@@ -32,6 +32,7 @@ from pathlib import Path
 import numpy as np
 import rasterio
 from rasterio.crs import CRS
+from rasterio.errors import RasterioIOError
 from rasterio.transform import Affine
 from rasterio.warp import transform_bounds
 from pyproj import Transformer
@@ -55,8 +56,11 @@ WGS84 = CRS.from_epsg(4326)
 # Absence while pooling. Every real height is far above it, so a lattice pixel that no
 # source pixel centre reached still reads as absent after the maximum.
 VOID = -1e30
-NOT_A_HEIGHT = 1e6  # a magnitude no orthometric height reaches
 POOL_BLOCK = 256  # source rows per coordinate transform
+
+# The range a real orthometric height is in. A value outside it is a sentinel that the
+# source did not declare — −9999 is the common one — and not ground.
+PLAUSIBLE_M = (-500.0, 9000.0)
 
 # Priority, finest and best-maintained national product first. Where two sources cover the
 # same pixel, the one earlier in this list keeps it. Keys with no adapter yet are listed so
@@ -156,15 +160,20 @@ def check_world(bounds: tuple[float, float, float, float], what: str) -> None:
 
 
 class Source:
-    """One national product: the manifest facts, and a way to obtain rasters for a box."""
+    """One national product: the manifest facts, and a way to obtain rasters for a box.
 
-    def __init__(self, key, country, product, resolution_m, licence, attribution, extent):
+    `vertical_datum` is the datum the product's heights are on. An adapter whose product is
+    ellipsoidal must convert before the tail: the archive is orthometric.
+    """
+
+    def __init__(self, key, country, product, resolution_m, licence, attribution, vertical_datum, extent):
         self.key = key
         self.country = country
         self.product = product
         self.resolution_m = resolution_m
         self.licence = licence
         self.attribution = attribution
+        self.vertical_datum = vertical_datum
         self.extent = extent
 
     def covers(self, bbox) -> bool:
@@ -200,7 +209,11 @@ class StacSource(Source):
         for i, (name, href) in enumerate(sorted(assets), 1):
             path = workdir / name
             if not path.exists():
-                path.write_bytes(http_get(href))
+                # A half-written file in the cache would look complete to the next run, so
+                # the bytes land beside the name and are moved onto it at the end.
+                part = path.with_name(name + ".part")
+                part.write_bytes(http_get(href))
+                os.replace(part, path)
                 print(f"  fetch [{i}/{len(assets)}] {name}")
             paths.append(path)
         return paths
@@ -209,7 +222,7 @@ class StacSource(Source):
 SOURCES = {
     "ch": StacSource(
         "ch", "Switzerland", "swissALTI3D 2 m", 2.0,
-        "Open data, attribution required", "© swisstopo", (5.9, 45.8, 10.5, 47.9),
+        "Open data, attribution required", "© swisstopo", "LN02/LHN95", (5.9, 45.8, 10.5, 47.9),
         stac="https://data.geo.admin.ch/api/stac/v0.9/collections/ch.swisstopo.swissalti3d/items",
         gsd="2",
     ),
@@ -239,6 +252,15 @@ def priority_rank(key: str) -> int:
 # ── the shared tail ─────────────────────────────────────────────────────────
 
 
+def open_raster(path: Path):
+    """`rasterio.open`, with a refusal that names the file and where to delete it from."""
+
+    try:
+        return rasterio.open(path)
+    except RasterioIOError as exc:
+        raise Refuse(f"{path}: cannot be opened ({exc}); delete it from {path.parent} and run again") from exc
+
+
 def source_xy(transform: Affine, rows, cols):
     """Source-CRS coordinates of pixel centres. Rotation and shear fall out of the affine."""
 
@@ -258,22 +280,30 @@ def source_envelope(transform: Affine, width: int, height: int):
 def read_source(path: Path):
     """One raster as float32 heights with voids marked, plus its CRS, transform and box.
 
-    Voids arrive as a declared sentinel, as a non-finite value, as the float maximum, or
-    undeclared. All four become `VOID` here, so the warp below has one convention and no
-    adapter has to know what its service sends.
+    A void arrives as a declared sentinel, as a non-finite value, or undeclared. All three
+    become `VOID` here, so the pooling below has one convention and no adapter has to know
+    what its service sends. Anything outside `PLAUSIBLE_M` is an undeclared sentinel.
+
+    The fraction of the raster that is void comes back with it, because that number is how a
+    source that answered with a mostly empty raster is noticed.
     """
 
-    with rasterio.open(path) as src:
+    with open_raster(path) as src:
         if src.crs is None:
             raise Refuse(f"{path}: the raster has no CRS, so it cannot be placed")
+        if src.scales != (1.0,) or src.offsets != (0.0,):
+            raise Refuse(
+                f"{path}: the band has scale {src.scales} and offset {src.offsets}, but the tail "
+                "reads raw metres; undo them with `gdal_translate -unscale` first"
+            )
         values = src.read(1).astype("float32")
-        void = ~np.isfinite(values) | (np.abs(values) > NOT_A_HEIGHT)
+        void = ~np.isfinite(values) | (values < PLAUSIBLE_M[0]) | (values > PLAUSIBLE_M[1])
         if src.nodata is not None and np.isfinite(src.nodata):
             void |= values == np.float32(src.nodata)
         values[void] = VOID
         envelope = source_envelope(src.transform, src.width, src.height)
         bounds = transform_bounds(src.crs, WGS84, *envelope)
-        return values, src.transform, src.crs, bounds
+        return values, src.transform, src.crs, bounds, float(void.mean())
 
 
 def pool_onto_lattice(values, src_transform, src_crs, window: Window):
@@ -387,10 +417,13 @@ def merge_tiles(existing, incoming, held: set[str], key: str):
     return np.where(existing != NODATA, existing, incoming)
 
 
-def ingest_raster(path: Path, source: Source, root: Path, held: dict[str, set[str]]) -> list[str]:
-    """Pool one raster onto the lattice and fold it into the archive's tiles."""
+def ingest_raster(path: Path, source: Source, root: Path, held: dict[str, set[str]]):
+    """Pool one raster onto the lattice and fold it into the archive's tiles.
 
-    values, src_transform, src_crs, bounds = read_source(path)
+    Returns the tiles it wrote and the fraction of the source raster that was void.
+    """
+
+    values, src_transform, src_crs, bounds, voided = read_source(path)
     check_world(bounds, str(path))
     window = covering_window(bounds, pad=1)
     pooled = to_int16(pool_onto_lattice(values, src_transform, src_crs, window))
@@ -402,12 +435,12 @@ def ingest_raster(path: Path, source: Source, root: Path, held: dict[str, set[st
         out = tile_path(root, ti, tj)
         contributors = held.setdefault(tile_id(ti, tj), set())
         if out.exists():
-            with rasterio.open(out) as src:
+            with open_raster(out) as src:
                 tile = merge_tiles(src.read(1), tile, contributors, source.key)
         write_tile(out, ti, tj, tile)
         contributors.add(source.key)
         touched.append(tile_id(ti, tj))
-    return touched
+    return touched, voided
 
 
 def local_rasters(directory: Path, bbox) -> list[Path]:
@@ -418,7 +451,7 @@ def local_rasters(directory: Path, bbox) -> list[Path]:
         raise Refuse(f"{directory}: no .tif files")
     keep = []
     for path in paths:
-        with rasterio.open(path) as src:
+        with open_raster(path) as src:
             if src.crs is None:
                 raise Refuse(f"{path}: the raster has no CRS, so it cannot be placed")
             west, south, east, north = transform_bounds(src.crs, WGS84, *src.bounds)
@@ -494,6 +527,7 @@ def rebuild_index(root: Path) -> dict:
                 "product": manifests[key]["product"],
                 "attribution": manifests[key]["attribution"],
                 "licence": manifests[key]["licence"],
+                "vertical_datum": manifests[key]["vertical_datum"],
                 "fetched": manifests[key]["fetched"],
             }
             for key in sorted(manifests)
@@ -641,8 +675,9 @@ def command_ingest(args) -> int:
     held = contributors(manifests)
     touched: set[str] = set()
     for i, path in enumerate(rasters, 1):
-        touched.update(ingest_raster(path, source, root, held))
-        print(f"  [{i}/{len(rasters)}] {path.name}: {len(touched)} tile(s) so far")
+        written, voided = ingest_raster(path, source, root, held)
+        touched.update(written)
+        print(f"  [{i}/{len(rasters)}] {path.name}: {len(written)} tile(s), {voided:.1%} void")
 
     mine = sorted(tile for tile, keys in held.items() if source.key in keys)
     write_manifest(root, {
@@ -652,6 +687,7 @@ def command_ingest(args) -> int:
         "resolution_m": source.resolution_m,
         "licence": source.licence,
         "attribution": source.attribution,
+        "vertical_datum": source.vertical_datum,
         "fetched": datetime.now(timezone.utc).date().isoformat(),
         "tiles": mine,
     })

@@ -75,7 +75,8 @@ def archive_pixel(transform, row, col):
 
 
 def local_source(key, country="Testland"):
-    return ingest.Source(key, country, f"{key} test product", 1.0, "CC0", f"© {key}", (-180, -90, 180, 90))
+    return ingest.Source(key, country, f"{key} test product", 1.0, "CC0", f"© {key}", "EGM2008",
+                         (-180, -90, 180, 90))
 
 
 class ArchiveCase(unittest.TestCase):
@@ -260,11 +261,37 @@ class Ingest(ArchiveCase):
             ("nan", np.where(plateau_with_tower() > 1400, np.nan, PLATEAU), "float32", np.nan),
             ("sentinel", np.where(plateau_with_tower() > 1400, -9999, PLATEAU), "int16", -9999),
             ("huge", np.where(plateau_with_tower() > 1400, 3.4e38, PLATEAU), "float32", None),
+            # −9999 with no nodata tag: only the plausible range catches this one.
+            ("undeclared", np.where(plateau_with_tower() > 1400, -9999.0, PLATEAU), "float32", None),
         ):
             with self.subTest(void=name):
                 _, _, data = self.pool(values, name, dtype=dtype, nodata=nodata)
                 self.assertEqual(int(data.max()), round(PLATEAU))
                 self.assertNotIn(round(TOWER), set(np.unique(data).tolist()))
+
+    def test_a_scaled_band_is_refused_by_name(self):
+        """A band with a scale or an offset is centimetres or worse, not metres."""
+
+        raster = source_raster(self.inputs / "scaled.tif", plateau_with_tower(),
+                               scales=((0.01,), (0.0,)))
+        with self.assertRaises(ingest.Refuse) as caught:
+            ingest.read_source(raster)
+        self.assertIn("gdal_translate -unscale", str(caught.exception))
+
+    def test_a_raster_that_cannot_be_opened_names_itself(self):
+        broken = self.inputs / "half-written.tif"
+        broken.write_bytes(b"II*\x00not a tiff")
+        with self.assertRaises(ingest.Refuse) as caught:
+            ingest.read_source(broken)
+        self.assertIn("half-written.tif", str(caught.exception))
+        self.assertIn(str(self.inputs), str(caught.exception))
+
+    def test_the_run_reports_the_void_fraction(self):
+        values = plateau_with_tower()
+        values[:100] = np.nan  # the top half of the raster is void
+        raster = source_raster(self.inputs / "half.tif", values, nodata=np.nan)
+        _, _, _, _, voided = ingest.read_source(raster)
+        self.assertAlmostEqual(voided, 0.5, places=3)
 
     def test_a_source_coarser_than_the_step_invents_nothing(self):
         """A 20 m source reaches the lattice pixels its centres land in, and no others."""
@@ -307,6 +334,8 @@ class Check(ArchiveCase):
         self.assertEqual((index["step_log2"], index["tile_log2"]), (6, 16))
         self.assertEqual(list(index["tiles"].values()), ["ch"])
         self.assertEqual(index["sources"]["ch"]["licence"], "Open data, attribution required")
+        self.assertEqual(index["sources"]["ch"]["vertical_datum"], "LN02/LHN95")
+        self.assertEqual(manifest["vertical_datum"], "LN02/LHN95")
         self.assertEqual(sorted(index["sha256"]), sorted(index["tiles"]))
 
 

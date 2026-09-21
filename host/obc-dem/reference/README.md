@@ -43,6 +43,22 @@ This is the normative contract. The baker and `ingest.py` both hold to it.
   ```
   A tile not in the index is not in the archive.
 
+### The vertical datum
+
+The contract says orthometric metres. It means orthometric on the same datum family as the
+native lattice, which is Copernicus GLO-30 on EGM2008. A national geoid model is not EGM2008
+— `ch` heights are on LN02/LHN95 — and the two differ by decimetres over the Alps. The
+bakery only lifts a node where the reference stands more than 10 m above the native surface,
+so a decimetre of datum difference cannot make a lift, and the archive records the datum per
+source rather than converting between geoid models.
+
+An **ellipsoidal** product is a different matter: it differs from an orthometric height by
+tens of metres, which is a lift. An adapter for an ellipsoidal product (HRDEM and ELVIS both
+publish some) **must** convert to orthometric before it hands the raster to the tail. No
+conversion code is in the tool yet, because no adapter needs one yet.
+
+`vertical_datum` is in `sources/<key>.json` and in `index.json`'s `sources`.
+
 ### One addition to the index
 
 `index.json` carries one map more than the contract above shows: **`sha256`**, the digest of each
@@ -50,7 +66,8 @@ tile file, under the same tile ids as `tiles`.
 
 ```json
 { "schema": 1, "step_log2": 6, "tile_log2": 16,
-  "sources": { "ch": { "product": "…", "attribution": "…", "licence": "…", "fetched": "2026-09-21" } },
+  "sources": { "ch": { "product": "…", "attribution": "…", "licence": "…",
+                       "vertical_datum": "LN02/LHN95", "fetched": "2026-09-21" } },
   "tiles": { "3410/2882": "ch" },
   "sha256": { "3410/2882": "9f86d0818…" } }
 ```
@@ -59,9 +76,14 @@ The terrain bakery keys its skip decision on the reference a cell was baked from
 the only statement of "these bytes" that survives a re-ingest of the same box. `tiles` keeps the
 shape the contract states, so a reader that wants the source key only reads one map, as before.
 
-`sources` holds the four fields the contract names. The full facts of a source — its country, its
-step in metres and the tile ids it holds — stay in its manifest at `sources/<key>.json`, which is
-what `index` rebuilds the index from.
+`sources` holds the four fields the contract names, plus `vertical_datum`. The full facts of a
+source — its country, its step in metres and the tiles it wrote pixels into — stay in its manifest
+at `sources/<key>.json`, which is what `index` rebuilds the index from.
+
+`tiles` names a tile's **best-priority contributor**. A tile can hold pixels from more than one
+source, because coverage stops at borders: `tiles` answers "who is the best source in this tile",
+the manifests answer "which tiles did this source write", and `sources` lists every source that
+contributed a pixel anywhere, so every attribution travels with the map.
 
 ## The tool
 
@@ -90,16 +112,21 @@ It needs `rasterio`, `pyproj` and `numpy` (`tools/requirements-bake.txt`, or
 An adapter has one job: `fetch(bbox, workdir) -> list[Path]`, rasters in any CRS and any dtype.
 Everything after that is shared, so a new country is an adapter and a row in the source table:
 
-1. Voids become one value. A source marks them with a declared sentinel, with NaN, with the float
-   maximum, or not at all. All four become absence before the warp.
-2. `rasterio.warp.reproject(..., resampling=Resampling.max)` puts the raster **directly onto the
-   lattice window that covers its bounds**. The destination transform is built from the lattice
-   integers, so no pixel is resampled twice and there is no `calculate_default_transform`.
+1. Voids become one value. A source marks them with a declared sentinel, with NaN, or not at all.
+   All three become absence, and so does any height outside −500 m to 9 000 m, because an
+   undeclared −9999 is a sentinel and not ground. The run prints the void fraction per raster, so
+   a service that answered with a nearly empty raster is visible.
+2. Every source pixel centre is mapped to WGS84 (a `pyproj` transform, per block of source rows),
+   and the integer microdegrees of that point give the lattice pixel that holds it. The lattice
+   pixel keeps the **maximum** of the centres that land in it. This is the contract's rule, done
+   directly, and it is not what `Resampling.max` does: that pools by area overlap, which raises
+   every lattice pixel a source pixel merely touches. Measured over an alpine box, area overlap
+   read 39 % of the pixels too high and spread a one-pixel tower over two to four archive pixels.
 3. The heights become `int16` metres, rounded half away from zero, with `−32768` for absence.
 4. The window is cut into tiles. A tile is always whole: a box that reaches a corner of a tile
    still writes 1024 × 1024 pixels, with nodata where the box did not reach.
 
-Then the priority rule decides who keeps the tile.
+Then the priority rule decides which pixels the tile keeps.
 
 ### Priority
 
@@ -109,35 +136,49 @@ Then the priority rule decides who keeps the tile.
 nl, de-nw, fr, no, us, ch, es
 ```
 
-- A tile a **higher-priority** source holds is left alone.
-- A tile a **lower-priority** source holds is replaced, and its pixels go.
-- A second ingest into a tile from the **same** source max-merges: the new box adds its footprint
-  and raises the pixels both boxes cover.
+The rule is per pixel, because coverage stops at borders and survey edges: a better source over one
+corner of a tile must not take the rest of the tile away from the source that does cover it.
 
-A source key that is not in the list ranks last, so it cannot displace a listed one.
+- Only this source has been in the tile: the **maximum**, so a second box adds its footprint and
+  raises the pixels both boxes cover.
+- This source ranks **better** than every source that has been in the tile: its pixels win where it
+  has them, and the other sources' pixels stay in its gaps.
+- Otherwise: the pixels already there stay, and this source fills the gaps only.
+
+A pixel does not record which source wrote it, so the comparison is against the tile's best
+contributor. One case loses by that: a best-ranking source that ingests two overlapping boxes into
+a tile a worse source also reached takes the later value there instead of the maximum. A source key
+that is not in the list ranks last, so it cannot displace a listed one.
 
 ### What a source may look like
 
 The tail is deliberately blunt, because the sources are not uniform:
 
-- **Any CRS.** A projected national grid (LV95, ETRS89/UTM) and EPSG:4326 both warp in one step.
-  Bounds are transformed with densified edges, so a curved projection edge cannot fall outside the
-  window.
+- **Any CRS.** A projected national grid (LV95, ETRS89/UTM) and EPSG:4326 are both one transform
+  of the pixel centres. Bounds are transformed with densified edges and the window is padded by one
+  pixel, so a curved projection edge cannot push a centre out of the window.
+- **A rotated or sheared transform is accepted.** A pixel centre is a point, and the affine gives
+  it whatever the raster's grid is turned to. No `gdalwarp` step is needed first.
 - **Any dtype.** `float32` with NaN, `int16` with a sentinel, and an undeclared void all mean
-  absence. A magnitude above 10^6 is not a height, so a float maximum is a void as well.
-- **A source coarser than 7 m is accepted.** `Resampling.max` upsamples by repeating the one source
-  pixel it finds, which is the maximum over a footprint of one. The archive step then carries no
-  more detail than the source had, which is correct: the maximum over an empty footprint stays
-  nodata, so a coarse source never invents ground.
+  absence, and so does any height outside −500 m to 9 000 m, which is what catches an undeclared
+  −9999.
+- **A source coarser than 7 m is accepted.** Its pixel centres reach fewer lattice pixels than the
+  lattice has, and the lattice pixels no centre reached stay nodata. A coarse source therefore
+  leaves gaps rather than inventing ground, and the archive carries no more detail than the source
+  had. A source that must be dense on the lattice has to be resampled before the ingest.
 - **A box at the antimeridian is refused, by name.** The lattice does not wrap, so split the box at
   ±180°. A box outside the world box is refused as well.
+- **A scaled band is refused by name.** A band with a scale or an offset is not metres; undo it
+  with `gdal_translate -unscale` first.
 - **Several revisions of one square are max-merged.** swisstopo publishes a square again when it
   re-flies it, and the STAC listing answers with every year. The archive keeps the maximum, which
   is the rule the whole archive is built on.
 
-Memory is one source raster plus the tiles it touches. A published national tile (swisstopo
-publishes one square kilometre at a time) is a few megabytes, so a country-sized ingest never holds
-more than that.
+Memory is one source raster plus the tiles it touches. That is small for a product that publishes
+per tile — swisstopo publishes one square kilometre at a time — and a country-sized ingest of such a
+product never holds more. A **monolithic** raster, such as a whole-state DGM of several gigabytes,
+is held whole: read it in blocks, or cut it up with `gdal_retile` before the ingest. Blockwise
+reading in the tail is a follow-up.
 
 ## Sources
 
