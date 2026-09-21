@@ -197,6 +197,10 @@ read one surface.
 Copernicus stays the base model. A national model gives lifts only, because it measures bare
 ground and therefore sits below Copernicus over every forest and town.
 
+The baker reads one archive rather than each national service. The archive holds the **highest**
+ground in each 7 m square of a fixed lattice, so a rock tower one metre wide survives, and the
+baker streams the squares of one cell at a time.
+
 Coverage can stop at any sample, so a national model that stops at a border is not a problem.
 A cell with no finer coverage is identical to a cell baked without one.
 
