@@ -375,6 +375,8 @@ def local_rasters(directory: Path, bbox) -> list[Path]:
     keep = []
     for path in paths:
         with rasterio.open(path) as src:
+            if src.crs is None:
+                raise Refuse(f"{path}: the raster has no CRS, so it cannot be placed")
             west, south, east, north = transform_bounds(src.crs, WGS84, *src.bounds)
         if not (east < bbox[0] or west > bbox[2] or north < bbox[1] or south > bbox[3]):
             keep.append(path)
@@ -501,8 +503,8 @@ def r2_remote() -> Remote:
         "RCLONE_CONFIG_OBCR2_SECRET_ACCESS_KEY": need("OBC_R2_SECRET_ACCESS_KEY"),
         "RCLONE_CONFIG_OBCR2_NO_CHECK_BUCKET": "true",
     }
-    root = "/".join(part for part in (bucket, prefix, ARCHIVE_PREFIX) if part)
-    return Remote(f"OBCR2:{root}", env)
+    key_root = "/".join(part for part in (bucket, prefix, ARCHIVE_PREFIX) if part)
+    return Remote(f"OBCR2:{key_root}", env)
 
 
 def run_rclone(argv: list[str], env: dict[str, str]) -> None:
