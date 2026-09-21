@@ -30,12 +30,10 @@ FI = Wcs20Source(
         "Sign in, open `API-avaimet` / `API keys`, and create a key for the open data\n"
         "interfaces. Copy the key, which looks like a UUID.",
 
-        "Set the key in this shell so the adapter can fetch:\n"
-        "    export OBC_REFERENCE_FI_TOKEN=<the API key>\n"
-        "Then stop here: `ingest fi --bbox ... --archive ...` fetches by itself. Go on\n"
-        "only if you would rather download the tiles.",
+        "The wizard asks for that key in a moment and keeps it in this process only.\n"
+        "Go on to the next step instead if you would rather download the tiles.",
 
-        "To download by hand instead, open\n"
+        "To download by hand, open\n"
         "https://asiointi.maanmittauslaitos.fi/karttapaikka/tiedostopalvelu/korkeusmalli,\n"
         "select `Korkeusmalli 2 m`, pick the map sheets over the area, and order them as\n"
         "GeoTIFF. The service sends a download link by e-mail.",

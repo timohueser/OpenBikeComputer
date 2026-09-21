@@ -61,7 +61,10 @@ class Nztopo50Cogs(CogWindows):
 
 NZ = Nztopo50Cogs(
     "nz", "New Zealand", "LiDAR DEM 1 m (LINZ)", 1.0,
-    "CC BY 4.0", "Sourced from LINZ, CC BY 4.0", "NZVD2016 (EPSG:7839), normal-orthometric",
+    "CC BY 4.0",
+    "Sourced from the LINZ Data Service and licensed by Toitū Te Whenua Land Information "
+    "New Zealand, for re-use under CC BY 4.0",
+    "NZVD2016 (EPSG:7839), normal-orthometric",
     (166.3, -47.4, 178.9, -34.0),
     base="https://nz-elevation.s3.ap-southeast-2.amazonaws.com"
          "/new-zealand/new-zealand/dem_1m/2193/",

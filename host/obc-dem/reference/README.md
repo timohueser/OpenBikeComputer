@@ -141,6 +141,26 @@ the wizard. A portal reads its key from the query or from an `Authorization` hea
 are the two shapes `Credential` has: the request a keyed WCS sends is the request the keyless
 one sends plus one parameter.
 
+Three rules keep a credential where it belongs, and each one is a test:
+
+- **A refusal never quotes it.** A service answers a 403 by quoting the request it refused, and
+  a request with a token in the query is a request with a secret in it. So a keyed request is
+  labelled `<key> <box>` and not by its URL, and every message goes through `redact`, which
+  takes out every value the `OBC_REFERENCE_*` namespace holds. What Denmark answers to a wrong
+  token is `dk (9.743, 56.32, 9.746, 56.3215): HTTP 403 — User not authorized`.
+- **It goes to the row's own hosts only.** An index is data, not code: Sweden's STAC answer
+  names the host each download is on, and a `href` somewhere else would otherwise be handed
+  the password. `credential_hosts` on the row is the allowed suffix, and a URL outside it is
+  refused by name — not fetched unsigned, because a download that quietly drops its credential
+  comes back as an error page and not as a raster.
+- **A redirect does not carry it.** urllib copies a request's headers onto the redirect it
+  follows, so `Authorization` would follow a `Location` anywhere. `DropAuthOnRedirect` takes
+  the header off when the host changes, and every request in the tool goes through that opener.
+
+A row states which shape it wants and the adapter states which shape it can send
+(`credential_style`), so a credential an adapter would drop on the floor is refused where the
+row is written rather than at the first request.
+
 Every request in the registry goes through `with_retry` in `sources/base.py`, so one rule covers
 all of them: a dropped connection, a 429 and a 5xx are retried three times; every other 4xx is the
 server's final answer and is refused at once with its body, because that body is the only thing
@@ -268,7 +288,7 @@ open, and the table says what each one answered.
 | `ca` | Canada | 1 m | HRDEM DTM (NRCan) | OGL Canada 2.0 | `Contains information licensed under the Open Government Licence – Canada` | WCS 1.1.1 |
 | `it-bz` | Italy, South Tyrol | 2.5 m | DTM (Provincia autonoma di Bolzano) | CC0 1.0 | `Autonome Provinz Bozen – Provincia autonoma di Bolzano` | WCS 2.0.1 |
 | `it-tn` | Italy, Trentino | 0.5 m | DTM (Provincia autonoma di Trento) | CC BY 4.0 | `Provincia autonoma di Trento` | 0.5 km grid of ESRI ASCII |
-| `nz` | New Zealand | 1 m | LiDAR DEM (LINZ) | CC BY 4.0 | `Sourced from LINZ, CC BY 4.0` | remote COG window, NZTopo50 sheets |
+| `nz` | New Zealand | 1 m | LiDAR DEM (LINZ) | CC BY 4.0 | `Sourced from the LINZ Data Service and licensed by Toitū Te Whenua Land Information New Zealand, for re-use under CC BY 4.0` | remote COG window, NZTopo50 sheets |
 | `de-nw` | Germany, North Rhine-Westphalia | 1 m | DGM1 | dl-de/zero-2-0 | `© Geobasis NRW` | WCS 2.0.1 |
 | `de-he` | Germany, Hesse | 1 m | DGM1 | dl-de/zero-2-0 | `© HLBG Hessen` | WCS 2.0.1 |
 | `de-bw` | Germany, Baden-Württemberg | 1 m | DGM1 | dl-de/by-2-0 | `Datenquelle: LGL, www.lgl-bw.de, dl-de/by-2-0` | WCS 2.0.1 |
@@ -355,27 +375,47 @@ account and the download, one step at a time, and ends by running the ingest.
 
 | key | country | step | product | licence | attribution | datum |
 | --- | --- | --- | --- | --- | --- | --- |
-| `dk` | Denmark | 0.4 m | DHM/Terræn | Danish free geographic data, attribution required | `© Klimadatastyrelsen` | DVR90 |
+| `dk` | Denmark | 0.4 m | DHM/Terræn | CC BY 4.0 | `Indeholder data fra Klimadatastyrelsen, Danmarks Højdemodel, <month> <year>` | DVR90 |
 | `se` | Sweden | 1 m | Markhöjdmodell (Lantmäteriet) | CC BY 4.0 | `© Lantmäteriet` | RH2000 |
 | `fi` | Finland | 2 m | Korkeusmalli (NLS) | CC BY 4.0 | `© Maanmittauslaitos` | N2000 |
-| `au` | Australia | 1–5 m | ELVIS (per-area order) | CC BY 4.0, licensor per survey | `Sourced from ELVIS – Elevation and Depth, © the contributing agency` | AHD |
+| `au` | Australia | per order, 1–5 m | ELVIS (per-area order) | CC BY 4.0, licensor per survey | `Sourced from ELVIS – Elevation and Depth, © the contributing agency` | AHD |
+
+Denmark's credit names the month of the delivery, so the row holds `{month} {year}` and `credit`
+fills them from the day the ingest fetched: what lands in `index.json` is
+`Indeholder data fra Klimadatastyrelsen, Danmarks Højdemodel, september 2026`. It is the one row
+whose attribution is not a constant.
+
+`au` states **no** step. The step of an order is the step of whichever survey the order covered,
+so claiming one number would be a claim about data nobody has seen; the run prints the step each
+delivered raster has instead.
 
 | key | credential | how to obtain it | what `--input` takes | wizard |
 | --- | --- | --- | --- | --- |
-| `dk` | `OBC_REFERENCE_DK_TOKEN` | A free Dataforsyningen account, then `Min side` → `Token`. | GeoTIFF, EPSG:25832, float32 metres, −9999 for no data. | `wizard dk` |
-| `se` | `OBC_REFERENCE_SE_USER` and `OBC_REFERENCE_SE_PASSWORD` | A free Geotorget account, then order `Markhöjdmodell Nedladdning, grid 1+` and create the consumer user. | GeoTIFF (COG) named `m<sheet>.tif`, 10 000 × 10 000 at 1 m, EPSG:5845, float32, −9999. | `wizard se` |
+| `dk` | `OBC_REFERENCE_DK_TOKEN` | A free Dataforsyningen account, then the user icon → `Administrer token til webservices og API'er` → `Opret ny token`. The token is account-wide, not per service. | GeoTIFF, EPSG:25832, float32 metres, −9999 for no data. | `wizard dk` |
+| `se` | `OBC_REFERENCE_SE_USER` and `OBC_REFERENCE_SE_PASSWORD` | `Logga in` at Geotorget and create a private account; find `Markhöjdmodell Nedladdning, grid 1+`, accept the national geodata platform (NGP) terms, then `Skicka in ansökan` under `Bli konsument` and choose Basic authentication rather than OAuth. Lantmäteriet answers the application. | GeoTIFF (COG) named `m<sheet>.tif`, 10 000 × 10 000 at 1 m, EPSG:5845, float32, −9999. | `wizard se` |
 | `fi` | `OBC_REFERENCE_FI_TOKEN` | A free NLS account at `omatili.maanmittauslaitos.fi`, then `API keys`. | GeoTIFF, EPSG:3067, float32 metres, −9999, one 3 km square per file. | `wizard fi` |
 | `au` | none; ELVIS answers no box at all | An ELVIS order and the link it sends by e-mail. | The order's zip, or its `*_DEM.tif` unpacked. ELVIS publishes each state in its own MGA zone, so the file's own CRS places it; an ASCII order must keep its `.prj`. | `wizard au` |
 
-`ingest <key> --input` reads every `.tif`, `.tiff`, `.asc` and `.zip` under the directory. A zip is
-opened into the work directory, not into the input directory, so a second run unpacks nothing. The
-one thing the tool writes into the input directory is the `.prj` beside an ESRI ASCII grid that
-came without one, because that is where the format keeps a CRS.
+The wizard asks for the credential itself and keeps it in its own process, so it is never on a
+command line. An empty answer is the other path: download the tiles and point the wizard at them.
 
-**Australia needs one check by hand.** Some ELVIS datasets are ellipsoidal, and an ellipsoidal
-height stands tens of metres from an orthometric one, which is the size of a lift. The row is AHD;
-an order whose metadata says otherwise must be converted before the ingest, and nothing here
-converts one.
+`ingest <key> --input` reads every `.tif`, `.tiff`, `.asc` and `.zip` under the directory, and
+**writes nothing into it** — a delivery directory is the owner's download and it stays as the
+portal left it. Everything the tool writes goes into the work directory:
+
+- A zip is unpacked there, under its path inside the delivery plus the digest of its bytes. That
+  is what makes a **re-issued** delivery of the same file name a different directory: keyed on
+  the name alone, the second order's members would be skipped as already unpacked and the archive
+  would silently keep the first order's tiles. Members are streamed to disk, not read whole.
+- A zip inside the zip is refused, naming the inner one. Unpack it and pass the directory.
+- An ESRI ASCII grid that came without a `.prj` is copied into the work directory under its own
+  digest and the `.prj` is written beside the copy. A `.prj` the portal shipped is used as it is.
+
+**Australia needs one answer by hand.** Some ELVIS datasets are ellipsoidal, and an ellipsoidal
+height stands tens of metres from an orthometric one, which is the size of a lift. No row can tell
+which an order held, so the tool does not guess: `ingest au --input` refuses until the owner has
+read the order's metadata and passed `--datum AHD`, and `wizard au` asks the question outright.
+An order that is not on AHD has to be converted first, which nothing here does.
 
 Two more are open data behind a login and are not rows, because neither answers a box at all:
 
@@ -450,6 +490,7 @@ from a machine that holds none. Each answer is what shaped the adapter.
 | --- | --- | --- |
 | **Denmark, Dataforsyningen** | `GET api.dataforsyningen.dk/dhm_wcs_DAF?service=WCS&request=GetCapabilities&token=` | **HTTP 200.** A WCS 1.0.0 capabilities document naming the coverages `dhm_terraen` and `dhm_overflade`, and the box 8.008, 54.435 → 15.598, 57.769, which is the row's extent. |
 | **Denmark, Dataforsyningen** | the same endpoint, `request=DescribeCoverage&coverage=dhm_terraen` | **HTTP 403 — `User not authorized`.** So the capabilities are open and the data is not, and `token=` is the one parameter the adapter adds. |
+| **Denmark, Dataforsyningen** | `ingest dk` with a wrong token, to see what a refusal says | **HTTP 403**, refused as `dk (9.743, 56.32, 9.746, 56.3215): HTTP 403 — User not authorized`. The token appears nowhere in the message, which is what `redact` and the `<key> <box>` label are for. |
 | **Denmark, Datafordeler** | `GET wcs.datafordeler.dk/DHMNedboer/dhm_wcs/1.0.0/WCS?service=WCS&request=GetCapabilities` | **HTTP 401**, empty body. Datafordeler's own gateway wants a username and a password or an `apikey`. The row takes the Dataforsyningen gateway instead, because that is the one whose capabilities can be read and checked. |
 | **Sweden, Lantmäteriet** | `GET api.lantmateriet.se/stac-hojd/v1/collections` and `…/v1/search?bbox=…&collections=dtm-cog` | **HTTP 200.** The STAC index is open. The search over Kebnekaise answered two items, each with a `data` asset at `dl1.lantmateriet.se/hojd/data/grid/mhm/75_6/m75x_6x.tif`, and the keyless `info` asset states the tile: GTiff, float32, nodata −9999, 10 000 × 10 000 at 1 m, EPSG:5845 ("SWEREF99 TM + RH2000 height"). |
 | **Sweden, Lantmäteriet** | `HEAD dl1.lantmateriet.se/hojd/data/grid/mhm/75_6/m753_64.tif` | **HTTP 401** with `WWW-Authenticate: Basic realm="Authorization Server"`. So the index is open and only the download is signed, which is why `se` reads the index without a credential and sends HTTP Basic on the download. |
@@ -510,6 +551,9 @@ export OBC_REFERENCE_FI_TOKEN=…        # Halti, the highest point in Finland
 python3 ingest.py ingest fi --bbox 21.2576,69.2995,21.2796,69.3141    --archive $A --work $W/fi
 
 python3 ingest.py wizard au --bbox 150.3050,-33.4200,150.3270,-33.4054 --archive $A
+# or, without the wizard, once the order's metadata has been read:
+python3 ingest.py ingest au --bbox 150.3050,-33.4200,150.3270,-33.4054 --archive $A \
+    --input $W/au-order --datum AHD
 ```
 
 A **country-scale** ingest is the same command with the country's box, and it is an owner-run job:
@@ -528,7 +572,8 @@ Five of the sources need a word about scale:
   whole-state run wants the work directory on a big disk. Each state publishes an index with a
   SHA-256 per square, which is the way to check a bulk download that the tool does not do for you.
 - **`nl`** is a 0.5 m product, so a box is four times the requests of a 1 m one, and `it-tn` and
-  `dk` are finer still.
+  `dk` are finer still. One Trentino square is 8.0 MB of ESRI ASCII, the 2 km verification box
+  needs 16 of them and so costs 123 MB, and the province is 25 201 squares, about 200 GB.
 - **`nz`** reads a window out of one sheet of 864 M pixels, the same way `at` does, so the cost of
   a box is the box and not the sheet.
 - **`se`** downloads a whole 10 km COG, a few hundred megabytes each, because that is what the

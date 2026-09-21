@@ -19,6 +19,7 @@ class BulkSource(Source):
     name it does not publish answers 404, and that is a coverage edge, not a fault.
     """
 
+    credential_style = "headers"
     skip_missing = False
 
     def files(self, bbox) -> list[tuple[str, str]]:
@@ -34,16 +35,16 @@ class BulkSource(Source):
         rasters, absent = [], 0
         for i, (name, url) in enumerate(wanted, 1):
             path = http_download(url, workdir / name, optional=self.skip_missing,
-                                 headers=self.headers())
+                                 headers=self.headers_for(url), what=f"{self.key} {name}")
             if path is None:
                 absent += 1
                 continue
             print(f"  fetch [{i}/{len(wanted)}] {name}")
             if path.suffix.lower() == ".zip":
-                rasters.extend(placed(raster, self)
+                rasters.extend(placed(raster, self, workdir)
                                for raster in unpack(path, workdir / f"{path.stem}.d", READABLE))
             elif path.suffix.lower() in READABLE:
-                rasters.append(placed(path, self))
+                rasters.append(placed(path, self, workdir))
             else:
                 raise Refuse(f"{path}: the registry expected a raster or a zip, not {path.suffix}")
         if absent:
