@@ -721,11 +721,14 @@ A node with `NODATA` anywhere in the 3 × 3 native lattice around it MUST NOT be
 the dilation. There is no bilinear surface there to measure a gap against, so a hole keeps a
 one-node rim of unlifted ground around it rather than a height the rule cannot justify.
 
-`node_max` and the gap are sampled on a probe grid the producer chooses. The v1 bakery uses
-32 × 32 sub-samples, centred in the node's cell, which puts the probe step below 2 m at the v1
-posting. This document therefore does **not** promise that two producers agree byte for byte on a
-lifted cell. It promises the identity of section 9.2: where there is no coverage, there is no
-difference.
+`node_max` and the gap are sampled on a probe grid the producer chooses. The v1 bakery uses **every
+reference pixel centre inside the node's half-posting cell**: its reference is an archive on a
+`2^6` µdeg lattice, so that is 64 probes per node at the v1 posting, and each pixel is already the
+maximum of the source pixels whose centres fall in it. A pooled probe reads the gap a little high on
+steep ground, because the maximum is credited to the pixel's centre and the bilinear surface there
+is lower than at the point the maximum came from. This document therefore does **not** promise that
+two producers agree byte for byte on a lifted cell. It promises the identity of section 9.2: where
+there is no coverage, there is no difference.
 
 Each test earns its place. The gap is measured against the bilinear surface, not against the node,
 because that surface is what a consumer draws. The convexity test is what leaves a steep planar
