@@ -1,24 +1,13 @@
 #!/usr/bin/env python3
 """Bundle-size budgets for the hosted builder's wasm bridges.
 
-Three budgeted modules, same argument, plus one that is measured and never gated. `apps/obc-web-convert` (#896) is what a visitor downloads the moment
-they drop a route; `apps/obc-web-assemble` (#1034) is what turns downloaded map cells into a map. Both are
-reached through a dynamic import. `apps/obc-skin-preview` (#1045) is the firmware reader + renderer
-opened only by the skin editor. Each is its own chunk rather than part of the initial page, and a
-silent size regression is a product regression. CI runs this right after each `wasm-pack build`,
-on the very bytes it then hands to the frontend job.
+Three modules are budgeted and one is measured and never gated. CI runs this right after each
+`wasm-pack build`, on the bytes it then hands to the frontend job.
 
-What is measured, and why:
-
-* **gzipped `.wasm` + `.js`** — the number that matters. Every static host serves these compressed
-  (a CDN will do better still with brotli), so this is what a visitor actually pays. The JS glue is
-  counted because it ships with the module and is not optional.
-* **raw `.wasm`** — a second, looser gate so a change that compresses well cannot hide behind gzip.
-  Raw size is also what the browser has to compile and keep resident.
-
-The budgets are round numbers a comfortable margin above the measured artifact, not high-water
-marks: they are meant to catch "a dependency crept in" (which moves this by tens of KB), not to
-force a bump on every refactor. Raising one is a deliberate edit with a reason in the PR body.
+Each module is gated on its gzipped `.wasm` plus `.js`, which is what a visitor pays, and on its raw
+`.wasm`, so a change that compresses well cannot hide behind gzip. The budgets sit a margin above
+the measured artifact, so they catch a dependency creeping in rather than force a bump on every
+refactor. Raising one needs a reason in the pull request body.
 """
 
 from __future__ import annotations
@@ -32,101 +21,22 @@ import sys
 from pathlib import Path
 
 
-# Budgets in bytes, per module. See the module docstring before changing any of them.
+# Budgets in bytes, per module, each about 10 % above the measured artifact.
 #
-# --- obc-web-convert --------------------------------------------------------------------------
-#
-# Measured 2026-07-26 on the initial A2 artifact (wasm-pack 0.15.0 / wasm-bindgen 0.2.125 /
-# wasm-opt -Oz, rustc stable 1.96): 84,108 B raw wasm + 11,293 B glue → 47,235 B gzipped. Of the
-# raw wasm, ~60 KB is code (the GPX scanner, the decimator's geometry, the OBCR emitter, the track
-# exporter, plus `f64` parsing, `core::fmt` and the allocator) and ~22 KB is data — the panic and
-# format strings `std` brings, and this bridge's own error prose.
-#
-# Both budgets sit ~20 % above that. Chosen so a toolchain bump (rustc/wasm-bindgen move this by a
-# few KB in either direction) never turns a green PR red, while anything structural — one more
-# shared crate linked in, a serializer, a second format — blows straight through it and has to be
-# argued for rather than absorbed.
-#
-# Re-measured 2026-07-29 while adding the waypoint read-back (`obc_convert_obcr_to_waypoints`,
-# chart-room preview): 104,201 B raw + 14,219 B glue → 57,363 B gzipped. The route read-back
-# directions added since the A2 measurement (`obcr_to_track`, then the waypoint table) pull in
-# `RouteIndex`/`RouteReader`/`for_each_waypoint`, which had eaten the old headroom (101 KB raw at
-# the previous commit — 99 % of the 100 KB budget before this addition's ~2.8 KB). Budgets
-# re-based to ~10 % above the new measurement, same philosophy as before.
-# --- obc-web-assemble ------------------------------------------------------------------------
-#
-# Measured 2026-07-31 on the initial P4b artifact (wasm-pack 0.15.0 / wasm-opt -Oz): 434,476 B raw
-# wasm + 20,474 B glue -> 184,441 B gzipped. Three times the other two, and it should be: this one
-# links the whole OBCA assembly engine (`obcm-assemble`'s graft, POI merge, nav rewrite, shard
-# planner and §4.8 verify pass) plus `obc-reader`'s decoder, SHA-256, and serde/serde_json for the
-# schema and skin documents. It is a *program*, not a converter.
-#
-# The budget is set differently from the other two on purpose. Those are latency budgets — they
-# guard the moment a visitor drops a file or hovers a preset card, where tens of KB are felt. This
-# module is fetched when someone has already chosen to assemble a map they are about to download
-# hundreds of MB of cells for, so 180 KB is not the cost that matters. What the budget is here for
-# is the *structural* regression: linking `obc-pack` (libGEOS), a second renderer, or the whole app.
-# Hence ~10 % headroom over the measurement, same as the others: enough that a toolchain bump never
-# turns a green PR red, far too little to absorb another crate.
-#
-# Re-measured 2026-07-31 after the review round (the §4.8 progress/abort wrapper, the double-take
-# refusal, the budget override, the warn-once console binding): 435,990 B raw + 24,452 B glue ->
-# 186,601 B gzipped. +1,514 B raw / +2,160 B gzipped, which is the shape a fix round should have —
-# error prose and a handful of branches, no new crate. Budgets unchanged (89 % / 91 %).
-#
-# Re-measured 2026-08-03 for EL4 (#1072, the terrain shard): 481,473 B raw + 27,118 B glue ->
-# 205,343 B gzipped. +45,483 B raw / +18,742 B gzipped — the largest single jump this module has
-# taken, and the one case where a *bigger* number is the right answer rather than a regression to
-# hunt. Two crates joined the graph, both deliberately and both small: `obc-elevation`'s
-# `TerrainReader` (the §4.8 read-back of the raster runs through the same parser the firmware does,
-# not a second opinion about the bytes) and `obc-dem`'s `container::ShardWriter` behind
-# `default-features = false` — which is the *whole point* of that feature gate, because the
-# alternative was a second OBCT container writer living in the assembler. Neither brings a
-# dependency of its own; the growth is object code for one format's reader and writer.
-#
-# What the budget still guards is unchanged: `obc-pack`/libGEOS, a renderer, or the app itself would
-# each be an order of magnitude more than this. Budgets raised to keep the same ~10 % headroom over
-# the new measurement (94 % / 92 %).
-#
-# Re-measured 2026-08-04 for #1116 phase D (the external merge: the scratch/extsort machinery, the
-# hierarchical prune, the sort-merge id joins, the banded verify): 546,661 B raw -> 231,537 B
-# gzipped at D3. Engine object code again — the sorts and the join walks are real passes with real
-# code, and no new crate arrived (`cargo tree` diff is clean: the same dependency set as EL4).
-# Budgets re-based to the same ~10 % headroom (91 % / 91 %), sized so the remaining phase-D stage
-# (D4's streaming emission) fits without another bump while `obc-pack`/GEOS would still blow
-# straight through.
-#
-# That last sizing was one stage optimistic, and the reason is worth writing down rather than
-# quietly re-basing again. It was measured at D3 (546,661 B raw) and sized for D4 on top; D5's
-# verify rewrite and the OPFS scratch landed in between, so the branch point for D4 was already
-# 566,656 B raw / 238,465 B gzipped — 94 % of a budget that was supposed to have a stage of room
-# left in it. Re-measured 2026-08-04 with D4's streaming emission (the adjacency as an external
-# sort, the quadtree over a tree-ordered stream, the §8 section written from the scratch seam):
-# 612,200 B raw -> 252,123 B gzipped, +45,544 B raw over the branch point. Engine object code once
-# more — `cargo tree -p obc-web-assemble --target wasm32-unknown-unknown` is byte-identical to
-# develop's, so nothing new was linked. Budgets re-based to ~10 % headroom over the *measured*
-# artifact (91 % / 90 %) and deliberately not sized for an unmeasured future stage this time.
-# --- obc-skin-preview ------------------------------------------------------------------------
-#
-# Measured 2026-08-01 on #1045 (wasm-pack 0.15.0 / wasm-opt -Oz): 240,227 B raw wasm + 11,859 B
-# glue -> 112,275 B gzipped. It intentionally links `obc-reader`, `obc-render`, and just enough of
-# `obcm-assemble` to resolve and stamp a skin; it does not link obc-pack, GEOS, or the cell assembly
-# driver. The module is lazy-loaded only when the editor opens, and its map/frame object is released
-# when it closes.
-# Budgets leave ~14 % headroom while still catching a second engine or accidental packer link.
+# `convert` is a latency budget: a visitor downloads it the moment they drop a route, so its size is
+# a wait. `assemble` links the whole assembly engine and is fetched only by someone who has already
+# chosen to download hundreds of megabytes of cells, so its budget guards against a crate being
+# linked in and not against the engine's own size. `preview` links the reader, the renderer and
+# enough of the assembler to stamp a skin, and nothing else.
 BUDGETS = {
     "convert": {"gzipped": 62 * 1024, "raw_wasm": 112 * 1024},
-    # Peak association merging and guarded content references: 774,602 B raw / 292,376 B
-    # gzip + glue in CI. The WASM dependency graph is unchanged; retain about 10% headroom.
     "assemble": {"gzipped": 320 * 1024, "raw_wasm": 832 * 1024},
     "preview": {"gzipped": 128 * 1024, "raw_wasm": 272 * 1024},
 }
 
-# What to *do* about an over-budget module, which is not the same advice for all three — and a guard
-# that gives the wrong advice gets obeyed anyway. Convert is a latency budget: the number is
-# what a visitor waits for, so "make it smaller" is the literal fix. Assemble is a structural guard
-# on a module nobody is waiting on, so the fix is almost never "shrink it" — it is to find out what
-# got linked in that should not have been.
+# The advice differs per module, because the fix does. Convert is a latency budget, so the literal
+# fix is to make it smaller. Assemble is a structural guard on a module nobody waits for, so the fix
+# is to find what got linked in.
 ADVICE = {
     "convert": (
         "This is the moment a visitor drops a route, and it ships to every one of them:"
@@ -156,10 +66,9 @@ PKG_DIRS = {
     "flat-device": Path("builder/app/test-support/flat-device/pkg"),
 }
 
-# The test device (`host/obc-flat-device`) has no budget, on purpose. Every module above ships to a
-# visitor; this one is downloaded by Vitest and the builder's dev harness and by nobody else, which
-# is also why it lands outside `src/`. Its size is worth printing — a jump means a crate joined the
-# graph — and worth nothing as a gate.
+# The test device has no budget: every module above ships to a visitor, and this one is downloaded
+# only by the test runner and the dev harness. Its size is worth printing and worth nothing as a
+# gate.
 UNBUDGETED = {"flat-device"}
 
 

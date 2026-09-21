@@ -17,10 +17,9 @@ import struct
 from dataclasses import dataclass
 from pathlib import Path
 
-#: The `ride-1` footer distance (u32 LE at byte 72 = a 60-byte sample stream + footer offset 12).
-#: 17800 m makes the two same-day rides visually distinct on the Rides rows' `D MON · distance`
-#: line — the exact ambiguity that row design exists to prevent. Distance is not part of the
-#: object's length validation, so the patched copy still reads as a valid ride.
+#: The `ride-1` footer distance, patched in place so the two same-day rides read differently on
+#: the Rides rows. Distance is not part of the object's length validation, so the patched copy
+#: still reads as a valid ride.
 RIDE_DISTANCE = (72, 17800)
 
 
@@ -158,7 +157,7 @@ def elevation(stage: Stage) -> Staging:
     body = bytearray(source.read_bytes())
     obcm = (stage.repo / "firmware" / "obc-formats" / "src" / "obcm.rs").read_text()
     version = int(re.search(r"pub const VERSION: u8 = (\d+);", obcm)[1])
-    # OBCM §1.1/§1.3: current header, 16-byte units, terrain offset and length at bytes 41 and 45.
+    # The current map header: 16-byte units, with the terrain offset and length at bytes 41 and 45.
     assert len(body) >= 65 and body[:5] == b"OBCM" + bytes([version]) and body[40] == 4
     offset, length = struct.unpack_from("<II", body, 41)
     assert bool(offset) == bool(length), "incomplete terrain region"

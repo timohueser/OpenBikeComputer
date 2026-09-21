@@ -90,7 +90,7 @@ class SelectionTests(unittest.TestCase):
     def test_a_standalone_root_is_a_reverse_dependency_like_any_other(self) -> None:
         reasons = next(item.reasons for item in self.plan_for("crates/core/src/lib.rs").units if item.id == "rust.board")
         self.assertTrue(any("reverse dependency board compiles core" in reason for reason in reasons))
-        # …but it never becomes a `-p` argument of the root-workspace run.
+        # It never becomes a `-p` argument of the root-workspace run.
         self.assertNotIn("board", plan.select(self.units, self.graph, ["crates/core/src/lib.rs"]).packages)
 
     def test_a_wasm_producer_reaches_its_browser_job(self) -> None:
@@ -132,9 +132,9 @@ class SelectionTests(unittest.TestCase):
         self.assertIn("ci.ui-snapshots", selected)
 
     def test_many_unowned_deletions_share_one_reason(self) -> None:
-        # A reason per path multiplies by every package and every declared suite. The `ci`
-        # gate reads the whole plan from one environment variable, which the shell refuses
-        # to start with past 128 KiB, so a branch that deletes a directory must not grow it.
+        # A reason per path multiplies by every package and every declared suite. The `ci` gate
+        # reads the whole plan from one environment variable, which the shell refuses to start with
+        # past a size limit, so a branch that deletes a directory must not grow it.
         gone = {f"scratch/tool/src/bin/b{index}.rs" for index in range(40)}
         emptied = self.plan_for(*sorted(gone), deleted=gone)
         self.assertFalse(emptied.errors)
