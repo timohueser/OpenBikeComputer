@@ -88,10 +88,10 @@ fn center_and_right_align_about_the_anchor() {
     assert!(rmaxx <= 40, "right-aligned text ends at x<=40 (got {rmaxx})");
 }
 
-/// Latin-1 / Latin Extended-A coverage — European route, ride and POI names (issue #489).
-/// The three text tiers ship the extended glyph set; only the digits-only `Huge` clock tier stays
-/// ASCII. We assert on *glyph identity*: the set of painted pixels for a char, captured relative to
-/// the cell, so "renders as a real glyph, not the `?` fallback" is a concrete pixel comparison.
+/// Latin-1 and Latin Extended-A coverage, for European route, ride and POI names. The text tiers
+/// ship the extended glyph set; only the digits-only `Huge` clock tier stays ASCII. The assertion
+/// is on glyph identity: the painted pixels for a char, relative to the cell, so "renders as a
+/// real glyph, not the `?` fallback" is a concrete pixel comparison.
 mod latin {
     use super::*;
 
@@ -132,8 +132,7 @@ mod latin {
 
     #[test]
     fn hoehenweg_ride_name_is_not_mangled() {
-        // The #489 repro: the pinned ride fixture "Höhenweg" used to render "H?he..". The ö now
-        // carries pixels the '?' fallback never would.
+        // The ö must carry pixels the '?' fallback never would, so a mangled name is not equal.
         let good = glyph("Höhenweg", Font::Body);
         let mangled = glyph("H?henweg", Font::Body);
         assert_ne!(good, mangled, "Höhenweg still renders like the old H?henweg");

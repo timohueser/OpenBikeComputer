@@ -1,13 +1,11 @@
-//! Format-contract + sampling tests for OBCT.
+//! Format-contract and sampling tests for OBCT.
 //!
-//! Each test builds a synthetic container **from the spec's field tables** (`build`, below) rather
-//! than checking in a binary, so the encoder and the reader are pinned to one layout: if either
-//! drifts, these break. Same discipline as `obc-reader`'s `tests/format.rs` with `obcm-testkit`.
+//! Each test builds a synthetic container from the spec's field tables rather than checking in a
+//! binary, so the encoder and the reader stay pinned to one layout.
 //!
-//! The fixtures deliberately use a small cell (`2^14` µdeg, 32 samples per edge, 2 × 2 tiles)
-//! rather than the v1 `2^19`: a v1 cell is 2 MiB of raster, and the posting/cell pair being
-//! *header data* is exactly what makes a small one legal. The tile stays 16 × 16 — that is format
-//! shape, not data.
+//! The fixtures use a small cell (`2^14` µdeg, 32 samples per edge, 2 × 2 tiles) rather than the
+//! v1 `2^19`: a v1 cell is 2 MiB of raster, and the posting and cell pair being header data is
+//! exactly what makes a small one legal. The tile stays 16 × 16, which is format shape.
 
 use std::cell::Cell;
 
@@ -23,16 +21,15 @@ const POSTING_LOG2: u8 = 9;
 const CELL_LOG2: u8 = 14;
 /// Samples along one cell edge at this pairing: 32.
 const CELL_SAMPLES: u32 = 1 << (CELL_LOG2 - POSTING_LOG2);
-/// The cell rectangle used by most tests: 47°N / 8°E, 2 × 2 cells with the far corner missing.
+/// The cell rectangle most tests use: 47°N, 8°E, 2 × 2 cells with the far corner missing.
 const MIN_I: u32 = 19_251;
 const MIN_J: u32 = 16_871;
 const ROWS: u16 = 2;
 const COLS: u16 = 2;
 
-/// The synthetic terrain: a plane in lattice space, `100 + 3·di + 5·dj` metres, anchored on the
-/// rectangle's own base sample. A plane is the one surface whose bilinear interpolation has a
-/// closed form independent of the interpolator, which is what makes it an oracle rather than a
-/// second copy of the code under test.
+/// The synthetic terrain: a plane in lattice space, `100 + 3·di + 5·dj` metres. A plane is the one
+/// surface whose bilinear interpolation has a closed form independent of the interpolator, which
+/// is what makes it an oracle rather than a second copy of the code under test.
 fn plane(i: u32, j: u32) -> i16 {
     let (bi, bj) = base_sample();
     (100 + 3 * (i as i64 - bi as i64) + 5 * (j as i64 - bj as i64)) as i16
@@ -43,10 +40,9 @@ fn base_sample() -> (u32, u32) {
     (cell_base_sample(MIN_I, POSTING_LOG2, CELL_LOG2), cell_base_sample(MIN_J, POSTING_LOG2, CELL_LOG2))
 }
 
-/// Build an OBCT container straight from `OBCT_Spec.md` §4: 32-byte header, row-major `uint32`
-/// directory over the cell rectangle (`0` = absent), then the present cells' blocks in directory
-/// order. `height(i, j)` is evaluated on **absolute lattice indices**; `present(ci, cj)` decides
-/// which cells exist.
+/// Build an OBCT container straight from the spec: 32-byte header, row-major `uint32` directory
+/// over the cell rectangle with `0` for absent, then the present cells' blocks in directory order.
+/// `height(i, j)` is evaluated on absolute lattice indices.
 fn build(rows: u16, cols: u16, height: impl Fn(u32, u32) -> i16, present: impl Fn(u32, u32) -> bool) -> Vec<u8> {
     let tiles_log2 = cell_tiles_log2(POSTING_LOG2, CELL_LOG2).expect("a legal pairing");
     let tiles = 1u32 << tiles_log2;
@@ -98,7 +94,7 @@ fn build(rows: u16, cols: u16, height: impl Fn(u32, u32) -> i16, present: impl F
     file
 }
 
-/// The whole 2 × 2 rectangle minus its far corner — a plane with a hole, the shape most tests want.
+/// The whole 2 × 2 rectangle minus its far corner: a plane with a hole.
 fn shard() -> Vec<u8> {
     build(ROWS, COLS, plane, |ci, cj| (ci, cj) != (MIN_I + 1, MIN_J + 1))
 }
@@ -108,9 +104,8 @@ fn coord(i: u32) -> i32 {
     lattice_coord(i, POSTING_LOG2)
 }
 
-/// The exact height of the plane at a µdeg coordinate, computed **without** interpolating: on a
-/// plane, `h = 100 + 3·(lat − base_lat)/P + 5·(lon − base_lon)/P`. Rounded half away from zero,
-/// per spec §5.2. This is the oracle the sampler is checked against.
+/// The exact height of the plane at a µdeg coordinate, computed without interpolating, rounded
+/// half away from zero. This is the oracle the sampler is checked against.
 fn plane_oracle(lat: i32, lon: i32) -> i16 {
     let p = 1i64 << POSTING_LOG2;
     let (bi, bj) = base_sample();
@@ -135,7 +130,7 @@ impl ByteSource for Counting<'_> {
     }
 }
 
-/// A [`ByteSource`] that can be **armed** to fail every read of the directory range, so a test can
+/// A [`ByteSource`] that can be armed to fail every read of the directory range, so a test can
 /// parse a good file and only then make the medium go bad under it.
 struct FlakyDirectory<'a> {
     bytes: &'a [u8],
@@ -155,7 +150,7 @@ impl ByteSource for FlakyDirectory<'_> {
     }
 }
 
-/// Sample through a fresh reader + cache — the shape every test below wants.
+/// Sample through a fresh reader and cache.
 fn sample_all(bytes: &[u8], points: &[(i32, i32)]) -> Vec<Option<i16>> {
     let src = SliceSource(bytes);
     let reader = TerrainReader::parse(&src).expect("the builder writes a valid container");
@@ -163,9 +158,8 @@ fn sample_all(bytes: &[u8], points: &[(i32, i32)]) -> Vec<Option<i16>> {
     points.iter().map(|&(lat, lon)| reader.sample(&mut cache, lat, lon)).collect()
 }
 
-/// The byte pin: every fixed field lands where §4.2 says, the directory is where §4.3 says, and the
-/// sizes close. Hand-decoded here rather than via the reader, so a reader bug cannot hide a layout
-/// bug.
+/// The byte pin: every fixed field lands where the spec says and the sizes close. Hand-decoded
+/// here rather than through the reader, so a reader bug cannot hide a layout bug.
 #[test]
 fn the_container_layout_pins_the_spec_field_tables() {
     let bytes = shard();
@@ -196,8 +190,8 @@ fn the_container_layout_pins_the_spec_field_tables() {
     assert_eq!(entry(3), 0, "the absent cell's slot is the zero sentinel");
     assert_eq!(bytes.len(), HEADER_LEN + dir_len + 3 * cell_bytes);
 
-    // Tile order inside a cell: row-major, rows advancing latitude. The sample at cell-local
-    // (row 16, col 0) is the first sample of tile (1, 0), i.e. two tiles in.
+    // Tile order inside a cell is row-major with rows advancing latitude, so cell-local
+    // (row 16, col 0) is the first sample of tile (1, 0).
     let cell0 = entry(0) as usize;
     let (bi, bj) = base_sample();
     let read = |at: usize| i16::from_le_bytes(bytes[at..at + 2].try_into().unwrap());
@@ -208,7 +202,7 @@ fn the_container_layout_pins_the_spec_field_tables() {
     assert_eq!(read(cell0 + 2 * TILE_BYTES), plane(bi + 16, bj), "tile (1,0) follows it");
 }
 
-/// A query exactly on a lattice point returns that sample untouched — including across all four
+/// A query exactly on a lattice point returns that sample untouched, including across all four
 /// tiles of a cell, which is the tile-addressing pin.
 #[test]
 fn a_lattice_point_returns_its_own_sample_in_every_tile() {
@@ -228,8 +222,8 @@ fn a_lattice_point_returns_its_own_sample_in_every_tile() {
     }
 }
 
-/// Bilinear on a plane is **exact**: the sampler must agree with the closed form at every
-/// sub-posting offset, including the rounding ties.
+/// Bilinear on a plane is exact: the sampler must agree with the closed form at every sub-posting
+/// offset, including the rounding ties.
 #[test]
 fn bilinear_on_a_plane_matches_the_closed_form_everywhere() {
     let bytes = shard();
@@ -250,9 +244,8 @@ fn bilinear_on_a_plane_matches_the_closed_form_everywhere() {
 }
 
 /// The seam rule, both halves. A point inside a cell samples identically whether that cell arrives
-/// as a 1 × 1 **cell file** or as one cell of a shard (the container is the same format), and a
-/// point in the last posting *before* a cell's max edge interpolates across the seam into the
-/// neighbour cell — so the surface stays the plane, with no discontinuity at the boundary.
+/// as a 1 × 1 cell file or as one cell of a shard, and a point in the last posting before a cell's
+/// max edge interpolates across the seam into the neighbour, so the surface stays the plane.
 #[test]
 fn the_same_point_samples_identically_across_a_cell_seam() {
     let full = shard();
@@ -265,7 +258,7 @@ fn the_same_point_samples_identically_across_a_cell_seam() {
     assert_eq!(sample_all(&full, &interior), sample_all(&alone, &interior), "a cell file is a 1×1 shard");
 
     // Straddling the seam between cell (0,0) and cell (1,0): the last posting of the first cell
-    // must fetch its upper corners out of the second one.
+    // must fetch its upper corners out of the second.
     let seam_i = bi + CELL_SAMPLES - 1;
     let straddle: Vec<(i32, i32)> =
         [1i64, 128, 256, 511].into_iter().map(|frac| ((coord(seam_i) as i64 + frac) as i32, coord(bj + 4))).collect();
@@ -273,21 +266,21 @@ fn the_same_point_samples_identically_across_a_cell_seam() {
         let (lat, lon) = straddle[k];
         assert_eq!(got, Some(plane_oracle(lat, lon)), "the cross-cell fetch keeps the plane a plane");
     }
-    // The seam sample itself belongs to the *upper* cell under the half-open rule, and both
-    // approaches to it agree because interpolation degenerates at a lattice point.
+    // The seam sample itself belongs to the upper cell under the half-open rule, and both
+    // approaches agree, because interpolation degenerates at a lattice point.
     let on_seam = (coord(seam_i + 1), coord(bj + 4));
     assert_eq!(sample_all(&full, &[on_seam])[0], Some(plane(seam_i + 1, bj + 4)));
 }
 
-/// Coverage edges clamp to the nearest sample of the containing cell rather than extrapolating —
-/// and a query whose *own* cell is missing is not covered at all.
+/// Coverage edges clamp to the nearest sample of the containing cell rather than extrapolating,
+/// and a query whose own cell is missing is not covered at all.
 #[test]
 fn coverage_edges_clamp_and_holes_are_uncovered() {
     let bytes = shard();
     let (bi, bj) = base_sample();
 
-    // Half a posting past the last sample of the rectangle's outer edge (cell (0,1)'s max lon):
-    // no neighbour exists, so the longitude corner clamps and the surface flattens eastwards.
+    // Half a posting past the last sample of the outer edge: no neighbour exists, so the longitude
+    // corner clamps and the surface flattens eastwards.
     let last_j = bj + 2 * CELL_SAMPLES - 1;
     let inside = (coord(bi + 2), coord(last_j));
     let past = (coord(bi + 2), coord(last_j) + 256);
@@ -295,8 +288,8 @@ fn coverage_edges_clamp_and_holes_are_uncovered() {
     assert_eq!(got[0], Some(plane(bi + 2, last_j)));
     assert_eq!(got[1], got[0], "clamped to the nearest covered sample, not extrapolated");
 
-    // The absent cell is a hole: every query inside it is uncovered, including one that sits right
-    // beside three present cells.
+    // The absent cell is a hole, so every query inside it is uncovered, even one beside three
+    // present cells.
     let hole = (coord(bi + CELL_SAMPLES + 1), coord(bj + CELL_SAMPLES + 1));
     let hole_corner = (coord(bi + CELL_SAMPLES), coord(bj + CELL_SAMPLES));
     assert_eq!(sample_all(&bytes, &[hole, hole_corner]), vec![None, None]);
@@ -307,15 +300,14 @@ fn coverage_edges_clamp_and_holes_are_uncovered() {
     assert_eq!(sample_all(&bytes, &[(GRID_ORIGIN - 1, 0)])[0], None);
 }
 
-/// One `NODATA` corner voids the whole query — never a partial interpolation over three corners.
+/// One `NODATA` corner voids the whole query, never a partial interpolation over three corners.
 #[test]
 fn a_nodata_corner_voids_the_sample_and_nothing_else() {
     let (bi, bj) = base_sample();
     let (hole_i, hole_j) = (bi + 20, bj + 7);
     let bytes = build(ROWS, COLS, |i, j| if (i, j) == (hole_i, hole_j) { NODATA } else { plane(i, j) }, |_, _| true);
 
-    // Every query whose 2 × 2 corner set touches the void is None: the four cells of postings
-    // around the sample.
+    // Every query whose corner set touches the void is None.
     let mut voided = Vec::new();
     for di in [-1i64, 0] {
         for dj in [-1i64, 0] {
@@ -329,14 +321,14 @@ fn a_nodata_corner_voids_the_sample_and_nothing_else() {
     assert_eq!(sample_all(&bytes, &[clear])[0], Some(plane(hole_i + 2, hole_j + 2)));
 }
 
-/// A **failed directory read voids the sample** — it must never be mistaken for "that cell is
-/// absent" and answered with the coverage clamp, which would hand back an entirely plausible
-/// height on a card that just glitched.
+/// A failed directory read voids the sample: it must never be mistaken for "that cell is absent"
+/// and answered with the coverage clamp, which would hand back a plausible height on a card that
+/// just glitched.
 ///
-/// The setup isolates the corner path: sample once inside the home cell so the cell memo holds it,
-/// *then* arm the failure, then sample a point whose upper corners cross the cell seam. The home
-/// cell now comes from the memo, so the only read that fails is the neighbour's directory entry —
-/// the exact spot where absence and I/O failure look alike.
+/// The setup isolates the corner path: sample inside the home cell so the cell memo holds it, then
+/// arm the failure, then sample a point whose upper corners cross the cell seam. Only the
+/// neighbour's directory entry is read, which is the exact spot where absence and I/O failure
+/// look alike.
 #[test]
 fn a_failed_directory_read_voids_the_sample_instead_of_clamping() {
     let bytes = shard();
@@ -361,8 +353,8 @@ fn a_failed_directory_read_voids_the_sample_instead_of_clamping() {
     src.armed.set(true);
     assert_eq!(reader.sample(&mut cache, straddle.0, straddle.1), None, "an I/O error is not an absent cell");
 
-    // And the clamp it must not have taken: had the error been read as absence, the seam query
-    // would have answered the home cell's edge sample — a wrong number that looks right.
+    // The clamp it must not have taken: read as absence, the seam query would have answered the
+    // home cell's edge sample, a wrong number that looks right.
     let clamped_if_wrong = plane(bi + CELL_SAMPLES - 1, bj + 4);
     assert_ne!(healthy, Some(clamped_if_wrong), "the two answers really are distinguishable");
 
@@ -403,11 +395,11 @@ fn malformed_containers_are_rejected_at_parse() {
     reject(&mutate(HEADER_LEN, &1u32.to_le_bytes()), "a cell block inside the directory");
     reject(&mutate(HEADER_LEN, &((HEADER_LEN + 16 + 1) as u32).to_le_bytes()), "an odd cell-block offset");
 
-    // The good file still parses — the mutations above are the only thing being rejected.
+    // The good file still parses, so the mutations above are the only thing being rejected.
     assert!(TerrainReader::parse(&SliceSource(&good)).is_ok());
 }
 
-/// The header a consumer reads back, including the coverage box EL4/EL7 will project.
+/// The header a consumer reads back, including the coverage box.
 #[test]
 fn the_parsed_header_describes_the_coverage_rectangle() {
     let bytes = shard();
@@ -421,14 +413,14 @@ fn the_parsed_header_describes_the_coverage_rectangle() {
     assert_eq!(min_lat, GRID_ORIGIN as i64 + MIN_I as i64 * side);
     assert_eq!(min_lon, GRID_ORIGIN as i64 + MIN_J as i64 * side);
     assert_eq!((max_lat - min_lat, max_lon - min_lon), (ROWS as i64 * side, COLS as i64 * side));
-    // The rectangle really is around 47°N / 8°E, i.e. the fixture is not sitting in the ocean of
-    // some other hemisphere because an index was transcribed wrong.
+    // The rectangle really is around 47°N and 8°E, so the fixture is not in another hemisphere
+    // because an index was transcribed wrong.
     assert!((46_900_000..47_100_000).contains(&min_lat));
     assert!((7_900_000..8_100_000).contains(&min_lon));
 }
 
-/// The cache is what makes a walk affordable: a repeated query costs no reads at all, and a walk
-/// inside one tile costs one tile read plus one directory read, not one per corner.
+/// The cache is what makes a walk affordable: a repeated query costs no reads, and a walk inside
+/// one tile costs one tile read plus one directory read, not one per corner.
 #[test]
 fn the_tile_cache_absorbs_the_corner_and_repeat_reads() {
     let bytes = shard();
@@ -457,9 +449,8 @@ fn the_tile_cache_absorbs_the_corner_and_repeat_reads() {
     assert!(hits > misses, "{hits} hits vs {misses} misses");
 }
 
-/// The seam consumers actually hold: [`TerrainElevation`] answers the same numbers the reader does,
-/// and a [`NullElevation`] in its place answers `None` — the substitution the epic's "removing
-/// terrain changes nothing else" claim rests on.
+/// The seam consumers hold: [`TerrainElevation`] answers the same numbers the reader does, and a
+/// [`NullElevation`] in its place answers `None`.
 #[test]
 fn the_elevation_source_seam_agrees_with_the_reader() {
     let bytes = shard();

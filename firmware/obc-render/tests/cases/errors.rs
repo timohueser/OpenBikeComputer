@@ -101,12 +101,10 @@ fn truncated_feature_is_dropped_whole_with_malformed_stat() {
     assert_eq!(stats, RenderStatsView { drawn: 0, capacity: 0, malformed: 1, structure: 0, reads: 0 });
     assert_eq!(buf.count(Rgb888::new(255, 0, 0)), 0, "malformed geometry must not reach the painter");
 }
-
-/// Absolute file offset of a LOD's first chunk byte: past the quadtree index, past the v11
-/// `chunk_count + 1` entry offset table, and past v14's one rounding step — chunks are addressed by
-/// scaled offsets, so they start at `align_up(table_end, U)` and the `0..U-1` bytes in between are
-/// §1.2 filler. The failure fixtures below arm on that offset, so they must not confuse the table,
-/// or the gap behind it, with the data.
+/// Absolute file offset of a LOD's first chunk byte: past the quadtree index, past the offset
+/// table, and past the one rounding step, because chunks are addressed by scaled offsets and the
+/// bytes in between are filler. The failure fixtures arm on that offset, so they must not confuse
+/// the table, or the gap behind it, with the data.
 fn chunk_data_offset(lod: &obc_reader::Lod) -> u64 {
     align_up(lod.index_offset as usize + lod.node_count * 4 + (lod.chunk_count + 1) * 4) as u64
 }
@@ -181,10 +179,9 @@ fn unsaturated_cased_feature_needs_no_failure_prone_refetch() {
     // feature was already published. (The saturated fallback's transactional pass-B publication is
     // covered by the collector saturation fixtures.)
     //
-    // v11 chunks are tight, so the *chunk* has to exceed the slot — a large declared `chunk_size` no
-    // longer makes a small chunk uncached. One cased line with 1025 vertices does it (7-byte compact
-    // header + 1024 × 4 int16-delta bytes = 4103), and keeping it to a single feature keeps the
-    // hypothetical second read unambiguous.
+    // Chunks are tight, so the chunk itself has to exceed the slot: a large declared `chunk_size`
+    // does not make a small chunk uncached. One cased line with 1025 vertices does it, and keeping
+    // it to a single feature keeps the hypothetical second read unambiguous.
     const CHUNK_SIZE: usize = 8192;
     let zigzag: Vec<(i16, i16)> = (0..1024).map(|i| if i % 2 == 0 { (20, 0) } else { (-20, 0) }).collect();
     let chunk = pack_line16(1, 100, 100, &zigzag);

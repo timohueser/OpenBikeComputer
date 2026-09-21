@@ -1,9 +1,8 @@
-//! Projection / viewport coverage for the renderer.
+//! Projection and viewport coverage for the renderer.
 //!
-//! Every other render test draws north-up and probes pixels, never the `Viewport` transform itself.
-//! This file pins it directly: the `to_map`∘`to_screen` involution to sub-pixel tolerance, the
-//! rotated (heading-up) projection, `visible_bbox` over a rotated view, and `north_screen_unit` /
-//! `aspect_for_lat`.
+//! Every other render test draws north-up and probes pixels. This pins the transform directly: the
+//! `to_map`-`to_screen` involution to sub-pixel tolerance, the rotated projection, `visible_bbox`
+//! over a rotated view, and the compass and aspect helpers.
 
 use obc_render::Viewport;
 
@@ -12,10 +11,9 @@ fn microdeg_per_px(zoom: f32) -> f32 {
     1.0 / zoom
 }
 
-/// `to_map(to_screen(p)) ≈ p` — the projection is its own inverse. `to_screen` rounds to integer
-/// pixels, so the round-trip can't be bit-exact; the only error is that ½-px quantization
-/// (`0.5 / zoom` µdeg of latitude, aspect-scaled in longitude). Asserting within ~1 px of ground is
-/// far tighter than the microdegree grid would allow if a sign or an aspect factor were wrong.
+/// `to_map(to_screen(p))` is `p`: the projection is its own inverse. `to_screen` rounds to integer
+/// pixels, so the only error is that half-pixel quantization, and asserting within about a pixel of
+/// ground is far tighter than a wrong sign or aspect factor would survive.
 #[test]
 fn to_map_inverts_to_screen_within_subpixel() {
     let vp = Viewport::new(240.0, 320.0, 11_000_000, 47_000_000, 4.0); // ~Innsbruck, 4 px/µdeg-lat
@@ -40,9 +38,8 @@ fn to_map_inverts_to_screen_within_subpixel() {
     }
 }
 
-/// At north-up (course 0) a point due north of the camera (higher latitude, same longitude)
-/// projects straight up the screen — same x as the camera center, smaller y — and a point due east
-/// projects to the right. The baseline the rotated cases are measured against.
+/// At north-up, a point due north of the camera projects straight up the screen and one due east
+/// to the right. The baseline the rotated cases are measured against.
 #[test]
 fn north_up_projects_north_to_screen_up() {
     let vp = Viewport::new(200.0, 200.0, 0, 0, 1.0);
@@ -58,10 +55,8 @@ fn north_up_projects_north_to_screen_up() {
     assert_eq!(ey, cy, "due-east keeps the camera's screen y at north-up");
 }
 
-/// Heading-up: with `course_rad = 90°` (camera facing east) the projection rotates so the heading
-/// points up the screen. A point due *east* of the camera (the direction of travel) must therefore
-/// project toward the **top**, and map-north must swing to the **left**. Exercises the
-/// `sin_c`/`cos_c` rotation in `to_screen` that the north-up suite never turns on.
+/// Heading-up: with the camera facing east, a point due east of it must project toward the top and
+/// map-north must swing to the left. This exercises the rotation the north-up suite never turns on.
 #[test]
 fn heading_up_rotates_travel_direction_to_screen_top() {
     use core::f32::consts::FRAC_PI_2;
@@ -80,9 +75,8 @@ fn heading_up_rotates_travel_direction_to_screen_top() {
     assert!((ny - cy).abs() <= 1, "north has ~no up/down component when heading east (y={ny})");
 }
 
-/// `north_screen_unit` is the unit screen vector pointing to map-north — the compass needle. At
-/// north-up it is straight up `(0, -1)`; a heading-up rotation turns it by the same course. Checks
-/// both, and that it stays unit length (the doc claims it needs no normalization).
+/// `north_screen_unit` is the unit screen vector pointing to map north. At north-up it is straight
+/// up, and a heading-up rotation turns it by the same course. It must stay unit length.
 #[test]
 fn north_screen_unit_tracks_the_rotation() {
     // North-up: straight up.
@@ -102,10 +96,9 @@ fn north_screen_unit_tracks_the_rotation() {
     assert!(((wx * wx + wy * wy).sqrt() - 1.0).abs() < 1e-5, "the needle is unit length");
 }
 
-/// `visible_bbox` over a **rotated** view must cover the tilted on-screen rectangle's full extent —
-/// it takes all four screen corners, so the axis-aligned ground box grows wider than the north-up
-/// box at the same zoom. A 45° course is the worst case: the screen diagonal becomes the bbox's
-/// half-extent. Asserts the rotated box strictly contains the north-up box and holds the center.
+/// `visible_bbox` over a rotated view must cover the tilted rectangle's full extent, so the
+/// axis-aligned ground box grows wider than the north-up box at the same zoom. A 45° course is the
+/// worst case, where the screen diagonal becomes the bbox's half-extent.
 #[test]
 fn rotated_visible_bbox_covers_the_tilted_rectangle() {
     let up = Viewport::new(200.0, 200.0, 0, 0, 1.0);
@@ -119,19 +112,17 @@ fn rotated_visible_bbox_covers_the_tilted_rectangle() {
     for bb in [&bb_up, &bb_rot] {
         assert!(bb.min_lon <= 0 && bb.max_lon >= 0 && bb.min_lat <= 0 && bb.max_lat >= 0, "center inside the bbox");
     }
-    // A 45° tilt of a square view widens the axis-aligned cover in both axes (the corner that was
-    // on the edge now reaches a screen corner). So the rotated box strictly contains the up box.
+    // A 45° tilt of a square view widens the axis-aligned cover in both axes, so the rotated box
+    // strictly contains the north-up one.
     assert!(bb_rot.min_lon < bb_up.min_lon, "rotated bbox extends further west");
     assert!(bb_rot.max_lon > bb_up.max_lon, "rotated bbox extends further east");
     assert!(bb_rot.min_lat < bb_up.min_lat, "rotated bbox extends further south");
     assert!(bb_rot.max_lat > bb_up.max_lat, "rotated bbox extends further north");
 }
 
-/// Aspect correction compresses longitude away from the equator: at higher latitude a degree of
-/// longitude spans less ground, so the same µdeg-lon step projects to fewer pixels. The renderer
-/// folds this into `Viewport::aspect` (= cos(lat)); a viewport at high latitude carries a smaller
-/// aspect than one at the equator (whose aspect is ~1). Pins `aspect_for_lat`, exercised only
-/// indirectly elsewhere.
+/// Aspect correction compresses longitude away from the equator, so the same µdeg-lon step
+/// projects to fewer pixels at higher latitude. A viewport at high latitude carries a smaller
+/// aspect than one at the equator.
 #[test]
 fn aspect_compresses_longitude_with_latitude() {
     let equator = Viewport::new(200.0, 200.0, 0, 0, 1.0);
