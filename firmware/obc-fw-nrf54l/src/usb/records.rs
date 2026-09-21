@@ -1,38 +1,11 @@
-//! **§5.2's USB binding v5 record framing**: `record_length u32`, exactly that many frame bytes,
-//! then zero padding to a four-byte boundary, in both directions on both bulk endpoint pairs.
+//! USB record framing: `record_length u32`, that many frame bytes, then zero padding to a
+//! four-byte boundary, in both directions on both bulk endpoint pairs. Packet boundaries carry no
+//! protocol meaning, so a record can span packets.
 //!
-//! This is the whole of what USB adds to `FLAT_Store_Protocol.md` §3, and the change from the v1
-//! envelope it replaces is not the prefix — it is that **packet boundaries carry no protocol
-//! meaning**. The v1 control plane made one frame exactly one USB transfer, which capped a frame at
-//! one max packet and made "which frame is this" a byte the transport had to invent. §5.2 instead
-//! says a record may span packets and that records are never interleaved and never concatenated
-//! without their prefixes, so a reader is a small reassembler over a byte stream and a writer is a
-//! length in front of a frame.
-//!
-//! ## What the reader owes the rest of the adapter
-//!
-//! **One record at a time, and no read until the last one is released.** That is not a
-//! simplification: §5 requires an adapter holding a stream frame to "withhold link credit — CoC
-//! credits on BLE, ceasing to accept stream records on USB" rather than buffer a second one. A
-//! reader that does not touch the endpoint while a record is out is exactly that: the bulk OUT
-//! endpoint NAKs, and the host's own send loop is what stops.
-//!
-//! ## Where the arithmetic lives
-//!
-//! Not here. The reassembly — where a read lands, when to compact, which bytes are a whole record —
-//! is [`obc_link::flat::Reassembler`], for the reason [`Ceilings`](obc_link::flat::Ceilings) and
-//! [`Admission`](obc_link::flat::Admission) are there too: it is a **rule of §5.2**, and this crate
-//! is bare metal with no test harness in CI, so a rule written here would be a rule nothing checks.
-//! What stays is what genuinely belongs to the device — the endpoint, the buffer, and the one
-//! `unsafe` that hands a record out as `'static`.
-//!
-//! ## Errors end the link, because §5.2 says so
-//!
-//! "A zero, out-of-range, truncated or overrun record length is `invalidFrame` and resets that
-//! record stream before teardown is reported to the engine." The adapter cannot *answer*
-//! `invalidFrame` — §5 forbids it originating a frame, and the engine never saw the record — so what
-//! it does is the rest of that sentence: it drops what it buffered and reports teardown. A peer that
-//! has lost the record boundary cannot be re-synchronised by guessing where the next one starts.
+//! The reader holds one record at a time and does not read again until that record is released.
+//! This is the link credit the protocol asks for: the bulk OUT endpoint NAKs and the host's send
+//! loop stops. A framing error ends the record stream, because a peer that lost the record
+//! boundary cannot resynchronise.
 
 use defmt::warn;
 use embassy_usb::driver::{Endpoint as _, EndpointError, EndpointIn, EndpointOut};
@@ -42,12 +15,11 @@ use super::{EpIn, EpOut, MAX_PACKET};
 
 pub(crate) use obc_link::flat::record_buffer_len as buffer_len;
 
-/// Why a record stream ended. Every variant is a reason string the driver logs and tears down on.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RecordEnd {
-    /// The endpoint was disabled — an unplug, or a configuration change.
+    /// The endpoint is disabled: an unplug, or a configuration change.
     LinkDown,
-    /// §5.2's framing error: a bad length or non-zero alignment padding.
+    /// A bad record length, or non-zero alignment padding.
     BadFraming,
     /// A driver-level failure with the endpoint still up.
     Driver,
@@ -63,16 +35,13 @@ impl RecordEnd {
     }
 }
 
-/// **Reassembles §5.2 records off one bulk OUT endpoint.**
-///
-/// The buffer is sized by [`buffer_len`] so that a compaction always leaves room for one whole
-/// armed read — which is what lets the reader make progress without ever refusing a transfer the
-/// driver already armed.
+/// Reassembles records off one bulk OUT endpoint. [`buffer_len`] sizes the buffer so that a
+/// compaction always leaves room for one whole armed read.
 pub(crate) struct RecordReader {
     ep: EpOut,
     buf: &'static mut [u8],
     frames: Reassembler,
-    /// The endpoint's armed transfer size: what `read` will refuse a shorter buffer for.
+    /// The endpoint's armed transfer size. `read` refuses a shorter buffer.
     armed: usize,
 }
 
@@ -82,31 +51,27 @@ impl RecordReader {
         RecordReader { ep, buf, frames: Reassembler::new(ceiling), armed }
     }
 
-    /// Park until the host has configured the interface. The endpoint is disabled before that and
-    /// after every unplug, and this is the idle state of a cable-less device.
+    /// Park until the host configures the interface. The endpoint is disabled before that, and
+    /// after every unplug.
     pub(crate) async fn wait_enabled(&mut self) {
         self.ep.wait_enabled().await;
     }
 
-    /// Forget everything buffered — a new configuration starts a new record stream, and §5.2 also
-    /// wants this after a framing fault, before teardown reaches the engine.
+    /// Forget everything buffered. A new configuration starts a new record stream, and a framing
+    /// fault must reset the stream before teardown reaches the engine.
     pub(crate) fn reset(&mut self) {
         self.frames.reset();
     }
 
-    /// **The next whole record.**
-    ///
-    /// The returned slice aliases this reader's buffer and is valid until the next call, which is
-    /// the contract the caller keeps by holding one record at a time — and, on the stream channel,
-    /// is also §5's credit withholding.
+    /// The next whole record. The returned slice aliases this reader's buffer and is valid until
+    /// the next call, so the caller must hold one record at a time.
     pub(crate) async fn next(&mut self) -> Result<&'static [u8], RecordEnd> {
         loop {
             match self.frames.take(self.buf) {
                 Ok(Some((start, len))) => {
                     // SAFETY: the slice aliases `self.buf`, which this reader owns for the life of
-                    // the image. It is invalidated only by the next `next`/`reset`, which is exactly
-                    // the caller's one-record-at-a-time contract — the same window the BLE adapter's
-                    // staged record lives in.
+                    // the image. Only the next `next` or `reset` invalidates it, which is the
+                    // caller's one-record-at-a-time contract.
                     return Ok(unsafe { core::slice::from_raw_parts(self.buf.as_ptr().add(start), len) });
                 }
                 Ok(None) => {}
@@ -127,9 +92,8 @@ impl RecordReader {
                 Ok(n) => self.frames.filled(n),
                 Err(EndpointError::Disabled) => return Err(RecordEnd::LinkDown),
                 Err(e) => {
-                    // Not a disable — a driver-level failure with the endpoint still up. The driver
-                    // backs off before re-accepting; re-arming here would hot-spin against a
-                    // persistent one and starve the ride loop on this cooperative executor.
+                    // The driver backs off before it accepts again. To re-arm here would hot-spin
+                    // on a persistent failure and starve the ride loop on this cooperative executor.
                     warn!("usb: [rec] read failed: {:?}", defmt::Debug2Format(&e));
                     return Err(RecordEnd::Driver);
                 }
@@ -138,14 +102,9 @@ impl RecordReader {
     }
 }
 
-/// **Writes §5.2 records to one bulk IN endpoint.**
-///
-/// The prefix goes out as its own transfer rather than being copied in front of the frame, and that
-/// is a consequence of where the frame lives: it is the engine's reaction buffer, lent through the
-/// storage queue, and the four bytes in front of it would have to be either a second copy of a
-/// 8 KiB record or a reserved head the engine would have to be taught about. Packet boundaries
-/// carry no protocol meaning here (§5.2), and this endpoint has exactly one writer — the driver —
-/// so nothing can interleave between the two transfers.
+/// Writes records to one bulk IN endpoint. The length prefix goes out as its own transfer,
+/// because the frame is the engine's reaction buffer and cannot get four more bytes in front of
+/// it. Packet boundaries carry no protocol meaning, and the driver is the only writer here.
 pub(crate) struct RecordWriter {
     ep: EpIn,
 }
@@ -165,7 +124,7 @@ impl RecordWriter {
             return false;
         }
         // One call is one packet on this driver, so a record wider than a packet goes out as
-        // several. The peer reassembles by the length above and never by transfer boundaries.
+        // several.
         for chunk in frame.chunks(MAX_PACKET as usize) {
             if self.write(chunk).await.is_err() {
                 return false;
