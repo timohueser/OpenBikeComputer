@@ -10,26 +10,27 @@ The device has one application slot and a small bootloader, and the update desig
 for the previous image. An update package uses the [OBCU format](src:specs/OBCU_Spec.md) and is
 stored as an ordinary object on the card.
 
-Uploading a package does not install it. Installation is a separate, explicit request. The current
-[board policy](src:firmware/obc-fw-nrf54l/src/flat_store.rs) refuses that request, so field
-installation is disabled: the pages below describe the contract and the bootloader, which are
-built and tested, not a feature a rider can use today.
+Uploading a package does not install it. Installation is a separate, explicit step, and the rider
+takes it on the device: the System menu checks the staged package and asks for a confirmation
+before anything is armed. The install request the link carries is a second route to the same arm,
+and the current [board policy](src:firmware/obc-fw-nrf54l/src/flat_store.rs) refuses it, because a
+client must not be able to reboot a bike computer that nobody is holding.
 
 ## The trust model
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
-<svg viewBox="0 0 720 442" role="img" aria-label="Current board firmware rejects ARM. In the install contract, an accepted ARM moves Idle to Armed. Installation verifies and flashes the image, then starts Trial. Confirmation returns to Idle; an unconfirmed trial restores an available rollback image.">
+<svg viewBox="0 0 720 442" role="img" aria-label="A confirmed install moves Idle to Armed. Installation verifies and flashes the image, then starts Trial. Confirmation returns to Idle; an unconfirmed trial restores an available rollback image.">
   <defs><marker id="software-firmware-updates-1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
-  <text class="d-tag" x="20" y="26" text-anchor="start">Install contract — currently disabled by board policy</text>
+  <text class="d-tag" x="20" y="26" text-anchor="start">Install contract</text>
   <rect class="d-panel d-focus" x="20" y="52" width="680" height="66" rx="8" />
-  <text class="d-title" x="360" y="77" text-anchor="middle">Current board: ARM → rejected</text>
-  <text class="d-sub" x="360" y="97" text-anchor="middle">An uploaded package stays staged.</text>
+  <text class="d-title" x="360" y="77" text-anchor="middle">The rider confirms on the device</text>
+  <text class="d-sub" x="360" y="97" text-anchor="middle">An uploaded package stays staged until then.</text>
   <rect class="d-panel" x="20" y="164" width="190" height="72" rx="8" />
   <text class="d-title" x="115" y="189" text-anchor="middle">Idle</text>
   <text class="d-sub" x="115" y="209" text-anchor="middle">Current application</text>
   <path class="d-flow" d="M210 200 L262 200" marker-end="url(#software-firmware-updates-1)" />
-  <text class="d-sub" x="236" y="154" text-anchor="middle">ARM accepted</text>
+  <text class="d-sub" x="236" y="154" text-anchor="middle">Install confirmed</text>
   <rect class="d-panel" x="265" y="164" width="190" height="72" rx="8" />
   <text class="d-title" x="360" y="189" text-anchor="middle">Armed</text>
   <text class="d-sub" x="360" y="209" text-anchor="middle">Verify · flash · read back</text>
@@ -48,7 +49,7 @@ built and tested, not a feature a rider can use today.
 </svg>
 </div>
 <div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
-<figcaption>The state transitions describe the install contract and bootloader. The current board policy rejects ARM before this flow starts.</figcaption>
+<figcaption>The state transitions describe the install contract and bootloader. The rider's confirmation on the device is what starts this flow.</figcaption>
 </figure>
 
 The chain is built so that every failure has one safe answer:
@@ -100,7 +101,7 @@ channels, stable and prerelease, and the path of a published package never chang
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
-<svg viewBox="0 0 720 416" role="img" aria-label="A release candidate triggers a build, signature, and inspection. Verified packages are published to GitHub and the update service. The companion or builder can upload a published or local package with PUT. Current board policy rejects the following ARM request.">
+<svg viewBox="0 0 720 416" role="img" aria-label="A release candidate triggers a build, signature, and inspection. Verified packages are published to GitHub and the update service. The companion or builder can upload a published or local package with PUT. The rider then confirms the install on the device.">
   <defs><marker id="software-firmware-updates-2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
   <text class="d-tag" x="20" y="26" text-anchor="start">Release and delivery</text>
   <rect class="d-panel" x="20" y="56" width="200" height="72" rx="8" />
@@ -122,7 +123,7 @@ channels, stable and prerelease, and the path of a published package never chang
   <text class="d-sub" x="240" y="250" text-anchor="middle">Download a release, or select a local package</text>
   <rect class="d-panel" x="500" y="205" width="200" height="74" rx="8" />
   <text class="d-title" x="600" y="230" text-anchor="middle">Local package</text>
-  <text class="d-sub" x="600" y="250" text-anchor="middle">UPDATE.BIN</text>
+  <text class="d-sub" x="600" y="250" text-anchor="middle">A file on the computer</text>
   <path class="d-flow" d="M500 242 L462 242" marker-end="url(#software-firmware-updates-2)" />
   <path class="d-flow" d="M240 279 L240 317" marker-end="url(#software-firmware-updates-2)" />
   <rect class="d-panel" x="20" y="320" width="440" height="74" rx="8" />
@@ -130,12 +131,12 @@ channels, stable and prerelease, and the path of a published package never chang
   <text class="d-sub" x="240" y="365" text-anchor="middle">Upload alone does not install firmware</text>
   <path class="d-flow" d="M460 357 L498 357" marker-end="url(#software-firmware-updates-2)" />
   <rect class="d-panel d-focus" x="500" y="320" width="200" height="74" rx="8" />
-  <text class="d-title" x="600" y="345" text-anchor="middle">ARM → rejected</text>
-  <text class="d-sub" x="600" y="365" text-anchor="middle">Current board policy</text>
+  <text class="d-title" x="600" y="345" text-anchor="middle">Confirm on the device</text>
+  <text class="d-sub" x="600" y="365" text-anchor="middle">Then arm, install, verify</text>
 </svg>
 </div>
 <div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
-<figcaption>Release clients can stage an update package. Field installation remains disabled by the current board policy.</figcaption>
+<figcaption>Release clients stage an update package. The install itself starts on the device.</figcaption>
 </figure>
 
 The companion app uploads a package over Bluetooth, the map builder uploads one over USB, and
@@ -148,12 +149,9 @@ the trusted key, and a check on the client would prove nothing about the device.
 
 A client offers only a strictly newer release, and offers nothing for a development build whose
 version is not a release version. After the upload it sends the arm request, naming the staged
-object and its revision. The link authorizes the request: an authenticated bond, or a physical
-cable.
-
-An implementation that enables arming must refuse it when the named object is not the staged
-package, when the structure, CRC, or signature is invalid, when the version is not strictly newer,
-while a ride is recording, or when the battery is too low.
+object and its revision. The board refuses that request today and the rider confirms the install on
+the device instead. The device checks the structure, the CRC and the signature before it arms, shows
+the running and the staged version side by side, and refuses to arm while a ride is recording.
 
 ## The chain, layer by layer
 
@@ -161,7 +159,7 @@ while a ride is recording, or when the battery is too low.
 |---|---|---|
 | HTTPS | client | authenticates the update service |
 | Manifest size and digest | client | detects a wrong or incomplete download |
-| Arm authorization | bond or cable | authorizes the install request |
+| Install confirmation | rider, on the device | authorizes the install |
 | Signature | device application | authenticates the package |
 | Version monotonicity | device application | prevents downgrade and reinstall |
 | Image CRC | application and bootloader | detects storage or transfer corruption |
@@ -213,7 +211,7 @@ service.
 <rect x="450" y="346" width="220" height="62" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" rx="7"/>
 <text class="d-label" x="560" y="371" text-anchor="middle">Rollback reserve</text>
 <text class="d-sub" x="560" y="392" text-anchor="middle">kind 8</text>
-<text class="d-sub" x="20" y="442" text-anchor="start">Boot state is the CRC-framed app ↔ bootloader handoff. Current board policy rejects ARM.</text>
+<text class="d-sub" x="20" y="442" text-anchor="start">Boot state is the CRC-framed app ↔ bootloader handoff, and names the two card objects by block run.</text>
 </svg>
 </div>
 <div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
