@@ -126,7 +126,8 @@ impl Runtime {
             self.reset();
             self.position = Some(position);
             app.state.peak_view_peak_count = 0;
-            if let Some(ground) = self.terrain.terrain.ground_height(position.0, position.1) {
+            let measured = app.recorder.fused_elevation_m();
+            if let Some(ground) = self.terrain.terrain.eye_ground(position.0, position.1, measured) {
                 let mut profile = PeakViewProfile::at(position.0, position.1, 0);
                 profile.set_ground(ground);
                 let mut peaks = obc_app::peak_view::Candidates::new();

@@ -161,6 +161,22 @@ impl PeakViewProfile<'_> {
     }
 }
 
+/// The height the observer's eye stands on, before the 2 m of rider.
+///
+/// The lattice has two answers and both are wrong inside a cell of a crest: the bilinear surface
+/// (`ground`) runs below two lifted nodes, and the cell's highest corner (`cell_top`) puts every
+/// position in the cell on the summit. A settled map-referenced altimeter resolves single metres,
+/// so it decides whenever it lands inside the band the lattice itself allows: one cell can hold
+/// 57 m of relief, so a real height here is anywhere from `ground` to `cell_top`, plus the slack
+/// the surface is wrong by at either end.
+pub fn eye_ground(ground: f32, cell_top: f32, measured: Option<f32>) -> f32 {
+    const SLACK_M: f32 = 30.0;
+    match measured {
+        Some(height) if (ground - SLACK_M..=cell_top + SLACK_M).contains(&height) => height,
+        _ => cell_top,
+    }
+}
+
 pub const MAX_PEAKS: usize = 64;
 pub type Candidates = heapless::Vec<PeakViewPeak, MAX_PEAKS>;
 
@@ -401,6 +417,17 @@ mod tests {
         assert_eq!(selected.len(), 64);
         assert!(selected.contains(&survivor));
         assert!(selected.iter().all(|p| p.visible || !tested.contains(&p.name)));
+    }
+
+    /// Both positions share one Rigidalstock cell, 45 m apart: the cell top is 2592 m and the
+    /// bilinear surface under the rider is 2588 m, while 2 m swissALTI3D measures 2564.4 m below
+    /// the summit and 2591.4 m on it. Only a measurement can separate them.
+    #[test]
+    fn a_plausible_measurement_decides_the_eye_and_an_implausible_one_is_ignored() {
+        assert_eq!(eye_ground(2588.0, 2592.0, Some(2564.4)), 2564.4);
+        assert_eq!(eye_ground(2588.0, 2592.0, Some(2591.4)), 2591.4);
+        assert_eq!(eye_ground(2588.0, 2592.0, Some(2400.0)), 2592.0, "outside the band the cell decides");
+        assert_eq!(eye_ground(2588.0, 2592.0, None), 2592.0, "an unsettled altimeter offers nothing");
     }
 
     #[test]

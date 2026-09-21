@@ -286,6 +286,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            tools/requirements-test.txt
+            tools/requirements-coverage.txt
+            tools/requirements-bake.txt
       - name: Install Python test reporter
         run: pip install -r tools/requirements-test.txt
       - name: firmware resource/dependency tool unit tests
@@ -294,6 +299,20 @@ jobs:
           mkdir -p .artifacts/coverage/firmware-tools
           rm -rf .artifacts/python/firmware-tools
           python3 -m coverage run --data-file=.artifacts/coverage/firmware-tools/.coverage --source=firmware/tools -m xmlrunner discover -s firmware/tools/tests -v -o .artifacts/python/firmware-tools
+      - name: Install the bake tool dependencies (rasterio, pyproj)
+        run: pip install -r tools/requirements-bake.txt
+      - name: reference archive ingest unit tests
+        id: python-dem-reference
+        run: |
+          rm -rf .artifacts/python/dem-reference
+          python3 -m xmlrunner discover -s host/obc-dem/reference/tests -v -o .artifacts/python/dem-reference
+      - name: Upload reference archive Python test results
+        if: ${{ !cancelled() && (steps.python-dem-reference.outcome == 'success' || steps.python-dem-reference.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-dem-reference-${{ github.run_attempt }}
+          path: .artifacts/python/dem-reference/*.xml
+          if-no-files-found: error
       - name: firmware production dependency direction
         run: python3 firmware/tools/check_dependencies.py
       - name: obc-bench --check (render + read-counter golden gate)
