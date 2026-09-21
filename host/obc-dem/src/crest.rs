@@ -55,6 +55,13 @@ use obc_formats::obct::{cell_samples_log2, GRID_ORIGIN, NODATA};
 
 use crate::reference::{ReferenceArchive, TileLookup, Window, NO_PIXEL, STEP_LOG2};
 
+/// Bumped whenever a change in this module moves a lift for unchanged inputs — a gate, the
+/// convexity measure, the dilation, the probe geometry.
+///
+/// A bakery puts it in its skip key, because the rule is as much an input to a baked sample as the
+/// archive tiles are. Nothing here reads it.
+pub const CREST_RULE_VERSION: u32 = 1;
+
 /// A node is a candidate when the reference stands this far above our bilinear surface.
 const LIFT_M: f64 = 10.0;
 /// …and only where the reference's node maxima are locally convex by this much.

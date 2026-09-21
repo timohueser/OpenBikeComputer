@@ -31,7 +31,9 @@ use obc_bake::cells::{CellBakeOptions, CellBakery, CellCutter, CellRunSummary, C
 use obc_bake::presets::StyleDoc;
 use obc_bake::regions::Region;
 use obc_bake::source::LocalExtracts;
-use obc_bake::terrain::{TerrainBakeOptions, TerrainBakery, TerrainCutter, TerrainDoc, TerrainRunSummary};
+use obc_bake::terrain::{
+    ReferenceSource, TerrainBakeOptions, TerrainBakery, TerrainCell, TerrainCutter, TerrainDoc, TerrainRunSummary,
+};
 use obc_pack::config::Config;
 use obc_pack::cut::{CutOptions, CutSummary};
 use obc_pack::geom::Geom;
@@ -313,6 +315,16 @@ impl Fixture {
 
     /// Bake the terrain artifact class into the same tree, at `revision`.
     fn terrain_bake(&self, cutter: &dyn TerrainCutter, revision: u32) -> TerrainRunSummary {
+        self.try_terrain_bake(cutter, revision, false).expect("the terrain run completes")
+    }
+
+    /// The same run, with its outcome and the short-reference policy in the caller's hands.
+    fn try_terrain_bake(
+        &self,
+        cutter: &dyn TerrainCutter,
+        revision: u32,
+        allow_short_reference: bool,
+    ) -> Result<TerrainRunSummary, String> {
         TerrainBakery {
             regions: &self.regions,
             source: &LocalExtracts::new(&self.extracts).with_snapshot(SNAPSHOT),
@@ -321,10 +333,10 @@ impl Fixture {
                 out: self.tree.clone(),
                 doc: terrain_doc(revision, TERRAIN_DATASET_VERSION),
                 force: false,
+                allow_short_reference,
             },
         }
         .run(&Progress::silent())
-        .expect("the terrain run completes")
     }
 
     /// Generate the catalog into the tree, as the CLI does after a bake.
@@ -431,6 +443,29 @@ fn terrain_doc(revision: u32, dataset_version: &str) -> TerrainDoc {
         // The credit comes from `obc-dem`'s own `const` and is never retyped, here or anywhere:
         // this assertion is the whole reason the bakery reaches for the library rather than a CLI.
         attribution: obc_elevation::COPERNICUS_ATTRIBUTION.into(),
+        // The run fills this from the cutter's own archive, so what a caller passes is ignored.
+        references: Vec::new(),
+    }
+}
+
+/// The reference source `FakeDem::lifted` credits — one national model, as an archive states it.
+fn fake_reference() -> ReferenceSource {
+    ReferenceSource {
+        key: "ch".into(),
+        product: "swissALTI3D 2 m".into(),
+        attribution: "© swisstopo".into(),
+        licence: "Open data, attribution required".into(),
+    }
+}
+
+/// The same source as the catalog must publish it.
+fn fake_reference_entry() -> obc_pack::catalog::ReferenceEntry {
+    let source = fake_reference();
+    obc_pack::catalog::ReferenceEntry {
+        key: source.key,
+        product: source.product,
+        attribution: source.attribution,
+        licence: source.licence,
     }
 }
 
@@ -442,24 +477,79 @@ fn terrain_doc(revision: u32, dataset_version: &str) -> TerrainDoc {
 struct FakeDem {
     /// Varies the bytes so a re-bake at a new revision produces genuinely different objects.
     fill: u8,
+    /// The reference sources every cell it bakes is derived from.
+    reference: Vec<ReferenceSource>,
+    /// What the reference mirror owes every cell this cutter bakes.
+    short: Option<obc_bake::terrain::ShortReference>,
+}
+
+impl FakeDem {
+    /// Copernicus alone: no reference archive, so no cell credits one.
+    fn plain(fill: u8) -> FakeDem {
+        FakeDem { fill, reference: Vec::new(), short: None }
+    }
+
+    /// With a reference archive whose lifts every cell uses.
+    fn lifted(fill: u8) -> FakeDem {
+        FakeDem { fill, reference: vec![fake_reference()], short: None }
+    }
+
+    /// With a mirror that is short of one tile every cell's window reads. The window is the Swiss
+    /// box the real archive covers, so the `--bbox` the refusal prints is a real one.
+    fn short_mirror(fill: u8) -> FakeDem {
+        let short = obc_bake::terrain::ShortReference {
+            tiles: 1,
+            first: (4809, 4222),
+            window_udeg: (46_727_168, 8_257_536, 46_792_704, 8_323_072),
+        };
+        FakeDem { short: Some(short), ..FakeDem::lifted(fill) }
+    }
 }
 
 impl TerrainCutter for FakeDem {
     fn recipe(&self) -> String {
-        "fake dem".into()
+        // `fill` is this fake's whole rasterising recipe, so it belongs in the string the skip key
+        // hashes — exactly as the real cutter's source set and crest rule version do. A fake that
+        // changed its bytes without saying so would only re-bake by accident.
+        format!("fake dem fill={}", self.fill)
     }
 
-    fn bake_cell(&self, ci: u32, cj: u32, posting_log2: u8, cell_log2: u8) -> Result<Option<Vec<u8>>, String> {
+    fn bake_cell(&self, ci: u32, cj: u32, posting_log2: u8, cell_log2: u8) -> Result<TerrainCell, String> {
         let len = obc_formats::obct::cell_block_len(posting_log2, cell_log2).expect("a pairing OBCT permits") as usize;
         let width = obc_pack::grid::id_width(u32::from(cell_log2));
         let id = format!("{cell_log2}/{ci:0width$}/{cj:0width$}");
         if id == TERRAIN_OCEAN {
-            return Ok(None);
+            return Ok(TerrainCell::default());
         }
         // A plausible little surface: whole metres, little-endian, never the NODATA sentinel.
-        Ok(Some(
-            (0..len / 2).flat_map(|k| (((k as i16) % 700) + i16::from(self.fill)).to_le_bytes()).collect::<Vec<u8>>(),
-        ))
+        Ok(TerrainCell {
+            block: Some(
+                (0..len / 2)
+                    .flat_map(|k| (((k as i16) % 700) + i16::from(self.fill)).to_le_bytes())
+                    .collect::<Vec<u8>>(),
+            ),
+            reference_sources: self.reference.iter().map(|r| r.key.clone()).collect(),
+            short_reference: self.short,
+        })
+    }
+
+    fn reference_digests(&self, ci: u32, cj: u32, _: u8, _: u8) -> Result<Vec<String>, String> {
+        if self.reference.is_empty() {
+            return Ok(Vec::new());
+        }
+        // The cell's own tile, and the ring tile only when the mirror holds it — which is what
+        // `ReferenceArchive::held_digests` does, and what makes completing a mirror move the key
+        // and re-bake exactly the short cells. A fake that reported a shortfall without it would
+        // leave the tree refusing for ever.
+        let mut digests = vec![format!("{ci}/{cj}=own")];
+        if self.short.is_none() {
+            digests.push("4809/4222=ring".into());
+        }
+        Ok(digests)
+    }
+
+    fn reference_credits(&self) -> Vec<ReferenceSource> {
+        self.reference.clone()
     }
 }
 
@@ -513,7 +603,7 @@ fn obcm_digests(tree: &Path) -> BTreeMap<String, String> {
 #[test]
 fn a_terrain_bake_publishes_cells_ocean_runs_and_a_priced_region_selection() {
     let f = fixture_dirs("terrain-roundtrip");
-    let summary = f.terrain_bake(&FakeDem { fill: 1 }, 1);
+    let summary = f.terrain_bake(&FakeDem::lifted(1), 1);
     assert_eq!(summary.terrain_revision, 1);
     // Six squares cover the fixture's two rectangles at 2^19; one of them is open water.
     assert_eq!(summary.cells.len(), 6, "{}", summary.render());
@@ -535,6 +625,16 @@ fn a_terrain_bake_publishes_cells_ocean_runs_and_a_priced_region_selection() {
         obc_elevation::COPERNICUS_ATTRIBUTION,
         "§13.5: the credit comes from obc-elevation's const"
     );
+    // §13.1/§13.5 — the reference models the cells' crest lifts came from travel with the map, per
+    // cell in the sidecar and once in the block. The wording is the archive's, not this crate's.
+    let sidecar: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(terrain_dir(&f.tree).join("0601").join("0525.obcd.json")).expect("the sidecar"),
+    )
+    .expect("parses");
+    assert_eq!(sidecar["reference_sources"], serde_json::json!(["ch"]));
+    assert_eq!(terrain.references.as_deref(), Some(&[fake_reference_entry()][..]));
+    let license = obc_pack::catalog::license_txt(root);
+    assert!(license.contains("© swisstopo"), "the notice reaches LICENSE.txt too:\n{license}");
     assert_eq!((terrain.cell_index.cell_count, terrain.cell_index.known_empty_count), (5, 1));
     assert!(terrain.cell_index.url.contains(&terrain.cell_index.sha256), "the index is addressed by its own digest");
 
@@ -594,20 +694,106 @@ fn a_terrain_bake_publishes_cells_ocean_runs_and_a_priced_region_selection() {
     assert!(keys.contains(&"terrain.json"), "{keys:?}");
 }
 
+/// A cell short of a reference tile the index names is **refused**, because this stage publishes:
+/// it would be lifted on one side of that tile's edge and not the other, which is a step in the
+/// contours and the route profile that no ground has. `--allow-short-reference` publishes it anyway
+/// and says so, and a tree that took the escape hatch publishes nothing silently.
+#[test]
+fn a_cell_short_of_its_reference_tiles_is_refused_unless_the_operator_allows_it() {
+    let f = fixture_dirs("short-reference");
+    let error = f.try_terrain_bake(&FakeDem::short_mirror(1), 1, false).expect_err("a short mirror must be refused");
+    assert!(error.contains("5 terrain cell(s) read reference tiles"), "the refusal sizes it: {error}");
+    assert!(error.contains("4809/4222") && error.contains("19/0601/0525"), "…names a tile and a cell: {error}");
+    assert!(error.contains("--allow-short-reference"), "…and the way out: {error}");
+    // The bbox is the union of the cells' **windows**, longitude first, ready to paste: the mirror
+    // tool pads a box by one tile, which is nothing like a cell's overhang at 2^19.
+    assert!(
+        error.contains("--bbox 8.257536,46.727168,8.323072,46.792704"),
+        "…and the box to mirror, copy-pasteable: {error}"
+    );
+    // What it baked before it refused is described by the tree, or nothing could explain the cells
+    // now on disk. Nothing is *selectable* yet: the region wiring is past the refusal.
+    assert!(f.tree.join("terrain.json").is_file(), "the refused run still states what it baked");
+    assert!(terrain_dir(&f.tree).join(".known-empty.json").is_file());
+
+    // A second run reaches the same verdict from the recorded state, without rasterising: this is
+    // the whole point of keeping the shortfall in the cell's state rather than only in the run.
+    let again = f.try_terrain_bake(&FakeDem::short_mirror(1), 1, false).expect_err("the verdict is recorded");
+    assert!(again.contains("5 terrain cell(s) read reference tiles"), "{again}");
+
+    let summary = f.try_terrain_bake(&FakeDem::short_mirror(1), 1, true).expect("the escape hatch publishes");
+    assert!(terrain_dir(&f.tree).join("0601").join("0525.obcd").is_file());
+    assert_eq!(summary.warnings.len(), 1, "{:?}", summary.warnings);
+    assert!(summary.warnings[0].starts_with("--allow-short-reference:"), "{:?}", summary.warnings);
+    assert!(summary.warnings[0].contains("4809/4222"), "{:?}", summary.warnings);
+
+    // And a mirror that is complete clears it with no flag, because the cells' keys move back.
+    let fixed = f.try_terrain_bake(&FakeDem::lifted(1), 1, false).expect("a complete mirror needs no flag");
+    assert!(fixed.warnings.is_empty(), "{:?}", fixed.warnings);
+}
+
+/// §13.2 makes a reference archive change a terrain revision bump. That bump must **re-stamp**
+/// every cell rather than re-rasterise it, or the per-cell digests would decide nothing on the one
+/// workflow they exist for — a Swiss archive release would rewrite the whole store.
+#[test]
+fn a_revision_bump_restamps_every_sidecar_and_rasterises_nothing() {
+    let f = fixture_dirs("terrain-revision-restamp");
+    f.terrain_bake(&FakeDem::lifted(1), 1);
+    f.bake(&FixtureCutter::new(), &[], SNAPSHOT, false);
+    // The artifacts alone: the sidecars beside them are the store's identity and are *meant* to
+    // move, which is the other half of this test.
+    let artifacts = |tree: &Path| -> BTreeMap<String, String> {
+        terrain_digests(tree).into_iter().filter(|(path, _)| path.ends_with(".obcd")).collect()
+    };
+    let before = artifacts(&f.tree);
+    assert!(!before.is_empty());
+
+    let summary = f.terrain_bake(&FakeDem::lifted(1), 2);
+    assert!(
+        summary.cells.iter().all(|c| c.status != obc_bake::terrain::TerrainCellStatus::Baked),
+        "a revision bump rasterises nothing:\n{}",
+        summary.render()
+    );
+    assert_eq!(artifacts(&f.tree), before, "…and moves no terrain byte");
+
+    // The sidecars are the store's identity, so those *do* move — every one of them, or §13.2's
+    // lockstep would fail in the generator.
+    for row in std::fs::read_dir(terrain_dir(&f.tree)).expect("the terrain dir").flatten() {
+        if !row.path().is_dir() {
+            continue;
+        }
+        for cell in std::fs::read_dir(row.path()).expect("a terrain row").flatten() {
+            let path = cell.path();
+            if path.to_string_lossy().ends_with(".obcd.json") {
+                let doc: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&path).expect("sidecar")).expect("JSON");
+                assert_eq!(doc["terrain_revision"], 2, "{}", path.display());
+                assert_eq!(doc["reference_sources"], serde_json::json!(["ch"]), "{}", path.display());
+            }
+        }
+    }
+    // Which means §13.2's lockstep still holds at the new revision: a sidecar the re-stamp missed
+    // would make the generator refuse the whole tree.
+    let generated =
+        obc_pack::catalog::generate(&f.tree, &obc_pack::catalog::CatalogOptions::new(BASE_URL, GENERATED_AT))
+            .expect("a re-stamped tree generates");
+    assert_eq!(generated.root.terrain.expect("terrain").terrain_revision, 2);
+}
+
 /// **Independence pin (b), at the bakery**: a terrain re-bake re-publishes no OBCM object, and the
 /// guard names the network band stale — with both revisions in the message, because "something is
 /// stale" is not an actionable thing to read at 2 a.m.
 #[test]
 fn a_terrain_rebake_leaves_the_obcm_store_alone_and_the_guard_flags_the_network_band() {
     let f = fixture_dirs("terrain-rebake");
-    f.terrain_bake(&FakeDem { fill: 1 }, 1);
+    f.terrain_bake(&FakeDem::plain(1), 1);
     f.bake(&FixtureCutter::new(), &[], SNAPSHOT, false);
     let obcm_before = obcm_digests(&f.tree);
     let terrain_before = terrain_digests(&f.tree);
     assert!(obc_bake::guard::check_cell_store(&f.tree).expect("guard").ok());
 
     // The DEM was re-released: a new terrain revision, new bytes, nothing else touched.
-    let summary = f.terrain_bake(&FakeDem { fill: 9 }, 2);
+    let summary = f.terrain_bake(&FakeDem::plain(9), 2);
     assert_eq!(summary.terrain_revision, 2);
     assert_ne!(terrain_digests(&f.tree), terrain_before, "the terrain store really did move");
     assert_eq!(obcm_digests(&f.tree), obcm_before, "a terrain re-bake must not rewrite one OBCM cell");
@@ -636,7 +822,7 @@ fn a_terrain_rebake_leaves_the_obcm_store_alone_and_the_guard_flags_the_network_
 #[test]
 fn a_schema_revision_bump_rebakes_no_terrain_object() {
     let f = fixture_dirs("terrain-schema-bump");
-    f.terrain_bake(&FakeDem { fill: 1 }, 1);
+    f.terrain_bake(&FakeDem::plain(1), 1);
     f.bake(&FixtureCutter::new(), &[], SNAPSHOT, false);
     let obcm_before = obcm_digests(&f.tree);
     let terrain_before = terrain_digests(&f.tree);
@@ -663,7 +849,7 @@ fn a_schema_revision_bump_rebakes_no_terrain_object() {
     assert_eq!(generated.root.terrain.as_ref().expect("terrain").terrain_revision, 1);
 
     // Re-running the terrain stage after all that is a no-op: nothing it keys on changed.
-    let again = f.terrain_bake(&FakeDem { fill: 1 }, 1);
+    let again = f.terrain_bake(&FakeDem::plain(1), 1);
     assert!(
         again.cells.iter().all(|c| c.status != obc_bake::terrain::TerrainCellStatus::Baked),
         "a schema bump must not make the terrain stage re-rasterise: {}",
@@ -676,7 +862,7 @@ fn a_schema_revision_bump_rebakes_no_terrain_object() {
 #[test]
 fn a_store_that_mixes_terrain_revisions_is_rejected() {
     let f = fixture_dirs("terrain-mixed");
-    f.terrain_bake(&FakeDem { fill: 1 }, 1);
+    f.terrain_bake(&FakeDem::plain(1), 1);
     f.bake(&FixtureCutter::new(), &[], SNAPSHOT, false);
 
     // One cell left behind by an interrupted re-bake.

@@ -94,6 +94,14 @@
                 {/if}
             </p>
             <p class="small faint attribution">{ledger.terrain.attribution}</p>
+            <!-- §13.5 covers every listed reference as well: summit heights in
+                 this raster come from a national model, and its licence asks for
+                 the same credit. One line each, from the catalog. -->
+            {#each ledger.terrain.references as reference (reference.key)}
+                <p class="small faint attribution">
+                    Summit heights from {reference.product}: {reference.attribution} ({reference.licence})
+                </p>
+            {/each}
         {/if}
 
         <!-- The map data's own credit (§3.1) — the catalog's string, the same

@@ -241,7 +241,12 @@ do_terrain() {
     for bbox in "$GRIMSEL_TERRAIN_BBOX" "$TENINGEN_TERRAIN_BBOX"; do
         "$obc_dem" fetch --bbox "$bbox" --out "$dem"
     done
-    "$obc_dem" bake --sources "$dem" --bbox "$GRIMSEL_TERRAIN_BBOX" \
+    # A mirror of the reference archive raises the Grimsel crests to the national
+    # model's height (OBCT §9). Opt-in, because re-recording the frames it moves is
+    # a decision: OBC_REFERENCE_ARCHIVE=<mirror of the grimsel box>.
+    local reference=()
+    [[ -n "${OBC_REFERENCE_ARCHIVE:-}" ]] && reference=(--reference "$OBC_REFERENCE_ARCHIVE")
+    "$obc_dem" bake --sources "$dem" --bbox "$GRIMSEL_TERRAIN_BBOX" "${reference[@]+"${reference[@]}"}" \
         --cell-log2 16 --shard "$BUILD_DIR/sim-grimsel/grimsel.obcd" --quiet
     "$obc_dem" bake --sources "$dem" --bbox "$TENINGEN_TERRAIN_BBOX" \
         --cell-log2 16 --shard "$bake_assets/teningen-preview.obcd" --quiet
