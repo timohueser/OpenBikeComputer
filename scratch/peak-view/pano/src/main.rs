@@ -12,7 +12,7 @@ fn main() {
     let bytes = std::fs::read(&a[0]).unwrap();
     let source = SliceSource(&bytes);
     let mut terrain = Terrain::parse(&source as &dyn ByteSource).unwrap();
-    let ground = terrain.observer_ground(lat, lon).expect("no terrain at observer");
+    let ground = terrain.eye_ground(lat, lon, None).expect("no terrain at observer");
     let mut profile = PeakViewProfile::at(lat, lon, 0);
     profile.set_ground(ground);
     if a.len() > 7 {
