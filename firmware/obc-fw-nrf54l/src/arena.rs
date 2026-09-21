@@ -178,7 +178,7 @@ pub(crate) const USB_ARM_BYTES: usize = crate::usb::STAGE_LEN;
 const _: () = assert!(
     NAV_ARM_BYTES <= ARENA_BYTES && RENDER_ARM_BYTES <= ARENA_BYTES && USB_ARM_BYTES == ARENA_BYTES,
     "the USB arm is no longer the arena ceiling — re-read the growth-asymmetry notes in arena.rs \
-     and at main.rs's budget assert before re-pinning anything"
+     before re-pinning anything"
 );
 
 #[cfg(has_nav)]

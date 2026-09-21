@@ -34,9 +34,9 @@ description = "nRF54LM20-DK board firmware for OpenBikeComputer — the real har
 # See `firmware/docs/ls021-flpr.md` + the crate README.
 #
 # **There is one build** (LM20, 2026-07-23): map + ride loop + on-device router + the full BLE stack
-# + the USB device plane in one image — no separate non-BLE shape, and since 2026-07-26 no separate
-# non-USB shape either (the 512 KB part fits them together; the budget assert + measured-residual
-# notes in main.rs are the margins). The critical-section impl therefore comes from MPSL on every
+# + the USB device plane in one image — no separate non-BLE shape and no separate non-USB shape
+# either (the 512 KB part fits them together; `firmware/tools/resource_baseline.json` holds the
+# margins). The critical-section impl therefore comes from MPSL on every
 # build, and the radio crates below are plain dependencies rather than optional ones (#1530): the
 # `ble` feature named a configuration that had not compiled for months, so there is no `default`
 # list — the features below are all opt-in overlays on the one shape.
@@ -210,7 +210,7 @@ bt-hci = { version = "0.9", default-features = false, features = ["defmt"] }
 # The BLE host (released 0.7 pins embassy-executor 0.10 / embassy-sync 0.8 / embassy-time 0.5.1 —
 # again exactly this crate's set). It runs on heapless **0.9**; the shared crates are on 0.8.
 # `default-packet-pool-mtu-251` sizes the pool for the config we intend to ship (ATT MTU 247 =
-# link-layer 251 with DLE), so the budget assert's RAM numbers are the shipping ones.
+# link-layer 251 with DLE), so the reported RAM numbers are the shipping ones.
 # `security` (A8, issue #276) turns on the LESC/SMP/bonding host: passkey pairing, the
 # per-characteristic encryption gate, and the peer-IRK resolving list for bonded reconnect.
 # It pulls p256/aes/cmac/rand{,_core,_chacha} — all no_std here (trouble pins them
