@@ -1,13 +1,11 @@
 import XCTest
 import OBCDomain
 
-/// B-S0 guardrails: the domain-type skeletons `B1` builds against compile and
-/// construct, and the pinned `protocol_version` is stated in one place. These are
-/// contract checks, not behavior — the real transport/codec coverage is `B1`.
+/// Contract checks, not behavior: the domain-type skeletons compile and construct, and the
+/// pinned `protocol_version` is stated in one place.
 final class ProtocolContractTests: XCTestCase {
     func testProtocolVersionIsPinned() {
-        // Bump deliberately, in lockstep with the firmware wire — not by accident.
-        // v4 is the FLAT store wire contract.
+        // Bump deliberately, in lockstep with the firmware wire.
         XCTAssertEqual(OBCProtocol.version, 4)
     }
 
@@ -23,8 +21,7 @@ final class ProtocolContractTests: XCTestCase {
     }
 
     func testDeviceObjectIDCodesAsABareNumber() throws {
-        // Persisted DTOs stored a bare number — the typed wrapper must not
-        // change their JSON shape (#359's no-schema-bump rule).
+        // Persisted DTOs store a bare number; the typed wrapper must not change their JSON shape.
         XCTAssertEqual(
             String(decoding: try JSONEncoder().encode([DeviceObjectID(7)]), as: UTF8.self), "[7]")
         XCTAssertEqual(
@@ -33,14 +30,11 @@ final class ProtocolContractTests: XCTestCase {
     }
 
     func testRideIDBridgesTheDeviceNamespace() {
-        // Ride identity is deliberately shared across the BLE boundary
-        // (#289/#290): a device-minted id round-trips through the typed
-        // accessors…
+        // Ride identity is shared across the BLE boundary: a device-minted id round-trips.
         let id = RideID(deviceObjectID: DeviceObjectID(42))
         XCTAssertEqual(id, RideID("42"))
         XCTAssertEqual(id.deviceObjectID, DeviceObjectID(42))
-        // …and a library-only id (mock fixtures, tests) honestly reports that
-        // it never came from a device catalog.
+        // A library-only id reports honestly that it never came from a device catalog.
         XCTAssertNil(RideID("ride-kettle-moraine").deviceObjectID)
     }
 
@@ -51,10 +45,8 @@ final class ProtocolContractTests: XCTestCase {
     }
 
     func testDomainSkeletonsConstruct() {
-        // Config carries the device name (Delta 1).
         XCTAssertEqual(DeviceConfig(name: "OBC-Trailhead").name, "OBC-Trailhead")
 
-        // Routes accept both import formats (Delta 2).
         let route = RouteSummary(
             id: RouteID("r1"), name: "Ridge Loop",
             distanceMeters: 42_000, elevationGainMeters: 1_200, source: .gpx
@@ -71,12 +63,10 @@ final class ProtocolContractTests: XCTestCase {
     }
 
     func testB1DomainFinalization() {
-        // Config carries units alongside the name (Delta 1 + Settings/G).
         let config = DeviceConfig(name: "OBC-Ridge", units: .imperial)
         XCTAssertEqual(config.units, .imperial)
         XCTAssertEqual(DeviceConfig(name: "x").units, .metric)  // defaults to metric
 
-        // Waypoints ride with a route (W1).
         let waypoint = Waypoint(
             index: 0, name: "Trailhead", note: "water",
             distanceAlongMeters: 0, coordinate: Coordinate(latitude: 47, longitude: 8)
@@ -88,7 +78,6 @@ final class ProtocolContractTests: XCTestCase {
         )
         XCTAssertEqual(blob.waypoints.count, 1)
 
-        // Extended summaries carry the fields the detail screens render.
         let route = RouteSummary(
             id: RouteID("r2"), name: "Ridge", distanceMeters: 42_000, elevationGainMeters: 1_200,
             estimatedDuration: 7_200, pointCount: 500, source: .tcx, trackPreview: .empty
@@ -103,7 +92,6 @@ final class ProtocolContractTests: XCTestCase {
         )
         XCTAssertEqual(tracked.climbMeters, 800)
 
-        // New transport-error cases are equatable/typed.
         XCTAssertEqual(DeviceError.bluetoothUnavailable(.poweredOff), .bluetoothUnavailable(.poweredOff))
         XCTAssertNotEqual(DeviceError.bluetoothUnavailable(.poweredOff), .bluetoothUnavailable(.unauthorized))
     }

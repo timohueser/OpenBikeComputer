@@ -4,11 +4,9 @@ import OBCMock
 import OBCTransport
 @testable import OBCUI
 
-/// #361 — the H3 rename's self-heal. The rename is optimistic; when its config
-/// write never lands, the bond record still carries the desired name and this
-/// pass pushes it back on the next connect. Exercised against a call-counting
-/// spy for the exact read/write discipline (once per pass, silent skips, no-op
-/// on match / no bond).
+/// The rename's self-heal. A rename is optimistic; when its config write never lands, the bond
+/// record still carries the desired name and this pass pushes it back on the next connect. A
+/// call-counting spy pins the read and write discipline.
 final class DeviceNameReconcilerTests: XCTestCase {
     private func makeReconciler(
         config: DeviceConfig,
@@ -22,8 +20,6 @@ final class DeviceNameReconcilerTests: XCTestCase {
         )
     }
 
-    /// Happy path (the common case: the rename's own write landed) — one read
-    /// to compare, **no** write.
     func testMatchingNamesReadOnceAndNeverWrite() async {
         let (reconciler, transport, _) = makeReconciler(
             config: DeviceConfig(name: "Trailhead"),
@@ -35,8 +31,7 @@ final class DeviceNameReconcilerTests: XCTestCase {
         XCTAssertTrue(transport.writtenConfigs.isEmpty, "a matching name must not rewrite")
     }
 
-    /// The heal: a diverged config gets the bond name pushed back — via
-    /// read-modify-write, so the other config fields survive.
+    /// The heal is a read-modify-write, so the other config fields survive.
     func testDivergedNameWritesTheBondNamePreservingOtherFields() async {
         let (reconciler, transport, _) = makeReconciler(
             config: DeviceConfig(name: "Trailhead", units: .imperial),
@@ -51,7 +46,7 @@ final class DeviceNameReconcilerTests: XCTestCase {
         )
     }
 
-    /// `forget()` cleared the bond → the pass must no-op (not even a read).
+    /// After `forget()` cleared the bond, the pass must not even read.
     func testNoBondRecordIsACompleteNoOp() async {
         let (reconciler, transport, _) = makeReconciler(
             config: DeviceConfig(name: "Trailhead"),
@@ -63,8 +58,6 @@ final class DeviceNameReconcilerTests: XCTestCase {
         XCTAssertTrue(transport.writtenConfigs.isEmpty)
     }
 
-    /// A failed `readConfig` is a silent skip — no write this pass; the
-    /// following connect's pass converges.
     func testReadFailureSkipsSilentlyAndTheNextPassConverges() async {
         let (reconciler, transport, _) = makeReconciler(
             config: DeviceConfig(name: "Trailhead"),
@@ -78,8 +71,6 @@ final class DeviceNameReconcilerTests: XCTestCase {
         XCTAssertEqual(transport.config.name, "Summit")
     }
 
-    /// A failed `writeConfig` is equally silent — never a hot retry within the
-    /// pass; the following connect's pass converges.
     func testWriteFailureRetriesOnlyOnTheNextPass() async {
         let (reconciler, transport, _) = makeReconciler(
             config: DeviceConfig(name: "Trailhead"),
@@ -97,9 +88,8 @@ final class DeviceNameReconcilerTests: XCTestCase {
 
 // MARK: - Test doubles (shared with SettingsModelTests / MainScreenModelTests)
 
-/// Call-counting link/config/battery/bonding stand-in: serves one config,
-/// records successful writes, and can fail either leg once. The Settings tests
-/// also use its inert status and bonding surfaces.
+/// Call-counting link, config, battery and bonding stand-in: it serves one config, records
+/// successful writes, and can fail either leg once.
 final class ConfigSpyTransport: DeviceLink, DeviceBattery, DeviceConfiguration, DeviceBonding,
     @unchecked Sendable {
     private let lock = NSLock()
@@ -117,7 +107,7 @@ final class ConfigSpyTransport: DeviceLink, DeviceBattery, DeviceConfiguration, 
     var config: DeviceConfig { lock.withLock { _config } }
     var readConfigCalls: Int { lock.withLock { _readConfigCalls } }
     var writeConfigCalls: Int { lock.withLock { _writeConfigCalls } }
-    /// Configs that **landed** (a failed write records the attempt count only).
+    /// Configs that landed; a failed write records the attempt count only.
     var writtenConfigs: [DeviceConfig] { lock.withLock { _writtenConfigs } }
     func failNextRead() { lock.withLock { _failNextRead = true } }
     func failNextWrite() { lock.withLock { _failNextWrite = true } }
@@ -145,7 +135,7 @@ final class ConfigSpyTransport: DeviceLink, DeviceBattery, DeviceConfiguration, 
         }
     }
 
-    // Inert remainder — a connected link with no battery sample.
+    // Inert remainder: a connected link with no battery sample.
     var state: AsyncStream<ConnectionState> {
         AsyncStream { $0.yield(.connected); $0.finish() }
     }
@@ -157,8 +147,8 @@ final class ConfigSpyTransport: DeviceLink, DeviceBattery, DeviceConfiguration, 
     }
 }
 
-/// In-memory `BondStore` with real save/load semantics — unlike `MockBondStore`
-/// it belongs to no `MockControl`, so tests can pair it with the spy transport.
+/// An in-memory `BondStore` with real save and load semantics. It belongs to no `MockControl`,
+/// so tests can pair it with the spy transport.
 final class RecordingBondStore: BondStore, @unchecked Sendable {
     private let lock = NSLock()
     private var _record: BondRecord?

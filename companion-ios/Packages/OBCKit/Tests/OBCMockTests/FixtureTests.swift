@@ -85,7 +85,7 @@ final class FixtureTests: XCTestCase {
         XCTAssertEqual(MockPayload.make(count: 0).count, 0)
     }
 
-    // MARK: Trips demo fixture (TR6)
+    // MARK: Trips demo fixture
 
     func testTripsFixtureGroupsTwoRoutesAndKeepsLooseOnes() {
         let set = FixtureSet.load("trips")
