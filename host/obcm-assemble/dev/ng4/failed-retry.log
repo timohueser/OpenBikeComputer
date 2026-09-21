@@ -1,5 +1,0 @@
-nav-profile collect us=477953
-nav-profile dedup us=59433
-nav-profile prune us=68869
-nav-profile renumber us=171229
-error: scratch store error: scratch file #30: write: Disk quota exceeded (os error 122)
