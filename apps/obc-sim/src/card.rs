@@ -18,16 +18,8 @@ pub struct Session {
 }
 
 pub fn persistent(path: &str, create: bool) -> Result<HostStore, String> {
-    #[cfg(unix)]
-    {
-        if create { HostStore::create_file(path) } else { HostStore::open_file(path) }
-            .map_err(|error| format!("card {path}: {error}"))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (path, create);
-        Err("persistent host cards are unsupported on this platform".into())
-    }
+    if create { HostStore::create_file(path) } else { HostStore::open_file(path) }
+        .map_err(|error| format!("card {path}: {error}"))
 }
 
 impl Session {
