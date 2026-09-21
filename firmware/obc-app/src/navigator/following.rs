@@ -220,8 +220,10 @@ impl NavigatorMachine {
     }
 
     /// The once-per-load route sync, run at the top of every tick. Returns whether the map must
-    /// repaint. The climbs and waypoints caches build once per load and advance their build key only
-    /// when the geometry is streamable: a `None` route keeps the old state and retries next tick.
+    /// repaint. The climbs and waypoints caches build once per load, on the same rule as the
+    /// profile: a cache is loaded only when the active route and a reader are both there, and the
+    /// build key follows the load. A missing reader therefore shows nothing and retries next tick;
+    /// the previous route's climbs and waypoints must not remain visible.
     ///
     /// The matcher follows the navigated route, so a load or a swap re-locks it. The accumulators,
     /// the trail and the pace window follow the ride session, which is Recorder's.
@@ -242,37 +244,19 @@ impl NavigatorMachine {
         }
 
         if self.following.active_route != self.climbs_route {
-            match (self.following.active_route, route) {
-                (Some(_), Some(r)) => {
-                    self.climbs = r.detect_climbs();
-                    self.climbs_route = self.following.active_route;
-                    self.following.active_climb = None; // a fresh list — re-derive the active climb on the next match
-                }
-                (None, _) => {
-                    self.climbs = Climbs::new();
-                    self.climbs_route = None;
-                    self.following.active_climb = None;
-                }
-                (Some(_), None) => { /* geometry not yet streamable — keep the old state, retry next tick */ }
-            }
+            let loaded = self.following.active_route.zip(route);
+            self.climbs = loaded.map_or_else(Climbs::new, |(_, r)| r.detect_climbs());
+            self.climbs_route = loaded.map(|(index, _)| index);
+            self.following.active_climb = None; // a fresh list — re-derive the active climb on the next match
         }
 
-        // Load the route's named waypoints once per load, on the same streamable-geometry guard.
-        // Loaded from the route start; a truncated table is slid forward in `update_next_waypoint`.
+        // The route's named waypoints load from the route start; a truncated table is slid forward
+        // in `update_next_waypoint`.
         if self.following.active_route != self.waypoints_route {
-            match (self.following.active_route, route) {
-                (Some(_), Some(r)) => {
-                    self.waypoints = r.load_waypoints(0);
-                    self.waypoints_route = self.following.active_route;
-                    self.following.next_waypoint = None; // a fresh table — re-derive the next waypoint on the next match
-                }
-                (None, _) => {
-                    self.waypoints = Waypoints::new();
-                    self.waypoints_route = None;
-                    self.following.next_waypoint = None;
-                }
-                (Some(_), None) => { /* geometry not yet streamable — keep the old table, retry next tick */ }
-            }
+            let loaded = self.following.active_route.zip(route);
+            self.waypoints = loaded.map_or_else(Waypoints::new, |(_, r)| r.load_waypoints(0));
+            self.waypoints_route = loaded.map(|(index, _)| index);
+            self.following.next_waypoint = None; // a fresh table — re-derive the next waypoint on the next match
         }
         self.following.waypoint_count = self.waypoints.len();
         if let Some(route) = route {
@@ -512,6 +496,41 @@ mod tests {
         navigator.refresh_route_profile(Some(&route));
         assert!(navigator.profile().is_none(), "unloading clears the profile even if a reader remains");
         assert_eq!(source.reads.get(), 3 * one_build);
+    }
+
+    /// A route change the reader cannot serve must leave no climb and no waypoint from the route
+    /// the rider just left, on the frame `App::run_pass` draws.
+    #[test]
+    fn route_change_without_a_reader_drops_the_previous_climbs_and_waypoints() {
+        use obc_formats::io::SliceSource;
+
+        let bytes = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr"
+        ));
+        let source = SliceSource(bytes);
+        let index = obc_route::RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
+        let mut navigator = NavigatorMachine::new();
+
+        navigator.set_active_route(Some(0));
+        navigator.sync_route_state(Some(&route));
+        assert!(!navigator.climbs().is_empty());
+        assert_eq!(navigator.cache_keys(), (Some(0), Some(0)));
+        navigator.route_state_mut().active_climb = Some(0);
+        navigator.route_state_mut().next_waypoint = Some(0);
+
+        navigator.set_active_route(Some(1));
+        navigator.sync_route_state(None);
+        assert!(navigator.climbs().is_empty(), "the previous route's climbs must not remain visible");
+        assert!(navigator.waypoints().is_empty(), "the previous route's waypoints must not remain visible");
+        assert_eq!(navigator.cache_keys(), (None, None));
+        assert_eq!(navigator.route_state().active_climb, None);
+        assert_eq!(navigator.route_state().next_waypoint, None);
+
+        navigator.sync_route_state(Some(&route));
+        assert_eq!(navigator.cache_keys(), (Some(1), Some(1)), "the build retries once a reader arrives");
+        assert!(!navigator.climbs().is_empty());
     }
 
     /// The placement path must land exactly the state the by-value path builds.
