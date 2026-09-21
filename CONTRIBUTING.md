@@ -148,6 +148,13 @@ unlocked, merged into the configured base, not the current worktree, and older t
 The main checkout, current checkout, dirty worktrees, and unmerged work are never removed. The
 default seven-day threshold also protects newly created or recently committed worktrees.
 
+Cargo never removes build artifacts it no longer uses, so every `target/` grows with each
+dependency bump, feature set, and toolchain update. `--include-builds` sweeps the artifacts that
+cargo has not rewritten within the threshold from every `target/`, the main checkout and locked
+agent worktrees included. The sweep is safe by construction: cargo recompiles whatever is missing,
+so a swept artifact costs a rebuild, never a stale binary. It holds each profile directory's
+`.cargo-lock` while it removes entries and skips a directory where a build is running.
+
 `--include-builds` additionally makes old `target/` directories in retained worktrees eligible.
 Those artifacts are reproducible but expensive to rebuild, so this is opt-in even with `--apply`.
 Fixture packages are managed separately with `obc fixtures prune`; cleanup never conflates the two
