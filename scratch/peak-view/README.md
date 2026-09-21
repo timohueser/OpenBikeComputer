@@ -34,7 +34,9 @@ Everything large. Set `PEAKVIEW_WORK` (default `/tmp/peak-view`) and put in it:
 
 - `dem/` — Copernicus GLO-30 tiles: `obc-dem fetch --bbox 46.66,7.86,47.19,8.92 --out $PEAKVIEW_WORK/dem`
 - `lidar/` — swissALTI3D over the same area, as reference archive tiles from
-  `host/obc-dem/reference/ingest.py ingest ch --bbox 8.30,46.75,8.60,46.95 --archive $PEAKVIEW_WORK/lidar`
+  `host/obc-dem/reference/ingest.py ingest ch --bbox 8.30,46.75,8.60,46.95 --archive $PEAKVIEW_WORK/lidar`.
+  `obc-dem` reads that archive once the reference-archive bake lands (#1931); before that it wants plain
+  WGS84 GeoTIFFs, which this tool no longer writes.
 - `eng_plain.obcd`, `eng_crest.obcd` — `obc-dem bake` then `obc-dem surface`, once without
   `--reference` and once with `--reference $PEAKVIEW_WORK/lidar`
 

@@ -594,11 +594,13 @@ def r2_remote() -> Remote:
     return Remote(f"OBCR2:{key_root}", env)
 
 
-def run_rclone(argv: list[str], env: dict[str, str]) -> None:
+def run_rclone(argv: list[str], env: dict[str, str], capture: bool = False) -> str:
     """Spawn rclone with the remote in its environment. The one seam the tests replace."""
 
     try:
-        subprocess.run(["rclone", *argv], env={**os.environ, **env}, check=True)
+        done = subprocess.run(["rclone", *argv], env={**os.environ, **env}, check=True,
+                              capture_output=capture, text=capture)
+        return done.stdout if capture else ""
     except FileNotFoundError as exc:
         raise Refuse("rclone is not on PATH — the publish and mirror steps need it "
                      "(https://rclone.org/install/)") from exc
@@ -607,17 +609,19 @@ def run_rclone(argv: list[str], env: dict[str, str]) -> None:
 
 
 def publish_plan(root: Path, remote: Remote, staging: Path) -> list[list[str]]:
-    """The three rclone calls of a publish, in order. `merge_index` runs between 2 and 3.
+    """The four rclone calls of a publish, in order: upload, ask, fetch, publish.
 
-    Every call is `copy`, so a publish only ever adds: an archive of one box cannot delete
-    another region's tiles. The index is the only file a consumer reads before it knows
-    what exists, so it goes last, and it goes up as the merge of what is already on R2
-    with this archive. `--checksum` makes a re-run idempotent: a tile whose bytes are
-    already there is skipped whatever its timestamp says.
+    Every transfer is `copy`, so a publish only ever adds: an archive of one box cannot
+    delete another region's tiles. The index is the only file a consumer reads before it
+    knows what exists, so it goes last, and it goes up as the merge of what is already on
+    R2 with this archive. The `lsf` call is how a first publish is told from a later one,
+    so an empty bucket needs no failed download. `--checksum` makes a re-run idempotent: a
+    tile whose bytes are already there is skipped whatever its timestamp says.
     """
 
     return [
         ["copy", str(root), remote.path, "--checksum", "--exclude", "/index.json"],
+        ["lsf", remote.path, "--include", "index.json"],
         ["copy", remote.path, str(staging), "--include", "/index.json"],
         ["copy", str(staging / "index.json"), remote.path, "--checksum"],
     ]
@@ -651,9 +655,18 @@ def mirror_plan(root: Path, remote: Remote, listing: Path) -> list[str]:
     return ["copy", remote.path, str(root), "--files-from", str(listing), "--checksum"]
 
 
-def box_tiles(bbox) -> list[str]:
+def box_tiles(bbox, halo: int = 1) -> list[str]:
+    """The tiles a box needs, with a ring of `halo` tiles around it.
+
+    The baker reads a cell's nodes plus a two-node halo, and a node at the edge of a cell
+    takes its pixels from the tile next door, so the box alone is one tile short on every
+    side.
+    """
+
     window = covering_window(bbox)
-    return [tile_id(ti, tj) for ti, tj in window.tiles()]
+    rows = range(max(tile_index(window.row0) - halo, 0), tile_index(window.row0 + window.rows - 1) + halo + 1)
+    cols = range(max(tile_index(window.col0) - halo, 0), tile_index(window.col0 + window.cols - 1) + halo + 1)
+    return [tile_id(ti, tj) for ti in rows for tj in cols]
 
 
 # ── commands ────────────────────────────────────────────────────────────────
@@ -788,10 +801,12 @@ def command_publish(args) -> int:
     remote = r2_remote()
     with tempfile.TemporaryDirectory() as directory:
         staging = Path(directory)
-        upload, fetch, publish = publish_plan(root, remote, staging)
-        for argv in (upload, fetch):
-            print(f"  rclone {' '.join(argv)}")
-            run_rclone(argv, remote.env)
+        upload, listing, fetch, publish = publish_plan(root, remote, staging)
+        print(f"  rclone {' '.join(upload)}")
+        run_rclone(upload, remote.env)
+        if run_rclone(listing, remote.env, capture=True).strip():
+            print(f"  rclone {' '.join(fetch)}")
+            run_rclone(fetch, remote.env)
         published = staging / "index.json"
         merged = merge_index(json.loads(published.read_text(encoding="utf-8")) if published.is_file() else None, local)
         published.write_text(
@@ -813,7 +828,8 @@ def command_mirror(args) -> int:
     root.mkdir(parents=True, exist_ok=True)
     run_rclone(["copyto", f"{remote.path}/index.json", str(root / "index.json")], remote.env)
     index = read_index(root)
-    wanted = [tile for tile in box_tiles(bbox) if tile in index.get("tiles", {})]
+    needed = box_tiles(bbox)
+    wanted = [tile for tile in needed if tile in index.get("tiles", {})]
     if not wanted:
         print(f"{args.bbox}: the archive holds no tile for that box")
         return 0
@@ -824,7 +840,8 @@ def command_mirror(args) -> int:
         run_rclone(mirror_plan(root, remote, listing), remote.env)
     finally:
         listing.unlink(missing_ok=True)
-    print(f"mirrored {len(wanted)} tile(s) into {root}")
+    print(f"mirrored {len(wanted)} of the {len(needed)} tile(s) the box and its halo need into {root}; "
+          f"the archive does not hold {len(needed) - len(wanted)}")
     return 0
 
 
