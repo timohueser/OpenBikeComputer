@@ -1,9 +1,7 @@
 import SwiftUI
 
-/// **Segmented Control** (§9, EXT) — the field-guide take on iOS segments:
-/// `parchment-3` sunken track (11pt radius, 3pt padding) with the selected
-/// segment raised on `panel` (8pt radius, soft shadow). Drives the
-/// Planned / Tracked split on the main screen.
+/// The field-guide take on iOS segments: a sunken track with the selected segment
+/// raised on `panel`. Drives the Planned and Tracked split on the main screen.
 public struct OBCSegmentedControl: View {
     @Binding var selection: Int
     let labels: [String]
@@ -33,9 +31,9 @@ public struct OBCSegmentedControl: View {
                                     .matchedGeometryEffect(id: "thumb", in: thumb)
                             }
                         }
-                        // The whole segment must hit-test, not just the text
-                        // glyphs — a .plain Button's transparent padding is
-                        // untappable without this.
+                        // The whole segment must hit-test, not just the text glyphs:
+                        // a .plain Button's transparent padding is untappable without
+                        // this.
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)

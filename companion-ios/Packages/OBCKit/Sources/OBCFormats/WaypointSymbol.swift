@@ -1,54 +1,36 @@
 import Foundation
 import OBCDomain
 
-/// The canonical GPX/TCX symbol → ``WaypointCategory`` mapping (`OBCR_Spec.md`
-/// §4.1) — the phone's half of a table the firmware also carries
-/// (`firmware/obc-route/src/symbol.rs`). **Both must stay row-for-row identical**:
-/// a route imported on the phone and the same file dropped on the device over USB
-/// have to categorize the same way, and the shared `specs/vectors/` fixtures pin
-/// exactly that.
-///
-/// A GPX `<wpt>` names its icon in `<sym>` (Garmin's symbol names, which most
-/// planners copy) or `<type>` (RideWithGPS' and Komoot's POI class); a TCX course
-/// point uses `PointType`. None of them is a registry, so the vocabularies below
-/// are a **curation** from real exports, and two rules keep it safe:
-///
-/// - **Never drop a waypoint.** An unmapped symbol yields `nil` (generic) and the
-///   waypoint imports, stores, and renders like any other.
-/// - **Only the six.** Symbols with no honest home among the map's categories stay
-///   generic rather than being forced into the nearest one — "Restroom", "Parking",
-///   "Ferry", "Hospital", "First Aid", "Viewpoint" and "Summit" are deliberately
-///   absent.
+/// Maps GPX and TCX symbol names to ``WaypointCategory``. The firmware carries the
+/// same table (`firmware/obc-route/src/symbol.rs`) and both must stay row-for-row
+/// identical: one file must categorize the same way over USB and through the phone.
+/// The vocabularies are curated from real exports, not a registry. An unmapped symbol
+/// yields `nil` and the waypoint still imports as generic. A symbol with no honest
+/// home among the six categories stays generic instead of taking the nearest one.
 public enum WaypointSymbol {
-    /// The category a source symbol means, or `nil` for **generic** (empty,
-    /// unmapped, or too long to be a symbol at all).
-    ///
-    /// Matching is case- and separator-insensitive: the same class arrives as
-    /// `Drinking Water`, `drinking_water` or `drinking-water` depending on who
-    /// exported it, so both sides normalize to lowercase words joined by single
-    /// spaces before comparing.
+    /// The category a source symbol means, or `nil` for generic.
+    /// Matching is case- and separator-insensitive: `Drinking Water`,
+    /// `drinking_water` and `drinking-water` normalize to the same key.
     public static func category(for symbol: String) -> WaypointCategory? {
         let normalized = normalize(symbol)
         guard !normalized.isEmpty else { return nil }
         return table[normalized]
     }
 
-    /// The symbol a `<wpt>` carries: `<sym>` when it says something, else `<type>`
-    /// (or `PointType`). Two tags for one idea — some exports write both, so the
-    /// Garmin-style `sym` wins rather than competing with `type`.
+    /// The symbol a waypoint carries: `sym` when it says something, else `type` (or
+    /// `PointType`). Some exports write both, and the Garmin-style `sym` wins.
     public static func symbol(sym: String?, type: String?) -> String {
         let sym = (sym ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !sym.isEmpty { return sym }
         return (type ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Longest symbol worth normalizing. Every table key is far shorter; a longer
-    /// value is freeform prose that could not have matched anyway.
+    /// Longest symbol worth normalizing. A longer value is prose that cannot match.
     static let maximumLength = 32
 
-    /// Fold a raw symbol to the table's spelling: ASCII-lowercase, every
-    /// non-alphanumeric byte a word break, runs collapsed to one space, ends
-    /// trimmed. Non-ASCII scalars are word breaks too — no key contains any.
+    /// Fold a raw symbol to the table's spelling: ASCII-lowercase, non-alphanumeric
+    /// bytes are word breaks, runs collapse to one space. Non-ASCII scalars are word
+    /// breaks too; no key contains one.
     static func normalize(_ symbol: String) -> String {
         var out = ""
         var pendingSpace = false
@@ -65,10 +47,8 @@ public enum WaypointSymbol {
         return out
     }
 
-    /// The curated vocabularies, in the spec's order. Sources: **G** = Garmin
-    /// BaseCamp symbol names, **R** = RideWithGPS POI types, **K** = Komoot
-    /// waypoint types, **O** = OSM-derived tags (what several planners emit
-    /// verbatim when a POI came from OSM).
+    /// The curated vocabularies. Source tags: G = Garmin BaseCamp, R = RideWithGPS,
+    /// K = Komoot, O = OSM tags that several planners emit verbatim.
     static let vocabularies: [(category: WaypointCategory, symbols: [String])] = [
         (.water, [
             "water",              // R, K
@@ -110,9 +90,8 @@ public enum WaypointSymbol {
             "wilderness hut",  // O
             "refuge",          // K
         ]),
-        // The six have no separate "food" class, and a rider filtering for
-        // supplies wants the bakery *and* the café in one list — so eating and
-        // shopping share Resupply.
+        // There is no separate food class, and a rider looking for supplies wants the
+        // bakery and the cafe in one list, so eating and shopping share Resupply.
         (.resupply, [
             "resupply",
             "convenience store",  // G, R
@@ -138,10 +117,8 @@ public enum WaypointSymbol {
             "gas station",        // R — a filling station is a resupply stop on a long day
             "fuel",               // O
         ]),
-        // Strictly the pharmacy counter. "Hospital" / "First Aid" / "Medical
-        // Facility" stay generic: a rider filtering for a pharmacy is looking to
-        // buy something, and a hospital row under that icon would mislead in both
-        // directions.
+        // Strictly the pharmacy counter. Hospital and First Aid stay generic: a
+        // hospital row under this icon would mislead in both directions.
         (.pharmacy, [
             "pharmacy",   // R, O
             "chemist",    // O
@@ -160,9 +137,8 @@ public enum WaypointSymbol {
         ]),
     ]
 
-    /// The vocabularies flattened for lookup — built once, keys already normalized
-    /// (a test asserts they are, or a row would be unreachable and the spec table
-    /// would lie).
+    /// The vocabularies flattened for lookup. A test asserts every key is already
+    /// normalized; an un-normalized row would be unreachable.
     private static let table: [String: WaypointCategory] = {
         var table: [String: WaypointCategory] = [:]
         for entry in vocabularies {

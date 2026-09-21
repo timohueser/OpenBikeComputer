@@ -1,20 +1,18 @@
 import SwiftUI
 import OBCDomain
 
-/// The top-bar **sync button**'s three states (design "SYNC" frame): idle
-/// (download arrow), syncing (amber spinner — pair with a "3 of 5 rides" line),
-/// done (forest check for ~2s, then back to idle — the *consumer* owns that
-/// timing).
+/// The top-bar sync button's three states. `syncing` pairs with a "3 of 5 rides"
+/// line; `done` shows a check until the consumer sets it back to idle, and that
+/// timing is the consumer's.
 public enum OBCSyncButtonState: Equatable, Sendable {
     case idle
     case syncing
     case done
 }
 
-/// **Device Top Bar** (§9, NEW) — name + battery + sync + settings gear. The
-/// only place connection lives: when the link is down the dot loses its glow,
-/// the name and battery dim, and sync disables (S4 "degrade, don't block").
-/// The gear is the single route into Settings (§2).
+/// Name, battery, sync and settings gear. The only place connection shows: when the
+/// link is down the dot loses its glow, the name and battery dim, and sync disables.
+/// The gear is the single route into Settings.
 public struct DeviceTopBar: View {
     let deviceName: String
     let connection: ConnectionState
@@ -58,8 +56,8 @@ public struct DeviceTopBar: View {
                     .foregroundStyle(isLinked ? OBCTheme.ink : OBCTheme.inkFaint)
                     .lineLimit(1)
             }
-            // No explicit identifier here: an id would shadow the label-keyed
-            // lookup tests use (`staticTexts["Trailhead"]`).
+            // No explicit identifier here: an id would shadow the label-keyed lookup
+            // the tests use (`staticTexts["Trailhead"]`).
             .accessibilityElement(children: .combine)
 
             Spacer(minLength: 0)
@@ -116,7 +114,6 @@ public struct DeviceTopBar: View {
     }
 }
 
-/// The 24×12 battery glyph + mono percent from the design top bar.
 public struct OBCBatteryIndicator: View {
     let percent: Int?
 
@@ -156,8 +153,8 @@ public struct OBCBatteryIndicator: View {
     }
 }
 
-/// The 38pt circular **icon button** in the device cluster (`.icon-btn`);
-/// 34pt `compact` for large-title trailing actions (`.lg-btn`).
+/// The 38pt circular icon button in the device cluster. `compact` is the 34pt
+/// variant for large-title trailing actions.
 public struct OBCIconButton<Label: View>: View {
     var compact = false
     var disabled = false
@@ -191,8 +188,7 @@ public struct OBCIconButton<Label: View>: View {
     }
 }
 
-/// The design's 20pt ring spinner (`.spinner`) — a stroked arc rotating at
-/// 0.8s/turn, colored track + bright cap.
+/// A 20pt ring spinner: a stroked arc rotating once per 0.8 s.
 public struct OBCSpinner: View {
     var color: Color = OBCTheme.tint
 

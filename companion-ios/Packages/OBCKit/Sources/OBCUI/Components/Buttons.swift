@@ -6,15 +6,15 @@ public struct OBCButtonStyle: ButtonStyle {
         case primary
         /// Transparent, forest label, 1.5pt forest-tinted border.
         case ghost
-        /// Coral fill, white label (the pairing CTA).
+        /// Coral fill, white label, for the pairing call to action.
         case warm
-        /// Transparent, warning-red label — always confirmed via sheet.
+        /// Transparent with a warning-red label. Always confirmed through a sheet.
         case destructive
     }
 
     let kind: Kind
-    /// `.btn` is `width:100%` in the design; pass `false` for inline buttons
-    /// (the empty state's sized-to-fit CTA).
+    /// Buttons are full width by default; pass `false` for an inline, sized-to-fit
+    /// button.
     var fullWidth = true
 
     @Environment(\.isEnabled) private var isEnabled

@@ -1,30 +1,23 @@
 import Foundation
 import OBCDomain
 
-/// A waypoint as a route file carries it — named and positioned, but with no
-/// ride-order context yet. Each decoder collects these, then `WaypointPlacement`
-/// turns them into the ordered `Waypoint`s W1 renders.
+/// A waypoint as a route file carries it: named and positioned, with no ride order.
+/// ``WaypointPlacement`` turns these into the ordered `Waypoint`s the app renders.
 struct RawWaypoint {
     var name: String
     var note: String?
     let coordinate: Coordinate
-    /// The icon the exporter wrote — GPX `<sym>`/`<type>`, TCX `PointType` — kept
-    /// verbatim; ``WaypointSymbol`` maps it onto a category during placement.
+    /// The icon the exporter wrote, kept verbatim; ``WaypointSymbol`` maps it to a
+    /// category during placement.
     var symbol: String = ""
 }
 
-/// Shared by every `RouteFileDecoder`: order free-standing waypoints along the
-/// track via nearest-track-point projection → cumulative distance, then sort +
-/// re-index in ride order. (GPX carries waypoints file-level and unordered; TCX
-/// course points are usually ordered already — projecting both keeps
-/// `distanceAlongMeters` consistent across formats.)
-///
-/// The same projection fixes the waypoint's **signed lateral offset**: its
-/// magnitude is the distance to the track point that won the placement, its sign
-/// which side of the direction of travel it fell on (`OBCR_Spec.md` §4). The
-/// firmware's converter derives both the same way from the same nearest-point
-/// rule, so a GPX imported here and the same file dropped on the device over USB
-/// place — and categorize — identically.
+/// Orders free-standing waypoints along the track: nearest track point, then
+/// cumulative distance, then sort and re-index in ride order. GPX carries waypoints
+/// file-level and unordered, so projecting both formats keeps `distanceAlongMeters`
+/// consistent. The same projection gives the signed lateral offset. The firmware
+/// converter uses the same nearest-point rule, so a file imported here and the same
+/// file dropped on the device over USB place and categorize identically.
 enum WaypointPlacement {
     static func place(_ raw: [RawWaypoint], along points: [RoutePoint]) -> [Waypoint] {
         guard !raw.isEmpty, points.count > 1 else { return [] }
@@ -51,11 +44,9 @@ enum WaypointPlacement {
         }
 
         return placed
-            // NaN-safe order (#304): a non-finite `along` (from a non-finite
-            // route coordinate poisoning the cumulative distance) would violate
-            // `sorted`'s strict-weak-ordering precondition and *trap*. Import
-            // rejects such coordinates upstream now, but this keeps any
-            // non-import caller from crashing — non-finite sorts to the end.
+            // A non-finite `along` would break `sorted`'s strict-weak-ordering
+            // precondition and trap. Import rejects such coordinates, but this keeps
+            // any other caller safe: non-finite sorts to the end.
             .sorted { lhs, rhs in
                 guard lhs.along.isFinite else { return false }
                 guard rhs.along.isFinite else { return true }
@@ -76,15 +67,9 @@ enum WaypointPlacement {
     }
 
     /// `magnitude` metres, signed by the side of travel the waypoint fell on:
-    /// **positive = right**, negative = left, matching `OBCR_Spec.md` §4.
-    ///
-    /// The direction of travel at the winning point `index` is its **incoming**
-    /// segment; the first point has none, so it borrows its outgoing one (the
-    /// firmware converter resolves that case the same way, one point later in its
-    /// single streaming pass). A waypoint exactly on the line of travel — cross
-    /// product zero, including a degenerate repeated point — takes the positive
-    /// sign; at the magnitudes where a side is drawn at all, that does not occur
-    /// in practice.
+    /// positive is right. The direction of travel at the winning point is its incoming
+    /// segment; the first point has none, so it borrows its outgoing one. A waypoint
+    /// on the line of travel takes the positive sign.
     private static func signedOffset(
         of waypoint: Coordinate, at index: Int, magnitude: Double, along points: [RoutePoint]
     ) -> Double {
@@ -95,15 +80,14 @@ enum WaypointPlacement {
             : (here, points[1].coordinate)
         let (dx, dy) = localMeters(from: from, to: to)
         let (ex, ey) = localMeters(from: here, to: waypoint)
-        // `cross > 0` ⇒ the waypoint lies left of travel; the stored sign is
-        // positive-is-right, so the stored value is its negation.
+        // `cross > 0` means the waypoint is left of travel, and the stored sign is
+        // positive-is-right, so the stored value is the negation.
         let cross = dx * ey - dy * ex
         return cross > 0 ? -magnitude : magnitude
     }
 
-    /// `from → to` as local-equirectangular metres `(east, north)` around `from`'s
-    /// latitude — enough for a cross product's sign over a route's short segments,
-    /// and the same projection the firmware measures with.
+    /// `from` to `to` as local-equirectangular metres `(east, north)`. Enough for a
+    /// cross product's sign, and the projection the firmware measures with.
     private static func localMeters(from: Coordinate, to: Coordinate) -> (Double, Double) {
         let metersPerDegree = 111_320.0
         let cosLat = Foundation.cos(from.latitude * .pi / 180)

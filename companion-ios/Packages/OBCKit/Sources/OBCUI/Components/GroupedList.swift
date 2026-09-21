@@ -46,7 +46,7 @@ public struct OBCListRow<Trailing: View>: View {
     let icon: String?
     let iconColor: Color
     let label: String
-    /// Overrides the label's ink — the warning-red "Forget device" row (G/H2).
+    /// Overrides the label's ink, for the warning-red "Forget device" row.
     let labelColor: Color?
     let value: String?
     var showsChevron: Bool
@@ -126,8 +126,8 @@ public struct OBCListRow<Trailing: View>: View {
 }
 
 public extension OBCListRow where Trailing == EmptyView {
-    /// Row without a custom trailing view — lets `action` be the trailing
-    /// closure at call sites without closure-matching ambiguity.
+    /// Row without a custom trailing view. It lets `action` be the trailing closure at
+    /// call sites without closure-matching ambiguity.
     init(
         icon: String? = nil,
         iconColor: Color = OBCTheme.forest,
@@ -156,9 +156,8 @@ public extension OBCListRow where Trailing == EmptyView {
     }
 }
 
-/// The 28pt tinted icon tile (7pt radius, white glyph) leading a settings row.
-/// `glyphColor` covers the design's neutral tiles (parchment-3 with an
-/// ink-soft glyph — white would vanish).
+/// The tinted icon tile leading a settings row. `glyphColor` covers the neutral tiles,
+/// where a white glyph would vanish.
 public struct OBCIconTile: View {
     let systemImage: String
     let color: Color
@@ -180,7 +179,7 @@ public struct OBCIconTile: View {
     }
 }
 
-/// The amber-outline "COMING SOON" badge (`.soon`).
+/// The amber-outline "COMING SOON" badge.
 public struct OBCSoonBadge: View {
     let text: String
 

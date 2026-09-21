@@ -1,8 +1,7 @@
 import SwiftUI
 
-// The D-series pairing screens (design §4). Dumb views: exact design copy +
-// callbacks, no transport — `LaunchFlowView` binds them to `LaunchFlowModel`.
-// Copy is finalized in the design; match it exactly (issue #241).
+// The pairing screens. Dumb views: copy and callbacks, no transport;
+// `LaunchFlowView` binds them to `LaunchFlowModel`.
 
 /// Shared page shape: centered content, bottom-pinned actions, parchment base.
 struct LaunchScreenScaffold<Content: View, Actions: View>: View {
@@ -21,7 +20,7 @@ struct LaunchScreenScaffold<Content: View, Actions: View>: View {
     }
 }
 
-/// D1 — the pairing prompt: two short steps, then one clear action.
+/// The pairing prompt: two short steps, then one clear action.
 struct PairIntroView: View {
     let onStart: () -> Void
 
@@ -71,7 +70,7 @@ struct PairIntroView: View {
     }
 }
 
-/// D2 — scanning: pulsing rings; the found-device row slides in.
+/// Scanning: pulsing rings, and the found-device row slides in.
 struct PairScanningView: View {
     let discovered: LaunchFlowModel.DiscoveredDevice?
     let onTapDevice: () -> Void
@@ -148,9 +147,8 @@ struct PairScanningView: View {
     }
 }
 
-/// D3 — the backdrop while pairing completes. On the real path the iOS system
-/// pairing alert sits over this (system blue — intentionally not ours, see
-/// `OBCSystemPairing`); the app draws only the quiet stage behind it.
+/// The backdrop while pairing completes. On the real path the iOS system pairing
+/// alert sits over this; the app draws only the quiet stage behind it.
 struct PairingBackdropView: View {
     var body: some View {
         LaunchScreenScaffold {
@@ -167,7 +165,7 @@ struct PairingBackdropView: View {
     }
 }
 
-/// D4 — paired: confirm, name shown, one way forward.
+/// Paired: confirm, name shown, one way forward.
 struct PairedView: View {
     let deviceName: String
     let onContinue: () -> Void
@@ -208,7 +206,7 @@ struct PairedView: View {
     }
 }
 
-/// D5 — timeout / failure: not alarming. Reason + fixes + a clear retry.
+/// Timeout or failure: reason, fixes, and a clear retry.
 struct PairFailedView: View {
     let failure: LaunchFlowModel.PairingFailure
     let onRetry: () -> Void
@@ -243,10 +241,9 @@ struct PairFailedView: View {
                     .padding(.bottom, failure == .timeout ? 20 : 0)
                     .accessibilityIdentifier("pair.failedReason")
 
-                // The scan-recovery hints only make sense for a timeout; the
-                // `.rejected` combined copy carries its own recovery inline
-                // (retry the passkey / Forget phone on the device), so no hint
-                // rows there — no dead rows (#461).
+                // The scan-recovery hints only make sense for a timeout. The
+                // `.rejected` copy carries its own recovery inline, so no hint rows
+                // there and no dead rows.
                 if failure == .timeout {
                     VStack(spacing: 10) {
                         checkItem("The device is showing **“pairing”** on its screen.")

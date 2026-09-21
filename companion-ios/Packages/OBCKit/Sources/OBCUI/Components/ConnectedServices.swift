@@ -3,9 +3,9 @@ import SwiftUI
 /// One connected service's row state in the sync block.
 public struct OBCServiceStatus: Identifiable {
     public enum SyncState {
-        /// Forest check + "Uploaded on import".
+        /// A forest check and an "Uploaded" line.
         case uploaded(String)
-        /// Faint line + a per-ride ghost Upload button.
+        /// A faint line and a per-ride ghost Upload button.
         case notUploaded(String)
     }
 
@@ -24,11 +24,9 @@ public struct OBCServiceStatus: Identifiable {
     }
 }
 
-/// **Connected-Services Sync Block** (§9, NEW) — per-service rows (Strava,
-/// Komoot) with a synced-state line and a per-ride **Upload** when auto-sync is
-/// off or a push failed (E3). **Shipped coming-soon** — the seam is designed
-/// now (`comingSoon: true` badges the header); the Settings side pairs it with
-/// an *auto-sync on import* toggle.
+/// Per-service rows with a synced-state line, and a per-ride Upload when auto-sync is
+/// off or a push failed. Shipped coming-soon: the seam is designed now, and the
+/// Settings side pairs it with an auto-sync toggle.
 public struct OBCConnectedServicesBlock: View {
     let services: [OBCServiceStatus]
     var comingSoon: Bool

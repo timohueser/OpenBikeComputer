@@ -1,13 +1,11 @@
 import Foundation
 import OBCDomain
 
-/// Garmin TCX → `ImportedRoute` (the B6 design delta: TCX is a hard
-/// requirement, not GPX-only). Reads `<Trackpoint>` geometry (position +
-/// `<AltitudeMeters>`) from any `<Track>` — a `<Course>`'s or, as a fallback,
-/// an `<Activity>`'s, so a shared workout file still imports as a route —
-/// plus the course `<Name>`, `<CoursePoint>` waypoints, and the `<Author>`
-/// name for the E1 banner. Time and sensor data are ignored — a planned
-/// route has none.
+/// Garmin TCX to `ImportedRoute`. Reads `<Trackpoint>` geometry from a `<Course>`'s
+/// `<Track>`, or from an `<Activity>`'s as a fallback, so a shared workout file still
+/// imports as a route. It also reads the course `<Name>`, the `<CoursePoint>`
+/// waypoints and the `<Author>`. Time and sensor data are ignored: a planned route
+/// has none.
 public struct TCXRouteDecoder: RouteFileDecoder {
     public var fileExtensions: Set<String> { ["tcx"] }
 
@@ -21,9 +19,8 @@ public struct TCXRouteDecoder: RouteFileDecoder {
             let line = parser.parserError.map { " (\($0.localizedDescription))" } ?? ""
             throw FormatError.malformed(reason: "not valid XML\(line)")
         }
-        // A present-but-invalid coordinate (non-finite or out of WGS-84 range)
-        // is a hard reject, not a silent skip: it would poison distance math
-        // (NaN) and the waypoint sort (#304).
+        // A present but invalid coordinate is a hard reject, not a silent skip: it
+        // would poison the distance math and the waypoint sort with NaN.
         guard !collector.malformed else {
             throw FormatError.malformed(reason: "coordinate is not finite or out of range")
         }
@@ -47,11 +44,11 @@ final class TCXCollector: NSObject, XMLParserDelegate {
     private(set) var courseName: String?
     private(set) var points: [RoutePoint] = []
     private(set) var rawWaypoints: [RawWaypoint] = []
-    /// Set when a `<Trackpoint>`/`<CoursePoint>` carried a parseable but invalid
-    /// position — the decoder rejects the whole file (#304).
+    /// Set when a point carried a parseable but invalid position; the decoder then
+    /// rejects the whole file.
     private(set) var malformed = false
 
-    /// Whose `<Position>`/`<Name>` we're inside — TCX nests both under
+    /// Whose `<Position>` or `<Name>` we are inside: TCX nests both under
     /// `<Trackpoint>` and `<CoursePoint>`, so the open container disambiguates.
     private enum Container { case trackpoint, coursePoint }
 
@@ -102,12 +99,11 @@ final class TCXCollector: NSObject, XMLParserDelegate {
         case "LongitudeDegrees" where path.last == "Position":
             pendingLongitude = Double(value)
         case "AltitudeMeters" where container == .trackpoint:
-            // A non-finite <AltitudeMeters> is dropped to nil (no elevation), not
-            // stored — it would poison ascent math (#304).
+            // A non-finite altitude is dropped to nil; it would poison ascent math.
             pendingElevation = Double(value).flatMap { $0.isFinite ? $0 : nil }
         case "Name":
             switch path.last {
-            // First course's name wins — a multi-course file imports as one route.
+            // The first course's name wins: a multi-course file imports as one route.
             case "Course": if courseName == nil, !value.isEmpty { courseName = value }
             case "CoursePoint": pendingName = value
             case "Author": author = value.isEmpty ? nil : value
@@ -124,13 +120,13 @@ final class TCXCollector: NSObject, XMLParserDelegate {
             container = nil
         case "CoursePoint":
             if let coordinate = pendingCoordinate() {
-                // A course point's Name is schema-capped at 10 chars, so files
+                // A course point's Name is schema-capped at 10 characters, so files
                 // often lean on PointType ("Left", "Water", "Summit") instead.
                 let name = pendingName?.isEmpty == false ? pendingName!
                     : (pendingPointType?.isEmpty == false ? pendingPointType! : "Waypoint")
-                // `PointType` is also the course point's *symbol* ("Water", "Food",
-                // "Left"): the same vocabulary GPX writes in `<sym>`, so it maps
-                // through the same table — even when it doubled as the name above.
+                // `PointType` is also the symbol, the same vocabulary GPX writes in
+                // `<sym>`, so it maps through the same table even when it doubled as
+                // the name above.
                 rawWaypoints.append(RawWaypoint(
                     name: name, note: pendingNotes, coordinate: coordinate,
                     symbol: WaypointSymbol.symbol(sym: pendingPointType, type: nil)
@@ -143,9 +139,8 @@ final class TCXCollector: NSObject, XMLParserDelegate {
         text = ""
     }
 
-    /// A missing/unparseable lat or lon → `nil`, skipping the point as before.
-    /// Present but invalid (non-finite / out of range) → flags `malformed`,
-    /// which rejects the whole file (#304).
+    /// A missing or unparseable lat or lon gives `nil` and the point is skipped.
+    /// Present but invalid flags `malformed`, which rejects the whole file.
     private func pendingCoordinate() -> Coordinate? {
         guard let lat = pendingLatitude, let lon = pendingLongitude else { return nil }
         let coordinate = Coordinate(latitude: lat, longitude: lon)
