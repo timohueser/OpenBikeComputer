@@ -19,6 +19,12 @@ schema = 2
 name = "obc-app"
 triggers = ["specs/vectors/**"]
 
+# The captured planner export is under `fixtures/`, which already selects every unit that declares
+# fixture inputs. Its SwiftPM duplicate is not, and only this suite holds the two identical.
+[[package]]
+name = "obc-route"
+triggers = ["companion-ios/Packages/OBCKit/Sources/OBCMock/Fixtures/sample-import.gpx"]
+
 [[package]]
 name = "obc-formats"
 route = "required"
