@@ -1,23 +1,14 @@
-//! The app-side **armer**'s decision core (S4, #619) — pure and host-tested, like [`engine`].
+//! The app-side armer: the staging scan, the arm sequence, and the trial confirm, as pure logic
+//! over two IO traits. The board crate owns the FAT, SPI and RRAMC plumbing.
 //!
-//! The board crate (`obc-fw-nrf54l`) owns the concrete FAT/SPI/RRAMC plumbing; everything that can
-//! be *wrong* — the staging-scan validation matrix, the arm sequencing (snapshot **before** the
-//! boot-state page write), the generation bump, the first-install no-rollback path, and the trial
-//! confirm — lives here behind two small IO traits so the whole matrix runs on the host with mocks
-//! (`tests/armer.rs`). The mirror of the [`engine`](crate::engine)/`obc-boot` split.
+//! The armer is the trust boundary: [`scan`] verifies the container's Ed25519 signature against a
+//! caller-supplied key before an arm is possible, and rejects unsigned containers. The bootloader
+//! does not verify, because it is flashed once and can never be updated, so the trust root lives in
+//! the half that ships with every image (see [`crate::sig`]).
 //!
-//! Since #997 the armer is also the **trust boundary**: [`scan`] verifies the container's Ed25519
-//! signature (`OBCU_Spec.md` §1.3) against a caller-supplied key before an arm is even possible, and
-//! rejects unsigned/v1 containers outright. The 32 KB bootloader deliberately does not verify — it is
-//! flashed once and can never be updated, so the trust root lives in the half that ships with every
-//! image (see [`crate::sig`]).
-//!
-//! Per `OBCU_Spec.md` §2.3 (normative, pinned in S3): the extent chain a [`StageIo`] resolves
-//! covers the **whole staged file** — the 64-byte OBCU header is part of the chain — while the
-//! [`StagedRef`]'s `len`/`crc32` stay **raw-image** values. [`scan`] validates exactly that shape;
-//! the bootloader's install engine consumes it with the same skip arithmetic.
-//!
-//! [`engine`]: crate::engine
+//! The extent chain a [`StageIo`] resolves covers the whole staged file, header included, while the
+//! [`StagedRef`]'s `len`/`crc32` stay raw-image values (`OBCU_Spec.md`). The install engine
+//! consumes it with the same skip arithmetic.
 
 use crate::crc32::Crc32;
 use crate::engine::IoError;
@@ -25,45 +16,35 @@ use crate::image::{ImageHeader, HEADER_LEN, MAX_IMAGE_LEN};
 use crate::sig::{PublicKey, Verifier, SIG_LEN, SIG_SCHEME_ED25519};
 use crate::state::{BootState, Extent, LastOutcome, OutcomeKind, StagedRef, MAX_EXTENTS};
 
-/// Why the staging scan rejected `UPDATE.BIN`. Surfaced **verbatim** by S5's UI (and, until then,
-/// by the `dfu-install` debug-link command as text via [`describe`](ScanError::describe)) — so the
-/// variants are user-actionable, not internal.
+/// Why the staging scan rejected `UPDATE.BIN`. The UI shows these verbatim through
+/// [`describe`](ScanError::describe), so the variants are user-actionable, not internal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScanError {
     /// No `UPDATE.BIN` in the card root.
     Missing,
-    /// The file is shorter than its own header claims (`64 + image_len`) — a torn copy.
+    /// The file is shorter than its own header claims: a torn copy.
     Truncated,
-    /// The 64-byte OBCU header didn't decode: bad magic, wrong header version, or a failed
-    /// header CRC — not an update image (or a torn header).
+    /// The OBCU header did not decode: bad magic, wrong version, or a failed header CRC.
     BadHeader,
-    /// The full CRC-32 pass over the image body didn't match the header — a corrupt copy.
+    /// The CRC-32 over the image body did not match the header: a corrupt copy.
     BadCrc,
-    /// The container carries **no signature this firmware can verify** (`OBCU_Spec.md` §1.3): either
-    /// a plain v1/unsigned image, or a `sig_scheme` from some future scheme. Rejected, not merely
-    /// warned about — accepting unsigned containers would make the signature bypassable by simply
-    /// re-wrapping a payload the v1 way.
+    /// The container carries no signature this firmware can verify: an unsigned image, or a future
+    /// scheme. Accepting these would make the signature bypassable by re-wrapping the payload.
     Unsigned,
-    /// The container is signed, the CRC passed, and the **Ed25519 signature did not verify** against
-    /// the key this firmware trusts: a forged or tampered image, a re-labelled version/length, or an
-    /// image signed by a key that isn't ours.
+    /// The signature does not verify against the key this firmware trusts.
     BadSignature,
-    /// `image_len` exceeds [`MAX_IMAGE_LEN`] (the app slot) — the image can never be flashed.
+    /// `image_len` exceeds [`MAX_IMAGE_LEN`], so the image can never be flashed.
     Oversize,
-    /// The file resolves to more than [`MAX_EXTENTS`] block runs. Carries the true count; the
-    /// fix is deleting + re-copying the file (fresh FAT allocation is contiguous).
-    TooFragmented {
-        /// The file's true extent count.
-        extents: u32,
-    },
-    /// An SD read (or the FAT-chain walk) failed — possibly transient.
+    /// The file resolves to more than [`MAX_EXTENTS`] block runs. The fix is to delete the file and
+    /// copy it again, because a fresh FAT allocation is contiguous.
+    TooFragmented { extents: u32 },
+    /// An SD read or the FAT-chain walk failed; possibly transient.
     Io,
 }
 
 impl ScanError {
-    /// A short, stable, user-facing phrase per variant — what the debug link streams today and
-    /// S5's error card shows tomorrow. (`TooFragmented` drops the count here; callers that can
-    /// format append it.)
+    /// A short user-facing phrase. `TooFragmented` drops the count; callers that can format it
+    /// append it.
     pub fn describe(&self) -> &'static str {
         match self {
             ScanError::Missing => "no UPDATE.BIN in the card root",
@@ -79,53 +60,36 @@ impl ScanError {
     }
 }
 
-/// Why a [`StageIo::stage_extents`] resolve failed — folded into [`ScanError`] by [`scan`].
+/// Why a [`StageIo::stage_extents`] resolve failed; [`scan`] folds it into a [`ScanError`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExtentsError {
-    /// The chain has more runs than the caller's table (or the FAT walker's own cap). Carries
-    /// the true count for the log/UI.
-    TooFragmented {
-        /// The file's true extent count.
-        extents: u32,
-    },
-    /// A raw block read failed, or the volume geometry couldn't be safely described.
+    /// The chain has more runs than the caller's table, or than the FAT walker's own cap.
+    TooFragmented { extents: u32 },
+    /// A raw block read failed, or the volume geometry could not be described safely.
     Io,
 }
 
-/// The staged file, as the scan reads it — implemented over FatFs + the raw card on the board,
-/// and over an in-memory fake in the host tests.
 pub trait StageIo {
     /// `UPDATE.BIN`'s byte length, or `None` when the file is absent from the card root.
     fn stage_len(&mut self) -> Option<u32>;
 
-    /// Read staged-file bytes at `offset` (the scan never reads past
-    /// [`stage_len`](StageIo::stage_len)).
+    /// The scan never reads past [`stage_len`](StageIo::stage_len).
     fn read_stage(&mut self, offset: u32, buf: &mut [u8]) -> Result<(), IoError>;
 
-    /// Resolve the staged file — the **whole file**, header included (spec §2.3) — to absolute
-    /// 512-byte block runs, written into `out` in file order. Returns the run count.
+    /// Resolves the whole file, header included, to absolute 512-byte block runs in file order.
+    /// Returns the run count.
     fn stage_extents(&mut self, out: &mut [Extent; MAX_EXTENTS]) -> Result<usize, ExtentsError>;
 }
 
-/// The staging scan + validation (issue #619 §1, extended by #997): find the file, decode its
-/// header, gate the size, gate the **signature scheme**, run the **full CRC-32 pass** over the image
-/// body *and the Ed25519 verification in the same pass*, then resolve the whole-file extent chain —
-/// returning the [`StagedRef`] the arm records, or the first [`ScanError`] hit. Nothing is written
-/// anywhere; a failed scan costs nothing.
+/// Finds `UPDATE.BIN`, decodes its header, gates the size and the signature scheme, CRCs and
+/// verifies the body in one pass, then resolves the whole-file extent chain into the [`StagedRef`]
+/// the arm records. Nothing is written, so a failed scan costs nothing.
 ///
-/// `chunk` is the caller's staging buffer (any non-empty size; the board passes a small stack buffer
-/// matching `sd.rs`'s 512-byte transfer idiom — no new resident statics). The image is read
-/// **once**: every byte is fed to the CRC and to the signature hash on the way past, so adding
-/// verification cost no extra card traffic.
+/// `chunk` is the caller's staging buffer, of any non-empty size. The image is read once: every
+/// byte feeds the CRC and the signature hash on the way past.
 ///
-/// `key` is the **verify-before-arm seam** (#997): the board passes
-/// [`RELEASE_PUBKEY`](crate::sig::RELEASE_PUBKEY), the host tests pass a test key. It is a plain
-/// parameter on purpose — the trusted key is never swapped behind a `cfg`/feature, so the code path
-/// the tests exercise is exactly the one that ships.
-///
-/// **Policy** (`OBCU_Spec.md` §1.4): an unsigned (v1) container is *rejected*, not merely flagged.
-/// CRC-32 remains the corruption check it always was — it runs first, so a corrupt copy still reads
-/// as "damaged", not "untrusted".
+/// `key` is a plain parameter, never swapped behind a `cfg` or a feature, so the tests exercise the
+/// path that ships. The board passes [`RELEASE_PUBKEY`](crate::sig::RELEASE_PUBKEY).
 pub fn scan(io: &mut impl StageIo, chunk: &mut [u8], key: &PublicKey) -> Result<StagedRef, ScanError> {
     debug_assert!(!chunk.is_empty(), "scan needs a non-empty staging buffer");
     let file_len = io.stage_len().ok_or(ScanError::Missing)?;
@@ -133,8 +97,6 @@ pub fn scan(io: &mut impl StageIo, chunk: &mut [u8], key: &PublicKey) -> Result<
         return Err(ScanError::Truncated);
     }
 
-    // The 64-byte OBCU header, decoded by the shared codec: valid CRC ⇒ `Some`, anything else
-    // (bad magic / version / header CRC) is a typed reject before any bulk read.
     let mut hdr = [0u8; HEADER_LEN];
     io.read_stage(0, &mut hdr).map_err(|_| ScanError::Io)?;
     let header = ImageHeader::decode(&hdr).ok_or(ScanError::BadHeader)?;
@@ -142,24 +104,21 @@ pub fn scan(io: &mut impl StageIo, chunk: &mut [u8], key: &PublicKey) -> Result<
     if header.image_len == 0 || header.image_len > MAX_IMAGE_LEN {
         return Err(ScanError::Oversize);
     }
-    // The signature gate, before any bulk read: only the scheme we verify, at the length it must
-    // be. A v1/unsigned container and a future scheme both land here — this device cannot vouch
-    // for either, and "install it anyway" is precisely the bypass v2 exists to close.
+    // The signature gate, before any bulk read: only the scheme this device verifies, at the
+    // length it must have. An unsigned container and a future scheme both land here.
     if header.sig_scheme != SIG_SCHEME_ED25519 || header.sig_len as usize != SIG_LEN {
         return Err(ScanError::Unsigned);
     }
-    // `container_len` counts the signature trailer, so a file that stops before it is Truncated.
+    // `container_len` counts the signature trailer, so a file that stops before it is truncated.
     if (file_len as u64) < header.container_len() {
         return Err(ScanError::Truncated);
     }
 
-    // The trailer, read before the streaming pass so a malformed signature or key costs nothing.
+    // Read the trailer before the streaming pass, so a malformed signature or key costs nothing.
     let mut signature = [0u8; SIG_LEN];
     io.read_stage(header.sig_offset() as u32, &mut signature).map_err(|_| ScanError::Io)?;
     let mut verifier = Verifier::new(key, &header, &signature).map_err(|_| ScanError::BadSignature)?;
 
-    // One pass over the image body: the CRC-32 (the armer-side half of "verify before erase" —
-    // the bootloader re-CRCs over the raw extents) and the signature hash together.
     let mut crc = Crc32::new();
     let mut done = 0u32;
     while done < header.image_len {
@@ -169,18 +128,12 @@ pub fn scan(io: &mut impl StageIo, chunk: &mut [u8], key: &PublicKey) -> Result<
         verifier.absorb(&chunk[..n]);
         done += n as u32;
     }
-    // Corruption first (it is the likelier failure and the more actionable message), then trust.
+    // Corruption first: it is the likelier failure and the more actionable message.
     if crc.finalize() != header.image_crc32 {
         return Err(ScanError::BadCrc);
     }
     verifier.finish().map_err(|_| ScanError::BadSignature)?;
 
-    // The whole-file extent chain (spec §2.3). The too-fragmented count gate has two real walls: the
-    // fixed-capacity `[Extent; MAX_EXTENTS]` buffer physically caps what `stage_extents` can write
-    // (its contract returns the run count, so a correct impl cannot report `Ok(n > MAX_EXTENTS)`),
-    // and it reports an over-long chain itself via `ExtentsError::TooFragmented`. `StagedRef::new`'s
-    // own `> MAX_EXTENTS` reject then stands as belt-and-braces (it can't fail on len/crc — they come
-    // from the same header).
     let mut extents = [Extent::default(); MAX_EXTENTS];
     let count = match io.stage_extents(&mut extents) {
         Ok(n) => n,
@@ -191,87 +144,70 @@ pub fn scan(io: &mut impl StageIo, chunk: &mut [u8], key: &PublicKey) -> Result<
         .ok_or(ScanError::TooFragmented { extents: count as u32 })
 }
 
-/// What the arm recorded as its rollback — carried in the [`ArmTicket`] so the caller (today the
-/// debug link, from S5 the UI) can warn on the no-rollback paths.
+/// What the arm recorded as its rollback, so the caller can warn on the paths without one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rollback {
     /// The running image was snapshotted to `ROLLBACK.BIN`; an unconfirmed trial restores it.
     Snapshot,
-    /// First-ever install (dev-flashed device, `installed: None`): no snapshot exists, so an
-    /// unconfirmed trial is accepted rather than rolled back (spec §2.4).
+    /// First install: no snapshot exists, so an unconfirmed trial is accepted, not rolled back.
     FirstInstall,
-    /// The boot-state page named an installed image, but the app slot no longer holds those
-    /// bytes (an SWD reflash since the last install) — snapshotting would record a rollback the
-    /// bootloader could never verify, so the arm proceeds without one, like a first install.
+    /// The boot-state page named an installed image, but the app slot no longer holds those bytes,
+    /// after an SWD reflash. A snapshot would record a rollback the bootloader could never verify,
+    /// so the arm proceeds without one.
     RunningMismatch,
 }
 
-/// A successful arm: what was written to the boot-state page (minus the bulky extents).
+/// A successful arm: what was written to the boot-state page, without the bulky extents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArmTicket {
-    /// The `Armed` record's generation — the old page's generation + 1.
     pub generation: u32,
-    /// Which rollback story the record carries.
     pub rollback: Rollback,
 }
 
-/// Why an arm failed. Scan errors never reach here — [`arm`] takes an already-validated
-/// [`StagedRef`].
+/// Why an arm failed. Scan errors never reach here: [`arm`] takes a validated [`StagedRef`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArmError {
-    /// The rollback snapshot couldn't be written/resolved. The arm is **aborted** (never
-    /// silently armed without the rollback the state implied) — the boot-state page is untouched.
+    /// The rollback snapshot could not be written or resolved. The arm aborts with the boot-state
+    /// page untouched, rather than arm without the rollback the state implied.
     Snapshot(ScanError),
-    /// The storage-blob stage (`OBCU_Spec.md` §3, #1158) couldn't be written/verified. The arm is
-    /// **aborted** — an `Armed` page whose carve the bootloader can't validate would only ever be
-    /// abandoned next boot, so failing here (where the app can show a card) is strictly better.
+    /// The storage-blob stage could not be written or verified. The arm aborts: an `Armed` page
+    /// whose carve the bootloader cannot validate would only be abandoned on the next boot.
     BlobStage,
-    /// The boot-state page write failed. Nothing was armed (a torn page decodes to `Idle`).
+    /// The boot-state page write failed. Nothing was armed; a torn page decodes to `Idle`.
     StateWrite,
 }
 
-/// The board-side effects [`arm`] sequences — a rollback snapshot, the storage-blob stage, and
-/// the page write.
+/// The board-side effects [`arm`] sequences.
 pub trait ArmIo {
-    /// Snapshot the running image (RRAM, `installed.image_len` bytes at the app slot base) to
-    /// `/ROLLBACK.BIN` as a full OBCU container and extent-resolve it (whole-file chain, spec
-    /// §2.3). `Ok(None)` = the slot's bytes no longer CRC-match `installed` (an SWD reflash) —
-    /// arm without a rollback rather than record one the bootloader would reject.
+    /// Writes the running image to `/ROLLBACK.BIN` as an OBCU container and resolves its extents.
+    /// `Ok(None)` means the slot's bytes no longer CRC-match `installed`, so the arm proceeds
+    /// without a rollback rather than record one the bootloader would reject.
     ///
-    /// The snapshot is written as an **unsigned** container ([`ImageHeader::unsigned`]): the device
-    /// cannot re-create the original signature from slot bytes alone, and nothing verifies one —
-    /// the snapshot never passes through [`scan`], and the bootloader's rollback path checks it by
-    /// CRC. Marking it signed would be a lie in a file `obc-mkimage inspect` reads.
+    /// The snapshot is an unsigned container: the device cannot re-create the original signature
+    /// from slot bytes, and nothing verifies one, because the bootloader's rollback path checks the
+    /// snapshot by CRC.
     fn snapshot(&mut self, installed: &ImageHeader) -> Result<Option<StagedRef>, ScanError>;
 
-    /// Stage the storage-bringup blob — the sEMMC soft-peripheral image the bootloader boots the
-    /// card through — into the `SEMMC_STAGE` RRAM carve (`OBCU_Spec.md` §3, #1158): blob body
-    /// first, the CRC-framed header line **last**, and verify the readback. Idempotent (the board
-    /// skips the write when the carve already stages these exact bytes), and inert without an
-    /// `Armed` record pointing past it — like the snapshot file.
+    /// Stages the sEMMC soft-peripheral image the bootloader boots the card through into the
+    /// `SEMMC_STAGE` RRAM carve: blob body first, the CRC-framed header line last, then a readback.
+    /// It is idempotent, and inert without an `Armed` record that points at it.
     fn stage_boot_blob(&mut self) -> Result<(), IoError>;
 
-    /// Persist `state` to the BOOT_STATE page (encode + 16-byte-line RRAM writes).
     fn write_state(&mut self, state: &BootState) -> Result<(), IoError>;
 }
 
-/// The arm sequence (issue #619 §3, extended by #1158), order **normative**: snapshot the
-/// rollback *first*, then stage the storage blob, then compose and write the `Armed` page. A
-/// power cut before the page write = nothing happened (the snapshot file and the staged blob are
-/// both inert without the record pointing at them); after = the install proceeds — and the write
-/// ordering means a valid `Armed` page **implies a valid blob carve**, which is what lets the
-/// bootloader treat an unvalidatable carve as the near-unreachable fault it is. No torn
-/// intermediate exists — the page is one CRC-framed blob.
+/// The arm sequence. The order is normative: snapshot the rollback first, then stage the storage
+/// blob, then write the `Armed` page. A power cut before the page write means nothing happened,
+/// because the snapshot file and the staged blob are both inert without the record that points at
+/// them. The order also means a valid `Armed` page implies a valid blob carve.
 ///
-/// `current` is the decoded boot-state page (read **before** composing — the generation bump is
-/// `current.generation() + 1`). Only `Idle { installed: Some(_) }` yields a snapshot; a fresh
-/// device (`installed: None`) — and, defensively, a non-`Idle` page that should never be live
-/// mid-run — arms with `rollback: None` (the first-install story, spec §2.4).
+/// Only `Idle { installed: Some(_) }` makes a snapshot. A fresh device, and defensively a non-`Idle`
+/// page, arms with `rollback: None`.
 pub fn arm(io: &mut impl ArmIo, current: &BootState, update: StagedRef) -> Result<ArmTicket, ArmError> {
     let installed = match current {
         BootState::Idle { installed, .. } => *installed,
-        // Armed/Trial can't be live mid-run (the bootloader consumes Armed; bring-up confirms
-        // Trial) — stay total: treat like a fresh device rather than guess at a rollback.
+        // Armed and Trial cannot be live mid-run, so treat them like a fresh device rather than
+        // guess at a rollback.
         _ => None,
     };
     let (rollback, kind) = match installed {
@@ -281,23 +217,15 @@ pub fn arm(io: &mut impl ArmIo, current: &BootState, update: StagedRef) -> Resul
         },
         None => (None, Rollback::FirstInstall),
     };
-    // The blob stage sits between the snapshot and the page write: still on the costs-nothing
-    // side of the commit point, so a failed stage aborts with the page untouched.
+    // The blob stage is before the commit point, so a failed stage aborts with the page untouched.
     io.stage_boot_blob().map_err(|_| ArmError::BlobStage)?;
     let generation = current.generation().wrapping_add(1);
     io.write_state(&BootState::Armed { generation, update, rollback }).map_err(|_| ArmError::StateWrite)?;
     Ok(ArmTicket { generation, rollback: kind })
 }
 
-/// The trial confirm (issue #619 §4): a healthy app — first frame presented, SD mounted — turns
-/// `Trial { installed, generation, .. }` into `Idle { installed: Some(installed), last_outcome:
-/// Installed(generation) }`. Anything else (the steady-state `Idle`, or a stale `Armed` that should
-/// be impossible mid-run) confirms nothing. Returns the state to write plus the just-confirmed
-/// image's header (for the S5 toast).
-///
-/// The confirm path surfaces its own success toast and clears the arm marker in the same beat, so
-/// this `Idle`'s recorded outcome is normally only read as history — but recording `Installed` keeps
-/// the page honest if a later boot re-reads it with the marker still present (a torn marker clear).
+/// The trial confirm: a healthy app turns a `Trial` page into an `Idle` that records `Installed`.
+/// Any other state confirms nothing. Returns the state to write and the confirmed image's header.
 pub fn confirm_trial(current: &BootState) -> Option<(BootState, ImageHeader)> {
     match current {
         BootState::Trial { installed, generation, .. } => {
