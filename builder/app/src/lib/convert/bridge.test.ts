@@ -1,23 +1,17 @@
 /**
  * The drift guard between the browser conversion path and the native one.
  *
- * These are not "does the wrapper work" tests. They exist so that a change to `obc-route` — the
- * decimator's tolerance, the OBCR header, the GPX exporter's element order — cannot ship a
- * browser build that quietly disagrees with the device and the CLI. The inputs and the expected
- * outputs are the checked-in `specs/vectors/` fixtures, and `host/obc-vectors/tests/
- * vectors.rs` holds the Rust side to those same bytes.
+ * These exist so that a change to `obc-route` — the decimator's tolerance, the OBCR header, the GPX
+ * exporter's element order — cannot ship a browser build that quietly disagrees with the device and
+ * the CLI. The inputs and the expected outputs are the checked-in `specs/vectors/` fixtures, and the
+ * Rust side is held to those same bytes.
  *
- * **What that proves, precisely.** The route and track fixtures are produced by running the real
- * `gpx_to_obcr` / `track_to_gpx` (the documented exception in `obc-vectors`' module header — a
- * serialization with no spec to rebuild from). So fixture and wasm output share a source, and
- * these tests prove the **wasm build agrees with the native build of the same code** — a drift
- * and miscompilation guard across the bindgen/adapter seam. They are not an independent
- * correctness check: a bug in `gpx_to_obcr` would move both together. That is the right scope
- * here — this PR adds a second *implementation host*, not a second implementation — and the
- * converter's own correctness is tested where it lives, in `obc-route`'s suite.
+ * Fixture and wasm output share a source, so these prove the **wasm build agrees with the native
+ * build of the same code**. They are not an independent correctness check: a bug in `gpx_to_obcr`
+ * would move both together, and the converter's own correctness is tested in `obc-route`'s suite.
  *
  * Regenerate the fixtures with `cd firmware && cargo test -p obc-vectors regenerate -- --ignored`
- * after a *deliberate* change, and expect the iOS suite to want the same look.
+ * after a *deliberate* change.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -28,10 +22,9 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { ConvertError, gpxToObcr, initConvert, routeTrack, routeWaypoints, trackToGpx } from "./bridge";
 
 /**
- * The OBCR header's name field, and the GPX `<trk><name>`, are inputs to the conversion — so they
- * have to match the ones the fixtures were built with (`obc_vectors::ROUTE_NAME` / `TRACK_NAME`).
- * They are restated rather than imported because there is no path from Rust consts into Node; that
- * is safe precisely because they are load-bearing: get one wrong and the byte comparison fails.
+ * The OBCR header's name field, and the GPX `<trk><name>`, are inputs to the conversion, so they have
+ * to match the ones the fixtures were built with. They are restated rather than imported because
+ * there is no path from Rust consts into Node; that is safe precisely because they are load-bearing.
  */
 const ROUTE_NAME = "Vector Loop";
 const TRACK_NAME = "Schauinsland & back";
@@ -52,7 +45,7 @@ const text = (path: string): string => readFileSync(join(ROOT, path), "utf8");
 
 /**
  * Fail on the first differing byte with its index and both values, instead of dumping two
- * multi-hundred-byte arrays. A byte-identity failure is usually one field, and the index says which.
+ * multi-hundred-byte arrays.
  */
 function expectSameBytes(actual: Uint8Array, expected: Uint8Array, what: string): void {
     const n = Math.min(actual.length, expected.length);
@@ -68,9 +61,8 @@ function expectSameBytes(actual: Uint8Array, expected: Uint8Array, what: string)
 }
 
 beforeAll(async () => {
-    // `--target web` glue resolves the module relative to itself and fetches it; Node cannot fetch
-    // a `file:` URL, so hand it the bytes. A missing artifact is a setup error, never a skip — a
-    // silently-skipped drift guard is worse than no drift guard.
+    // The `--target web` glue fetches the module relative to itself and Node cannot fetch a `file:`
+    // URL, so hand it the bytes. A missing artifact is a setup error, never a skip.
     const wasm = join(dirname(fileURLToPath(import.meta.url)), "pkg", "obc_web_convert_bg.wasm");
     if (!existsSync(wasm)) {
         throw new Error(

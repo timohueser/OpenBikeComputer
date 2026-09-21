@@ -49,8 +49,8 @@ describe("parseCellIndex", () => {
     });
 
     it.each<[string, (d: LooseDoc) => void]>([
-        // §6.3: assembly copies chunk bytes between files, which is only
-        // meaningful within one schema revision.
+        // Assembly copies chunk bytes between files, which is only meaningful
+        // within one schema revision.
         ["a schema revision the root does not carry", (d) => (d.schema_revision = 6)],
         ["another envelope version", (d) => (d.schema_version = 1)],
         ["a band the root did not pin", (d) => (d.band = "mid")],

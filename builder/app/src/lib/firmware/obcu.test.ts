@@ -2,10 +2,10 @@
  * The `UPDATE.BIN` reader, pinned to `specs/vectors/update-container-v2.bin` (the signed container
  * the device actually installs) and to `update-container-v1.bin` for the unsigned-reject case.
  *
- * Those fixtures are the same ones `cargo test -p obc-vectors` and the iOS suite read, so this is the
- * fourth implementation held to one set of bytes rather than a fixture captured from this code.
- * The rejection cases matter as much as the happy one: everything this reader refuses is a file
- * that would otherwise be pushed down a cable for a minute and then refused by the device.
+ * Those fixtures are the same ones the Rust and iOS suites read, so this is the fourth
+ * implementation held to one set of bytes rather than a fixture captured from this code. The
+ * rejection cases matter as much as the happy one: everything this reader refuses is a file that
+ * would otherwise be pushed down a cable for a minute and then refused by the device.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -30,7 +30,7 @@ const CONTAINER = new Uint8Array(
     readFileSync(join(repoRoot(), "specs/vectors", "update-container-v2.bin")),
 );
 
-/** The unsigned (v1) container — a shape the device refuses, so this reader must too (§1.4). */
+/** The unsigned container — a shape the device refuses, so this reader must too. */
 const CONTAINER_V1 = new Uint8Array(
     readFileSync(join(repoRoot(), "specs/vectors", "update-container-v1.bin")),
 );
@@ -78,16 +78,16 @@ describe("readUpdateImage", () => {
     });
 
     it("carries the signature trailer into the container it sends", () => {
-        // The regression that would break every USB update: truncating at `64 + imageLen` drops the
-        // trailer, and the device then refuses the file it received as truncated (§1.4 step 4).
+            // The regression that would break every USB update: truncating at `64 + imageLen` drops
+            // the trailer, and the device then refuses the file it received as truncated.
         const { container } = readUpdateImage(CONTAINER);
         expect(container).toEqual(CONTAINER);
         expect(container.subarray(OBCU_HEADER_LEN + 128)).toEqual(CONTAINER.subarray(OBCU_HEADER_LEN + 128));
     });
 
     it("drops trailing slack rather than sending it", () => {
-        // `OBCU_Spec.md` §1.1/§2.3: bytes past the container are ignored. Announcing them would make
-        // the device store a length that disagrees with the header it just verified.
+            // Bytes past the container are ignored. Announcing them would make the device store a
+            // length that disagrees with the header it just verified.
         const padded = new Uint8Array(CONTAINER.length + 512);
         padded.set(CONTAINER, 0);
         const { container } = readUpdateImage(padded);
@@ -96,8 +96,8 @@ describe("readUpdateImage", () => {
     });
 
     it("refuses an unsigned container before spending the transfer on it", () => {
-        // §1.4: the device installs signed containers only. Learning that here costs a second;
-        // learning it after the upload costs a minute of cable time.
+            // The device installs signed containers only. Learning that here costs a second;
+            // learning it after the upload costs a minute of cable time.
         const e = rejection(CONTAINER_V1);
         expect(e.code).toBe("unsigned");
         expect(e.message).toContain("not signed");
@@ -119,8 +119,8 @@ describe("readUpdateImage", () => {
     });
 
     it("refuses a header version it does not implement", () => {
-        // §1.1: a version change is a hard reject, never a silent migration. The header CRC has to
-        // stay valid for this to test what it says it does, so the check order is what is asserted.
+            // A version change is a hard reject, never a silent migration. The header CRC has to
+            // stay valid for this to test what it says it does, so the check order is asserted.
         expect(rejection(edited(4, 2)).code).toBe("not-obcu");
     });
 

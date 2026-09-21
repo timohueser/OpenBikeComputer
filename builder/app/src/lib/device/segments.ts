@@ -1,24 +1,18 @@
 /**
- * The trip preview's shared distance axis: several stage tracks, concatenated in trip order into
- * the one polyline the chart-room modal already knows how to window, hover and zoom
- * (`elevation.ts`), plus the bookkeeping that keeps each stage addressable on that axis — where
- * it starts, how long its drawn track is, which point indices are its, and where the seams
- * between stages fall (the profile's thin boundary rules).
+ * The trip preview's shared distance axis: several stage tracks, concatenated in trip order into the
+ * one polyline the chart-room modal already knows how to window, hover and zoom, plus the
+ * bookkeeping that keeps each stage addressable on that axis.
  *
- * Pure geometry, like `elevation.ts`: the modal derives everything else (window echo per stage,
- * per-stage profile tint, merged waypoint positions) from this one result.
+ * Pure geometry, like `elevation.ts`: the modal derives everything else from this one result.
  *
  * The axis is `cumulativeDistances` over the **concatenated** points, so the straight-line jump
- * between one stage's end and the next stage's start — usually zero for a tour, where each day
- * starts where the last ended — is part of the axis, exactly as it would be had the stages been
- * one recorded track.
+ * between one stage's end and the next stage's start is part of the axis, exactly as it would be had
+ * the stages been one recorded track.
  *
- * Deliberate tradeoff for a *discontinuous* trip (a real gap between stages): the map marks the
- * jump with a thin dashed connector (the modal draws it from consecutive ranges here), so the
- * hover dot visibly travels a transfer leg — but the elevation profile still draws one straight
- * interpolated ramp across the jump's span. Masking that ramp would mean splitting the profile's
- * SVG path per stage; the seam rules already say where the stages meet, so the ramp stays until a
- * discontinuous trip is something riders actually build.
+ * Deliberate tradeoff for a *discontinuous* trip: the map marks the jump with a thin dashed
+ * connector, so the hover dot visibly travels a transfer leg, but the elevation profile still draws
+ * one straight interpolated ramp across the jump's span. Masking that ramp would mean splitting the
+ * profile's SVG path per stage, and the seam rules already say where the stages meet.
  */
 
 import type { RouteWaypoint } from "../convert/bridge";
@@ -96,11 +90,10 @@ export function concatSegments(segments: ReadonlyArray<readonly ProfilePoint[]>)
 /**
  * A stage waypoint's position on the shared axis: its stored `distAlongM` — measured from the
  * stage's own start on the RAW pre-decimation track, so it can slightly exceed the drawn stage's
- * length — clamped into the stage's drawn span, then offset by everything before the stage. The
- * same clamp the single-route modal applies (`clampedDistM`), per stage.
+ * length — clamped into the stage's drawn span, then offset by everything before the stage.
  *
- * On a degenerate axis (no distance at all) the raw value is passed through, as before: there is
- * no span to clamp into, and the caption should say what was stored rather than 0.
+ * On a degenerate axis the raw value is passed through: there is no span to clamp into, and the
+ * caption should say what was stored rather than 0.
  */
 export function waypointDistanceM(axis: SegmentAxis, segment: number, distAlongM: number): number {
     if (axis.totalM <= 0) return distAlongM;

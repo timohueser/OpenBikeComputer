@@ -1,12 +1,11 @@
 // Lasso cells: the cells a drawn ring overlaps.
 //
-// The assertions worth having are the shape ones — a diagonal ring must select
-// its stair of cells and NOT the bounding box's rectangle, because "better than
-// a box for diagonal shapes" is the whole reason the tool exists — and the
-// containment ones: a cell wholly inside the ring has no edge near it, so it is
-// selected by the even-odd corner test alone, and a ring drawn wholly inside
-// one cell has no boundary crossing either, so it exercises the
-// segment-inside-square half of the overlap test.
+// The assertions worth having are the shape ones — a diagonal ring must select its
+// stair of cells and NOT the bounding box's rectangle, because "better than a box for
+// diagonal shapes" is the whole reason the tool exists — and the containment ones: a
+// cell wholly inside the ring has no edge near it, so it is selected by the even-odd
+// corner test alone, and a ring drawn wholly inside one cell has no boundary crossing
+// either, so it exercises the segment-inside-square half of the overlap test.
 
 import { describe, expect, it } from "vitest";
 import type { LatLon } from "./corridor";

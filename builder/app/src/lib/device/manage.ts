@@ -1,24 +1,20 @@
 /**
  * Renaming routes and editing trips — the mutations the device page offers beyond remove.
  *
- * Neither is a protocol feature, and that is the point: both ride on the one primitive §3.6 already
- * has, **a `PUT` naming an existing object replaces it in one commit**. A rename gets the OBCR,
- * rewrites the 48-byte name field in the payload, and puts the same object back under the same
- * `ObjectId` — so every reference to it survives. A trip edit gets a 56-byte-plus-eight-per-stage
- * object, mutates the stage list, and does the same.
+ * Neither is a protocol feature, and that is the point: both ride on the one primitive the wire
+ * already has, **a `PUT` naming an existing object replaces it in one commit**. A rename gets the
+ * OBCR, rewrites the 48-byte name field in the payload, and puts the same object back under the same
+ * `ObjectId`, so every reference to it survives. A trip edit does the same to its stage list.
  *
- * **Every replace carries the revision it expects** (§3.6), and that is the substance rather than
- * ceremony: the check runs at admission and again immediately before the commit, so an object
- * something else replaced in between fails the compare-and-swap instead of silently clobbering. The
- * caller supplies the entry it listed; a stale one earns `revisionConflict` and the page re-lists.
+ * **Every replace carries the revision it expects**, checked at admission and again immediately
+ * before the commit, so an object something else replaced in between fails the compare-and-swap
+ * instead of silently clobbering. A stale entry earns `revisionConflict` and the page re-lists.
  *
- * A rename writes the name in **two** places, because the two are different fields with different
- * readers: the OBCR header's name is what the device shows while navigating, and §3.6's display name
- * is what a catalog listing shows. Writing only one of them would make the device page and the
- * device disagree about what a route is called.
+ * A rename writes the name in **two** places, because they have different readers: the OBCR header's
+ * name is what the device shows while navigating, and the display name is what a catalog listing
+ * shows. Writing only one would make the device page and the device disagree.
  *
- * Nothing here talks to the store: callers run these inside `dashboard.enqueue` (each call is one or
- * two transfers) and refresh afterwards.
+ * Nothing here talks to the store: callers run these inside `dashboard.enqueue` and refresh after.
  */
 
 import type { FlatStoreClient } from "../usb/client";
@@ -27,14 +23,10 @@ import { decodeTripObject, encodeTripObject, type TripObject } from "../usb/obje
 import { ObjectKind, type CatalogEntry, type PutResponse } from "../usb/protocol";
 import { decodeRouteHeader, ROUTE_NAME_MAX } from "./route";
 
-/** The trip name field's cap — the same 48-byte field a route's name and §3.6's both use. */
+/** The trip name field's cap — the same 48-byte field a route's name and the display name use. */
 export const TRIP_NAME_MAX = 48;
 
-/**
- * The largest route id a trip can name.
- *
- * Trip v2 stores the flat store's complete nonzero `u64` ObjectId.
- */
+/** The largest route id a trip can name: the flat store's complete nonzero `u64` ObjectId. */
 export const MAX_TRIP_STAGE_ID = 0xffff_ffff_ffff_ffffn;
 
 /** A route this trip format cannot name. Its own error, because the fix is not "try again". */
@@ -56,9 +48,8 @@ export function stageId(objectId: bigint): bigint {
 
 /**
  * The OBCR bytes with a new name in the header: length byte at offset 6, the null-padded 48-byte
- * field at 64 (`OBCR_Spec.md` §1 — the offsets `decodeRouteHeader` reads). The old name is zeroed
- * before the new one lands, because the field is *null-padded*, and a shorter name over a longer
- * one would otherwise leave the tail of the old name in the file.
+ * field at 64. The old name is zeroed before the new one lands, because the field is *null-padded*
+ * and a shorter name over a longer one would otherwise leave the tail of the old name in the file.
  */
 export function renameRouteBytes(obcr: Uint8Array, name: string): Uint8Array {
     decodeRouteHeader(obcr); // magic, version, length — refuse to "rename" something else
@@ -108,9 +99,8 @@ export async function createTrip(
  * Edit a trip: get, apply `mutate`, replace at the same id. Returns what was written.
  *
  * The read-modify-write is serialized against this page's other operations by the caller's queue,
- * and against everything else by §3.6's compare-and-swap: the expected revision is the one the
- * caller listed, so a trip that moved underneath this returns `revisionConflict` rather than
- * overwriting the change.
+ * and against everything else by the compare-and-swap: a trip that moved underneath this returns
+ * `revisionConflict` rather than overwriting the change.
  */
 export async function updateTrip(
     client: FlatStoreClient,
@@ -135,8 +125,6 @@ export async function updateTrip(
     );
     return written;
 }
-
-// --- pure stage-list mutators, for `updateTrip` --------------------------------
 
 export function addStage(trip: TripObject, routeId: bigint): TripObject {
     // Adding a stage that is already in the trip is a no-op, not a duplicate: the

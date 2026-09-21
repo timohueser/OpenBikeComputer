@@ -1,10 +1,9 @@
 // The coverage store, over the real example catalog and the real parsers.
 //
-// These are the selection-to-UI adapters #1038 adds on top of the (already
-// tested) v2 arithmetic: part lifecycle and naming, the pending/final story a
-// summary card depends on, the refusals that must arrive as sentences rather
-// than crashes, and — measured, not assumed — the resolver reuse that keeps the
-// corridor slider smooth.
+// These are the selection-to-UI adapters on top of the already-tested arithmetic: part
+// lifecycle and naming, the pending/final story a summary card depends on, the refusals
+// that must arrive as sentences rather than crashes, and — measured, not assumed — the
+// resolver reuse that keeps the corridor slider smooth.
 
 import { describe, expect, it } from "vitest";
 import { CatalogClient } from "../catalog/client";
@@ -193,9 +192,9 @@ describe("box parts", () => {
         });
         store.addBox(degreesToUbox(47.2, 7.35, 47.4, 8.05));
 
-        // The detail band is whole; the mid band is not. The old detail-only
-        // selector answered [] here while `acceptHoles` consulted the ledger's
-        // full count — accepting a hole no square had shown.
+            // The detail band is whole; the mid band is not. A detail-only selector would
+            // answer [] here while `acceptHoles` consulted the ledger's full count —
+            // accepting a hole no square had shown.
         expect(store.partialDetailCells()).toEqual([]);
         expect(store.holeCells()).toEqual(["19/0602/0527"]);
 
@@ -242,10 +241,9 @@ describe("partial-detail hatching (#1041 A9)", () => {
     }
 
     it("a plain region pick hatches nothing: the sentence keeps the count, the map stays quiet", () => {
-        // The review's Freiburg-pick pin, on the example catalog: a curated
-        // region's border cells are partial (extract-edge normality, #1025),
-        // and the region's own cell list has no holes — so the full count is
-        // sentenced but not one square hatches.
+            // A curated region's border cells are partial as extract-edge normality, and the
+            // region's own cell list has no holes — so the full count is sentenced but not
+            // one square hatches.
         const store = makeStore();
         store.indices = partialIndices();
         withSwissList(store);
@@ -352,7 +350,6 @@ describe("refusals arrive as sentences", () => {
         expect(store.ledger).toBeNull();
     });
 });
-
 
 describe("custom skin admission", () => {
     it("keeps the selected saved skin and storage unchanged when an edit has an invalid drawing order", () => {

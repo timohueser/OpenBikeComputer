@@ -1,39 +1,25 @@
 <!--
-  The "chart room" preview (#894 epic, preview redesign of 2026-07-29; the wireframe's Option 1):
-  one near-fullscreen surface for routes, rides and trips — stats as a chip strip in the header,
-  the map filling everything, waypoints floating on it, and a zoomable elevation profile along the
-  bottom whose window the map echoes (the windowed span stays coral, the rest drops to gray-green).
+  The "chart room" preview: one near-fullscreen surface for routes, rides and trips — stats as a
+  chip strip in the header, the map filling everything, waypoints floating on it, and a zoomable
+  elevation profile along the bottom whose window the map echoes.
 
-  A plain overlay, not a `<dialog>` — same WebKitGTK reasoning as `ConfirmDialog.svelte`. The map
-  is a second, short-lived Leaflet instance: created when the modal mounts, `invalidateSize`d on
-  the next frame (the container has no size until layout has run), removed on teardown. Leaflet's
-  CSS is already global (`main.ts`), and this component only ever lives inside the lazily-loaded
-  device/rides chunks, so the static `import L` adds nothing to the entry bundle it wasn't
-  already carrying via the region picker.
+  A plain overlay, not a `<dialog>` — same WebKitGTK reasoning as `ConfirmDialog.svelte`. The map is
+  a second, short-lived Leaflet instance: created when the modal mounts, `invalidateSize`d on the
+  next frame, removed on teardown. This component only ever lives inside the lazily-loaded
+  device/rides chunks, so the static `import L` adds nothing to the entry bundle.
 
-  The zoom state is one `[t0, t1]` window over distance-along-track (`lib/device/elevation`), and
-  every surface reads it: the profile redraws the windowed span from the real points, the map's
-  coral polyline is re-sliced to `windowIndexRange`, and the km caption names the span. Drag on
-  the profile selects a range (within the current window), Ctrl/⌘-drag pans a zoomed window along
-  the track, wheel zooms about the cursor, double-click resets. A preview without drawable
-  elevation (trips, elevation-less rides) has no profile strip and no zoom — the map stays fully
-  coral. The map deliberately does NOT re-fit on zoom changes: one initial fitBounds, then the
-  viewport is the rider's.
+  The zoom state is one `[t0, t1]` window over distance-along-track, and every surface reads it.
+  Drag on the profile selects a range within the current window, Ctrl/⌘-drag pans a zoomed window,
+  wheel zooms about the cursor, double-click resets. A preview without drawable elevation has no
+  profile strip and no zoom. The map deliberately does NOT re-fit on zoom changes: one initial
+  fitBounds, then the viewport is the rider's.
 
-  Hover is synced both ways over the same distance axis: a pointer on the profile draws a thin
-  cursor line there and an amber dot on the map at the matching point along the track
-  (`pointAtDistance`); a pointer on either map polyline snaps the dot to the nearest track point
-  (`nearestPointIndex`) and puts the cursor line at its distance. One lazily-created circleMarker,
-  mutated with `setLatLng`, updates gated through rAF — no layer churn on mousemove.
+  Hover is synced both ways over the same distance axis, through one lazily-created circleMarker
+  mutated with `setLatLng` and gated through rAF, so there is no layer churn on mousemove.
 
-  A trip hands in `segments` instead of `points`: per-stage tracks in the trip band's colors,
-  concatenated onto ONE shared axis (`lib/device/segments`), so every mechanism above — window,
-  hover, waypoints — runs unchanged over the concatenation. What changes is paint: the map draws
-  one polyline pair per stage (gray full stage underneath, the stage color re-sliced to the
-  window on top — the same dim/undim the single track does with coral), the profile marks the
-  seams with thin rules and carries a stage-colored ribbon along its top edge, and the waypoint
-  card merges every stage's waypoints onto the shared axis, each row wearing its stage's dot. A
-  plain route/ride preview is exactly the degenerate case: one coral segment.
+  A trip hands in `segments` instead of `points`: per-stage tracks concatenated onto ONE shared
+  axis, so window, hover and waypoints run unchanged over the concatenation. What changes is paint.
+  A plain route or ride preview is the degenerate case: one coral segment.
 -->
 <script lang="ts">
     import L from "leaflet";
@@ -59,7 +45,7 @@
     const MIN_DRAG_FRACTION = 0.005;
     /** Wheel-to-zoom gearing: one notch (~100 deltaY) scales the window by e^0.2 ≈ 1.22. */
     const WHEEL_GEARING = 0.002;
-    /** The single-track highlight color — a one-segment "trip" in coral is exactly today's look. */
+    /** The single-track highlight color — a one-segment "trip" in coral. */
     const CORAL = "#cf6a2a";
     /** The dimmed remainder outside the zoom window — one gray-green for every stage. */
     const DIM = "#8b957f";
@@ -83,8 +69,8 @@
         onclose: () => void;
         /** The header's action side — Delete, Pull, whatever the object supports. */
         actions?: import("svelte").Snippet;
-        /** The route's stored waypoints (OBCR §4); empty for rides. Trips carry theirs per stage
-         *  inside `segments` instead. */
+        /** The route's stored waypoints; empty for rides. Trips carry theirs per stage inside
+         *  `segments` instead. */
         waypoints?: readonly RouteWaypoint[];
     } = $props();
 
@@ -108,8 +94,8 @@
         readonly color: string | null;
     }
 
-    /** Every stage's waypoints on the shared axis, in axis order (stages are ordered, and each
-     *  stage's table is ordered by its own distance — OBCR §4). */
+    /** Every stage's waypoints on the shared axis, in axis order: stages are ordered, and each
+     *  stage's table is ordered by its own distance. */
     const waypoints = $derived<AxisWaypoint[]>(
         segs.flatMap((s, k) =>
             s.waypoints.map((w) => ({
@@ -156,11 +142,10 @@
 
     // --- the shared hover cursor -----------------------------------------------------------
     //
-    // One rAF gate for both sources (profile pointermove, map polyline mousemove): the latest
-    // report wins, `hoverT` changes at most once a frame, and everything downstream — the strip's
-    // cursor line, the map dot's `setLatLng` — hangs off that one state. A source may queue a
-    // thunk instead of a value, in which case its work (the map side's nearest-point scan) also
-    // runs at most once a frame, not once per raw mousemove.
+    // One rAF gate for both sources (profile pointermove, map polyline mousemove): the latest report
+    // wins, `hoverT` changes at most once a frame, and everything downstream hangs off that one
+    // state. A source may queue a thunk instead of a value, so the map side's nearest-point scan
+    // also runs at most once a frame.
 
     let hoverRaf = 0;
     let hoverNext: number | null | (() => number | null) = null;
@@ -225,17 +210,15 @@
                 const range = axis.ranges[k];
                 return range && range[1] > range[0] ? [{ seg, a: range[0], b: range[1] }] : [];
             });
-            // The subdued whole track underneath, the windowed span in each stage's color on top —
-            // every gray first, every colored line above them all. At the full window the colors
-            // cover the gray entirely — today's all-coral look, per stage.
+                // The subdued whole track underneath, the windowed span in each stage's color on
+                // top. At the full window the colors cover the gray entirely.
             const grays = drawable.map(({ a, b }) =>
                 L.polyline(latlngs.slice(a, b + 1), { color: DIM, weight: 4 }),
             );
             for (const gray of grays) gray.addTo(map);
-            // A jump between non-contiguous stages: the shared axis walks it (`segments.ts`), so
-            // the hover dot travels it too — give it a visible road. A thin dashed connector in
-            // the dim gray, under the colored lines and outside the window echo: a transfer leg,
-            // not ridden track. Contiguous stages (the normal tour) draw nothing here.
+                // A jump between non-contiguous stages: the shared axis walks it, so the hover dot
+                // travels it too — give it a visible road. A thin dashed connector in the dim gray
+                // reads as a transfer leg, not ridden track. Contiguous stages draw nothing here.
             for (let i = 1; i < drawable.length; i++) {
                 const from = drawable[i - 1].b;
                 const to = drawable[i].a;
@@ -254,9 +237,9 @@
             }));
             for (const { line } of colored) line.addTo(map);
             if (hasProfile) {
-                // The reverse hover: a pointer on any polyline snaps the dot to the nearest
-                // track point and the profile draws its cursor line at its distance. Without a
-                // profile there is nothing to sync, so the map stays hover-quiet.
+                    // The reverse hover: a pointer on any polyline snaps the dot to the nearest
+                    // track point and the profile draws its cursor line at its distance. Without a
+                    // profile there is nothing to sync, so the map stays hover-quiet.
                 const report = (event: L.LeafletMouseEvent) => {
                     // Queued as a thunk: the O(n) scan runs inside the rAF gate, once a frame.
                     const { lat, lng } = event.latlng;
@@ -318,10 +301,9 @@
         };
     });
 
-    // The map's echo of the profile window: re-slice each stage's colored polyline to its share
-    // of the window, nothing else — no re-fit, no recreation. The gray full track only shows once
-    // a window exists; a stage entirely outside the window dims to gray by emptying its colored
-    // line.
+    // The map's echo of the profile window: re-slice each stage's colored polyline to its share of
+    // the window, nothing else — no re-fit, no recreation. The gray full track only shows once a
+    // window exists; a stage entirely outside the window dims to gray by emptying its colored line.
     $effect(() => {
         const lines = coloredLines;
         if (lines.length === 0) return;
@@ -422,15 +404,13 @@
         return ((d - profile.startM) / span) * 100;
     });
 
-    /** The hovered point's elevation, for the cursor line's readout — null when the hovered span
-     *  has no honest number (`elevationAtDistance` refuses to print the interpolated ramp across
-     *  a null gap), and the chip simply stays away. Derived off `hoverT`, so it changes at most
-     *  once a frame, on the same rAF gate as everything else hover-driven. */
+    /** The hovered point's elevation, for the cursor line's readout — null when the hovered span has
+     *  no honest number, and the chip simply stays away. Derived off `hoverT`, so it changes at most
+     *  once a frame. */
     const hoverEle = $derived(hoverT === null ? null : elevationAtDistance(points, cum, hoverT * totalTrackM));
 
     /** The strip's laid-out width — read once when the strip mounts, then kept fresh by a
-     *  ResizeObserver (never read per mousemove: the chip's flip must not force layout on the
-     *  hover path). */
+     *  ResizeObserver. Never read per mousemove: the chip's flip must not force layout. */
     let stripWidth = $state(0);
     $effect(() => {
         const el = profileEl;
@@ -441,23 +421,21 @@
         return () => observer.disconnect();
     });
 
-    /** Room the chip needs right of the line: its widest realistic reading ("8,848 m" plus
-     *  padding, border and the 5px offset) — a fixed allowance, since measuring the chip itself
-     *  on every hover frame would reintroduce the layout read the ResizeObserver avoids. */
+    /** Room the chip needs right of the line: its widest realistic reading plus padding, border and
+     *  the 5px offset. A fixed allowance, since measuring the chip on every hover frame would
+     *  reintroduce the layout read the ResizeObserver avoids. */
     const CHIP_ALLOWANCE_PX = 72;
 
-    /** Mirror the chip to the line's left side when the room to the strip's right edge runs out
-     *  — measured against the real strip width, so a narrow window flips earlier than a wide
-     *  one and the reading never clips. */
+    /** Mirror the chip to the line's left side when the room to the strip's right edge runs out,
+     *  measured against the real strip width, so the reading never clips. */
     const chipFlip = $derived(
         hoverPct !== null && stripWidth > 0 && (1 - hoverPct / 100) * stripWidth < CHIP_ALLOWANCE_PX,
     );
 
-    /** An axis distance's x position across the profile strip for the current window, in
-     *  percent — null when it falls outside the current zoom window. Waypoint ticks and stage
-     *  boundary rules alike. (Waypoint distances arrive pre-clamped onto the drawn axis —
-     *  `waypointDistanceM` — since `distAlongM` was measured on the RAW pre-decimation track and
-     *  can slightly exceed the decimated polyline's length.) */
+    /** An axis distance's x position across the profile strip for the current window, in percent —
+     *  null when it falls outside the window. Waypoint distances arrive pre-clamped onto the drawn
+     *  axis, since `distAlongM` was measured on the raw pre-decimation track and can slightly exceed
+     *  the decimated polyline's length. */
     function pctInWindow(d: number): number | null {
         if (!profile) return null;
         const span = profile.endM - profile.startM;

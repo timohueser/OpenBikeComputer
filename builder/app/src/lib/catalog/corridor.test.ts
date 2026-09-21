@@ -112,8 +112,8 @@ describe("corridorCells", () => {
     });
 
     it("is generous at the coarse band with no extra rule", () => {
-        // The same route, the same radius, one band up: whole covering cells,
-        // i.e. context beyond the corridor (OBCA §1.2).
+            // The same route, the same radius, one band up: whole covering cells, i.e.
+            // context beyond the corridor.
         const route = [
             { lat: CENTRE.lat, lon: SQUARE.minLon + 1000 },
             { lat: CENTRE.lat, lon: SQUARE.maxLon - 1000 },
@@ -158,9 +158,9 @@ describe("corridorCells", () => {
     });
 
     it("refuses a route that spans the antimeridian instead of buffering the world", () => {
-        // The grid does not wrap (OBCA §1.4), so a route written from one side
-        // of the seam to the other is two selections and two maps. Buffering it
-        // as one box would quietly select — and price — every cell in between.
+            // The grid does not wrap, so a route written from one side of the seam to
+            // the other is two selections and two maps. Buffering it as one box would
+            // quietly select — and price — every cell in between.
         const acrossTheSeam = [
             { lat: 60_000_000, lon: 179_000_000 },
             { lat: 60_000_000, lon: -179_000_000 },
@@ -187,16 +187,14 @@ describe("corridorCells", () => {
 
 // --- the prefilter must never decide anything -------------------------------
 //
-// `corridorCells` is two tests in a trench coat: a cheap box prefilter that
-// picks candidates, and the exact segment-to-rectangle distance that decides.
-// The whole design only holds if the first is a superset of the second — a
-// candidate that is never generated is never tested, never selected, and never
-// reported as a hole either, because the missing lists are built from cells that
-// *were* selected. So the prefilter dropping one cell is a silent hole in the
-// corridor, and that is what the two suites below stand guard over.
+// `corridorCells` is two tests in a trench coat: a cheap box prefilter that picks
+// candidates, and the exact segment-to-rectangle distance that decides. The whole design
+// only holds if the first is a superset of the second — a candidate that is never
+// generated is never tested, never selected, and never reported as a hole either. So the
+// prefilter dropping one cell is a silent hole in the corridor.
 
-/** The module's own per-cell acceptance test, spelled out here with no
- *  prefilter in front of it: the oracle the real function must agree with. */
+/** The module's own per-cell acceptance test, spelled out here with no prefilter in
+ *  front of it: the oracle the real function must agree with. */
 function acceptsCell(cell: CellId, points: readonly LatLon[], radiusM: number): boolean {
     const square = cellSquare(cell);
     const lat0 = (square.minLat + square.maxLat) / 2;
@@ -276,13 +274,12 @@ function seededRandom(seed: number): () => number {
 
 describe("the candidate prefilter is never the decision", () => {
     it("keeps a cell whose own latitude reaches further than the route's", () => {
-        // The regression vector. The route sits 1 µdeg south of coarse cell
-        // 20/0300/0263 and 65 100 µdeg west of it. The cell's centre is half a
-        // cell (~0.52°) further north, where a degree of longitude is ~1 %
-        // shorter — so 65 100 µdeg is inside 5 km measured at the *cell*, and
-        // outside 5 km measured at the *route*. Padding the candidate box with
-        // the route's latitude dropped this cell across a ~624 µdeg (≈ 48 m)
-        // window, with nothing anywhere reporting a hole.
+            // The regression vector. The route sits 1 µdeg south of coarse cell
+            // 20/0300/0263 and 65 100 µdeg west of it. The cell's centre is half a cell
+            // further north, where a degree of longitude is ~1 % shorter — so 65 100 µdeg
+            // is inside 5 km measured at the *cell*, and outside 5 km measured at the
+            // *route*. Padding the candidate box with the route's latitude drops this
+            // cell across a ~48 m window, with nothing anywhere reporting a hole.
         const cell = cellSquare(parseCellId("20/0300/0263"));
         const route = [{ lat: cell.minLat - 1, lon: cell.minLon - 65_100 }];
         expect(acceptsCell(parseCellId("20/0300/0263"), route, 5000)).toBe(true);

@@ -1,18 +1,16 @@
-// The two satellite documents: a band's cell index (§8) and a region's cell
-// list (§6).
+// The two satellite documents: a band's cell index and a region's cell list.
 //
-// DACH is thousands of cells across four bands, so the catalog splits its data and keeps
-// the all-or-nothing guarantee **per document**, with the root pinning each
-// satellite by `bytes` + `sha256`. That pin is checked by `client.ts` before a
-// byte of this parser's input is trusted; what is left here is the internal
-// consistency of a document that has already proved it is the one the root meant:
-// the revision it was baked at, the band it claims, and the ids inside it.
+// DACH is thousands of cells across four bands, so the catalog splits its data and
+// keeps the all-or-nothing guarantee **per document**, with the root pinning each
+// satellite by `bytes` + `sha256`. That pin is checked by `client.ts` before a byte
+// of this parser's input is trusted; what is left here is the internal consistency
+// of a document that has already proved it is the one the root meant.
 //
-// The revision check is the one worth naming. Assembly copies chunk bytes
-// between files, which is only meaningful within one schema revision
-// (`OBCA_Spec.md` §6.3) — so a satellite a revision behind the root is not
-// "slightly stale", it is a set of cells that must never be assembled together.
-// A generator refuses to publish a mixed tree; this refuses to consume one.
+// The revision check is the one worth naming. Assembly copies chunk bytes between
+// files, which is only meaningful within one schema revision — so a satellite a
+// revision behind the root is not "slightly stale", it is a set of cells that must
+// never be assembled together. A generator refuses to publish a mixed tree; this
+// refuses to consume one.
 
 import { formatCellId, parseCellId, type CellId } from "./grid";
 import type { Catalog, CellIndexRef, RegionEntry, TerrainEntry } from "./manifest";
@@ -43,9 +41,9 @@ export interface CellSource {
  * One published cell.
  *
  * There is no bbox and that is deliberate: a cell's coverage is exactly its grid
- * square, which the `id` determines to the microdegree, and the bakery verifies
- * the artifact's own OBCM header against it. `cell` below is that square's id,
- * parsed once here so nothing downstream re-parses a string per frame.
+ * square, which the `id` determines to the microdegree, and the bakery verifies the
+ * artifact's own OBCM header against it. `cell` below is that square's id, parsed
+ * once here so nothing downstream re-parses a string per frame.
  */
 export interface CellEntry {
     id: string;
@@ -56,17 +54,16 @@ export interface CellEntry {
     url: string;
     built_at: string;
     sources: CellSource[];
-    /** `true` iff the sources do not fully cover the cell's square (§3.7). A
-     *  consumer MUST NOT present a partial cell as canonical coverage. */
+    /** `true` iff the sources do not fully cover the cell's square. A consumer MUST
+     *  NOT present a partial cell as canonical coverage. */
     partial: boolean;
 }
 
 /** An inclusive, same-row run of cells whose canonical content is empty.
  *
- * These cells have no OBCM object: they are explicit coverage, not missing
- * data, and therefore cost zero bytes and need no payload download or graft.
- * Their identities still participate in assembly coverage and output bounds.
- */
+ *  These cells have no OBCM object: they are explicit coverage, not missing data,
+ *  and therefore cost zero bytes. Their identities still participate in assembly
+ *  coverage and output bounds. */
 export interface KnownEmptyRun {
     start: string;
     end: string;
@@ -97,14 +94,14 @@ export interface RegionCellsDocument {
     region_id: string;
     /** Band id → its cell ids, sorted, exactly as published. */
     cells: Record<string, string[]>;
-    /** This region's terrain cell ids, sorted (§13.3). A **separate field**,
-     *  because `cells` is keyed by schema band and terrain is not one. Empty
-     *  for a region published before terrain, or for a terrain-less catalog. */
+    /** This region's terrain cell ids, sorted. A **separate field**, because `cells`
+     *  is keyed by schema band and terrain is not one. Empty for a terrain-less
+     *  catalog. */
     terrain: string[];
 }
 
-/** One published terrain cell (§13.1). No bbox and no per-cell source list: the
- *  id is the square, and the provenance is one dataset stated once in the root. */
+/** One published terrain cell. No bbox and no per-cell source list: the id is the
+ *  square, and the provenance is one dataset stated once in the root. */
 export interface TerrainCellEntry {
     id: string;
     /** The parsed id. Not on the wire. */
@@ -115,10 +112,10 @@ export interface TerrainCellEntry {
     built_at: string;
 }
 
-/** An inclusive, same-row run of canonically void terrain squares (§13.6) —
- *  open ocean, or outside the source dataset's coverage. They have no object,
- *  because OBCT §4.3 makes an absent cell and an all-`NODATA` one answer
- *  identically, so 2 MiB of sentinel would buy nothing. */
+/** An inclusive, same-row run of canonically void terrain squares — open ocean, or
+ *  outside the source dataset's coverage. They have no object, because an absent
+ *  cell and an all-`NODATA` one answer identically, so 2 MiB of sentinel would buy
+ *  nothing. */
 export interface TerrainEmptyRun {
     start: string;
     end: string;
@@ -130,8 +127,8 @@ export interface TerrainEmptyRun {
 export interface TerrainIndexDocument {
     schema_version: number;
     /** The terrain store's own revision. There is deliberately **no
-     *  `schema_revision`** here: a terrain cell does not know which OBCM schema
-     *  it will be used beside (§13.1), and the absence is normative. */
+     *  `schema_revision`** here: a terrain cell does not know which OBCM schema it
+     *  will be used beside, and the absence is normative. */
     terrain_revision: number;
     dataset_id: string;
     dataset_version: string;
@@ -146,12 +143,10 @@ export interface TerrainIndexDocument {
 /**
  * `parseCellId`, with the grid's refusal re-thrown as a document error.
  *
- * A `GridError` is a statement about a *string*; from inside a parser the
- * caller's contract is `CatalogFormatError`, a statement about a *document*
- * (§7). The distinction is not pedantry: a consumer catches the document error
- * to say "this catalog is malformed" and let the user retry or report it, and
- * a `GridError` escaping through the same call would sail past that handler and
- * land as a blank screen — for a case that is precisely a bad document.
+ * A `GridError` is a statement about a *string*; from inside a parser the caller's
+ * contract is `CatalogFormatError`, a statement about a *document*. A `GridError`
+ * escaping here would sail past the handler that says "this catalog is malformed"
+ * and land as a blank screen, for a case that is precisely a bad document.
  */
 function parseCellIdIn(id: string, at: string): CellId {
     try {
@@ -221,9 +216,9 @@ export function cellIndexHas(index: CellIndexDocument, id: string): boolean {
  * Parse one band's cell index against the root's pin on it.
  *
  * `ref` is what the root says this document is: which band, which cell size, how
- * many cells. Every one of those is re-asserted here, because the digest only
- * proves the bytes are the ones the root hashed — not that the root described
- * them correctly.
+ * many cells. Every one of those is re-asserted here, because the digest only proves
+ * the bytes are the ones the root hashed — not that the root described them
+ * correctly.
  */
 export function parseCellIndex(body: string, catalog: Catalog, ref: CellIndexRef): CellIndexDocument {
     const where = `cell index (${ref.band})`;
@@ -360,13 +355,12 @@ export function terrainEmptyAt(index: TerrainIndexDocument, id: string): Terrain
 /**
  * Parse the pinned terrain index against the root's `terrain` block.
  *
- * The four keys of §13.2's lockstep — `dataset_version`, `posting_log2`,
- * `cell_log2`, `terrain_revision` — are re-asserted against the root here,
- * because the digest only proves the bytes are the ones the root hashed, not
- * that the root described them correctly. And the absence of `schema_revision`
- * is checked rather than merely not-read: a document that grew one would mean an
- * OBCM bump had started rewriting the terrain store, which is precisely the
- * coupling §13 exists to prevent.
+ * The four lockstep keys — `dataset_version`, `posting_log2`, `cell_log2`,
+ * `terrain_revision` — are re-asserted against the root here, because the digest
+ * only proves the bytes are the ones the root hashed, not that the root described
+ * them correctly. The absence of `schema_revision` is checked rather than merely
+ * not-read: a document that grew one would mean an OBCM bump had started rewriting
+ * the terrain store.
  */
 export function parseTerrainIndex(body: string, catalog: Catalog, block: TerrainEntry): TerrainIndexDocument {
     const where = "terrain index";
@@ -496,7 +490,7 @@ export function parseTerrainIndex(body: string, catalog: Catalog, block: Terrain
 /**
  * Parse a region's cell list against the root's entry for that region.
  *
- * The list is **stored, not derived from the boundary** (§6): deriving one
+ * The list is **stored, not derived from the boundary**: deriving one
  * would let a simplification error drop an edge cell, and a dropped fine cell is
  * a silent hole in street detail. So this parser's job is to check the stored
  * answer is the one the root priced — same bands, same counts — and never to
@@ -521,8 +515,8 @@ export function parseRegionCells(body: string, catalog: Catalog, entry: RegionEn
     for (const bandId of Object.keys(raw)) {
         const at = `${where}.cells.${bandId}`;
         const band = bandsById.get(bandId);
-        // §6: a list naming a band the schema lacks is a list this client
-        // cannot place in any file of the assembly.
+        // A list naming a band the schema lacks is a list this client cannot place in
+        // any file of the assembly.
         if (!band) fail(`${at}: band ${JSON.stringify(bandId)} is not in schema.bands`);
         const ids = arr(raw[bandId], at).map((v, k) => {
             if (typeof v !== "string") fail(`${at}[${k}]: expected a cell id`);
@@ -548,9 +542,9 @@ export function parseRegionCells(body: string, catalog: Catalog, entry: RegionEn
         if (count > 0 && !(bandId in cells)) fail(`${where}: band "${bandId}" is priced but absent from the list`);
     }
 
-    // §13.3's terrain list: a **separate field**, because `cells` is keyed by
-    // schema band and terrain is not one. Optional, so a terrain-less catalog
-    // and a region published before terrain both read as "no raster here".
+    // The terrain list is a **separate field**, because `cells` is keyed by schema
+    // band and terrain is not one. Optional, so a terrain-less catalog and a region
+    // published before terrain both read as "no raster here".
     const terrainAt = `${where}.terrain`;
     const terrain: string[] =
         doc.terrain === undefined || doc.terrain === null
@@ -568,8 +562,8 @@ export function parseRegionCells(body: string, catalog: Catalog, entry: RegionEn
         if (terrain[k] <= terrain[k - 1]) fail(`${terrainAt}: ids are not sorted, or one appears twice`);
     }
     // The root priced this selection; a list that disagrees is a price that is
-    // not the price of the download. Counted against the two halves §13.3 splits
-    // it into, so a downloadable square silently becoming void is caught too.
+    // not the price of the download. Counted against the two halves the terrain price
+    // splits into, so a downloadable square silently becoming void is caught too.
     if (entry.terrain) {
         const priced = entry.terrain.cell_count + entry.terrain.known_empty_count;
         if (terrain.length !== priced) {
@@ -587,14 +581,13 @@ export function parseRegionCells(body: string, catalog: Catalog, entry: RegionEn
 }
 
 /**
- * §6's cross-document MUST: a region cell list may not name a cell that is
- * absent from its band's index.
+ * The cross-document MUST: a region cell list may not name a cell that is absent
+ * from its band's index.
  *
- * It lives apart from `parseRegionCells` because it is the only check that needs
- * two satellites at once, and the client applies it exactly when both are in
- * hand. A violation is not a hole to draw — a hole is ground with no cell, while
- * this is a *named* cell with no bytes, size or digest, which is a broken
- * publish.
+ * It lives apart from `parseRegionCells` because it is the only check that needs two
+ * satellites at once. A violation is not a hole to draw — a hole is ground with no
+ * cell, while this is a *named* cell with no bytes, size or digest, which is a
+ * broken publish.
  */
 export function assertRegionCellsIndexed(
     doc: RegionCellsDocument,

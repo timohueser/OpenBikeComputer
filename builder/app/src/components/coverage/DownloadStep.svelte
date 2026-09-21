@@ -1,11 +1,10 @@
 <script lang="ts">
-    // Final coverage proof, then delivery: cells fetched and verified against
-    // the catalog, assembled into ONE `.obcm` by wasm in a Worker, and either
+    // Final coverage proof, then delivery: cells fetched and verified against the
+    // catalog, assembled into ONE `.obcm` by wasm in a Worker, and either
     // downloaded normally or streamed straight to a connected device.
     //
-    // A map is one file, which decides the shape of this screen's second half. There
-    // is nothing to order, nothing to package and nothing to acknowledge: the run
-    // produces a single object, and the only question left is where it lands.
+    // A map is one file, so there is nothing to order, nothing to package and
+    // nothing to acknowledge: the only question left is where it lands.
 
     import { onDestroy, onMount } from "svelte";
     import type { AssemblePhase, MemoryEstimate } from "../../lib/assemble/bridge";
@@ -66,20 +65,17 @@
         }
     }
 
-    /** The engine's sort budget (#1116 phase D), which after the external merge **is** the wasm
-     *  engine term. 256 MB: big enough that a DACH-scale sort is ~a dozen runs (well inside the
-     *  scratch pool), small enough that engine + caches + terrain stays a fraction of a tab's
-     *  budget. Passed to both the assembly and the estimate, so the projection prices the run
-     *  that will actually happen. */
+    /** The engine's sort budget, which after the external merge **is** the wasm engine term. A
+     *  chosen value: big enough that a DACH-scale sort is about a dozen runs, small enough that
+     *  engine plus caches plus terrain stays a fraction of a tab's budget. Passed to both the
+     *  assembly and the estimate, so the projection prices the run that will actually happen. */
     const SORT_BUDGET_BYTES = 256 * 1024 * 1024;
 
     /** What a run of this ledger needs from OPFS, all three tenants together: the cells (minus
-     *  terrain, which never goes to disk), the assembled map the sink writes (≈ the cells, measured
-     *  1.00), and the merge's spill (edge + adjacency + claim streams; ≤ 2.5× the network band,
-     *  the estimate model's own coefficient). Used by the estimate effect and by `begin`, so the
-     *  projection and the run decide OPFS-or-fallback by the same arithmetic — a run that can
-     *  store its cells but not its output would otherwise fail at the first write, after the
-     *  download. */
+     *  terrain, which never goes to disk), the assembled map the sink writes, and the merge's
+     *  spill. Used by the estimate effect and by `begin`, so the projection and the run decide
+     *  OPFS-or-fallback by the same arithmetic — a run that can store its cells but not its output
+     *  would otherwise fail at the first write, after the download. */
     function runDiskNeed(l: { totalBytes: number; core: { bytes: number }; terrain: { bytes: number } | null }) {
         const terrain = l.terrain?.bytes ?? 0;
         return l.totalBytes - terrain + l.totalBytes + 2.5 * l.core.bytes;
@@ -87,8 +83,6 @@
 
     const ledger = $derived(store.ledger);
     const detailBand = $derived(detailBandId(store.catalog));
-
-    // --- worker lifetime --------------------------------------------------
 
     let worker: Worker | null = null;
 
@@ -101,13 +95,11 @@
             worker.onmessage = (event) => {
                 if (worker === current) void onWorkerMessage(event);
             };
-            // The worker's own code answers every failure with an `error`
-            // message — these two fire for what that code never sees: the
-            // script failing to boot at all (a lost chunk after a deploy) and
-            // a message that could not be deserialized. Both arrive as the
-            // protocol's `{code: "internal"}` shape so one switch handles
-            // every failure, and the worker is dropped — a worker that could
-            // not boot stays broken, so the next request must spawn fresh.
+            // The worker's own code answers every failure with an `error` message;
+            // these two fire for what that code never sees — the script failing to
+            // boot at all, and a message that could not be deserialized. Both arrive
+            // as the protocol's `{code: "internal"}` shape, and the worker is dropped,
+            // because one that could not boot stays broken.
             worker.onerror = (e) => {
                 if (worker !== current) return;
                 workerFailed(e.message || "the assembly worker failed to start");
@@ -120,7 +112,7 @@
         return worker;
     }
 
-    /** A worker-level failure (#1041 A4), routed like a posted `error`. */
+    /** A worker-level failure, routed like a posted `error`. */
     function workerFailed(message: string) {
         worker?.terminate();
         worker = null;
@@ -155,13 +147,9 @@
         onSendReadyChange?.(false);
     });
 
-    // Releases before the opt-in retained cells automatically. The first visit to this step after
-    // the change removes that legacy cache unless the rider has explicitly enabled reuse.
     onMount(() => {
         void initializeStorage();
     });
-
-    // --- the run ----------------------------------------------------------
 
     type Phase =
         | "idle"
@@ -189,11 +177,10 @@
     /** Set by `failRun`: a delivery that has not started must not write into an
      *  output that is being discarded. */
     let sinkClosed = false;
-    /** How this run's cells reached the assembler (#1116 B2), as the worker
-     *  reports it before the assembly starts. Shown, because a bug report about a
-     *  failed country-scale run has to say which path ran. */
+    /** How this run's cells reached the assembler, as the worker reports it before the assembly
+     *  starts. Shown, because a bug report about a failed country-scale run has to say which. */
     let readMode = $state<CellReadMode | null>(null);
-    /** …and where its map went (#1116 D1), for the same reason. */
+    /** …and where its map went, for the same reason. */
     let writeMode = $state<MapWriteMode | null>(null);
     /** Cells this run did not have to fetch, because a previous one already put
      *  them in OPFS under the same digest. */
@@ -211,12 +198,10 @@
     let abortCtl: AbortController | null = null;
     let downloadOutput: MapOutputSession | null = null;
     let outputCleanupFailed = $state(false);
-    /** The name this run's file will be saved under, fixed when the run starts. Read
-     *  once rather than at save time, so editing the selection mid-download cannot
-     *  rename the map that is already being built from the old one.
+    /** The name this run's file will be saved under, fixed when the run starts, so editing the
+     *  selection mid-download cannot rename the map that is already being built from the old one.
      *
-     *  `$state` because the saving row renders it: it is written during a run, and a
-     *  plain `let` would leave that row showing the previous run's name. */
+     *  `$state` because the saving row renders it. */
     let runFileName = $state("OBC map.obcm");
 
     interface DeviceOutput {
@@ -279,15 +264,11 @@
                 writeMode = msg.mode;
                 break;
             case "stored-map":
-                // The map never crossed the port: it is in OPFS, the worker has let
-                // go of it, and this is where it becomes a file someone has. The
-                // save is started here and awaited by `done`, because a multi-
-                // gigabyte write outlives this handler.
-                // **The phase moves before the delivery is assigned.** A ~9 GiB write
-                // outlives this handler, and while it ran the screen still said
-                // "assembling" — so a rider who pressed Cancel during the save was
-                // cancelling a thing that had already finished, and the button's own
-                // branch dispatched on the wrong phase.
+                    // The map never crossed the port: it is in OPFS, the worker has
+                    // let go of it, and this is where it becomes a file someone has.
+                    // The phase moves before the delivery is assigned, because a
+                    // ~9 GiB write outlives this handler and Cancel must dispatch on
+                    // the right phase.
                 phase = "saving";
                 delivery = deliverStoredMap(msg.byteLength);
                 void delivery.catch(() => {});
@@ -303,16 +284,15 @@
                 void delivery.catch(() => {});
                 break;
             case "done":
-                // The worker's OPFS ledger, for anyone profiling an assembly
-                // from DevTools — a worker's own console does not surface.
+                    // The worker's OPFS ledger, for anyone profiling an assembly from
+                    // DevTools — a worker's own console does not surface.
                 if (msg.io) console.debug("[assemble] opfs i/o", msg.io);
                 runWarnings = msg.warnings;
                 try {
                     await delivery;
-                    // A direct PUT is durable now. Detach its abort listener synchronously, before
-                    // even a no-op output-session await: TransferBar/unmount cancellation after
-                    // commit must not race `failRun` against host-side cleanup and turn success
-                    // into "cancelled".
+                        // A direct PUT is durable now. Detach its abort listener synchronously:
+                        // cancellation after commit must not race `failRun` against host-side
+                        // cleanup and turn success into "cancelled".
                     if (!sinkClosed && output?.kind === "device") {
                         output.removeAbort();
                         output.ctx.phase("finalizing");
@@ -323,12 +303,11 @@
                     await failRun(cause);
                     break;
                 }
-                // A cancel that arrived *during* the save has already discarded the
-                // output and set the phase — `failRun` awaits this same delivery, so
-                // both paths resume here. Without this guard the later writer won:
-                // a discarded map could report "done", and the run that kept its file
-                // could report "Cancelled". `sinkClosed` is the fact that settles it,
-                // because it is set before the discard rather than after it.
+                    // A cancel that arrived *during* the save has already discarded the
+                    // output and set the phase — `failRun` awaits this same delivery, so
+                    // both paths resume here. Without this guard a discarded map could
+                    // report "done". `sinkClosed` settles it, because it is set before
+                    // the discard rather than after it.
                 if (sinkClosed) break;
                 // Cleanup can recursively remove a country-sized temporary cell store. Keep the
                 // run closed while that awaits: declaring `done` here briefly re-enabled both
@@ -357,13 +336,10 @@
                 break;
             case "error":
                 if (msg.estimateId !== undefined && (msg.estimateId !== estimateGeneration || estimateLedger !== ledger)) return;
-                // Two conversations share this worker, and their failures are
-                // different facts (#1041 A3): an error during a run belongs to
-                // the run, but an error answering the background *estimate*
-                // must not paint the screen with "Nothing was saved" about a
-                // download that never started — it gets its own channel and
-                // its own retry, and never wedges the button behind a pending
-                // flag nothing will clear.
+                    // Two conversations share this worker, and their failures are
+                    // different facts: an error during a run belongs to the run, but an
+                    // error answering the background *estimate* must not paint the screen
+                    // with "Nothing was saved" about a download that never started.
                 if (phase === "assembling" || phase === "saving") {
                     await failRun(new Error(msg.message));
                 } else {
@@ -375,15 +351,12 @@
     }
 
     /**
-     * The map the assembly wrote into OPFS (#1116 D1): its bytes were never in wasm
-     * memory and never crossed the worker port, and on the browser host they never
-     * enter the tab's heap either — a `Blob` on an OPFS file is a handle, and that is
-     * what the save is given.
+     * The map the assembly wrote into OPFS: its bytes were never in wasm memory and never crossed
+     * the worker port, and on the browser host they never enter the tab's heap either — a `Blob` on
+     * an OPFS file is a handle, and that is what the save is given.
      *
-     * The desktop host does read it back, because its output session takes bytes to
-     * write into a real folder. That is one map resident, which is the residency this
-     * host always had; the saving D1 is here for is on the *assembly*, and it is
-     * unaffected.
+     * The desktop host does read it back, because its output session takes bytes to write into a
+     * real folder. That is one map resident, which is the residency that host always had.
      */
     async function deliverStoredMap(byteLength: number) {
         const blob = await readMapOutput();
@@ -424,11 +397,10 @@
             const { sendMapBlob } = await import("../../lib/device/write");
             output.result = await sendMapBlob(output.client, blob, name, output.ctx);
         } else if (downloadOutput) {
-            // A picked directory (or the desktop's native folder) takes the map
-            // where the rider wants it, to be sent on to the device later — the
-            // card itself carries a flat store, not a filesystem a host can write.
-            // The session streams a Blob without buffering it; only a host that
-            // needs contiguous bytes converts, on its side.
+                // A picked directory (or the desktop's native folder) takes the map
+                // where the rider wants it, to be sent on to the device later — the card
+                // itself carries a flat store, not a filesystem a host can write. The
+                // session streams a Blob without buffering it.
             const path = await downloadOutput.write(name, bytes ?? blob);
             savedFile = { name, byteLength, path };
         } else {
@@ -620,17 +592,14 @@
     }
 
     /**
-     * The same plan minus every cell already in the store, and the tally of what
-     * that saved.
+     * The same plan minus every cell already in the store, and the tally of what that saved.
      *
-     * A cell is "already here" when a file named by its catalog digest exists at
-     * the catalog's length. That is the whole identity check: the name **is** the
-     * SHA-256 `fetchVerified` matched before the file was written, and the length
-     * catches the one thing that can go wrong afterwards — a write torn by a
-     * crash or a quota refusal. Re-hashing every cell on every run would cost
-     * seconds and a full read of exactly the bytes this exists to stop reading.
+     * A cell is "already here" when a file named by its catalog digest exists at the catalog's
+     * length. The name **is** the SHA-256 `fetchVerified` matched before the file was written, and
+     * the length catches a write torn by a crash or a quota refusal. Re-hashing every cell on every
+     * run would cost seconds and a full read of exactly the bytes this exists to stop reading.
      *
-     * Terrain is never skipped: it is not in the store (see `begin`).
+     * Terrain is never skipped: it is not in the store.
      */
     async function skipCached(
         plan: CellDownloadPlan,
@@ -665,12 +634,10 @@
     }
 
     /**
-     * The map's filename. **JS owns this**: the assembler names nothing — what
-     * crosses its seam is a digest and a length — so the name is chosen here, where
-     * the selection is known.
-     *
-     * `.obcm` because that is what a map is, and what this app's own file picker
-     * accepts. What an OS forbids in a name becomes a dash.
+     * The map's filename. **JS owns this**: the assembler names nothing — what crosses its seam is
+     * a digest and a length — so the name is chosen here, where the selection is known. `.obcm`
+     * because that is what a map is, and what this app's own file picker accepts. What an OS
+     * forbids in a name becomes a dash.
      */
     function mapFileName(): string {
         const stem = mapName().replace(/[\\/:*?"<>|]/g, "-").trim();
@@ -742,14 +709,11 @@
         // already-unmounted instance's put/finalization before this run touches shared OPFS.
         out.releaseWork = await runOp(acquireMapWorkStorage, async (release) => release());
 
-        // Cells go to disk when this browser will take them, which keeps a country's
-        // worth out of the tab's heap. With the opt-in above, the same store also lets
-        // a later build reuse them. The raster deliberately does not:
-        // its objects are small and it is downloaded last, so it would buy the
-        // least of anything here (a B-series follow-up if that stops being true).
-        // Probed by writing and reading a file back, not by sniffing for a
-        // method: the fallback has to be chosen on what this browser actually
-        // does, and a store that cannot be written to is worse than no store.
+            // Cells go to disk when this browser will take them, which keeps a country's
+            // worth out of the tab's heap, and with the opt-in above a later build can
+            // reuse them. The raster deliberately does not: its objects are small and it
+            // is downloaded last. Probed by writing and reading a file back, not by
+            // sniffing for a method: a store that cannot be written to is worse than none.
         const revision = cellStoreRevision(store.catalog);
         // Unchecked means no reuse in either direction. OPFS still carries this run when available,
         // because that working disk is what makes country-sized assembly possible.
@@ -776,12 +740,10 @@
         let fetchPlan = plan;
         if (cellStore) {
             fetchPlan = await skipCached(plan, cellStore, runOp);
-            // Asked once, before a byte is fetched, and asked about the WHOLE
-            // run — cells, the map the sink writes, the merge's spill — because
-            // after phase D all three live in OPFS: a store with room for the
-            // cells but not the output would fail at the first write, after the
-            // download. Falling back now costs disk-backed input and any selected
-            // reuse, but avoids a quota failure after the download.
+            // Asked once, before a byte is fetched, and about the WHOLE run — cells, the
+            // map the sink writes, the merge's spill — because all three live in OPFS: a
+            // store with room for the cells but not the output would fail at the first
+            // write, after the download.
             const hasRoom = await runOp(() => hasRoomFor(runDiskNeed(l)));
             if (!hasRoom) {
                 cellStore = null;
@@ -800,16 +762,15 @@
                 downloadCells(fetchPlan, {
                     fetchImpl: store.client.fetchImpl,
                     onCell: async (item, bytes) => {
-                        // `band === null` is what a terrain cell is (`OBCC_Spec.md`
-                        // §13: a second artifact class, not a band), and it is the
-                        // only thing that decides which door it goes in.
+                            // `band === null` is what a terrain cell is — a second artifact
+                            // class, not a band — and it is the only thing that decides
+                            // which door it goes in.
                         if (item.band === null) {
                             terrainCells.push({ id: item.cell.id, sha256: item.cell.sha256, bytes });
                         } else if (cellStore) {
-                            // Verified once, on the way in: the file's name is the
-                            // digest `fetchVerified` just checked. Awaited, so a slow
-                            // disk applies backpressure instead of letting the
-                            // download queue gigabytes behind it.
+                                // Verified once, on the way in: the file's name is the digest
+                                // `fetchVerified` just checked. Awaited, so a slow disk applies
+                                // backpressure instead of letting gigabytes queue behind it.
                             await runOp(() =>
                                 cellStore.put(item.cell.sha256, bytes).catch((cause: unknown) => {
                                     throw new Error(
@@ -862,18 +823,15 @@
             type: "assemble",
             requireDisk,
             cells,
-            // One or the other, never a mix: `cells` carries buffers when there
-            // was nowhere to put them, `sourceCells` names files in OPFS when
-            // there was. The worker decides how it reads the latter — through
-            // sync access handles, or by reading them into memory only when
-            // the admitted mode permits buffering. Required disk mode refuses.
+                // One or the other, never a mix: `cells` carries buffers when there was
+                // nowhere to put them, `sourceCells` names files in OPFS when there was.
+                // The worker decides how it reads the latter.
             sourceCells: cellStore ? sourceCells : undefined,
             cellStore: cellStore?.revision,
             knownEmpty: plan.knownEmpty,
-            // Terrain travels as its own pair: the lattice the catalog states
-            // and the objects that were downloaded. A catalog with no terrain
-            // block sends neither, and the map is written with an empty §1.3
-            // region — a complete map with flat profiles (§13).
+                // Terrain travels as its own pair: the lattice the catalog states and the
+                // objects that were downloaded. A catalog with no terrain block sends
+                // neither, and the map is written with an empty terrain region.
             terrain: store.terrain
                 ? { postingLog2: store.terrain.posting_log2, cellLog2: store.terrain.cell_log2 }
                 : undefined,
@@ -884,13 +842,10 @@
                 // The same budget the estimate was given, so the projection prices
                 // the run that actually happens rather than the engine's default.
                 mergeBudgetBytes: SORT_BUDGET_BYTES,
-                // Both were shown before this button unlocked. `acceptHoles`
-                // is derived from the *shown* set, not the ledger's raw count
-                // (#1041 A5): `store.holeCells()` is every band's holes — the
-                // squares hatched on the map, the proof and the summary line —
-                // so the assembly is never told to accept a hole the UI kept
-                // to itself. Partial cells exist in essentially every real map
-                // (every coarse cell of a country is partial, #1025).
+                    // Both were shown before this button unlocked. `acceptHoles` is derived
+                    // from the *shown* set, not the ledger's raw count, so the assembly is
+                    // never told to accept a hole the UI kept to itself. Partial cells exist
+                    // in essentially every real map.
                 acceptHoles: store.holeCells().length > 0,
                 acceptPartial: true,
             },
@@ -963,24 +918,21 @@
         if (phase === "downloading") {
             abortCtl?.abort(cause);
         } else if (phase === "assembling" || phase === "saving") {
-            // The worker is blocked inside one synchronous wasm call and cannot
-            // read a message — terminate IS the cancel (bridge threading
-            // contract). Nothing usable is left behind: a partial `.obcm` fails
-            // its own header checks, and the file is only saved once the run says
-            // it finished.
+                // The worker is blocked inside one synchronous wasm call and cannot read
+                // a message — terminate IS the cancel. Nothing usable is left behind: a
+                // partial `.obcm` fails its own header checks, and the file is only saved
+                // once the run says it finished.
             void failRun(cause);
         }
     }
-
-    // --- the memory projection, before the download -----------------------
 
     let estimate = $state<MemoryEstimate | null>(null);
     let estimateLedger = $state.raw<typeof ledger>(null);
     let estimateOnDisk = false;
     let estimateGeneration = 0;
     let estimatePending = $state(false);
-    /** The estimate's own failure channel (#1041 A3) — never mixed into the
-     *  run's. Cleared by the next request; retried by bumping the nonce. */
+    /** The estimate's own failure channel, never mixed into the run's. Cleared by the next
+     *  request; retried by bumping the nonce. */
     let estimateError = $state<string | null>(null);
     let estimateNonce = $state(0);
 
@@ -998,9 +950,9 @@
         estimateLedger = null;
         const idle = phase === "idle" || phase === "done" || phase === "cancelled" || phase === "error";
         if (!l || !l.isFinal || l.cellCount === 0 || !idle) {
-            // Every exit clears the pending flag (#1041 A3): a selection that
-            // empties or a run that starts must not leave "waiting for an
-            // estimate" latched with nothing left to answer it.
+                // Every exit clears the pending flag: a selection that empties or a run
+                // that starts must not leave "waiting for an estimate" latched with
+                // nothing left to answer it.
             estimate = null;
             estimatePending = false;
             return;
@@ -1014,11 +966,10 @@
         // Debounced: a slider mid-drag changes the figures every frame, and the
         // projection only matters once the selection settles.
         const timer = setTimeout(() => {
-            // The main thread's half of both residency escapes, decided by the
-            // same two checks `begin` runs before a byte is fetched: a store this
-            // browser will write, with room for the WHOLE run (`runDiskNeed` —
-            // cells, output, spill; terrain never goes to disk). The worker ANDs
-            // in its own sync-handle probe. The generation excludes stale probes and replies.
+                // The main thread's half of both residency escapes, decided by the same
+                // two checks `begin` runs before a byte is fetched: a store this browser
+                // will write, with room for the WHOLE run. The worker ANDs in its own
+                // sync-handle probe.
             void (async () => {
                 const onDisk = (await cellStoreWritable()) && (await hasRoomFor(diskNeed));
                 if (destroyed || estimateId !== estimateGeneration || l !== ledger) return;
@@ -1058,15 +1009,11 @@
         if (estimate.headroomBytes >= estimate.budgetBytes * 0.15) return null;
         return (
             `Close to the browser's memory budget: about ${formatBytes(estimate.peakBytes)} projected of ` +
-            // No "use the desktop app" here: the desktop host runs this very
-            // worker in its webview, so it carries the identical wasm32 ceiling.
-            // It becomes the sure path when it assembles through the native
-            // engine, and this line can promise it then — not before.
+                // No "use the desktop app" here: the desktop host runs this very worker in
+                // its webview, so it carries the identical wasm32 ceiling.
             `${formatBytes(estimate.budgetBytes)}. It will probably assemble; a smaller area is the sure thing.`
         );
     });
-
-    // --- the coverage proof -----------------------------------------------
 
     interface Proof {
         viewW: number;
@@ -1086,8 +1033,8 @@
         if (cellIds.length === 0) return null;
         const cells = parseCells(cellIds);
         const rings = coverageRings(cells);
-        // Every band's holes, the same squares the map hatches (#1041 A5 —
-        // `store.holeCells` owns the dedup and the reasoning).
+        // Every band's holes, the same squares the map hatches; `store.holeCells` owns
+        // the dedup and the reasoning.
         const holeCells = store.holeCells();
         const holeRects: UBox[] = mergeMixedCellRects(holeCells);
         const routes = store.selection.parts.flatMap((p) => (p.kind === "corridor" ? [p.points] : []));
@@ -1152,16 +1099,12 @@
     function proofCaption(p: Proof): string {
         const bits: string[] = [];
         if (p.holeCount) bits.push(`${p.holeCount} ${p.holeCount === 1 ? "hole" : "holes"}`);
-        // Disjoint parts are a choice, not a defect (#1041 low sweep / A21):
-        // someone who added Freiburg and Bremen knows they are apart, and "1
-        // gap" tallied next to the holes read as a warning about it. The
-        // mock's own tone — "gaps are fine — holes stay visible" — is the
-        // caption's tone: reassure about the gaps, stay honest about holes.
+            // Disjoint parts are a choice, not a defect: someone who added Freiburg and
+            // Bremen knows they are apart, and "1 gap" tallied next to the holes read as
+            // a warning about it. Reassure about the gaps, stay honest about holes.
         if (p.gapCount) bits.push("separate parts — that's fine");
         return bits.length ? `your map's coverage — ${bits.join(" · ")}` : "your map's coverage";
     }
-
-    // --- gating -----------------------------------------------------------
 
     const running = $derived(
         phase === "downloading" || phase === "assembling" || phase === "saving" || phase === "finalizing",
@@ -1183,16 +1126,15 @@
             estimate !== null &&
             estimateLedger === l &&
             !estimatePending &&
-            // An unanswered projection keeps the mandatory pre-download check
-            // honest: the button waits for the retry, not forever (A3).
+                // An unanswered projection keeps the mandatory pre-download check honest:
+                // the button waits for the retry, not forever.
             estimateError === null
         );
     });
     $effect(() => onSendReadyChange?.(ready));
-    /** Whether a failed run left a file behind that someone has to delete. Counted
-     *  from what actually reached the disk, and only where nothing cleaned it up:
-     *  a picked directory's session removes what it wrote, so there is something to
-     *  discard only when there was no session or its removal refused. */
+    /** Whether a failed run left a file behind that someone has to delete. Counted from what
+     *  actually reached the disk, and only where nothing cleaned it up: a picked directory's
+     *  session removes what it wrote. */
     const incompleteFileRemains = $derived(
         persisted && (!platform.openMapOutput || outputCleanupFailed),
     );
@@ -1245,8 +1187,6 @@
         {/if}
 
         <div class="facts">
-            <!-- P1 (2026-08-09): the one number that matters leads the card as
-                 a stat band; everything descriptive is one quiet caption. -->
             {#if ledger.isFinal}
                 <p class="line statband">
                     <span class="mono big">{formatBytes(ledger.totalBytes)}</span>
@@ -1302,9 +1242,7 @@
             </div>
 
             {#if phase === "idle" || phase === "cancelled" || phase === "error" || phase === "done"}
-                <!-- No size in the label: the stat band above already leads
-                     with it, and the same number twice in one card was the P1
-                     round's headline complaint. -->
+                <!-- No size in the label: the stat band above already leads with it. -->
                 <button type="button" class="btn primary" disabled={!ready} onclick={run}>
                     Download map
                 </button>

@@ -1,4 +1,4 @@
-// The invariant that makes the seam safe (#895): a capability flag and the
+// The invariant that makes the seam safe: a capability flag and the
 // member it gates are the same fact.
 //
 // The hosts are imported directly, not through `$host`, because the point is
@@ -49,8 +49,8 @@ describe("the hosts as a set", () => {
     it("borrows the browser's USB stack only where there is nothing else", () => {
         // Which transport `device()` uses, not whether it has one. Both browser
         // hosts borrow Chromium's WebUSB stack; the desktop app has a native
-        // transport. #901 turns the browser limitation into its own gate and
-        // its own sentence.
+        // transport. The gating layer turns the browser limitation into its own gate
+        // and its own sentence.
         expect(web.platform.usbViaWebUsb).toBe(true);
         expect(dev.platform.usbViaWebUsb).toBe(true);
         expect(desktop.platform.usbViaWebUsb).toBe(false);
@@ -64,7 +64,7 @@ describe("the hosts as a set", () => {
     it("links back to the site only where there is a site around the app", () => {
         // The desktop app is a standalone window: no docs/simulator/GitHub in
         // its chrome, tabs instead. Optional member, not a cap — a nav link has
-        // no moment of intent to gate (#901).
+        // no moment of intent to gate.
         expect(web.platform.siteNav).toBeDefined();
         expect(dev.platform.siteNav).toBeDefined();
         expect(desktop.platform.siteNav).toBeUndefined();

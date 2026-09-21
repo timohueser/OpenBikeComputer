@@ -1,15 +1,15 @@
 <!--
-  One control, one requirement (#901). Where the requirement holds this renders
-  the real thing; where it doesn't, it leaves a dead copy of the control on
-  screen with the reason underneath — so the feature is discovered at the moment
-  someone reaches for it, and the answer arrives with it.
+  One control, one requirement. Where the requirement holds this renders the real
+  thing; where it does not, it leaves a dead copy of the control on screen with the
+  reason underneath — so the feature is discovered at the moment someone reaches for
+  it, and the answer arrives with it.
 
-  Nothing platform-specific lives here or in any caller: the requirement name is
-  the whole interface, and `lib/platform/gating.ts` owns which ones hold and
-  what each one says.
+  Nothing platform-specific lives here or in any caller: the requirement name is the
+  whole interface, and `lib/platform/gating.ts` owns which ones hold and what each one
+  says.
 
-  Usage — a control backed by a platform member, checked once (and tier first,
-  browser second, so each failure gets its own sentence):
+  Usage — a control backed by a platform member, tier first and browser second, so each
+  failure gets its own sentence:
 
       <Gated need={["deviceUsb", "webUsb"]} value={platform.device}>
           {#snippet children(device)}<Transfer {device} />{/snippet}
@@ -18,37 +18,26 @@
           {/snippet}
       </Gated>
 
-  Usage — a plain gate, where the reason line is the whole point:
+  `unavailable` is optional: omit it where there is no control worth showing dead and
+  the reason line should take its place.
 
-      <Gated need="rideLibrary" />
+  **What a stand-in must be.** The same reach that makes gating work for a sighted
+  person has to work for a screen reader, so the stand-in stays in the accessibility
+  tree and carries its own state:
 
-  `unavailable` is optional: omit it where there is no control worth showing
-  dead and the reason line should simply take its place.
+    * Prefer a **natively disable-able control** with `disabled`. That alone takes it
+      out of the tab order *and* gets it announced as unavailable.
+    * Apply `aria-describedby={reason}` to it. The snippet's argument is the id of this
+      instance's reason sentence, and the pairing is what turns two adjacent things on
+      screen into one utterance.
+    * A stand-in that **is not** natively disable-able must still be unfocusable — a
+      plain `<span>` rather than an `<a href>`, or `tabindex="-1"` with
+      `aria-disabled="true"`. `inert` on the wrapper would do it, but it also hides the
+      control from assistive tech entirely, which is what this deliberately avoids.
 
-  **What a stand-in must be.** The same reach that makes gating work for a
-  sighted person has to work for a screen reader, so the stand-in stays in the
-  accessibility tree and carries its own state:
-
-    * Prefer a **natively disable-able control** — `button`, `input`, `select`,
-      `textarea`, `fieldset` — with `disabled`. That alone takes it out of the
-      tab order *and* gets it announced as unavailable, which nothing we could
-      write by hand does as well.
-    * Apply `aria-describedby={reason}` to that control. The snippet's argument
-      is the id of this instance's reason sentence (unique per instance, so
-      several gates on one page don't collide), and the pairing is what turns
-      two adjacent things on screen into one utterance: *"Send to device,
-      unavailable — USB transfers live in the desktop app."*
-    * A stand-in that **isn't** natively disable-able must still be
-      unfocusable — a plain `<span>` rather than an `<a href>`, or failing that
-      `tabindex="-1"` with `aria-disabled="true"`. Nothing here will do it for
-      you: `inert` on the wrapper would, but it also hides the control from
-      assistive tech entirely, which is the thing this is deliberately not
-      doing.
-
-  The reason's link stays outside the association on purpose. It is a real,
-  focusable link and should be reached as one — folding it into the description
-  would flatten it into recited text and leave the next step unreachable by
-  keyboard navigation.
+  The reason's link stays outside the association on purpose. It is a real, focusable
+  link and should be reached as one — folding it into the description would flatten it
+  into recited text and leave the next step unreachable by keyboard.
 -->
 <script lang="ts" generics="T">
     import type { Snippet } from "svelte";
@@ -72,8 +61,7 @@
 
     const blocked = $derived(unmet(need, value));
     // Per instance, so two gates in one column describe their own controls.
-    // `$props.id()` has to be a declaration initializer on its own, hence two
-    // lines; the prefix is only there to make the markup readable.
+    // `$props.id()` has to be a declaration initializer on its own, hence two lines.
     const uid = $props.id();
     const reasonId = `gate-reason-${uid}`;
 </script>
