@@ -494,6 +494,10 @@ elevation from any other source.
   "cell_log2": 19,
   "terrain_revision": 4,
   "attribution": "produced using Copernicus WorldDEM-30 © DLR e.V. …",
+  "references": [
+    { "key": "ch", "product": "swissALTI3D 2 m",
+      "attribution": "© swisstopo", "licence": "Open data, attribution required" }
+  ],
   "cell_index": {
     "cell_count": 812,
     "known_empty_count": 37,
@@ -512,9 +516,18 @@ elevation from any other source.
 | `cell_log2` | integer | `log2(S)` of the terrain cell, µdeg, `10 … 28`. Independent of any band's. |
 | `terrain_revision` | integer | Monotone content revision of the terrain store, ≥ 1. |
 | `attribution` | string | Non-empty source credit (§13.5). |
+| `references` | array | Optional. The finer reference models the raster's crest lifts come from. |
 | `cell_index` | object | The single pinned index: `cell_count`, `known_empty_count`, `bytes`, `sha256`, `url`. |
 
-All are required when the block is present. The pin is the §8 machinery reused whole
+`references` carries one entry per source that **any published cell** is derived from
+(OBCT §9), sorted by `key`. Each entry is `{ "key", "product", "attribution",
+"licence" }`, all non-empty strings. The producer copies them from the reference
+archive, which is the only place the required wording lives. The array is absent when
+no published cell used a reference, which is the common case; it is never empty when
+present. `attribution` at the top of the block stays the base dataset's credit — a
+reference supplies summit heights, it does not replace the source.
+
+All other fields are required when the block is present. The pin is the §8 machinery reused whole
 — exact byte length, lowercase SHA-256, and a URL carrying that digest immediately
 before the final extension — and §9's integrity rules apply to it and to every object
 it names, unchanged.
@@ -579,6 +592,14 @@ A terrain re-bake is a complete terrain cutover for the same reason a schema bum
 complete OBCM cutover: a raster resampled at a new posting or from a new dataset
 release does not join at a seam with one that was not.
 
+A **reference archive change is a terrain revision bump**. A new release of a finer
+reference model moves baked samples wherever it changes a crest (OBCT §9), exactly as a
+new release of the base dataset does, and a raster baked against two archives does not
+join at a seam either. §13.4 therefore turns it into a nav re-bake as well, because the
+router's per-edge ascents were integrated from the surface that moved. A producer MAY
+re-bake only the cells the changed archive tiles reach — the raster is a pure function
+of each square — but every published cell MUST carry the new `terrain_revision`.
+
 ### 13.3 A region's terrain selection
 
 A region's satellite lists its terrain cell ids in `terrain` (§6), by the same
@@ -638,6 +659,12 @@ display terrain — the map builder, the docs, anything that ships derived raste
 MUST take the string from the catalog rather than hard-coding it, so a dataset change
 carries its own notice with it. A producer MUST NOT publish a terrain block with an
 empty `attribution`.
+
+**The obligation covers every entry of `references` as well.** A crest baked from a
+national elevation model is derived from that model, and its licence requires the same
+credit. A consumer that displays `attribution` MUST display every listed reference's
+`attribution` in the same place, and MUST NOT hard-code any of them. A producer MUST
+NOT publish a cell derived from a source it cannot state an entry for.
 
 ### 13.6 Known-empty terrain
 
