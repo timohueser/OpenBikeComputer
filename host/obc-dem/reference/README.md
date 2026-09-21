@@ -217,24 +217,44 @@ reading in the tail is a follow-up.
 
 ## Sources
 
-`ch` is implemented. The rest of the table is the registry of what the archive will hold: the
-sources with an adapter, the ones that arrive through `--input` because a download needs a login,
-and the candidates.
+The registry is `ingest/sources/`. A source with an adapter is fetched by `ingest <key>`; a source
+without one is a row that records the licence, the attribution and the datum, and says how to get
+the rasters for `--input`.
 
 ### Open services, no key
 
-| key | country | step | product | licence | attribution | adapter |
+| key | country | step | product | licence | attribution | protocol |
 | --- | --- | --- | --- | --- | --- | --- |
-| `ch` | Switzerland | 2 m | swissALTI3D | Open data, attribution required | `© swisstopo` | STAC, in the tool |
-| `fr` | France | 1 m | RGE ALTI (IGN) | Licence Ouverte | `© IGN` | planned |
-| `us` | United States | 1 m | 3DEP (USGS) | Public domain | `USGS 3DEP` | planned |
-| `no` | Norway | 1 m | NHM DTM (Kartverket) | CC BY 4.0 | `© Kartverket` | planned |
-| `es` | Spain | 5 m | MDT05 / PNOA LiDAR (IGN) | CC BY 4.0 | `© Instituto Geográfico Nacional` | planned |
-| `nl` | Netherlands | 0.5 m | AHN DTM (PDOK) | CC BY 4.0 | `© Rijkswaterstaat / AHN` | planned |
-| `de-nw` | Germany, North Rhine-Westphalia | 1 m | DGM1 (Geobasis NRW) | dl-de/zero-2-0 | `© Geobasis NRW` | planned |
+| `ch` | Switzerland | 2 m | swissALTI3D | Open data, attribution required | `© swisstopo` | STAC |
+| `fr` | France | 1 m | RGE ALTI (IGN) | Licence Ouverte | `© IGN` | WMS, float32 BIL |
+| `us` | United States | 1 m | 3DEP (USGS) | Public domain | `USGS 3DEP` | ArcGIS `exportImage` |
+| `no` | Norway | 1 m | NHM DTM (Kartverket) | CC BY 4.0 | `© Kartverket` | WCS 1.0.0 |
+| `es` | Spain | 5 m | MDT05 / PNOA LiDAR (IGN) | CC BY 4.0 | `© Instituto Geográfico Nacional` | WCS 2.0.1 |
+| `nl` | Netherlands | 0.5 m | AHN DTM (PDOK) | CC BY 4.0 | `© Rijkswaterstaat / AHN` | WCS 2.0.1 |
+| `de-nw` | Germany, North Rhine-Westphalia | 1 m | DGM1 (Geobasis NRW) | dl-de/zero-2-0 | `© Geobasis NRW` | WCS 2.0.1 |
 
-Germany publishes elevation per state, each with its own service. NRW is in the registry because
-its WCS needs nothing else; the other states follow the same pattern and are a registry row each.
+Germany publishes elevation per state, each on its own service, so `de-*` is a family of rows and
+not one adapter. Where the protocol is the same the code is the same.
+
+### The vertical datum of each source
+
+A source cannot be registered without one: the archive is orthometric metres, and the bakery
+compares the reference against Copernicus on EGM2008. Every datum below is **orthometric**, so no
+adapter here needs a geoid conversion.
+
+| key | vertical datum | what the agency documents |
+| --- | --- | --- |
+| `ch` | LN02 / LHN95 | swisstopo's national levelling network |
+| `fr` | NGF-IGN69 | IGN's levelling network for mainland France |
+| `us` | NAVD88 | 3DEP heights, through the GEOID12B/GEOID18 model |
+| `no` | NN2000 | Kartverket's current height system |
+| `es` | REDNAP, EVRS-aligned | IGN levels MDT05 on REDNAP, whose origin is the mean sea level at Alicante, and documents REDNAP as connected to the European levelling network |
+| `nl` | NAP | Normaal Amsterdams Peil |
+| `de-nw` | DHHN2016 | the German height reference |
+
+An **ellipsoidal** product is a different matter, and it is refused rather than ingested: it stands
+tens of metres away from an orthometric height, which is the size of a lift. Converting one is
+CP6's concern, with the drop-in sources.
 
 ### Sources that need a key, a login or a bulk download
 
@@ -256,6 +276,48 @@ exactly like a fetched raster.
 
 Alpine Italy is the first of these to matter: a border ridge with coverage on one side only shows
 the step between a lifted and an unlifted node in contours and profiles.
+
+### The live probes
+
+Every adapter is verified against one published summit. The box is about 2 km on a side, the
+ingest is the command in the next section, and **got** is the maximum the archive tile holds
+after max-pooling — not the service's own raster, so the number below is the one the baker
+would read.
+
+| key | summit | expected | got | note |
+| --- | --- | --- | --- | --- |
+| `fr` | Puy de Sancy, 45.5282 N 2.8140 E | 1885 m | 1880 m | The `HIGHRES` WMS layer resamples off IGN's Lambert-93 grid, so a sharp summit arrives a few metres low. At Le Brévent above Chamonix the same box reads 2507 m where the map says 2525 m. Low costs nothing: the bakery does not lift where the reference is below Copernicus. |
+| `us` | Mount Elbert, 39.1178 N 106.4453 W | 4401 m | 4401 m | |
+| `no` | Galdhøpiggen, 61.6363 N 8.3125 E | 2469 m | 2468 m | |
+| `es` | Torre de Cerredo, 43.1975 N 4.8536 W | 2650 m | 2647 m | MDT05 is a 5 m product and answers `int16`. |
+| `nl` | Vaalserberg, 50.7540 N 6.0209 E | 322 m | 323 m | Two of the four requests came back wholly void: the box reaches into Belgium and Germany, where AHN stops. The run prints the void fraction, so a nearly empty answer is visible. |
+| `de-nw` | Langenberg, 51.2769 N 8.5592 E | 843 m | 844 m | 7.9 % void, because the summit is on the Hesse border and NRW's DGM stops there. |
+
+### Ingesting a source
+
+One box at a time, and the work directory is a cache: a second run of the same box downloads
+nothing. These are the verification boxes the table above was measured over.
+
+```sh
+cd host/obc-dem/reference
+A=/tmp/reference/archive
+
+python3 ingest.py ingest ch    --bbox 8.3800,46.7800,8.4200,46.8200 --archive $A --work /tmp/fetch/ch
+python3 ingest.py ingest fr    --bbox 2.8019,45.5204,2.8259,45.5364 --archive $A --work /tmp/fetch/fr
+python3 ingest.py ingest us    --bbox -106.4583,39.1091,-106.4323,39.1265 --archive $A --work /tmp/fetch/us
+python3 ingest.py ingest no    --bbox 8.2925,61.6230,8.3325,61.6496 --archive $A --work /tmp/fetch/no
+python3 ingest.py ingest es    --bbox -4.8666,43.1888,-4.8406,43.2062 --archive $A --work /tmp/fetch/es
+python3 ingest.py ingest nl    --bbox 6.0079,50.7453,6.0339,50.7627 --archive $A --work /tmp/fetch/nl
+python3 ingest.py ingest de-nw --bbox 8.5462,51.2682,8.5722,51.2856 --archive $A --work /tmp/fetch/de-nw
+
+python3 ingest.py check --archive $A
+```
+
+A **country-scale** ingest is the same command with the country's box, and it is an owner-run job:
+it downloads hundreds of gigabytes and takes days per country. Run one source at a time, keep the
+work directory on a disk with room for the source rasters, and `check` the archive before
+`publish`. The tail holds one source raster plus the tiles it touches in memory, so a product that
+publishes per tile costs nothing extra however large the box is.
 
 ### What makes a good reference
 

@@ -1,13 +1,19 @@
 """What every adapter is: the manifest facts, and a way to obtain rasters for a box."""
 
+import os
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 
 from ..lattice import Refuse
 
 HTTP_TIMEOUT = 300
+
+# What is worth taking out of a downloaded archive. A `.asc` grid carries no CRS of its
+# own, so a source that ships one states the CRS in its registry row.
+RASTER_SUFFIXES = {".tif", ".tiff", ".asc"}
 
 
 class Source:
@@ -56,6 +62,61 @@ class ManualSource(Source):
 
     def fetch(self, bbox, workdir) -> list[Path]:
         raise Refuse(f"{self.key}: {self.why}. Fetch the rasters by hand and pass --input")
+
+
+def http_download(url: str, path: Path) -> Path:
+    """Stream one file to disk, which is how a bulk product of several gigabytes arrives.
+
+    The bytes land beside the name and are moved onto it at the end, so a download that
+    was cut short is never mistaken for a complete one by the next run.
+    """
+
+    if path.exists():
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    part = path.with_name(path.name + ".part")
+    try:
+        with urllib.request.urlopen(url, timeout=HTTP_TIMEOUT) as response:
+            total = int(response.headers.get("Content-Length") or 0)
+            done = 0
+            with part.open("wb") as handle:
+                while chunk := response.read(1 << 20):
+                    handle.write(chunk)
+                    done += len(chunk)
+                    if total:
+                        print(f"\r    {path.name}: {done / total:.0%} of {total / 1e6:.0f} MB",
+                              end="", flush=True)
+        print()
+    except urllib.error.HTTPError as error:
+        part.unlink(missing_ok=True)
+        raise Refuse(f"{url}: HTTP {error.code}") from error
+    os.replace(part, path)
+    return path
+
+
+def unpack(archive: Path, into: Path) -> list[Path]:
+    """The rasters inside a downloaded archive, extracted once.
+
+    A bulk product arrives as a zip of tiles. Only rasters are taken out of it, and a
+    member whose name reaches outside the directory is refused rather than written.
+    """
+
+    rasters = []
+    with zipfile.ZipFile(archive) as bundle:
+        for member in bundle.namelist():
+            suffix = Path(member).suffix.lower()
+            if suffix not in RASTER_SUFFIXES:
+                continue
+            target = (into / Path(member).name).resolve()
+            if not str(target).startswith(str(into.resolve())):
+                raise Refuse(f"{archive}: the member `{member}` reaches outside {into}")
+            if not target.exists():
+                into.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(bundle.read(member))
+            rasters.append(target)
+    if not rasters:
+        raise Refuse(f"{archive}: holds no raster; it is not what the registry expected")
+    return sorted(rasters)
 
 
 def http_get(url: str) -> bytes:
