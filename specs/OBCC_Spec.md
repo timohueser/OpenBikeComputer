@@ -519,13 +519,15 @@ elevation from any other source.
 | `references` | array | Optional. The finer reference models the raster's crest lifts come from. |
 | `cell_index` | object | The single pinned index: `cell_count`, `known_empty_count`, `bytes`, `sha256`, `url`. |
 
-`references` carries one entry per source that **any published cell** is derived from
-(OBCT §9), sorted by `key`. Each entry is `{ "key", "product", "attribution",
-"licence" }`, all non-empty strings. The producer copies them from the reference
-archive, which is the only place the required wording lives. The array is absent when
-no published cell used a reference, which is the common case; it is never empty when
-present. `attribution` at the top of the block stays the base dataset's credit — a
-reference supplies summit heights, it does not replace the source.
+`references` carries one entry per source **a published cell's bake decoded** (OBCT §9),
+sorted by `key`. A source the bake could have read and did not — a tile the producer's
+mirror lacked, or coverage that stops short — contributes no entry, because the map does
+not contain its data. Each entry is `{ "key", "product", "attribution", "licence" }`;
+`key` MUST be kebab-case and the other three MUST be non-empty. The producer copies them
+from the reference archive, which is the only place the required wording lives. The array
+is absent when no published cell used a reference, which is the common case; it is never
+empty when present. `attribution` at the top of the block stays the base dataset's credit
+— a reference supplies summit heights, it does not replace the source.
 
 All other fields are required when the block is present. The pin is the §8 machinery reused whole
 — exact byte length, lowercase SHA-256, and a URL carrying that digest immediately
@@ -664,7 +666,7 @@ empty `attribution`.
 national elevation model is derived from that model, and its licence requires the same
 credit. A consumer that displays `attribution` MUST display every listed reference's
 `attribution` in the same place, and MUST NOT hard-code any of them. A producer MUST
-NOT publish a cell derived from a source it cannot state an entry for.
+NOT publish a cell whose bake decoded a source it cannot state an entry for.
 
 ### 13.6 Known-empty terrain
 
