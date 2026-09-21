@@ -213,30 +213,45 @@ class Ingest(ArchiveCase):
         self.assertLess(int((data == 1000).sum()), west_only)  # the 50 m overlap took the higher value
         self.assertEqual(covered, int((data == 1000).sum()) + int((data == 1100).sum()))
 
-    def test_priority_decides_who_holds_a_tile(self):
-        """A finer source replaces a coarser one's tile; the coarser one never comes back."""
+    def test_priority_decides_pixels_not_whole_tiles(self):
+        """A better source wins the pixels it covers, and nothing else.
+
+        Coverage stops at borders and survey edges, so a better source over one corner of a
+        tile must not take the rest of the tile away from the source that does cover it.
+        """
 
         ingest.SOURCES.update({"nl": local_source("nl"), "es": local_source("es")})
         self.addCleanup(lambda: [ingest.SOURCES.pop(key) for key in ("nl", "es")])
         coarse = source_raster(self.inputs / "coarse.tif", np.full((SIDE, SIDE), 1000.0, dtype="float32"))
-        fine = self.root / "fine"
-        fine.mkdir()
-        source_raster(fine / "fine.tif", np.full((SIDE, SIDE), 900.0, dtype="float32"))
+        corner = self.root / "corner"
+        corner.mkdir()
+        # A quarter of the coarse source's square, in its north-west corner, reading lower.
+        source_raster(corner / "corner.tif", np.full((SIDE // 2, SIDE // 2), 900.0, dtype="float32"),
+                      transform=grid())
 
         self.ingest("es", coarse)
-        self.assertEqual(self.index()["tiles"], {self.only_tile()[0]: "es"})
-
-        self.ingest("nl", fine / "fine.tif", inputs=fine)
         tile, path = self.only_tile()
+        self.assertEqual(self.index()["tiles"], {tile: "es"})
         with rasterio.open(path) as src:
-            self.assertEqual(int(src.read(1).max()), 900)  # replaced, not merged
-        self.assertEqual(self.index()["tiles"], {tile: "nl"})
-        self.assertEqual(sorted(self.index()["sources"]), ["nl"])
+            whole = src.read(1)
+        covered = int((whole == 1000).sum())
 
-        self.ingest("es", coarse)
+        self.ingest("nl", corner / "corner.tif", inputs=corner)
         with rasterio.open(path) as src:
-            self.assertEqual(int(src.read(1).max()), 900)  # left alone
-        self.assertEqual(self.index()["tiles"], {tile: "nl"})
+            data = src.read(1)
+        self.assertGreater(int((data == 900).sum()), 0)  # the better source took its corner
+        self.assertGreater(int((data == 1000).sum()), 0)  # and left the rest with `es`
+        self.assertEqual(int((data == 900).sum()) + int((data == 1000).sum()), covered)
+        self.assertEqual(self.index()["tiles"], {tile: "nl"})  # the best contributor
+        self.assertEqual(sorted(self.index()["sources"]), ["es", "nl"])  # both attributions travel
+        for key in ("es", "nl"):
+            manifest = json.loads((self.archive / "sources" / f"{key}.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["tiles"], [tile])
+
+        self.ingest("es", coarse)  # the coarser source cannot take the corner back
+        with rasterio.open(path) as src:
+            again = src.read(1)
+        self.assertTrue((again == data).all())
 
     def test_voids_arrive_as_nodata_whatever_the_source_calls_them(self):
         """A float32 NaN, an integer sentinel and the float maximum are all one void."""
