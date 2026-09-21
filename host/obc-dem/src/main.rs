@@ -187,6 +187,15 @@ fn bake(args: &[String]) -> Result<(), String> {
         _ => unreachable!("checked above"),
     };
     summarise(&report);
+    // A mirror carries the whole index and the tiles of one box, so a tile the index names and the
+    // mirror lacks is normal at the edges and a short copy in the middle. Either way it costs lifts
+    // without failing, so the count is the operator's only sight of it.
+    if let Some(archive) = archive.filter(|a| a.absent_tiles() > 0) {
+        println!(
+            "{} tile(s) the index names are not in this archive — lifts there were skipped",
+            archive.absent_tiles()
+        );
+    }
     println!("\n{SOURCE_DATASET}: {COPERNICUS_ATTRIBUTION}");
     if reference.is_some() {
         println!("\nThe reference DEM keeps its own attribution, which must travel with this container.");

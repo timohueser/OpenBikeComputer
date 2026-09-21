@@ -246,6 +246,10 @@ pub struct ReferenceArchive {
     /// Every source with a surviving pixel in a tile, best first — `index.json`'s `contributors`,
     /// which is what attribution reads.
     contributors: BTreeMap<(u32, u32), Vec<String>>,
+    /// Tiles the index names that this root does not hold. A mirror of one box is the ordinary
+    /// reason and no error; a copy that stopped half way is the reason an operator has to be told.
+    /// Distinct ids, so a tile two cells both read is counted once.
+    absent: std::cell::RefCell<BTreeSet<(u32, u32)>>,
 }
 
 impl ReferenceArchive {
@@ -284,7 +288,7 @@ impl ReferenceArchive {
             };
             contributors.insert(key, sources);
         }
-        Ok(ReferenceArchive { root: root.to_path_buf(), contributors })
+        Ok(ReferenceArchive { root: root.to_path_buf(), contributors, absent: Default::default() })
     }
 
     /// Tiles the index names.
@@ -307,9 +311,18 @@ impl ReferenceArchive {
         }
         let path = self.root.join(format!("{TILE_LOG2}/{ti:04}/{tj:04}.tif"));
         if !path.is_file() {
+            self.absent.borrow_mut().insert((ti, tj));
             return Ok(None);
         }
         ReferenceTile::open(&path, ti, tj).map(Some)
+    }
+
+    /// How many distinct tiles a bake asked for that the index names and this root does not hold.
+    ///
+    /// Zero is what a mirror of the baked box should report. Anything else is a mirror that is
+    /// short of the box it was made for, which costs lifts silently — so a caller reports it.
+    pub fn absent_tiles(&self) -> usize {
+        self.absent.borrow().len()
     }
 
     /// Every source that contributed a pixel to a tile this window reads, sorted — the attribution
