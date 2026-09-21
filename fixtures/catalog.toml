@@ -56,10 +56,19 @@ summary = "Every currently registered simulator scenario"
 packages = ["sim-peak-view", "sim-freiburg"]
 scenarios = ["grimsel", "monaco-upahead", "assistant-out-and-back", "assistant-forward-rejoin", "assistant-loop-crossing", "assistant-monaco-dense", "assistant-dunlough-access"]
 
+[packages.peak-view-photos]
+summary = "Seven Engelberg photographs, the skyline read off each, and the terrain shard Peak View is measured on"
+archive = "packages/07f07668fec11c73bfd173c7039aee4d7e1ffe2c4fd5bdba266e1508bb9fd4ad.tar.gz"
+sha256 = "07f07668fec11c73bfd173c7039aee4d7e1ffe2c4fd5bdba266e1508bb9fd4ad"
+bytes = 19955630
+provenance = "Photographs taken near Engelberg by the owner, who also gave the four positions; EXIF stripped in transit, so the lens is fitted. Each skyline was read once from its photograph through a camera registered on 2 m swissALTI3D, and only the quarter-degree columns the reference agrees with within 0.5 degrees are kept. The OBCT v3 shard is Copernicus GLO-30 tiles N46_E007, N46_E008, N47_E007 and N47_E008 on the box 46.66,7.86,47.19,8.92, with swissALTI3D crest lifts from a 24-tile reference archive ingested 2026-09-21: 83,516 samples lifted, the largest by 391 m. Method, digests and per-view caveats: package README.md and fixtures/sources/peak-view/photos/README.md."
+license = "CC-BY-4.0 (photographs, © Timo Hüser); Copernicus DEM Licence (terrain base); swisstopo open data, attribution required (swissALTI3D crest lifts); GPL-3.0-only (the read skylines). See package README.md."
+tracked_sources = { "photos/hahnen.json" = "sources/peak-view/photos/hahnen.json", "photos/rigidalstock-from-brunni.json" = "sources/peak-view/photos/rigidalstock-from-brunni.json", "photos/urnerstaffel.json" = "sources/peak-view/photos/urnerstaffel.json", "photos/below-titlis.json" = "sources/peak-view/photos/below-titlis.json", "photos/below-west.json" = "sources/peak-view/photos/below-west.json", "photos/top-south.json" = "sources/peak-view/photos/top-south.json", "photos/top-north.json" = "sources/peak-view/photos/top-north.json" }
+
 [profiles.test]
 summary = "All external fixture packages exercised by the full repository test suite"
 scenarios = ["grimsel", "monaco-upahead"]
-packages = []
+packages = ["peak-view-photos"]
 
 [packages.assistant-osm]
 summary = "Pinned OSM sources for Ride Assistant: Switzerland, Monaco and regional West Cork"

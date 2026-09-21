@@ -108,6 +108,11 @@ pub struct Builder {
     north: [f32; RAYS],
     east: [f32; RAYS],
     cutoff: [usize; RAYS],
+    /// The skyline row of each finished panorama column. The drawn tones cannot answer this — a
+    /// sunlit face and the sky share tone 0 — and the photo regression test measures the drawn
+    /// skyline. Host test builds only.
+    #[cfg(any(test, feature = "external-fixtures"))]
+    skyline: [u16; COLUMNS],
     depth: [[u16; ROWS]; DRAW_RAYS],
     tones: [[u8; ROWS]; DRAW_RAYS],
     thresholds: [f32; ROWS],
@@ -216,6 +221,13 @@ impl Builder {
     pub fn complete(&self) -> bool {
         self.finished == u64::MAX
     }
+
+    /// The topmost row terrain reached in a finished panorama column, or [`ROWS`] where the column
+    /// is all sky. Column zero points north and each one is `360 / COLUMNS` degrees wide.
+    #[cfg(any(test, feature = "external-fixtures"))]
+    pub fn skyline_row(&self, column: usize) -> usize {
+        usize::from(self.skyline[column % COLUMNS])
+    }
     pub fn progress(&self) -> u8 {
         (self.panorama.finished.count_ones() * 100 / SECTORS as u32) as u8
     }
@@ -283,7 +295,14 @@ impl Builder {
             self.depth[2..].fill([NO_DEPTH; ROWS]);
             self.tones[2..].fill([0; ROWS]);
         }
+        let halo = self.reuse_halo.then(|| [self.cutoff[SECTOR], self.cutoff[SECTOR + 1]]);
         self.cutoff.fill(ROWS);
+        // The two reused bearings keep their skyline as well as their pixels. Their rays are out of
+        // the mask below, so nothing would fill it again.
+        if let Some([first, second]) = halo {
+            self.cutoff[0] = first;
+            self.cutoff[1] = second;
+        }
         self.ray_mask = if self.labels_only { 0 } else { (1 << DRAW_RAYS) - 1 };
         for ray in 0..RAYS {
             let (bearing_q8, catalogue) = if self.labels_only {
@@ -797,6 +816,10 @@ impl Builder {
 
     fn finish_sector(&mut self) {
         for ray in 1..=SECTOR {
+            #[cfg(any(test, feature = "external-fixtures"))]
+            {
+                self.skyline[self.sector + ray - 1] = self.cutoff[ray] as u16;
+            }
             for row in 0..ROWS {
                 let depth = self.depth[ray][row];
                 let mut tone = self.tones[ray][row];

@@ -30,7 +30,20 @@ heapless = "0.8"
 # shim the renderer and route crates use.
 libm = { version = "0.2", default-features = false } # no arch asm: identical correctly-rounded results, keeps the suite Miri-runnable (the #501 alignment-UB tripwire)
 
+[features]
+# Host-only. It turns on the captured-fixture test targets and the small read-only accessors they
+# need; the device build never enables it and carries none of it.
+external-fixtures = []
+
 [dev-dependencies]
 # The hand-written OBCM v6 byte builder shared by the reader/renderer tests — the POIs-browser
 # integration tests (#425) use `build_poi_map` to synthesise a v6 map with real POIs to snapshot.
 obcm-testkit = { path = "../../host/obcm-testkit" }
+# The external fixture registry, and the JSON the Peak View photo skylines are recorded in. Both
+# are dev-only and host-only: a dev-dependency is never part of the device build.
+obc-fixtures = { path = "../../host/obc-fixtures" }
+serde_json = "1"
+
+[[test]]
+name = "peak_view_photos"
+required-features = ["external-fixtures"]

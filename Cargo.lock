@@ -2664,6 +2664,7 @@ dependencies = [
  "heapless 0.8.0",
  "libm",
  "obc-elevation",
+ "obc-fixtures",
  "obc-formats",
  "obc-map-scene",
  "obc-ports",
@@ -2671,6 +2672,7 @@ dependencies = [
  "obc-render",
  "obc-route",
  "obcm-testkit",
+ "serde_json",
 ]
 
 [[package]]
