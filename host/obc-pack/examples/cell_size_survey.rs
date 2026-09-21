@@ -1,33 +1,28 @@
-//! `cell_size_survey` — measure an `.obcm` the way a **cell catalog** would have to store it
-//! (epic #1016, deliverable D1).
+//! Measure an `.obcm` the way a cell catalog would have to store it.
 //!
-//! The cell design's one free parameter is the cell *size* per band, and the only honest way to
-//! choose it is to look at where the bytes actually are in a real bake. This example reads a packed
-//! map through the same `obc-reader` the device uses and reports two things:
+//! The cell design's one free parameter is the cell size per band, and the only honest way to choose
+//! it is to look at where the bytes are in a real bake. This example reads a packed map through the
+//! same `obc-reader` the device uses and reports two things.
 //!
-//! 1. **Section budget** — per-LOD region bytes (index + offset table + chunk data, the three parts
-//!    of OBCM_Spec §3), plus the POI section, the hours pool, and the nav-graph section. This says
-//!    which LODs are worth cell-splitting at all and how big a *core file* (styles + nav + POIs, and
-//!    no geometry at all — OBCA_Spec §5.1) would be, which is the one size in a volume set that
-//!    cannot be reduced by splitting.
-//! 2. **Per-cell byte distribution** — for each candidate cell size, the LOD's chunk bytes binned
-//!    into cells of the fixed global grid (`--grid-origin`, default −2^28 µdeg on both axes), so a
-//!    shard-count and fetch-count model has a measured distribution rather than an average.
+//! The section budget: per-LOD region bytes (index, offset table and chunk data), plus the POI
+//! section, the hours pool and the nav-graph section. That says which LODs are worth cell-splitting
+//! at all, and how big a core file would be, which is the one size in a volume set that cannot be
+//! reduced by splitting.
 //!
-//! Binning is **area-proportional**: a leaf's bytes are split across the cells it overlaps in
-//! proportion to the overlapped area. For a fine LOD, whose leaves are far smaller than a cell,
-//! that is exact — every leaf lands wholly inside one cell. For a coarse LOD it is a model, and a
-//! deliberately conservative one: real per-cell bakes re-simplify and re-split, so a cut leaf's two
-//! halves cost slightly *more* than the fractions reported here (two chunk headers, two sentinels).
-//! The nav section is binned by junction: each §8.3 record's exact byte length lands in its own
-//! coordinate's cell, and the edge pool is pro-rated by each cell's share of junctions (an edge
-//! record is shared by two endpoints, and fetching millions of them to attribute exactly would cost
-//! more than the precision is worth).
+//! The per-cell byte distribution: for each candidate cell size, the LOD's chunk bytes binned into
+//! cells of the fixed global grid, so a shard-count and fetch-count model has a measured
+//! distribution rather than an average.
 //!
-//! Read-only and additive: no packer or reader behaviour is touched. The band sizes it produced —
-//! `2^20` coarse / `2^19` mid / `2^18` fine + network — are normative in
-//! [`OBCA_Spec.md`](../../../specs/OBCA_Spec.md) §1.5 as **schema data**, so re-running this on new
-//! bakes is how those numbers get retuned.
+//! Binning is area-proportional: a leaf's bytes are split across the cells it overlaps in proportion
+//! to the overlapped area. For a fine LOD, whose leaves are far smaller than a cell, that is exact.
+//! For a coarse LOD it is a deliberately conservative model, since a real per-cell bake re-simplifies
+//! and re-splits, so a cut leaf's two halves cost slightly more than the fractions reported here. The
+//! nav section is binned by junction: each record's exact byte length lands in its own coordinate's
+//! cell, and the edge pool is pro-rated by each cell's share of junctions.
+//!
+//! Read-only and additive: no packer or reader behaviour is touched. The band sizes it produced are
+//! normative in [`OBCA_Spec.md`](../../../specs/OBCA_Spec.md) as schema data, so re-running this on
+//! new bakes is how those numbers get retuned.
 //!
 //! ```sh
 //! cargo run --release --example cell_size_survey -- switzerland.obcm
@@ -40,11 +35,10 @@ use std::process::ExitCode;
 use obc_map_scene::BBox;
 use obc_reader::{MapCache, MapTables, Reader, SliceSource};
 
-/// Origin of the fixed global cell grid, in microdegrees, on **both** axes (epic #1016 §1). A
-/// power of two so that every candidate cell size divides the origin offset exactly, and negative
-/// enough to contain the whole geographic domain (±90e6 / ±180e6) — the grid is defined over a
-/// square µdeg world because an OBCM quadtree halves both axes together, so cells must be square
-/// in µdeg for a cell to ever coincide with a quadtree node.
+/// Origin of the fixed global cell grid, in microdegrees, on both axes. A power of two so that every
+/// candidate cell size divides the origin offset exactly, and negative enough to contain the whole
+/// geographic domain. The grid is square in µdeg because an OBCM quadtree halves both axes together,
+/// so cells must be square for one to ever coincide with a quadtree node.
 const DEFAULT_GRID_ORIGIN: i64 = -(1 << 28);
 
 /// Candidate cell sizes, as `log2(µdeg)`: 2^18 ≈ 0.26°, 2^19 ≈ 0.52°, 2^20 ≈ 1.05°, 2^21 ≈ 2.10°.
@@ -174,9 +168,9 @@ fn report_cells(name: &str, cells: &CellBytes) {
     );
 }
 
-/// Read the `k`-th entry of a LOD's v11 offset table (§5.1) straight out of the file bytes. The
-/// reader keeps its chunk-extent math private (it is a bounds-checked internal), and a survey wants
-/// every chunk's length rather than one chunk's extent, so the table is read here directly.
+/// Read the `k`-th entry of a LOD's offset table straight out of the file bytes. The reader keeps
+/// its chunk-extent math private, and a survey wants every chunk's length rather than one chunk's
+/// extent.
 fn offset_entry(bytes: &[u8], table_start: usize, k: usize) -> Option<u32> {
     let at = table_start.checked_add(k.checked_mul(4)?)?;
     let raw: [u8; 4] = bytes.get(at..at + 4)?.try_into().ok()?;
@@ -205,10 +199,8 @@ fn survey(path: &str, opts: &Options) -> Result<(), String> {
         bbox.max_lon as f64 / 1e6,
     );
 
-    // --- 1. Section budget -------------------------------------------------------------------
-    //
-    // Per LOD, the three parts of the region (§3) plus a byte density, so LODs are comparable
-    // across maps of different size.
+    // 1. Section budget: per LOD, the three parts of the region plus a byte density, so LODs are
+    // comparable across maps of different size.
     println!("\n-- per-LOD regions --");
     println!(
         "{:>3}  {:>9}  {:>7}  {:>9}  {:>10}  {:>11}  {:>10}  {:>9}",
@@ -260,9 +252,8 @@ fn survey(path: &str, opts: &Options) -> Result<(), String> {
         100.0 * geom_total / bytes.len() as f64
     );
 
-    // --- 2. Per-cell distributions ------------------------------------------------------------
-    //
-    // Walk each LOD's leaves once per LOD and bin into every candidate cell size in the same pass.
+    // 2. Per-cell distributions: walk each LOD's leaves once and bin into every candidate cell size
+    // in the same pass.
     let mut leaves: Vec<Vec<(BBox, f64)>> = Vec::new();
     for (i, l) in r.lods().iter().enumerate() {
         let table_start = (l.index_offset + (l.node_count * 4) as u64) as usize;
@@ -287,8 +278,8 @@ fn survey(path: &str, opts: &Options) -> Result<(), String> {
     if opts.nav && !nav.is_empty() {
         let mut scratch = vec![0u8; nav.chunk_size];
         let mut seen: HashSet<u32> = HashSet::new();
-        // §8.2 bin-packing means a leaf walk can yield the same record more than once — dedupe by
-        // `Node Id`, exactly as A* settle does.
+        // Bin-packing means a leaf walk can yield the same record more than once, so dedupe by node
+        // id, exactly as the router's settle does.
         r.for_each_nav_node(&bbox, &mut scratch, |n| {
             if seen.insert(n.id) {
                 nav_nodes.push((n.lat, n.lon, (13 + 15 * n.degree()) as f64));
