@@ -228,11 +228,10 @@ describe("downloadCells", () => {
     });
 
     it("survives a connection dropped mid-cell, which is the failure that ends real runs", async () => {
-        // The one observed on 2026-08-09: the CDN closes the connection part-way
-        // through a multi-megabyte cell, the reader ends clean and short, and a
-        // run of hundreds of cells throws away everything it had. Retrying is
-        // safe because the object is digest-pinned — the second attempt cannot
-        // slip past the check that the first one failed.
+            // The CDN can close the connection part-way through a multi-megabyte cell: the reader
+            // ends clean and short, and a run of hundreds of cells throws away everything it had.
+            // Retrying is safe because the object is digest-pinned — the second attempt cannot slip
+            // past the check that the first one failed.
         const { plan } = await fixtures();
         const victim = plan.items[2];
         const whole = bodyFor("fine/18/1204/1052");
@@ -386,8 +385,8 @@ describe("downloadCells", () => {
             downloadCells(plan, {
                 fetchImpl: impl,
                 concurrency: 2,
-                // One attempt, so the truncated slot's partial bytes are released
-                // at the same point in the run this test was written around.
+                    // One attempt, so the truncated slot's partial bytes are released at the same
+                    // point in the run.
                 attempts: 1,
                 onCell: () => {},
                 onProgress: (p) => reports.push(p.receivedBytes),
