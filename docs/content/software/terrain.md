@@ -161,6 +161,12 @@ moves the bottom of the frame. Terrain and labels share the projection, while be
 distances and visibility stay geographic. Turning changes neither the scale nor the horizon
 position. Lighting has a fixed northwest world direction, so turning does not change the shading.
 
+The eye is 2 m above the ground the observer stands on. That ground is the map-referenced altitude
+when the altimeter has settled and the value agrees with the observer's terrain cell, or the highest
+corner of that cell if it does not. The four lattice nodes of the cell the rider stands in are
+clamped to the rider's own height, so the ground under the rider never blocks the view and the
+surface stays continuous.
+
 The renderer requests terrain out to 100 km. Missing distant coverage is marked with dashed bearing
 segments. Missing terrain at the observer or a storage read failure makes the
 view unavailable. Absent geographic cells are skipped without traversing their individual samples.
