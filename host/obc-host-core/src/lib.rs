@@ -10,7 +10,7 @@
 //! - [`NavPlan`] and [`commit_nav_plan`] — the resumable route planner held across frames, one
 //!   bounded step per frame, and the shared commit tail.
 //! - [`flat_map`] and [`flat_store`] — map objects and revision-pinned readers on shared memory,
-//!   temporary-file, or explicitly opened persistent Unix card media.
+//!   temporary-file, or explicitly opened persistent card media.
 //! - [`terrain`] — bounded elevation sampling from the exact retained map on the shared card.
 //! - [`trace`] — typed, normalized in-memory behavior traces and policy-free outcome scheduling,
 //!   which the DeviceCore conformance matrix is built on.
