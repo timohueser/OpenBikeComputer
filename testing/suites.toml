@@ -14,19 +14,16 @@ schema = 2
 
 # ── Cargo packages with facts Cargo cannot derive ───────────────────────────
 
-# The vector files are a contract, not a dependency: a codec consumer never imports them. The
-# captured planner exports are the same: the importer reads them, nothing imports them.
+# The vector files are a contract, not a dependency: a codec consumer never imports them.
 [[package]]
 name = "obc-app"
-triggers = ["specs/vectors/**", "fixtures/sources/route-import/**"]
+triggers = ["specs/vectors/**"]
 
-# It also reads the SwiftPM duplicate, to hold it identical to the canonical copy.
+# The captured planner export is under `fixtures/`, which already selects every unit that declares
+# fixture inputs. Its SwiftPM duplicate is not, and only this suite holds the two identical.
 [[package]]
 name = "obc-route"
-triggers = [
-  "fixtures/sources/route-import/**",
-  "companion-ios/Packages/OBCKit/Sources/OBCMock/Fixtures/sample-import.gpx",
-]
+triggers = ["companion-ios/Packages/OBCKit/Sources/OBCMock/Fixtures/sample-import.gpx"]
 
 [[package]]
 name = "obc-formats"
@@ -154,7 +151,6 @@ triggers = [
   "builder/app/package-lock.json",
   "builder/app/vite.config.ts",
   "specs/vectors/**",
-  "fixtures/sources/route-import/**",
   "host/obc-flat-device/**",
 ]
 

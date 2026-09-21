@@ -5,13 +5,13 @@
 //! `gpx_to_obcr`, the resident table the Map draws from, and the names on the panel.
 
 use embedded_graphics::pixelcolor::Rgb888;
-use obc_formats::io::{ByteSink, Error, SliceSource};
+use obc_formats::io::SliceSource;
 use obc_ports::{Fix, RideClock, Sensors};
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader};
 use obc_render::text::{text_width, Font};
 use obc_route::{RouteIndex, RouteReader, RouteSummary, MAX_POINTS_PER_CHUNK};
 
-use crate::harness::support::{build_min_obcm, wpts_from_obcr, Buf, OnceFix};
+use crate::harness::support::{build_min_obcm, wpts_from_obcr, Buf, OnceFix, VecSink};
 use crate::screen::map::chip_band_box;
 use crate::screen::palette::PARCHMENT;
 use crate::settings::WaypointMode;
@@ -21,20 +21,6 @@ const KOMOOT: &[u8] =
     include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/sources/route-import/komoot-schwarzwald.gpx"));
 
 const PANEL: (i32, i32) = (240, 320);
-
-#[derive(Default)]
-struct VecSink(Vec<u8>);
-impl ByteSink for VecSink {
-    fn write(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        self.0.extend_from_slice(bytes);
-        Ok(())
-    }
-    fn patch_at(&mut self, offset: u32, bytes: &[u8]) -> Result<(), Error> {
-        let at = offset as usize;
-        self.0[at..at + bytes.len()].copy_from_slice(bytes);
-        Ok(())
-    }
-}
 
 fn obcr(gpx: &[u8]) -> Vec<u8> {
     let mut sink = VecSink::default();
