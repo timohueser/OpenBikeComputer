@@ -740,6 +740,13 @@ A lift MUST NOT be negative: section 9 raises crests, and a reference that sits 
 a hollow is not a reason to edit the lattice there. A producer MUST NOT use a lift to carry any
 other correction; a systematic disagreement with the source is a re-bake of the source, not a lift.
 
+There is **no ceiling** on a lift, and a producer MUST NOT cap one. Measured over Engelberg the
+largest lift is 413 m, where Copernicus GLO-30 reads a notch in a rock wall that the 2 m reference
+does not; the reference is the better measurement there, so a clamp would put the error back. A
+spike in a reference looks the same from here, though, so a producer MUST report the largest lift of
+a run, the node it is at, and how many lifts exceed 200 m. That is how an operator sees a broken
+reference, instead of finding it in a drawn panorama.
+
 A change of reference archive changes the baked samples, so it is a terrain revision bump and hence
 a navigation re-bake (`OBCC_Spec.md` §13.4). The reference DEM keeps its own attribution, which
 MUST travel with every container derived from it.
