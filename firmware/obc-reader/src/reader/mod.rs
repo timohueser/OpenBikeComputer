@@ -1,16 +1,12 @@
 //! OBCM format reader: header, style table, LOD table, per-LOD quadtree query and chunk decode,
-//! the POI directory with its hours pool, and the nav-graph section (parse and leaf walk only).
+//! the POI directory with its hours pool, and the nav-graph section.
 //!
-//! All coordinates are integer microdegrees, as stored in the file. Projection to screen space is
-//! the renderer's job.
+//! All coordinates are integer microdegrees, as stored in the file.
 //!
 //! The reader streams through a [`ByteSource`]: only the header, style table and LOD table stay
-//! resident (parsed once in [`MapTables`]); the quadtree index and geometry chunks are pulled on
-//! demand, so the whole `.obcm` never has to fit in RAM.
-//!
-//! `read_at` takes `&self`, so the lazy reads go through an internal [`MapCache`] behind a
-//! `RefCell`. The cache changes only *when* a byte is read, never *what* decodes, so renders stay
-//! byte-identical.
+//! resident, so the whole `.obcm` never has to fit in RAM. `read_at` takes `&self`, so the lazy
+//! reads go through an internal [`MapCache`] behind a `RefCell`, which changes when a byte is
+//! read and never what decodes.
 
 mod cache;
 mod errors;
@@ -54,15 +50,13 @@ use obc_formats::obcm::{
 use obc_formats::obcm::{MAGIC, STYLE_RECORD_LEN, VERSION};
 use obc_map_scene::{BBox, LineStyle, Style, StyleFlags};
 
-/// Hard cap on quadtree recursion depth in [`Reader::walk_leaves`]. A well-formed tree is far
-/// shallower, so this never rejects a real map. It matters for a corrupt one: once the node bbox
-/// subdivides to a point the quadrants stop shrinking while `intersects(view)` stays true, so an
-/// unbounded walk recurses until the stack overflows.
+/// Hard cap on quadtree recursion depth. A well-formed tree is far shallower. It matters for a
+/// corrupt one: once the node bbox subdivides to a point the quadrants stop shrinking while
+/// `intersects(view)` stays true, so an unbounded walk overflows the stack.
 const MAX_QUADTREE_DEPTH: u32 = 32;
 
-/// A flat `uint32` quadtree index over the header's global bbox, the layout a geometry [`Lod`] and
-/// a POI category share. The leaf walk needs only where the index starts and how many nodes it
-/// holds, so [`Reader::walk_leaves`] serves the geometry walk and the POI query alike.
+/// A flat `uint32` quadtree index over the header's global bbox, shared by a geometry [`Lod`] and
+/// a POI category, so one [`Reader::walk_leaves`] serves both.
 trait QuadIndex {
     /// Byte offset of node 0 in the file.
     fn index_offset(&self) -> u64;
@@ -70,36 +64,30 @@ trait QuadIndex {
     fn node_count(&self) -> usize;
 }
 
-/// What follows a `node_count`-node index begins right behind it, at `index_offset + node_count *
-/// 4`. `None` on `u64` overflow, which a corrupt `index_offset` or `node_count` can reach. What
-/// follows differs per section, which is why the callers name it and this does not.
+/// What follows a `node_count`-node index begins at `index_offset + node_count * 4`. `None` on
+/// `u64` overflow, which a corrupt directory can reach.
 #[inline]
 fn index_end(index_offset: u64, node_count: usize) -> Option<u64> {
     (node_count as u64).checked_mul(4)?.checked_add(index_offset)
 }
 
-/// The same convention for a section whose chunks are addressed by a scaled offset: they begin at
-/// `align_up(index_offset + node_count * 4, U)`, one rounding step past the index. The index and
-/// the offset table are read by 4-byte indexing, so neither needs a boundary of its own.
+/// The same convention where chunks are addressed by a scaled offset: they begin one rounding
+/// step past the index, which itself needs no boundary because it is read by 4-byte indexing.
 #[inline]
 fn aligned_index_end(scale: OffsetScale, index_offset: u64, node_count: usize) -> Option<u64> {
     scale.align_up(index_end(index_offset, node_count)?)
 }
 
-/// Resolve one stored scaled offset field to a byte position in this file.
-///
-/// The scale rides inside [`ScaledOffset`], so an offset read from one file cannot be resolved
-/// against another file's unit. A resolved offset is bounded by the source's own length: each
-/// parse refuses a section that reaches past `total`, and the [`ByteSource`] refuses the read.
+/// Resolve one stored scaled offset field to a byte position in this file. The scale rides inside
+/// [`ScaledOffset`], so an offset read from one file cannot be resolved against another's unit.
 #[inline]
 pub(crate) fn resolve(offset: ScaledOffset) -> u64 {
     offset.bytes()
 }
 
 /// Byte range `[start, end)` of chunk `chunk_id` in a section whose chunks lie a fixed
-/// `chunk_size` apart from `data_start` (the POI and nav sections; LOD chunk data is packed tight
-/// behind an offset table instead). `chunk_id` comes straight from a quadtree leaf, so it is
-/// arbitrary in a corrupt map: `None` covers an out-of-range id and any `u64` overflow.
+/// `chunk_size` apart from `data_start`. `chunk_id` comes from a quadtree leaf, so it is arbitrary
+/// in a corrupt map: `None` covers an out-of-range id and any overflow.
 #[inline]
 fn fixed_chunk_range(
     data_start: Option<u64>,
@@ -116,8 +104,8 @@ fn fixed_chunk_range(
     Some((start, end))
 }
 
-/// The OBCM header fields that describe a map without touching any geometry, decoded before a
-/// single byte of style table, index or chunk is read. [`MapTables::parse`] carries on from here.
+/// The OBCM header fields that describe a map without touching any geometry, decoded before any
+/// style table, index or chunk byte is read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MapHeader {
     pub version: u8,
@@ -140,16 +128,15 @@ pub struct TerrainRegion {
     pub offset: u64,
     /// The region's length. `Terrain Length` counts units, so this is the container's byte length
     /// rounded up and the tail is filler: a consumer must bound its reads by the container's own
-    /// structure and must not derive the payload length from this.
+    /// structure.
     pub len: u64,
 }
 
-/// Decode and validate the fixed OBCM header: magic, version, bbox, marker color, the offset scale
-/// and the terrain region.
+/// Decode and validate the fixed OBCM header: magic, version, bbox, marker color, offset scale and
+/// terrain region.
 ///
-/// The version byte is a hard cut, and it cuts in both directions. The refusal is the file's, not
-/// the section's: nothing is partially readable across the cut, because a section offset that
-/// means the wrong unit lands somewhere plausible rather than somewhere obviously wrong.
+/// The version byte is a hard cut in both directions, and the refusal is the file's: a section
+/// offset that means the wrong unit lands somewhere plausible rather than obviously wrong.
 pub(crate) fn parse_header(h: &[u8; HEADER_LEN]) -> Result<MapHeader, Error> {
     if h[0..4] != MAGIC {
         return Err(Error::BadMagic);
@@ -158,15 +145,14 @@ pub(crate) fn parse_header(h: &[u8; HEADER_LEN]) -> Result<MapHeader, Error> {
     if version != VERSION {
         return Err(Error::BadVersion);
     }
-    // Header field order: lat,lon,lat,lon (see `obc-pack`'s `serialize.rs` header pack).
+    // Header field order: lat, lon, lat, lon.
     let min_lat = rd_i32(h, 5);
     let min_lon = rd_i32(h, 9);
     let max_lat = rd_i32(h, 13);
     let max_lon = rd_i32(h, 17);
     let marker_color = rd_u16(h, 30);
     let scale = OffsetScale::new(h[HEADER_OFFSET_SCALE_OFF]).map_err(|_| Error::BadScale)?;
-    // `0` means the map carries no elevation, and `Terrain Length` must then be `0` too. A file
-    // that sets one without the other is refused rather than half-believed.
+    // `0` means no elevation, and `Terrain Length` must then be `0` too.
     let terrain_offset = scale.offset(rd_u32(h, HEADER_TERRAIN_OFFSET_OFF));
     let terrain_len = scale.offset(rd_u32(h, HEADER_TERRAIN_LENGTH_OFF));
     if terrain_offset.is_zero() != terrain_len.is_zero() {
@@ -181,21 +167,19 @@ pub(crate) fn parse_header(h: &[u8; HEADER_LEN]) -> Result<MapHeader, Error> {
 }
 
 /// The prefix every OBCM parse begins with, decoded and bounds-checked once: the fixed header plus
-/// the LOD table's position. [`MapTables::parse`] goes on to the style table and the POI and nav
-/// sections, whose offsets it reads out of the retained `header` bytes.
+/// the LOD table's position.
 pub(crate) struct HeaderPrologue {
     /// The raw header bytes, kept so a caller can decode the fields the prologue does not own.
     pub header: [u8; HEADER_LEN],
     pub map: MapHeader,
     pub lod_count: usize,
     pub lod_table_offset: u64,
-    /// The file's length, already read from the source — every offset check above used it.
+    /// The file's length, already read from the source.
     pub total: u64,
 }
 
-/// Read + validate the shared prologue from `src`. A file shorter than the header, with the wrong
-/// magic / version, or with a LOD table that is empty, wraps `u64`, or runs past EOF is rejected
-/// here, so neither parse has to restate the check.
+/// Read and validate the shared prologue. A file shorter than the header, with the wrong magic or
+/// version, or with a LOD table that is empty, wraps `u64` or runs past EOF is rejected here.
 pub(crate) fn parse_prologue(src: &dyn ByteSource) -> Result<HeaderPrologue, Error> {
     let total = src.len();
     if total < HEADER_LEN as u64 {
@@ -210,8 +194,8 @@ pub(crate) fn parse_prologue(src: &dyn ByteSource) -> Result<HeaderPrologue, Err
         return Err(Error::BadOffset);
     }
     if let Some(region) = map.terrain {
-        // The window has to be inside the file it is a window onto. What is in it is the terrain
-        // consumer's problem: an unreadable raster is not a broken map.
+        // The window has to be inside the file it is a window onto; what is in it is the terrain
+        // consumer's problem.
         let end = region.offset.checked_add(region.len).ok_or(Error::BadOffset)?;
         if end > total {
             return Err(Error::BadOffset);
@@ -219,7 +203,7 @@ pub(crate) fn parse_prologue(src: &dyn ByteSource) -> Result<HeaderPrologue, Err
     }
     crate::landmarks::map_region(&header, total)?;
     // Checked: `lod_table_offset` is an arbitrary header u32 scaled by an arbitrary unit, so the
-    // table-end can wrap `u64` and slip past the guard below.
+    // table end can wrap `u64` and slip past the guard below.
     let lod_table_end = (lod_count as u64)
         .checked_mul(LOD_ENTRY_LEN as u64)
         .and_then(|len| lod_table_offset.checked_add(len))
@@ -231,47 +215,38 @@ pub(crate) fn parse_prologue(src: &dyn ByteSource) -> Result<HeaderPrologue, Err
 }
 
 /// The session-resident, immutable map tables: header scalars, style table and LOD pyramid. Parsed
-/// once per `.obcm`, then borrowed by a cheap per-frame [`Reader::new`]. Keeping the per-frame
-/// reader to tens of bytes is what holds the deep route-load render path inside the nRF's stack
-/// reserve.
+/// once per `.obcm`, then borrowed by a cheap per-frame [`Reader::new`], which is what holds the
+/// deep route-load render path inside the nRF's stack reserve.
 pub struct MapTables {
     pub version: u8,
     pub bbox: BBox,
-    /// User-position marker color (RGB565), resolved to a device pixel by the host's color policy
-    /// like style colors.
+    /// User-position marker color (RGB565).
     pub marker_color: u16,
-    /// The file's offset unit, retained so a lazily-read offset-table entry resolves against this
-    /// file's scale and no other's.
+    /// The file's offset unit, so a lazily-read offset-table entry resolves against this file.
     scale: OffsetScale,
     /// The embedded terrain region, or `None` for a map with no elevation.
     terrain: Option<TerrainRegion>,
     /// LOD layers ordered coarsest (0) → finest (N-1). Always at least one.
     lods: Vec<Lod, 16>,
-    /// The parsed POI directory. Always present, with some categories possibly empty, plus the
-    /// hours-pool offset and count.
+    /// The parsed POI directory, always present, plus the hours-pool offset and count.
     pois: PoiDirectory,
     /// The parsed nav directory, always present and possibly an empty graph. With the profile
-    /// table it is the graph's only resident state; everything else streams.
+    /// table it is the graph's only resident state.
     nav: NavDirectory,
     /// The parsed routing profiles (1..=8, always present): at most 8 × 56 B resident.
     profiles: heapless::Vec<MapProfile, NAV_MAX_PROFILES>,
     /// Styles indexed by id (0..=255) for O(1) lookup during rendering.
     styles: [Option<Style>; 256],
-    /// The backdrop style, resolved once at parse so the per-frame lookup is a field read rather
-    /// than a 256-slot scan.
+    /// The backdrop style, resolved at parse so the per-frame lookup is a field read.
     backdrop: Option<Style>,
-    /// Session-unique parse identity, never 0 (a zeroed [`MapCache`] sits at generation 0, which
-    /// means unowned). [`Reader::new`] hands it to the cache, which self-clears when it last
-    /// served a different parse, so a map switch cannot cross-serve stale chunks.
+    /// Session-unique parse identity, never 0. The cache self-clears when it last served a
+    /// different parse, so a map switch cannot cross-serve stale chunks.
     generation: u32,
 }
 
 impl MapTables {
-    /// Parse the header scalars, style table and LOD pyramid from `src`. This is the one
-    /// expensive, allocating step (a 2048-byte style scratch plus the table reads), so do it once
-    /// per map and hand the result to [`Reader::new`] each frame. A map that is shorter than the
-    /// header, or carries the wrong magic or version, or has out-of-range table offsets, is
-    /// rejected.
+    /// Parse the header scalars, style table and LOD pyramid. The one expensive, allocating step,
+    /// so do it once per map and hand the result to [`Reader::new`] each frame.
     pub fn parse(src: &dyn ByteSource) -> Result<MapTables, Error> {
         let HeaderPrologue { header, map, lod_count, lod_table_offset, total } = parse_prologue(src)?;
         let MapHeader { version, bbox, marker_color, scale, terrain } = map;
@@ -279,9 +254,8 @@ impl MapTables {
         let poi_section_offset = resolve(scale.offset(rd_u32(&header, 32)));
         let nav_section_offset = resolve(scale.offset(rd_u32(&header, 36)));
 
-        // The style table cannot start inside the header, and it does not start at its end
-        // either: the header is no whole number of units at any scale above `0`, so the table
-        // begins at the first unit boundary at or after it and the gap is filler.
+        // The style table does not start at the header's end: the header is no whole number of
+        // units, so the table begins at the first unit boundary past it and the gap is filler.
         let style_floor = scale.align_up(HEADER_LEN as u64).ok_or(Error::BadOffset)?;
         if style_offset < style_floor || style_offset > total {
             return Err(Error::BadOffset);
@@ -293,12 +267,10 @@ impl MapTables {
         let pois = parse_poi_directory(src, scale, poi_section_offset, total)?;
         let nav = parse_nav_directory(src, scale, nav_section_offset, total)?;
         let profiles = parse_nav_profiles(src, &nav)?;
-        // Resolve the backdrop (lowest `z_index`, ties by lowest id) once here; the table is
-        // immutable after parse, so the per-frame lookup never re-scans the 256 slots.
+        // Resolve the backdrop once; the table is immutable after parse.
         let backdrop = styles.iter().filter_map(|s| s.as_ref()).min_by_key(|s| (s.z_index, s.id)).copied();
-        // Stamp a session-unique generation. `fetch_add + 1` starts the first parse at 1, so 0 is
-        // never live and a zero-initialized cache always reads as unowned. `Relaxed` suffices:
-        // the counter is the only shared state and only uniqueness matters.
+        // `fetch_add + 1` starts the first parse at 1, so 0 is never live and a zero-initialized
+        // cache always reads as unowned. `Relaxed` suffices: only uniqueness matters.
         static GEN: AtomicU32 = AtomicU32::new(0);
         let generation = GEN.fetch_add(1, Ordering::Relaxed) + 1;
         Ok(MapTables {
@@ -323,18 +295,16 @@ impl MapTables {
         self.scale
     }
 
-    /// The embedded terrain region, or `None` for a map with no elevation.
-    ///
-    /// The reader forms a window and hands it over; it never parses the container. A consumer
-    /// whose OBCT parse fails must fall back to no elevation and must still mount, render and
-    /// route: a rider whose raster is unreadable has the map they would have had without one.
+    /// The embedded terrain region, or `None` for a map with no elevation. The reader forms a
+    /// window and never parses the container: a consumer whose OBCT parse fails must fall back to
+    /// no elevation and still mount, render and route.
     #[inline]
     pub fn terrain(&self) -> Option<TerrainRegion> {
         self.terrain
     }
 
-    /// Whether LOD `lod` is written empty in this file's LOD table (`Index Node Count == 0`). A
-    /// mount-time predicate for I/O avoidance over one file's own table, and nothing more.
+    /// Whether LOD `lod` is written empty in this file's LOD table: a mount-time predicate for
+    /// I/O avoidance, and nothing more.
     pub fn lod_is_empty(&self, lod: usize) -> bool {
         self.lods.get(lod).is_none_or(|entry| entry.node_count() == 0)
     }
@@ -349,8 +319,8 @@ impl MapTables {
         &self.styles
     }
 
-    /// The map's routing profiles (1..=8, always present). Lets a host mirror the profile names
-    /// into the app UI straight off the parsed tables, without building a per-frame [`Reader`].
+    /// The map's routing profiles, so a host can mirror their names into the UI straight off the
+    /// parsed tables.
     pub fn nav_profiles(&self) -> &[MapProfile] {
         &self.profiles
     }
@@ -360,31 +330,26 @@ impl MapTables {
         self.backdrop.as_ref()
     }
 
-    /// Whether the map carries a non-empty nav graph. A graph-less map dims the Detour station
-    /// instead of failing a plan.
+    /// Whether the map carries a non-empty nav graph.
     pub fn has_nav_graph(&self) -> bool {
         !self.nav.is_empty()
     }
 }
 
 pub struct Reader<'a> {
-    /// The byte source the index and geometry chunks stream from. `&dyn`, not a generic, so
-    /// signatures holding a `&Reader` need no `<S>` parameter.
+    /// The byte source the index and geometry chunks stream from. `&dyn`, so a `&Reader` needs no `<S>`.
     src: &'a dyn ByteSource,
-    /// Header scalars, copied from [`MapTables`] so field access stays direct while the big
-    /// tables stay borrowed.
+    /// Header scalars, copied from [`MapTables`] so field access stays direct.
     pub version: u8,
     pub bbox: BBox,
     pub marker_color: u16,
-    /// The session-resident immutable tables, parsed once and borrowed here, so a per-frame
-    /// `Reader` carries no styles or lods of its own.
+    /// The session-resident immutable tables, parsed once and borrowed here.
     tables: &'a MapTables,
-    /// Borrowed lazy-read cache for the streamed index and geometry, reusable across frames. It
-    /// keeps its own `RefCell` because `read_at` takes `&self` but the cache mutates; the borrows
-    /// are tightly scoped, so the index-node read and the chunk decode never overlap.
+    /// Borrowed lazy-read cache for the streamed index and geometry. It keeps its own `RefCell`
+    /// because `read_at` takes `&self` but the cache mutates; the borrows are tightly scoped.
     cache: &'a MapCache,
-    /// False only when construction legally re-entered an already borrowed cache. Streamed calls
-    /// then return `CacheError::Busy`; reconstructing the cheap reader is the retry.
+    /// False only when construction legally re-entered an already borrowed cache. Reconstructing
+    /// the cheap reader is the retry.
     cache_ready: bool,
 }
 
@@ -399,12 +364,10 @@ impl<'a> Reader<'a> {
         self.src
     }
 
-    /// Build a per-frame reader over the pre-parsed [`MapTables`], a `src`, and a `cache` the
-    /// geometry and index reads stream through. Cheap: it borrows the tables and copies only the
-    /// header scalars, with no parse and no SD read. The cache is caller-owned and reusable across
-    /// frames; pass a fresh [`MapCache::new`] if you keep none. The cache adopts these tables'
-    /// parse generation here, so building a reader over a different map's tables auto-clears the
-    /// stale slots and no manual [`MapCache::clear`] is needed.
+    /// Build a per-frame reader over the pre-parsed [`MapTables`], a `src` and a caller-owned
+    /// `cache`. Cheap: it borrows the tables and copies only the header scalars. The cache adopts
+    /// these tables' parse generation, so a reader over a different map auto-clears the stale
+    /// slots and no manual [`MapCache::clear`] is needed.
     pub fn new(src: &'a dyn ByteSource, tables: &'a MapTables, cache: &'a MapCache) -> Reader<'a> {
         let cache_ready = cache.adopt(tables.generation).is_ok();
         Reader {
@@ -418,15 +381,13 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// Snapshot of the chunk-cache + streaming counters. Cumulative over the cache's life, so the
-    /// renderer reports the per-frame delta.
+    /// Snapshot of the cache and streaming counters, cumulative over the cache's life.
     #[inline]
     pub fn chunk_cache_stats(&self) -> CacheStats {
         self.try_chunk_cache_stats().unwrap_or_default()
     }
 
-    /// Fallible cache-counter snapshot for callers that must tell legal contention from an
-    /// actually empty cache.
+    /// Fallible snapshot for callers that must tell legal contention from an empty cache.
     #[inline]
     pub(crate) fn try_chunk_cache_stats(&self) -> Result<CacheStats, CacheError> {
         if !self.cache_ready {
@@ -440,16 +401,14 @@ impl<'a> Reader<'a> {
         self.tables.styles.get(id as usize).and_then(|s| s.as_ref())
     }
 
-    /// The backdrop style: the one at the bottom of the paint order (lowest `z_index`, ties broken
-    /// by lowest id). Its color fills the screen before any geometry is drawn. `None` only for an
-    /// empty style table.
+    /// The backdrop style, at the bottom of the paint order. Its color fills the screen before any
+    /// geometry. `None` only for an empty style table.
     pub fn backdrop_style(&self) -> Option<&Style> {
         self.tables.backdrop.as_ref()
     }
 
-    /// Read node `idx` of a [`QuadIndex`], streamed through the index block cache. `None` on a
-    /// read failure, and the walk then skips that subtree. `idx < node_count` and the index region
-    /// lies within the file, both guaranteed by the callers, so the offset never overflows `u64`.
+    /// Read node `idx` of a [`QuadIndex`] through the index block cache. `None` on a read failure,
+    /// and the walk then skips that subtree. The callers guarantee `idx < node_count`.
     #[inline]
     fn read_node(&self, index: &dyn QuadIndex, idx: usize) -> Result<u32, MapReadError> {
         if !self.cache_ready {
@@ -466,9 +425,7 @@ impl<'a> Reader<'a> {
     }
 
     /// Visit `(chunk_id, node_bbox)` for every non-empty leaf of a [`QuadIndex`] overlapping
-    /// `view`, walking the flat `u32` tree over the header's global bbox. The geometry walk and
-    /// the POI query share the node encoding, so one implementation serves both. `index` is `&dyn`
-    /// so the recursive walk is not monomorphized twice.
+    /// `view`. `index` is `&dyn` so the recursive walk is not monomorphized twice.
     fn walk_leaves<F: FnMut(u32, BBox)>(
         &self,
         index: &dyn QuadIndex,
@@ -478,13 +435,12 @@ impl<'a> Reader<'a> {
         depth: u32,
         visit: &mut F,
     ) -> Result<(), MapReadError> {
-        // The depth cap is the hard stack bound against a corrupt cyclic branch; a well-formed
-        // tree never reaches it.
+        // The depth cap is the hard stack bound against a corrupt cyclic branch.
         if idx >= index.node_count() || depth > MAX_QUADTREE_DEPTH || !node.intersects(view) {
             return Ok(());
         }
-        // Read the node before descending or visiting, so the index-cache borrow is released
-        // before a leaf's `visit` triggers a geometry-chunk read.
+        // Read the node before descending, so the index-cache borrow is released before a leaf's
+        // `visit` triggers a geometry-chunk read.
         let val = self.read_node(index, idx)?;
         if val & BRANCH_BIT == 0 {
             if val != EMPTY_LEAF {
@@ -493,14 +449,12 @@ impl<'a> Reader<'a> {
             return Ok(());
         }
         let child = (val & !BRANCH_BIT) as usize;
-        // The packer flattens the quadtree breadth-first, so a branch's children always lie after
-        // it. A back- or self-reference (`child <= idx`) appears only in a corrupt map and would
-        // re-enter a node already on the stack; the depth cap above is the backstop.
+        // The packer flattens the quadtree breadth-first, so a branch's children lie after it. A
+        // back-reference appears only in a corrupt map and would re-enter a node on the stack.
         if child <= idx {
             return Err(MapReadError::Malformed);
         }
-        // Floor-division midpoints must match the packer's split, so reader and writer agree on
-        // every node bbox.
+        // Floor-division midpoints must match the packer's split.
         let mid_lon = (node.min_lon + node.max_lon).div_euclid(2);
         let mid_lat = (node.min_lat + node.max_lat).div_euclid(2);
         // NW, NE, SW, SE
@@ -517,15 +471,13 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Parse the style table from `src` at `style_offset` into the caller's `styles` (cleared first).
-/// The table is small, so it is pulled in two reads: the count byte, then the records. A truncated
-/// table is tolerated — the walk stops at the last whole record — but a failed read or a
-/// `style_offset` at or past EOF is [`Error::BadOffset`], because an all-`None` table would let
-/// the map load and render nothing with no error to surface.
+/// Parse the style table into the caller's `styles`, cleared first. A truncated table is
+/// tolerated, stopping at the last whole record, but a failed read or a `style_offset` at or past
+/// EOF is [`Error::BadOffset`], because an all-`None` table would let the map load and render
+/// nothing.
 ///
-/// The out-param and `inline(never)` are deliberate: with the array in the return value, the
-/// several KB of scratch inline into the device `main`'s permanent frame and the ride path
-/// overflows the stack. The scratch must stay in a frame that pops before `run_app` starts.
+/// The out-param and `inline(never)` keep the several KB of scratch out of the device `main`'s
+/// permanent frame, where the ride path overflows the stack.
 #[inline(never)]
 fn parse_styles(
     src: &dyn ByteSource,
@@ -534,17 +486,16 @@ fn parse_styles(
     styles: &mut [Option<Style>; 256],
 ) -> Result<(), Error> {
     styles.fill(None);
-    // `MapTables::parse`'s header guard admits `style_offset == total`; there is no count byte to
-    // read there, so treat it as the corrupt header it is rather than a silently-empty table.
+    // The header guard admits `style_offset == total`, where there is no count byte, so treat it
+    // as the corrupt header it is.
     if style_offset >= total {
         return Err(Error::BadOffset);
     }
     let mut cb = [0u8; 1];
     src.read_at(style_offset, &mut cb).map_err(Error::Source)?;
     let count = cb[0] as usize;
-    // `count*8` record bytes follow the count, clamped to what the file holds so the break below
-    // stops at the last whole record in a truncated table. `count` is a single byte, so `count * 8`
-    // fits `usize` on every target and the `min` can only make it smaller.
+    // `count*8` record bytes follow the count, clamped to what the file holds. `count` is one
+    // byte, so the product fits `usize` everywhere and the `min` can only shrink it.
     let avail = total - (style_offset + 1);
     let want = ((count * STYLE_RECORD_LEN) as u64).min(avail) as usize;
     let mut buf = [0u8; 256 * STYLE_RECORD_LEN];
@@ -562,12 +513,11 @@ fn parse_styles(
         let weight = buf[o + 4];
         let flags = buf[o + 5];
         let priority = (flags & STYLE_PRIORITY_MASK) + 1;
-        // The two color2 bytes are always present; the flag bit — not a `0x0000` sentinel — decides
-        // whether they carry a color (black `0x0000` is a legal secondary color).
+        // The two color2 bytes are always present; the flag bit, not a `0x0000` sentinel, decides
+        // whether they carry a colour.
         let color2 = if flags & STYLE_HAS_COLOR2_BIT != 0 { Some(rd_u16(&buf, o + 6)) } else { None };
         // Bit 4 takes the style off the width ramp, bit 5 files it under the terrain layer, and
-        // bit 6 makes the line ticked. Bit 7 stays reserved and is ignored, not rejected. Ticked
-        // wins over dashed, so a record setting both still draws one way.
+        // bit 6 makes the line ticked. Bit 7 is reserved and ignored. Ticked wins over dashed.
         let line = if flags & STYLE_TICKED_BIT != 0 {
             LineStyle::Ticked
         } else if flags & STYLE_DASHED_BIT != 0 {
@@ -616,9 +566,8 @@ mod tests {
     use obc_formats::cache::INDEX_BLOCK;
     use obc_formats::io::Error as IoError;
 
-    /// A `ByteSource` reproducing a flaky-SD partial overwrite: the read at offset `fail_at`
-    /// copies `partial` bytes into the destination and then returns `Err`. Every other read is
-    /// filled from `data`. `SliceSource` copies in one shot and cannot reproduce this.
+    /// A `ByteSource` reproducing a flaky-SD partial overwrite: the read at `fail_at` copies
+    /// `partial` bytes and then returns `Err`. `SliceSource` copies in one shot and cannot.
     struct FlakySource<'a> {
         data: &'a [u8],
         fail_at: u64,
@@ -644,9 +593,9 @@ mod tests {
         }
     }
 
-    /// The map renderer replays an ordered quadtree walk every frame. When that cycle is larger
-    /// than the index cache, LRU has zero hits forever, because the next scan evicts every block
-    /// just before reuse. BRRIP must keep a protected subset while one probation slot takes the scan.
+    /// The renderer replays an ordered quadtree walk every frame. When that cycle is larger than
+    /// the index cache, LRU has zero hits forever, so BRRIP must keep a protected subset while
+    /// one probation slot takes the scan.
     #[test]
     fn index_cache_resists_a_repeated_scan_larger_than_capacity() {
         const WORKING_BLOCKS: usize = 18;
@@ -727,9 +676,8 @@ mod tests {
         assert_eq!(stats.chunk_hits, CHUNKS as u32, "the second five-chunk scan must be entirely RAM-only");
     }
 
-    /// A read that fails partway must leave the evicted slot *empty*, not poisoned with the old key
-    /// over a half-overwritten buffer — otherwise a later request for the old key is served as a
-    /// corrupt hit.
+    /// A read that fails partway must leave the evicted slot empty, not poisoned with the old key
+    /// over a half-overwritten buffer, which a later request would be served as a corrupt hit.
     #[test]
     fn partial_read_failure_does_not_poison_evicted_slot() {
         const LEN: usize = 64;
@@ -739,7 +687,7 @@ mod tests {
         for (k, b) in data.iter_mut().enumerate() {
             *b = (k as u8).wrapping_mul(31).wrapping_add(7); // distinct, offset-derived bytes
         }
-        // The eviction read (K_new) lives past the primed chunks (one per slot) and fails partway.
+        // The eviction read lives past the primed chunks and fails partway.
         let fail_at = (CACHE_SLOTS * LEN) as u64;
         let src = FlakySource { data: &data, fail_at, partial: 8 };
 
@@ -747,7 +695,7 @@ mod tests {
         let mut inner = cache.inner.borrow_mut();
         let node = BBox { min_lon: 0, min_lat: 0, max_lon: 1, max_lat: 1 };
 
-        // Prime all five slots. RRIP's first victim of the next miss is slot 0 (cid 0).
+        // Prime all five slots; RRIP's first victim of the next miss is slot 0.
         for cid in 0..CACHE_SLOTS as u32 {
             let loc = inner.load_chunk(&src, 0, cid, u64::from(cid) * LEN as u64, LEN, &node).unwrap();
             if cid < MAP_CHUNK_SLOTS as u32 {
@@ -760,14 +708,14 @@ mod tests {
         assert_eq!(primed.chunk_misses, CACHE_SLOTS as u32);
         assert_eq!(primed.chunk_hits, 0);
 
-        // The true bytes of K_old (cid 0), for an uncorrupted-content check after re-read.
+        // The true bytes of K_old, for the content check after re-read.
         let mut k_old = [0u8; LEN];
         src.read_at(0, &mut k_old).unwrap();
 
         // Eviction read of K_new fails partway through filling slot 0's buffer.
         assert!(matches!(inner.load_chunk(&src, 0, 99, fail_at, LEN, &node), Err(IoError::Io)));
 
-        // Request K_old again: it must be a *miss* (re-read), not a hit on the poisoned slot.
+        // Request K_old again: it must be a miss, not a hit on the poisoned slot.
         let before = inner.stats();
         let loc = inner.load_chunk(&src, 0, 0, 0, LEN, &node).unwrap();
         let after = inner.stats();
@@ -781,9 +729,8 @@ mod tests {
         }
     }
 
-    /// [`MapCache::new_boxed`] leans on a `core` implementation detail: a zeroed `RefCell` borrow
-    /// flag means unborrowed. The first `borrow_mut` here is the tripwire, plus a check that the
-    /// zeroed allocation behaves like a fresh [`MapCache::new`].
+    /// [`MapCache::new_boxed`] leans on a `core` detail: a zeroed `RefCell` borrow flag means
+    /// unborrowed. The first `borrow_mut` here is the tripwire.
     #[cfg(feature = "alloc")]
     #[test]
     fn new_boxed_is_a_fresh_unborrowed_cache() {
@@ -804,16 +751,15 @@ mod tests {
         assert_eq!(inner.stats().chunk_misses, 1, "an empty cache's first load is a miss");
     }
 
-    /// Two maps sharing a chunk key `(lod, cid, len)` but holding different bytes must not
-    /// cross-serve through a shared cache. Slots are keyed only by that triple, not by the source,
-    /// so the guarantee lives in the generation adopt inside `Reader::new`: this drives a map
-    /// switch through the public path without ever calling `clear()`.
+    /// Two maps sharing a chunk key but holding different bytes must not cross-serve through a
+    /// shared cache. Slots are keyed only by that triple, so the guarantee lives in the generation
+    /// adopt inside `Reader::new`, and this drives a map switch without ever calling `clear()`.
     #[test]
     fn map_switch_without_clear_cannot_cross_serve() {
         use obcm_testkit::{build_file, pack_line, pad, LodSpec};
 
-        // Two byte-identical layouts (same chunk key and offsets) whose one feature differs only
-        // in its delta, so the decoded endpoint tells the maps apart.
+        // Two byte-identical layouts whose one feature differs only in its delta, so the decoded
+        // endpoint tells the maps apart.
         let build = |delta: (i8, i8)| {
             build_file(
                 (0, 0, 1000, 1000),
@@ -829,7 +775,7 @@ mod tests {
         let a = build((1, 1));
         let b = build((2, 2));
 
-        /// Decode chunk `(0, 0)` and return the feature's last exterior point + the cache stats.
+        /// Decode chunk `(0, 0)` and return the feature's last exterior point and the stats.
         fn last_point(r: &Reader) -> ((i32, i32), CacheStats) {
             let mut points = Vec::<(i32, i32), 8>::new();
             let mut ring_lens = Vec::<usize, 2>::new();
@@ -849,15 +795,15 @@ mod tests {
         assert_ne!(ta.generation, 0, "0 must stay the unowned sentinel");
         assert_ne!(ta.generation, tb.generation, "each parse gets its own generation");
 
-        // Map A through the shared cache: a miss that leaves A's chunk resident under key (0,0,64).
+        // Map A: a miss that leaves A's chunk resident under the shared key.
         let cache = MapCache::new();
         let ra = Reader::new(&sa, &ta, &cache);
         let (pa, stats_a) = last_point(&ra);
         assert_eq!(pa, (11, 11), "map A's geometry");
         assert_eq!((stats_a.chunk_hits, stats_a.chunk_misses), (0, 1));
 
-        // Map B over the same cache and the same chunk key, with no `clear()`: `Reader::new`
-        // adopts B's generation, so the load must miss and serve B's bytes.
+        // Map B over the same cache and key, with no `clear()`: `Reader::new` adopts B's
+        // generation, so the load must miss and serve B's bytes.
         let rb = Reader::new(&sb, &tb, &cache);
         let (pb, stats_b) = last_point(&rb);
         assert_eq!(pb, (12, 12), "map B's geometry, not stale A bytes");
@@ -904,8 +850,7 @@ mod tests {
     }
 
     /// A style-table read that fails must surface as a parse error, not an all-`None` table that
-    /// loads and renders nothing. Both reads are exercised, the count byte and the record block. A
-    /// physically truncated table is still tolerated.
+    /// loads and renders nothing. Both reads are exercised.
     #[test]
     fn failed_style_table_read_errors_map_parse() {
         use obcm_testkit::{build_file, pack_line, pad, LodSpec};
@@ -919,8 +864,7 @@ mod tests {
                 chunk_size: 64,
             }],
         );
-        // `Style Offset` is scaled, so arm the failing read at the resolved byte, not at the
-        // field's own value.
+        // `Style Offset` is scaled, so arm the failing read at the resolved byte.
         let style_off = obcm_testkit::resolve_offset(&bytes, 21) as u64;
         // The count-byte read (at style_off), then the record-block read (at style_off + 1).
         for fail_at in [style_off, style_off + 1] {
