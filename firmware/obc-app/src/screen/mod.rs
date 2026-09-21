@@ -1027,8 +1027,8 @@ impl Screen {
     /// carried until a frame pays it — see [`clear_base_debt`](Screen::clear_base_debt).
     pub(crate) fn needs_base(&self) -> bool {
         match self {
-            Screen::QuickDrawer(s) => s.needs_base(),
-            Screen::ContextDrawer(s) => s.needs_base(),
+            Screen::QuickDrawer(s) => s.motion.needs_base(),
+            Screen::ContextDrawer(s) => s.motion.needs_base(),
             _ => false,
         }
     }
@@ -1038,8 +1038,8 @@ impl Screen {
     /// it.
     pub(crate) fn clear_base_debt(&mut self) {
         match self {
-            Screen::QuickDrawer(s) => s.clear_base_debt(),
-            Screen::ContextDrawer(s) => s.clear_base_debt(),
+            Screen::QuickDrawer(s) => s.motion.clear_base_debt(),
+            Screen::ContextDrawer(s) => s.motion.clear_base_debt(),
             _ => {}
         }
     }
@@ -1048,8 +1048,8 @@ impl Screen {
     /// still on the panel, and a sheet arriving from the opposite edge does not cover them.
     pub(crate) fn owe_base_draw(&mut self) {
         match self {
-            Screen::QuickDrawer(s) => s.owe_base(),
-            Screen::ContextDrawer(s) => s.owe_base(),
+            Screen::QuickDrawer(s) => s.motion.owe_base(),
+            Screen::ContextDrawer(s) => s.motion.owe_base(),
             _ => {}
         }
     }
