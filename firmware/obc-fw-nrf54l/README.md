@@ -988,9 +988,8 @@ root, convert its output explicitly when needed:
 target/release/obc-dem surface native.obcd indexed.obcd
 ```
 
-Use a complete regional map to check production coverage and the map-size budget. The assembler
-rejects more than 10% growth relative to the same complete map with native heights only, including
-terrain indices and alignment. Simulator fixture packages are separate acceptance inputs; see
+Use a complete regional map to check production coverage. Simulator fixture packages are
+separate acceptance inputs; see
 [the simulator README](../../apps/obc-sim/README.md).
 
 ## Landmark photo demo

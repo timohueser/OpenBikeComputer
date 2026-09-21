@@ -655,17 +655,94 @@ every coarser level selects a subset of those vertices. Thus the native maximum 
 all coarser bilinear surfaces. An 8×8 cell rectangle needs 170 index bytes plus 342 padding
 bytes. The assembler builds this index once for the selected rectangle.
 
-### 8.4 Assembly and size limit
+### 8.4 Assembly
 
 The assembler MUST preserve each published cell's complete block. It MUST NOT combine native
 and indexed cells in one container. An embedded v3 terrain region MUST also start on a 512-byte
 boundary in the complete OBCM file. Bytes used to reach this outer boundary are OBCM filler;
 bytes inside the OBCT prefix and cell blocks are zero padding.
 
-The assembler MUST compare the final map size with the equivalent map containing only v1 native
-heights over the same coverage and without the Peak View summit POI category. Other geometry,
-service POIs, navigation, and native height values remain the same. Include the summit category's
-directory, spatial tree and chunk bytes, and both formats' region and outer alignment bytes. The new size MUST satisfy
-`new_bytes <= native_map_bytes + floor(native_map_bytes / 10)`. A map that exceeds this limit
-MUST be rejected before emission, with both sizes reported. This is a whole-map limit, not a
-percentage of the terrain region.
+---
+
+## 9. Version 3 flag bit 2: crest planes
+
+A native posting of `2^9` µdeg cannot hold a rock tower. Measured against 2 m LiDAR at
+Engelberg, the bilinear surface through Copernicus GLO-30 samples runs 100 m below the Hahnen's
+summit, and a panorama drawn from it loses the one feature that makes the mountain
+recognisable. Raising the native lattice is not the answer: §1.3's raster is also the route
+profile, the contour source and the map-referenced altimeter's frame, and those want the
+measured surface, not its upper envelope.
+
+Flag bit 2 therefore adds a **crest block**: a per-cell set of non-negative lifts, one plane per
+§8.1 level, that **only a panorama consumer applies**. Ordinary elevation consumers read §1–§5
+and never see them. The lifts come from a finer reference DEM where the producer has one; a
+container may carry blocks for some cells and not others, because national LiDAR coverage stops
+at borders.
+
+### 9.1 Crest directory
+
+When flag bit 2 is set, a crest directory starts at the 512-byte boundary after §8.3's
+cross-cell index, or after the cell directory when flag bit 1 is clear. It holds one
+little-endian `uint32` per geographic cell, in the cell directory's row-major order. Zero means
+the cell has no crest block. Any other value is that block's byte offset from the container
+start and MUST be a multiple of 512. The producer MUST pad the directory to a 512-byte
+boundary. A cell that is absent from the cell directory MUST have a zero crest entry. No cell
+block, crest block or index may overlap another.
+
+### 9.2 Crest block
+
+A crest block holds one plane per §8.1 level, in the same increasing-posting order, each padded
+to a 512-byte boundary. A level's plane holds one unsigned byte per sample of that level, in the
+16×16 tile order of §2, so the plane for level `i` is a quarter of the size of the plane for
+level `i-1`. Byte `L` at a sample means the panorama surface there is
+
+```
+native + 2·L   metres,   for a native height that is not NODATA
+```
+
+`L = 0` leaves the sample unchanged, so an all-zero block and an absent block are equivalent and
+a producer SHOULD omit it. A `NODATA` native sample stays `NODATA` whatever `L` says. The two
+metre step is deliberate: the error it adds is a metre, against the tens of metres it corrects.
+`L = 255` is a lift of 510 m and is the maximum the format can express; a producer MUST clamp to
+it and SHOULD report the clamp.
+
+A block carries every level, not only the native one, because the renderer changes level with
+distance and a lift that stopped at the native level would show as a step in the skyline where
+a ridge crosses that boundary. The geometric series converges: all levels together cost four
+thirds of the native plane, which for the v1 pairing is 1,398,016 bytes before padding against
+2,097,152 bytes of native heights.
+
+Each level's lifts are computed against **that level's own** lattice, not resampled from the
+native one. A coarser lattice under-samples a crest further, so its lifts are larger. This falls
+out of applying §9.4's rule per level and needs no separate rule.
+
+### 9.3 What a crest plane obliges the producer to do
+
+Lifts are non-negative, so the panorama surface is never below the native one. That one property
+keeps the rest of the format sound, and it is why the lift is unsigned.
+
+A cell's §8.2 maximum-height nodes and error codes MUST describe the **panorama** surface at
+their own level — that level's heights with that level's lifts applied. Because a lift cannot be
+negative, such a maximum also bounds the unlifted surface, so §8.2's guarantee still holds for a
+consumer that ignores crest blocks: that consumer culls less than it could, never more. The same
+reasoning covers §8.3's cross-cell index.
+
+§8.1 still governs the stored heights: a coarser level selects native lattice posts and a crest
+block does not change them. The lift is applied by the consumer on top of the level it reads,
+which is what keeps the native heights of every level byte-identical to a container without
+crest blocks.
+
+### 9.4 What the format does not decide
+
+Which samples to lift is a producer choice, like the posting of §1.3. For each level, the v1
+bakery lifts a sample when a reference DEM's maximum within that sample's half-posting cell
+stands more than 10 m above that level's baked bilinear surface **and** the reference is locally
+convex there, then extends the selection by one sample so that a crest is lifted along its whole
+length. The
+convexity test is what keeps a steep planar slope alone; without it a coarse lattice's honest
+under-sampling of a 40° face reads as a crest and the whole mountain inflates. The one-sample
+extension is what keeps a lifted crest from alternating with its unlifted neighbours, which a
+panorama shows as a sawtooth along the skyline.
+
+A producer MUST NOT use a crest plane to carry a correction that ordinary elevation consumers
+should see. The native raster stays authoritative for elevation, gradient and climb.

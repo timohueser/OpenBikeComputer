@@ -136,7 +136,7 @@ fn generate_surface(
 ) -> Result<Box<Builder>, String> {
     let started = Instant::now();
     let mut terrain = Terrain::parse(source).map_err(|e| format!("terrain: {e:?}"))?;
-    let ground = terrain.ground_height(position.0, position.1).ok_or("no terrain at observer")?;
+    let ground = terrain.observer_ground(position.0, position.1).ok_or("no terrain at observer")?;
     let mut candidates = Default::default();
     if let Some(reader) = reader {
         obc_app::peak_view::collect_summits(reader, position, (ground + 2.0).round() as i16, &[], &mut candidates)

@@ -56,6 +56,7 @@
 #[cfg(feature = "geotiff")]
 pub mod bake;
 pub mod container;
+pub mod crest;
 #[cfg(feature = "fetch")]
 pub mod fetch;
 #[cfg(feature = "geotiff")]
