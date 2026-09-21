@@ -1,17 +1,11 @@
 //! The read seam past 4 GiB: a map whose every section lives beyond a `u32`, parsed and decoded.
 //!
-//! This is the one thing FS7.5-seam changed that anybody can observe. Until it landed,
-//! `ByteSource` was `read_at(offset: u32) / len() -> u32`, so a file above 4 GiB was one OBCM v14
-//! could express (§1.1's interior is `2^32 × U` = 64 GiB at the default scale) and nothing in this
-//! tree could open. `obcm_assemble::FILE_CEILING` was the `min` of the two walls and the reader's
-//! bound. Everything else about this slice is a type change; **this** is the capability.
-//!
-//! The map is a real one — `two_lod_file`'s bytes, feature for feature — relocated so that its
-//! style table, LOD table, quadtree indexes, chunk data, POI directory and nav section all begin
-//! past `BASE`. The header stays at byte 0, because that is the one offset the format fixes; the
-//! §1.2 gap between it and the body is filler, which is exactly what a gap is. Nothing about the
-//! *content* moves, so the assertions compare the far map's decode against the near map's: the
-//! seam may change which byte a read names, never which byte it returns.
+//! The map is a real one, `two_lod_file`'s bytes feature for feature, relocated so that its style
+//! table, LOD table, quadtree indexes, chunk data, POI directory and nav section all begin past
+//! `BASE`. The header stays at byte 0, the one offset the format fixes, and the gap between it and
+//! the body is filler. Nothing about the content moves, so the assertions compare the far map's
+//! decode against the near map's: the seam may change which byte a read names, never which byte it
+//! returns.
 
 use obc_formats::io::Error as IoError;
 use obc_map_scene::{BBox, Kind};
@@ -28,9 +22,8 @@ const CS: usize = 64;
 const GLOBAL: (i32, i32, i32, i32) = (0, 0, 1000, 1000);
 const STYLES: &[Style] = &[(1, 3, 0xF800, 2, 3, false, None), (2, -1, 0x07E0, 1, 3, false, None)];
 
-/// Where the relocated body begins: **5 GiB**, comfortably past `u32::MAX` and a whole number of
-/// units at the default scale, so every offset that names it is still a legal scaled `uint32`
-/// (5 GiB / 16 = 335,544,320 units, well inside the `2^32` §1.1 allows).
+/// Where the relocated body begins: 5 GiB, past `u32::MAX` and a whole number of units at the
+/// default scale, so every offset that names it is still a legal scaled `uint32`.
 const BASE: usize = 5 << 30;
 const _: () = assert!(BASE > u32::MAX as usize, "the whole point is to be past the old wall");
 const _: () = assert!(BASE.is_multiple_of(UNIT), "a scaled offset cannot name a byte off the unit boundary");
@@ -51,16 +44,12 @@ fn two_lod_file() -> Vec<u8> {
     )
 }
 
-/// Rewrite every **absolute** offset in `near` to `BASE + itself`, leaving the bytes they name
-/// where they are. The result is not a file — it is the body of one, to be served at `BASE` by
-/// [`FarSource`].
+/// Rewrite every absolute offset in `near` to `BASE + itself`, leaving the bytes they name where
+/// they are. The result is not a file but the body of one, to be served at `BASE`.
 ///
-/// The rewrite is exhaustive by construction rather than by search, which is why it is spelled out
-/// rather than done with a scan: OBCM has exactly four absolute offsets in the header, one per LOD
-/// table entry, and the two section directories carry their own. Everything else in the format is
-/// *relative* — a LOD's chunk-offset table counts units from that LOD's `data_start`, a feature's
-/// deltas count microdegrees from its anchor — which is precisely why relocating a map is
-/// tractable at all, and is the same property `obcm-assemble`'s graft leans on.
+/// The rewrite is exhaustive by construction rather than by search: OBCM has four absolute offsets
+/// in the header, one per LOD table entry, and the two section directories carry their own.
+/// Everything else in the format is relative, which is why relocating a map is tractable at all.
 fn relocate(near: &[u8]) -> Vec<u8> {
     let mut far = near.to_vec();
     let lod_tab = resolve_offset(near, 26);
@@ -79,10 +68,9 @@ fn relocate(near: &[u8]) -> Vec<u8> {
         let moved = scaled(BASE + resolve_offset(near, at));
         far[at..at + 4].copy_from_slice(&moved.to_le_bytes());
     }
-    // The two directories name offsets inside themselves, so they are **regenerated** at the moved
+    // The two directories name offsets inside themselves, so they are regenerated at the moved
     // section base rather than patched field by field. `BASE` is a multiple of `U`, so each is
-    // byte-for-byte the same length as the one it replaces — the §1.2 filler runs a directory
-    // computes depend on `section_off % U` and nothing else.
+    // byte-for-byte the same length as the one it replaces.
     let poi = empty_poi_directory(BASE + poi_off);
     let nav = empty_nav_directory(BASE + nav_off);
     assert_eq!(poi.len(), nav_off - poi_off, "a relocated POI directory is the same length");
@@ -92,14 +80,13 @@ fn relocate(near: &[u8]) -> Vec<u8> {
     far
 }
 
-/// The relocated map as a source: the header at byte 0, `BASE - HEADER_LEN` bytes of §1.2 filler,
-/// then the body. Sparse rather than allocated — five gibibytes of `0xFF` is a fact about the
-/// address space, not something a test needs to own.
+/// The relocated map as a source: the header at byte 0, filler, then the body. Sparse rather than
+/// allocated, because five gibibytes of `0xFF` is a fact about the address space.
 struct FarSource<'a> {
-    /// The `relocate`d bytes, indexed by the offset they had **before** the move.
+    /// The relocated bytes, indexed by the offset they had before the move.
     body: &'a [u8],
-    /// Reads whose first byte is at or past `BASE`, so a test can prove the far bytes were actually
-    /// fetched rather than inferred.
+    /// Reads whose first byte is at or past `BASE`, so a test can prove the far bytes were fetched
+    /// rather than inferred.
     far_reads: Cell<u32>,
     /// The highest byte offset any read has named.
     high_water: Cell<u64>,
@@ -139,8 +126,8 @@ impl ByteSource for FarSource<'_> {
     }
 }
 
-/// Every table the parse builds must resolve to a byte past the old wall — and the parse must
-/// succeed, which before this slice it could not.
+/// Every table the parse builds must resolve to a byte past the old wall, and the parse must
+/// succeed.
 #[test]
 fn a_map_laid_out_past_four_gibibytes_parses() {
     let near = two_lod_file();
@@ -163,8 +150,8 @@ fn a_map_laid_out_past_four_gibibytes_parses() {
     assert!(src.high_water.get() > u32::MAX as u64, "and named a byte no u32 offset can");
 }
 
-/// The geometry is the same geometry. A relocated map's chunks decode feature-for-feature into what
-/// the un-relocated one decodes — the seam moved the addressing and nothing else.
+/// The geometry is the same geometry: a relocated map's chunks decode feature for feature into
+/// what the un-relocated one decodes.
 #[test]
 fn geometry_past_four_gibibytes_decodes_identically_to_the_same_map_at_low_offsets() {
     let near = two_lod_file();
@@ -211,21 +198,20 @@ fn geometry_past_four_gibibytes_decodes_identically_to_the_same_map_at_low_offse
     assert_eq!(poly[0].kind, Kind::Polygon);
 }
 
-/// The fail-closed half. A resolved offset past the *source's* length is still refused — the wall
-/// moved to where the bytes end rather than disappearing, and a `SliceSource` still cannot serve a
-/// byte its host cannot address.
+/// The fail-closed half: a resolved offset past the source's length is still refused. The wall
+/// moved to where the bytes end rather than disappearing.
 #[test]
 fn a_section_past_the_sources_end_is_still_refused() {
     let near = two_lod_file();
     let far = relocate(&near);
 
-    // Served through a source that stops short of `BASE`: every section the header names is now
-    // outside it, so the parse must refuse rather than read filler as a style table.
+    // Served through a source that stops short of `BASE`, so every section the header names is
+    // outside it and the parse must refuse rather than read filler as a style table.
     let truncated = SliceSource(&far[..STYLE_OFFSET]);
     assert!(MapTables::parse(&truncated).is_err(), "a map whose sections lie past the source is refused");
 
-    // And the far map through a plain in-memory slice: `SliceSource` narrows to `usize`, which is
-    // the host's address space rather than the format's wall, and it refuses rather than wraps.
+    // And the far map through a plain in-memory slice: `SliceSource` narrows to `usize`, the
+    // host's address space rather than the format's wall, and it refuses rather than wraps.
     let whole = SliceSource(&far);
     assert!(MapTables::parse(&whole).is_err(), "the relocated offsets do not resolve inside the un-relocated bytes");
 }
