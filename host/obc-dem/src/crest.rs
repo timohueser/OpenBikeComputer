@@ -46,7 +46,7 @@
 
 use obc_formats::obct::{cell_samples_log2, GRID_ORIGIN, NODATA};
 
-use crate::reference::{ReferenceArchive, Window, NO_PIXEL, STEP_LOG2};
+use crate::reference::{ReferenceArchive, TileLookup, Window, NO_PIXEL, STEP_LOG2};
 
 /// A node is a candidate when the reference stands this far above our bilinear surface.
 const LIFT_M: f64 = 10.0;
@@ -88,8 +88,8 @@ impl LiftTally {
 /// The µdeg box of reference pixels one cell's rule reads: the `side + 1` nodes the cell's lift map
 /// holds and a two-node halo, each node reaching half a posting on every side.
 ///
-/// It is also what decides a cell's attribution, so a caller that needs the source keys asks the
-/// archive over this same window.
+/// Public because a caller that wants to know which tiles a cell reads — a mirror, a test — should
+/// ask this rather than re-derive the halo.
 pub fn cell_window(ci: u32, cj: u32, posting_log2: u8, cell_log2: u8) -> Option<Window> {
     let side = 1i64 << cell_samples_log2(posting_log2, cell_log2)?;
     let step = 1i64 << posting_log2;
@@ -101,6 +101,17 @@ pub fn cell_window(ci: u32, cj: u32, posting_log2: u8, cell_log2: u8) -> Option<
         lon_lo: origin_x - HALO * step - step / 2,
         lon_hi: origin_x + (side + HALO) * step + step / 2,
     })
+}
+
+/// What one cell's scan produced: the map, and what the archive could not give it.
+///
+/// The two are separate because a cell with no lift at all still has something to report — a mirror
+/// that is short of its box costs a whole cell's lifts and does not fail.
+pub struct CellLift {
+    /// The lifts, or `None` when the rule selected nothing in this cell.
+    pub map: Option<LiftMap>,
+    /// Tiles the index named for this cell's window that the archive does not hold.
+    pub absent_tiles: Vec<(u32, u32)>,
 }
 
 /// One cell's lifts in whole metres, over the nodes it owns and its inclusive high edge.
@@ -118,6 +129,10 @@ pub struct LiftMap {
     /// Lift in whole metres per node, row-major, never negative.
     lifts: Vec<i16>,
     tally: LiftTally,
+    /// Every source that contributed a pixel to a tile this cell **decoded**, sorted. An index
+    /// entry whose tile a mirror does not hold is not in here: a container cannot be derived from
+    /// bytes the bake never read, and attribution follows what was read.
+    sources: Vec<String>,
 }
 
 impl LiftMap {
@@ -133,10 +148,20 @@ impl LiftMap {
         cell_log2: u8,
         native: impl FnMut(i32, i32) -> i16,
         archive: &ReferenceArchive,
-    ) -> Result<Option<LiftMap>, String> {
+    ) -> Result<CellLift, String> {
         let samples_log2 = cell_samples_log2(posting_log2, cell_log2).ok_or_else(|| {
             format!("posting 2^{posting_log2} µdeg with cell 2^{cell_log2} µdeg is not a pairing OBCT permits")
         })?;
+        // A node has to own at least one archive pixel, or the rule has nothing to measure: the
+        // reference maximum inside its half-posting cell, and the roof of a pixel's footprint, are
+        // both areas of the archive lattice. Below that step the two lattices invert — a pixel would
+        // span several nodes — and the pass silently produced no lift at all rather than saying so.
+        if posting_log2 < STEP_LOG2 {
+            return Err(format!(
+                "posting 2^{posting_log2} µdeg is finer than the reference archive's 2^{STEP_LOG2} µdeg step, \
+                 so a node owns no archive pixel"
+            ));
+        }
         let window = cell_window(ci, cj, posting_log2, cell_log2).expect("the pairing is checked above");
         let side = 1i64 << samples_log2;
         let step = 1i64 << posting_log2;
@@ -160,8 +185,19 @@ impl LiftMap {
         let mut node_max = vec![NO_PIXEL; scan.nodes()];
         let mut gap = vec![f64::NEG_INFINITY; scan.nodes()];
         let mut any = false;
+        // Attribution follows what was decoded, not what the index promised.
+        let mut contributors: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        let mut absent_tiles = Vec::new();
         for (ti, tj) in window.tiles() {
-            let Some(tile) = archive.tile(ti, tj)? else { continue };
+            let (tile, sources) = match archive.tile(ti, tj)? {
+                TileLookup::Held { tile, sources } => (tile, sources),
+                TileLookup::Absent => {
+                    absent_tiles.push((ti, tj));
+                    continue;
+                }
+                TileLookup::Unknown => continue,
+            };
+            contributors.extend(sources.iter().map(String::as_str));
             tile.centres_in(window, |lat, lon, height| {
                 let at = scan.at(node_of(lat, origin_y, step), node_of(lon, origin_x, step));
                 if holed[at] {
@@ -173,7 +209,7 @@ impl LiftMap {
             });
         }
         if !any {
-            return Ok(None);
+            return Ok(CellLift { map: None, absent_tiles });
         }
 
         let core = select(&node_max, &gap, &scan);
@@ -215,7 +251,9 @@ impl LiftMap {
         // seam answer 0 there while its neighbour answers the lift, which is exactly the
         // disagreement the halo exists to prevent.
         let any_lift = lifts.iter().any(|&lift| lift != 0);
-        Ok(any_lift.then_some(LiftMap { origin_y, origin_x, step, stride, lifts, tally }))
+        let sources = contributors.into_iter().map(str::to_string).collect();
+        let map = any_lift.then_some(LiftMap { origin_y, origin_x, step, stride, lifts, tally, sources });
+        Ok(CellLift { map, absent_tiles })
     }
 
     /// The native sampler with this map's lifts added. `NODATA` passes through — a lift describes a
@@ -245,6 +283,12 @@ impl LiftMap {
     /// What the rule did in this cell.
     pub fn tally(&self) -> LiftTally {
         self.tally
+    }
+
+    /// Every reference source this cell's lifts are derived from, sorted — the attribution that
+    /// must travel with a container holding this cell (§9.3).
+    pub fn sources(&self) -> &[String] {
+        &self.sources
     }
 }
 
@@ -381,9 +425,13 @@ impl NativeWindow {
     ///
     /// Four corners settle it. A bilinear patch is a saddle, so its maximum over an axis-aligned
     /// rectangle is at a corner, and each corner is evaluated in the lattice interval that holds it.
-    /// At every posting from `2^6` µdeg up — the archive's own step, and every posting a production
-    /// bake uses — a footprint lies inside one interval, because the interval boundaries are
-    /// multiples of the pixel side; so the four corners are the exact maximum rather than a bound.
+    ///
+    /// **Requires a posting of at least [`STEP_LOG2`]**, which [`LiftMap::bake`] refuses otherwise.
+    /// At or above that step the lattice interval boundaries are multiples of the pixel side, so a
+    /// footprint lies inside one interval and the four corners are the exact maximum. Below it a
+    /// footprint would span several intervals and could enclose a lattice node, whose height the
+    /// corners would miss — the maximum would then read low and the gap high, which is the error
+    /// this function exists to remove.
     fn roof(&self, lat: i64, lon: i64) -> f64 {
         let (south, north) = (lat - HALF_PIXEL, lat + HALF_PIXEL);
         let (west, east) = (lon - HALF_PIXEL, lon + HALF_PIXEL);
@@ -465,7 +513,7 @@ mod tests {
         assert!(archive.is_empty());
 
         let native = |_: i32, _: i32| 1000i16;
-        assert!(LiftMap::bake(0, 0, 9, 19, native, &archive).unwrap().is_none());
+        assert!(LiftMap::bake(0, 0, 9, 19, native, &archive).unwrap().map.is_none());
         // A pairing OBCT does not permit is refused before any tile is read.
         assert!(LiftMap::bake(0, 0, 9, 12, native, &archive).is_err());
         let _ = std::fs::remove_dir_all(&root);

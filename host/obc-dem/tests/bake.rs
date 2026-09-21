@@ -19,7 +19,7 @@ use obc_dem::bake::{bake_cell, bake_cells, bake_shard, cell_file_name, cell_rect
 use obc_dem::container::CellRect;
 use obc_dem::crest::{cell_window, LiftMap};
 use obc_dem::geotiff::{DemMosaic, DemTile};
-use obc_dem::reference::ReferenceArchive;
+use obc_dem::reference::{ReferenceArchive, TileLookup, TILE_PIXELS};
 use obc_dem::BboxUdeg;
 use obc_elevation::grid::{cell_base_sample, cell_of, lattice_coord, locate};
 use obc_elevation::{TerrainReader, TileCache, DEFAULT_TILE_SLOTS};
@@ -214,16 +214,21 @@ fn a_cell_is_the_same_bytes_alone_as_inside_a_shard() {
 /// The heights are whole metres because an archive pixel is: the rule sees the archive's own
 /// rounding, not a continuous function.
 fn write_reference(root: &Path, cells: &[(u32, u32)], surface: impl Fn(f64, f64) -> Option<f64>) {
-    let mut ids = std::collections::BTreeSet::new();
-    for &(ci, cj) in cells {
-        ids.extend(cell_window(ci, cj, POSTING_LOG2, CELL_LOG2).expect("the fixture pairing").tiles());
-    }
-    let tiles: Vec<ArchiveTile> = ids
+    let tiles: Vec<ArchiveTile> = reference_tiles(cells)
         .into_iter()
         .map(|(ti, tj)| ArchiveTile::filled(ti, tj, |lat, lon| surface(lat as f64, lon as f64).map(quantise)))
         .collect();
     assert!(!tiles.is_empty(), "a fixture archive with no tile proves nothing");
     write_archive(root, "ch", &tiles);
+}
+
+/// Every archive tile a list of cells reads, halo included, in the order an index names them.
+fn reference_tiles(cells: &[(u32, u32)]) -> Vec<(u32, u32)> {
+    let mut ids = std::collections::BTreeSet::new();
+    for &(ci, cj) in cells {
+        ids.extend(cell_window(ci, cj, POSTING_LOG2, CELL_LOG2).expect("the fixture pairing").tiles());
+    }
+    ids.into_iter().collect()
 }
 
 /// A cone one posting wide on a **steep** planar slope — the fixture the lift rule is judged on. The
@@ -337,7 +342,7 @@ fn a_reference_composes_the_same_cell_bytes_in_all_three_bakes() {
     let rect = cell_rect(fixture_bbox(), POSTING_LOG2, CELL_LOG2).unwrap();
     let mut moved = 0;
     for (slot, (ci, cj)) in rect.cells().enumerate() {
-        let lift = LiftMap::bake(ci, cj, POSTING_LOG2, CELL_LOG2, native, &archive).unwrap();
+        let lift = LiftMap::bake(ci, cj, POSTING_LOG2, CELL_LOG2, native, &archive).unwrap().map;
         let alone = bake_cell(&mosaic, ci, cj, POSTING_LOG2, CELL_LOG2, lift.as_ref())
             .expect("the plane covers every fixture cell");
         assert_eq!(alone.len(), 512, "a lifted cell is the same length as a plain one");
@@ -368,8 +373,10 @@ fn a_tower_is_lifted_and_the_plane_it_stands_on_is_not() {
     write_reference(scratch.path(), &[(ci, cj)], |lat, lon| Some(cone.reference(lat, lon)));
     let archive = ReferenceArchive::open(scratch.path()).unwrap();
 
-    let map =
-        LiftMap::bake(ci, cj, POSTING_LOG2, CELL_LOG2, cone.native(), &archive).unwrap().expect("the tower is a crest");
+    let map = LiftMap::bake(ci, cj, POSTING_LOG2, CELL_LOG2, cone.native(), &archive)
+        .unwrap()
+        .map
+        .expect("the tower is a crest");
     let at = |y, x| lift_at(&map, ci, cj, y, x);
 
     assert!((100..=130).contains(&at(8, 8)), "the tip is lifted to the tower's own height, got {}", at(8, 8));
@@ -427,7 +434,7 @@ fn a_reference_below_the_gate_lifts_nothing_however_steep_the_mountain() {
     write_reference(scratch.path(), &[(ci, cj)], |lat, lon| Some(pyramid(lat, lon) + 8.0));
     let archive = ReferenceArchive::open(scratch.path()).unwrap();
     assert!(
-        LiftMap::bake(ci, cj, POSTING_LOG2, CELL_LOG2, native, &archive).unwrap().is_none(),
+        LiftMap::bake(ci, cj, POSTING_LOG2, CELL_LOG2, native, &archive).unwrap().map.is_none(),
         "8 m is not 10 m, and the slope under it must not make up the difference"
     );
 
@@ -436,7 +443,8 @@ fn a_reference_below_the_gate_lifts_nothing_however_steep_the_mountain() {
     let over = Scratch::new("over-the-gate");
     write_reference(over.path(), &[(ci, cj)], |lat, lon| Some(pyramid(lat, lon) + 12.0));
     let archive = ReferenceArchive::open(over.path()).unwrap();
-    let map = LiftMap::bake(ci, cj, POSTING_LOG2, CELL_LOG2, native, &archive).unwrap().expect("12 m clears the gate");
+    let map =
+        LiftMap::bake(ci, cj, POSTING_LOG2, CELL_LOG2, native, &archive).unwrap().map.expect("12 m clears the gate");
     assert_eq!(lift_at(&map, ci, cj, 8, 8), 12, "and the apex rises by exactly what the reference says");
 }
 
@@ -457,6 +465,7 @@ fn cells_agree_on_every_node_they_share() {
     let map = |ci, cj| {
         LiftMap::bake(ci, cj, POSTING_LOG2, CELL_LOG2, cone.native(), &archive)
             .unwrap()
+            .map
             .expect("the corner tower is a crest in every cell of the block")
     };
     let (nw, ne, sw, se) = (map(ci, cj), map(ci, cj + 1), map(ci + 1, cj), map(ci + 1, cj + 1));
@@ -511,9 +520,11 @@ fn a_cell_lifted_only_on_its_seam_still_has_a_map() {
     let native = |lat: i32, lon: i32| quantise(Cone::slope(f64::from(lat), f64::from(lon)));
 
     let west =
-        LiftMap::bake(ci, cj, POSTING_LOG2, CELL_LOG2, native, &archive).unwrap().expect("the seam node is lifted");
-    let east =
-        LiftMap::bake(ci, cj + 1, POSTING_LOG2, CELL_LOG2, native, &archive).unwrap().expect("and so is its column 0");
+        LiftMap::bake(ci, cj, POSTING_LOG2, CELL_LOG2, native, &archive).unwrap().map.expect("the seam node is lifted");
+    let east = LiftMap::bake(ci, cj + 1, POSTING_LOG2, CELL_LOG2, native, &archive)
+        .unwrap()
+        .map
+        .expect("and so is its column 0");
     assert_eq!(west.tally().nodes, 0, "the west cell owns no lifted node, which is the trap");
 
     let mut lifted = 0;
@@ -525,27 +536,189 @@ fn a_cell_lifted_only_on_its_seam_still_has_a_map() {
     assert!(lifted > 0, "the ridge must reach the seam by dilation, or the test proves nothing");
 }
 
-/// A tile whose transform is not the lattice its id names is refused **by name**, rather than
-/// sliding every height in it by the error. Half a pixel — 32 µdeg, 3.5 m — is the size of mistake
-/// a hand-cut tile makes, and it is 32 000 times the tolerance the contract states.
-#[test]
-fn a_tile_whose_transform_is_not_the_lattice_is_refused_by_name() {
+/// The id of one tile the fixture's first cell reads, and a correct raster for it.
+fn fixture_tile() -> (u32, u32, ArchiveTile) {
     let rect = cell_rect(fixture_bbox(), POSTING_LOG2, CELL_LOG2).unwrap();
-    let (ci, cj) = (rect.min_i, rect.min_j);
-    let scratch = Scratch::new("skewed-tile");
-    let window = cell_window(ci, cj, POSTING_LOG2, CELL_LOG2).unwrap();
+    let window = cell_window(rect.min_i, rect.min_j, POSTING_LOG2, CELL_LOG2).unwrap();
     let (ti, tj) = window.tiles().next().expect("the cell reads at least one tile");
-    let mut tile = ArchiveTile::filled(ti, tj, |lat, lon| Some(quantise(Cone::slope(lat as f64, lon as f64))));
-    tile.skew_deg = 32e-6;
+    let tile = ArchiveTile::filled(ti, tj, |lat, lon| Some(quantise(Cone::slope(lat as f64, lon as f64))));
+    (ti, tj, tile)
+}
+
+/// **Every** property of the tile contract is refused **by name** when it is broken, because each
+/// one moves ground rather than losing it: a wrong size or band count reads the wrong pixels, a
+/// `uint16` raster reads a height of 33 000 m, a wrong nodata turns absence into −32 768 m of
+/// ground, `PixelIsPoint` slides the tile half a pixel, a wrong datum is a different place, and a
+/// tie point off the lattice slides every height in the tile. Half a pixel — 32 µdeg, 3.5 m — is
+/// the size of mistake a hand-cut tile makes, and it is 32 000 times the tolerance the contract
+/// states.
+#[test]
+fn a_tile_that_breaks_the_contract_is_refused_by_name() {
+    let (ti, tj, tile) = fixture_tile();
+    /// One broken tile: what it is, the words the refusal must carry, and how to break it.
+    type Case = (&'static str, &'static str, fn(&mut common::RasterTiff));
+    let cases: [Case; 7] = [
+        ("half the size", "1024²", |r| {
+            r.rows = TILE_PIXELS / 2;
+            r.cols = TILE_PIXELS / 2;
+            r.pixels.truncate(r.rows * r.cols * 2);
+        }),
+        ("two bands", "bands", |r| {
+            r.bands = 2;
+            r.pixels.extend_from_within(..);
+        }),
+        ("unsigned samples", "not int16", |r| r.sample_format = 1),
+        ("another nodata", "nodata", |r| r.nodata = Some(-9999.0)),
+        ("a point raster", "an archive pixel is an area", |r| r.raster_type = PIXEL_IS_POINT),
+        ("another datum", "WGS 84", |r| r.epsg = 4258),
+        ("a tie point half a pixel north", "origin lat", |r| r.tie_lat_deg += 32e-6),
+    ];
+
+    for (what, expect, break_it) in cases {
+        let scratch = Scratch::new("broken-tile");
+        std::fs::write(scratch.join("index.json"), common::archive_index("ch", &[(ti, tj)], true)).unwrap();
+        let mut raster = tile.raster();
+        break_it(&mut raster);
+        std::fs::write(common::tile_path(scratch.path(), ti, tj), raster.to_bytes()).unwrap();
+
+        let archive = ReferenceArchive::open(scratch.path()).unwrap();
+        let error = match archive.tile(ti, tj) {
+            Err(e) => e,
+            Ok(_) => panic!("a tile with {what} must be refused"),
+        };
+        assert!(error.contains(&format!("{tj:04}.tif")), "{what}: the refusal must name the file: {error}");
+        assert!(error.contains(expect), "{what}: the refusal must say `{expect}`: {error}");
+    }
+
+    // And a refusal reaches the bake rather than turning into a silent absence of lifts.
+    let scratch = Scratch::new("broken-bake");
+    std::fs::write(scratch.join("index.json"), common::archive_index("ch", &[(ti, tj)], true)).unwrap();
+    let mut raster = tile.raster();
+    raster.tie_lat_deg += 32e-6;
+    std::fs::write(common::tile_path(scratch.path(), ti, tj), raster.to_bytes()).unwrap();
+    let archive = ReferenceArchive::open(scratch.path()).unwrap();
+    let rect = cell_rect(fixture_bbox(), POSTING_LOG2, CELL_LOG2).unwrap();
+    let native = |lat: i32, lon: i32| quantise(Cone::slope(f64::from(lat), f64::from(lon)));
+    assert!(LiftMap::bake(rect.min_i, rect.min_j, POSTING_LOG2, CELL_LOG2, native, &archive).is_err());
+}
+
+/// An `index.json` this reader cannot hold to the contract is refused when it is opened, not when a
+/// tile turns out wrong: a different schema, step or tile size is a different archive, and a key
+/// that is not a tile id means the ids cannot be trusted at all.
+#[test]
+fn an_index_that_is_not_this_contract_is_refused() {
+    let ok =
+        |extra: &str| format!("{{\"schema\": 1, \"step_log2\": 6, \"tile_log2\": 16, \"sources\": {{}}, {extra}}}");
+    for (what, json, expect) in [
+        ("another schema", ok("\"tiles\": {}").replace("\"schema\": 1", "\"schema\": 2"), "schema 2"),
+        ("another step", ok("\"tiles\": {}").replace("\"step_log2\": 6", "\"step_log2\": 5"), "step_log2 5"),
+        ("another tile size", ok("\"tiles\": {}").replace("\"tile_log2\": 16", "\"tile_log2\": 15"), "tile_log2 15"),
+        ("no tiles map", ok("\"other\": {}"), "no `tiles` map"),
+        ("no schema", "{\"step_log2\": 6, \"tile_log2\": 16, \"tiles\": {}}".to_string(), "no schema"),
+        ("a key that is not an id", ok("\"tiles\": {\"ch\": \"ch\"}"), "`ch` is not a tile id"),
+        ("not JSON at all", "{".to_string(), "not readable JSON"),
+    ] {
+        let scratch = Scratch::new("broken-index");
+        std::fs::write(scratch.join("index.json"), json).unwrap();
+        let error = match ReferenceArchive::open(scratch.path()) {
+            Err(e) => e,
+            Ok(_) => panic!("an index with {what} must be refused"),
+        };
+        assert!(error.contains("index.json"), "{what}: the refusal must name the file: {error}");
+        assert!(error.contains(expect), "{what}: the refusal must say `{expect}`: {error}");
+    }
+}
+
+/// `contributors` is newer than `tiles`, so an archive ingested before it existed must still give
+/// its attribution — from the one best-priority source key `tiles` names.
+#[test]
+fn an_index_without_contributors_falls_back_to_the_best_source_key() {
+    let (ti, tj, tile) = fixture_tile();
+    for with_contributors in [true, false] {
+        let scratch = Scratch::new("fallback");
+        std::fs::write(scratch.join("index.json"), common::archive_index("ch", &[(ti, tj)], with_contributors))
+            .unwrap();
+        std::fs::write(common::tile_path(scratch.path(), ti, tj), tile.to_geotiff()).unwrap();
+        let archive = ReferenceArchive::open(scratch.path()).unwrap();
+        match archive.tile(ti, tj).unwrap() {
+            TileLookup::Held { sources, .. } => {
+                assert_eq!(sources, ["ch"], "with contributors: {with_contributors}");
+            }
+            _ => panic!("the tile is on disk and in the index"),
+        }
+    }
+}
+
+/// A posting finer than the archive's own step leaves a node owning no archive pixel, so the rule
+/// has nothing to measure. It is refused, naming both steps, rather than quietly baking every cell
+/// without a lift — which is what it did before, attribution reminder and all.
+#[test]
+fn a_posting_finer_than_the_archive_step_is_refused() {
+    let (ti, tj, tile) = fixture_tile();
+    let scratch = Scratch::new("too-fine");
     write_archive(scratch.path(), "ch", &[tile]);
     let archive = ReferenceArchive::open(scratch.path()).unwrap();
+    let native = |_: i32, _: i32| 1000i16;
+    let _ = (ti, tj);
 
-    let error = archive.tile(ti, tj).expect_err("a tile off the lattice must be refused");
-    assert!(error.contains(&format!("{tj:04}.tif")), "the refusal must name the file: {error}");
-    assert!(error.contains("origin lat"), "and say what is wrong with it: {error}");
-    // And the refusal reaches the bake rather than turning into a silent absence of lifts.
-    let native = |lat: i32, lon: i32| quantise(Cone::slope(f64::from(lat), f64::from(lon)));
-    assert!(LiftMap::bake(ci, cj, POSTING_LOG2, CELL_LOG2, native, &archive).is_err());
+    for posting in [4u8, 5] {
+        let error = match LiftMap::bake(0, 0, posting, 19, native, &archive) {
+            Err(e) => e,
+            Ok(_) => panic!("a posting of 2^{posting} µdeg is finer than the archive and must be refused"),
+        };
+        assert!(error.contains(&format!("2^{posting} µdeg")), "it must name the posting: {error}");
+        assert!(error.contains("2^6 µdeg"), "and the archive's step: {error}");
+    }
+    // The archive's own step is the finest posting the rule can serve, and it is allowed.
+    assert!(LiftMap::bake(0, 0, 6, 19, native, &archive).is_ok());
+}
+
+/// Attribution follows what the bake **read**, not what the index promised: a mirror that is short
+/// of its box credits only the sources whose tiles it actually holds, and says how many it lacked.
+#[test]
+fn a_short_mirror_credits_only_the_tiles_it_holds_and_counts_the_rest() {
+    // A cell whose southern halo reaches into the tile below it, so its window reads two tiles: the
+    // fixture's base cell sits one cell north of a tile line, so the cell south of it is the one.
+    let rect = cell_rect(fixture_bbox(), POSTING_LOG2, CELL_LOG2).unwrap();
+    let (ci, cj) = (rect.min_i - 1, rect.min_j);
+    let window = cell_window(ci, cj, POSTING_LOG2, CELL_LOG2).unwrap();
+    let ids: Vec<(u32, u32)> = window.tiles().collect();
+    assert!(ids.len() > 1, "the fixture needs a cell whose halo leaves its own tile, got {ids:?}");
+
+    // The tower stands in the tile holding the cell's centre, which is the one on disk. Every other
+    // tile of the window is named in the index, under a source key of its own, and is not there —
+    // which is what a mirror short of its box looks like.
+    let cone = Cone::on_node(ci, cj, 8, 8, 120.0);
+    let (centre_lat, centre_lon) = node_udeg(ci, cj, SPAN / 2, SPAN / 2);
+    let held = obc_dem::reference::Window {
+        lat_lo: i64::from(centre_lat),
+        lat_hi: i64::from(centre_lat) + 1,
+        lon_lo: i64::from(centre_lon),
+        lon_hi: i64::from(centre_lon) + 1,
+    }
+    .tiles()
+    .next()
+    .expect("the cell centre is on the lattice");
+    let absent: Vec<(u32, u32)> = ids.iter().copied().filter(|&id| id != held).collect();
+
+    let scratch = Scratch::new("short-mirror");
+    let tile = ArchiveTile::filled(held.0, held.1, |lat, lon| Some(quantise(cone.reference(lat as f64, lon as f64))));
+    std::fs::write(common::tile_path(scratch.path(), held.0, held.1), tile.to_geotiff()).unwrap();
+    let entry = |f: &dyn Fn(&(u32, u32)) -> String| ids.iter().map(f).collect::<Vec<_>>().join(", ");
+    let key = |id: &(u32, u32)| if *id == held { "ch" } else { "absent-source" };
+    let index = format!(
+        "{{\"schema\": 1, \"step_log2\": 6, \"tile_log2\": 16, \
+          \"sources\": {{\"ch\": {{}}, \"absent-source\": {{}}}}, \"tiles\": {{{}}}, \"contributors\": {{{}}}}}",
+        entry(&|id| format!("\"{}/{}\": \"{}\"", id.0, id.1, key(id))),
+        entry(&|id| format!("\"{}/{}\": [\"{}\"]", id.0, id.1, key(id))),
+    );
+    std::fs::write(scratch.join("index.json"), index).unwrap();
+
+    let archive = ReferenceArchive::open(scratch.path()).unwrap();
+    let lift = LiftMap::bake(ci, cj, POSTING_LOG2, CELL_LOG2, cone.native(), &archive).unwrap();
+    let map = lift.map.expect("the tower stands in the tile the mirror holds");
+    assert_eq!(map.sources(), ["ch"], "a source whose tile the mirror does not hold must not be credited");
+    assert_eq!(lift.absent_tiles, absent, "and every tile it lacked is reported");
 }
 
 /// The seam rule from both sides: two adjacent cells baked **independently** hand the reader a

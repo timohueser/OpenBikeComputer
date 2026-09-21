@@ -82,8 +82,10 @@ impl SyntheticDem {
             cols: self.cols,
             bits: 32,
             sample_format: 3, // IEEE floating point
+            bands: 1,
             pixels: self.north_up.iter().flat_map(|v| v.to_le_bytes()).collect(),
             raster_type: self.raster_type,
+            epsg: 4326,
             nodata: self.nodata,
         }
         .to_bytes()
@@ -112,15 +114,20 @@ pub struct RasterTiff {
     /// `BitsPerSample` and `SampleFormat`: 32 and 3 for IEEE float, 16 and 2 for signed integer.
     pub bits: u16,
     pub sample_format: u16,
+    /// `SamplesPerPixel`. One for every DEM; a refusal test sets it to two.
+    pub bands: u16,
     /// The samples, little-endian, row-major, **north-up**.
     pub pixels: Vec<u8>,
     pub raster_type: u16,
+    /// `GeographicTypeGeoKey`. 4326 for every DEM; a refusal test sets another datum.
+    pub epsg: u16,
     pub nodata: Option<f64>,
 }
 
 impl RasterTiff {
     pub fn to_bytes(&self) -> Vec<u8> {
-        assert_eq!(self.pixels.len(), self.rows * self.cols * usize::from(self.bits) / 8, "pixel bytes");
+        let want = self.rows * self.cols * usize::from(self.bands) * usize::from(self.bits) / 8;
+        assert_eq!(self.pixels.len(), want, "pixel bytes");
         // Layout: 8-byte header, then the IFD, then out-of-line values, then the strip.
         let mut entries: Vec<(u16, u16, u32, Value)> = Vec::new();
         let mut push = |tag: u16, ty: u16, count: u32, value: Value| entries.push((tag, ty, count, value));
@@ -131,7 +138,7 @@ impl RasterTiff {
         push(259, TYPE_SHORT, 1, Value::Inline(short(1))); // uncompressed
         push(262, TYPE_SHORT, 1, Value::Inline(short(1))); // BlackIsZero
         push(273, TYPE_LONG, 1, Value::StripOffset);
-        push(277, TYPE_SHORT, 1, Value::Inline(short(1)));
+        push(277, TYPE_SHORT, 1, Value::Inline(short(self.bands)));
         push(278, TYPE_LONG, 1, Value::Inline((self.rows as u32).to_le_bytes()));
         push(279, TYPE_LONG, 1, Value::Inline((self.pixels.len() as u32).to_le_bytes()));
         push(284, TYPE_SHORT, 1, Value::Inline(short(1))); // chunky
@@ -155,7 +162,7 @@ impl RasterTiff {
             2048,
             0,
             1,
-            4326, // GeographicTypeGeoKey = WGS 84
+            self.epsg, // GeographicTypeGeoKey
         ];
         push(34735, TYPE_SHORT, keys.len() as u32, Value::Blob(keys.iter().flat_map(|k| k.to_le_bytes()).collect()));
         if let Some(nodata) = self.nodata {
@@ -220,14 +227,12 @@ pub struct ArchiveTile {
     pub tj: u32,
     /// Heights in **north-up** rows, so row 0 is the northernmost, as a GeoTIFF stores them.
     north_up: Vec<i16>,
-    /// A deliberate error in the tie point, in degrees — for the refusal test.
-    pub skew_deg: f64,
 }
 
 impl ArchiveTile {
     /// A tile of the given id with no source pixel anywhere in it.
     pub fn empty(ti: u32, tj: u32) -> ArchiveTile {
-        ArchiveTile { ti, tj, north_up: vec![NO_PIXEL; TILE_PIXELS * TILE_PIXELS], skew_deg: 0.0 }
+        ArchiveTile { ti, tj, north_up: vec![NO_PIXEL; TILE_PIXELS * TILE_PIXELS] }
     }
 
     /// Fill it by **pooling** `height` over every pixel's own square, in µdeg.
@@ -270,43 +275,65 @@ impl ArchiveTile {
         (i64::from(GRID_ORIGIN) + i64::from(self.ti) * tile, i64::from(GRID_ORIGIN) + i64::from(self.tj) * tile)
     }
 
-    pub fn to_geotiff(&self) -> Vec<u8> {
+    /// This tile as the raster the contract describes, so a refusal test can break exactly one
+    /// field of it and leave the rest right.
+    pub fn raster(&self) -> RasterTiff {
         let tile = 1i64 << TILE_LOG2;
         let (_, lon0) = self.origin_udeg();
         let north = i64::from(GRID_ORIGIN) + (i64::from(self.ti) + 1) * tile;
         RasterTiff {
-            tie_lat_deg: north as f64 / 1e6 + self.skew_deg,
+            tie_lat_deg: north as f64 / 1e6,
             tie_lon_deg: lon0 as f64 / 1e6,
             step_deg: (1i64 << STEP_LOG2) as f64 / 1e6,
             rows: TILE_PIXELS,
             cols: TILE_PIXELS,
             bits: 16,
             sample_format: 2, // two's-complement signed integer
+            bands: 1,
             pixels: self.north_up.iter().flat_map(|v| v.to_le_bytes()).collect(),
             raster_type: PIXEL_IS_AREA,
+            epsg: 4326,
             nodata: Some(f64::from(NO_PIXEL)),
         }
-        .to_bytes()
     }
+
+    pub fn to_geotiff(&self) -> Vec<u8> {
+        self.raster().to_bytes()
+    }
+}
+
+/// The path an archive gives tile `(ti, tj)`, created up to its directory.
+pub fn tile_path(root: &Path, ti: u32, tj: u32) -> std::path::PathBuf {
+    let dir = root.join(format!("{TILE_LOG2}/{ti:04}"));
+    std::fs::create_dir_all(&dir).expect("archive tile directory");
+    dir.join(format!("{tj:04}.tif"))
+}
+
+/// An `index.json` naming `ids` with the source key `key`, with `contributors` unless
+/// `with_contributors` is false — an archive ingested before that map existed.
+pub fn archive_index(key: &str, ids: &[(u32, u32)], with_contributors: bool) -> String {
+    let ids: Vec<String> = ids.iter().map(|(ti, tj)| format!("{ti}/{tj}")).collect();
+    let entry = |value: &str| ids.iter().map(|id| format!("    \"{id}\": {value}")).collect::<Vec<_>>().join(",\n");
+    let contributors = if with_contributors {
+        format!(",\n  \"contributors\": {{\n{}\n  }}", entry(&format!("[\"{key}\"]")))
+    } else {
+        String::new()
+    };
+    format!(
+        "{{\n  \"schema\": 1,\n  \"step_log2\": {STEP_LOG2},\n  \"tile_log2\": {TILE_LOG2},\n  \
+         \"sources\": {{\"{key}\": {{\"product\": \"synthetic\", \"attribution\": \"© nobody\"}}}},\n  \
+         \"tiles\": {{\n{}\n  }}{contributors}\n}}\n",
+        entry(&format!("\"{key}\"")),
+    )
 }
 
 /// Write a reference archive at `root`: the tiles, and an `index.json` that names every one of them
 /// with the source key `key`.
 pub fn write_archive(root: &Path, key: &str, tiles: &[ArchiveTile]) {
-    let ids: Vec<String> = tiles.iter().map(|t| format!("{}/{}", t.ti, t.tj)).collect();
-    let entry = |value: &str| ids.iter().map(|id| format!("    \"{id}\": {value}")).collect::<Vec<_>>().join(",\n");
-    let index = format!(
-        "{{\n  \"schema\": 1,\n  \"step_log2\": {STEP_LOG2},\n  \"tile_log2\": {TILE_LOG2},\n  \
-         \"sources\": {{\"{key}\": {{\"product\": \"synthetic\", \"attribution\": \"© nobody\"}}}},\n  \
-         \"tiles\": {{\n{}\n  }},\n  \"contributors\": {{\n{}\n  }}\n}}\n",
-        entry(&format!("\"{key}\"")),
-        entry(&format!("[\"{key}\"]")),
-    );
-    std::fs::write(root.join("index.json"), index).expect("writing index.json");
+    let ids: Vec<(u32, u32)> = tiles.iter().map(|t| (t.ti, t.tj)).collect();
+    std::fs::write(root.join("index.json"), archive_index(key, &ids, true)).expect("writing index.json");
     for tile in tiles {
-        let dir = root.join(format!("{TILE_LOG2}/{:04}", tile.ti));
-        std::fs::create_dir_all(&dir).expect("archive tile directory");
-        std::fs::write(dir.join(format!("{:04}.tif", tile.tj)), tile.to_geotiff()).expect("writing an archive tile");
+        std::fs::write(tile_path(root, tile.ti, tile.tj), tile.to_geotiff()).expect("writing an archive tile");
     }
 }
 

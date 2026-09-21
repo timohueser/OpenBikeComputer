@@ -187,15 +187,6 @@ fn bake(args: &[String]) -> Result<(), String> {
         _ => unreachable!("checked above"),
     };
     summarise(&report);
-    // A mirror carries the whole index and the tiles of one box, so a tile the index names and the
-    // mirror lacks is normal at the edges and a short copy in the middle. Either way it costs lifts
-    // without failing, so the count is the operator's only sight of it.
-    if let Some(archive) = archive.filter(|a| a.absent_tiles() > 0) {
-        println!(
-            "{} tile(s) the index names are not in this archive — lifts there were skipped",
-            archive.absent_tiles()
-        );
-    }
     println!("\n{SOURCE_DATASET}: {COPERNICUS_ATTRIBUTION}");
     if reference.is_some() {
         println!("\nThe reference DEM keeps its own attribution, which must travel with this container.");
@@ -205,17 +196,26 @@ fn bake(args: &[String]) -> Result<(), String> {
 }
 
 fn summarise(report: &BakeReport) {
-    let BakeReport { cells_total, cells_written, samples_total, samples_nodata, lifts, sources } = report;
-    let (cells_total, cells_written) = (*cells_total, *cells_written);
-    let (samples_total, samples_nodata) = (*samples_total, *samples_nodata);
-    let covered = samples_total - samples_nodata;
-    let pct = if samples_total == 0 { 0.0 } else { covered as f64 * 100.0 / samples_total as f64 };
-    println!("{cells_written}/{cells_total} cells written, {covered}/{samples_total} samples covered ({pct:.1} %)");
-    if !sources.is_empty() {
-        let keys: Vec<&str> = sources.iter().map(String::as_str).collect();
-        println!("reference source(s) over this box: {}", keys.join(", "));
+    let covered = report.samples_total - report.samples_nodata;
+    let pct = if report.samples_total == 0 { 0.0 } else { covered as f64 * 100.0 / report.samples_total as f64 };
+    println!(
+        "{}/{} cells written, {covered}/{} samples covered ({pct:.1} %)",
+        report.cells_written, report.cells_total, report.samples_total
+    );
+    if !report.sources.is_empty() {
+        let keys: Vec<&str> = report.sources.iter().map(String::as_str).collect();
+        println!("reference source(s) the lifts come from: {}", keys.join(", "));
     }
-    let lifts = *lifts;
+    // A mirror carries the whole index and the tiles of one box, so a tile the index names and the
+    // mirror lacks is normal at the edges and a short copy in the middle. Either way it costs lifts
+    // without failing, so the count is the operator's only sight of it.
+    if !report.reference_tiles_absent.is_empty() {
+        println!(
+            "{} tile(s) the index names are not in this archive — lifts there were skipped",
+            report.reference_tiles_absent.len()
+        );
+    }
+    let lifts = report.lifts;
     if lifts.nodes == 0 {
         return;
     }

@@ -20,7 +20,7 @@ use obc_formats::obct::{
 };
 
 use crate::container::{CellRect, ShardWriter};
-use crate::crest::{cell_window, LiftMap, LiftTally};
+use crate::crest::{CellLift, LiftMap, LiftTally};
 use crate::geotiff::DemMosaic;
 use crate::reference::ReferenceArchive;
 use crate::BboxUdeg;
@@ -50,9 +50,13 @@ pub struct BakeReport {
     pub samples_nodata: u64,
     /// What §9's rule did, over every cell. Zero when the bake had no reference.
     pub lifts: LiftTally,
-    /// Every reference source that contributed a pixel to a cell of this bake, sorted. Its
-    /// attribution must travel with the container (§9.3).
+    /// Every reference source a **lifted** cell of this bake is derived from, sorted. Its
+    /// attribution must travel with the container (§9.3). A source whose tiles the archive named
+    /// and did not hold, or whose tiles moved no sample, is not in here.
     pub sources: std::collections::BTreeSet<String>,
+    /// Tiles the index named and the archive did not hold, over the whole run — distinct ids, so a
+    /// tile two cells share is counted once.
+    pub reference_tiles_absent: std::collections::BTreeSet<(u32, u32)>,
 }
 
 /// One cell's outcome, for a CLI's per-cell line — a struct rather than six positional arguments,
@@ -192,18 +196,21 @@ fn lift_map(
     cj: u32,
     params: BakeParams,
     reference: Option<&ReferenceArchive>,
-) -> Result<Option<LiftMap>, String> {
+) -> Result<CellLift, String> {
     match reference {
         Some(archive) => LiftMap::bake(ci, cj, params.posting_log2, params.cell_log2, lattice_sampler(mosaic), archive),
-        None => Ok(None),
+        None => Ok(CellLift { map: None, absent_tiles: Vec::new() }),
     }
 }
 
-/// The reference sources one cell reads, for the run's attribution.
-fn sources_of(ci: u32, cj: u32, params: BakeParams, reference: Option<&ReferenceArchive>) -> Vec<String> {
-    let Some(archive) = reference else { return Vec::new() };
-    let Some(window) = cell_window(ci, cj, params.posting_log2, params.cell_log2) else { return Vec::new() };
-    archive.sources_for(window).into_iter().map(str::to_string).collect()
+/// Fold one cell's lift outcome into the run's report: its tally, its attribution and the tiles the
+/// archive owed it. Attribution comes from the map, so a cell that moved no sample credits nothing.
+fn record(report: &mut BakeReport, lift: &CellLift) {
+    if let Some(map) = &lift.map {
+        report.lifts = report.lifts.join(map.tally());
+        report.sources.extend(map.sources().iter().cloned());
+    }
+    report.reference_tiles_absent.extend(lift.absent_tiles.iter().copied());
 }
 
 /// Count the `NODATA` samples in a block — the operator's coverage number, read back from the bytes
@@ -232,12 +239,9 @@ pub fn bake_shard<W: Write + Seek>(
 
     for (index, (ci, cj)) in rect.cells().enumerate() {
         let lift = lift_map(mosaic, ci, cj, params, reference)?;
-        let block = bake_cell(mosaic, ci, cj, params.posting_log2, params.cell_log2, lift.as_ref());
-        let lifted = lift.as_ref().map_or(0, |map| map.tally().nodes);
-        if let Some(map) = &lift {
-            report.lifts = report.lifts.join(map.tally());
-        }
-        report.sources.extend(sources_of(ci, cj, params, reference));
+        let block = bake_cell(mosaic, ci, cj, params.posting_log2, params.cell_log2, lift.map.as_ref());
+        let lifted = lift.map.as_ref().map_or(0, |map| map.tally().nodes);
+        record(&mut report, &lift);
         match &block {
             Some(bytes) => {
                 report.cells_written += 1;
@@ -317,12 +321,9 @@ pub fn bake_cells(
 
     for (index, (ci, cj)) in rect.cells().enumerate() {
         let lift = lift_map(mosaic, ci, cj, params, reference)?;
-        let block = bake_cell(mosaic, ci, cj, params.posting_log2, params.cell_log2, lift.as_ref());
-        let lifted = lift.as_ref().map_or(0, |map| map.tally().nodes);
-        if let Some(map) = &lift {
-            report.lifts = report.lifts.join(map.tally());
-        }
-        report.sources.extend(sources_of(ci, cj, params, reference));
+        let block = bake_cell(mosaic, ci, cj, params.posting_log2, params.cell_log2, lift.map.as_ref());
+        let lifted = lift.map.as_ref().map_or(0, |map| map.tally().nodes);
+        record(&mut report, &lift);
         let written = block.is_some();
         match block {
             Some(bytes) => {
